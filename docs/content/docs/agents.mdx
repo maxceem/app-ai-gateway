@@ -1,0 +1,33 @@
+---
+title: Agent integration
+description: A deterministic workflow for agents deploying and configuring the gateway.
+---
+
+Agents should treat checked-in schemas and command output as authoritative. Do not
+infer production configuration from project-specific examples.
+
+## Safe workflow
+
+1. Inspect the target application's identity provider and runtime.
+2. Choose server API-key or issuer plus Apple App Attest authentication.
+3. Produce a candidate application JSON document.
+4. Validate it before applying it.
+5. Confirm Cloudflare authentication and required secrets without printing values.
+6. Perform a deployment dry run when available.
+7. Deploy, call `/v1/healthz`, and confirm the application through the admin API.
+8. Return the gateway URL, application ID, and non-secret client configuration.
+
+## Machine-readable sources
+
+- `openapi/openapi.json` is the generated HTTP contract.
+- `src/contracts/schemas.ts` contains shared runtime schemas; `src/contracts/openapi.ts`
+  assembles them into documented operations.
+- `.dev.vars.example` lists required secret names without values.
+- `wrangler.jsonc` declares Cloudflare resources and environments.
+
+## Secret rules
+
+- Never place secrets in command arguments, source, documentation, or chat output.
+- Use hidden prompts, stdin, ignored files, or a secret manager.
+- Treat initial application API keys and development credentials as one-time outputs.
+- Report where a credential was stored rather than repeating its value.

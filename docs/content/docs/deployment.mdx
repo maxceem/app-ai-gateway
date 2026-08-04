@@ -1,0 +1,55 @@
+---
+title: Deployment
+description: Deploy safely through Cloudflare's template flow or Wrangler.
+---
+
+## Deploy to Cloudflare
+
+The repository's deploy button is the shortest interactive path. Cloudflare forks
+the repository, provisions the Worker and compatible bindings, applies migrations,
+and connects subsequent pushes to Workers Builds.
+
+Before starting, create a Cloudflare AI Gateway and an authenticated gateway token.
+The form asks for:
+
+| Value | Purpose |
+|---|---|
+| `CF_AIG_GATEWAY_ID` | The exact existing Cloudflare AI Gateway ID |
+| `CF_AIG_TOKEN` | Its authenticated gateway token |
+| `ADMIN_TOKEN` | A strong token used to administer this deployment |
+
+Provider API keys do not belong in these Worker secrets. Store them in Cloudflare
+AI Gateway under **Provider Keys**, using alias `default`.
+
+## Deploy with Wrangler
+
+From a clean checkout:
+
+```sh
+pnpm install
+cp .dev.vars.example .dev.vars
+```
+
+Fill the three required values without committing the file, then run:
+
+```sh
+pnpm run secrets:upload
+pnpm run deploy
+```
+
+The deploy command preserves existing secrets, creates a missing internal JWT
+secret, provisions D1 when necessary, applies migrations by binding name, and
+deploys the console and API.
+
+## Verify
+
+Call the deployed health endpoint and then sign in to the console:
+
+```sh
+curl https://YOUR-WORKER.workers.dev/v1/healthz
+```
+
+<Callout type="warn" title="Migration state is separate from Worker versions">
+  A Worker rollback does not roll back D1. Review new migrations before deploying
+  them to shared environments and never modify an applied migration.
+</Callout>

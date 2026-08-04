@@ -1,0 +1,36 @@
+---
+title: Operations
+description: Migrations, secret rotation, observability, and recovery practices.
+---
+
+## Routine verification
+
+```sh
+pnpm run typecheck
+pnpm test
+pnpm run openapi:check
+pnpm run docs:build
+pnpm run deploy:dry-run
+pnpm run startup:check
+```
+
+## Rotate the administrator token
+
+```sh
+pnpm run admin-token:rotate
+```
+
+Wrangler prompts without putting the new secret value in command history. Rotation
+invalidates the previous administrator token.
+
+## Database migrations
+
+Change `src/db/schema.ts`, generate a new Drizzle migration, and commit both the
+schema and generated migration artifacts. Apply remote migrations through the
+`DB` binding so deployments remain independent of a particular database name.
+
+## Logs and traces
+
+The Worker enables Cloudflare logs and sampled traces. Proxy responses also return
+`Server-Timing` measurements for authentication, limit evaluation, and provider
+time-to-first-byte.

@@ -1,0 +1,59 @@
+---
+title: Application configuration
+description: Define authentication, provider routing, and limits for one tenant.
+---
+
+An application row is the only tenant-specific input. Do not add tenant branches
+to Worker code.
+
+## Server application
+
+Use API-key authentication for a trusted backend:
+
+```json
+{
+  "name": "Search service",
+  "config": {
+    "authentication": {
+      "type": "api_key",
+      "end_user": {
+        "header": "x-end-user-id",
+        "required": false,
+        "fallback": "api_key"
+      }
+    },
+    "routing": {
+      "providers": {
+        "mode": "selected",
+        "selected": {
+          "openai": {
+            "allowed_paths": ["v1/responses"],
+            "allowed_models": ["gpt-5.6-terra"],
+            "max_output_tokens": 4096
+          }
+        }
+      },
+      "model_rewrites": {}
+    },
+    "limits": {
+      "per_user": {
+        "requests": { "per_minute": 30, "per_day": 1000 },
+        "spending": { "monthly_usd": 10 }
+      },
+      "per_app": {
+        "requests": { "per_minute": 300, "per_day": 10000 },
+        "spending": { "monthly_usd": 100 }
+      }
+    }
+  }
+}
+```
+
+Creating an API-key application returns its initial plaintext key once. Store it
+immediately in the calling application's secret manager.
+
+## Validation workflow
+
+Use the console for guided editing. Automation should validate a candidate through
+`POST /v1/admin/apps/{app}/validate` before updating the stored configuration.
+The generated API reference describes the canonical request schema.

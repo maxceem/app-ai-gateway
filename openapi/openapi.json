@@ -1,0 +1,3080 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "App AI Gateway API",
+    "version": "0.1.0",
+    "description": "A multi-tenant, provider-native LLM proxy for mobile applications and trusted server backends."
+  },
+  "servers": [
+    {
+      "url": "https://gateway.example.com",
+      "description": "Replace with your deployed gateway origin"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Operations",
+      "description": "Unauthenticated service health."
+    },
+    {
+      "name": "Application authentication",
+      "description": "Issuer and Apple App Attest token exchange."
+    },
+    {
+      "name": "Application",
+      "description": "Authenticated application-user state."
+    },
+    {
+      "name": "Provider proxy",
+      "description": "Provider-native streaming proxy endpoints."
+    },
+    {
+      "name": "Admin applications",
+      "description": "Application configuration lifecycle."
+    },
+    {
+      "name": "Admin operations",
+      "description": "Keys, users, credentials, and usage."
+    },
+    {
+      "name": "Admin models",
+      "description": "Model pricing metadata."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "AdminBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The deployment's ADMIN_TOKEN."
+      },
+      "GatewayBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A gateway access token or server application API key."
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "AppAttestRegisterRequest": {
+        "type": "object",
+        "properties": {
+          "issuer_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attestation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "challenge": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "issuer_token",
+          "key_id",
+          "attestation",
+          "challenge"
+        ]
+      },
+      "AppAttestTokenRequest": {
+        "type": "object",
+        "properties": {
+          "issuer_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assertion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "challenge": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "issuer_token",
+          "key_id",
+          "assertion",
+          "challenge"
+        ]
+      },
+      "DevelopmentTokenRequest": {
+        "type": "object",
+        "properties": {
+          "issuer_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dev_secret": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "issuer_token",
+          "dev_secret"
+        ],
+        "additionalProperties": false
+      },
+      "AppWrite": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "config": {
+            "$ref": "#/components/schemas/AppConfig"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "config"
+        ]
+      },
+      "AppConfig": {
+        "type": "object",
+        "properties": {
+          "authentication": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "apple_app_attest"
+                    ]
+                  },
+                  "issuer": {
+                    "type": "object",
+                    "properties": {
+                      "jwks_url": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "user_id_claim": {
+                        "type": "string"
+                      },
+                      "token_header": {
+                        "type": "string"
+                      },
+                      "required_claims": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string"
+                            },
+                            "contains": {
+                              "type": "string"
+                            },
+                            "equals": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "path"
+                          ]
+                        }
+                      },
+                      "max_token_lifetime_seconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "required": [
+                      "jwks_url",
+                      "user_id_claim",
+                      "required_claims",
+                      "max_token_lifetime_seconds"
+                    ]
+                  },
+                  "app_attest": {
+                    "type": "object",
+                    "properties": {
+                      "team_id": {
+                        "type": "string"
+                      },
+                      "bundle_id": {
+                        "type": "string"
+                      },
+                      "environments": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "production",
+                            "development"
+                          ]
+                        },
+                        "minItems": 1
+                      }
+                    },
+                    "required": [
+                      "team_id",
+                      "bundle_id",
+                      "environments"
+                    ]
+                  },
+                  "development_access": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "type",
+                  "issuer",
+                  "app_attest",
+                  "development_access"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "api_key"
+                    ]
+                  },
+                  "end_user": {
+                    "type": "object",
+                    "properties": {
+                      "header": {
+                        "type": "string",
+                        "enum": [
+                          "x-end-user-id"
+                        ]
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "fallback": {
+                        "type": "string",
+                        "enum": [
+                          "api_key"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "header",
+                      "required",
+                      "fallback"
+                    ]
+                  }
+                },
+                "required": [
+                  "type",
+                  "end_user"
+                ]
+              }
+            ]
+          },
+          "routing": {
+            "type": "object",
+            "properties": {
+              "providers": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "all",
+                      "selected"
+                    ]
+                  },
+                  "selected": {
+                    "type": "object",
+                    "properties": {
+                      "openai": {
+                        "type": "object",
+                        "properties": {
+                          "allowed_paths": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "fixed_model": {
+                                      "type": "string"
+                                    },
+                                    "clamp": {
+                                      "type": "string",
+                                      "enum": [
+                                        "responses",
+                                        "chat_completions",
+                                        "gemini_native",
+                                        "anthropic",
+                                        "none"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "path"
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "allowed_models": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "max_output_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "allowed_paths",
+                          "allowed_models"
+                        ]
+                      },
+                      "anthropic": {
+                        "type": "object",
+                        "properties": {
+                          "allowed_paths": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "fixed_model": {
+                                      "type": "string"
+                                    },
+                                    "clamp": {
+                                      "type": "string",
+                                      "enum": [
+                                        "responses",
+                                        "chat_completions",
+                                        "gemini_native",
+                                        "anthropic",
+                                        "none"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "path"
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "allowed_models": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "max_output_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "allowed_paths",
+                          "allowed_models"
+                        ]
+                      },
+                      "xai": {
+                        "type": "object",
+                        "properties": {
+                          "allowed_paths": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "fixed_model": {
+                                      "type": "string"
+                                    },
+                                    "clamp": {
+                                      "type": "string",
+                                      "enum": [
+                                        "responses",
+                                        "chat_completions",
+                                        "gemini_native",
+                                        "anthropic",
+                                        "none"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "path"
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "allowed_models": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "max_output_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "allowed_paths",
+                          "allowed_models"
+                        ]
+                      },
+                      "gemini": {
+                        "type": "object",
+                        "properties": {
+                          "allowed_paths": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "fixed_model": {
+                                      "type": "string"
+                                    },
+                                    "clamp": {
+                                      "type": "string",
+                                      "enum": [
+                                        "responses",
+                                        "chat_completions",
+                                        "gemini_native",
+                                        "anthropic",
+                                        "none"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "path"
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "allowed_models": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "max_output_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "allowed_paths",
+                          "allowed_models"
+                        ]
+                      },
+                      "perplexity": {
+                        "type": "object",
+                        "properties": {
+                          "allowed_paths": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "fixed_model": {
+                                      "type": "string"
+                                    },
+                                    "clamp": {
+                                      "type": "string",
+                                      "enum": [
+                                        "responses",
+                                        "chat_completions",
+                                        "gemini_native",
+                                        "anthropic",
+                                        "none"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "path"
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "allowed_models": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "max_output_tokens": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "allowed_paths",
+                          "allowed_models"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              },
+              "model_rewrites": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "providers",
+              "model_rewrites"
+            ]
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "per_user": {
+                "type": "object",
+                "properties": {
+                  "requests": {
+                    "type": "object",
+                    "properties": {
+                      "per_minute": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "per_day": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "per_minute",
+                      "per_day"
+                    ]
+                  },
+                  "spending": {
+                    "type": "object",
+                    "properties": {
+                      "monthly_usd": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "monthly_usd"
+                    ]
+                  }
+                },
+                "required": [
+                  "requests",
+                  "spending"
+                ]
+              },
+              "per_app": {
+                "type": "object",
+                "properties": {
+                  "requests": {
+                    "type": "object",
+                    "properties": {
+                      "per_minute": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "per_day": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "per_minute",
+                      "per_day"
+                    ]
+                  },
+                  "spending": {
+                    "type": "object",
+                    "properties": {
+                      "monthly_usd": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "monthly_usd"
+                    ]
+                  }
+                },
+                "required": [
+                  "requests",
+                  "spending"
+                ]
+              }
+            },
+            "required": [
+              "per_user",
+              "per_app"
+            ]
+          }
+        },
+        "required": [
+          "authentication",
+          "routing",
+          "limits"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/v1/healthz": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "getHealth",
+        "summary": "Check gateway health",
+        "responses": {
+          "200": {
+            "description": "The Worker is accepting requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "service": {
+                      "type": "string",
+                      "enum": [
+                        "ai-gateway"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "service"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/auth/challenge": {
+      "post": {
+        "tags": [
+          "Application authentication"
+        ],
+        "operationId": "createAppAttestChallenge",
+        "summary": "Create an App Attest challenge",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A five-minute, single-use challenge.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "challenge": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "challenge",
+                    "expires_in"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/auth/register": {
+      "post": {
+        "tags": [
+          "Application authentication"
+        ],
+        "operationId": "registerAppAttestKey",
+        "summary": "Register an App Attest key",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppAttestRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The key was registered for the verified issuer identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "user_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/auth/token": {
+      "post": {
+        "tags": [
+          "Application authentication"
+        ],
+        "operationId": "exchangeGatewayToken",
+        "summary": "Exchange issuer and device proof for a gateway token",
+        "description": "App Attest clients send key_id, assertion, and challenge. Development clients send dev_secret instead.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AppAttestTokenRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DevelopmentTokenRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A short-lived gateway access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "access_token": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "access_token",
+                    "expires_in"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/me": {
+      "get": {
+        "tags": [
+          "Application"
+        ],
+        "operationId": "getCurrentUser",
+        "summary": "Get the current user's limits and usage",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current user state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "requests_today": {
+                          "type": "number"
+                        },
+                        "requests_remaining": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "monthly_cost_usd": {
+                          "type": "number"
+                        },
+                        "monthly_budget_usd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "blocked": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "requests_today",
+                        "requests_remaining",
+                        "monthly_cost_usd",
+                        "monthly_budget_usd",
+                        "blocked"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "user_id",
+                    "limits"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/proxy/{provider}/{path}": {
+      "post": {
+        "tags": [
+          "Provider proxy"
+        ],
+        "operationId": "proxyProviderRequest",
+        "summary": "Proxy a provider-native model request",
+        "description": "The body and successful response retain the selected provider's native format. The gateway validates the configured path and model, injects provider credentials through Cloudflare AI Gateway, applies limits, and streams the upstream response without buffering.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "openai",
+                "anthropic",
+                "xai",
+                "gemini",
+                "perplexity"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "v1/responses"
+            },
+            "required": true,
+            "name": "path",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required for issuer/App Attest clients; optional for server API keys."
+            },
+            "required": false,
+            "description": "Required for issuer/App Attest clients; optional for server API keys.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional configured end-user identity for server applications."
+            },
+            "required": false,
+            "description": "Optional configured end-user identity for server applications.",
+            "name": "x-end-user-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "Provider-native JSON request. Consult the selected provider's API reference for the exact shape."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Provider-native response. Streaming responses remain streamed.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A request or spending limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The upstream provider request failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps": {
+      "get": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "listApps",
+        "summary": "List applications",
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Applications and current usage summaries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "month": {
+                      "type": "string"
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  },
+                  "required": [
+                    "month",
+                    "apps"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "createApp",
+        "summary": "Create an application",
+        "description": "API-key applications receive a one-time plaintext initial key in the response.",
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Application created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "api_key": {}
+                  },
+                  "required": [
+                    "app_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A unique application ID could not be allocated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}": {
+      "get": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "getApp",
+        "summary": "Get an application",
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Application state.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "updateApp",
+        "summary": "Update an application",
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Application state.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "deleteApp",
+        "summary": "Delete an application and its associated operational data",
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "confirm",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Application deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "app_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deleted",
+                    "app_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/validate": {
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "validateApp",
+        "summary": "Validate an application configuration without saving it",
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved valid configuration.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/keys": {
+      "get": {
+        "operationId": "listAppKeys",
+        "summary": "List application API keys",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createAppKey",
+        "summary": "Create an application API key",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/keys/{key}/revoke": {
+      "post": {
+        "operationId": "revokeAppKey",
+        "summary": "Revoke an application API key",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "key_123"
+            },
+            "required": true,
+            "name": "key",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/development-credential": {
+      "get": {
+        "operationId": "getDevelopmentCredential",
+        "summary": "Get development credential metadata",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createDevelopmentCredential",
+        "summary": "Create a development credential",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteDevelopmentCredential",
+        "summary": "Delete a development credential",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/development-credential/rotate": {
+      "post": {
+        "operationId": "rotateDevelopmentCredential",
+        "summary": "Rotate a development credential",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/users": {
+      "get": {
+        "operationId": "listAppUsers",
+        "summary": "List application users",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/users/{user}": {
+      "get": {
+        "operationId": "getAppUser",
+        "summary": "Get an application user",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "user-123"
+            },
+            "required": true,
+            "name": "user",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/users/{user}/block": {
+      "post": {
+        "operationId": "blockAppUser",
+        "summary": "Block an application user",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "user-123"
+            },
+            "required": true,
+            "name": "user",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/users/{user}/unblock": {
+      "post": {
+        "operationId": "unblockAppUser",
+        "summary": "Unblock an application user",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "user-123"
+            },
+            "required": true,
+            "name": "user",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/usage": {
+      "get": {
+        "operationId": "getAppUsage",
+        "summary": "Get application usage totals",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/usage/timeseries": {
+      "get": {
+        "operationId": "getAppUsageTimeseries",
+        "summary": "Get application usage over time",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/usage/breakdown": {
+      "get": {
+        "operationId": "getAppUsageBreakdown",
+        "summary": "Get grouped application usage",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/events": {
+      "get": {
+        "operationId": "listAppEvents",
+        "summary": "List application usage events",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/prices": {
+      "get": {
+        "operationId": "listModelPrices",
+        "summary": "List known model prices",
+        "tags": [
+          "Admin models"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

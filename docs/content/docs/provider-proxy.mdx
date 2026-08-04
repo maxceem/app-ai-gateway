@@ -1,0 +1,32 @@
+---
+title: Provider proxy
+description: Send provider-native requests while the gateway enforces policy and credentials.
+---
+
+The proxy route is:
+
+```text
+/v1/apps/{app}/proxy/{provider}/{provider-path}
+```
+
+Supported provider slugs are `openai`, `anthropic`, `xai`, `gemini`, and
+`perplexity`. The application configuration must allow both the provider path and
+model.
+
+## Provider-native contract
+
+The gateway intentionally does not invent a unified model request format. Request
+bodies and successful responses retain the upstream provider's native contract.
+This is why the generated OpenAPI schema describes the body as an open JSON object:
+the provider documentation remains authoritative for its exact fields.
+
+## Streaming
+
+Upstream response bodies are streamed to the client. The gateway tees the stream
+for usage accounting without buffering the complete provider response.
+
+## Forwarded controls
+
+Only the documented Cloudflare AI Gateway control headers are forwarded. The
+Worker strips other `cf-aig-*` headers and supplies its own encrypted authenticated
+gateway token.

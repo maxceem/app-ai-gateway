@@ -1,0 +1,101 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "app-ai-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  },
+  "assets": {
+    "directory": "./console/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/v1/*"]
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "USER_LIMITER", "class_name": "UserLimiter" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] }
+  ],
+  "env": {
+    "production": {
+      "name": "ai-gateway",
+      "routes": [
+        {
+          "pattern": "ai-gateway.maxceem.com",
+          "custom_domain": true
+        }
+      ],
+      "placement": {
+        "region": "azure:eastus2"
+      },
+      "vars": {
+        "ENVIRONMENT": "production",
+        "CF_AIG_GATEWAY_ID": "ai-gateway-dev",
+        "GATEWAY_TOKEN_TTL_SECONDS": "3600",
+        "CONFIG_CACHE_TTL_SECONDS": "60"
+      },
+      "ai": {
+        "binding": "AI"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ai-gateway-enam",
+          "database_id": "476a8aa9-095b-45fb-9b83-3067e6f063b2",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "USER_LIMITER", "class_name": "UserLimiter" }
+        ]
+      }
+    },
+    "local": {
+      "name": "app-ai-gateway-local",
+      "routes": [],
+      "assets": {
+        "directory": "./console/dist",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/v1/*"]
+      },
+      "vars": {
+        "ENVIRONMENT": "local",
+        "CF_AIG_GATEWAY_ID": "ai-gateway-dev"
+      },
+      "ai": {
+        "binding": "AI",
+        "remote": true
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ai-gateway-local",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "USER_LIMITER", "class_name": "UserLimiter" }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+# Required values requested by the Deploy to Cloudflare flow.
+# Create the AI Gateway before deployment. Never commit real values.
+CF_AIG_GATEWAY_ID=
+CF_AIG_TOKEN=
+ADMIN_TOKEN=
+
+# JWT_SECRET is generated during the first deployment.
+# For local development, run `pnpm run secrets:setup-local` to generate it.

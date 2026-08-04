@@ -1,0 +1,90 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "fumadocs-openapi/css/preset.css";
+
+:root {
+  --font-body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+  --font-code: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-code);
+  --color-fd-primary: hsl(15 88% 52%);
+}
+
+body {
+  font-family: var(--font-body), sans-serif;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, currentColor 3%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, currentColor 3%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-code);
+}
+
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.brand-mark {
+  display: inline-grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-fd-primary) 55%, transparent);
+  border-radius: 0.5rem;
+  color: var(--color-fd-primary);
+  background: color-mix(in srgb, var(--color-fd-primary) 9%, transparent);
+}
+
+.gateway-hero {
+  position: relative;
+  overflow: hidden;
+  margin: 1rem 0 2.5rem;
+  padding: clamp(1.5rem, 5vw, 3.25rem);
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 1.25rem;
+  background:
+    radial-gradient(circle at 82% 12%, color-mix(in srgb, var(--color-fd-primary) 20%, transparent), transparent 34%),
+    color-mix(in srgb, var(--color-fd-background) 94%, currentColor 6%);
+}
+
+.gateway-hero::after {
+  content: "";
+  position: absolute;
+  inset: auto -8% -45% auto;
+  width: 19rem;
+  aspect-ratio: 1;
+  border: 1px solid color-mix(in srgb, var(--color-fd-primary) 30%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2.5rem color-mix(in srgb, var(--color-fd-primary) 4%, transparent), 0 0 0 5rem color-mix(in srgb, var(--color-fd-primary) 3%, transparent);
+  pointer-events: none;
+}
+
+.gateway-eyebrow {
+  color: var(--color-fd-primary);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.gateway-hero h1 {
+  max-width: 14ch;
+  margin: 0.7rem 0 1rem;
+  font-size: clamp(2.2rem, 6vw, 4.8rem);
+  line-height: 0.98;
+  letter-spacing: -0.065em;
+}
+
+.gateway-hero p {
+  max-width: 62ch;
+  color: var(--color-fd-muted-foreground);
+  font-size: clamp(1rem, 2vw, 1.15rem);
+}

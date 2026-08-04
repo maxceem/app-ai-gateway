@@ -1,0 +1,164 @@
+{
+  "openai": {
+    "gpt-5.6": { "input": 5.0, "cached_input": 0.5, "output": 30.0 },
+    "gpt-5.6-sol": { "input": 5.0, "cached_input": 0.5, "output": 30.0 },
+    "gpt-5.6-terra": { "input": 2.5, "cached_input": 0.25, "output": 15.0 },
+    "gpt-5.6-luna": { "input": 1.0, "cached_input": 0.1, "output": 6.0 },
+    "gpt-5.5": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "output": 30.0,
+      "long_context_threshold": 272000,
+      "long_input": 10.0,
+      "long_cached_input": 1.0,
+      "long_output": 45.0
+    },
+    "gpt-5.5-pro": { "input": 30.0, "output": 180.0 },
+    "gpt-5.4": {
+      "input": 2.5,
+      "cached_input": 0.25,
+      "output": 15.0,
+      "long_context_threshold": 272000,
+      "long_input": 5.0,
+      "long_cached_input": 0.5,
+      "long_output": 22.5
+    },
+    "gpt-5.4-pro": {
+      "input": 30.0,
+      "output": 180.0,
+      "long_context_threshold": 272000,
+      "long_input": 60.0,
+      "long_output": 270.0
+    },
+    "gpt-5.4-mini": { "input": 0.75, "cached_input": 0.075, "output": 4.5 },
+    "gpt-5.4-nano": { "input": 0.2, "cached_input": 0.02, "output": 1.25 },
+    "gpt-5.3-codex": { "input": 1.75, "cached_input": 0.175, "output": 14.0 },
+    "gpt-5.2": { "input": 1.75, "cached_input": 0.175, "output": 14.0 },
+    "gpt-5.2-pro": { "input": 21.0, "output": 168.0 },
+    "gpt-5.1": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-5": { "input": 1.25, "cached_input": 0.125, "output": 10.0 },
+    "gpt-5-pro": { "input": 15.0, "output": 120.0 },
+    "gpt-5-mini": { "input": 0.25, "cached_input": 0.025, "output": 2.0 },
+    "gpt-5-nano": { "input": 0.05, "cached_input": 0.005, "output": 0.4 },
+    "o3": { "input": 2.0, "cached_input": 0.5, "output": 8.0 },
+    "o3-pro": { "input": 20.0, "output": 80.0 },
+    "gpt-4.1": { "input": 2.0, "cached_input": 0.5, "output": 8.0 },
+    "gpt-4.1-mini": { "input": 0.4, "cached_input": 0.1, "output": 1.6 },
+    "gpt-4o-mini": { "input": 0.15, "cached_input": 0.075, "output": 0.6 },
+    "gpt-4o-mini-transcribe": { "input": 1.25, "output": 5.0 },
+    "gpt-4o-transcribe": { "input": 2.5, "output": 10.0 },
+    "whisper-1": { "per_minute": 0.006 }
+  },
+  "anthropic": {
+    "claude-fable-5": { "input": 10.0, "cached_input": 1.0, "cache_write": 12.5, "output": 50.0 },
+    "claude-mythos-5": { "input": 10.0, "cached_input": 1.0, "cache_write": 12.5, "output": 50.0 },
+    "claude-opus-5": { "input": 5.0, "cached_input": 0.5, "cache_write": 6.25, "output": 25.0 },
+    "claude-opus-4-8": { "input": 5.0, "cached_input": 0.5, "cache_write": 6.25, "output": 25.0 },
+    "claude-opus-4-7": { "input": 5.0, "cached_input": 0.5, "cache_write": 6.25, "output": 25.0 },
+    "claude-opus-4-6": { "input": 5.0, "cached_input": 0.5, "cache_write": 6.25, "output": 25.0 },
+    "claude-opus-4-5": { "input": 5.0, "cached_input": 0.5, "cache_write": 6.25, "output": 25.0 },
+    "claude-sonnet-5": { "input": 2.0, "cached_input": 0.2, "cache_write": 2.5, "output": 10.0 },
+    "claude-sonnet-4-6": { "input": 3.0, "cached_input": 0.3, "cache_write": 3.75, "output": 15.0 },
+    "claude-sonnet-4-5": { "input": 3.0, "cached_input": 0.3, "cache_write": 3.75, "output": 15.0 },
+    "claude-haiku-4-5": { "input": 1.0, "cached_input": 0.1, "cache_write": 1.25, "output": 5.0 },
+    "claude-haiku-4-5-20251001": { "input": 1.0, "cached_input": 0.1, "cache_write": 1.25, "output": 5.0 }
+  },
+  "xai": {
+    "grok-4.5": {
+      "input": 2.0,
+      "cached_input": 0.3,
+      "output": 6.0,
+      "long_context_threshold": 200000,
+      "long_input": 4.0,
+      "long_cached_input": 0.6,
+      "long_output": 12.0
+    },
+    "grok-build-0.1": {
+      "input": 1.0,
+      "cached_input": 0.2,
+      "output": 2.0,
+      "long_context_threshold": 200000,
+      "long_input": 2.0,
+      "long_cached_input": 0.4,
+      "long_output": 4.0
+    },
+    "grok-4.3": {
+      "input": 1.25,
+      "cached_input": 0.2,
+      "output": 2.5,
+      "long_context_threshold": 200000,
+      "long_input": 2.5,
+      "long_cached_input": 0.4,
+      "long_output": 5.0
+    },
+    "grok-4.20-multi-agent-0309": {
+      "input": 1.25,
+      "cached_input": 0.2,
+      "output": 2.5,
+      "long_context_threshold": 200000,
+      "long_input": 2.5,
+      "long_cached_input": 0.4,
+      "long_output": 5.0
+    },
+    "grok-4.20-0309-reasoning": {
+      "input": 1.25,
+      "cached_input": 0.2,
+      "output": 2.5,
+      "long_context_threshold": 200000,
+      "long_input": 2.5,
+      "long_cached_input": 0.4,
+      "long_output": 5.0
+    },
+    "grok-4.20-0309-non-reasoning": {
+      "input": 1.25,
+      "cached_input": 0.2,
+      "output": 2.5,
+      "long_context_threshold": 200000,
+      "long_input": 2.5,
+      "long_cached_input": 0.4,
+      "long_output": 5.0
+    },
+    "grok-transcribe": { "per_hour": 0.1 }
+  },
+  "gemini": {
+    "gemini-3.6-flash": { "input": 1.5, "cached_input": 0.15, "output": 7.5 },
+    "gemini-3.5-flash": { "input": 1.5, "cached_input": 0.15, "output": 9.0 },
+    "gemini-3.5-flash-lite": { "input": 0.3, "cached_input": 0.03, "output": 2.5 },
+    "gemini-3.1-pro-preview": {
+      "input": 2.0,
+      "cached_input": 0.2,
+      "output": 12.0,
+      "long_context_threshold": 200000,
+      "long_input": 4.0,
+      "long_cached_input": 0.4,
+      "long_output": 18.0
+    },
+    "gemini-3.1-pro-preview-customtools": {
+      "input": 2.0,
+      "cached_input": 0.2,
+      "output": 12.0,
+      "long_context_threshold": 200000,
+      "long_input": 4.0,
+      "long_cached_input": 0.4,
+      "long_output": 18.0
+    },
+    "gemini-3-flash-preview": { "input": 0.5, "cached_input": 0.05, "output": 3.0 },
+    "gemini-2.5-pro": {
+      "input": 1.25,
+      "cached_input": 0.125,
+      "output": 10.0,
+      "long_context_threshold": 200000,
+      "long_input": 2.5,
+      "long_cached_input": 0.25,
+      "long_output": 15.0
+    },
+    "gemini-2.5-flash": { "input": 0.3, "cached_input": 0.03, "output": 2.5 },
+    "gemini-2.5-flash-lite": { "input": 0.1, "cached_input": 0.01, "output": 0.4 }
+  },
+  "perplexity": {
+    "sonar": { "input": 1.0, "output": 1.0 },
+    "sonar-pro": { "input": 3.0, "output": 15.0 },
+    "sonar-reasoning-pro": { "input": 2.0, "output": 8.0 },
+    "sonar-deep-research": { "input": 2.0, "output": 8.0 }
+  }
+}

@@ -1,0 +1,48 @@
+---
+title: Quickstart
+description: Run the gateway locally and verify the first request path.
+---
+
+## Requirements
+
+- Node.js 22 or newer
+- pnpm 11
+- Wrangler 4
+- A Cloudflare account for remote AI binding requests
+
+## Start locally
+
+```sh
+pnpm install
+cp .dev.vars.example .dev.vars
+pnpm run secrets:setup-local
+pnpm run db:migrate:local
+pnpm run db:seed:local
+pnpm run dev
+```
+
+Verify the Worker:
+
+```sh
+curl http://localhost:8787/v1/healthz
+```
+
+The response should be:
+
+```json
+{ "ok": true, "service": "ai-gateway" }
+```
+
+## Open the console
+
+Visit `http://localhost:8787`. The local administrator token is generated into
+the ignored `.dev.vars` file by `secrets:setup-local`.
+
+## Before sending a model request
+
+The seeded configurations are development examples. A real deployment also needs:
+
+1. An authenticated Cloudflare AI Gateway.
+2. Provider keys stored in its **Provider Keys** screen with alias `default`.
+3. An application row whose provider, path, and model policy permits the request.
+4. Either a server application key or an issuer/App Attest gateway token.

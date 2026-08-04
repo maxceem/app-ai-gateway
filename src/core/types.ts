@@ -1,0 +1,132 @@
+export type Provider = "openai" | "anthropic" | "xai" | "gemini" | "perplexity";
+
+export interface ClaimRequirement {
+  path: string;
+  contains?: string;
+  equals?: string | number | boolean;
+}
+
+export type AppAttestEnvironment = "production" | "development";
+export type GatewayAuthMethod = "dev" | "attest" | "api_key";
+
+export interface IssuerAuthConfig {
+  jwks_url: string;
+  user_id_claim: string;
+  token_header?: string;
+  required_claims: ClaimRequirement[];
+  max_token_lifetime_seconds: number;
+}
+
+export interface AppleAppAttestAuthentication {
+  type: "apple_app_attest";
+  issuer: IssuerAuthConfig;
+  app_attest: {
+    team_id: string;
+    bundle_id: string;
+    environments: AppAttestEnvironment[];
+  };
+  development_access: boolean;
+}
+
+export interface ApiKeyAuthentication {
+  type: "api_key";
+  end_user: {
+    header: "x-end-user-id";
+    required: boolean;
+    fallback: "api_key";
+  };
+}
+
+export type AuthenticationConfig = AppleAppAttestAuthentication | ApiKeyAuthentication;
+
+export interface ProviderProxyConfig {
+  allowed_paths: AllowedPath[];
+  allowed_models: string[];
+  max_output_tokens?: number;
+}
+
+export type OutputClampStyle =
+  | "responses"
+  | "chat_completions"
+  | "gemini_native"
+  | "anthropic"
+  | "none";
+
+export interface AllowedPathConfig {
+  path: string;
+  fixed_model?: string;
+  clamp?: OutputClampStyle;
+}
+
+export type AllowedPath = string | AllowedPathConfig;
+
+export interface RoutingConfig {
+  providers: {
+    mode: "all" | "selected";
+    selected?: Partial<Record<Provider, ProviderProxyConfig>>;
+  };
+  model_rewrites: Record<string, string>;
+}
+
+export interface ResolvedRoutingConfig {
+  providerMode: "all" | "selected";
+  providers: Partial<Record<Provider, ProviderProxyConfig>>;
+  modelRewrites: Record<string, string>;
+}
+
+export interface LimitScopeConfig {
+  requests: {
+    per_minute: number | null;
+    per_day: number | null;
+  };
+  spending: {
+    monthly_usd: number | null;
+  };
+}
+
+export interface LimitsConfig {
+  per_user: LimitScopeConfig;
+  per_app: LimitScopeConfig;
+}
+
+export interface StoredAppConfig {
+  authentication: AuthenticationConfig;
+  routing: RoutingConfig;
+  limits: LimitsConfig;
+}
+
+export interface ResolvedLimitScope {
+  requestsPerMinute: number | null;
+  requestsPerDay: number | null;
+  monthlyBudgetMicrousd: number | null;
+}
+
+export interface ResolvedLimitsConfig {
+  perUser: ResolvedLimitScope;
+  perApp: ResolvedLimitScope;
+}
+
+export interface AppConfig {
+  id: string;
+  name: string;
+  authentication: AuthenticationConfig;
+  routing: ResolvedRoutingConfig;
+  limits: ResolvedLimitsConfig;
+  status: "active" | "disabled";
+}
+
+export interface GatewayIdentity {
+  appId: string;
+  userId: string;
+  jti: string;
+  expiresAt: number;
+  authMethod: GatewayAuthMethod;
+  apiKeyId?: string;
+}
+
+export interface UsageCounts {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+}

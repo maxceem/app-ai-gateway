@@ -1,0 +1,76 @@
+{
+  "name": "@calories-tracker/ai-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.17.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env local",
+    "console:dev": "pnpm --filter @ai-gateway/console dev",
+    "console:build": "pnpm --filter @ai-gateway/console build",
+    "console:typecheck": "pnpm --filter @ai-gateway/console typecheck",
+    "deploy": "pnpm run console:build && node scripts/deploy.mjs",
+    "deploy:production": "pnpm run console:build && wrangler d1 migrations apply DB --remote --env production && wrangler deploy --env production",
+    "typecheck": "tsc --noEmit && wrangler types --check --env-file .dev.vars.example && pnpm run console:typecheck && pnpm run docs:typecheck",
+    "test": "vitest run && node --test test/deploy-script.node.mjs",
+    "test:watch": "vitest",
+    "check": "pnpm run typecheck && pnpm run openapi:check && pnpm test && pnpm run console:test && pnpm run docs:build",
+    "openapi:generate": "node --experimental-strip-types scripts/generate-openapi.ts",
+    "openapi:check": "node scripts/check-openapi.mjs",
+    "docs:dev": "pnpm --filter @ai-gateway/docs dev",
+    "docs:build": "pnpm --filter @ai-gateway/docs build",
+    "docs:deploy": "pnpm --filter @ai-gateway/docs cf:deploy",
+    "docs:typecheck": "pnpm --filter @ai-gateway/docs typecheck",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --env local",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:production": "wrangler d1 migrations apply DB --remote --env production",
+    "db:seed:local": "wrangler d1 execute DB --local --env local --file seeds/dev-app.sql",
+    "secrets:upload": "wrangler secret bulk .dev.vars --env=\"\"",
+    "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
+    "admin-token:rotate": "wrangler secret put ADMIN_TOKEN",
+    "tenants:register": "./scripts/register-calorie-tracker-tenants.sh",
+    "deploy:dry-run": "pnpm run console:build && wrangler deploy --dry-run --env=\"\"",
+    "startup:check": "wrangler check startup --env=\"\"",
+    "console:test": "pnpm --filter @ai-gateway/console test",
+    "console:ensure": "node -e \"require('node:fs').mkdirSync('console/dist',{recursive:true})\"",
+    "predev": "pnpm run console:ensure",
+    "pretest": "pnpm run console:ensure"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "^1.5.1",
+    "asn1js": "^3.0.7",
+    "cbor-x": "^1.6.0",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.9.0",
+    "jose": "^6.0.0",
+    "zod": "^4.0.0",
+    "pkijs": "^3.3.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.7",
+    "@cloudflare/workers-types": "^5.20260723.1",
+    "@types/node": "^24.0.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "cloudflare": {
+    "bindings": {
+      "CF_AIG_GATEWAY_ID": {
+        "description": "Required. [Create a Cloudflare AI Gateway](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fai-gateway) first, then enter its exact Gateway ID (slug). This deployment does not create a gateway."
+      },
+      "CF_AIG_TOKEN": {
+        "description": "After creating the gateway, open its Settings and select **Create authentication token**. Save the one-time token and paste it here; it includes the required AI Gateway Run permission."
+      },
+      "ADMIN_TOKEN": {
+        "description": "Create a strong random token for the console admin access. Generate one with a password manager or run `openssl rand -base64 32`, save it, then paste it here."
+      }
+    }
+  }
+}
