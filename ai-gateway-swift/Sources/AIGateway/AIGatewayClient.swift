@@ -120,36 +120,73 @@ public actor AIGatewayClient {
         guard let keyID else {
             throw GatewayError(code: .attestFailed, message: "App Attest key registration failed", statusCode: 0)
         }
+        let signed = try await signedAssertion(for: keyID, forceIssuerRefresh: forceIssuerRefresh)
+        let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
+        do {
+            return try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed))
+        } catch let error as GatewayError where error.code == .attestFailed {
+            // The gateway holds a key this device is no longer signing with.
+            let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
+            let retry = try await sign(with: replacement)
+            return try await postJSON(path: "auth/token", body: tokenBody(issuerToken, retry))
+        }
+    }
+
+    private struct SignedAssertion {
+        let keyID: String
+        let challenge: String
+        let assertion: Data
+    }
+
+    /// Signs a challenge, replacing the key first if this device can no longer
+    /// sign with the one on file.
+    ///
+    /// The stored key id outlives the key itself. Deleting the app destroys its
+    /// App Attest key in the Secure Enclave, but the keychain entry naming that
+    /// key survives deletion — so the next install reads back an id it cannot
+    /// sign with, and `generateAssertion` fails locally with
+    /// `DCError.invalidInput` before any request leaves the device. Restoring to
+    /// a new device leaves the same wreckage.
+    ///
+    /// Recovering from the gateway rejecting a key was never enough, because
+    /// this failure happens a step earlier and never reaches the gateway at all.
+    /// Treating the two the same way is what makes a reinstall something the app
+    /// heals from on its next request rather than something that ends it.
+    ///
+    /// Only the signing call is guarded. Fetching a challenge is a network
+    /// request, and a flight-mode failure there must not be mistaken for a dead
+    /// key and cost the user a perfectly good one.
+    private func signedAssertion(for keyID: String, forceIssuerRefresh: Bool) async throws -> SignedAssertion {
+        let challengeValue = try await challenge()
+        let clientData = Self.assertionClientData(app: appID, challenge: challengeValue, keyID: keyID)
+        do {
+            let assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
+            return SignedAssertion(keyID: keyID, challenge: challengeValue, assertion: assertion)
+        } catch {
+            let replacement = try await replaceKey(forceIssuerRefresh: forceIssuerRefresh)
+            return try await sign(with: replacement)
+        }
+    }
+
+    private func sign(with keyID: String) async throws -> SignedAssertion {
         let challengeValue = try await challenge()
         let clientData = Self.assertionClientData(app: appID, challenge: challengeValue, keyID: keyID)
         let assertion = try await attestProvider.generateAssertion(keyID, clientDataHash: clientData.sha256)
-        let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
-        do {
-            return try await postJSON(
-                path: "auth/token",
-                body: [
-                    "issuer_token": issuerToken,
-                    "key_id": keyID,
-                    "assertion": assertion.base64EncodedString(),
-                    "challenge": challengeValue,
-                ]
-            )
-        } catch let error as GatewayError where error.code == .attestFailed {
-            try credentialStore.setAppAttestKeyID(nil, for: appID)
-            let replacement = try await registerKey(forceIssuerRefresh: forceIssuerRefresh)
-            let retryChallenge = try await challenge()
-            let retryData = Self.assertionClientData(app: appID, challenge: retryChallenge, keyID: replacement)
-            let retryAssertion = try await attestProvider.generateAssertion(replacement, clientDataHash: retryData.sha256)
-            return try await postJSON(
-                path: "auth/token",
-                body: [
-                    "issuer_token": issuerToken,
-                    "key_id": replacement,
-                    "assertion": retryAssertion.base64EncodedString(),
-                    "challenge": retryChallenge,
-                ]
-            )
-        }
+        return SignedAssertion(keyID: keyID, challenge: challengeValue, assertion: assertion)
+    }
+
+    private func replaceKey(forceIssuerRefresh: Bool) async throws -> String {
+        try credentialStore.setAppAttestKeyID(nil, for: appID)
+        return try await registerKey(forceIssuerRefresh: forceIssuerRefresh)
+    }
+
+    private func tokenBody(_ issuerToken: String, _ signed: SignedAssertion) -> [String: String] {
+        [
+            "issuer_token": issuerToken,
+            "key_id": signed.keyID,
+            "assertion": signed.assertion.base64EncodedString(),
+            "challenge": signed.challenge,
+        ]
     }
 
     private func registerKey(forceIssuerRefresh: Bool) async throws -> String {

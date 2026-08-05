@@ -24,13 +24,20 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 struct MockAttestProvider: AppAttestProviding {
+    /// Key ids this device can no longer sign with — what a reinstall leaves
+    /// behind, the Secure Enclave key having gone with the old install while
+    /// the keychain entry naming it stayed.
+    var deadKeyIDs: Set<String> = []
+
     var isSupported: Bool { true }
     func generateKey() async throws -> String { "generated-key" }
     func attestKey(_ keyID: String, clientDataHash: Data) async throws -> Data {
         Data("attestation".utf8)
     }
     func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
-        Data("assertion".utf8)
+        // `DCError.invalidInput` is what iOS actually raises here.
+        if deadKeyIDs.contains(keyID) { throw URLError(.userAuthenticationRequired) }
+        return Data("assertion".utf8)
     }
 }
 
@@ -142,6 +149,41 @@ struct AIGatewayClientTests {
         #expect(tokenCalls == 2)
         #expect(await refreshRecorder.snapshot() == [false, true])
         #expect(await recoveryRecorder.snapshot() == 1)
+    }
+
+    /// A key the Secure Enclave has forgotten is registered afresh rather than
+    /// ending the session. Signing fails on the device, before any request is
+    /// made, so the gateway never gets the chance to reject it — which is why
+    /// recovering from a rejection alone left a reinstalled app stuck.
+    @Test
+    func aKeyThisDeviceCannotSignWithIsReplaced() async throws {
+        var registerCalls = 0
+        var tokenCalls = 0
+        MockURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/auth/challenge") {
+                return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
+            }
+            if request.url!.path.hasSuffix("/auth/register") {
+                registerCalls += 1
+                return response(request, status: 200, body: #"{"user_id":"user-1"}"#)
+            }
+            tokenCalls += 1
+            return response(request, status: 200, body: #"{"access_token":"recovered","expires_in":3600}"#)
+        }
+        let store = MemoryCredentialStore(keyID: "key-from-previous-install")
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            issuerTokenProvider: { _ in "issuer" },
+            attestProvider: MockAttestProvider(deadKeyIDs: ["key-from-previous-install"]),
+            credentialStore: store,
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "recovered")
+        // Registered once, and the replacement is what gets stored.
+        #expect(registerCalls == 1)
+        #expect(tokenCalls == 1)
+        #expect(try store.appAttestKeyID(for: "test-app") == "generated-key")
     }
 
     @Test
