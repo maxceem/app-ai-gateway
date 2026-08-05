@@ -2,7 +2,9 @@
   <!--
     Matches the "AI" mark in the console header (24x24, 4px radius, bold).
     rx 5.33 keeps that same 4:24 corner ratio at this 32px size.
-    Colours are the console's light-mode --primary / --primary-foreground.
+    Colours are the console's light-mode primary / primary-foreground tokens.
+    Note: XML forbids a double hyphen inside a comment, so token names are
+    written without their CSS custom-property prefix.
   -->
   <rect width="32" height="32" rx="5.33" fill="#18181b" />
   <text
