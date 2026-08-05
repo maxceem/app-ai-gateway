@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    Matches the "AI" mark in the console header (24x24, 4px radius, bold).
+    rx 5.33 keeps that same 4:24 corner ratio at this 32px size.
+    Colours are the console's light-mode --primary / --primary-foreground.
+  -->
+  <rect width="32" height="32" rx="5.33" fill="#18181b" />
+  <text
+    x="16"
+    y="17"
+    fill="#fafafa"
+    font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif"
+    font-size="15"
+    font-weight="700"
+    letter-spacing="0.2"
+    text-anchor="middle"
+    dominant-baseline="central"
+  >AI</text>
+</svg>
