@@ -16,25 +16,11 @@ Requirements: a Cloudflare account and an existing
 The deployment form provisions the Worker, D1 database, Durable Object, admin
 console, and future deployments. It requires:
 
-| Variable | Value |
+| Variable | How to obtain it |
 | --- | --- |
-| `CF_AIG_GATEWAY_ID` | Your Cloudflare AI Gateway ID (slug) |
-| `CF_AIG_TOKEN` | Its authenticated gateway token |
-| `ADMIN_TOKEN` | A strong token you create for the admin console |
-
-Get the values before deploying:
-
-1. Open [Cloudflare AI Gateway](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fai-gateway),
-   create or select a gateway, and copy its exact **Gateway ID** into
-   `CF_AIG_GATEWAY_ID`.
-2. In that gateway's **Settings**, select **Create authentication token**. Save
-   the one-time token and use it as `CF_AIG_TOKEN`; the generated token includes
-   the required **AI Gateway Run** permission.
-3. Generate and save your own admin token, then use it as `ADMIN_TOKEN`:
-
-   ```sh
-   openssl rand -base64 32
-   ```
+| `CF_AIG_GATEWAY_ID` | [Create or select an AI Gateway](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fai-gateway), then copy its exact **Gateway ID** (slug). Deployment does not create one. |
+| `CF_AIG_TOKEN` | In that gateway, open **Settings → Create authentication token**. Save the one-time token; it includes **AI Gateway Run** permission. |
+| `ADMIN_TOKEN` | Create and save a strong random token with a password manager or `openssl rand -base64 32`. This is your admin-console password. |
 
 `JWT_SECRET` is generated automatically. Add model-provider credentials in the
 AI Gateway **Provider Keys** page using the alias `default`; never put provider
