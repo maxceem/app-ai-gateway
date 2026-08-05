@@ -60,3 +60,7 @@ curl http://localhost:8787/v1/healthz
 Run the full verification suite with `pnpm run check`. Configuration, client
 integration, authentication, and API details are covered in the
 [documentation](https://docs.appaigateway.com/docs/).
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
