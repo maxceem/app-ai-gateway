@@ -57,11 +57,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="min-h-dvh bg-background">
       <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:px-6">
-          <Link to="/apps" className="flex items-center gap-2 font-semibold tracking-tight">
+          {/* "App [AI] Gateway" — the mark sits inline between the words, so the
+              gap is word spacing rather than the wider mark-beside-text gap. */}
+          <Link to="/apps" className="flex items-center gap-1.5 font-semibold tracking-tight">
+            <span>App</span>
             <span className="grid size-6 place-items-center rounded bg-primary text-[11px] font-bold text-primary-foreground">
               AI
             </span>
-            Gateway Console
+            <span>Gateway</span>
           </Link>
           <nav className="ml-4 hidden items-center gap-1 sm:flex">
             <Link
