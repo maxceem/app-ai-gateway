@@ -31,11 +31,14 @@ import { RangePicker } from "@/components/pickers";
 import { EventStatusBadge } from "@/components/status-badge";
 import { PROVIDER_LABELS, type Provider } from "@/lib/config-types";
 import {
+  cachedInputRate,
   daysAgo,
   formatCompact,
   formatCost,
   formatDateTime,
   formatNumber,
+  formatPercent,
+  inputTokens,
   today,
   totalTokens,
 } from "@/lib/format";
@@ -215,7 +218,7 @@ export function UsageTab({ appId }: { appId: string }) {
                 <TableHead className="pl-6">{dimension}</TableHead>
                 <TableHead className="text-right">Requests</TableHead>
                 <TableHead className="text-right">Input</TableHead>
-                <TableHead className="text-right">Cached</TableHead>
+                <TableHead className="text-right">Cached input</TableHead>
                 <TableHead className="text-right">Output</TableHead>
                 <TableHead className="pr-6 text-right">Cost</TableHead>
               </TableRow>
@@ -240,9 +243,12 @@ export function UsageTab({ appId }: { appId: string }) {
                       {row.key ?? <span className="text-muted-foreground">none</span>}
                     </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.requests)}</TableCell>
-                    <TableCell className="tabular text-right">{formatCompact(row.input_tokens)}</TableCell>
+                    <TableCell className="tabular text-right">{formatCompact(inputTokens(row))}</TableCell>
                     <TableCell className="tabular text-right">
-                      {formatCompact(row.cached_input_tokens)}
+                      <span className="block">{formatCompact(row.cached_input_tokens)}</span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        {formatPercent(cachedInputRate(row))} of input
+                      </span>
                     </TableCell>
                     <TableCell className="tabular text-right">{formatCompact(row.output_tokens)}</TableCell>
                     <TableCell className="tabular pr-6 text-right">{formatCost(row.cost_usd)}</TableCell>

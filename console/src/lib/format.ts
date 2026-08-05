@@ -1,11 +1,19 @@
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const plain = new Intl.NumberFormat("en-US");
+const percent = new Intl.NumberFormat("en-US", {
+  style: "percent",
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
 
 export const formatNumber = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : plain.format(value);
 
 export const formatCompact = (value: number | null | undefined): string =>
   value === null || value === undefined ? "—" : value < 10_000 ? plain.format(value) : compact.format(value);
+
+export const formatPercent = (value: number | null | undefined): string =>
+  value === null || value === undefined ? "—" : percent.format(value);
 
 /** Gateway costs are often fractions of a cent, so small values keep more digits. */
 export function formatCost(value: number | null | undefined): string {
@@ -53,13 +61,24 @@ export function formatRelative(value: string | null | undefined): string {
   return date.toLocaleDateString();
 }
 
-export const totalTokens = (usage: {
+interface TokenUsage {
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
   output_tokens: number;
-}): number =>
-  usage.input_tokens + usage.cached_input_tokens + usage.cache_write_tokens + usage.output_tokens;
+}
+
+/** Provider input includes every exclusive input billing bucket. */
+export const inputTokens = (usage: TokenUsage): number =>
+  usage.input_tokens + usage.cached_input_tokens + usage.cache_write_tokens;
+
+export const cachedInputRate = (usage: TokenUsage): number | null => {
+  const total = inputTokens(usage);
+  return total === 0 ? null : usage.cached_input_tokens / total;
+};
+
+export const totalTokens = (usage: TokenUsage): number =>
+  inputTokens(usage) + usage.output_tokens;
 
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 10).slice(0, 7);
