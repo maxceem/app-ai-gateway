@@ -40,6 +40,70 @@ describe("admin API", () => {
     });
   });
 
+  it("previews and applies usage repricing while reconciling budget limiters", async () => {
+    const appId = "admin-reprice";
+    const userId = "user-1";
+    await seedApp(appId, { appBudgetUsd: 100 });
+    await env.DB.prepare(
+      `INSERT INTO usage_events(
+         app_id, user_id, provider, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      appId,
+      userId,
+      "openai",
+      "gpt-5.6-luna",
+      "openai/v1/responses",
+      50,
+      40,
+      10,
+      20,
+      0.000184,
+      "ok",
+    ).run();
+    const userLimiter = env.USER_LIMITER.getByName(`${appId}:${userId}`);
+    const appLimiter = env.USER_LIMITER.getByName(appId);
+    await userLimiter.addCost(Date.now(), 184);
+    await appLimiter.addCost(Date.now(), 184);
+    const month = new Date().toISOString().slice(0, 7);
+    const url = `https://example.test/v1/admin/apps/${appId}/usage/reprice`;
+    const request = (apply: boolean) => exports.default.fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-admin-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply }),
+    });
+
+    const preview = await request(false);
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({
+      applied: false,
+      matched_events: 1,
+      previous_cost_usd: 0.000184,
+      recalculated_cost_usd: 0.0000373,
+      reconciled_users: 0,
+    });
+    expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(184);
+
+    const applied = await request(true);
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toMatchObject({
+      applied: true,
+      matched_events: 1,
+      recalculated_cost_usd: 0.0000373,
+      reconciled_users: 1,
+    });
+    const row = await env.DB.prepare("SELECT cost_usd FROM usage_events WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_usd: number }>();
+    expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);
+    expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
+    expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
+  });
+
   it("rejects an insecure issuer URL during app upsert", async () => {
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/insecure-issuer", {
       method: "POST",

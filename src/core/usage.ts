@@ -37,6 +37,16 @@ export function hasModelPrice(provider: Provider, model: string): boolean {
     && price.output >= 0;
 }
 
+export function hasTokenModelPrice(provider: Provider, model: string): boolean {
+  const price = (prices as Record<Provider, Record<string, Price>>)[provider]?.[model];
+  return price?.input !== undefined
+    && Number.isFinite(price.input)
+    && price.input >= 0
+    && price.output !== undefined
+    && Number.isFinite(price.output)
+    && price.output >= 0;
+}
+
 interface UsageEventInput {
   env: Env;
   stream: ReadableStream<Uint8Array> | null;
@@ -95,10 +105,11 @@ function openAiUsage(value: unknown): UsageObservation | null {
   const inputTotal = numberAt(usage, "input_tokens") || numberAt(usage, "prompt_tokens");
   const details = asRecord(usage.input_tokens_details) ?? asRecord(usage.prompt_tokens_details);
   const cached = details ? numberAt(details, "cached_tokens") : 0;
+  const cacheWrite = details ? numberAt(details, "cache_write_tokens") : 0;
   return {
-    inputTokens: Math.max(0, inputTotal - cached),
+    inputTokens: Math.max(0, inputTotal - cached - cacheWrite),
     cachedInputTokens: cached,
-    cacheWriteTokens: 0,
+    cacheWriteTokens: cacheWrite,
     outputTokens: numberAt(usage, "output_tokens") || numberAt(usage, "completion_tokens"),
   };
 }

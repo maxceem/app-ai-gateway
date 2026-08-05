@@ -736,6 +736,39 @@
           "routing",
           "limits"
         ]
+      },
+      "UsageRepriceRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "month": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}$/u"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "month"
+        ],
+        "additionalProperties": false
       }
     },
     "parameters": {}
@@ -2734,6 +2767,91 @@
             "in": "path"
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful operation.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/usage/reprice": {
+      "post": {
+        "operationId": "repriceAppUsage",
+        "summary": "Preview or apply current catalog prices to stored usage",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageRepriceRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful operation.",

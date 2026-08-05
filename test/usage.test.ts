@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { computeCost, extractUsageText } from "../src/core/usage";
 
 describe("usage extraction", () => {
-  it("normalizes OpenAI cached tokens as a subset of input", () => {
+  it("normalizes OpenAI cached and cache-write tokens as subsets of input", () => {
     const usage = extractUsageText(
       `event: response.completed\ndata: ${JSON.stringify({
         response: {
           usage: {
             input_tokens: 100,
-            input_tokens_details: { cached_tokens: 40 },
+            input_tokens_details: { cached_tokens: 40, cache_write_tokens: 10 },
             output_tokens: 20,
           },
         },
@@ -17,12 +17,12 @@ describe("usage extraction", () => {
       "openai",
     );
     expect(usage).toEqual({
-      inputTokens: 60,
+      inputTokens: 50,
       cachedInputTokens: 40,
-      cacheWriteTokens: 0,
+      cacheWriteTokens: 10,
       outputTokens: 20,
     });
-    expect(computeCost("openai", "gpt-5.6-terra", usage)).toBeCloseTo(0.00046, 8);
+    expect(computeCost("openai", "gpt-5.6-luna", usage)).toBeCloseTo(0.0000373, 8);
   });
 
   it("normalizes Anthropic cache fields as separate token buckets across stream events", () => {

@@ -101,3 +101,10 @@ export const DevelopmentTokenRequestSchema = z.object({
   issuer_token: z.string().min(1),
   dev_secret: z.string().min(1),
 }).strict().meta({ id: "DevelopmentTokenRequest" });
+
+export const UsageRepriceRequestSchema = z.object({
+  provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"]),
+  model: z.string().min(1),
+  month: z.string().regex(/^\d{4}-\d{2}$/u),
+  apply: z.boolean().default(false),
+}).strict().meta({ id: "UsageRepriceRequest" });

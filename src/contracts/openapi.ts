@@ -4,6 +4,7 @@ import {
   AppAttestTokenRequestSchema,
   AppWriteSchema,
   DevelopmentTokenRequestSchema,
+  UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
 export {
@@ -12,6 +13,7 @@ export {
   AppConfigSchema,
   AppWriteSchema,
   DevelopmentTokenRequestSchema,
+  UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
 export const ErrorResponseSchema = z.object({
@@ -263,6 +265,7 @@ const adminRoutes: Omit<RouteConfig, "responses">[] = [
   { method: "post", path: "/v1/admin/apps/{app}/users/{user}/block", operationId: "blockAppUser", summary: "Block an application user", request: { params: UserPath } },
   { method: "post", path: "/v1/admin/apps/{app}/users/{user}/unblock", operationId: "unblockAppUser", summary: "Unblock an application user", request: { params: UserPath } },
   { method: "get", path: "/v1/admin/apps/{app}/usage", operationId: "getAppUsage", summary: "Get application usage totals", request: { params: AppPath } },
+  { method: "post", path: "/v1/admin/apps/{app}/usage/reprice", operationId: "repriceAppUsage", summary: "Preview or apply current catalog prices to stored usage", request: { params: AppPath, body: { required: true, content: json(UsageRepriceRequestSchema) } } },
   { method: "get", path: "/v1/admin/apps/{app}/usage/timeseries", operationId: "getAppUsageTimeseries", summary: "Get application usage over time", request: { params: AppPath } },
   { method: "get", path: "/v1/admin/apps/{app}/usage/breakdown", operationId: "getAppUsageBreakdown", summary: "Get grouped application usage", request: { params: AppPath } },
   { method: "get", path: "/v1/admin/apps/{app}/events", operationId: "listAppEvents", summary: "List application usage events", request: { params: AppPath } },

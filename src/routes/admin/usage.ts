@@ -1,8 +1,12 @@
 import { Hono } from "hono";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
+import type { Provider } from "../../core/types";
+import { computeCost, hasTokenModelPrice } from "../../core/usage";
+import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { database } from "../../db";
 import { usageEvents } from "../../db/schema";
+import type { UserLimiter } from "../../do/UserLimiter";
 import type { AdminVariables } from "../../middleware/admin";
 import { currentMonth, eventDay, inRange, parseLimit, parseRange, usageTotals } from "./shared";
 
@@ -44,6 +48,106 @@ usageRoutes.get("/apps/:app/usage", async (c) => {
     ))
     .get();
   return c.json({ app_id: appId, month, ...row });
+});
+
+usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
+  const appId = c.req.param("app");
+  let value: unknown;
+  try {
+    value = await c.req.json();
+  } catch {
+    throw new GatewayError(400, "invalid_request", "A JSON object is required");
+  }
+  const parsed = UsageRepriceRequestSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new GatewayError(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request");
+  }
+  const { provider, model, month, apply } = parsed.data;
+  if (!hasTokenModelPrice(provider, model)) {
+    throw new GatewayError(400, "invalid_request", `No token price is configured for ${provider}/${model}`);
+  }
+
+  const rows = await database(c.env.DB)
+    .select({
+      id: usageEvents.id,
+      inputTokens: usageEvents.inputTokens,
+      cachedInputTokens: usageEvents.cachedInputTokens,
+      cacheWriteTokens: usageEvents.cacheWriteTokens,
+      outputTokens: usageEvents.outputTokens,
+      costUsd: usageEvents.costUsd,
+    })
+    .from(usageEvents)
+    .where(and(
+      eq(usageEvents.appId, appId),
+      eq(usageEvents.provider, provider),
+      eq(usageEvents.model, model),
+      eq(sql`substr(${usageEvents.createdAt}, 1, 7)`, month),
+    ))
+    .limit(10_001);
+  if (rows.length > 10_000) {
+    throw new GatewayError(400, "invalid_request", "Repricing is limited to 10,000 events per operation");
+  }
+
+  const repriced = rows.map((row) => {
+    const costUsd = computeCost(provider as Provider, model, row);
+    if (costUsd === null) {
+      throw new GatewayError(400, "invalid_request", `Unable to compute a token price for ${provider}/${model}`);
+    }
+    return { id: row.id, previousCostUsd: row.costUsd, costUsd };
+  });
+  const previousCostUsd = repriced.reduce((total, row) => total + row.previousCostUsd, 0);
+  const recalculatedCostUsd = repriced.reduce((total, row) => total + row.costUsd, 0);
+
+  let reconciledUsers = 0;
+  if (apply && repriced.length > 0) {
+    for (let offset = 0; offset < repriced.length; offset += 100) {
+      const chunk = repriced.slice(offset, offset + 100);
+      await c.env.DB.batch(chunk.map((row) => c.env.DB
+        .prepare("UPDATE usage_events SET cost_usd = ? WHERE id = ? AND app_id = ?")
+        .bind(row.costUsd, row.id, appId)));
+    }
+
+    const monthFilter = and(
+      eq(usageEvents.appId, appId),
+      eq(sql`substr(${usageEvents.createdAt}, 1, 7)`, month),
+    );
+    const userTotals = await database(c.env.DB)
+      .select({
+        userId: usageEvents.userId,
+        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${usageEvents.costUsd} * 1000000)), 0) AS INTEGER)`,
+      })
+      .from(usageEvents)
+      .where(monthFilter)
+      .groupBy(usageEvents.userId);
+    for (const total of userTotals) {
+      const limiter = c.env.USER_LIMITER.getByName(`${appId}:${total.userId}`) as DurableObjectStub<UserLimiter>;
+      await limiter.reconcileMonth(month, total.microusd);
+    }
+    reconciledUsers = userTotals.length;
+
+    const appTotal = await database(c.env.DB)
+      .select({
+        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${usageEvents.costUsd} * 1000000)), 0) AS INTEGER)`,
+      })
+      .from(usageEvents)
+      .where(monthFilter)
+      .get();
+    const appLimiter = c.env.USER_LIMITER.getByName(appId) as DurableObjectStub<UserLimiter>;
+    await appLimiter.reconcileMonth(month, appTotal?.microusd ?? 0);
+  }
+
+  return c.json({
+    app_id: appId,
+    provider,
+    model,
+    month,
+    applied: apply,
+    matched_events: repriced.length,
+    previous_cost_usd: previousCostUsd,
+    recalculated_cost_usd: recalculatedCostUsd,
+    delta_usd: recalculatedCostUsd - previousCostUsd,
+    reconciled_users: reconciledUsers,
+  });
 });
 
 /** Daily buckets split by provider; the console pivots them into a stacked chart. */
