@@ -14,6 +14,7 @@ export interface SeedOptions {
   limits?: { rpm: number; rpd: number; app_rpm?: number; app_rpd?: number };
   budgetUsd?: number | null;
   appBudgetUsd?: number | null;
+  endpoints?: Record<string, unknown>;
 }
 
 export function routingConfig(proxy: Record<string, unknown>): Record<string, unknown> {
@@ -34,8 +35,10 @@ export function serverConfig(input: {
   budgetUsd?: number | null;
   appBudgetUsd?: number | null;
   authentication?: Record<string, unknown>;
+  endpoints?: Record<string, unknown>;
 } = {}): Record<string, unknown> {
   return {
+    ...(input.endpoints === undefined ? {} : { endpoints: input.endpoints }),
     authentication: input.authentication ?? {
       type: "api_key",
       end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
@@ -152,6 +155,7 @@ export async function seedApp(appId: string, options: SeedOptions = {}): Promise
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       limits: limitsConfig(options),
+      ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
     } as unknown as StoredAppConfig,
     status: "active",
   });
@@ -180,6 +184,7 @@ export async function seedServerApp(
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       limits: limitsConfig(options),
+      ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
     } as unknown as StoredAppConfig,
     status: "active",
   });

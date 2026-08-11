@@ -14,6 +14,7 @@ export type ErrorCode =
   | "invalid_request"
   | "app_not_found"
   | "app_disabled"
+  | "endpoint_not_found"
   | "internal_error";
 
 export class GatewayError extends Error {

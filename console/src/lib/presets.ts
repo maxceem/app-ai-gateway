@@ -245,7 +245,7 @@ export function mergeClaims(
 export const describeClaim = (claim: ClaimRequirement): string =>
   claim.equals !== undefined
     ? `${claim.path} equals ${String(claim.equals)}`
-    : `${claim.path} contains ${claim.contains}`;
+    : `${claim.path} contains ${Array.isArray(claim.contains) ? claim.contains.join(" or ") : claim.contains}`;
 
 export const presetInputsComplete = (
   preset: { inputs: PresetInput[] },

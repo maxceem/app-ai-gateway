@@ -4,7 +4,7 @@ const NullableLimit = z.number().nonnegative().nullable();
 
 const ClaimRequirementSchema = z.object({
   path: z.string(),
-  contains: z.string().optional(),
+  contains: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
   equals: z.union([z.string(), z.number(), z.boolean()]).optional(),
 });
 
@@ -47,6 +47,18 @@ const ProviderPolicySchema = z.object({
   max_output_tokens: z.number().int().positive().optional(),
 });
 
+const EndpointTargetSchema = z.object({
+  provider: z.enum(["openai", "xai"]),
+  model: z.string().min(1),
+});
+
+const EndpointSchema = EndpointTargetSchema.extend({
+  api_style: z.enum(["responses", "transcription"]),
+  params: z.record(z.string(), z.unknown()).optional(),
+  max_output_tokens: z.number().int().positive().optional(),
+  fallback: z.array(EndpointTargetSchema).optional(),
+});
+
 const LimitScopeSchema = z.object({
   requests: z.object({
     per_minute: NullableLimit,
@@ -74,6 +86,7 @@ export const AppConfigSchema = z.object({
     per_user: LimitScopeSchema,
     per_app: LimitScopeSchema,
   }),
+  endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/u), EndpointSchema).optional(),
 }).meta({ id: "AppConfig" });
 
 export const AppWriteSchema = z.object({

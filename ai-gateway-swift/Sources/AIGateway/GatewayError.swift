@@ -11,6 +11,7 @@ public enum GatewayErrorCode: String, Codable, Sendable {
     case payloadTooLarge = "payload_too_large"
     case providerError = "provider_error"
     case invalidRequest = "invalid_request"
+    case endpointNotFound = "endpoint_not_found"
     case appNotFound = "app_not_found"
     case appDisabled = "app_disabled"
     case internalError = "internal_error"

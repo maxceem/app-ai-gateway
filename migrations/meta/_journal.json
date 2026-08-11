@@ -43,6 +43,13 @@
       "when": 1785815157773,
       "tag": "0005_cheerful_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786421560645,
+      "tag": "0006_little_captain_marvel",
+      "breakpoints": true
     }
   ]
 }

@@ -78,7 +78,28 @@ public actor AIGatewayClient {
         providerPath: String,
         method: String = "POST"
     ) async throws -> URLRequest {
-        var request = URLRequest(url: proxyURL(provider: provider, providerPath: providerPath))
+        try await authorizedRequest(
+            url: proxyURL(provider: provider, providerPath: providerPath),
+            method: method
+        )
+    }
+
+    /// A server-configured endpoint. The provider, model, and any baked
+    /// parameters live in the gateway's endpoint row, so the caller sends only
+    /// the request body its slug expects.
+    public func endpointURL(slug: String) -> URL {
+        baseURL.appending(path: "v1/apps/\(appID)/endpoints/\(slug)")
+    }
+
+    public func authorizedRequest(
+        endpointSlug: String,
+        method: String = "POST"
+    ) async throws -> URLRequest {
+        try await authorizedRequest(url: endpointURL(slug: endpointSlug), method: method)
+    }
+
+    private func authorizedRequest(url: URL, method: String) async throws -> URLRequest {
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
         request.setValue(Self.appVersion, forHTTPHeaderField: "X-App-Version")

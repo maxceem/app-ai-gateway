@@ -59,6 +59,7 @@ const BREAKDOWNS = [
   { value: "user", label: "By user" },
   { value: "status", label: "By status" },
   { value: "route", label: "By route" },
+  { value: "endpoint", label: "By endpoint" },
   { value: "app_version", label: "By app version" },
 ] as const;
 
@@ -323,7 +324,9 @@ export function UsageTab({ appId }: { appId: string }) {
                     </TableCell>
                     <TableCell className="font-mono text-xs">{event.user_id}</TableCell>
                     <TableCell className="font-mono text-xs">{event.model}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{event.route}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
+                    </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {formatCompact(totalTokens(event))}
                     </TableCell>

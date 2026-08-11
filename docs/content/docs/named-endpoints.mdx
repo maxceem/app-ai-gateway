@@ -1,0 +1,71 @@
+---
+title: Named endpoints
+description: Put the provider, model, and parameters in server configuration behind a stable slug.
+---
+
+A named endpoint is a slug whose provider and model live in the application
+configuration instead of in the client:
+
+```text
+POST /v1/apps/{app}/endpoints/{slug}
+```
+
+The request is authenticated exactly like the [provider proxy](/docs/provider-proxy):
+a gateway access token or application API key, plus `X-App-Version` for issuer and
+App Attest clients. Limits, usage accounting, and the error envelope are identical.
+An unknown slug returns `404` with the code `endpoint_not_found`.
+
+Endpoints exist so an operator can move traffic to a new model without shipping a
+client release. The client only ever names the slug.
+
+## Configuration
+
+Endpoints live in the application config under a top-level `endpoints` block:
+
+```json
+{
+  "endpoints": {
+    "chat": {
+      "api_style": "responses",
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "params": { "reasoning": { "effort": "low" } },
+      "max_output_tokens": 4096,
+      "fallback": [{ "provider": "xai", "model": "grok-4.5" }]
+    },
+    "transcribe": {
+      "api_style": "transcription",
+      "provider": "openai",
+      "model": "gpt-4o-mini-transcribe"
+    }
+  }
+}
+```
+
+Slugs use `a-z`, `0-9`, and `-`, up to 64 characters. `provider` is `openai` or
+`xai`, for the endpoint itself and for every fallback entry, because those are the
+request shapes the gateway composes. Every model, including fallbacks, must have a
+price in the catalog; a configuration that names an unpriced model is rejected on
+save.
+
+## Request handling
+
+`api_style: "responses"` accepts an OpenAI Responses body. The gateway overwrites
+`model`, deep-merges `params` over the client body with server values winning, and
+applies `max_output_tokens` with the same clamp policy the proxy uses: an explicit
+client value above the cap is rejected, and a missing value is injected.
+
+`api_style: "transcription"` accepts an OpenAI `/v1/audio/transcriptions`
+multipart body. The client may omit `model`; the gateway sets it. OpenAI endpoints
+call `v1/audio/transcriptions` and xAI endpoints call `v1/stt`.
+
+Responses keep the serving provider's native format, streamed unbuffered.
+
+## Fallback
+
+When a provider call throws, rate limits, or returns a server error, and nothing
+has been streamed to the client yet, the gateway retries the next `{provider,
+model}` pair with the same prepared body. Usage is recorded against the target
+that actually served the request, and every attempt is recorded with the endpoint
+slug in `usage_events.endpoint_slug`, which the console exposes as the "By
+endpoint" usage breakdown.

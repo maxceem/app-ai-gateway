@@ -112,6 +112,58 @@ struct AIGatewayClientTests {
         )
     }
 
+    /// Named endpoints bake the provider and model into server config, so the
+    /// URL carries only the slug and the request is otherwise identical to a
+    /// proxy call.
+    @Test
+    func endpointRequestsUseTheNamedEndpointURL() async throws {
+        MockURLProtocol.handler = { request in
+            response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600}"#)
+        }
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .development(secret: "dev-secret"),
+            issuerTokenProvider: { _ in "firebase-token" },
+            session: session()
+        )
+        #expect(
+            await client.endpointURL(slug: "chat").absoluteString
+                == "https://gateway.test/v1/apps/test-app/endpoints/chat"
+        )
+        let request = try await client.authorizedRequest(endpointSlug: "transcribe")
+        #expect(request.url?.absoluteString == "https://gateway.test/v1/apps/test-app/endpoints/transcribe")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
+        #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
+    }
+
+    /// A base URL with a path prefix keeps it, and both request builders stay
+    /// available while the app finishes migrating off the proxy.
+    @Test
+    func endpointAndProxyURLsSharePrefixHandling() async {
+        let client = AIGatewayClient(
+            appID: "calorie-tracker",
+            baseURL: URL(string: "https://gateway.test/base")!,
+            authMode: .development(secret: "dev-secret"),
+            issuerTokenProvider: { _ in "firebase-token" },
+            session: session()
+        )
+        #expect(
+            await client.endpointURL(slug: "chat").absoluteString
+                == "https://gateway.test/base/v1/apps/calorie-tracker/endpoints/chat"
+        )
+        #expect(
+            await client.proxyURL(provider: "openai", providerPath: "v1/responses").absoluteString
+                == "https://gateway.test/base/v1/apps/calorie-tracker/proxy/openai/v1/responses"
+        )
+    }
+
+    @Test
+    func endpointNotFoundDecodesFromTheGatewayEnvelope() {
+        #expect(GatewayErrorCode(rawValue: "endpoint_not_found") == .endpointNotFound)
+    }
+
     @Test
     func issuerRejectionForcesOneFreshIssuerTokenAndRetries() async throws {
         var tokenCalls = 0

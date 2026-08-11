@@ -101,6 +101,7 @@ export const usageEvents = sqliteTable(
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     route: text("route").notNull(),
+    endpointSlug: text("endpoint_slug"),
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),

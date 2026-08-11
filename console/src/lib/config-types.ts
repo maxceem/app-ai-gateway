@@ -25,7 +25,7 @@ export type AttestEnvironment = (typeof ATTEST_ENVIRONMENTS)[number];
 
 export interface ClaimRequirement {
   path: string;
-  contains?: string;
+  contains?: string | string[];
   equals?: string | number | boolean;
 }
 
@@ -81,6 +81,29 @@ export interface ProxyConfig {
   model_rewrites?: Record<string, string>;
 }
 
+export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;
+export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
+
+/** The Worker only composes OpenAI and xAI request shapes for named endpoints. */
+export const ENDPOINT_PROVIDERS = ["openai", "xai"] as const;
+export type EndpointProvider = (typeof ENDPOINT_PROVIDERS)[number];
+
+export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
+
+export interface EndpointTarget {
+  provider: EndpointProvider;
+  model: string;
+}
+
+export interface EndpointConfig extends EndpointTarget {
+  api_style: EndpointApiStyle;
+  params?: Record<string, unknown>;
+  max_output_tokens?: number;
+  fallback?: EndpointTarget[];
+}
+
+export type EndpointsConfig = Record<string, EndpointConfig>;
+
 export interface LimitScopeConfig {
   requests: { per_minute: number | null; per_day: number | null };
   spending: { monthly_usd: number | null };
@@ -95,6 +118,7 @@ export interface StoredAppConfig {
   authentication: AuthenticationConfig;
   routing: ProxyConfig;
   limits: LimitsConfig;
+  endpoints?: EndpointsConfig;
 }
 
 export const pathOf = (path: AllowedPath): string => (typeof path === "string" ? path : path.path);
@@ -114,6 +138,37 @@ export function normalizePath(path: AllowedPathObject): AllowedPath {
 
 export function emptyProvider(): ProviderConfig {
   return { allowed_paths: [], allowed_models: [] };
+}
+
+export function emptyEndpoint(): EndpointConfig {
+  return { api_style: "responses", provider: "openai", model: "" };
+}
+
+/** Suggests an unused slug so adding a second endpoint never silently replaces one. */
+export function nextEndpointSlug(endpoints: EndpointsConfig, base = "endpoint"): string {
+  if (endpoints[base] === undefined) return base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const slug = `${base}-${suffix}`;
+    if (endpoints[slug] === undefined) return slug;
+  }
+  return `${base}-${Date.now()}`;
+}
+
+/** Renames a slug in place so the operator's card order does not jump around. */
+export function renameEndpoint(
+  endpoints: EndpointsConfig,
+  from: string,
+  to: string,
+): EndpointsConfig {
+  return Object.fromEntries(
+    Object.entries(endpoints).map(([slug, endpoint]) => [slug === from ? to : slug, endpoint]),
+  );
+}
+
+export function endpointSlugError(slug: string, endpoints: EndpointsConfig, self: string): string | null {
+  if (!ENDPOINT_SLUG.test(slug)) return "Use 1-64 characters from a-z, 0-9, and -";
+  if (slug !== self && endpoints[slug] !== undefined) return "Another endpoint already uses this slug";
+  return null;
 }
 
 export function providerMode(proxy: ProxyConfig): "all" | "selected" {

@@ -45,6 +45,7 @@ export const limiterGate: MiddlewareHandler<{
           provider,
           model,
           route: `${provider}/${providerPath}`,
+          endpointSlug: c.get("endpointSlug") ?? null,
           appVersion: c.req.header("x-app-version") ?? null,
           status,
           latencyMs: Math.round(limiterDurationMs),

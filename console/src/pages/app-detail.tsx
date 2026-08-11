@@ -10,6 +10,7 @@ import {
   Loader2,
   MoreHorizontal,
   Power,
+  Route,
   ShieldCheck,
   Trash2,
   Users,
@@ -43,11 +44,15 @@ const UsageTab = lazy(() => import("@/pages/tabs/usage").then((module) => ({ def
 const RawJsonTab = lazy(() =>
   import("@/pages/tabs/raw-json").then((module) => ({ default: module.RawJsonTab })),
 );
+const EndpointsTab = lazy(() =>
+  import("@/pages/tabs/endpoints").then((module) => ({ default: module.EndpointsTab })),
+);
 
 const TABS = [
   { value: "overview", label: "Overview", icon: BadgeCheck },
   { value: "auth", label: "Auth policy", icon: ShieldCheck },
   { value: "proxy", label: "Proxy policy", icon: Waypoints },
+  { value: "endpoints", label: "Endpoints", icon: Route },
   { value: "limits", label: "Limits", icon: Gauge },
   { value: "users", label: "Users", icon: Users },
   { value: "usage", label: "Usage", icon: ChartNoAxesColumn },
@@ -182,7 +187,13 @@ export function AppDetailPage() {
         <UsersTab appId={appId} />
       ) : (
         <Suspense fallback={<Skeleton className="h-64 w-full" />}>
-          {tab === "usage" ? <UsageTab appId={appId} /> : <RawJsonTab state={state} />}
+          {tab === "usage" ? (
+            <UsageTab appId={appId} />
+          ) : tab === "endpoints" ? (
+            <EndpointsTab appId={appId} state={state} />
+          ) : (
+            <RawJsonTab state={state} />
+          )}
         </Suspense>
       )}
 

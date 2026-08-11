@@ -9,6 +9,11 @@ import type {
   AppConfig,
   AuthenticationConfig,
   ClaimRequirement,
+  EndpointApiStyle,
+  EndpointConfig,
+  EndpointProvider,
+  EndpointsConfig,
+  EndpointTarget,
   LimitsConfig,
   LimitScopeConfig,
   OutputClampStyle,
@@ -36,6 +41,11 @@ const CLAMP_STYLES: OutputClampStyle[] = [
   "none",
 ];
 const CONFIG_CACHE_TTL_MS = 60_000;
+export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/u;
+export const ENDPOINT_API_STYLES: EndpointApiStyle[] = ["responses", "transcription"];
+// Named endpoints compose the provider request themselves, so only providers
+// whose Responses and transcription shapes the gateway builds are allowed.
+export const ENDPOINT_PROVIDERS: EndpointProvider[] = ["openai", "xai"];
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -78,14 +88,18 @@ function parseClaims(value: unknown): ClaimRequirement[] {
   return value.map((item) => {
     const requirement = record(item, "claim requirement");
     const path = requiredString(requirement.path, "Claim requirement path");
-    const hasContains = typeof requirement.contains === "string";
+    const hasContains =
+      typeof requirement.contains === "string" ||
+      (Array.isArray(requirement.contains) &&
+        requirement.contains.length > 0 &&
+        requirement.contains.every((entry) => typeof entry === "string"));
     const hasEquals = ["string", "number", "boolean"].includes(typeof requirement.equals);
     if (hasContains === hasEquals) {
       throw new GatewayError(500, "internal_error", "Claim requirements need exactly one of contains or equals");
     }
     return {
       path,
-      ...(hasContains ? { contains: requirement.contains as string } : {}),
+      ...(hasContains ? { contains: requirement.contains as string | string[] } : {}),
       ...(hasEquals ? { equals: requirement.equals as string | number | boolean } : {}),
     };
   });
@@ -279,6 +293,78 @@ function parseRouting(raw: unknown): { stored: RoutingConfig; resolved: Resolved
   };
 }
 
+function parseEndpointTarget(raw: unknown, label: string): EndpointTarget {
+  const value = record(raw, label);
+  const provider = value.provider;
+  if (!ENDPOINT_PROVIDERS.includes(provider as EndpointProvider)) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      `${label}.provider must be one of ${ENDPOINT_PROVIDERS.join(", ")}`,
+    );
+  }
+  const model = requiredString(value.model, `${label}.model`);
+  if (!hasModelPrice(provider as EndpointProvider, model)) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      `${label}.model ${model} has no configured price for ${String(provider)}`,
+    );
+  }
+  return { provider: provider as EndpointProvider, model };
+}
+
+function parseEndpoint(raw: unknown, label: string): EndpointConfig {
+  const value = record(raw, label);
+  const target = parseEndpointTarget(value, label);
+  if (!ENDPOINT_API_STYLES.includes(value.api_style as EndpointApiStyle)) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      `${label}.api_style must be one of ${ENDPOINT_API_STYLES.join(", ")}`,
+    );
+  }
+  const endpoint: EndpointConfig = {
+    api_style: value.api_style as EndpointApiStyle,
+    provider: target.provider,
+    model: target.model,
+  };
+  if (value.params !== undefined) endpoint.params = record(value.params, `${label}.params`);
+  if (value.max_output_tokens !== undefined) {
+    const cap = nullablePositiveInteger(value.max_output_tokens, `${label}.max_output_tokens`);
+    if (cap === null) {
+      throw new GatewayError(500, "internal_error", `${label}.max_output_tokens cannot be null`);
+    }
+    endpoint.max_output_tokens = cap;
+  }
+  if (value.fallback !== undefined) {
+    if (!Array.isArray(value.fallback)) {
+      throw new GatewayError(500, "internal_error", `${label}.fallback must be an array`);
+    }
+    endpoint.fallback = value.fallback.map((item, index) =>
+      parseEndpointTarget(item, `${label}.fallback[${index}]`),
+    );
+  }
+  return endpoint;
+}
+
+function parseEndpoints(raw: unknown): EndpointsConfig {
+  if (raw === undefined) return {};
+  const value = record(raw, "endpoints");
+  const endpoints: EndpointsConfig = {};
+  for (const [slug, definition] of Object.entries(value)) {
+    if (!ENDPOINT_SLUG.test(slug)) {
+      throw new GatewayError(
+        500,
+        "internal_error",
+        `endpoints.${slug} is not a valid slug; use 1-64 characters from a-z, 0-9, and -`,
+      );
+    }
+    endpoints[slug] = parseEndpoint(definition, `endpoints.${slug}`);
+  }
+  return endpoints;
+}
+
 function parseLimitScope(raw: unknown, label: string): { stored: LimitScopeConfig; resolved: ResolvedLimitScope } {
   const value = record(raw, label);
   const requests = record(value.requests, `${label}.requests`);
@@ -307,12 +393,19 @@ export function parseStoredAppConfig(raw: unknown): { stored: StoredAppConfig; r
   const perUser = parseLimitScope(limitsValue.per_user, "limits.per_user");
   const perApp = parseLimitScope(limitsValue.per_app, "limits.per_app");
   const limits: LimitsConfig = { per_user: perUser.stored, per_app: perApp.stored };
+  const endpoints = parseEndpoints(value.endpoints);
   return {
-    stored: { authentication, routing: routing.stored, limits },
+    stored: {
+      authentication,
+      routing: routing.stored,
+      limits,
+      ...(value.endpoints === undefined ? {} : { endpoints }),
+    },
     resolved: {
       authentication,
       routing: routing.resolved,
       limits: { perUser: perUser.resolved, perApp: perApp.resolved },
+      endpoints,
     },
   };
 }

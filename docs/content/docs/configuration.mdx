@@ -52,6 +52,12 @@ Use API-key authentication for a trusted backend:
 Creating an API-key application returns its initial plaintext key once. Store it
 immediately in the calling application's secret manager.
 
+## Named endpoints
+
+An optional top-level `endpoints` block moves the provider, model, and fixed
+parameters out of the client and behind a slug. See
+[Named endpoints](/docs/named-endpoints).
+
 ## Validation workflow
 
 Use the console for guided editing. Automation should validate a candidate through

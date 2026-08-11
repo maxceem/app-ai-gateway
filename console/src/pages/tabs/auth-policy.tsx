@@ -229,7 +229,12 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
                           claims.map((item, position) =>
                             position === index
                               ? next === "equals"
-                                ? { path: item.path, equals: item.contains ?? "" }
+                                ? {
+                                    path: item.path,
+                                    equals: Array.isArray(item.contains)
+                                      ? (item.contains[0] ?? "")
+                                      : (item.contains ?? ""),
+                                  }
                                 : { path: item.path, contains: String(item.equals ?? "") }
                               : item,
                           ),
@@ -248,17 +253,23 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
                   <div className="min-w-[180px] flex-1">
                     <Label className="mb-1.5 text-xs text-muted-foreground">Value</Label>
                     <Input
-                      value={String(claim.equals ?? claim.contains ?? "")}
-                      placeholder="pro"
-                      className="font-mono text-xs"
-                      onChange={(event) =>
-                        patchClaim(
-                          index,
-                          mode === "equals"
-                            ? { equals: event.target.value }
-                            : { contains: event.target.value },
-                        )
+                      value={
+                        mode === "contains" && Array.isArray(claim.contains)
+                          ? claim.contains.join(", ")
+                          : String(claim.equals ?? claim.contains ?? "")
                       }
+                      placeholder={mode === "contains" ? "pro, pro_test" : "pro"}
+                      className="font-mono text-xs"
+                      onChange={(event) => {
+                        if (mode === "equals") {
+                          patchClaim(index, { equals: event.target.value });
+                          return;
+                        }
+                        const values = event.target.value.split(",").map((value) => value.trim());
+                        patchClaim(index, {
+                          contains: values.length > 1 ? values : event.target.value,
+                        });
+                      }}
                     />
                   </div>
                   <Button

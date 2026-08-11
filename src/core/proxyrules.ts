@@ -24,7 +24,7 @@ export interface PreparedProxyRequest {
   query: string;
 }
 
-function sanitizedQuery(request: Request): string {
+export function sanitizedQuery(request: Request): string {
   const url = new URL(request.url);
   // Provider SDKs sometimes put their API key in the query string. The gateway
   // authenticates the client separately and must never forward a client key.
@@ -33,7 +33,7 @@ function sanitizedQuery(request: Request): string {
   return url.search;
 }
 
-async function readBodyLimited(request: Request): Promise<Uint8Array> {
+export async function readBodyLimited(request: Request): Promise<Uint8Array> {
   const declared = request.headers.get("content-length");
   if (declared && Number.parseInt(declared, 10) > MAX_REQUEST_BYTES) {
     throw new GatewayError(413, "payload_too_large", "Request body exceeds 20 MB");
@@ -107,7 +107,7 @@ function matchedPath(provider: Provider, path: string, allowed: AllowedPath[]): 
   return null;
 }
 
-function jsonObject(bytes: Uint8Array): Record<string, unknown> {
+export function jsonObject(bytes: Uint8Array): Record<string, unknown> {
   try {
     const value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not object");
@@ -144,7 +144,7 @@ function validateOutputCap(
   return true;
 }
 
-function validateOrInjectOutputCap(
+export function validateOrInjectOutputCap(
   style: OutputClampStyle,
   provider: Provider,
   body: Record<string, unknown>,
@@ -188,7 +188,7 @@ function validateOrInjectOutputCap(
   return true;
 }
 
-function sanitizedHeaders(
+export function sanitizedHeaders(
   request: Request,
   app: AppConfig,
   tokenHeader: string,

@@ -41,6 +41,11 @@ const ProviderPath = AppPath.extend({
   path: z.string().openapi({ param: { name: "path", in: "path" }, example: "v1/responses" }),
 });
 
+const EndpointPath = AppPath.extend({
+  slug: z.string().regex(/^[a-z0-9-]{1,64}$/u)
+    .openapi({ param: { name: "slug", in: "path" }, example: "chat" }),
+});
+
 const json = (schema: z.ZodType) => ({
   "application/json": { schema },
 });
@@ -186,6 +191,48 @@ register({
 });
 
 register({
+  method: "post",
+  path: "/v1/apps/{app}/endpoints/{slug}",
+  tags: ["Named endpoints"],
+  operationId: "callNamedEndpoint",
+  summary: "Call a server-configured named endpoint",
+  description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so an operator can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+  security: [{ GatewayBearer: [] }],
+  request: {
+    params: EndpointPath,
+    headers: z.object({
+      "x-app-version": z.string().optional().openapi({ description: "Required for issuer/App Attest clients; optional for server API keys." }),
+      "x-end-user-id": z.string().optional().openapi({ description: "Optional configured end-user identity for server applications." }),
+    }),
+    body: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()).openapi({
+            description: "OpenAI Responses API body for endpoints whose api_style is responses. The gateway overwrites model and deep-merges the configured params.",
+          }),
+        },
+        "multipart/form-data": {
+          schema: z.object({
+            file: z.string().openapi({ format: "binary" }),
+            model: z.string().optional().openapi({ description: "Ignored; the gateway sets the configured model." }),
+            prompt: z.string().optional(),
+            language: z.string().optional(),
+            response_format: z.string().optional(),
+          }).openapi({ description: "Body for endpoints whose api_style is transcription." }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
+    ...errorResponses,
+    429: response("A request or spending limit was reached.", ErrorResponseSchema),
+    502: response("Every configured target failed.", ErrorResponseSchema),
+  },
+});
+
+register({
   method: "get",
   path: "/v1/admin/apps",
   tags: ["Admin applications"],
@@ -295,6 +342,7 @@ export function createOpenAPIDocument() {
       { name: "Application authentication", description: "Issuer and Apple App Attest token exchange." },
       { name: "Application", description: "Authenticated application-user state." },
       { name: "Provider proxy", description: "Provider-native streaming proxy endpoints." },
+      { name: "Named endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, credentials, and usage." },
       { name: "Admin models", description: "Model pricing metadata." },

@@ -14,6 +14,8 @@ export interface ProxyVariables {
   provider: Provider;
   providerPath: string;
   preparedProxyRequest: PreparedProxyRequest;
+  /** Named endpoint routes set this; passthrough proxy traffic leaves it unset. */
+  endpointSlug?: string;
 }
 
 type ProxyEnv = { Bindings: Env; Variables: GatewayVariables & ProxyVariables };

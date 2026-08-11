@@ -62,3 +62,91 @@ describe("canonical app configuration", () => {
     }))).toThrowError("has no configured price");
   });
 });
+
+describe("named endpoint configuration", () => {
+  const chat = {
+    api_style: "responses",
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    params: { reasoning: { effort: "low" } },
+    max_output_tokens: 4096,
+    fallback: [{ provider: "xai", model: "grok-4.5" }],
+  };
+
+  it("keeps a valid endpoints block verbatim in the stored configuration", () => {
+    const stored = validateAppConfigJson(serverConfig({
+      endpoints: {
+        chat,
+        transcribe: {
+          api_style: "transcription",
+          provider: "openai",
+          model: "gpt-4o-mini-transcribe",
+        },
+      },
+    }));
+    expect(stored.endpoints).toEqual({
+      chat,
+      transcribe: {
+        api_style: "transcription",
+        provider: "openai",
+        model: "gpt-4o-mini-transcribe",
+      },
+    });
+  });
+
+  it("omits the block entirely when an app configures no endpoints", () => {
+    expect(validateAppConfigJson(serverConfig())).not.toHaveProperty("endpoints");
+  });
+
+  it.each(["Chat", "chat_completions", "", "a".repeat(65), "chat/1"])(
+    "rejects the invalid slug %s",
+    (slug) => {
+      expect(() => validateAppConfigJson(serverConfig({ endpoints: { [slug]: chat } })))
+        .toThrowError("is not a valid slug");
+    },
+  );
+
+  it("rejects a model without a configured price", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      endpoints: { chat: { api_style: "responses", provider: "openai", model: "released-today" } },
+    }))).toThrowError("has no configured price");
+  });
+
+  it("rejects a fallback model without a configured price", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      endpoints: {
+        chat: { ...chat, fallback: [{ provider: "xai", model: "released-today" }] },
+      },
+    }))).toThrowError("endpoints.chat.fallback[0].model");
+  });
+
+  it.each(["gemini", "anthropic", "perplexity"])(
+    "rejects the unsupported endpoint provider %s",
+    (provider) => {
+      expect(() => validateAppConfigJson(serverConfig({
+        endpoints: { chat: { api_style: "responses", provider, model: "gpt-5.6-luna" } },
+      }))).toThrowError("endpoints.chat.provider must be one of openai, xai");
+      expect(() => validateAppConfigJson(serverConfig({
+        endpoints: { chat: { ...chat, fallback: [{ provider, model: "gpt-5.6-luna" }] } },
+      }))).toThrowError("endpoints.chat.fallback[0].provider must be one of openai, xai");
+    },
+  );
+
+  it("rejects an unknown api_style", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      endpoints: { chat: { ...chat, api_style: "chat_completions" } },
+    }))).toThrowError("endpoints.chat.api_style must be one of responses, transcription");
+  });
+
+  it.each([0, -1, 1.5, "4096"])("rejects the invalid max_output_tokens %s", (value) => {
+    expect(() => validateAppConfigJson(serverConfig({
+      endpoints: { chat: { ...chat, max_output_tokens: value } },
+    }))).toThrowError("endpoints.chat.max_output_tokens");
+  });
+
+  it.each([[[]], ["low"], [null]])("rejects non-object params %s", (params) => {
+    expect(() => validateAppConfigJson(serverConfig({
+      endpoints: { chat: { ...chat, params } },
+    }))).toThrowError("endpoints.chat.params");
+  });
+});

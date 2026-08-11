@@ -83,10 +83,7 @@ function genericConfig(row, oldAuth, oldProxy, oldLimits) {
   };
 }
 
-const calorieConfigs = new Map([
-  ["calorie-tracker", "config/calorie-tracker.production.json"],
-  ["calorie-tracker-dev", "config/calorie-tracker.development.json"],
-]);
+const calorieConfigs = new Map([["calorie-tracker", "config/calorie-tracker.production.json"]]);
 const statements = ["PRAGMA foreign_keys = ON;"];
 for (const row of apps) {
   const oldAuth = json(row.auth_config_json);

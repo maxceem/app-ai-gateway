@@ -59,6 +59,8 @@ interface UsageEventInput {
   provider: Provider;
   model: string;
   route: string;
+  /** Set for named endpoint traffic; null for the passthrough proxy. */
+  endpointSlug?: string | null;
   appVersion: string | null;
   status: "ok" | "provider_error";
   latencyMs: number;
@@ -73,6 +75,7 @@ interface BlockedUsageEventInput {
   provider: string;
   model: string;
   route: string;
+  endpointSlug?: string | null;
   appVersion: string | null;
   status: "blocked_rate" | "blocked_budget" | "blocked_user";
   latencyMs: number;
@@ -312,6 +315,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     provider: input.provider,
     model: input.model,
     route: input.route,
+    endpointSlug: input.endpointSlug ?? null,
     inputTokens: usage.inputTokens,
     cachedInputTokens: usage.cachedInputTokens,
     cacheWriteTokens: usage.cacheWriteTokens,
@@ -350,6 +354,7 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
     provider: input.provider,
     model: input.model,
     route: input.route,
+    endpointSlug: input.endpointSlug ?? null,
     costUsd: 0,
     appVersion: input.appVersion,
     authMethod: input.authMethod,

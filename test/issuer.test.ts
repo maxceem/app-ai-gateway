@@ -69,6 +69,21 @@ describe("issuer JWT verification", () => {
     });
   });
 
+  it("accepts any listed value when contains is an array of alternatives", async () => {
+    const fixture = await signingFixture("key-any-of");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    const config: IssuerAuthConfig = {
+      ...baseConfig,
+      required_claims: [{ path: "revenueCatEntitlements", contains: ["pro", "pro_test"] }],
+    };
+    const testEntitlement = await fixture.token({ revenueCatEntitlements: ["pro_test"] });
+    await expect(verifyIssuerToken(testEntitlement, config)).resolves.toMatchObject({ userId: "issuer-user" });
+    const prodEntitlement = await fixture.token({ revenueCatEntitlements: ["pro"] });
+    await expect(verifyIssuerToken(prodEntitlement, config)).resolves.toMatchObject({ userId: "issuer-user" });
+    const neither = await fixture.token({ revenueCatEntitlements: ["basic"] });
+    await expect(verifyIssuerToken(neither, config)).rejects.toMatchObject({ code: "issuer_token_rejected" });
+  });
+
   it("accepts only Firebase-shaped tokens from the configured project with the pro entitlement", async () => {
     const fixture = await signingFixture("firebase-key");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));

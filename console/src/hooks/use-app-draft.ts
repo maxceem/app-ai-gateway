@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type {
   AuthConfig,
   AuthenticationConfig,
+  EndpointsConfig,
   LimitsConfig,
   ProxyConfig,
   StoredAppConfig,
@@ -81,6 +82,19 @@ export function useAppDraft(appId: string) {
 
   const updateLimits = useCallback((limits: LimitsConfig) => updateConfig({ limits }), [updateConfig]);
 
+  // Endpoints live inside config_json, so they ride the same draft as the rest.
+  // An empty map is dropped so apps without endpoints keep their config clean.
+  const updateEndpoints = useCallback((endpoints: EndpointsConfig) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const { endpoints: _previous, ...config } = current.config;
+      return {
+        ...current,
+        config: Object.keys(endpoints).length === 0 ? config : { ...config, endpoints },
+      };
+    });
+  }, []);
+
   const reset = useCallback(() => {
     if (activeBaseline) setDraft(JSON.parse(activeBaseline) as Draft);
   }, [activeBaseline]);
@@ -121,6 +135,7 @@ export function useAppDraft(appId: string) {
     updateIssuer,
     updateProxy,
     updateLimits,
+    updateEndpoints,
     reset,
     save,
     saving: saveMutation.isPending,

@@ -60,7 +60,10 @@ function containsClaim(actual: unknown, expected: string): boolean {
 
 function requirementMatches(payload: JWTPayload, requirement: ClaimRequirement): boolean {
   const actual = claimAtPath(payload, requirement.path);
-  if (requirement.contains !== undefined) return containsClaim(actual, requirement.contains);
+  if (requirement.contains !== undefined) {
+    const expected = Array.isArray(requirement.contains) ? requirement.contains : [requirement.contains];
+    return expected.some((value) => containsClaim(actual, value));
+  }
   return actual === requirement.equals;
 }
 

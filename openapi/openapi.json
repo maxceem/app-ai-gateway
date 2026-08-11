@@ -29,6 +29,10 @@
       "description": "Provider-native streaming proxy endpoints."
     },
     {
+      "name": "Named endpoints",
+      "description": "Server-configured provider and model behind a stable slug."
+    },
+    {
       "name": "Admin applications",
       "description": "Application configuration lifecycle."
     },
@@ -214,7 +218,18 @@
                               "type": "string"
                             },
                             "contains": {
-                              "type": "string"
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "minItems": 1
+                                }
+                              ]
                             },
                             "equals": {
                               "anyOf": [
@@ -729,6 +744,68 @@
               "per_user",
               "per_app"
             ]
+          },
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "openai",
+                    "xai"
+                  ]
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "api_style": {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "transcription"
+                  ]
+                },
+                "params": {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                "max_output_tokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "fallback": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "enum": [
+                          "openai",
+                          "xai"
+                        ]
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "model"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "provider",
+                "model",
+                "api_style"
+              ]
+            }
           }
         },
         "required": [
@@ -1349,6 +1426,172 @@
           },
           "502": {
             "description": "The upstream provider request failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apps/{app}/endpoints/{slug}": {
+      "post": {
+        "tags": [
+          "Named endpoints"
+        ],
+        "operationId": "callNamedEndpoint",
+        "summary": "Call a server-configured named endpoint",
+        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so an operator can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,64}$/u",
+              "example": "chat"
+            },
+            "required": true,
+            "name": "slug",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required for issuer/App Attest clients; optional for server API keys."
+            },
+            "required": false,
+            "description": "Required for issuer/App Attest clients; optional for server API keys.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional configured end-user identity for server applications."
+            },
+            "required": false,
+            "description": "Optional configured end-user identity for server applications.",
+            "name": "x-end-user-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "OpenAI Responses API body for endpoints whose api_style is responses. The gateway overwrites model and deep-merges the configured params."
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Ignored; the gateway sets the configured model."
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "language": {
+                    "type": "string"
+                  },
+                  "response_format": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "description": "Body for endpoints whose api_style is transcription."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Provider-native response. Streaming responses remain streamed.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A request or spending limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Every configured target failed.",
             "content": {
               "application/json": {
                 "schema": {

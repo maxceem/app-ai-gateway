@@ -2,7 +2,7 @@ export type Provider = "openai" | "anthropic" | "xai" | "gemini" | "perplexity";
 
 export interface ClaimRequirement {
   path: string;
-  contains?: string;
+  contains?: string | string[];
   equals?: string | number | boolean;
 }
 
@@ -89,10 +89,33 @@ export interface LimitsConfig {
   per_app: LimitScopeConfig;
 }
 
+/**
+ * Named endpoints resolve provider and model on the server so an operator can
+ * swap models without shipping a new client. Only providers whose native
+ * request shape the gateway can compose are allowed.
+ */
+export type EndpointApiStyle = "responses" | "transcription";
+export type EndpointProvider = Extract<Provider, "openai" | "xai">;
+
+export interface EndpointTarget {
+  provider: EndpointProvider;
+  model: string;
+}
+
+export interface EndpointConfig extends EndpointTarget {
+  api_style: EndpointApiStyle;
+  params?: Record<string, unknown>;
+  max_output_tokens?: number;
+  fallback?: EndpointTarget[];
+}
+
+export type EndpointsConfig = Record<string, EndpointConfig>;
+
 export interface StoredAppConfig {
   authentication: AuthenticationConfig;
   routing: RoutingConfig;
   limits: LimitsConfig;
+  endpoints?: EndpointsConfig;
 }
 
 export interface ResolvedLimitScope {
@@ -112,6 +135,7 @@ export interface AppConfig {
   authentication: AuthenticationConfig;
   routing: ResolvedRoutingConfig;
   limits: ResolvedLimitsConfig;
+  endpoints: EndpointsConfig;
   status: "active" | "disabled";
 }
 

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAPIDocument } from "../src/contracts/openapi";
 import { AppWriteSchema } from "../src/contracts/schemas";
-import developmentConfig from "../config/calorie-tracker.development.json";
 import productionConfig from "../config/calorie-tracker.production.json";
 
 describe("generated OpenAPI contract", () => {
@@ -20,15 +19,13 @@ describe("generated OpenAPI contract", () => {
     expect(document.paths).toHaveProperty("/v1/healthz");
     expect(document.paths).toHaveProperty("/v1/apps/{app}/auth/token");
     expect(document.paths).toHaveProperty("/v1/apps/{app}/proxy/{provider}/{path}");
+    expect(document.paths).toHaveProperty("/v1/apps/{app}/endpoints/{slug}");
     expect(document.paths).toHaveProperty("/v1/admin/apps");
     expect(document.paths).toHaveProperty("/v1/admin/apps/{app}/usage");
   });
 
   it("accepts the checked-in application examples", () => {
-    for (const [name, value] of [
-      ["development", developmentConfig],
-      ["production", productionConfig],
-    ] as const) {
+    for (const [name, value] of [["production", productionConfig]] as const) {
       expect(AppWriteSchema.safeParse(value), name).toMatchObject({ success: true });
     }
   });

@@ -18,6 +18,7 @@ const BREAKDOWN_COLUMNS = {
   user: usageEvents.userId,
   status: usageEvents.status,
   route: usageEvents.route,
+  endpoint: usageEvents.endpointSlug,
   app_version: usageEvents.appVersion,
 } as const;
 
@@ -231,6 +232,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       provider: row.provider,
       model: row.model,
       route: row.route,
+      endpoint_slug: row.endpointSlug,
       input_tokens: row.inputTokens,
       cached_input_tokens: row.cachedInputTokens,
       cache_write_tokens: row.cacheWriteTokens,

@@ -8,6 +8,11 @@ import { limiterGate } from "./middleware/gate";
 import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
 import { consoleRoutes } from "./routes/console";
+import {
+  endpointPrepare,
+  endpointRoutes,
+  type EndpointVariables,
+} from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
 import { proxyPrepare, proxyRoutes, type ProxyVariables } from "./routes/proxy";
 
@@ -15,7 +20,7 @@ export { UserLimiter };
 
 const app = new Hono<{
   Bindings: Env;
-  Variables: GatewayVariables & AdminVariables & ProxyVariables;
+  Variables: GatewayVariables & AdminVariables & ProxyVariables & EndpointVariables;
 }>();
 
 app.get("/v1/healthz", (c) => c.json({ ok: true, service: "ai-gateway" }));
@@ -29,6 +34,9 @@ app.route("/v1/apps/:app/auth", authRoutes);
 app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, limiterGate);
 app.route("/v1/apps/:app/proxy", proxyRoutes);
 
+app.use("/v1/apps/:app/endpoints/:slug", gatewayAuth, endpointPrepare, limiterGate);
+app.route("/v1/apps/:app/endpoints", endpointRoutes);
+
 app.use("/v1/apps/:app/me", gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);
 
@@ -40,7 +48,7 @@ app.notFound((c) => c.json({ error: { code: "invalid_request", message: "Route n
 app.onError((error, c) => {
   const headers = new Headers();
   headers.set("content-type", "application/json; charset=UTF-8");
-  if (c.req.path.includes("/proxy/")) {
+  if (c.req.path.includes("/proxy/") || c.req.path.includes("/endpoints/")) {
     const auth = c.get("authDurationMs") ?? 0;
     const limiter = c.get("limiterDurationMs") ?? 0;
     headers.set(

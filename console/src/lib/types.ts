@@ -157,6 +157,8 @@ export interface UsageEvent {
   provider: string;
   model: string;
   route: string;
+  /** Null for passthrough proxy traffic. */
+  endpoint_slug: string | null;
   input_tokens: number;
   cached_input_tokens: number;
   cache_write_tokens: number;
