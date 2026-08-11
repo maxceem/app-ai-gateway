@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAPIDocument } from "../src/contracts/openapi";
 import { AppWriteSchema } from "../src/contracts/schemas";
+import devConfig from "../config/calorie-tracker.dev.json";
 import productionConfig from "../config/calorie-tracker.production.json";
 
 describe("generated OpenAPI contract", () => {
@@ -25,7 +26,10 @@ describe("generated OpenAPI contract", () => {
   });
 
   it("accepts the checked-in application examples", () => {
-    for (const [name, value] of [["production", productionConfig]] as const) {
+    for (const [name, value] of [
+      ["dev", devConfig],
+      ["production", productionConfig],
+    ] as const) {
       expect(AppWriteSchema.safeParse(value), name).toMatchObject({ success: true });
     }
   });

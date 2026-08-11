@@ -33,18 +33,28 @@ for command_name in curl jq; do
   fi
 done
 
-curl -fsS \
-  -X POST \
-  "$gateway_base_url/v1/admin/apps/calorie-tracker" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data-binary "@$project_dir/config/calorie-tracker.production.json" |
-  jq '{
-    id: .app.id,
-    status: .app.status,
-    appattest_environments: .app.authentication.app_attest.environments,
-    required_claims: .app.authentication.issuer.required_claims,
-    dev_access_enabled: .app.authentication.development_access,
-    provider_mode: .app.routing.providerMode,
-    endpoints: (.app.endpoints // {} | keys)
-  }'
+register_app() {
+  app_id=$1
+  config_path=$2
+
+  curl -fsS \
+    -X POST \
+    "$gateway_base_url/v1/admin/apps/$app_id" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    --data-binary "@$project_dir/$config_path" |
+    jq '{
+      id: .app.id,
+      name: .app.name,
+      status: .app.status,
+      bundle_id: .app.authentication.app_attest.bundle_id,
+      appattest_environments: .app.authentication.app_attest.environments,
+      required_claims: .app.authentication.issuer.required_claims,
+      dev_access_enabled: .app.authentication.development_access,
+      provider_mode: .app.routing.providerMode,
+      endpoints: (.app.endpoints // {} | keys)
+    }'
+}
+
+register_app calorie-tracker-dev config/calorie-tracker.dev.json
+register_app calorie-tracker config/calorie-tracker.production.json

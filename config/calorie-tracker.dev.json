@@ -1,5 +1,5 @@
 {
-  "name": "Calorie Tracker Production",
+  "name": "Calorie Tracker Dev",
   "config": {
     "authentication": {
       "type": "apple_app_attest",
@@ -17,16 +17,16 @@
           },
           {
             "path": "revenueCatEntitlements",
-            "contains": "pro"
+            "contains": "pro_test"
           }
         ],
         "max_token_lifetime_seconds": 3600
       },
       "app_attest": {
         "team_id": "7XE4PJV852",
-        "bundle_id": "com.maxceem.CalTrack",
+        "bundle_id": "com.maxceem.CalTrack.dev",
         "environments": [
-          "production"
+          "development"
         ]
       },
       "development_access": false
