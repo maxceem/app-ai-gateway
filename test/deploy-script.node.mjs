@@ -42,7 +42,10 @@ test("reports missing user-provided deployment values", () => {
 test("deploy button requests an existing gateway before its required token", () => {
   const projectRoot = new URL("..", import.meta.url);
   const packageJson = JSON.parse(readFileSync(new URL("package.json", projectRoot), "utf8"));
-  const wranglerConfig = JSON.parse(readFileSync(new URL("wrangler.jsonc", projectRoot), "utf8"));
+  const wranglerConfig = JSON.parse(
+    readFileSync(new URL("wrangler.jsonc", projectRoot), "utf8")
+      .replace(/^\s*\/\/.*$/gmu, ""),
+  );
   const secretTemplate = readFileSync(new URL(".dev.vars.example", projectRoot), "utf8");
 
   assert.equal(wranglerConfig.vars?.CF_AIG_GATEWAY_ID, undefined);

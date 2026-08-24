@@ -24,6 +24,7 @@ import type {
   RoutingConfig,
   StoredAppConfig,
 } from "./types";
+import type { BillingPlanLimits } from "../billing/gateway";
 
 interface CacheEntry {
   expiresAt: number;
@@ -385,7 +386,10 @@ function parseLimitScope(raw: unknown, label: string): { stored: LimitScopeConfi
   };
 }
 
-export function parseStoredAppConfig(raw: unknown): { stored: StoredAppConfig; resolved: Omit<AppConfig, "id" | "name" | "status"> } {
+export function parseStoredAppConfig(raw: unknown): {
+  stored: StoredAppConfig;
+  resolved: Omit<AppConfig, "id" | "organizationId" | "name" | "status">;
+} {
   const value = record(raw, "app");
   const authentication = parseAuthentication(value.authentication);
   const routing = parseRouting(value.routing);
@@ -412,7 +416,13 @@ export function parseStoredAppConfig(raw: unknown): { stored: StoredAppConfig; r
 
 function fromRow(row: typeof apps.$inferSelect): AppConfig {
   const parsed = parseStoredAppConfig(row.config);
-  return { id: row.id, name: row.name, status: row.status, ...parsed.resolved };
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    name: row.name,
+    status: row.status,
+    ...parsed.resolved,
+  };
 }
 
 export function hasAppLevelLimits(app: AppConfig): boolean {
@@ -440,8 +450,37 @@ export function clearAppConfigCache(): void {
   appCache.clear();
 }
 
-export function validateAppConfigJson(config: unknown): StoredAppConfig {
-  return parseStoredAppConfig(config).stored;
+function assertBillingCeilings(config: StoredAppConfig, ceilings: BillingPlanLimits): void {
+  const scopes = [config.limits.per_user, config.limits.per_app];
+  for (const scope of scopes) {
+    if (
+      ceilings.maxRpm !== undefined
+      && (scope.requests.per_minute === null || scope.requests.per_minute > ceilings.maxRpm)
+    ) {
+      throw new GatewayError(403, "plan_limit_exceeded", `requests.per_minute exceeds the plan ceiling of ${ceilings.maxRpm}`);
+    }
+    if (
+      ceilings.maxRpd !== undefined
+      && (scope.requests.per_day === null || scope.requests.per_day > ceilings.maxRpd)
+    ) {
+      throw new GatewayError(403, "plan_limit_exceeded", `requests.per_day exceeds the plan ceiling of ${ceilings.maxRpd}`);
+    }
+    if (
+      ceilings.maxMonthlyUsd !== undefined
+      && (scope.spending.monthly_usd === null || scope.spending.monthly_usd > ceilings.maxMonthlyUsd)
+    ) {
+      throw new GatewayError(403, "plan_limit_exceeded", `spending.monthly_usd exceeds the plan ceiling of ${ceilings.maxMonthlyUsd}`);
+    }
+  }
+}
+
+export function validateAppConfigJson(
+  config: unknown,
+  ceilings: BillingPlanLimits = {},
+): StoredAppConfig {
+  const stored = parseStoredAppConfig(config).stored;
+  assertBillingCeilings(stored, ceilings);
+  return stored;
 }
 
 export function assertAppActive(app: AppConfig): void {

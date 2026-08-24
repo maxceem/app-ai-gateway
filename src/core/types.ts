@@ -131,6 +131,7 @@ export interface ResolvedLimitsConfig {
 
 export interface AppConfig {
   id: string;
+  organizationId: string | null;
   name: string;
   authentication: AuthenticationConfig;
   routing: ResolvedRoutingConfig;

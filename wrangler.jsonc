@@ -33,6 +33,9 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] }
   ],
+  // Hosted environments can opt into billing with a service binding:
+  // "services": [{ "binding": "BILLING", "service": "cf-billing", "entrypoint": "BillingWorker" }],
+  // The OSS default intentionally has no BILLING binding and runs self-hosted.
   "env": {
     "production": {
       "name": "ai-gateway",

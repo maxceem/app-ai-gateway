@@ -1,13 +1,16 @@
 import { Hono } from "hono";
+import type { BillingVariables } from "./billing/gateway";
 import { GatewayError } from "./core/errors";
 import { log } from "./core/log";
 import { UserLimiter } from "./do/UserLimiter";
 import { adminAuth, type AdminVariables } from "./middleware/admin";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { limiterGate } from "./middleware/gate";
+import { billingEntitlementGate } from "./middleware/billing";
 import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
 import { operatorAuthRoutes } from "./routes/operator-auth";
+import { consoleRoutes } from "./routes/console";
 import {
   endpointPrepare,
   endpointRoutes,
@@ -20,13 +23,20 @@ export { UserLimiter };
 
 const app = new Hono<{
   Bindings: Env;
-  Variables: GatewayVariables & AdminVariables & ProxyVariables & EndpointVariables;
+  Variables: GatewayVariables & AdminVariables & ProxyVariables & EndpointVariables & BillingVariables;
 }>();
+
+app.use("*", async (c, next) => {
+  c.set("billingRequestCache", new Map());
+  await next();
+});
 
 app.get("/v1/healthz", (c) => c.json({ ok: true, service: "ai-gateway" }));
 
 app.route("/v1/auth", operatorAuthRoutes);
+app.route("/v1/console", consoleRoutes);
 
+app.use("/v1/apps/:app/*", billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
 app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, limiterGate);

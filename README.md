@@ -86,6 +86,24 @@ Add `--env production` when applicable. This invokes `wrangler d1 execute` and
 does not print the password or hash. Prefer `--local` while validating a recovery
 procedure; remote execution is an explicit owner-operated step.
 
+### Optional cloud billing
+
+The OSS configuration has no `BILLING` service binding and therefore grants
+self-hosted access without subscription checks. A hosted environment can bind
+the `BillingWorker` entrypoint from `cf-billing`; the commented example in
+`wrangler.jsonc` shows the binding shape. The gateway scopes every RPC to
+service `ai-gateway` and the authenticated organization ID.
+
+Billing plan `limits_json` may define these ceilings:
+
+```json
+{ "maxApps": 25, "maxRpm": 500, "maxRpd": 10000, "maxMonthlyUsd": 250 }
+```
+
+With the binding present, inactive organizations receive stable
+`402 payment_required` responses on the app data plane. RPC failures fail
+closed without modifying or disabling application rows.
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).

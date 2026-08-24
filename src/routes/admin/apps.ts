@@ -1,5 +1,11 @@
-import { Hono } from "hono";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { Hono, type Context } from "hono";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
+import {
+  billingPlanLimits,
+  getBillingAccess,
+  requireActiveBilling,
+  type BillingPlanLimits,
+} from "../../billing/gateway";
 import {
   invalidateAppConfig,
   loadAppConfig,
@@ -78,15 +84,22 @@ function suffixedAppId(base: string): string {
 }
 
 function asBadRequest(error: unknown): never {
+  if (
+    error instanceof GatewayError
+    && (error.code === "plan_limit_exceeded" || error.code === "billing_unavailable")
+  ) {
+    throw error;
+  }
   if (error instanceof GatewayError) throw new GatewayError(400, "invalid_request", error.message);
   throw error;
 }
 
 function validatedConfig(
   next: Record<string, unknown>,
+  ceilings: BillingPlanLimits = {},
 ): ReturnType<typeof validateAppConfigJson> {
   try {
-    return validateAppConfigJson(next);
+    return validateAppConfigJson(next, ceilings);
   } catch (error) {
     asBadRequest(error);
   }
@@ -126,7 +139,35 @@ function serializeRow(row: typeof apps.$inferSelect) {
   };
 }
 
-export const appRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+type AppRouteEnv = { Bindings: Env; Variables: AdminVariables };
+
+export const appRoutes = new Hono<AppRouteEnv>();
+
+async function activePlanLimits(c: Context<AppRouteEnv>): Promise<BillingPlanLimits> {
+  const access = requireActiveBilling(await getBillingAccess(
+    c.env,
+    c.get("admin").organizationId,
+    c.get("billingRequestCache"),
+  ));
+  return billingPlanLimits(access);
+}
+
+async function assertAppCapacity(c: Context<AppRouteEnv>, limits: BillingPlanLimits): Promise<void> {
+  if (limits.maxApps === undefined) return;
+  const organizationId = c.get("admin").organizationId;
+  const row = await database(c.env.DB)
+    .select({ value: sql<number>`count(*)` })
+    .from(apps)
+    .where(eq(apps.organizationId, organizationId))
+    .get();
+  if ((row?.value ?? 0) >= limits.maxApps) {
+    throw new GatewayError(
+      403,
+      "plan_limit_exceeded",
+      `The plan allows at most ${limits.maxApps} application${limits.maxApps === 1 ? "" : "s"}`,
+    );
+  }
+}
 
 appRoutes.get("/apps", async (c) => {
   const month = c.req.query("month") ?? currentMonth();
@@ -226,6 +267,8 @@ appRoutes.get("/apps", async (c) => {
 });
 
 appRoutes.post("/apps", async (c) => {
+  const planLimits = await activePlanLimits(c);
+  await assertAppCapacity(c, planLimits);
   const value = await c.req.json();
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
@@ -236,7 +279,7 @@ appRoutes.post("/apps", async (c) => {
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
   if (raw.id !== undefined && typeof raw.id !== "string") throw new GatewayError(400, "invalid_request", "id must be a lowercase slug");
   const requestedId = raw.id === undefined ? slugifyAppName(name) : assertAppId(raw.id);
-  const config = validatedConfig(body.config);
+  const config = validatedConfig(body.config, planLimits);
   if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
     throw new GatewayError(
       400,
@@ -312,6 +355,7 @@ appRoutes.get("/apps/:app", async (c) => {
 });
 
 appRoutes.post("/apps/:app/validate", async (c) => {
+  const planLimits = await activePlanLimits(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const existing = await database(c.env.DB).query.apps.findFirst({
@@ -320,7 +364,7 @@ appRoutes.post("/apps/:app/validate", async (c) => {
       eq(apps.organizationId, c.get("admin").organizationId),
     ),
   });
-  const config = validatedConfig(body.config);
+  const config = validatedConfig(body.config, planLimits);
   if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
     const credential = await database(c.env.DB).query.developmentCredentials.findFirst({
       columns: { appId: true },
@@ -334,10 +378,12 @@ appRoutes.post("/apps/:app/validate", async (c) => {
 });
 
 appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
+  const planLimits = await activePlanLimits(c);
+  if (!c.get("adminApp")) await assertAppCapacity(c, planLimits);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
-  const config = validatedConfig(body.config);
+  const config = validatedConfig(body.config, planLimits);
   if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
     const credential = await db.query.developmentCredentials.findFirst({
       columns: { appId: true },

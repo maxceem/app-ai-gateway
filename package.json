@@ -45,6 +45,7 @@
     "asn1js": "^3.0.7",
     "better-auth": "1.6.9",
     "cbor-x": "^1.6.0",
+    "cf-billing": "file:../../maxceem/services/cf-billing",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.9.0",
     "jose": "^6.0.0",

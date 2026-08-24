@@ -7,6 +7,7 @@ interface Env {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   ALLOW_PUBLIC_REGISTRATION?: string;
+  BILLING?: import("cf-billing").BillingRuntime;
   CF_AIG_GATEWAY_ID: string;
   CF_AIG_TOKEN: string;
 }
@@ -18,6 +19,7 @@ declare namespace Cloudflare {
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
     ALLOW_PUBLIC_REGISTRATION?: string;
+    BILLING?: import("cf-billing").BillingRuntime;
     CF_AIG_GATEWAY_ID: string;
     CF_AIG_TOKEN: string;
   }

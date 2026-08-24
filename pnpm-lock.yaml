@@ -26,6 +26,9 @@ importers:
       cbor-x:
         specifier: ^1.6.0
         version: 1.6.4
+      cf-billing:
+        specifier: file:../../maxceem/services/cf-billing
+        version: file:../../maxceem/services/cf-billing(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)
@@ -2728,6 +2731,9 @@ packages:
 
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
+
+  cf-billing@file:../../maxceem/services/cf-billing:
+    resolution: {directory: ../../maxceem/services/cf-billing, type: directory}
 
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
@@ -6412,6 +6418,41 @@ snapshots:
       cbor-extract: 2.2.2
 
   ccount@2.0.1: {}
+
+  cf-billing@file:../../maxceem/services/cf-billing(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17):
+    dependencies:
+      drizzle-orm: 0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@aws-sdk/client-rds-data'
+      - '@cloudflare/workers-types'
+      - '@electric-sql/pglite'
+      - '@libsql/client'
+      - '@libsql/client-wasm'
+      - '@neondatabase/serverless'
+      - '@op-engineering/op-sqlite'
+      - '@opentelemetry/api'
+      - '@planetscale/database'
+      - '@prisma/client'
+      - '@tidbcloud/serverless'
+      - '@types/better-sqlite3'
+      - '@types/pg'
+      - '@types/sql.js'
+      - '@upstash/redis'
+      - '@vercel/postgres'
+      - '@xata.io/client'
+      - better-sqlite3
+      - bun-types
+      - expo-sqlite
+      - gel
+      - knex
+      - kysely
+      - mysql2
+      - pg
+      - postgres
+      - prisma
+      - sql.js
+      - sqlite3
 
   chai@6.2.2: {}
 

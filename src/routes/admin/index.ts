@@ -11,6 +11,8 @@ import { keyRoutes } from "./keys";
 import { usageRoutes } from "./usage";
 import { userRoutes } from "./users";
 import { managementKeyRoutes } from "./management-keys";
+import { billingRoutes } from "./billing";
+import { billingBinding } from "../../billing/gateway";
 
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
@@ -47,6 +49,12 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
 
 adminRoutes.use("/apps/:app", scopeAdminApp);
 adminRoutes.use("/apps/:app/*", scopeAdminApp);
+adminRoutes.use("/billing/*", async (c, next) => {
+  if (!billingBinding(c.env)) {
+    throw new GatewayError(404, "not_found", "Billing is not configured");
+  }
+  await next();
+});
 
 /** Supplies the priced model catalog used by the proxy-policy editor. */
 adminRoutes.get("/prices", (c) => c.json({ prices }));
@@ -57,3 +65,4 @@ adminRoutes.route("/", keyRoutes);
 adminRoutes.route("/", userRoutes);
 adminRoutes.route("/", usageRoutes);
 adminRoutes.route("/", managementKeyRoutes);
+adminRoutes.route("/billing", billingRoutes);

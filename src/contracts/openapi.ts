@@ -108,6 +108,21 @@ register({
   },
 });
 
+register({
+  method: "get",
+  path: "/v1/console/capabilities",
+  tags: ["Operations"],
+  operationId: "getConsoleCapabilities",
+  summary: "Discover optional deployment capabilities",
+  responses: {
+    200: response("Capabilities used by operator clients.", z.object({
+      billing: z.boolean(),
+      registrationOpen: z.boolean(),
+      googleAuth: z.boolean(),
+    })),
+  },
+});
+
 for (const authRoute of [
   {
     method: "post",
@@ -179,6 +194,7 @@ register({
   responses: {
     200: response("A five-minute, single-use challenge.", z.object({ challenge: z.string(), expires_in: z.number() })),
     ...errorResponses,
+    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
   },
 });
 
@@ -195,6 +211,7 @@ register({
   responses: {
     200: response("The key was registered for the verified issuer identity.", z.object({ user_id: z.string() })),
     ...errorResponses,
+    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
   },
 });
 
@@ -215,6 +232,7 @@ register({
   responses: {
     200: response("A short-lived gateway access token.", z.object({ access_token: z.string(), expires_in: z.number() })),
     ...errorResponses,
+    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
   },
 });
 
@@ -238,6 +256,7 @@ register({
       }),
     })),
     ...errorResponses,
+    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
   },
 });
 
@@ -262,6 +281,7 @@ register({
   responses: {
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
+    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
     429: response("A request or spending limit was reached.", ErrorResponseSchema),
     502: response("The upstream provider request failed.", ErrorResponseSchema),
   },
@@ -304,6 +324,7 @@ register({
   responses: {
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
+    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
     429: response("A request or spending limit was reached.", ErrorResponseSchema),
     502: response("Every configured target failed.", ErrorResponseSchema),
   },
@@ -333,6 +354,78 @@ register({
     ...errorResponses,
     409: response("A unique application ID could not be allocated.", ErrorResponseSchema),
   },
+});
+
+const BillingPlanSelectionSchema = z.object({
+  planKey: z.string().min(1),
+  billingPeriod: z.enum(["month", "year"]),
+});
+
+for (const route of [
+  { path: "/v1/admin/billing/plans", operationId: "listBillingPlans", summary: "List billing plans" },
+  { path: "/v1/admin/billing/status", operationId: "getBillingStatus", summary: "Get organization billing access" },
+  { path: "/v1/admin/billing/portal/status", operationId: "getBillingPortalStatus", summary: "Poll billing portal/access status" },
+] as const) {
+  register({
+    method: "get",
+    path: route.path,
+    tags: ["Admin billing"],
+    operationId: route.operationId,
+    summary: route.summary,
+    security: operatorSecurity,
+    responses: { 200: response("Billing service response.", z.unknown()), ...errorResponses },
+  });
+}
+
+register({
+  method: "post",
+  path: "/v1/admin/billing/checkout",
+  tags: ["Admin billing"],
+  operationId: "createBillingCheckout",
+  summary: "Create a hosted checkout",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(BillingPlanSelectionSchema.extend({
+    successUrl: z.url().optional(),
+    cancelUrl: z.url().optional(),
+  })) } },
+  responses: { 200: response("Hosted checkout URL.", z.object({ url: z.string() })), ...errorResponses },
+});
+
+for (const route of [
+  { path: "/v1/admin/billing/change", operationId: "changeBillingPlan", summary: "Change the subscription plan" },
+  { path: "/v1/admin/billing/resume", operationId: "resumeBillingSubscription", summary: "Resume a canceled subscription" },
+] as const) {
+  register({
+    method: "post",
+    path: route.path,
+    tags: ["Admin billing"],
+    operationId: route.operationId,
+    summary: route.summary,
+    security: operatorSecurity,
+    request: { body: { required: true, content: json(BillingPlanSelectionSchema) } },
+    responses: { 200: response("Billing service response.", z.unknown()), ...errorResponses },
+  });
+}
+
+register({
+  method: "post",
+  path: "/v1/admin/billing/cancel",
+  tags: ["Admin billing"],
+  operationId: "cancelBillingSubscription",
+  summary: "Cancel the subscription at period end",
+  security: operatorSecurity,
+  responses: { 200: response("Cancellation accepted.", z.object({ ok: z.literal(true) })), ...errorResponses },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/billing/trial",
+  tags: ["Admin billing"],
+  operationId: "startBillingTrial",
+  summary: "Start a no-card trial",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(z.object({ planKey: z.string().min(1) })) } },
+  responses: { 200: response("Trial access state.", z.unknown()), ...errorResponses },
 });
 
 for (const definition of [
@@ -479,6 +572,7 @@ export function createOpenAPIDocument() {
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, credentials, and usage." },
       { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
+      { name: "Admin billing", description: "Optional cf-billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },
     ],
   });

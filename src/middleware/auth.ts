@@ -4,8 +4,9 @@ import { verifyApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "../core/jwt";
 import type { AppConfig, GatewayIdentity, Provider } from "../core/types";
+import type { BillingVariables } from "../billing/gateway";
 
-export interface GatewayVariables {
+export interface GatewayVariables extends BillingVariables {
   appConfig: AppConfig;
   identity: GatewayIdentity;
   authHeaderName: string;

@@ -14,6 +14,7 @@ import {
 } from "../auth/operator";
 import { GatewayError } from "../core/errors";
 import type { apps } from "../db/schema";
+import type { BillingVariables } from "../billing/gateway";
 
 export interface AdminContext {
   userId: string;
@@ -22,7 +23,7 @@ export interface AdminContext {
   credentialType: "session" | "apiKey";
 }
 
-export interface AdminVariables {
+export interface AdminVariables extends BillingVariables {
   authState: AuthState;
   operatorAuth: CfAuth;
   admin: AdminContext;
