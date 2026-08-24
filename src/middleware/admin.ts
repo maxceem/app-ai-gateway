@@ -30,8 +30,16 @@ export interface AdminVariables extends BillingVariables {
   adminApp?: typeof apps.$inferSelect;
 }
 
+/**
+ * Writes that every member may perform. Switching the active organization only
+ * re-signs a cookie describing which tenant the caller is reading, so gating it
+ * behind owner/admin would strand read-only members in one organization.
+ */
+const MEMBER_WRITABLE_OPERATIONS = new Set(["POST /v1/admin/organizations/select"]);
+
 function isMutation(method: string, path: string): boolean {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  if (MEMBER_WRITABLE_OPERATIONS.has(`${method} ${path}`)) return false;
   return !path.endsWith("/validate");
 }
 

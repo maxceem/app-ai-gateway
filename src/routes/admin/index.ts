@@ -11,6 +11,7 @@ import { keyRoutes } from "./keys";
 import { usageRoutes } from "./usage";
 import { userRoutes } from "./users";
 import { managementKeyRoutes } from "./management-keys";
+import { organizationRoutes } from "./organizations";
 import { billingRoutes } from "./billing";
 import { billingBinding } from "../../billing/gateway";
 
@@ -65,4 +66,5 @@ adminRoutes.route("/", keyRoutes);
 adminRoutes.route("/", userRoutes);
 adminRoutes.route("/", usageRoutes);
 adminRoutes.route("/", managementKeyRoutes);
+adminRoutes.route("/", organizationRoutes);
 adminRoutes.route("/billing", billingRoutes);

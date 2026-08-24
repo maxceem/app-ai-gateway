@@ -35,6 +35,26 @@ function sessionHeaders(cookie: string, json = false): Record<string, string> {
   };
 }
 
+async function userIdFor(email: string): Promise<string> {
+  const row = await env.DB.prepare("SELECT id FROM operator_user WHERE email = ?")
+    .bind(email)
+    .first<{ id: string }>();
+  return row!.id;
+}
+
+/** Adds a second organization directly; cf-auth exposes creation only in-process. */
+async function seedOrganization(name: string, userId: string, role = "owner"): Promise<string> {
+  const now = new Date().toISOString();
+  const organizationId = `org-${name}`;
+  await env.DB.prepare(
+    "INSERT INTO operator_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+  ).bind(organizationId, name, userId, now, now).run();
+  await env.DB.prepare(
+    "INSERT INTO operator_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, ?, 'active', ?)",
+  ).bind(`membership-${name}`, organizationId, userId, role, now).run();
+  return organizationId;
+}
+
 async function createApp(cookie: string, id: string) {
   return exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
     method: "POST",
@@ -150,6 +170,175 @@ describe("operator authentication", () => {
       "UPDATE operator_organization_user SET role = 'admin' WHERE organization_id = ?",
     ).bind(organizationId).run();
     expect((await createApp(cookie, "admin-can-create")).status).toBe(201);
+  });
+
+  it("reports the caller's identity, organization and role to operator clients", async () => {
+    const { cookie, organizationId } = await signup("session-shape@example.test");
+
+    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/session`, {
+      headers: sessionHeaders(cookie),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json<{
+      session: {
+        user: { email: string };
+        organization: { id: string };
+        role: string;
+        memberships: unknown[];
+        credentialType: string;
+      };
+    }>();
+    expect(body.session.user.email).toBe("session-shape@example.test");
+    expect(body.session.organization.id).toBe(organizationId);
+    expect(body.session.role).toBe("owner");
+    expect(body.session.memberships).toHaveLength(1);
+    expect(body.session.credentialType).toBe("session");
+  });
+
+  it("lets a read-only member switch between the organizations they belong to", async () => {
+    const { cookie, organizationId } = await signup("switcher@example.test");
+    const userId = await userIdFor("switcher@example.test");
+    const secondOrganizationId = await seedOrganization("second-tenant", userId, "member");
+
+    const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations`, {
+      headers: sessionHeaders(cookie),
+    });
+    expect(listed.status).toBe(200);
+    const organizations = await listed.json<{ organizations: Array<{ organization: { id: string } }> }>();
+    expect(organizations.organizations.map((entry) => entry.organization.id)).toEqual(
+      expect.arrayContaining([organizationId, secondOrganizationId]),
+    );
+
+    // Demote the caller everywhere: switching must not require mutation rights.
+    await env.DB.prepare("UPDATE operator_organization_user SET role = 'member' WHERE user_id = ?")
+      .bind(userId).run();
+
+    const wrongVerb = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
+      method: "PUT",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ organizationId: secondOrganizationId }),
+    });
+    expect(wrongVerb.status).toBe(403);
+    await expect(wrongVerb.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+
+    const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
+      method: "POST",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ organizationId: secondOrganizationId }),
+    });
+    expect(selected.status, await selected.clone().text()).toBe(200);
+    await expect(selected.json()).resolves.toMatchObject({
+      session: { organization: { id: secondOrganizationId }, role: "member" },
+    });
+    expect(selected.headers.get("set-cookie")).toContain("agw_operator_current_organization");
+
+    const foreign = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
+      method: "POST",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ organizationId: "org-not-mine" }),
+    });
+    expect(foreign.status).toBe(403);
+    await expect(foreign.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+  });
+
+  it("administers organization members and protects the last owner", async () => {
+    const { cookie, organizationId } = await signup("owner-seat@example.test");
+    const secondSeat = await signup("second-seat@example.test");
+    await signup("foreign-seat@example.test");
+    const ownerId = await userIdFor("owner-seat@example.test");
+    const otherId = await userIdFor("second-seat@example.test");
+    const foreignId = await userIdFor("foreign-seat@example.test");
+    await env.DB.prepare(
+      "INSERT INTO operator_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'member', 'active', ?)",
+    ).bind("membership-second-seat", organizationId, otherId, new Date().toISOString()).run();
+
+    const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/members`, {
+      headers: sessionHeaders(cookie),
+    });
+    expect(listed.status).toBe(200);
+    const members = await listed.json<{ members: Array<{ id: string; role: string }> }>();
+    expect(members.members).toHaveLength(2);
+    expect(members.members.find((member) => member.id === otherId)?.role).toBe("member");
+    expect(members.members.find((member) => member.id === foreignId)).toBeUndefined();
+
+    const promoted = await exports.default.fetch(`${ORIGIN}/v1/admin/members/${otherId}`, {
+      method: "PUT",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ role: "admin" }),
+    });
+    expect(promoted.status).toBe(200);
+    await expect(promoted.json()).resolves.toMatchObject({ member: { role: "admin" } });
+
+    const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
+      method: "POST",
+      headers: sessionHeaders(secondSeat.cookie, true),
+      body: JSON.stringify({ organizationId }),
+    });
+    expect(selected.status).toBe(200);
+    const adminCookie = `${secondSeat.cookie}; ${cookieFrom(selected)}`;
+    const adminCannotDemoteOwner = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/members/${ownerId}`,
+      {
+        method: "PUT",
+        headers: sessionHeaders(adminCookie, true),
+        body: JSON.stringify({ role: "member" }),
+      },
+    );
+    expect(adminCannotDemoteOwner.status).toBe(403);
+    await expect(adminCannotDemoteOwner.json()).resolves.toMatchObject({
+      error: { code: "forbidden" },
+    });
+
+    const selfDemotion = await exports.default.fetch(`${ORIGIN}/v1/admin/members/${ownerId}`, {
+      method: "PUT",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ role: "member" }),
+    });
+    expect(selfDemotion.status).toBe(409);
+    await expect(selfDemotion.json()).resolves.toMatchObject({ error: { code: "last_owner" } });
+
+    const removed = await exports.default.fetch(`${ORIGIN}/v1/admin/members/${otherId}`, {
+      method: "DELETE",
+      headers: sessionHeaders(cookie),
+    });
+    expect(removed.status).toBe(200);
+    const after = await exports.default.fetch(`${ORIGIN}/v1/admin/members`, {
+      headers: sessionHeaders(cookie),
+    });
+    await expect(after.json()).resolves.toMatchObject({ members: [{ id: ownerId }] });
+  }, 10_000);
+
+  it("keeps management-key callers out of organization switching and membership", async () => {
+    const { cookie, organizationId } = await signup("machine-seat@example.test");
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
+      method: "POST",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ name: "Automation" }),
+    });
+    const { key } = await created.json<{ key: { plaintext: string } }>();
+
+    for (const request of [
+      new Request(`${ORIGIN}/v1/admin/organizations`, {
+        headers: { authorization: `Bearer ${key.plaintext}` },
+      }),
+      new Request(`${ORIGIN}/v1/admin/organizations/select`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.plaintext}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ organizationId }),
+      }),
+      new Request(`${ORIGIN}/v1/admin/members`, {
+        headers: { authorization: `Bearer ${key.plaintext}` },
+      }),
+    ]) {
+      const response = await exports.default.fetch(request);
+      expect(response.status, request.url).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "session_required" },
+      });
+    }
   });
 
   it("keeps applications and every nested admin surface invisible across organizations", async () => {

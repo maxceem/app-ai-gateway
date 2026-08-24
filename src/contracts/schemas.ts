@@ -121,3 +121,13 @@ export const UsageRepriceRequestSchema = z.object({
   month: z.string().regex(/^\d{4}-\d{2}$/u),
   apply: z.boolean().default(false),
 }).strict().meta({ id: "UsageRepriceRequest" });
+
+export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
+
+export const OrganizationSelectRequestSchema = z.object({
+  organizationId: z.string().trim().min(1),
+}).meta({ id: "OrganizationSelectRequest" });
+
+export const OrganizationMemberRoleUpdateRequestSchema = z.object({
+  role: OrganizationRoleSchema,
+}).meta({ id: "OrganizationMemberRoleUpdateRequest" });

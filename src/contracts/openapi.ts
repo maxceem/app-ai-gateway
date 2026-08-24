@@ -4,6 +4,9 @@ import {
   AppAttestTokenRequestSchema,
   AppWriteSchema,
   DevelopmentTokenRequestSchema,
+  OrganizationMemberRoleUpdateRequestSchema,
+  OrganizationRoleSchema,
+  OrganizationSelectRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
@@ -13,6 +16,9 @@ export {
   AppConfigSchema,
   AppWriteSchema,
   DevelopmentTokenRequestSchema,
+  OrganizationMemberRoleUpdateRequestSchema,
+  OrganizationRoleSchema,
+  OrganizationSelectRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
@@ -37,6 +43,10 @@ const KeyPath = AppPath.extend({
 
 const ManagementKeyPath = z.object({
   id: z.string().openapi({ param: { name: "id", in: "path" }, example: "key_123" }),
+});
+
+const OrganizationMemberPath = z.object({
+  user: z.string().openapi({ param: { name: "user", in: "path" }, example: "user_123" }),
 });
 
 const ProviderPath = AppPath.extend({
@@ -524,6 +534,136 @@ register({
   },
 });
 
+const OrganizationSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
+});
+
+const OrganizationMembershipSchema = z.object({
+  organization: OrganizationSummarySchema,
+  role: OrganizationRoleSchema,
+  status: z.literal("active"),
+  joinedAt: z.string(),
+});
+
+const OrganizationMemberSchema = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  email: z.string(),
+  emailVerified: z.boolean(),
+  image: z.string().nullable(),
+  createdAt: z.string(),
+  role: OrganizationRoleSchema,
+  status: z.literal("active"),
+  joinedAt: z.string(),
+});
+
+const OperatorSessionSchema = z.object({
+  session: z.object({
+    user: z.object({
+      id: z.string(),
+      name: z.string().nullable(),
+      email: z.string(),
+      emailVerified: z.boolean(),
+      image: z.string().nullable(),
+      createdAt: z.string(),
+    }).nullable(),
+    organization: OrganizationSummarySchema.nullable(),
+    role: OrganizationRoleSchema,
+    memberships: z.array(OrganizationMembershipSchema),
+    credentialType: z.enum(["session", "apiKey"]),
+  }),
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/session",
+  tags: ["Admin organizations"],
+  operationId: "getOperatorContext",
+  summary: "Get the caller's identity, current organization and role",
+  description:
+    "Operator clients need the caller's role and active organization to gate their UI; the Better Auth session endpoint reports neither.",
+  security: operatorSecurity,
+  responses: { 200: response("Resolved operator session.", OperatorSessionSchema), ...errorResponses },
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/organizations",
+  tags: ["Admin organizations"],
+  operationId: "listOperatorOrganizations",
+  summary: "List the organizations the caller belongs to",
+  security: [{ OperatorSession: [] }],
+  responses: {
+    200: response("Memberships ordered by organization creation time.", z.object({
+      organizations: z.array(OrganizationMembershipSchema),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/organizations/select",
+  tags: ["Admin organizations"],
+  operationId: "selectOperatorOrganization",
+  summary: "Switch the caller's active organization",
+  description: "Available to every member, including read-only members, of the target organization.",
+  security: [{ OperatorSession: [] }],
+  request: { body: { required: true, content: json(OrganizationSelectRequestSchema) } },
+  responses: { 200: response("Session rescoped to the selected organization.", OperatorSessionSchema), ...errorResponses },
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/members",
+  tags: ["Admin organizations"],
+  operationId: "listOrganizationMembers",
+  summary: "List members of the current organization",
+  description: "Requires an owner/admin user session.",
+  security: [{ OperatorSession: [] }],
+  responses: {
+    200: response("Organization members.", z.object({ members: z.array(OrganizationMemberSchema) })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "put",
+  path: "/v1/admin/members/{user}",
+  tags: ["Admin organizations"],
+  operationId: "updateOrganizationMemberRole",
+  summary: "Change a member's role",
+  description: "Requires an owner/admin user session. Granting or removing the owner role requires an owner.",
+  security: [{ OperatorSession: [] }],
+  request: {
+    params: OrganizationMemberPath,
+    body: { required: true, content: json(OrganizationMemberRoleUpdateRequestSchema) },
+  },
+  responses: {
+    200: response("Updated membership.", z.object({ member: OrganizationMembershipSchema })),
+    409: response("The organization would be left without an owner.", ErrorResponseSchema),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "delete",
+  path: "/v1/admin/members/{user}",
+  tags: ["Admin organizations"],
+  operationId: "removeOrganizationMember",
+  summary: "Remove a member from the current organization",
+  description: "Requires an owner/admin user session. Removing an owner requires an owner.",
+  security: [{ OperatorSession: [] }],
+  request: { params: OrganizationMemberPath },
+  responses: {
+    200: response("Removed membership.", z.object({ removed: OrganizationMembershipSchema })),
+    409: response("The organization would be left without an owner.", ErrorResponseSchema),
+    ...errorResponses,
+  },
+});
+
 const adminRoutes: Omit<RouteConfig, "responses">[] = [
   { method: "get", path: "/v1/admin/apps/{app}/keys", operationId: "listAppKeys", summary: "List application API keys", request: { params: AppPath } },
   { method: "post", path: "/v1/admin/apps/{app}/keys", operationId: "createAppKey", summary: "Create an application API key", request: { params: AppPath, body: { required: true, content: json(z.object({ name: z.string().optional() })) } } },
@@ -572,6 +712,7 @@ export function createOpenAPIDocument() {
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, credentials, and usage." },
       { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
+      { name: "Admin organizations", description: "Operator identity, organization switching, and membership." },
       { name: "Admin billing", description: "Optional cf-billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },
     ],
