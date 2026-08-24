@@ -134,7 +134,7 @@ describe("named endpoints", () => {
     expect(response.headers.get("server-timing")).toContain("provider_ttfb");
     expect(captured).toHaveLength(1);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/openai/responses",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/responses",
     );
     expect(JSON.parse(captured[0]!.body)).toEqual({
       model: "gpt-5.6-luna",
@@ -257,7 +257,7 @@ describe("named endpoints", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/openai/audio/transcriptions",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/audio/transcriptions",
     );
     expect(captured[0]?.form?.get("model")).toBe("gpt-4o-mini-transcribe");
     expect(captured[0]?.form?.get("language")).toBe("en");
@@ -290,7 +290,7 @@ describe("named endpoints", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/grok/v1/stt",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/grok/v1/stt",
     );
     expect(captured[0]?.form?.get("model")).toBe("grok-transcribe");
   });

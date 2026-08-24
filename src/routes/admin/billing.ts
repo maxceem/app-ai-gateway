@@ -5,6 +5,7 @@ import {
   billingBinding,
   billingRpcError,
   getBillingAccess,
+  invalidateBillingAccess,
 } from "../../billing/gateway";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
@@ -79,40 +80,50 @@ billingRoutes.post("/checkout", async (c) => {
     ...(typeof body.successUrl === "string" ? { successUrl: body.successUrl } : {}),
     ...(typeof body.cancelUrl === "string" ? { cancelUrl: body.cancelUrl } : {}),
   }));
+  invalidateBillingAccess(c.get("admin").organizationId);
   return c.json(result);
 });
 
 billingRoutes.post("/change", async (c) => {
   const body = record(await c.req.json());
-  return c.json(await rpc(() => binding(c.env).changePlan({
+  const result = await rpc(() => binding(c.env).changePlan({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
     planKey: requiredString(body.planKey, "planKey"),
     billingPeriod: billingPeriod(body.billingPeriod),
-  })));
+  }));
+  invalidateBillingAccess(c.get("admin").organizationId);
+  return c.json(result);
 });
 
-billingRoutes.post("/cancel", async (c) => c.json(await rpc(() =>
-  binding(c.env).cancelSubscription({
+billingRoutes.post("/cancel", async (c) => {
+  const result = await rpc(() => binding(c.env).cancelSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
-  }))));
+  }));
+  invalidateBillingAccess(c.get("admin").organizationId);
+  return c.json(result);
+});
 
 billingRoutes.post("/resume", async (c) => {
   const body = record(await c.req.json());
-  return c.json(await rpc(() => binding(c.env).resumeSubscription({
+  const result = await rpc(() => binding(c.env).resumeSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
     planKey: requiredString(body.planKey, "planKey"),
     billingPeriod: billingPeriod(body.billingPeriod),
-  })));
+  }));
+  invalidateBillingAccess(c.get("admin").organizationId);
+  return c.json(result);
 });
 
 billingRoutes.post("/trial", async (c) => {
   const body = record(await c.req.json());
-  return c.json(await rpc(() => binding(c.env).startTrial({
+  const result = await rpc(() => binding(c.env).startTrial({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
     planKey: requiredString(body.planKey, "planKey"),
-  })));
+  }));
+  invalidateBillingAccess(c.get("admin").organizationId);
+  return c.json(result);
 });

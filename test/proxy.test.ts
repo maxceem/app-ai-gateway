@@ -259,7 +259,7 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/perplexity-ai/chat/completions",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/perplexity-ai/chat/completions",
     );
   });
 
@@ -381,7 +381,7 @@ describe("provider-native proxy", () => {
     expect(new TextDecoder().decode(secondChunk.value)).toBe(second);
     expect((await reader.read()).done).toBe(true);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/openai/responses",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/responses",
     );
     expect(captured[0]?.headers.get("authorization")).toBeNull();
     expect(captured[0]?.headers.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
@@ -483,7 +483,7 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/openai/chat/completions",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/chat/completions",
     );
   });
 
@@ -523,7 +523,7 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
     );
     expect(JSON.parse(captured[0]!.body)).toMatchObject({
       generationConfig: { maxOutputTokens: 128 },
@@ -988,7 +988,7 @@ describe("provider-native proxy", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(upstreamUrl).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/perplexity-ai/chat/completions",
+      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/perplexity-ai/chat/completions",
     );
     expect(upstreamHeaders.get("authorization")).toBeNull();
     expect(upstreamHeaders.get("x-end-user-id")).toBeNull();

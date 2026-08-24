@@ -10,7 +10,7 @@ export default defineConfig({
         wrangler: { configPath: "./wrangler.jsonc", environment: "local" },
         miniflare: {
           bindings: {
-            CF_AIG_BASE_URL: "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev",
+            CF_AIG_BASE_URL: "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway",
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-thirty-two-bytes",
             CF_AIG_TOKEN: "test-cf-aig-token",

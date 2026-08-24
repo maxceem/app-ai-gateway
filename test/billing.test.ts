@@ -1,7 +1,9 @@
 import type { BillingAccess, BillingRuntime } from "cf-billing";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  BILLING_ACCESS_CACHE_TTL_MS,
+  clearBillingAccessCache,
   getBillingAccess,
   type BillingRequestCache,
 } from "../src/billing/gateway";
@@ -13,6 +15,11 @@ const ORIGIN = "https://example.test";
 const MANAGEMENT_HEADERS = {
   authorization: "Bearer agw_mgmt_test-admin-secret",
 };
+
+beforeEach(() => {
+  clearBillingAccessCache();
+  vi.restoreAllMocks();
+});
 
 function stub(overrides: Partial<BillingRuntime> = {}): BillingRuntime {
   const inactive: BillingAccess = { status: "inactive", reason: "missing_subscription" };
@@ -53,7 +60,7 @@ describe("billing gateway", () => {
     });
   });
 
-  it("caches active and inactive access per request", async () => {
+  it("caches access across requests until the isolate TTL expires", async () => {
     let calls = 0;
     const access: BillingAccess = {
       status: "active",
@@ -66,15 +73,59 @@ describe("billing gateway", () => {
         return access;
       },
     });
-    const cache: BillingRequestCache = new Map();
-    await expect(getBillingAccess({ BILLING: binding }, "org-active", cache)).resolves.toEqual(access);
-    await expect(getBillingAccess({ BILLING: binding }, "org-active", cache)).resolves.toEqual(access);
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    await expect(getBillingAccess(
+      { BILLING: binding },
+      "org-active",
+      new Map() as BillingRequestCache,
+    )).resolves.toEqual(access);
+    await expect(getBillingAccess(
+      { BILLING: binding },
+      "org-active",
+      new Map() as BillingRequestCache,
+    )).resolves.toEqual(access);
     expect(calls).toBe(1);
+
+    now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
+    await expect(getBillingAccess(
+      { BILLING: binding },
+      "org-active",
+      new Map() as BillingRequestCache,
+    )).resolves.toEqual(access);
+    expect(calls).toBe(2);
 
     await expect(getBillingAccess({ BILLING: stub() }, "org-inactive")).resolves.toMatchObject({
       status: "inactive",
       reason: "missing_subscription",
     });
+  });
+
+  it("invalidates cached access after a billing mutation", async () => {
+    let accessCalls = 0;
+    const billingEnv = withBilling(stub({
+      getTenantAccess: async () => {
+        accessCalls += 1;
+        return { status: "active", planKey: "pro" };
+      },
+    }));
+
+    for (const expectedCalls of [1, 2]) {
+      const status = await worker.request(
+        `${ORIGIN}/v1/admin/billing/status`,
+        { headers: MANAGEMENT_HEADERS },
+        billingEnv,
+      );
+      expect(status.status).toBe(200);
+      expect(accessCalls).toBe(expectedCalls);
+      if (expectedCalls === 1) {
+        const cancelled = await worker.request(
+          `${ORIGIN}/v1/admin/billing/cancel`,
+          { method: "POST", headers: MANAGEMENT_HEADERS },
+          billingEnv,
+        );
+        expect(cancelled.status).toBe(200);
+      }
+    }
   });
 
   it("uses RPC-safe billing error codes and fails closed", async () => {
@@ -144,6 +195,7 @@ describe("billing gateway", () => {
     await expect(inactiveCreate.json()).resolves.toMatchObject({
       error: { code: "payment_required" },
     });
+    clearBillingAccessCache();
 
     const zeroAppEnv = withBilling(stub({
       getTenantAccess: async () => ({ status: "active", limits: { maxApps: 0 } }),
@@ -157,6 +209,7 @@ describe("billing gateway", () => {
     await expect(appLimit.json()).resolves.toMatchObject({
       error: { code: "plan_limit_exceeded" },
     });
+    clearBillingAccessCache();
 
     const rateLimitEnv = withBilling(stub({
       getTenantAccess: async () => ({ status: "active", limits: { maxRpm: 5 } }),

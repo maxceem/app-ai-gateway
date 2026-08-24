@@ -45,6 +45,11 @@ export const adminAuth: MiddlewareHandler<{
     if (!token.startsWith(MANAGEMENT_KEY_PREFIX)) {
       throw new GatewayError(401, "auth_required", "A valid management key is required");
     }
+    if (!authorization.startsWith("Bearer ")) {
+      const headers = new Headers(c.req.raw.headers);
+      headers.set("authorization", `Bearer ${token}`);
+      c.req.raw = new Request(c.req.raw, { headers });
+    }
   }
 
   const operatorAuth = createOperatorAuth(c.env, c.req.url);

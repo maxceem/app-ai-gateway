@@ -65,13 +65,25 @@ Run the full verification suite with `pnpm run check`. Configuration, client
 integration, authentication, and API details are covered in the
 [documentation](https://docs.appaigateway.com/docs/).
 
-### Local cf-auth dependency
+## Until @maxceem/cf-auth is on npm
 
-Until `@maxceem/cf-auth` is published, this checkout uses the lockfile-recorded
-`file:../../maxceem/packages/cf-auth` dependency. Keep the gateway and `maxceem`
-repositories in that relative layout and run `pnpm --dir ../../maxceem/packages/cf-auth build`
-before installing or bundling the gateway. A `file:` dependency is used instead
-of an unrecorded global pnpm link so installs and Wrangler resolution are repeatable.
+The gateway temporarily uses the lockfile-recorded local dependencies
+`file:../../maxceem/packages/cf-auth` and
+`file:../../maxceem/services/cf-billing`. Until cf-auth is published, check out
+the `maxceem` repository beside `calories-tracker` so the directory layout is:
+
+```text
+parent/
+├── calories-tracker/app-ai-gateway/
+└── maxceem/
+    ├── packages/cf-auth/
+    └── services/cf-billing/
+```
+
+Then run `pnpm install` from `app-ai-gateway`. The cf-auth package's `prepare`
+script builds its ignored `dist/` automatically for local and Git installs, so
+Worker typechecks, tests, and Wrangler bundling work from fresh checkouts. The
+recorded `file:` dependencies are used instead of untracked global pnpm links.
 
 ### Break-glass operator recovery
 
@@ -119,6 +131,17 @@ Billing plan `limits_json` may define these ceilings:
 With the binding present, inactive organizations receive stable
 `402 payment_required` responses on the app data plane. RPC failures fail
 closed without modifying or disabling application rows.
+
+## OSS release checklist
+
+- Publish `@maxceem/cf-auth` and replace its temporary local path with the npm
+  version. Before distributing a standalone gateway checkout, also replace the
+  `cf-billing` source path with a distributable billing contract package.
+- Before publishing this repository, rewrite history before commit `0ecfd9a`.
+  Older commits still contain a real domain, AI Gateway ID, D1 UUID, and obsolete
+  `ADMIN_TOKEN` references even though none remain in the current tree.
+- Re-run secret scanning against the rewritten history and rotate any value that
+  was ever usable as a credential.
 
 ## License
 

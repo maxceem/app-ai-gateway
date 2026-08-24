@@ -29,6 +29,7 @@ export function createOperatorAuth(env: Env, requestUrl: string): CfAuth {
     baseUrl: origin,
     basePath: OPERATOR_AUTH_BASE_PATH,
     trustedOrigins: [origin],
+    disableSignUp: !registrationOpen(env),
     emailAndPassword: { enabled: true },
     organizations: { autoProvisionDefaultOrganization: true },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
@@ -38,6 +39,7 @@ export function createOperatorAuth(env: Env, requestUrl: string): CfAuth {
           google: {
             clientId: env.GOOGLE_CLIENT_ID!,
             clientSecret: env.GOOGLE_CLIENT_SECRET!,
+            disableSignUp: !registrationOpen(env),
           },
         }
       : {}),

@@ -91,14 +91,14 @@ describe("issuer JWT verification", () => {
       ...baseConfig,
       jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
       required_claims: [
-        { path: "iss", contains: "https://securetoken.google.com/calorie-tracker-production" },
-        { path: "aud", contains: "calorie-tracker-production" },
+        { path: "iss", contains: "https://securetoken.google.com/example-production" },
+        { path: "aud", contains: "example-production" },
         { path: "revenueCatEntitlements", contains: "pro" },
       ],
     };
     const valid = await fixture.token({
-      iss: "https://securetoken.google.com/calorie-tracker-production",
-      aud: "calorie-tracker-production",
+      iss: "https://securetoken.google.com/example-production",
+      aud: "example-production",
       sub: "firebase-anonymous-uid",
       auth_time: Math.floor(Date.now() / 1000),
       firebase: { sign_in_provider: "anonymous" },

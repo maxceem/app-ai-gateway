@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { and, eq, gte, lte, sql } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import {
   billingPlanLimits,
   getBillingAccess,
@@ -14,6 +14,10 @@ import {
 } from "../../core/config";
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
+import {
+  insertAppWithinCapacity,
+  upsertAppWithinCapacity,
+} from "../../core/app-writes";
 import { database } from "../../db";
 import {
   apiKeys,
@@ -152,21 +156,24 @@ async function activePlanLimits(c: Context<AppRouteEnv>): Promise<BillingPlanLim
   return billingPlanLimits(access);
 }
 
-async function assertAppCapacity(c: Context<AppRouteEnv>, limits: BillingPlanLimits): Promise<void> {
-  if (limits.maxApps === undefined) return;
-  const organizationId = c.get("admin").organizationId;
-  const row = await database(c.env.DB)
-    .select({ value: sql<number>`count(*)` })
-    .from(apps)
-    .where(eq(apps.organizationId, organizationId))
-    .get();
-  if ((row?.value ?? 0) >= limits.maxApps) {
-    throw new GatewayError(
-      403,
-      "plan_limit_exceeded",
-      `The plan allows at most ${limits.maxApps} application${limits.maxApps === 1 ? "" : "s"}`,
-    );
-  }
+function appCapacityError(maxApps: number): GatewayError {
+  return new GatewayError(
+    403,
+    "plan_limit_exceeded",
+    `The plan allows at most ${maxApps} application${maxApps === 1 ? "" : "s"}`,
+  );
+}
+
+async function organizationAtCapacity(
+  d1: D1Database,
+  organizationId: string,
+  maxApps: number | undefined,
+): Promise<boolean> {
+  if (maxApps === undefined) return false;
+  const row = await d1.prepare(
+    "SELECT COUNT(*) AS count FROM apps WHERE organization_id = ?",
+  ).bind(organizationId).first<{ count: number }>();
+  return (row?.count ?? 0) >= maxApps;
 }
 
 appRoutes.get("/apps", async (c) => {
@@ -268,7 +275,6 @@ appRoutes.get("/apps", async (c) => {
 
 appRoutes.post("/apps", async (c) => {
   const planLimits = await activePlanLimits(c);
-  await assertAppCapacity(c, planLimits);
   const value = await c.req.json();
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
@@ -289,19 +295,20 @@ appRoutes.post("/apps", async (c) => {
   }
 
   const db = database(c.env.DB);
+  const organizationId = c.get("admin").organizationId;
   let appId = requestedId;
   let created = false;
   for (let attempt = 0; attempt < 16; attempt += 1) {
-    const rows = await db.insert(apps).values({
+    created = await insertAppWithinCapacity(c.env.DB, {
       id: appId,
-      organizationId: c.get("admin").organizationId,
+      organizationId,
       name,
       config,
       status: body.status ?? "active",
-    }).onConflictDoNothing({ target: apps.id }).returning({ id: apps.id });
-    if (rows.length > 0) {
-      created = true;
-      break;
+    }, planLimits.maxApps);
+    if (created) break;
+    if (await organizationAtCapacity(c.env.DB, organizationId, planLimits.maxApps)) {
+      throw appCapacityError(planLimits.maxApps!);
     }
     appId = suffixedAppId(requestedId);
   }
@@ -379,7 +386,6 @@ appRoutes.post("/apps/:app/validate", async (c) => {
 
 appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const planLimits = await activePlanLimits(c);
-  if (!c.get("adminApp")) await assertAppCapacity(c, planLimits);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
@@ -393,18 +399,29 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
       throw new GatewayError(400, "invalid_request", "Generate a development credential before enabling development access");
     }
   }
-  const values: typeof apps.$inferInsert = {
+  const organizationId = c.get("admin").organizationId;
+  const values = {
     id: appId,
-    organizationId: c.get("admin").organizationId,
+    organizationId,
     name: body.name,
     config,
     status: body.status ?? "active",
     updatedAt: new Date().toISOString(),
   };
-  await db.insert(apps).values(values).onConflictDoUpdate({
-    target: apps.id,
-    set: { name: values.name, config: values.config, status: values.status, updatedAt: values.updatedAt },
-  });
+  const written = await upsertAppWithinCapacity(c.env.DB, values, planLimits.maxApps);
+  if (!written) {
+    const occupied = await db.query.apps.findFirst({
+      columns: { organizationId: true },
+      where: eq(apps.id, appId),
+    });
+    if (occupied && occupied.organizationId !== organizationId) {
+      throw new GatewayError(404, "app_not_found", "App is not registered");
+    }
+    if (await organizationAtCapacity(c.env.DB, organizationId, planLimits.maxApps)) {
+      throw appCapacityError(planLimits.maxApps!);
+    }
+    throw new GatewayError(409, "invalid_request", "The application changed concurrently; retry the request");
+  }
   if (config.authentication.type !== "apple_app_attest" || !config.authentication.development_access) {
     await db.delete(developmentCredentials).where(eq(developmentCredentials.appId, appId));
   }

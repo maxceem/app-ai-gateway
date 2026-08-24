@@ -6,6 +6,7 @@ import {
 import { GatewayError } from "../core/errors";
 
 export const BILLING_SERVICE_ID = "ai-gateway";
+export const BILLING_ACCESS_CACHE_TTL_MS = 30_000;
 
 export interface BillingPlanLimits {
   maxApps?: number;
@@ -34,6 +35,21 @@ export interface BillingVariables {
 export type BillingBinding = BillingRuntime;
 export interface BillingEnv {
   BILLING?: BillingBinding;
+}
+
+interface BillingAccessCacheEntry {
+  expiresAt: number;
+  value: Promise<GatewayBillingAccess>;
+}
+
+const billingAccessCache = new Map<string, BillingAccessCacheEntry>();
+
+export function invalidateBillingAccess(organizationId: string): void {
+  billingAccessCache.delete(organizationId);
+}
+
+export function clearBillingAccessCache(): void {
+  billingAccessCache.clear();
 }
 
 export function billingBinding(env: BillingEnv): BillingBinding | undefined {
@@ -67,19 +83,33 @@ async function loadBillingAccess(env: BillingEnv, organizationId: string): Promi
 }
 
 /**
- * Reads billing access with an optional request-owned cache. Callers in Hono
- * pass `c.get("billingRequestCache")`; omitting it performs one uncached read.
+ * Reads billing access through a request-owned cache plus a short isolate TTL
+ * cache. Self-hosted environments bypass both maps entirely.
  */
 export function getBillingAccess(
   env: BillingEnv,
   organizationId: string,
   cache?: BillingRequestCache,
 ): Promise<GatewayBillingAccess> {
-  if (!cache) return loadBillingAccess(env, organizationId);
-  const existing = cache.get(organizationId);
-  if (existing) return existing;
+  if (!billingBinding(env)) return Promise.resolve({ status: "active", selfHosted: true });
+
+  const requestValue = cache?.get(organizationId);
+  if (requestValue) return requestValue;
+
+  const now = Date.now();
+  const cached = billingAccessCache.get(organizationId);
+  if (cached && cached.expiresAt > now) {
+    cache?.set(organizationId, cached.value);
+    return cached.value;
+  }
+  if (cached) billingAccessCache.delete(organizationId);
+
   const pending = loadBillingAccess(env, organizationId);
-  cache.set(organizationId, pending);
+  billingAccessCache.set(organizationId, {
+    expiresAt: now + BILLING_ACCESS_CACHE_TTL_MS,
+    value: pending,
+  });
+  cache?.set(organizationId, pending);
   return pending;
 }
 
