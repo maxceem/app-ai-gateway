@@ -47,10 +47,14 @@ async function googleIdToken(email: string, subject: string): Promise<string> {
     .sign(pair.privateKey);
 }
 
-async function googleSignIn(email: string, subject: string): Promise<Response> {
+async function googleSignIn(
+  email: string,
+  subject: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   return worker.request(`${ORIGIN}/v1/auth/sign-in/social`, {
     method: "POST",
-    headers: { "content-type": "application/json", origin: ORIGIN },
+    headers: { "content-type": "application/json", origin: ORIGIN, ...headers },
     body: JSON.stringify({
       provider: "google",
       callbackURL: ORIGIN,
@@ -97,6 +101,30 @@ describe("closed operator registration", () => {
       .first<{ count: number }>();
     expect(user).toBeNull();
     expect(after?.count).toBe(before?.count);
+  });
+
+  it("returns a rejected browser navigation to the console sign-in screen", async () => {
+    const response = await googleSignIn("nav-google-disabled@example.test", "nav-disabled-subject", {
+      "sec-fetch-mode": "navigate",
+      accept: "text/html,application/xhtml+xml",
+    });
+
+    // A top-level navigation cannot render a JSON body, so the operator has to
+    // be handed back to a page that can explain what happened.
+    expect(response.status, await response.clone().text()).toBe(302);
+    expect(response.headers.get("location")).toBe("/login?error=registration_disabled");
+  });
+
+  it("still answers script callers with the machine-readable error", async () => {
+    const response = await googleSignIn("xhr-google-disabled@example.test", "xhr-disabled-subject", {
+      "sec-fetch-mode": "cors",
+      accept: "application/json",
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "registration_disabled" },
+    });
   });
 
   it("accepts the case-insensitive bearer scheme for management keys", async () => {
