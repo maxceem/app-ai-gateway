@@ -109,6 +109,11 @@ export function getBillingAccess(
     expiresAt: now + BILLING_ACCESS_CACHE_TTL_MS,
     value: pending,
   });
+  void pending.then((access) => {
+    if (access.status !== "inactive" || access.reason !== "billing_unavailable") return;
+    const current = billingAccessCache.get(organizationId);
+    if (current?.value === pending) billingAccessCache.delete(organizationId);
+  });
   cache?.set(organizationId, pending);
   return pending;
 }

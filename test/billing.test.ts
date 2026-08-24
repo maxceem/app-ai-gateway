@@ -131,14 +131,25 @@ describe("billing gateway", () => {
   it("uses RPC-safe billing error codes and fails closed", async () => {
     const error = new Error("service unavailable");
     error.name = "BillingHttpError:service_not_found";
-    await expect(getBillingAccess({
-      BILLING: stub({ getTenantAccess: async () => { throw error; } }),
-    }, "org-error")).resolves.toEqual({
+    let calls = 0;
+    const binding = stub({
+      getTenantAccess: async () => {
+        calls += 1;
+        if (calls === 1) throw error;
+        return { status: "active", planKey: "pro" };
+      },
+    });
+    await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
       status: "inactive",
       reason: "billing_unavailable",
       selfHosted: false,
       billingErrorCode: "service_not_found",
     });
+    await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
+      status: "active",
+      planKey: "pro",
+    });
+    expect(calls).toBe(2);
   });
 
   it("validates configured rate, daily, and spending ceilings at the config choke point", () => {
