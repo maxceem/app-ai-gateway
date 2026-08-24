@@ -24,6 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -32,6 +33,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { AppStatusBadge } from "@/components/status-badge";
 import { useAppDraft } from "@/hooks/use-app-draft";
+import { useConsoleSession } from "@/lib/console-session";
+import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useDeleteApp } from "@/lib/queries";
 import { AuthPolicyTab } from "@/pages/tabs/auth-policy";
 import { LimitsTab } from "@/pages/tabs/limits";
@@ -65,6 +68,7 @@ export function AppDetailPage() {
   const navigate = useNavigate();
   const state = useAppDraft(appId);
   const deleteApp = useDeleteApp();
+  const { readOnly } = useConsoleSession();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { query, draft, dirty } = state;
@@ -135,12 +139,26 @@ export function AppDetailPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem onClick={toggleStatus} disabled={!draft}>
+                {/* A tooltip cannot follow the pointer into a menu, so the
+                    restriction is stated as a label above the disabled items. */}
+                {readOnly ? (
+                  <>
+                    <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                      {READ_ONLY_REASON}
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                  </>
+                ) : null}
+                <DropdownMenuItem onClick={toggleStatus} disabled={!draft || readOnly}>
                   <Power className="size-4" />
                   {draft?.status === "active" ? "Disable app" : "Enable app"}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
+                <DropdownMenuItem
+                  variant="destructive"
+                  disabled={readOnly}
+                  onClick={() => setConfirmDelete(true)}
+                >
                   <Trash2 className="size-4" />
                   Delete app
                 </DropdownMenuItem>

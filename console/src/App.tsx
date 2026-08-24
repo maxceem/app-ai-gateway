@@ -13,6 +13,7 @@ import { MembersPage } from "@/pages/members";
 import { ProfilePage } from "@/pages/profile";
 import { SignupPage } from "@/pages/signup";
 import { ConsoleSessionProvider } from "@/lib/console-session";
+import { DEFAULT_LANDING, loginUrlFor, returnPathFrom } from "@/lib/auth-redirect";
 import { useBillingStatus, useCapabilities, useSession } from "@/lib/queries";
 
 function FullPageSpinner() {
@@ -40,7 +41,9 @@ function AuthenticatedConsole() {
   if (session.isPending || capabilities.isPending) return <FullPageSpinner />;
 
   if (session.isError || !session.data) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    // Same query-string contract the global 401 handler uses, so both paths
+    // return the operator to where they were headed.
+    return <Navigate to={loginUrlFor(`${location.pathname}${location.search}`)} replace />;
   }
 
   if (!capabilities.data) {
@@ -64,7 +67,7 @@ function AuthenticatedConsole() {
     >
       <AppShell>
         <Routes>
-          <Route path="/" element={<Navigate to="/apps" replace />} />
+          <Route path="/" element={<Navigate to={DEFAULT_LANDING} replace />} />
           <Route path="/apps" element={<AppsPage />} />
           <Route path="/apps/:appId" element={<Navigate to="overview" replace />} />
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
@@ -74,7 +77,7 @@ function AuthenticatedConsole() {
           {capabilities.data.billing ? (
             <Route path="/billing" element={<BillingPage />} />
           ) : null}
-          <Route path="*" element={<Navigate to="/apps" replace />} />
+          <Route path="*" element={<Navigate to={DEFAULT_LANDING} replace />} />
         </Routes>
       </AppShell>
     </ConsoleSessionProvider>
@@ -84,8 +87,11 @@ function AuthenticatedConsole() {
 /** Sends an already-signed-in operator away from the auth screens. */
 function PublicOnly({ children }: { children: React.ReactNode }) {
   const session = useSession();
+  const location = useLocation();
   if (session.isPending) return <FullPageSpinner />;
-  if (session.isSuccess && session.data) return <Navigate to="/apps" replace />;
+  if (session.isSuccess && session.data) {
+    return <Navigate to={returnPathFrom(location.search)} replace />;
+  }
   return <>{children}</>;
 }
 

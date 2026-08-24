@@ -1,27 +1,34 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { authErrorMessage } from "@/lib/auth-errors";
+import { oauthErrorNotice, returnPathFrom } from "@/lib/auth-redirect";
 import { useCapabilities, useSignIn } from "@/lib/queries";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const capabilities = useCapabilities();
   const signIn = useSignIn();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // A provider redirect reports failure in the query string, not a response body.
+  const oauthError = oauthErrorNotice(location.search);
+  const returnPath = returnPathFrom(location.search);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!email.trim() || !password) return;
     try {
       await signIn.mutateAsync({ email: email.trim(), password });
-      await navigate("/apps", { replace: true });
+      await navigate(returnPath, { replace: true });
     } catch {
       // Rendered inline below; the mutation keeps the error.
     }
@@ -35,6 +42,13 @@ export function LoginPage() {
           <CardDescription>Use your operator account for this gateway.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {oauthError ? (
+            <Alert variant={oauthError.tone} role="alert">
+              <AlertTitle>{oauthError.title}</AlertTitle>
+              <AlertDescription>{oauthError.description}</AlertDescription>
+            </Alert>
+          ) : null}
+
           <form onSubmit={(event) => void submit(event)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -76,7 +90,7 @@ export function LoginPage() {
             </Button>
           </form>
 
-          {capabilities.data?.googleAuth ? <GoogleButton /> : null}
+          {capabilities.data?.googleAuth ? <GoogleButton returnPath={returnPath} /> : null}
 
           {capabilities.data?.registrationOpen ? (
             <p className="text-center text-sm text-muted-foreground">

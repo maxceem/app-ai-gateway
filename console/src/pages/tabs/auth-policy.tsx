@@ -3,6 +3,9 @@ import { Copy, KeyRound, Plus, RefreshCw, Trash2, TriangleAlert } from "lucide-r
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { DisabledReason, GuardedButton } from "@/components/guarded-button";
+import { useConsoleSession } from "@/lib/console-session";
+import { READ_ONLY_REASON } from "@/lib/permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -37,6 +40,7 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
   const createCredential = useCreateDevelopmentCredential(appId);
   const rotateCredential = useRotateDevelopmentCredential(appId);
   const deleteCredential = useDeleteDevelopmentCredential(appId);
+  const { readOnly } = useConsoleSession();
   const [newSecret, setNewSecret] = useState<string | null>(null);
   if (authentication.type === "api_key") {
     return (
@@ -316,13 +320,20 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
             title="Simulator development access"
             description="Lets Simulator clients exchange a valid issuer token plus this app's secret. Identity still comes from the issuer token."
             action={
-              <Switch
-                checked={devAccess}
-                disabled={createCredential.isPending || deleteCredential.isPending || credential.isLoading}
-                onCheckedChange={(checked) => void (checked
-                  ? enableDevelopmentAccess()
-                  : disableDevelopmentAccess())}
-              />
+              readOnly ? (
+                <DisabledReason reason={READ_ONLY_REASON}>
+                  <Switch checked={devAccess} disabled aria-label="Simulator development access" />
+                </DisabledReason>
+              ) : (
+                <Switch
+                  checked={devAccess}
+                  aria-label="Simulator development access"
+                  disabled={createCredential.isPending || deleteCredential.isPending || credential.isLoading}
+                  onCheckedChange={(checked) => void (checked
+                    ? enableDevelopmentAccess()
+                    : disableDevelopmentAccess())}
+                />
+              )
             }
           />
         </CardHeader>
@@ -355,7 +366,7 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
                   {credential.data?.secret_prefix ?? "Credential"}…
                 </p>
               </div>
-              <Button
+              <GuardedButton
                 variant="outline"
                 size="sm"
                 disabled={rotateCredential.isPending}
@@ -363,7 +374,7 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
               >
                 <RefreshCw className="size-3.5" />
                 Rotate
-              </Button>
+              </GuardedButton>
             </div>
             <Alert>
               <TriangleAlert />

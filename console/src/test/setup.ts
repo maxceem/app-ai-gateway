@@ -19,6 +19,12 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
+// Radix Select drives its listbox through the Pointer Capture API, which jsdom
+// does not implement at all.
+Element.prototype.hasPointerCapture ??= () => false;
+Element.prototype.setPointerCapture ??= () => {};
+Element.prototype.releasePointerCapture ??= () => {};
+
 // Radix's positioning primitives (tooltip, select, dropdown) measure with these.
 if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = class {

@@ -2,22 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { LoginPage } from "./login";
-import { renderPublic } from "@/test/render";
-
-const CAPABILITIES = "/v1/console/capabilities";
-
-/** Routes fetches by URL so a test only states the responses it cares about. */
-function stubApi(routes: Record<string, { status?: number; body: unknown }>) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const match = Object.keys(routes).find((key) => url.startsWith(key));
-    if (!match) return new Response("{}", { status: 404 });
-    const route = routes[match]!;
-    return new Response(JSON.stringify(route.body), { status: route.status ?? 200 });
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
+import { CAPABILITIES_URL, capabilities, renderPublic, stubApi } from "@/test/render";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -26,7 +11,7 @@ afterEach(() => {
 describe("LoginPage", () => {
   it("signs in with email and password", async () => {
     const fetchMock = stubApi({
-      [CAPABILITIES]: { body: { billing: false, registrationOpen: true, googleAuth: false } },
+      [CAPABILITIES_URL]: capabilities(),
       "/v1/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
     });
 
@@ -48,7 +33,7 @@ describe("LoginPage", () => {
 
   it("shows a readable message when the credentials are wrong", async () => {
     stubApi({
-      [CAPABILITIES]: { body: { billing: false, registrationOpen: true, googleAuth: false } },
+      [CAPABILITIES_URL]: capabilities(),
       "/v1/auth/sign-in/email": {
         status: 401,
         body: { code: "INVALID_EMAIL_OR_PASSWORD", message: "Invalid email or password" },
@@ -67,7 +52,7 @@ describe("LoginPage", () => {
 
   it("hides the Google button unless the deployment enables it", async () => {
     stubApi({
-      [CAPABILITIES]: { body: { billing: false, registrationOpen: true, googleAuth: false } },
+      [CAPABILITIES_URL]: capabilities(),
     });
 
     renderPublic(<LoginPage />, { route: "/login" });
@@ -78,7 +63,7 @@ describe("LoginPage", () => {
 
   it("offers Google sign-in when the capability is present", async () => {
     stubApi({
-      [CAPABILITIES]: { body: { billing: false, registrationOpen: true, googleAuth: true } },
+      [CAPABILITIES_URL]: capabilities({ googleAuth: true }),
     });
 
     renderPublic(<LoginPage />, { route: "/login" });
@@ -88,7 +73,7 @@ describe("LoginPage", () => {
 
   it("hides the sign-up link when registration is closed", async () => {
     stubApi({
-      [CAPABILITIES]: { body: { billing: false, registrationOpen: false, googleAuth: false } },
+      [CAPABILITIES_URL]: capabilities({ registrationOpen: false }),
     });
 
     renderPublic(<LoginPage />, { route: "/login" });
@@ -99,11 +84,78 @@ describe("LoginPage", () => {
 
   it("links to sign-up when registration is open", async () => {
     stubApi({
-      [CAPABILITIES]: { body: { billing: false, registrationOpen: true, googleAuth: false } },
+      [CAPABILITIES_URL]: capabilities(),
     });
 
     renderPublic(<LoginPage />, { route: "/login" });
 
     expect(await screen.findByRole("link", { name: /create one/i })).toBeTruthy();
+  });
+});
+
+describe("LoginPage OAuth failures", () => {
+  it("explains a cancelled Google consent instead of showing a bare form", async () => {
+    stubApi({ [CAPABILITIES_URL]: capabilities({ googleAuth: true }) });
+
+    renderPublic(<LoginPage />, { route: "/login?error=access_denied" });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/google sign-in was cancelled/i);
+  });
+
+  it("explains a Google account rejected by closed registration", async () => {
+    stubApi({ [CAPABILITIES_URL]: capabilities({ googleAuth: true }) });
+
+    renderPublic(<LoginPage />, { route: "/login?error=registration_disabled" });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/does not accept new accounts/i);
+  });
+
+  it("shows nothing extra on an ordinary sign-in visit", async () => {
+    stubApi({ [CAPABILITIES_URL]: capabilities() });
+
+    renderPublic(<LoginPage />, { route: "/login" });
+
+    await screen.findByRole("button", { name: /sign in/i });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("LoginPage deep links", () => {
+  it("returns the operator to the page they were sent away from", async () => {
+    stubApi({
+      [CAPABILITIES_URL]: capabilities(),
+      "/v1/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
+      "/v1/admin/session": { body: { session: {} } },
+    });
+
+    const { router } = renderPublic(<LoginPage />, {
+      route: "/login?from=%2Fapps%2Fmy-app%2Fusage",
+    });
+
+    await userEvent.type(screen.getByLabelText(/email/i), "ada@example.test");
+    await userEvent.type(screen.getByLabelText(/password/i), "correct-horse-42");
+    await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(router.location.pathname).toBe("/apps/my-app/usage");
+    });
+  });
+
+  it("lands on the console default when there is nothing to return to", async () => {
+    stubApi({
+      [CAPABILITIES_URL]: capabilities(),
+      "/v1/auth/sign-in/email": { body: { redirect: false, token: "t", user: {} } },
+      "/v1/admin/session": { body: { session: {} } },
+    });
+
+    const { router } = renderPublic(<LoginPage />, { route: "/login" });
+
+    await userEvent.type(screen.getByLabelText(/email/i), "ada@example.test");
+    await userEvent.type(screen.getByLabelText(/password/i), "correct-horse-42");
+    await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => expect(router.location.pathname).toBe("/apps"));
   });
 });

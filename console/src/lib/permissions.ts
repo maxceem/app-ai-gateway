@@ -60,7 +60,14 @@ export function canChangeRole(input: {
   return { allowed: true };
 }
 
-/** Whether `actorRole` may remove a member holding `targetRole`. */
+/**
+ * Whether `actorRole` may remove the member holding `targetRole`.
+ *
+ * Mirrors cf-auth's `removeOrganizationMember`, which gates on manager rights,
+ * owner-acts-on-owner, and the last-owner guard — and imposes no special rule
+ * for removing yourself. Self-removal is therefore allowed on the same terms as
+ * removing anyone else; the UI presents it as leaving rather than removing.
+ */
 export function canRemoveMember(input: {
   actorRole: OrganizationRole;
   targetRole: OrganizationRole;
@@ -69,13 +76,25 @@ export function canRemoveMember(input: {
 }): RoleChangeCheck {
   const { actorRole, targetRole, ownerCount, isSelf } = input;
 
-  if (!canManage(actorRole)) return { allowed: false, reason: READ_ONLY_REASON };
-  if (isSelf) return { allowed: false, reason: "You cannot remove yourself from the organization." };
+  if (!canManage(actorRole)) {
+    // A plain member fails cf-auth's `requireManager`, so they cannot even leave.
+    return {
+      allowed: false,
+      reason: isSelf
+        ? "Only owners and admins can leave on their own. Ask one of them to remove you."
+        : READ_ONLY_REASON,
+    };
+  }
   if (targetRole === "owner" && !canActOnOwners(actorRole)) {
     return { allowed: false, reason: "Only an owner can remove another owner." };
   }
   if (targetRole === "owner" && ownerCount <= 1) {
-    return { allowed: false, reason: "An organization must keep at least one owner." };
+    return {
+      allowed: false,
+      reason: isSelf
+        ? "You are the last owner. Promote another owner before leaving."
+        : "An organization must keep at least one owner.",
+    };
   }
 
   return { allowed: true };

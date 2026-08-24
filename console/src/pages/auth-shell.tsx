@@ -22,14 +22,20 @@ export function AuthLayout({ children }: { children: ReactNode }) {
 }
 
 /** Rendered only when the deployment reports the `googleAuth` capability. */
-export function GoogleButton({ label = "Continue with Google" }: { label?: string }) {
+export function GoogleButton({
+  label = "Continue with Google",
+  returnPath,
+}: {
+  label?: string;
+  returnPath?: string;
+}) {
   const [pending, setPending] = useState(false);
 
   const start = async () => {
     setPending(true);
     try {
       // Navigates away on success, so `pending` intentionally stays true.
-      await startGoogleSignIn();
+      await startGoogleSignIn(returnPath);
     } catch (error) {
       setPending(false);
       toast.error(authErrorMessage(error, "Could not start Google sign-in"));

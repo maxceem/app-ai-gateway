@@ -20,7 +20,16 @@ export function DisabledReason({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span tabIndex={0} className="inline-flex w-fit cursor-not-allowed">
+        {/* The wrapper is the only focusable element here — the control it
+            wraps is disabled — so it carries the explanation for screen
+            readers rather than being an unlabelled tab stop. */}
+        <span
+          tabIndex={0}
+          role="button"
+          aria-disabled="true"
+          aria-label={typeof reason === "string" ? reason : undefined}
+          className="inline-flex w-fit cursor-not-allowed"
+        >
           {children}
         </span>
       </TooltipTrigger>

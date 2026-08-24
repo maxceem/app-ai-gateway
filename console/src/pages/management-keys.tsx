@@ -71,7 +71,17 @@ export function ManagementKeysPage() {
         </div>
       </div>
 
-      {created ? <OneTimeKey created={created} onDismiss={() => setCreated(null)} /> : null}
+      {created ? (
+        <OneTimeKey
+          created={created}
+          onDismiss={() => {
+            setCreated(null);
+            // The plaintext also sits in the mutation's cached result; drop it
+            // so the only copy of a live credential is the operator's.
+            createKey.reset();
+          }}
+        />
+      ) : null}
 
       {list.isError ? (
         <Alert variant="destructive">

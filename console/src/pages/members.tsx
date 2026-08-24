@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -30,15 +31,22 @@ import {
   canRemoveMember,
   ROLE_LABELS,
 } from "@/lib/permissions";
-import { useMembers, useRemoveMember, useUpdateMemberRole } from "@/lib/queries";
+import {
+  useLeaveOrganization,
+  useMembers,
+  useRemoveMember,
+  useUpdateMemberRole,
+} from "@/lib/queries";
 import type { OrganizationMember, OrganizationRole } from "@/lib/types";
 
 export function MembersPage() {
   const { organization, role: actorRole, session, canManage } = useConsoleSession();
   // Listing members requires owner/admin on the server; do not even ask as a member.
   const list = useMembers(canManage);
+  const navigate = useNavigate();
   const updateRole = useUpdateMemberRole();
   const removeMember = useRemoveMember();
+  const leaveOrganization = useLeaveOrganization();
   const [pendingRemoval, setPendingRemoval] = useState<OrganizationMember | null>(null);
 
   const members = list.data?.members ?? [];
@@ -53,9 +61,20 @@ export function MembersPage() {
     }
   };
 
+  const leavingSelf = pendingRemoval?.id === session.user?.id;
+
   const remove = async () => {
     if (!pendingRemoval) return;
     try {
+      if (leavingSelf) {
+        // Leaving rescopes the session to another organization, or to a freshly
+        // provisioned one, so the whole cache goes rather than just the list.
+        await leaveOrganization.mutateAsync(pendingRemoval.id);
+        toast.success(`You left ${organization?.name ?? "the organization"}`);
+        setPendingRemoval(null);
+        await navigate("/apps", { replace: true });
+        return;
+      }
       await removeMember.mutateAsync(pendingRemoval.id);
       toast.success(`${pendingRemoval.email} removed`);
       setPendingRemoval(null);
@@ -158,7 +177,11 @@ export function MembersPage() {
                             member={member}
                             actorRole={actorRole}
                             ownerCount={ownerCount}
-                            pending={updateRole.isPending}
+                            // Scoped to the row being changed, so one in-flight
+                            // update does not freeze every other row's picker.
+                            pending={
+                              updateRole.isPending && updateRole.variables?.userId === member.id
+                            }
                             onChange={(next) => void changeRole(member, next)}
                           />
                         </TableCell>
@@ -169,7 +192,7 @@ export function MembersPage() {
                             reason={removal.allowed ? undefined : removal.reason}
                             onClick={() => setPendingRemoval(member)}
                           >
-                            Remove
+                            {isSelf ? "Leave" : "Remove"}
                           </GuardedButton>
                         </TableCell>
                       </TableRow>
@@ -192,16 +215,24 @@ export function MembersPage() {
         onOpenChange={(open) => {
           if (!open) setPendingRemoval(null);
         }}
-        title="Remove member"
+        title={leavingSelf ? "Leave organization" : "Remove member"}
         description={
-          <p>
-            <span className="font-medium text-foreground">{pendingRemoval?.email}</span> will lose
-            access to this organization and everything in it.
-          </p>
+          leavingSelf ? (
+            <p>
+              You will lose access to{" "}
+              <span className="font-medium text-foreground">{organization?.name}</span> and
+              everything in it. Another owner or admin would have to add you back.
+            </p>
+          ) : (
+            <p>
+              <span className="font-medium text-foreground">{pendingRemoval?.email}</span> will lose
+              access to this organization and everything in it.
+            </p>
+          )
         }
-        confirmLabel="Remove member"
+        confirmLabel={leavingSelf ? "Leave organization" : "Remove member"}
         destructive
-        pending={removeMember.isPending}
+        pending={removeMember.isPending || leaveOrganization.isPending}
         onConfirm={() => void remove()}
       />
     </div>

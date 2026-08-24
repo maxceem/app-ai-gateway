@@ -84,14 +84,41 @@ describe("canRemoveMember", () => {
     expect(canRemoveMember(base).allowed).toBe(true);
   });
 
-  it("refuses self-removal", () => {
-    const result = canRemoveMember({ ...base, isSelf: true });
+  it("allows leaving on the same terms as removing anyone else", () => {
+    // cf-auth's removeOrganizationMember imposes no special self rule.
+    expect(canRemoveMember({ ...base, isSelf: true }).allowed).toBe(true);
+    expect(
+      canRemoveMember({ ...base, actorRole: "admin", targetRole: "admin", isSelf: true }).allowed,
+    ).toBe(true);
+  });
+
+  it("stops the last owner leaving and says how to unblock it", () => {
+    const result = canRemoveMember({
+      actorRole: "owner",
+      targetRole: "owner",
+      ownerCount: 1,
+      isSelf: true,
+    });
     expect(result.allowed).toBe(false);
-    expect(result.reason).toMatch(/yourself/i);
+    expect(result.reason).toMatch(/promote another owner/i);
+  });
+
+  it("lets an owner leave once another owner remains", () => {
+    expect(
+      canRemoveMember({ actorRole: "owner", targetRole: "owner", ownerCount: 2, isSelf: true })
+        .allowed,
+    ).toBe(true);
   });
 
   it("refuses removal by a read-only member", () => {
     expect(canRemoveMember({ ...base, actorRole: "member" }).allowed).toBe(false);
+  });
+
+  it("tells a member they cannot even leave by themselves", () => {
+    // A member fails cf-auth's requireManager, so self-removal is not theirs.
+    const result = canRemoveMember({ ...base, actorRole: "member", isSelf: true });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toMatch(/ask one of them to remove you/i);
   });
 
   it("stops an admin removing an owner", () => {

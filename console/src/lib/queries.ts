@@ -166,6 +166,19 @@ export function useRemoveMember() {
   });
 }
 
+/**
+ * Self-removal. Leaving changes which organization the operator acts in — and
+ * may leave them with none, in which case the gateway provisions a fresh
+ * default — so every organization-scoped cache is dropped.
+ */
+export function useLeaveOrganization() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.delete(`/v1/admin/members/${encodeURIComponent(userId)}`),
+    onSuccess: () => client.clear(),
+  });
+}
+
 export function useManagementKeys() {
   return useQuery({
     queryKey: keys.managementKeys,
@@ -190,13 +203,22 @@ export function useRevokeManagementKey() {
   });
 }
 
-/** Billing hooks stay disabled unless the deployment reports the capability. */
+/**
+ * Billing hooks stay disabled unless the deployment reports the capability.
+ *
+ * A subscription can lapse while the console is open — a card expires, a trial
+ * ends — and the data plane starts answering 402. Polling and refetching on
+ * focus keep the banner honest without waiting for a reload; the query client
+ * additionally refreshes this on any 402.
+ */
 export function useBillingStatus(enabled: boolean) {
   return useQuery({
     queryKey: keys.billingStatus,
     queryFn: () => api.get<BillingStatusResponse>("/v1/admin/billing/status"),
     enabled,
     staleTime: 30_000,
+    refetchInterval: enabled ? 5 * 60_000 : false,
+    refetchOnWindowFocus: true,
   });
 }
 
