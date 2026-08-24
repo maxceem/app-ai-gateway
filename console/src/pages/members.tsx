@@ -48,16 +48,26 @@ export function MembersPage() {
   const removeMember = useRemoveMember();
   const leaveOrganization = useLeaveOrganization();
   const [pendingRemoval, setPendingRemoval] = useState<OrganizationMember | null>(null);
+  // Per-row, not per-mutation: two concurrent role changes share one mutation
+  // object, so its `variables` only ever describe the most recent call.
+  const [rolesInFlight, setRolesInFlight] = useState<ReadonlySet<string>>(new Set());
 
   const members = list.data?.members ?? [];
   const ownerCount = members.filter((member) => member.role === "owner").length;
 
   const changeRole = async (member: OrganizationMember, nextRole: OrganizationRole) => {
+    setRolesInFlight((current) => new Set(current).add(member.id));
     try {
       await updateRole.mutateAsync({ userId: member.id, role: nextRole });
       toast.success(`${member.email} is now ${ROLE_LABELS[nextRole].toLowerCase()}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not change the role");
+    } finally {
+      setRolesInFlight((current) => {
+        const next = new Set(current);
+        next.delete(member.id);
+        return next;
+      });
     }
   };
 
@@ -177,11 +187,7 @@ export function MembersPage() {
                             member={member}
                             actorRole={actorRole}
                             ownerCount={ownerCount}
-                            // Scoped to the row being changed, so one in-flight
-                            // update does not freeze every other row's picker.
-                            pending={
-                              updateRole.isPending && updateRole.variables?.userId === member.id
-                            }
+                            pending={rolesInFlight.has(member.id)}
                             onChange={(next) => void changeRole(member, next)}
                           />
                         </TableCell>

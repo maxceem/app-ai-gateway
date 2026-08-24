@@ -190,6 +190,9 @@ export function useCreateManagementKey() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (name: string) => api.post<{ key: CreatedManagementKey }>("/v1/admin/keys", { name }),
+    // The result holds the only copy of a live credential. Without this the
+    // cached mutation outlives `reset()` and keeps the plaintext in memory.
+    gcTime: 0,
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
   });
 }

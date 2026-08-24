@@ -61,9 +61,14 @@ describe("MembersPage last-owner protection", () => {
     renderAuthenticated(<MembersPage />);
 
     const row = await rowFor("ada@example.test");
-    expect(within(row).getByRole("button", { name: /^leave$/i })).toHaveProperty("disabled", true);
-    // The guard wrapper carries the explanation as its accessible name.
-    expect(within(row).getByRole("button", { name: /last owner/i })).toBeTruthy();
+    const leave = within(row).getByRole("button", { name: /^leave$/i });
+    expect(leave).toHaveProperty("disabled", true);
+    expect(leave.getAttribute("aria-disabled")).toBe("true");
+
+    // The action keeps its own name; the reason is a description alongside it.
+    const describedBy = leave.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/last owner/i);
   });
 
   it("lets an owner leave once another owner exists", async () => {
@@ -111,6 +116,38 @@ describe("MembersPage role changes", () => {
 
     expect(await screen.findByRole("option", { name: /owner/i }))
       .toHaveProperty("ariaDisabled", "true");
+  });
+
+  it("freezes only the row being changed while the change is in flight", async () => {
+    let release: (value: Response) => void = () => {};
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return new Response(
+          JSON.stringify({ members: [SELF_OWNER, member(), member({ id: "user-3", email: "hopper@example.test" })] }),
+          { status: 200 },
+        );
+      }
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAuthenticated(<MembersPage />);
+
+    const graceRow = await rowFor("grace@example.test");
+    await userEvent.click(within(graceRow).getByRole("combobox"));
+    await userEvent.click(await screen.findByRole("option", { name: /admin/i }));
+
+    // The other rows stay usable while Grace's change is outstanding.
+    await waitFor(() =>
+      expect(within(graceRow).getByRole("combobox")).toHaveProperty("disabled", true));
+    const hopperRow = await rowFor("hopper@example.test");
+    expect(within(hopperRow).getByRole("combobox")).toHaveProperty("disabled", false);
+
+    release(new Response(JSON.stringify({ member: {} }), { status: 200 }));
+    await waitFor(() =>
+      expect(within(graceRow).getByRole("combobox")).toHaveProperty("disabled", false));
   });
 
   it("changes a role and reports it", async () => {

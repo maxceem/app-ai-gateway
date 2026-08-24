@@ -40,16 +40,40 @@ describe("GuardedButton", () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
-  it("explains the restriction on focus", async () => {
+  it("keeps the action's own name and describes the restriction separately", () => {
     renderAuthenticated(<GuardedButton>Create app</GuardedButton>, {
       session: { role: "member" },
     });
 
-    await userEvent.tab();
-    expect(await screen.findByText(/read-only/i)).toBeTruthy();
+    // Naming the button after the reason would lose what the action even is.
+    const button = screen.getByRole("button", { name: /create app/i });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/read-only/i);
   });
 
-  it("prefers an explicit reason over the default read-only copy", async () => {
+  it("does not nest an interactive role inside the action", () => {
+    renderAuthenticated(<GuardedButton>Create app</GuardedButton>, {
+      session: { role: "member" },
+    });
+
+    // The focusable wrapper exists for the tooltip only; a role here would be
+    // a nested-interactive violation.
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("shows the reason on hover", async () => {
+    renderAuthenticated(<GuardedButton>Create app</GuardedButton>, {
+      session: { role: "member" },
+    });
+
+    await userEvent.hover(screen.getByRole("button", { name: /create app/i }).parentElement!);
+    expect((await screen.findAllByText(/read-only/i)).length).toBeGreaterThan(0);
+  });
+
+  it("prefers an explicit reason over the default read-only copy", () => {
     renderAuthenticated(
       <GuardedButton reason="An organization must keep at least one owner.">Remove</GuardedButton>,
       { session: { role: "owner" } },
@@ -57,8 +81,7 @@ describe("GuardedButton", () => {
 
     const button = screen.getByRole("button", { name: /remove/i });
     expect(button).toHaveProperty("disabled", true);
-
-    await userEvent.tab();
-    expect(await screen.findByText(/at least one owner/i)).toBeTruthy();
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/at least one owner/i);
   });
 });

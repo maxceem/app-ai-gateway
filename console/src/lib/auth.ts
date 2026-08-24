@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { DEFAULT_LANDING, LOGIN_PATH } from "./auth-redirect";
+import { DEFAULT_LANDING, isSafeReturnPath, loginUrlFor } from "./auth-redirect";
 
 /**
  * Better Auth's HTTP surface, mounted by the Worker at `/v1/auth`.
@@ -43,13 +43,23 @@ export function changePassword(input: {
  * Starts the Google flow. Better Auth answers with the provider URL instead of
  * redirecting, so the console performs the top-level navigation itself.
  *
- * Failures come back as a top-level navigation to `errorCallbackURL`, which is
- * why the sign-in screen reads `?error=` from its own query string.
+ * Both outcomes are top-level navigations, so the destination the operator was
+ * originally headed for has to survive in the URLs handed to the provider:
+ * success returns there directly, and failure returns to sign-in still carrying
+ * it, alongside the `?error=` the sign-in screen renders.
+ *
+ * `returnPath` reaches here from the query string, so it is sanitized rather
+ * than trusted.
  */
-export async function startGoogleSignIn(callbackURL = DEFAULT_LANDING): Promise<void> {
+export async function startGoogleSignIn(returnPath?: string): Promise<void> {
+  const destination = isSafeReturnPath(returnPath) ? returnPath : DEFAULT_LANDING;
   const result = await api.post<{ url?: string; redirect?: boolean }>(
     `${AUTH_BASE}/sign-in/social`,
-    { provider: "google", callbackURL, errorCallbackURL: LOGIN_PATH },
+    {
+      provider: "google",
+      callbackURL: destination,
+      errorCallbackURL: loginUrlFor(destination),
+    },
   );
   if (!result?.url) throw new Error("Google sign-in is unavailable right now.");
   window.location.assign(result.url);

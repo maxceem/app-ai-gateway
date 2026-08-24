@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import { useId, type ComponentProps, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConsoleSession } from "@/lib/console-session";
@@ -7,30 +7,34 @@ import { READ_ONLY_REASON } from "@/lib/permissions";
 /**
  * Explains why an action is unavailable instead of hiding it.
  *
- * A disabled button sets `pointer-events: none`, which would swallow the hover
- * that opens the tooltip, so the trigger is a focusable wrapper around it.
+ * A disabled control sets `pointer-events: none`, which would swallow the hover
+ * that opens the tooltip, so the trigger is a focusable wrapper around it. The
+ * wrapper deliberately has no role: giving it one would nest an interactive
+ * element inside another and replace the action's own name with the reason.
+ *
+ * Pass `reasonId` to render the reason as a description the wrapped control can
+ * point at with `aria-describedby`, so assistive tech announces the action and
+ * then why it is unavailable.
  */
 export function DisabledReason({
   reason,
+  reasonId,
   children,
 }: {
   reason: ReactNode;
+  reasonId?: string;
   children: ReactNode;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        {/* The wrapper is the only focusable element here — the control it
-            wraps is disabled — so it carries the explanation for screen
-            readers rather than being an unlabelled tab stop. */}
-        <span
-          tabIndex={0}
-          role="button"
-          aria-disabled="true"
-          aria-label={typeof reason === "string" ? reason : undefined}
-          className="inline-flex w-fit cursor-not-allowed"
-        >
+        <span tabIndex={0} className="inline-flex w-fit cursor-not-allowed">
           {children}
+          {reasonId ? (
+            <span id={reasonId} className="sr-only">
+              {reason}
+            </span>
+          ) : null}
         </span>
       </TooltipTrigger>
       <TooltipContent>{reason}</TooltipContent>
@@ -52,13 +56,14 @@ export function GuardedButton({
   ...props
 }: ComponentProps<typeof Button> & { reason?: string }) {
   const { readOnly } = useConsoleSession();
+  const reasonId = useId();
   const blockedReason = reason ?? (readOnly ? READ_ONLY_REASON : undefined);
 
   if (!blockedReason) return <Button disabled={disabled} {...props} />;
 
   return (
-    <DisabledReason reason={blockedReason}>
-      <Button {...props} disabled />
+    <DisabledReason reason={blockedReason} reasonId={reasonId}>
+      <Button {...props} disabled aria-disabled="true" aria-describedby={reasonId} />
     </DisabledReason>
   );
 }
