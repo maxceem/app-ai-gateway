@@ -3,7 +3,10 @@
 // so they are added to the generated Env through declaration merging.
 interface Env {
   JWT_SECRET: string;
-  ADMIN_TOKEN: string;
+  BETTER_AUTH_SECRET: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  ALLOW_PUBLIC_REGISTRATION?: string;
   CF_AIG_GATEWAY_ID: string;
   CF_AIG_TOKEN: string;
 }
@@ -11,7 +14,10 @@ interface Env {
 declare namespace Cloudflare {
   interface Env {
     JWT_SECRET: string;
-    ADMIN_TOKEN: string;
+    BETTER_AUTH_SECRET: string;
+    GOOGLE_CLIENT_ID?: string;
+    GOOGLE_CLIENT_SECRET?: string;
+    ALLOW_PUBLIC_REGISTRATION?: string;
     CF_AIG_GATEWAY_ID: string;
     CF_AIG_TOKEN: string;
   }

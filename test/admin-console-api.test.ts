@@ -8,7 +8,7 @@ import {
 } from "./helpers";
 
 const ORIGIN = "https://example.test";
-const AUTH = { authorization: "Bearer test-admin-secret" };
+const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
 const JSON_AUTH = { ...AUTH, "content-type": "application/json" };
 
 async function get(path: string) {
@@ -217,8 +217,8 @@ describe("admin console API", () => {
 
   it("returns a readable row plus the error when a stored config is invalid", async () => {
     await env.DB.prepare(
-      `INSERT INTO apps(id, name, config_json, status)
-       VALUES (?, ?, ?, 'active')`,
+      `INSERT INTO apps(id, organization_id, name, config_json, status)
+       VALUES (?, 'operator-test-organization', ?, ?, 'active')`,
     )
       .bind("broken-config", "Broken", JSON.stringify({ authentication: {}, routing: {}, limits: {} }))
       .run();

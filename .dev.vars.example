@@ -2,7 +2,9 @@
 # Create the AI Gateway before deployment. Never commit real values.
 CF_AIG_GATEWAY_ID=
 CF_AIG_TOKEN=
-ADMIN_TOKEN=
 
-# JWT_SECRET is generated during the first deployment.
+# JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
 # For local development, run `pnpm run secrets:setup-local` to generate it.
+ALLOW_PUBLIC_REGISTRATION=true
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=

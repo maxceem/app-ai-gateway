@@ -7,7 +7,7 @@ import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { limiterGate } from "./middleware/gate";
 import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
-import { consoleRoutes } from "./routes/console";
+import { operatorAuthRoutes } from "./routes/operator-auth";
 import {
   endpointPrepare,
   endpointRoutes,
@@ -25,9 +25,7 @@ const app = new Hono<{
 
 app.get("/v1/healthz", (c) => c.json({ ok: true, service: "ai-gateway" }));
 
-// Console session exchange sits outside /v1/admin: it authenticates with the raw
-// admin token in the body and issues the cookie the admin routes then accept.
-app.route("/v1/console", consoleRoutes);
+app.route("/v1/auth", operatorAuthRoutes);
 
 app.route("/v1/apps/:app/auth", authRoutes);
 

@@ -29,7 +29,7 @@
     "db:seed:local": "wrangler d1 execute DB --local --env local --file seeds/dev-app.sql",
     "secrets:upload": "wrangler secret bulk .dev.vars --env=\"\"",
     "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
-    "admin-token:rotate": "wrangler secret put ADMIN_TOKEN",
+    "recover-access": "node scripts/recover-access.mjs",
     "tenants:register": "./scripts/register-calorie-tracker-tenants.sh",
     "deploy:dry-run": "pnpm run console:build && wrangler deploy --dry-run --env=\"\"",
     "startup:check": "wrangler check startup --env=\"\"",
@@ -39,14 +39,17 @@
     "pretest": "pnpm run console:ensure"
   },
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.9",
     "@hono/zod-openapi": "^1.5.1",
+    "@maxceem/cf-auth": "file:../../maxceem/packages/cf-auth",
     "asn1js": "^3.0.7",
+    "better-auth": "1.6.9",
     "cbor-x": "^1.6.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.9.0",
     "jose": "^6.0.0",
-    "zod": "^4.0.0",
-    "pkijs": "^3.3.3"
+    "pkijs": "^3.3.3",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.7",
@@ -67,9 +70,6 @@
       },
       "CF_AIG_TOKEN": {
         "description": "After creating the gateway, open its Settings and select **Create authentication token**. Save the one-time token and paste it here; it includes the required AI Gateway Run permission."
-      },
-      "ADMIN_TOKEN": {
-        "description": "Create a strong random token for the console admin access. Generate one with a password manager or run `openssl rand -base64 32`, save it, then paste it here."
       }
     }
   }

@@ -9,7 +9,10 @@ describe("initial database migration", () => {
       notnull: number;
       dflt_value: string | null;
     }>();
-    const appColumns = await env.DB.prepare("PRAGMA table_info(apps)").all<{ name: string }>();
+    const appColumns = await env.DB.prepare("PRAGMA table_info(apps)").all<{
+      name: string;
+      notnull: number;
+    }>();
     const apiKeyColumns = await env.DB.prepare("PRAGMA table_info(api_keys)").all<{ name: string }>();
     const developmentCredentialColumns = await env.DB
       .prepare("PRAGMA table_info(development_credentials)")
@@ -32,6 +35,20 @@ describe("initial database migration", () => {
       "status",
       "created_at",
       "updated_at",
+      "organization_id",
+    ]);
+    expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(0);
+    const operatorTables = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'operator_%' ORDER BY name",
+    ).all<{ name: string }>();
+    expect(operatorTables.results.map((row) => row.name)).toEqual([
+      "operator_account",
+      "operator_api_key",
+      "operator_organization",
+      "operator_organization_user",
+      "operator_session",
+      "operator_user",
+      "operator_verification",
     ]);
     expect(apiKeyColumns.results.map((column) => column.name)).toEqual([
       "id",

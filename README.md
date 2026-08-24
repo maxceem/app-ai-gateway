@@ -20,9 +20,10 @@ console, and future deployments. It requires:
 | --- | --- |
 | `CF_AIG_GATEWAY_ID` | [Create or select an AI Gateway](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fai-gateway), then copy its exact **Gateway ID** (slug). Deployment does not create one. |
 | `CF_AIG_TOKEN` | In that gateway, open **Settings → Create authentication token**. Save the one-time token; it includes **AI Gateway Run** permission. |
-| `ADMIN_TOKEN` | Create and save a strong random token with a password manager or `openssl rand -base64 32`. This is your admin-console password. |
-
-`JWT_SECRET` is generated automatically. Add model-provider credentials in the
+`JWT_SECRET` and `BETTER_AUTH_SECRET` are generated automatically. After the
+first deployment, create the initial operator account at `/v1/auth/sign-up/email`.
+Set `ALLOW_PUBLIC_REGISTRATION=false` after bootstrapping a private deployment.
+Add model-provider credentials in the
 AI Gateway **Provider Keys** page using the alias `default`; never put provider
 keys in this repository or Worker variables.
 
@@ -30,7 +31,7 @@ For a manual deployment:
 
 ```sh
 pnpm install
-cp .dev.vars.example .dev.vars # fill in the three variables above
+cp .dev.vars.example .dev.vars # fill in the two variables above
 pnpm run secrets:upload
 pnpm run deploy
 ```
@@ -60,6 +61,30 @@ curl http://localhost:8787/v1/healthz
 Run the full verification suite with `pnpm run check`. Configuration, client
 integration, authentication, and API details are covered in the
 [documentation](https://docs.appaigateway.com/docs/).
+
+### Local cf-auth dependency
+
+Until `@maxceem/cf-auth` is published, this checkout uses the lockfile-recorded
+`file:../../maxceem/packages/cf-auth` dependency. Keep the gateway and `maxceem`
+repositories in that relative layout and run `pnpm --dir ../../maxceem/packages/cf-auth build`
+before installing or bundling the gateway. A `file:` dependency is used instead
+of an unrecorded global pnpm link so installs and Wrangler resolution are repeatable.
+
+### Break-glass operator recovery
+
+Self-hosters can reset an operator password or promote an existing member to
+owner with `scripts/recover-access.mjs`. The command refuses to choose a D1
+target implicitly:
+
+```sh
+pnpm recover-access -- --email owner@example.com --password-stdin --remote < /secure/password-file
+pnpm recover-access -- --email owner@example.com --promote-owner \
+  --organization-id <organization-id> --remote
+```
+
+Add `--env production` when applicable. This invokes `wrangler d1 execute` and
+does not print the password or hash. Prefer `--local` while validating a recovery
+procedure; remote execution is an explicit owner-operated step.
 
 ## License
 

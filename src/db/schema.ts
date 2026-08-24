@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { createCfAuthTables } from "@maxceem/cf-auth/schema";
 import {
   check,
   index,
@@ -23,10 +24,23 @@ export type UsageStatus =
   | "blocked_budget"
   | "blocked_user";
 
+/** Operator-plane auth tables are namespaced away from end-user gateway data. */
+export const operatorAuthTables = createCfAuthTables({ tablePrefix: "operator_" });
+export const {
+  user: operatorUser,
+  session: operatorSession,
+  account: operatorAccount,
+  verification: operatorVerification,
+  organization: operatorOrganization,
+  organizationUser: operatorOrganizationUser,
+  apiKey: operatorApiKey,
+} = operatorAuthTables;
+
 export const apps = sqliteTable(
   "apps",
   {
     id: text("id").primaryKey(),
+    organizationId: text("organization_id").references(() => operatorOrganization.id),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" })
       .$type<StoredAppConfig>()
@@ -36,6 +50,7 @@ export const apps = sqliteTable(
     updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
   },
   (table) => [
+    index("idx_apps_organization_id").on(table.organizationId),
     check("apps_status_check", sql`${table.status} IN ('active', 'disabled')`),
   ],
 );

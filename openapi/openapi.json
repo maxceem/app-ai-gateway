@@ -17,6 +17,10 @@
       "description": "Unauthenticated service health."
     },
     {
+      "name": "Operator authentication",
+      "description": "Better Auth signup and session lifecycle."
+    },
+    {
       "name": "Application authentication",
       "description": "Issuer and Apple App Attest token exchange."
     },
@@ -41,16 +45,27 @@
       "description": "Keys, users, credentials, and usage."
     },
     {
+      "name": "Admin management keys",
+      "description": "Organization-scoped agw_mgmt_ credentials."
+    },
+    {
       "name": "Admin models",
       "description": "Model pricing metadata."
     }
   ],
   "components": {
     "securitySchemes": {
-      "AdminBearer": {
+      "ManagementBearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The deployment's ADMIN_TOKEN."
+        "bearerFormat": "agw_mgmt_…",
+        "description": "An organization-scoped management API key created by an owner or admin."
+      },
+      "OperatorSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "agw_operator_auth.session_token",
+        "description": "The Better Auth operator session cookie. Admin requests also send x-console-request: 1."
       },
       "GatewayBearer": {
         "type": "http",
@@ -890,6 +905,371 @@
         }
       }
     },
+    "/v1/auth/sign-up/email": {
+      "post": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signUpOperator",
+        "summary": "Create an operator account and its initial organization",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8
+                  }
+                },
+                "required": [
+                  "name",
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated operator session.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-in/email": {
+      "post": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signInOperator",
+        "summary": "Sign in an operator with email and password",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated operator session.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/get-session": {
+      "get": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "getOperatorSession",
+        "summary": "Get the current operator session",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current session or null.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-out": {
+      "post": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signOutOperator",
+        "summary": "End the current operator session",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session ended.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-in/social": {
+      "get": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signInOperatorWithGoogle",
+        "summary": "Start optional Google sign-in",
+        "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "google"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Google."
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/apps/{app}/auth/challenge": {
       "post": {
         "tags": [
@@ -1612,7 +1992,10 @@
         "summary": "List applications",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "responses": {
@@ -1690,7 +2073,10 @@
         "description": "API-key applications receive a one-time plaintext initial key in the response.",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "requestBody": {
@@ -1785,7 +2171,10 @@
         "summary": "Get an application",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1858,7 +2247,10 @@
         "summary": "Update an application",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1941,7 +2333,10 @@
         "summary": "Delete an application and its associated operational data",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2041,7 +2436,10 @@
         "summary": "Validate an application configuration without saving it",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2117,6 +2515,347 @@
         }
       }
     },
+    "/v1/admin/keys": {
+      "get": {
+        "tags": [
+          "Admin management keys"
+        ],
+        "operationId": "listManagementKeys",
+        "summary": "List management keys for the current organization",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Management key metadata without plaintext tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "organizationId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "revokedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "organizationId",
+                          "name",
+                          "createdAt",
+                          "revokedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "keys"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin management keys"
+        ],
+        "operationId": "createManagementKey",
+        "summary": "Create a management key for the current organization",
+        "description": "Requires an owner/admin user session. The plaintext agw_mgmt_ token is returned once.",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "One-time plaintext management key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "organizationId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "plaintext": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "organizationId",
+                        "name",
+                        "createdAt",
+                        "revokedAt",
+                        "plaintext"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "key"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/keys/{id}/revoke": {
+      "post": {
+        "tags": [
+          "Admin management keys"
+        ],
+        "operationId": "revokeManagementKey",
+        "summary": "Revoke a management key",
+        "description": "Requires an owner/admin user session.",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "key_123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked management key metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "organizationId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "organizationId",
+                        "name",
+                        "createdAt",
+                        "revokedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "key"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/apps/{app}/keys": {
       "get": {
         "operationId": "listAppKeys",
@@ -2126,7 +2865,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2199,7 +2941,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2289,7 +3034,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2373,7 +3121,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2446,7 +3197,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2519,7 +3273,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2594,7 +3351,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2669,7 +3429,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2744,7 +3507,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2828,7 +3594,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2912,7 +3681,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2996,7 +3768,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -3071,7 +3846,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -3156,7 +3934,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -3231,7 +4012,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -3306,7 +4090,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -3381,7 +4168,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "responses": {

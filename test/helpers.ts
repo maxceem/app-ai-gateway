@@ -6,9 +6,12 @@ import { database } from "../src/db";
 import { apiKeys, apps, developmentCredentials } from "../src/db/schema";
 import type { StoredAppConfig } from "../src/core/types";
 
+export const TEST_ORGANIZATION_ID = "operator-test-organization";
+
 export const TEST_DEVELOPMENT_SECRET = "test-per-app-development-secret-12345";
 
 export interface SeedOptions {
+  organizationId?: string | null;
   proxy?: Record<string, unknown>;
   auth?: Record<string, unknown>;
   limits?: { rpm: number; rpd: number; app_rpm?: number; app_rpd?: number };
@@ -134,6 +137,9 @@ export async function seedApp(appId: string, options: SeedOptions = {}): Promise
   const developmentAccess = options.auth === undefined || issuer.dev_access !== undefined;
   await database(env.DB).insert(apps).values({
     id: appId,
+    organizationId: options.organizationId === undefined
+      ? TEST_ORGANIZATION_ID
+      : options.organizationId,
     name: `Test ${appId}`,
     config: {
       authentication: {
@@ -176,6 +182,9 @@ export async function seedServerApp(
   const key = options.key ?? `agw_${suffix.padEnd(48, "A").slice(0, 48)}`;
   await database(env.DB).insert(apps).values({
     id: appId,
+    organizationId: options.organizationId === undefined
+      ? TEST_ORGANIZATION_ID
+      : options.organizationId,
     name: `Test ${appId}`,
     config: {
       authentication: {

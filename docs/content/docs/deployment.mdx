@@ -16,7 +16,6 @@ The form asks for:
 |---|---|
 | `CF_AIG_GATEWAY_ID` | The exact existing Cloudflare AI Gateway ID |
 | `CF_AIG_TOKEN` | Its authenticated gateway token |
-| `ADMIN_TOKEN` | A strong token used to administer this deployment |
 
 Provider API keys do not belong in these Worker secrets. Store them in Cloudflare
 AI Gateway under **Provider Keys**, using alias `default`.
@@ -30,15 +29,15 @@ pnpm install
 cp .dev.vars.example .dev.vars
 ```
 
-Fill the three required values without committing the file, then run:
+Fill the two required values without committing the file, then run:
 
 ```sh
 pnpm run secrets:upload
 pnpm run deploy
 ```
 
-The deploy command preserves existing secrets, creates a missing internal JWT
-secret, provisions D1 when necessary, applies migrations by binding name, and
+The deploy command preserves existing secrets, creates missing JWT and Better
+Auth signing secrets, provisions D1 when necessary, applies migrations by binding name, and
 deploys the console and API.
 
 ## Verify
@@ -48,6 +47,10 @@ Call the deployed health endpoint and then sign in to the console:
 ```sh
 curl https://YOUR-WORKER.workers.dev/v1/healthz
 ```
+
+Create the initial operator with `/v1/auth/sign-up/email`, then set
+`ALLOW_PUBLIC_REGISTRATION=false` for a private deployment. Admin automation uses
+organization-scoped `agw_mgmt_` keys created under `/v1/admin/keys`.
 
 <Callout type="warn" title="Migration state is separate from Worker versions">
   A Worker rollback does not roll back D1. Review new migrations before deploying

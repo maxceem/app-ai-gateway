@@ -21,25 +21,20 @@ const deterministicRandom = (length) => Buffer.alloc(length, 0xab);
 test("parses Wrangler's JSON secret list", () => {
   const names = parseSecretList(
     JSON.stringify([
-      { name: "ADMIN_TOKEN", type: "secret_text" },
+      { name: "BETTER_AUTH_SECRET", type: "secret_text" },
       { name: "JWT_SECRET", type: "secret_text" },
     ]),
   );
-  assert.deepEqual([...names], ["ADMIN_TOKEN", "JWT_SECRET"]);
+  assert.deepEqual([...names], ["BETTER_AUTH_SECRET", "JWT_SECRET"]);
 });
 
 test("reports missing user-provided deployment values", () => {
   assert.deepEqual(missingRequiredSecrets(new Set()), [
     "CF_AIG_GATEWAY_ID",
     "CF_AIG_TOKEN",
-    "ADMIN_TOKEN",
   ]);
   assert.deepEqual(
     missingRequiredSecrets(new Set(["CF_AIG_GATEWAY_ID", "CF_AIG_TOKEN"])),
-    ["ADMIN_TOKEN"],
-  );
-  assert.deepEqual(
-    missingRequiredSecrets(new Set(["CF_AIG_GATEWAY_ID", "CF_AIG_TOKEN", "ADMIN_TOKEN"])),
     [],
   );
 });
@@ -54,7 +49,6 @@ test("deploy button requests an existing gateway before its required token", () 
   assert.deepEqual(Object.keys(packageJson.cloudflare.bindings), [
     "CF_AIG_GATEWAY_ID",
     "CF_AIG_TOKEN",
-    "ADMIN_TOKEN",
   ]);
   assert.match(packageJson.cloudflare.bindings.CF_AIG_GATEWAY_ID.description, /Create a Cloudflare AI Gateway/u);
   assert.match(packageJson.cloudflare.bindings.CF_AIG_GATEWAY_ID.description, /does not create/u);
@@ -66,15 +60,19 @@ test("deploy button requests an existing gateway before its required token", () 
   );
 });
 
-test("generates the internal JWT secret once and leaves an existing value alone", () => {
+test("generates internal signing secrets once and leaves existing values alone", () => {
   const first = createMissingGeneratedSecrets(new Set(), deterministicRandom);
   assert.equal(Buffer.from(first.JWT_SECRET, "base64url").byteLength, 48);
+  assert.equal(Buffer.from(first.BETTER_AUTH_SECRET, "base64url").byteLength, 48);
 
-  const second = createMissingGeneratedSecrets(new Set(["JWT_SECRET"]), deterministicRandom);
+  const second = createMissingGeneratedSecrets(
+    new Set(["JWT_SECRET", "BETTER_AUTH_SECRET"]),
+    deterministicRandom,
+  );
   assert.deepEqual(second, {});
 });
 
-test("deployment uploads only the generated JWT secret and provisions D1 before migrations", () => {
+test("deployment uploads generated signing secrets and provisions D1 before migrations", () => {
   const directory = mkdtempSync(join(tmpdir(), "ai-gateway-deploy-test-"));
   const fakeWrangler = join(directory, "wrangler.mjs");
   const callLog = join(directory, "calls.ndjson");
@@ -92,7 +90,6 @@ appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify(entry) + "\\n");
 if (args[0] === "secret" && args[1] === "list") {
   console.log(JSON.stringify([
     { name: "CF_AIG_GATEWAY_ID" },
-    { name: "ADMIN_TOKEN" },
     { name: "CF_AIG_TOKEN" }
   ]));
 }
@@ -123,7 +120,7 @@ if (
       },
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.doesNotMatch(result.stdout, /ADMIN_TOKEN=/u);
+    assert.doesNotMatch(result.stdout, /BETTER_AUTH_SECRET=/u);
 
     const calls = readFileSync(callLog, "utf8")
       .trim()
@@ -141,8 +138,9 @@ if (
     );
 
     const uploaded = JSON.parse(calls[1].input);
-    assert.deepEqual(Object.keys(uploaded), ["JWT_SECRET"]);
+    assert.deepEqual(Object.keys(uploaded), ["JWT_SECRET", "BETTER_AUTH_SECRET"]);
     assert.equal(Buffer.from(uploaded.JWT_SECRET, "base64url").byteLength, 48);
+    assert.equal(Buffer.from(uploaded.BETTER_AUTH_SECRET, "base64url").byteLength, 48);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

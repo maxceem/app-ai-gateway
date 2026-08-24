@@ -23,6 +23,11 @@ describe("generated OpenAPI contract", () => {
     expect(document.paths).toHaveProperty("/v1/apps/{app}/endpoints/{slug}");
     expect(document.paths).toHaveProperty("/v1/admin/apps");
     expect(document.paths).toHaveProperty("/v1/admin/apps/{app}/usage");
+    expect(document.paths).toHaveProperty("/v1/auth/sign-up/email");
+    expect(document.paths).toHaveProperty("/v1/auth/sign-in/email");
+    expect(document.paths).toHaveProperty("/v1/admin/keys");
+    expect(document.components?.securitySchemes).toHaveProperty("OperatorSession");
+    expect(document.components?.securitySchemes).toHaveProperty("ManagementBearer");
   });
 
   it("accepts the checked-in application examples", () => {

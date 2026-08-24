@@ -35,6 +35,10 @@ const KeyPath = AppPath.extend({
   key: z.string().openapi({ param: { name: "key", in: "path" }, example: "key_123" }),
 });
 
+const ManagementKeyPath = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, example: "key_123" }),
+});
+
 const ProviderPath = AppPath.extend({
   provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"])
     .openapi({ param: { name: "provider", in: "path" } }),
@@ -63,10 +67,17 @@ const errorResponses = {
 };
 
 const registry = new OpenAPIHono();
-registry.openAPIRegistry.registerComponent("securitySchemes", "AdminBearer", {
+registry.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
   type: "http",
   scheme: "bearer",
-  description: "The deployment's ADMIN_TOKEN.",
+  bearerFormat: "agw_mgmt_…",
+  description: "An organization-scoped management API key created by an owner or admin.",
+});
+registry.openAPIRegistry.registerComponent("securitySchemes", "OperatorSession", {
+  type: "apiKey",
+  in: "cookie",
+  name: "agw_operator_auth.session_token",
+  description: "The Better Auth operator session cookie. Admin requests also send x-console-request: 1.",
 });
 registry.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
   type: "http",
@@ -77,6 +88,11 @@ registry.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
 function register(route: RouteConfig): void {
   registry.openAPIRegistry.registerPath(route);
 }
+
+const operatorSecurity: RouteConfig["security"] = [
+  { OperatorSession: [] },
+  { ManagementBearer: [] },
+];
 
 register({
   method: "get",
@@ -90,6 +106,67 @@ register({
       service: z.literal("ai-gateway"),
     })),
   },
+});
+
+for (const authRoute of [
+  {
+    method: "post",
+    path: "/v1/auth/sign-up/email",
+    operationId: "signUpOperator",
+    summary: "Create an operator account and its initial organization",
+    body: z.object({ name: z.string(), email: z.email(), password: z.string().min(8) }),
+  },
+  {
+    method: "post",
+    path: "/v1/auth/sign-in/email",
+    operationId: "signInOperator",
+    summary: "Sign in an operator with email and password",
+    body: z.object({ email: z.email(), password: z.string() }),
+  },
+] as const) {
+  register({
+    method: authRoute.method,
+    path: authRoute.path,
+    tags: ["Operator authentication"],
+    operationId: authRoute.operationId,
+    summary: authRoute.summary,
+    request: { body: { required: true, content: json(authRoute.body) } },
+    responses: {
+      200: response("Authenticated operator session.", z.unknown()),
+      ...errorResponses,
+    },
+  });
+}
+
+register({
+  method: "get",
+  path: "/v1/auth/get-session",
+  tags: ["Operator authentication"],
+  operationId: "getOperatorSession",
+  summary: "Get the current operator session",
+  security: [{ OperatorSession: [] }],
+  responses: { 200: response("Current session or null.", z.unknown()), ...errorResponses },
+});
+
+register({
+  method: "post",
+  path: "/v1/auth/sign-out",
+  tags: ["Operator authentication"],
+  operationId: "signOutOperator",
+  summary: "End the current operator session",
+  security: [{ OperatorSession: [] }],
+  responses: { 200: response("Session ended.", z.unknown()), ...errorResponses },
+});
+
+register({
+  method: "get",
+  path: "/v1/auth/sign-in/social",
+  tags: ["Operator authentication"],
+  operationId: "signInOperatorWithGoogle",
+  summary: "Start optional Google sign-in",
+  description: "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
+  request: { query: z.object({ provider: z.literal("google") }) },
+  responses: { 302: { description: "Redirect to Google." }, ...errorResponses },
 });
 
 register({
@@ -238,7 +315,7 @@ register({
   tags: ["Admin applications"],
   operationId: "listApps",
   summary: "List applications",
-  security: [{ AdminBearer: [] }],
+  security: operatorSecurity,
   responses: { 200: response("Applications and current usage summaries.", z.object({ month: z.string(), apps: z.array(z.unknown()) })), ...errorResponses },
 });
 
@@ -249,7 +326,7 @@ register({
   operationId: "createApp",
   summary: "Create an application",
   description: "API-key applications receive a one-time plaintext initial key in the response.",
-  security: [{ AdminBearer: [] }],
+  security: operatorSecurity,
   request: { body: { required: true, content: json(AppWriteSchema) } },
   responses: {
     201: response("Application created.", z.object({ app_id: z.string(), api_key: z.unknown().nullable() })),
@@ -268,7 +345,7 @@ for (const definition of [
     tags: ["Admin applications"],
     operationId: definition.operationId,
     summary: definition.summary,
-    security: [{ AdminBearer: [] }],
+    security: operatorSecurity,
     request: {
       params: AppPath,
       ...(definition.method === "put" ? { body: { required: true, content: json(AppWriteSchema) } } : {}),
@@ -283,7 +360,7 @@ register({
   tags: ["Admin applications"],
   operationId: "validateApp",
   summary: "Validate an application configuration without saving it",
-  security: [{ AdminBearer: [] }],
+  security: operatorSecurity,
   request: { params: AppPath, body: { required: true, content: json(AppWriteSchema) } },
   responses: { 200: response("Resolved valid configuration.", z.unknown()), ...errorResponses },
 });
@@ -294,9 +371,64 @@ register({
   tags: ["Admin applications"],
   operationId: "deleteApp",
   summary: "Delete an application and its associated operational data",
-  security: [{ AdminBearer: [] }],
+  security: operatorSecurity,
   request: { params: AppPath, query: z.object({ confirm: z.string() }) },
   responses: { 200: response("Application deleted.", z.object({ deleted: z.literal(true), app_id: z.string() })), ...errorResponses },
+});
+
+const ManagementKeySummarySchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
+  revokedAt: z.string().nullable(),
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/keys",
+  tags: ["Admin management keys"],
+  operationId: "listManagementKeys",
+  summary: "List management keys for the current organization",
+  security: [{ OperatorSession: [] }],
+  responses: {
+    200: response("Management key metadata without plaintext tokens.", z.object({
+      keys: z.array(ManagementKeySummarySchema),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/keys",
+  tags: ["Admin management keys"],
+  operationId: "createManagementKey",
+  summary: "Create a management key for the current organization",
+  description: "Requires an owner/admin user session. The plaintext agw_mgmt_ token is returned once.",
+  security: [{ OperatorSession: [] }],
+  request: { body: { required: true, content: json(z.object({ name: z.string().min(1).max(100) })) } },
+  responses: {
+    201: response("One-time plaintext management key.", z.object({
+      key: ManagementKeySummarySchema.extend({ plaintext: z.string() }),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/keys/{id}/revoke",
+  tags: ["Admin management keys"],
+  operationId: "revokeManagementKey",
+  summary: "Revoke a management key",
+  description: "Requires an owner/admin user session.",
+  security: [{ OperatorSession: [] }],
+  request: { params: ManagementKeyPath },
+  responses: {
+    200: response("Revoked management key metadata.", z.object({ key: ManagementKeySummarySchema })),
+    ...errorResponses,
+  },
 });
 
 const adminRoutes: Omit<RouteConfig, "responses">[] = [
@@ -323,7 +455,7 @@ for (const route of adminRoutes) {
   register({
     ...route,
     tags: [route.path === "/v1/admin/prices" ? "Admin models" : "Admin operations"],
-    security: [{ AdminBearer: [] }],
+    security: operatorSecurity,
     responses: { 200: response("Successful operation.", z.unknown()), ...errorResponses },
   });
 }
@@ -339,12 +471,14 @@ export function createOpenAPIDocument() {
     servers: [{ url: "https://gateway.example.com", description: "Replace with your deployed gateway origin" }],
     tags: [
       { name: "Operations", description: "Unauthenticated service health." },
+      { name: "Operator authentication", description: "Better Auth signup and session lifecycle." },
       { name: "Application authentication", description: "Issuer and Apple App Attest token exchange." },
       { name: "Application", description: "Authenticated application-user state." },
       { name: "Provider proxy", description: "Provider-native streaming proxy endpoints." },
       { name: "Named endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, credentials, and usage." },
+      { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
       { name: "Admin models", description: "Model pricing metadata." },
     ],
   });

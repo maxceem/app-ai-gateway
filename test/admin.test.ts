@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { appleConfig, seedApp, serverConfig } from "./helpers";
 
 describe("admin API", () => {
-  it("requires the admin token and returns exact monthly usage rollups", async () => {
+  it("requires operator authentication and returns exact monthly usage rollups", async () => {
     await seedApp("admin-rollup");
     await env.DB.batch([
       env.DB.prepare(
@@ -25,7 +25,7 @@ describe("admin API", () => {
     expect(denied.status).toBe(401);
 
     const response = await exports.default.fetch(url, {
-      headers: { authorization: "Bearer test-admin-secret" },
+      headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
     });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -71,7 +71,7 @@ describe("admin API", () => {
     const request = (apply: boolean) => exports.default.fetch(url, {
       method: "POST",
       headers: {
-        authorization: "Bearer test-admin-secret",
+        authorization: "Bearer agw_mgmt_test-admin-secret",
         "content-type": "application/json",
       },
       body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply }),
@@ -108,7 +108,7 @@ describe("admin API", () => {
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/insecure-issuer", {
       method: "POST",
       headers: {
-        authorization: "Bearer test-admin-secret",
+        authorization: "Bearer agw_mgmt_test-admin-secret",
         "content-type": "application/json",
       },
       body: JSON.stringify({
@@ -135,7 +135,7 @@ describe("admin API", () => {
         {
           method: "POST",
           headers: {
-            authorization: "Bearer test-admin-secret",
+            authorization: "Bearer agw_mgmt_test-admin-secret",
             "content-type": "application/json",
           },
           body: JSON.stringify({
@@ -157,7 +157,7 @@ describe("admin API", () => {
       {
         method: "POST",
         headers: {
-          authorization: "Bearer test-admin-secret",
+          authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -176,7 +176,7 @@ describe("admin API", () => {
       {
         method: "POST",
         headers: {
-          authorization: "Bearer test-admin-secret",
+          authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
         body: JSON.stringify({ name: "Production Worker" }),
@@ -193,7 +193,7 @@ describe("admin API", () => {
 
     const listed = await exports.default.fetch(
       "https://example.test/v1/admin/apps/admin-server-keys/keys",
-      { headers: { authorization: "Bearer test-admin-secret" } },
+      { headers: { authorization: "Bearer agw_mgmt_test-admin-secret" } },
     );
     expect(listed.status).toBe(200);
     const listText = await listed.text();
@@ -208,7 +208,7 @@ describe("admin API", () => {
       `https://example.test/v1/admin/apps/admin-server-keys/keys/${createdBody.id}/revoke`,
       {
         method: "POST",
-        headers: { authorization: "Bearer test-admin-secret" },
+        headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
       },
     );
     expect(revoked.status).toBe(200);
@@ -222,7 +222,7 @@ describe("admin API", () => {
       {
         method: "POST",
         headers: {
-          authorization: "Bearer test-admin-secret",
+          authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
         body: JSON.stringify({ name: "Not allowed" }),
@@ -251,7 +251,7 @@ describe("admin API", () => {
         {
           method: "POST",
           headers: {
-            authorization: "Bearer test-admin-secret",
+            authorization: "Bearer agw_mgmt_test-admin-secret",
             "content-type": "application/json",
           },
           body: JSON.stringify(body),

@@ -12,7 +12,7 @@ export default defineConfig({
           bindings: {
             CF_AIG_BASE_URL: "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev",
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
-            ADMIN_TOKEN: "test-admin-secret",
+            BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-thirty-two-bytes",
             CF_AIG_TOKEN: "test-cf-aig-token",
             TEST_MIGRATIONS: migrations,
           },

@@ -1,5 +1,13 @@
 export type ErrorCode =
   | "auth_required"
+  | "forbidden"
+  | "session_required"
+  | "registration_disabled"
+  | "validation_error"
+  | "conflict"
+  | "not_found"
+  | "not_a_member"
+  | "last_owner"
   | "attest_failed"
   | "issuer_token_rejected"
   | "auth_method_not_supported"

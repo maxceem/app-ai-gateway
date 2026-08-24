@@ -28,8 +28,8 @@ Fumadocs documentation application. Use Node.js 22+ and the pinned pnpm version.
 
 ## Security
 
-- Never print or commit provider keys, `ADMIN_TOKEN`, `CF_AIG_TOKEN`, gateway
-  application keys, or development credentials.
+- Never print or commit provider keys, `BETTER_AUTH_SECRET`, `CF_AIG_TOKEN`,
+  management keys, gateway application keys, or development credentials.
 - Provider keys belong in Cloudflare AI Gateway BYOK/Secrets Store, alias `default`.
 - Use Wrangler secret commands, stdin, hidden prompts, or ignored local files for
   secret values. Do not place secret values in command arguments.

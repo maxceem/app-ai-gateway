@@ -10,9 +10,9 @@ fi
 gateway_base_url=$AI_GATEWAY_BASE_URL
 gateway_base_url=${gateway_base_url%/}
 
-if [ -z "${ADMIN_TOKEN:-}" ]; then
+if [ -z "${MANAGEMENT_API_KEY:-}" ]; then
   if [ ! -f "$project_dir/.dev.vars" ]; then
-    echo "ADMIN_TOKEN is not set and $project_dir/.dev.vars does not exist." >&2
+    echo "MANAGEMENT_API_KEY is not set and $project_dir/.dev.vars does not exist." >&2
     exit 1
   fi
   set -a
@@ -21,8 +21,8 @@ if [ -z "${ADMIN_TOKEN:-}" ]; then
   set +a
 fi
 
-if [ -z "${ADMIN_TOKEN:-}" ]; then
-  echo "ADMIN_TOKEN is required." >&2
+if [ -z "${MANAGEMENT_API_KEY:-}" ]; then
+  echo "MANAGEMENT_API_KEY is required." >&2
   exit 1
 fi
 
@@ -40,7 +40,7 @@ register_app() {
   curl -fsS \
     -X POST \
     "$gateway_base_url/v1/admin/apps/$app_id" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Authorization: Bearer $MANAGEMENT_API_KEY" \
     -H "Content-Type: application/json" \
     --data-binary "@$project_dir/$config_path" |
     jq '{

@@ -94,10 +94,10 @@ function ensureDeploymentSecrets() {
 
   const generated = createMissingGeneratedSecrets(existingNames);
   uploadSecrets(generated);
-  if ("JWT_SECRET" in generated) {
-    console.log("Generated and securely uploaded the internal JWT signing secret.");
+  if ("JWT_SECRET" in generated || "BETTER_AUTH_SECRET" in generated) {
+    console.log("Generated and securely uploaded missing internal signing secrets.");
   } else {
-    console.log("The internal JWT signing secret already exists; keeping it unchanged.");
+    console.log("The internal signing secrets already exist; keeping them unchanged.");
   }
 }
 
