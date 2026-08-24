@@ -2,6 +2,7 @@ import { env, exports } from "cloudflare:workers";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
+import { registrationDisabledRedirect } from "../src/routes/operator-auth";
 
 const ORIGIN = "https://example.test";
 const GOOGLE_CLIENT_ID = "test-google-client";
@@ -125,6 +126,35 @@ describe("closed operator registration", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "registration_disabled" },
     });
+  });
+
+  it("carries the rejected response's cookies and destination onto the redirect", () => {
+    const rejected = new Response(null, {
+      status: 302,
+      headers: { location: "/login?error=signup_disabled&from=%2Fapps%2Fmy-app" },
+    });
+    // Better Auth clears its transient OAuth state cookies on rejection.
+    rejected.headers.append("set-cookie", "agw_operator_auth.state=; Max-Age=0; Path=/");
+    rejected.headers.append("set-cookie", "agw_operator_auth.pkce=; Max-Age=0; Path=/");
+
+    const redirect = registrationDisabledRedirect(rejected);
+
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get("location")).toBe(
+      "/login?from=%2Fapps%2Fmy-app&error=registration_disabled",
+    );
+    // Dropping these would leave state cookies the flow no longer owns.
+    expect(redirect.headers.getSetCookie()).toEqual([
+      "agw_operator_auth.state=; Max-Age=0; Path=/",
+      "agw_operator_auth.pkce=; Max-Age=0; Path=/",
+    ]);
+  });
+
+  it("still redirects when the rejection carries no cookies or destination", () => {
+    const redirect = registrationDisabledRedirect(new Response(null, { status: 403 }));
+
+    expect(redirect.headers.get("location")).toBe("/login?error=registration_disabled");
+    expect(redirect.headers.getSetCookie()).toEqual([]);
   });
 
   it("accepts the case-insensitive bearer scheme for management keys", async () => {

@@ -46,6 +46,34 @@ async function isDisabledSocialSignup(response: Response): Promise<boolean> {
     && body.message.toLowerCase() === "signup disabled";
 }
 
+/**
+ * Rebuilds the rejection as a redirect to the console sign-in screen.
+ *
+ * Better Auth's own response is discarded, so two things have to be carried
+ * across: its `Set-Cookie` headers, which clear the transient OAuth state
+ * cookies (leaving them behind would strand cookies the flow no longer owns),
+ * and any `from` destination it was going to return the operator to.
+ */
+export function registrationDisabledRedirect(rejected: Response): Response {
+  const target = new URL(CONSOLE_LOGIN_PATH, "https://console.invalid");
+
+  const location = rejected.headers.get("location");
+  if (location) {
+    const from = new URL(location, "https://auth.invalid").searchParams.get("from");
+    if (from) target.searchParams.set("from", from);
+  }
+  target.searchParams.set("error", "registration_disabled");
+
+  const redirect = new Response(null, {
+    status: 302,
+    headers: { location: `${target.pathname}${target.search}` },
+  });
+  for (const cookie of rejected.headers.getSetCookie()) {
+    redirect.headers.append("set-cookie", cookie);
+  }
+  return redirect;
+}
+
 operatorAuthRoutes.all("/*", async (c) => {
   if (
     c.req.method === "POST"
@@ -61,7 +89,7 @@ operatorAuthRoutes.all("/*", async (c) => {
     // delivered as one. Returning JSON here would leave the operator looking at
     // an error document with no way back into the console.
     if (isTopLevelNavigation(c.req.raw)) {
-      return c.redirect(`${CONSOLE_LOGIN_PATH}?error=registration_disabled`, 302);
+      return registrationDisabledRedirect(response);
     }
     return c.json(registrationDisabled(), 403);
   }
