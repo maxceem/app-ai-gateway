@@ -47,7 +47,6 @@ cp .dev.vars.example .dev.vars
 # Set CF_AIG_GATEWAY_ID and CF_AIG_TOKEN in .dev.vars
 pnpm run secrets:setup-local
 pnpm run db:migrate:local
-pnpm run db:seed:local
 pnpm run dev
 ```
 
@@ -57,6 +56,10 @@ the API with:
 ```sh
 curl http://localhost:8787/v1/healthz
 ```
+
+Sign up through `/v1/auth/sign-up/email`, then create the first organization-owned
+application through the console or admin API. No personal tenant seed is included
+in the public repository.
 
 Run the full verification suite with `pnpm run check`. Configuration, client
 integration, authentication, and API details are covered in the
@@ -85,6 +88,19 @@ pnpm recover-access -- --email owner@example.com --promote-owner \
 Add `--env production` when applicable. This invokes `wrangler d1 execute` and
 does not print the password or hash. Prefer `--local` while validating a recovery
 procedure; remote execution is an explicit owner-operated step.
+
+### Migrating an ADMIN_TOKEN deployment
+
+Existing deployments can create their first operator organization and backfill
+legacy apps with `scripts/migrate-to-orgs.mjs`. The command requires an explicit
+`--local` or `--remote` target; validate it with local D1 state before the owner
+runs the documented production step. See the
+[admin auth migration guide](https://docs.appaigateway.com/docs/auth-migration).
+
+The checked-in Wrangler environments contain no personal domain, D1 ID, or AI
+Gateway ID. Configure those deployment-specific values in your own environment;
+keep `CF_AIG_GATEWAY_ID` and `CF_AIG_TOKEN` in secrets/variables rather than
+committing them.
 
 ### Optional cloud billing
 

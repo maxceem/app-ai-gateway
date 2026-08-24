@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAPIDocument } from "../src/contracts/openapi";
 import { AppWriteSchema } from "../src/contracts/schemas";
-import devConfig from "../config/calorie-tracker.dev.json";
-import productionConfig from "../config/calorie-tracker.production.json";
+import { appleConfig, serverConfig } from "./helpers";
 
 describe("generated OpenAPI contract", () => {
   it("has unique operation IDs and covers every public API family", () => {
@@ -33,12 +32,14 @@ describe("generated OpenAPI contract", () => {
     expect(document.components?.securitySchemes).toHaveProperty("ManagementBearer");
   });
 
-  it("accepts the checked-in application examples", () => {
-    for (const [name, value] of [
-      ["dev", devConfig],
-      ["production", productionConfig],
+  it("accepts representative server and mobile application examples", () => {
+    for (const [name, config] of [
+      ["server", serverConfig()],
+      ["mobile", appleConfig({ jwks_url: "https://issuer.example/.well-known/jwks.json" })],
     ] as const) {
-      expect(AppWriteSchema.safeParse(value), name).toMatchObject({ success: true });
+      expect(AppWriteSchema.safeParse({ name: `${name} example`, config }), name).toMatchObject({
+        success: true,
+      });
     }
   });
 });

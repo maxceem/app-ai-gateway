@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 
@@ -83,17 +83,10 @@ function genericConfig(row, oldAuth, oldProxy, oldLimits) {
   };
 }
 
-const calorieConfigs = new Map([
-  ["calorie-tracker-dev", "config/calorie-tracker.dev.json"],
-  ["calorie-tracker", "config/calorie-tracker.production.json"],
-]);
 const statements = ["PRAGMA foreign_keys = ON;"];
 for (const row of apps) {
   const oldAuth = json(row.auth_config_json);
-  const configPath = calorieConfigs.get(row.id);
-  const config = configPath
-    ? JSON.parse(readFileSync(resolve(configPath), "utf8")).config
-    : genericConfig(row, oldAuth, json(row.proxy_config_json), json(row.limits_json));
+  const config = genericConfig(row, oldAuth, json(row.proxy_config_json), json(row.limits_json));
   if (oldAuth.dev_access?.secret != null && config.authentication.type === "apple_app_attest") {
     config.authentication.development_access = true;
   }

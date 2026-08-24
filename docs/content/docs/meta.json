@@ -3,7 +3,10 @@
   "pages": [
     "index",
     "quickstart",
+    "agent-quickstart",
     "deployment",
+    "auth-migration",
+    "cloud-billing",
     "configuration",
     "authentication",
     "provider-proxy",

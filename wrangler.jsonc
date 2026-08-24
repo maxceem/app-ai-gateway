@@ -38,19 +38,10 @@
   // The OSS default intentionally has no BILLING binding and runs self-hosted.
   "env": {
     "production": {
-      "name": "ai-gateway",
-      "routes": [
-        {
-          "pattern": "ai-gateway.maxceem.com",
-          "custom_domain": true
-        }
-      ],
-      "placement": {
-        "region": "azure:eastus2"
-      },
+      "name": "app-ai-gateway-production",
+      "routes": [],
       "vars": {
         "ENVIRONMENT": "production",
-        "CF_AIG_GATEWAY_ID": "ai-gateway-dev",
         "GATEWAY_TOKEN_TTL_SECONDS": "3600",
         "CONFIG_CACHE_TTL_SECONDS": "60",
         "ALLOW_PUBLIC_REGISTRATION": "true"
@@ -61,8 +52,7 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "ai-gateway-enam",
-          "database_id": "476a8aa9-095b-45fb-9b83-3067e6f063b2",
+          "database_name": "app-ai-gateway-production",
           "migrations_dir": "migrations"
         }
       ],
@@ -82,7 +72,6 @@
       },
       "vars": {
         "ENVIRONMENT": "local",
-        "CF_AIG_GATEWAY_ID": "ai-gateway-dev",
         "ALLOW_PUBLIC_REGISTRATION": "true"
       },
       "ai": {

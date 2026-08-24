@@ -1,0 +1,58 @@
+---
+title: Admin auth migration
+description: Move an existing ADMIN_TOKEN deployment to operator organizations.
+---
+
+This is a manual owner-operated D1 migration. Back up the database, review the
+generated Drizzle migration, and deploy the new Worker code before running it.
+A Worker rollback does not roll back D1.
+
+## Test locally first
+
+Apply all migrations to isolated local state, add representative legacy app
+rows, and run:
+
+```sh
+pnpm migrate-to-orgs -- \
+  --email owner@example.com \
+  --password-stdin \
+  --organization-name "Gateway operators" \
+  --local < /secure/password-file
+```
+
+The script creates a credential operator, an organization, and an owner
+membership, then assigns every app whose `organization_id` is `NULL` to that
+organization. It does not reassign apps that already belong to an organization.
+
+## Run against the intended deployment
+
+Production execution is deliberately not automated. The owner selects the
+remote target explicitly:
+
+```sh
+pnpm migrate-to-orgs -- \
+  --email owner@example.com \
+  --password-stdin \
+  --organization-name "Gateway operators" \
+  --remote --env production < /secure/password-file
+```
+
+The script exits on duplicate operator data instead of guessing how to merge it.
+If the migration was partially performed, inspect D1 and use the documented
+break-glass recovery tool rather than rerunning blindly.
+
+## Verify and retire the old secret
+
+1. Sign in at `/v1/auth/sign-in/email` and verify that all expected apps, users,
+   usage, and keys are visible.
+2. Create an `agw_mgmt_` key for each automation client and replace its old
+   `ADMIN_TOKEN` credential.
+3. Set `ALLOW_PUBLIC_REGISTRATION=false` for private deployments.
+4. Only after verification, delete the obsolete secret manually:
+
+```sh
+pnpm exec wrangler secret delete ADMIN_TOKEN --env production
+```
+
+The new admin API returns `404` for another organization's apps. Owner/admin
+members can mutate organization state; ordinary members are read-only.

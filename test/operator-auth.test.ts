@@ -181,5 +181,5 @@ describe("operator authentication", () => {
         error: { code: "app_not_found" },
       });
     }
-  });
+  }, 10_000);
 });

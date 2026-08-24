@@ -40,6 +40,11 @@ The deploy command preserves existing secrets, creates missing JWT and Better
 Auth signing secrets, provisions D1 when necessary, applies migrations by binding name, and
 deploys the console and API.
 
+The public `wrangler.jsonc` intentionally has no custom production domain,
+Cloudflare account-specific D1 database ID, or AI Gateway ID. Add a custom route
+and the identifiers for resources you own in your private deployment
+configuration. Keep `CF_AIG_GATEWAY_ID` and `CF_AIG_TOKEN` out of source control.
+
 ## Verify
 
 Call the deployed health endpoint and then sign in to the console:

@@ -1,0 +1,77 @@
+---
+title: Agent quickstart
+description: Bootstrap the gateway and make a provider request entirely with curl.
+---
+
+This flow is intended for a fresh self-hosted instance whose public registration
+is still open. It requires `curl` and `jq`.
+
+```sh
+export GATEWAY_URL="https://YOUR-WORKER.workers.dev"
+
+# Sign up and retain the Better Auth session cookie.
+curl --fail-with-body -sS -c operator.cookies \
+  -H 'content-type: application/json' \
+  -d '{"name":"Agent owner","email":"owner@example.com","password":"use-a-long-password"}' \
+  "$GATEWAY_URL/v1/auth/sign-up/email" >/dev/null
+
+# Mint an organization-scoped management key.
+export MGMT_KEY="$(curl --fail-with-body -sS -b operator.cookies \
+  -H 'x-console-request: 1' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Agent bootstrap"}' \
+  "$GATEWAY_URL/v1/admin/keys" | jq -r '.key.plaintext')"
+
+# Create a server app; capture its one-time data-plane key.
+export APP_KEY="$(curl --fail-with-body -sS \
+  -H "authorization: Bearer $MGMT_KEY" \
+  -H 'content-type: application/json' \
+  -d @- "$GATEWAY_URL/v1/admin/apps" <<'JSON' | jq -r '.api_key.key'
+{
+  "id": "curl-agent",
+  "name": "curl agent",
+  "config": {
+    "authentication": {
+      "type": "api_key",
+      "end_user": { "header": "x-end-user-id", "required": false, "fallback": "api_key" }
+    },
+    "routing": {
+      "providers": {
+        "mode": "selected",
+        "selected": {
+          "openai": {
+            "allowed_paths": ["v1/responses"],
+            "allowed_models": ["gpt-5.6-terra"],
+            "max_output_tokens": 1024
+          }
+        }
+      },
+      "model_rewrites": { "gpt-5.6-terra": "gpt-5.6" }
+    },
+    "limits": {
+      "per_user": {
+        "requests": { "per_minute": 30, "per_day": 1000 },
+        "spending": { "monthly_usd": 10 }
+      },
+      "per_app": {
+        "requests": { "per_minute": 300, "per_day": 10000 },
+        "spending": { "monthly_usd": 100 }
+      }
+    }
+  }
+}
+JSON
+)"
+
+# Proxy a provider-native request.
+curl --fail-with-body -sS \
+  -H "authorization: Bearer $APP_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.6-terra","input":"Reply with exactly: gateway ready"}' \
+  "$GATEWAY_URL/v1/apps/curl-agent/proxy/openai/v1/responses"
+```
+
+Provider key alias `default` must already exist in the configured Cloudflare AI
+Gateway. Clear the exported keys from shell history or close the shell after
+placing them in a secret manager. Then close public registration for a private
+deployment.
