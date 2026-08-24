@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { GuardedButton } from "@/components/guarded-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -97,10 +98,10 @@ export function ServerKeys({ appId }: { appId: string }) {
               placeholder="Production Worker"
               onChange={(event) => setName(event.target.value)}
             />
-            <Button disabled={!name.trim() || create.isPending} onClick={() => void createKey()}>
+            <GuardedButton disabled={!name.trim() || create.isPending} onClick={() => void createKey()}>
               {create.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
               Create key
-            </Button>
+            </GuardedButton>
           </div>
 
           <div className="overflow-hidden rounded-md border">
@@ -129,7 +130,7 @@ export function ServerKeys({ appId }: { appId: string }) {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button
+                        <GuardedButton
                           variant="ghost"
                           size="sm"
                           className="text-destructive"
@@ -138,7 +139,7 @@ export function ServerKeys({ appId }: { appId: string }) {
                         >
                           <ShieldX className="size-3.5" />
                           Revoke
-                        </Button>
+                        </GuardedButton>
                       </TableCell>
                     </TableRow>
                   ))

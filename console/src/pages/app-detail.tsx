@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { GuardedButton } from "@/components/guarded-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -208,10 +209,10 @@ export function AppDetailPage() {
               <Button variant="ghost" size="sm" onClick={state.reset} disabled={state.saving}>
                 Discard
               </Button>
-              <Button size="sm" onClick={() => void state.save()} disabled={state.saving}>
+              <GuardedButton size="sm" onClick={() => void state.save()} disabled={state.saving}>
                 {state.saving ? <Loader2 className="size-4 animate-spin" /> : null}
                 Save changes
-              </Button>
+              </GuardedButton>
             </div>
           </div>
         </div>

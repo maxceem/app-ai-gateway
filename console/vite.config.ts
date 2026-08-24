@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -16,8 +16,20 @@ export default defineConfig({
       "/v1": {
         target: "http://localhost:8787",
         changeOrigin: false,
+        // Better Auth rejects state-changing requests whose Origin is not
+        // trusted, and the Worker trusts only its own origin. The browser sends
+        // the dev server's origin, so rewrite it to the proxy target or every
+        // sign-in POST fails in development.
+        headers: { origin: "http://localhost:8787" },
       },
     },
+  },
+  test: {
+    // Auth screens and capability gating are only meaningful when rendered, so
+    // the suite runs in a DOM. The pure `lib/*` tests are unaffected by it.
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    restoreMocks: true,
   },
   build: {
     outDir: "dist",

@@ -11,6 +11,32 @@ export class ApiError extends Error {
 
 export const isUnauthorized = (error: unknown) => error instanceof ApiError && error.status === 401;
 
+/** A read-only member tried to mutate, or lacks the role for a whole surface. */
+export const isForbidden = (error: unknown) => error instanceof ApiError && error.status === 403;
+
+/** The organization has no active subscription; the caller should upsell. */
+export const isPaymentRequired = (error: unknown) =>
+  error instanceof ApiError && error.status === 402;
+
+/**
+ * Two error envelopes reach this client. The gateway wraps its own failures in
+ * `{ error: { code, message } }`, while Better Auth answers `/v1/auth/*`
+ * straight from better-call with a flat `{ code, message }` and SCREAMING_CASE
+ * codes. Normalizing both here keeps every caller on one `ApiError` shape.
+ */
+function toApiError(status: number, payload: unknown): ApiError {
+  const body = (payload ?? {}) as {
+    error?: { code?: string; message?: string };
+    code?: string;
+    message?: string;
+  };
+  const code = body.error?.code ?? body.code ?? "unknown";
+  const message = body.error?.message
+    ?? body.message
+    ?? `Request failed with status ${status}`;
+  return new ApiError(status, code, message);
+}
+
 /**
  * Every call rides the HttpOnly session cookie plus the header the Worker
  * requires, so a cross-site request can never reach the admin API.
@@ -22,16 +48,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
   const text = await response.text();
-  const payload = text ? (JSON.parse(text) as unknown) : null;
-
-  if (!response.ok) {
-    const envelope = payload as { error?: { code?: string; message?: string } } | null;
-    throw new ApiError(
-      response.status,
-      envelope?.error?.code ?? "unknown",
-      envelope?.error?.message ?? `Request failed with status ${response.status}`,
-    );
+  // An HTML error page or an empty body must not surface as a JSON SyntaxError.
+  let payload: unknown = null;
+  try {
+    payload = text ? (JSON.parse(text) as unknown) : null;
+  } catch {
+    payload = null;
   }
+
+  if (!response.ok) throw toApiError(response.status, payload);
   return payload as T;
 }
 

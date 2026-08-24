@@ -23,5 +23,9 @@ export default defineConfig({
   test: {
     maxWorkers: 2,
     setupFiles: ["./test/apply-migrations.ts"],
+    // The console is a browser app with its own jsdom Vitest project, run by
+    // `pnpm run console:test`. Without this it is swept up by the default glob
+    // and executed inside the Workers runtime, where there is no DOM.
+    include: ["test/**/*.test.ts"],
   },
 });

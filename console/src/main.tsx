@@ -8,6 +8,23 @@ import { isUnauthorized } from "./lib/api";
 import { keys } from "./lib/queries";
 import "./index.css";
 
+const AUTH_PATHS = new Set(["/login", "/signup"]);
+
+/**
+ * A 401 anywhere means the session is gone. Dropping the cached session sends
+ * the router back to the sign-in screen rather than leaving every panel to
+ * render its own 401, and the redirect is skipped on the auth screens so a bad
+ * password does not look like a navigation.
+ */
+function handleUnauthorized(error: unknown) {
+  if (!isUnauthorized(error)) return;
+  client.setQueryData(keys.session, null);
+  if (!AUTH_PATHS.has(window.location.pathname)) {
+    window.history.pushState({}, "", "/login");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+
 const client = new QueryClient({
   defaultOptions: {
     queries: {
@@ -17,18 +34,8 @@ const client = new QueryClient({
       retry: (count, error) => !isUnauthorized(error) && count < 2,
     },
   },
-  // An expired session must drop the whole app back to the login screen rather
-  // than leaving every panel showing its own 401.
-  queryCache: new QueryCache({
-    onError: (error) => {
-      if (isUnauthorized(error)) client.setQueryData(keys.session, null);
-    },
-  }),
-  mutationCache: new MutationCache({
-    onError: (error) => {
-      if (isUnauthorized(error)) client.setQueryData(keys.session, null);
-    },
-  }),
+  queryCache: new QueryCache({ onError: handleUnauthorized }),
+  mutationCache: new MutationCache({ onError: handleUnauthorized }),
 });
 
 createRoot(document.getElementById("root")!).render(

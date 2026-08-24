@@ -1,26 +1,48 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, query } from "./api";
+import {
+  changePassword,
+  signInWithPassword,
+  signOut,
+  signUpWithPassword,
+  type SignInInput,
+  type SignUpInput,
+} from "./auth";
 import type {
   AppListResponse,
   AppCreateBody,
   AppResponse,
   AppUpsertBody,
   ApiKeyListResponse,
+  BillingPlansResponse,
+  BillingStatusResponse,
+  Capabilities,
   CreatedApiKey,
   CreatedApp,
   CreatedDevelopmentCredential,
+  CreatedManagementKey,
   DevelopmentCredential,
   BreakdownResponse,
   EventsResponse,
+  ManagementKeyListResponse,
+  MemberListResponse,
   MonthlyUsage,
+  OrganizationListResponse,
+  OrganizationRole,
   PricesResponse,
-  Session,
+  SessionResponse,
   TimeseriesResponse,
   UserListResponse,
 } from "./types";
 
 export const keys = {
+  capabilities: ["capabilities"] as const,
   session: ["session"] as const,
+  organizations: ["organizations"] as const,
+  members: ["members"] as const,
+  managementKeys: ["management-keys"] as const,
+  billingStatus: ["billing", "status"] as const,
+  billingPlans: ["billing", "plans"] as const,
   apps: (month: string) => ["apps", month] as const,
   app: (appId: string) => ["app", appId] as const,
   apiKeys: (appId: string) => ["api-keys", appId] as const,
@@ -34,28 +56,184 @@ export const keys = {
   prices: ["prices"] as const,
 };
 
+/**
+ * Deployment capabilities gate whole features (billing, signup, Google), so
+ * they are fetched before anything else and never refetched.
+ */
+export function useCapabilities() {
+  return useQuery({
+    queryKey: keys.capabilities,
+    queryFn: () => api.get<Capabilities>("/v1/console/capabilities"),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: 1,
+  });
+}
+
+/**
+ * The operator's identity, active organization and role.
+ *
+ * A 401 here is the normal unauthenticated case rather than an error worth
+ * retrying, so the caller treats a failed query as "signed out".
+ */
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: () => api.get<Session>("/v1/console/session"),
+    queryFn: async () => (await api.get<SessionResponse>("/v1/admin/session")).session,
     retry: false,
     staleTime: 60_000,
   });
 }
 
-export function useLogin() {
+export function useSignIn() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (token: string) => api.post<Session>("/v1/console/session", { token }),
-    onSuccess: (session) => client.setQueryData(keys.session, session),
+    mutationFn: (input: SignInInput) => signInWithPassword(input),
+    onSuccess: () => client.invalidateQueries(),
   });
 }
 
-export function useLogout() {
+export function useSignUp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => api.delete<{ authenticated: false }>("/v1/console/session"),
-    onSuccess: () => client.clear(),
+    mutationFn: (input: SignUpInput) => signUpWithPassword(input),
+    onSuccess: () => client.invalidateQueries(),
+  });
+}
+
+export function useSignOut() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => signOut(),
+    // Clearing rather than invalidating drops every organization-scoped cache
+    // so the next operator never sees the previous one's data.
+    onSettled: () => client.clear(),
+  });
+}
+
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (input: { currentPassword: string; newPassword: string }) =>
+      changePassword({ ...input, revokeOtherSessions: true }),
+  });
+}
+
+export function useOrganizations(enabled = true) {
+  return useQuery({
+    queryKey: keys.organizations,
+    queryFn: () => api.get<OrganizationListResponse>("/v1/admin/organizations"),
+    enabled,
+  });
+}
+
+export function useSelectOrganization() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (organizationId: string) =>
+      api.post<SessionResponse>("/v1/admin/organizations/select", { organizationId }),
+    onSuccess: (result) => {
+      // Every cached list is scoped to the previous organization.
+      client.clear();
+      client.setQueryData(keys.session, result.session);
+    },
+  });
+}
+
+export function useMembers(enabled = true) {
+  return useQuery({
+    queryKey: keys.members,
+    queryFn: () => api.get<MemberListResponse>("/v1/admin/members"),
+    enabled,
+  });
+}
+
+export function useUpdateMemberRole() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: OrganizationRole }) =>
+      api.put(`/v1/admin/members/${encodeURIComponent(userId)}`, { role }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: keys.members });
+      void client.invalidateQueries({ queryKey: keys.session });
+    },
+  });
+}
+
+export function useRemoveMember() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.delete(`/v1/admin/members/${encodeURIComponent(userId)}`),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.members }),
+  });
+}
+
+export function useManagementKeys() {
+  return useQuery({
+    queryKey: keys.managementKeys,
+    queryFn: () => api.get<ManagementKeyListResponse>("/v1/admin/keys"),
+  });
+}
+
+export function useCreateManagementKey() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.post<{ key: CreatedManagementKey }>("/v1/admin/keys", { name }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
+  });
+}
+
+export function useRevokeManagementKey() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) =>
+      api.post(`/v1/admin/keys/${encodeURIComponent(keyId)}/revoke`),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
+  });
+}
+
+/** Billing hooks stay disabled unless the deployment reports the capability. */
+export function useBillingStatus(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.billingStatus,
+    queryFn: () => api.get<BillingStatusResponse>("/v1/admin/billing/status"),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useBillingPlans(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.billingPlans,
+    queryFn: () => api.get<BillingPlansResponse>("/v1/admin/billing/plans"),
+    enabled,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+}
+
+export function useStartCheckout() {
+  return useMutation({
+    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+      api.post<{ url: string }>("/v1/admin/billing/checkout", {
+        ...input,
+        successUrl: `${window.location.origin}/billing`,
+        cancelUrl: `${window.location.origin}/billing`,
+      }),
+  });
+}
+
+export function useCancelSubscription() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ ok: true }>("/v1/admin/billing/cancel"),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
+  });
+}
+
+export function useResumeSubscription() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+      api.post<{ ok: true; requiredActionUrl?: string }>("/v1/admin/billing/resume", input),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
 }
 

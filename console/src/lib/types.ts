@@ -1,10 +1,124 @@
 import type { StoredAppConfig } from "./config-types";
 
+/** Optional deployment features, read once before the app renders. */
+export interface Capabilities {
+  billing: boolean;
+  registrationOpen: boolean;
+  googleAuth: boolean;
+}
+
+export interface OperatorUser {
+  id: string;
+  name: string | null;
+  email: string;
+  emailVerified: boolean;
+  image: string | null;
+  createdAt: string;
+}
+
+export type OrganizationRole = "owner" | "admin" | "member";
+
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface OrganizationMembership {
+  organization: OrganizationSummary;
+  role: OrganizationRole;
+  status: "active";
+  joinedAt: string;
+}
+
+export interface OrganizationMember extends OperatorUser {
+  role: OrganizationRole;
+  status: "active";
+  joinedAt: string;
+}
+
+/** The console's identity: who the operator is and what they may do here. */
 export interface Session {
-  authenticated: boolean;
-  expires_at: number | null;
-  environment: string;
-  gateway_id: string;
+  user: OperatorUser | null;
+  organization: OrganizationSummary | null;
+  role: OrganizationRole;
+  memberships: OrganizationMembership[];
+  credentialType: "session" | "apiKey";
+}
+
+export interface SessionResponse {
+  session: Session;
+}
+
+export interface OrganizationListResponse {
+  organizations: OrganizationMembership[];
+}
+
+export interface MemberListResponse {
+  members: OrganizationMember[];
+}
+
+export interface ManagementKey {
+  id: string;
+  organizationId: string;
+  name: string;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface ManagementKeyListResponse {
+  keys: ManagementKey[];
+}
+
+/** The plaintext token is present exactly once, in the create response. */
+export interface CreatedManagementKey extends ManagementKey {
+  plaintext: string;
+}
+
+export type BillingInactiveReason =
+  | "trial_expired"
+  | "past_due"
+  | "canceled"
+  | "missing_subscription"
+  | "service_inactive"
+  | "billing_unavailable";
+
+export interface BillingAccess {
+  status: "active" | "trialing" | "inactive";
+  reason?: BillingInactiveReason;
+  selfHosted?: boolean;
+  subscriptionStatus?: string;
+  planKey?: string;
+  planName?: string;
+  billingPeriod?: "month" | "year";
+  trialEndsAt?: string;
+  renewsAt?: string;
+  endsAt?: string;
+  canUpgrade?: boolean;
+  billingErrorCode?: string;
+}
+
+export interface BillingStatusResponse {
+  access: BillingAccess;
+}
+
+export interface BillingPrice {
+  billingPeriod: "month" | "year";
+  priceAmountCents: number;
+  priceCurrency: string;
+}
+
+export interface BillingPlan {
+  planKey: string;
+  name: string;
+  description: string;
+  features: string[];
+  trialDays: number;
+  prices: BillingPrice[];
+}
+
+export interface BillingPlansResponse {
+  plans: BillingPlan[];
 }
 
 export interface UsageTotals {

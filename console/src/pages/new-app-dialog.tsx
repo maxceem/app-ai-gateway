@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { GuardedButton } from "@/components/guarded-button";
 import {
   Dialog,
   DialogContent,
@@ -224,10 +225,10 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogTrigger asChild>
-          <Button size="sm">
+          <GuardedButton size="sm">
             <Plus className="size-4" />
             New app
-          </Button>
+          </GuardedButton>
         </DialogTrigger>
         <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
