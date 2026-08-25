@@ -4,12 +4,12 @@ import { generateDevelopmentCredential } from "../../core/development-credential
 import { invalidateAppConfig } from "../../core/config";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
-import { apps, developmentCredentials } from "../../db/schema";
+import { app, appDevelopmentCredential } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import type { StoredAppConfig } from "../../core/types";
 
 async function appRow(env: Env, appId: string) {
-  const row = await database(env.DB).query.apps.findFirst({ where: eq(apps.id, appId) });
+  const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   if (row.config.authentication.type !== "apple_app_attest") {
     throw new GatewayError(400, "invalid_request", "Development credentials require an App Attest app");
@@ -25,7 +25,7 @@ function withDevelopmentAccess(config: StoredAppConfig, enabled: boolean): Store
   };
 }
 
-function serialized(row: typeof developmentCredentials.$inferSelect) {
+function serialized(row: typeof appDevelopmentCredential.$inferSelect) {
   return {
     enabled: true,
     secret_prefix: row.secretPrefix,
@@ -42,8 +42,8 @@ export const developmentCredentialRoutes = new Hono<{
 developmentCredentialRoutes.get("/apps/:app/development-credential", async (c) => {
   const appId = c.req.param("app");
   await appRow(c.env, appId);
-  const row = await database(c.env.DB).query.developmentCredentials.findFirst({
-    where: eq(developmentCredentials.appId, appId),
+  const row = await database(c.env.DB).query.appDevelopmentCredential.findFirst({
+    where: eq(appDevelopmentCredential.appId, appId),
   });
   return c.json(row
     ? serialized(row)
@@ -53,46 +53,46 @@ developmentCredentialRoutes.get("/apps/:app/development-credential", async (c) =
 
 developmentCredentialRoutes.post("/apps/:app/development-credential", async (c) => {
   const appId = c.req.param("app");
-  const app = await appRow(c.env, appId);
+  const storedApp = await appRow(c.env, appId);
   const generated = await generateDevelopmentCredential();
   const [credential] = await database(c.env.DB)
-    .insert(developmentCredentials)
+    .insert(appDevelopmentCredential)
     .values({
       appId,
       secretHash: generated.secretHash,
       secretPrefix: generated.secretPrefix,
     })
-    .onConflictDoNothing({ target: developmentCredentials.appId })
+    .onConflictDoNothing({ target: appDevelopmentCredential.appId })
     .returning();
   if (!credential) {
     throw new GatewayError(409, "invalid_request", "A development credential already exists; rotate it instead");
   }
   await database(c.env.DB)
-    .update(apps)
-    .set({ config: withDevelopmentAccess(app.config, true), updatedAt: new Date().toISOString() })
-    .where(eq(apps.id, appId));
+    .update(app)
+    .set({ config: withDevelopmentAccess(storedApp.config, true), updatedAt: new Date().toISOString() })
+    .where(eq(app.id, appId));
   invalidateAppConfig(appId);
   return c.json({ ...serialized(credential), secret: generated.secret }, 201);
 });
 
 developmentCredentialRoutes.post("/apps/:app/development-credential/rotate", async (c) => {
   const appId = c.req.param("app");
-  const app = await appRow(c.env, appId);
+  const storedApp = await appRow(c.env, appId);
   if (
-    app.config.authentication.type !== "apple_app_attest"
-    || !app.config.authentication.development_access
+    storedApp.config.authentication.type !== "apple_app_attest"
+    || !storedApp.config.authentication.development_access
   ) {
     throw new GatewayError(400, "invalid_request", "Development access is disabled");
   }
   const generated = await generateDevelopmentCredential();
   const [credential] = await database(c.env.DB)
-    .update(developmentCredentials)
+    .update(appDevelopmentCredential)
     .set({
       secretHash: generated.secretHash,
       secretPrefix: generated.secretPrefix,
       rotatedAt: sql`datetime('now')`,
     })
-    .where(eq(developmentCredentials.appId, appId))
+    .where(eq(appDevelopmentCredential.appId, appId))
     .returning();
   if (!credential) throw new GatewayError(404, "invalid_request", "Development credential was not found");
   return c.json({ ...serialized(credential), secret: generated.secret });
@@ -100,14 +100,14 @@ developmentCredentialRoutes.post("/apps/:app/development-credential/rotate", asy
 
 developmentCredentialRoutes.delete("/apps/:app/development-credential", async (c) => {
   const appId = c.req.param("app");
-  const app = await appRow(c.env, appId);
+  const storedApp = await appRow(c.env, appId);
   await database(c.env.DB)
-    .delete(developmentCredentials)
-    .where(eq(developmentCredentials.appId, appId));
+    .delete(appDevelopmentCredential)
+    .where(eq(appDevelopmentCredential.appId, appId));
   await database(c.env.DB)
-    .update(apps)
-    .set({ config: withDevelopmentAccess(app.config, false), updatedAt: new Date().toISOString() })
-    .where(eq(apps.id, appId));
+    .update(app)
+    .set({ config: withDevelopmentAccess(storedApp.config, false), updatedAt: new Date().toISOString() })
+    .where(eq(app.id, appId));
   invalidateAppConfig(appId);
   return c.json({ enabled: false });
 });

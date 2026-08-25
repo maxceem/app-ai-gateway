@@ -3,21 +3,21 @@ import { describe, expect, it } from "vitest";
 
 describe("initial database migration", () => {
   it("creates the complete current schema", async () => {
-    const userColumns = await env.DB.prepare("PRAGMA table_info(users)").all<{ name: string }>();
-    const usageColumns = await env.DB.prepare("PRAGMA table_info(usage_events)").all<{
+    const userColumns = await env.DB.prepare("PRAGMA table_info(app_user)").all<{ name: string }>();
+    const usageColumns = await env.DB.prepare("PRAGMA table_info(app_usage_event)").all<{
       name: string;
       notnull: number;
       dflt_value: string | null;
     }>();
-    const appColumns = await env.DB.prepare("PRAGMA table_info(apps)").all<{
+    const appColumns = await env.DB.prepare("PRAGMA table_info(app)").all<{
       name: string;
       notnull: number;
     }>();
-    const apiKeyColumns = await env.DB.prepare("PRAGMA table_info(api_keys)").all<{ name: string }>();
+    const apiKeyColumns = await env.DB.prepare("PRAGMA table_info(app_api_key)").all<{ name: string }>();
     const developmentCredentialColumns = await env.DB
-      .prepare("PRAGMA table_info(development_credentials)")
+      .prepare("PRAGMA table_info(app_development_credential)")
       .all<{ name: string }>();
-    const apiKeyIndexes = await env.DB.prepare("PRAGMA index_list(api_keys)").all<{
+    const apiKeyIndexes = await env.DB.prepare("PRAGMA index_list(app_api_key)").all<{
       name: string;
       unique: number;
     }>();
@@ -38,17 +38,28 @@ describe("initial database migration", () => {
       "organization_id",
     ]);
     expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(0);
-    const operatorTables = await env.DB.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'operator_%' ORDER BY name",
+    const appTables = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND (name = 'app' OR name LIKE 'app_%') ORDER BY name",
     ).all<{ name: string }>();
-    expect(operatorTables.results.map((row) => row.name)).toEqual([
-      "operator_account",
-      "operator_api_key",
-      "operator_organization",
-      "operator_organization_user",
-      "operator_session",
-      "operator_user",
-      "operator_verification",
+    expect(appTables.results.map((row) => row.name)).toEqual([
+      "app",
+      "app_api_key",
+      "app_auth_challenge",
+      "app_development_credential",
+      "app_usage_event",
+      "app_user",
+    ]);
+    const consoleTables = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'console_%' ORDER BY name",
+    ).all<{ name: string }>();
+    expect(consoleTables.results.map((row) => row.name)).toEqual([
+      "console_api_key",
+      "console_organization",
+      "console_organization_user",
+      "console_user",
+      "console_user_account",
+      "console_user_session",
+      "console_verification",
     ]);
     expect(apiKeyColumns.results.map((column) => column.name)).toEqual([
       "id",
@@ -76,9 +87,9 @@ describe("initial database migration", () => {
   it("rejects usage events without a cost", async () => {
     await expect(
       env.DB.prepare(
-        `INSERT INTO usage_events(app_id, user_id, provider, model, route, cost_usd, status)
+        `INSERT INTO app_usage_event(app_id, user_id, provider, model, route, cost_usd, status)
          VALUES ('migration-cost', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', NULL, 'ok')`,
       ).run(),
-    ).rejects.toThrow(/NOT NULL constraint failed: usage_events.cost_usd/u);
+    ).rejects.toThrow(/NOT NULL constraint failed: app_usage_event.cost_usd/u);
   });
 });

@@ -8,7 +8,7 @@ import { verifyIssuerToken } from "../core/issuer";
 import { issueGatewayToken } from "../core/jwt";
 import type { AppAttestEnvironment, AppConfig, AppleAppAttestAuthentication } from "../core/types";
 import { database } from "../db";
-import { authChallenges, users } from "../db/schema";
+import { appAuthChallenge, appUser } from "../db/schema";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
@@ -41,13 +41,13 @@ function schemaBody<T>(schema: { safeParse(value: unknown): { success: true; dat
 
 async function consumeChallenge(env: Env, appId: string, challenge: string): Promise<void> {
   const consumed = await database(env.DB)
-    .delete(authChallenges)
+    .delete(appAuthChallenge)
     .where(and(
-      eq(authChallenges.challenge, challenge),
-      eq(authChallenges.appId, appId),
-      gt(authChallenges.expiresAt, sql`datetime('now')`),
+      eq(appAuthChallenge.challenge, challenge),
+      eq(appAuthChallenge.appId, appId),
+      gt(appAuthChallenge.expiresAt, sql`datetime('now')`),
     ))
-    .returning({ challenge: authChallenges.challenge });
+    .returning({ challenge: appAuthChallenge.challenge });
   if (consumed.length === 0) {
     throw new GatewayError(403, "attest_failed", "Challenge is invalid, expired, or already used");
   }
@@ -77,7 +77,7 @@ export async function storeAttestedUser(input: {
   environment: AppAttestEnvironment;
 }): Promise<void> {
   await database(input.env.DB)
-    .insert(users)
+    .insert(appUser)
     .values({
       appId: input.appId,
       id: input.userId,
@@ -88,7 +88,7 @@ export async function storeAttestedUser(input: {
       lastSeenAt: sql`datetime('now')`,
     })
     .onConflictDoUpdate({
-      target: [users.appId, users.id],
+      target: [appUser.appId, appUser.id],
       set: {
         attestKeyId: input.keyId,
         attestPublicKey: input.publicKeyPem,
@@ -110,7 +110,7 @@ authRoutes.post("/challenge", async (c) => {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const challenge = btoa(String.fromCharCode(...bytes)).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
-  await database(c.env.DB).insert(authChallenges).values({
+  await database(c.env.DB).insert(appAuthChallenge).values({
     challenge,
     appId,
     expiresAt: sql`datetime('now', '+5 minutes')`,
@@ -166,10 +166,10 @@ authRoutes.post("/token", async (c) => {
     }
     const { userId } = await verifyIssuerToken(body.issuer_token, auth.issuer);
     await database(c.env.DB)
-      .insert(users)
+      .insert(appUser)
       .values({ appId, id: userId, lastSeenAt: sql`datetime('now')` })
       .onConflictDoUpdate({
-        target: [users.appId, users.id],
+        target: [appUser.appId, appUser.id],
         set: { lastSeenAt: sql`datetime('now')` },
       });
     const issued = await issueGatewayToken(c.env.JWT_SECRET, appId, userId, "dev", accessTtl());
@@ -178,7 +178,7 @@ authRoutes.post("/token", async (c) => {
 
   const body = schemaBody(AppAttestTokenRequestSchema, rawBody);
   const { userId } = await verifyIssuerToken(body.issuer_token, auth.issuer);
-  const user = await database(c.env.DB).query.users.findFirst({
+  const user = await database(c.env.DB).query.appUser.findFirst({
     columns: {
       attestKeyId: true,
       attestPublicKey: true,
@@ -186,7 +186,7 @@ authRoutes.post("/token", async (c) => {
       attestEnvironment: true,
       status: true,
     },
-    where: and(eq(users.appId, appId), eq(users.id, userId)),
+    where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
   });
   if (
     !user ||
@@ -213,14 +213,14 @@ authRoutes.post("/token", async (c) => {
     previousCounter: user.attestCounter,
   });
   const updated = await database(c.env.DB)
-    .update(users)
+    .update(appUser)
     .set({ attestCounter: counter, lastSeenAt: sql`datetime('now')` })
     .where(and(
-      eq(users.appId, appId),
-      eq(users.id, userId),
-      lt(users.attestCounter, counter),
+      eq(appUser.appId, appId),
+      eq(appUser.id, userId),
+      lt(appUser.attestCounter, counter),
     ))
-    .returning({ id: users.id });
+    .returning({ id: appUser.id });
   if (updated.length !== 1) {
     throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
   }

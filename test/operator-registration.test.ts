@@ -76,7 +76,7 @@ describe("closed operator registration", () => {
 
     expect(response.status, await response.clone().text()).toBe(200);
     expect(response.headers.get("set-cookie")).toContain("agw_operator_auth.session_token");
-    const userCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM operator_user WHERE email = ?")
+    const userCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM console_user WHERE email = ?")
       .bind(email)
       .first<{ count: number }>();
     expect(userCount?.count).toBe(1);
@@ -84,7 +84,7 @@ describe("closed operator registration", () => {
 
   it("rejects new Google users without creating user or organization rows", async () => {
     const email = "new-google-disabled@example.test";
-    const before = await env.DB.prepare("SELECT COUNT(*) AS count FROM operator_organization")
+    const before = await env.DB.prepare("SELECT COUNT(*) AS count FROM console_organization")
       .first<{ count: number }>();
     const response = await googleSignIn(email, "new-google-disabled-subject");
 
@@ -95,10 +95,10 @@ describe("closed operator registration", () => {
         message: "Public registration is disabled for this deployment",
       },
     });
-    const user = await env.DB.prepare("SELECT id FROM operator_user WHERE email = ?")
+    const user = await env.DB.prepare("SELECT id FROM console_user WHERE email = ?")
       .bind(email)
       .first();
-    const after = await env.DB.prepare("SELECT COUNT(*) AS count FROM operator_organization")
+    const after = await env.DB.prepare("SELECT COUNT(*) AS count FROM console_organization")
       .first<{ count: number }>();
     expect(user).toBeNull();
     expect(after?.count).toBe(before?.count);

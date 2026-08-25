@@ -20,12 +20,12 @@ import {
 } from "../../core/app-writes";
 import { database } from "../../db";
 import {
-  apiKeys,
-  apps,
-  authChallenges,
-  developmentCredentials,
-  usageEvents,
-  users,
+  appApiKey,
+  app,
+  appAuthChallenge,
+  appDevelopmentCredential,
+  appUsageEvent,
+  appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { AppWriteSchema } from "../../contracts/schemas";
@@ -132,7 +132,7 @@ function summary(config: ReturnType<typeof validateAppConfigJson>) {
   };
 }
 
-function serializeRow(row: typeof apps.$inferSelect) {
+function serializeRow(row: typeof app.$inferSelect) {
   return {
     id: row.id,
     name: row.name,
@@ -171,7 +171,7 @@ async function organizationAtCapacity(
 ): Promise<boolean> {
   if (maxApps === undefined) return false;
   const row = await d1.prepare(
-    "SELECT COUNT(*) AS count FROM apps WHERE organization_id = ?",
+    "SELECT COUNT(*) AS count FROM app WHERE organization_id = ?",
   ).bind(organizationId).first<{ count: number }>();
   return (row?.count ?? 0) >= maxApps;
 }
@@ -183,34 +183,34 @@ appRoutes.get("/apps", async (c) => {
   const organizationId = c.get("admin").organizationId;
   const rows = await db
     .select()
-    .from(apps)
-    .where(eq(apps.organizationId, organizationId))
-    .orderBy(apps.id);
+    .from(app)
+    .where(eq(app.organizationId, organizationId))
+    .orderBy(app.id);
   const usage = await db
-    .select({ appId: usageEvents.appId, ...usageTotals })
-    .from(usageEvents)
-    .innerJoin(apps, eq(usageEvents.appId, apps.id))
+    .select({ appId: appUsageEvent.appId, ...usageTotals })
+    .from(appUsageEvent)
+    .innerJoin(app, eq(appUsageEvent.appId, app.id))
     .where(and(
-      eq(apps.organizationId, organizationId),
+      eq(app.organizationId, organizationId),
       gte(eventDay, bounds.from),
       lte(eventDay, bounds.to),
     ))
-    .groupBy(usageEvents.appId);
+    .groupBy(appUsageEvent.appId);
   const usageByApp = new Map(usage.map((row) => [row.appId, row]));
   const counts = await c.env.DB.prepare(
     `WITH identities AS (
-       SELECT users.app_id, users.id, users.status
-         FROM users
-         JOIN apps AS owned_apps ON owned_apps.id = users.app_id
-        WHERE owned_apps.organization_id = ?
+       SELECT app_user.app_id, app_user.id, app_user.status
+         FROM app_user
+         JOIN app AS owned_app ON owned_app.id = app_user.app_id
+        WHERE owned_app.organization_id = ?
        UNION ALL
        SELECT events.app_id, events.user_id AS id, 'active' AS status
-         FROM usage_events AS events
-         JOIN apps AS owned_apps ON owned_apps.id = events.app_id
-        WHERE owned_apps.organization_id = ?
+         FROM app_usage_event AS events
+         JOIN app AS owned_app ON owned_app.id = events.app_id
+        WHERE owned_app.organization_id = ?
           AND
           NOT EXISTS (
-          SELECT 1 FROM users WHERE users.app_id = events.app_id AND users.id = events.user_id
+          SELECT 1 FROM app_user WHERE app_user.app_id = events.app_id AND app_user.id = events.user_id
         )
         GROUP BY events.app_id, events.user_id
      )
@@ -318,7 +318,7 @@ appRoutes.post("/apps", async (c) => {
   try {
     if (config.authentication.type === "api_key") {
       const generated = await generateApiKey();
-      const [row] = await db.insert(apiKeys).values({
+      const [row] = await db.insert(appApiKey).values({
         id: generated.id,
         appId,
         name: "Default key",
@@ -334,7 +334,7 @@ appRoutes.post("/apps", async (c) => {
       };
     }
   } catch (error) {
-    await db.delete(apps).where(eq(apps.id, appId));
+    await db.delete(app).where(eq(app.id, appId));
     throw error;
   }
   invalidateAppConfig(appId);
@@ -343,10 +343,10 @@ appRoutes.post("/apps", async (c) => {
 
 appRoutes.get("/apps/:app", async (c) => {
   const appId = c.req.param("app");
-  const row = await database(c.env.DB).query.apps.findFirst({
+  const row = await database(c.env.DB).query.app.findFirst({
     where: and(
-      eq(apps.id, appId),
-      eq(apps.organizationId, c.get("admin").organizationId),
+      eq(app.id, appId),
+      eq(app.organizationId, c.get("admin").organizationId),
     ),
   });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
@@ -365,17 +365,17 @@ appRoutes.post("/apps/:app/validate", async (c) => {
   const planLimits = await activePlanLimits(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
-  const existing = await database(c.env.DB).query.apps.findFirst({
+  const existing = await database(c.env.DB).query.app.findFirst({
     where: and(
-      eq(apps.id, appId),
-      eq(apps.organizationId, c.get("admin").organizationId),
+      eq(app.id, appId),
+      eq(app.organizationId, c.get("admin").organizationId),
     ),
   });
   const config = validatedConfig(body.config, planLimits);
   if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
-    const credential = await database(c.env.DB).query.developmentCredentials.findFirst({
+    const credential = await database(c.env.DB).query.appDevelopmentCredential.findFirst({
       columns: { appId: true },
-      where: eq(developmentCredentials.appId, appId),
+      where: eq(appDevelopmentCredential.appId, appId),
     });
     if (!credential) {
       throw new GatewayError(400, "invalid_request", "Generate a development credential before enabling development access");
@@ -391,9 +391,9 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const db = database(c.env.DB);
   const config = validatedConfig(body.config, planLimits);
   if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
-    const credential = await db.query.developmentCredentials.findFirst({
+    const credential = await db.query.appDevelopmentCredential.findFirst({
       columns: { appId: true },
-      where: eq(developmentCredentials.appId, appId),
+      where: eq(appDevelopmentCredential.appId, appId),
     });
     if (!credential) {
       throw new GatewayError(400, "invalid_request", "Generate a development credential before enabling development access");
@@ -410,9 +410,9 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   };
   const written = await upsertAppWithinCapacity(c.env.DB, values, planLimits.maxApps);
   if (!written) {
-    const occupied = await db.query.apps.findFirst({
+    const occupied = await db.query.app.findFirst({
       columns: { organizationId: true },
-      where: eq(apps.id, appId),
+      where: eq(app.id, appId),
     });
     if (occupied && occupied.organizationId !== organizationId) {
       throw new GatewayError(404, "app_not_found", "App is not registered");
@@ -423,7 +423,7 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     throw new GatewayError(409, "invalid_request", "The application changed concurrently; retry the request");
   }
   if (config.authentication.type !== "apple_app_attest" || !config.authentication.development_access) {
-    await db.delete(developmentCredentials).where(eq(developmentCredentials.appId, appId));
+    await db.delete(appDevelopmentCredential).where(eq(appDevelopmentCredential.appId, appId));
   }
   invalidateAppConfig(appId);
   const loaded = await loadAppConfig(c.env, appId);
@@ -434,20 +434,20 @@ appRoutes.delete("/apps/:app", async (c) => {
   const appId = c.req.param("app");
   if (c.req.query("confirm") !== appId) throw new GatewayError(400, "invalid_request", "Pass ?confirm=<app-id> to delete an app");
   const db = database(c.env.DB);
-  const existing = await db.query.apps.findFirst({
+  const existing = await db.query.app.findFirst({
     where: and(
-      eq(apps.id, appId),
-      eq(apps.organizationId, c.get("admin").organizationId),
+      eq(app.id, appId),
+      eq(app.organizationId, c.get("admin").organizationId),
     ),
   });
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const removedUsers = await db.delete(users).where(eq(users.appId, appId)).returning({ id: users.id });
-  await db.delete(authChallenges).where(eq(authChallenges.appId, appId));
-  await db.delete(apiKeys).where(eq(apiKeys.appId, appId));
-  await db.delete(developmentCredentials).where(eq(developmentCredentials.appId, appId));
-  await db.delete(apps).where(and(
-    eq(apps.id, appId),
-    eq(apps.organizationId, c.get("admin").organizationId),
+  const removedUsers = await db.delete(appUser).where(eq(appUser.appId, appId)).returning({ id: appUser.id });
+  await db.delete(appAuthChallenge).where(eq(appAuthChallenge.appId, appId));
+  await db.delete(appApiKey).where(eq(appApiKey.appId, appId));
+  await db.delete(appDevelopmentCredential).where(eq(appDevelopmentCredential.appId, appId));
+  await db.delete(app).where(and(
+    eq(app.id, appId),
+    eq(app.organizationId, c.get("admin").organizationId),
   ));
   invalidateAppConfig(appId);
   return c.json({ deleted: appId, removed_users: removedUsers.length, usage_events_retained: true });

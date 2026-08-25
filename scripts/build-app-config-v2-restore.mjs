@@ -9,6 +9,8 @@ if (!backupPath || !outputPath) {
 }
 
 const database = new DatabaseSync(resolve(backupPath), { readOnly: true });
+// This converter intentionally reads a pre-0003 backup, whose source tables
+// predate both the config-v2 rebuild and the current plane-prefixed names.
 const apps = database.prepare("SELECT * FROM apps ORDER BY id").all();
 const apiKeys = database.prepare("SELECT * FROM api_keys ORDER BY app_id, id").all();
 
@@ -91,7 +93,7 @@ for (const row of apps) {
     config.authentication.development_access = true;
   }
   statements.push(
-    `INSERT INTO apps(id, name, config_json, status, created_at, updated_at) VALUES (${[
+    `INSERT INTO app(id, name, config_json, status, created_at, updated_at) VALUES (${[
       row.id,
       row.name,
       JSON.stringify(config),
@@ -103,7 +105,7 @@ for (const row of apps) {
   const secret = oldAuth.dev_access?.secret;
   if (typeof secret === "string") {
     statements.push(
-      `INSERT INTO development_credentials(app_id, secret_hash, secret_prefix, created_at) VALUES (${[
+      `INSERT INTO app_development_credential(app_id, secret_hash, secret_prefix, created_at) VALUES (${[
         row.id,
         createHash("sha256").update(secret).digest("hex"),
         secret.slice(0, 12),
@@ -115,7 +117,7 @@ for (const row of apps) {
 
 for (const key of apiKeys) {
   statements.push(
-    `INSERT INTO api_keys(id, app_id, name, key_hash, key_prefix, status, created_at, last_used_at) VALUES (${[
+    `INSERT INTO app_api_key(id, app_id, name, key_hash, key_prefix, status, created_at, last_used_at) VALUES (${[
       key.id,
       key.app_id,
       key.name,

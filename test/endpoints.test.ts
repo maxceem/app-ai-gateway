@@ -89,7 +89,7 @@ async function latestUsage(appId: string, expected = 1): Promise<UsageRow[]> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const rows = await env.DB.prepare(
       `SELECT provider, model, route, endpoint_slug, status, app_version
-         FROM usage_events WHERE app_id = ? ORDER BY id`,
+         FROM app_usage_event WHERE app_id = ? ORDER BY id`,
     )
       .bind(appId)
       .all<UsageRow>();

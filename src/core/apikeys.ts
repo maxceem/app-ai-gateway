@@ -1,6 +1,6 @@
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { database } from "../db";
-import { apiKeys } from "../db/schema";
+import { appApiKey } from "../db/schema";
 import { GatewayError } from "./errors";
 import type { GatewayIdentity } from "./types";
 
@@ -58,9 +58,9 @@ export async function verifyApiKey(
   const hash = await hashApiKey(credential);
   let resolved = apiKeyCache.get(hash);
   if (!resolved || resolved.expiresAt <= Date.now()) {
-    const row = await database(env.DB).query.apiKeys.findFirst({
+    const row = await database(env.DB).query.appApiKey.findFirst({
       columns: { id: true, appId: true },
-      where: and(eq(apiKeys.keyHash, hash), eq(apiKeys.status, "active")),
+      where: and(eq(appApiKey.keyHash, hash), eq(appApiKey.status, "active")),
     });
     resolved = {
       expiresAt: Date.now() + CONFIG_CACHE_TTL_MS,
@@ -83,14 +83,14 @@ export async function verifyApiKey(
 
 export async function markApiKeyUsed(env: Env, apiKeyId: string): Promise<void> {
   await database(env.DB)
-    .update(apiKeys)
+    .update(appApiKey)
     .set({ lastUsedAt: sql`datetime('now')` })
     .where(
       and(
-        eq(apiKeys.id, apiKeyId),
+        eq(appApiKey.id, apiKeyId),
         or(
-          isNull(apiKeys.lastUsedAt),
-          lt(apiKeys.lastUsedAt, sql`datetime('now', '-1 hour')`),
+          isNull(appApiKey.lastUsedAt),
+          lt(appApiKey.lastUsedAt, sql`datetime('now', '-1 hour')`),
         ),
       ),
     );

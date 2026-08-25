@@ -4,7 +4,7 @@ import {
   type CfAuthError,
   isCfAuthError,
 } from "@maxceem/cf-auth";
-import { operatorAuthTables } from "../db/schema";
+import { consoleAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 
 export const OPERATOR_AUTH_BASE_PATH = "/v1/auth";
@@ -24,7 +24,7 @@ export function createOperatorAuth(env: Env, requestUrl: string): CfAuth {
   return createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
-    tables: operatorAuthTables,
+    tables: consoleAuthTables,
     secret: env.BETTER_AUTH_SECRET,
     baseUrl: origin,
     basePath: OPERATOR_AUTH_BASE_PATH,

@@ -267,7 +267,7 @@ describe("billing gateway", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "payment_required" },
     });
-    const row = await env.DB.prepare("SELECT status FROM apps WHERE id = ?")
+    const row = await env.DB.prepare("SELECT status FROM app WHERE id = ?")
       .bind(appId)
       .first<{ status: string }>();
     expect(row?.status).toBe("active");

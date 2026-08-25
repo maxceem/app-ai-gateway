@@ -24,23 +24,23 @@ export type UsageStatus =
   | "blocked_budget"
   | "blocked_user";
 
-/** Operator-plane auth tables are namespaced away from end-user gateway data. */
-export const operatorAuthTables = createCfAuthTables({ tablePrefix: "operator_" });
+/** Console-plane auth tables are namespaced away from end-user gateway data. */
+export const consoleAuthTables = createCfAuthTables({ tablePrefix: "console_" });
 export const {
-  user: operatorUser,
-  session: operatorSession,
-  account: operatorAccount,
-  verification: operatorVerification,
-  organization: operatorOrganization,
-  organizationUser: operatorOrganizationUser,
-  apiKey: operatorApiKey,
-} = operatorAuthTables;
+  user: consoleUser,
+  session: consoleUserSession,
+  account: consoleUserAccount,
+  verification: consoleVerification,
+  organization: consoleOrganization,
+  organizationUser: consoleOrganizationUser,
+  apiKey: consoleApiKey,
+} = consoleAuthTables;
 
-export const apps = sqliteTable(
-  "apps",
+export const app = sqliteTable(
+  "app",
   {
     id: text("id").primaryKey(),
-    organizationId: text("organization_id").references(() => operatorOrganization.id),
+    organizationId: text("organization_id").references(() => consoleOrganization.id),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" })
       .$type<StoredAppConfig>()
@@ -55,13 +55,13 @@ export const apps = sqliteTable(
   ],
 );
 
-export const apiKeys = sqliteTable(
-  "api_keys",
+export const appApiKey = sqliteTable(
+  "app_api_key",
   {
     id: text("id").primaryKey(),
     appId: text("app_id")
       .notNull()
-      .references(() => apps.id),
+      .references(() => app.id),
     name: text("name").notNull(),
     keyHash: text("key_hash").notNull(),
     keyPrefix: text("key_prefix").notNull(),
@@ -76,22 +76,22 @@ export const apiKeys = sqliteTable(
   ],
 );
 
-export const developmentCredentials = sqliteTable("development_credentials", {
+export const appDevelopmentCredential = sqliteTable("app_development_credential", {
   appId: text("app_id")
     .primaryKey()
-    .references(() => apps.id),
+    .references(() => app.id),
   secretHash: text("secret_hash").notNull(),
   secretPrefix: text("secret_prefix").notNull(),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
   rotatedAt: text("rotated_at"),
 });
 
-export const users = sqliteTable(
-  "users",
+export const appUser = sqliteTable(
+  "app_user",
   {
     appId: text("app_id")
       .notNull()
-      .references(() => apps.id),
+      .references(() => app.id),
     id: text("id").notNull(),
     attestKeyId: text("attest_key_id"),
     attestPublicKey: text("attest_public_key"),
@@ -107,8 +107,8 @@ export const users = sqliteTable(
   ],
 );
 
-export const usageEvents = sqliteTable(
-  "usage_events",
+export const appUsageEvent = sqliteTable(
+  "app_usage_event",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     appId: text("app_id").notNull(),
@@ -138,13 +138,13 @@ export const usageEvents = sqliteTable(
   ],
 );
 
-export const authChallenges = sqliteTable(
-  "auth_challenges",
+export const appAuthChallenge = sqliteTable(
+  "app_auth_challenge",
   {
     challenge: text("challenge").primaryKey(),
     appId: text("app_id")
       .notNull()
-      .references(() => apps.id),
+      .references(() => app.id),
     expiresAt: text("expires_at").notNull(),
   },
   (table) => [index("idx_auth_challenges_expiry").on(table.expiresAt)],

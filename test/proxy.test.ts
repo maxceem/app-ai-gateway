@@ -589,7 +589,7 @@ describe("provider-native proxy", () => {
         });
         expect(fetchSpy).not.toHaveBeenCalled();
         const usage = await env.DB.prepare(
-          "SELECT COUNT(*) AS count FROM usage_events WHERE app_id = ?",
+          "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ?",
         )
           .bind(appId)
           .first<{ count: number }>();
@@ -663,14 +663,14 @@ describe("provider-native proxy", () => {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM usage_events WHERE app_id = ? AND model = ?",
+        "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ? AND model = ?",
       )
         .bind("proxy-rewrite", "gemini-3.6-flash")
         .first<{ count: number }>();
       if ((row?.count ?? 0) > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    throw new Error("Rewritten model was not persisted to usage_events");
+    throw new Error("Rewritten model was not persisted to app_usage_event");
   });
 
   it("rebuilds a rewritten Gemini path", async () => {
@@ -869,7 +869,7 @@ describe("provider-native proxy", () => {
     expect(upstreamBytes).toEqual(requestBytes);
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        "SELECT model, cost_usd, auth_method FROM usage_events WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT model, cost_usd, auth_method FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
       )
         .bind("proxy-xai-stt")
         .first<{ model: string; cost_usd: number; auth_method: string | null }>();
@@ -881,7 +881,7 @@ describe("provider-native proxy", () => {
       }
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    throw new Error("Fixed xAI STT model was not persisted to usage_events");
+    throw new Error("Fixed xAI STT model was not persisted to app_usage_event");
   });
 
   it("rejects bodies larger than 20 MB before contacting the provider", async () => {
@@ -1004,7 +1004,7 @@ describe("provider-native proxy", () => {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const row = await env.DB.prepare(
         `SELECT user_id, input_tokens, output_tokens, cost_usd, app_version, auth_method
-           FROM usage_events WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
+           FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
       )
         .bind("proxy-perplexity")
         .first<{
@@ -1015,7 +1015,7 @@ describe("provider-native proxy", () => {
           app_version: string | null;
           auth_method: string | null;
         }>();
-      const keyRow = await env.DB.prepare("SELECT last_used_at FROM api_keys WHERE app_id = ?")
+      const keyRow = await env.DB.prepare("SELECT last_used_at FROM app_api_key WHERE app_id = ?")
         .bind("proxy-perplexity")
         .first<{ last_used_at: string | null }>();
       if (row && keyRow?.last_used_at) {

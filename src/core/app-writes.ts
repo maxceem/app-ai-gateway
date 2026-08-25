@@ -27,10 +27,10 @@ export async function insertAppWithinCapacity(
   maxApps: number | undefined,
 ): Promise<boolean> {
   const result = await d1.prepare(
-    `INSERT INTO apps(id, organization_id, name, config_json, status, updated_at)
+    `INSERT INTO app(id, organization_id, name, config_json, status, updated_at)
      SELECT ?, ?, ?, ?, ?, ?
       WHERE ? IS NULL
-         OR (SELECT COUNT(*) FROM apps WHERE organization_id = ?) < ?
+         OR (SELECT COUNT(*) FROM app WHERE organization_id = ?) < ?
      ON CONFLICT(id) DO NOTHING
      RETURNING id`,
   ).bind(
@@ -53,20 +53,20 @@ export async function upsertAppWithinCapacity(
   maxApps: number | undefined,
 ): Promise<boolean> {
   const result = await d1.prepare(
-    `INSERT INTO apps(id, organization_id, name, config_json, status, updated_at)
+    `INSERT INTO app(id, organization_id, name, config_json, status, updated_at)
      SELECT ?, ?, ?, ?, ?, ?
       WHERE EXISTS (
-              SELECT 1 FROM apps
+              SELECT 1 FROM app
                WHERE id = ? AND organization_id = ?
             )
          OR ? IS NULL
-         OR (SELECT COUNT(*) FROM apps WHERE organization_id = ?) < ?
+         OR (SELECT COUNT(*) FROM app WHERE organization_id = ?) < ?
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        config_json = excluded.config_json,
        status = excluded.status,
        updated_at = excluded.updated_at
-     WHERE apps.organization_id = excluded.organization_id
+     WHERE app.organization_id = excluded.organization_id
      RETURNING id`,
   ).bind(
     ...bindings(values),

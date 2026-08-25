@@ -36,7 +36,7 @@ async function recordUsage(
     createdAt = new Date().toISOString().slice(0, 19).replace("T", " "),
   } = overrides;
   await env.DB.prepare(
-    `INSERT INTO usage_events(
+    `INSERT INTO app_usage_event(
        app_id, user_id, provider, model, route, input_tokens,
        cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at
      ) VALUES (?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?)`,
@@ -48,10 +48,10 @@ async function recordUsage(
 describe("admin console API", () => {
   it("lists apps with month-to-date usage and user counts", async () => {
     await seedApp("list-apps");
-    await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("list-apps", "user-1", "active")
       .run();
-    await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("list-apps", "user-2", "blocked")
       .run();
     await recordUsage("list-apps");
@@ -217,7 +217,7 @@ describe("admin console API", () => {
 
   it("returns a readable row plus the error when a stored config is invalid", async () => {
     await env.DB.prepare(
-      `INSERT INTO apps(id, organization_id, name, config_json, status)
+      `INSERT INTO app(id, organization_id, name, config_json, status)
        VALUES (?, 'operator-test-organization', ?, ?, 'active')`,
     )
       .bind("broken-config", "Broken", JSON.stringify({ authentication: {}, routing: {}, limits: {} }))
@@ -231,7 +231,7 @@ describe("admin console API", () => {
 
   it("deletes an app only with confirmation and keeps its usage history", async () => {
     await seedApp("delete-me");
-    await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("delete-me", "user-1", "active")
       .run();
     await recordUsage("delete-me");
@@ -251,7 +251,7 @@ describe("admin console API", () => {
     expect((await get("/v1/admin/apps/delete-me")).status).toBe(404);
 
     const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM usage_events WHERE app_id = ?",
+      "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ?",
     )
       .bind("delete-me")
       .first<{ count: number }>();
@@ -261,7 +261,7 @@ describe("admin console API", () => {
   it("lists users with month-to-date usage and supports search", async () => {
     await seedApp("user-list");
     for (const id of ["alpha-user", "beta-user"]) {
-      await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, 'active')")
+      await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, 'active')")
         .bind("user-list", id)
         .run();
     }

@@ -13,7 +13,7 @@ import {
   rethrowCfAuthError,
 } from "../auth/operator";
 import { GatewayError } from "../core/errors";
-import type { apps } from "../db/schema";
+import type { app } from "../db/schema";
 import type { BillingVariables } from "../billing/gateway";
 
 export interface AdminContext {
@@ -27,7 +27,7 @@ export interface AdminVariables extends BillingVariables {
   authState: AuthState;
   operatorAuth: CfAuth;
   admin: AdminContext;
-  adminApp?: typeof apps.$inferSelect;
+  adminApp?: typeof app.$inferSelect;
 }
 
 /**

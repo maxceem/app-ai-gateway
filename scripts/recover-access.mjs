@@ -52,21 +52,21 @@ const statements = [];
 if (password) {
   const passwordHash = await hashPassword(password);
   statements.push(
-    `UPDATE operator_account
+    `UPDATE console_user_account
         SET password = ${sqlString(passwordHash)}, updated_at = ${Date.now()}
       WHERE provider_id = 'credential'
         AND user_id = (
-          SELECT id FROM operator_user WHERE email = ${sqlString(email)} COLLATE NOCASE
+          SELECT id FROM console_user WHERE email = ${sqlString(email)} COLLATE NOCASE
         );`,
   );
 }
 if (promoteOwner) {
   statements.push(
-    `UPDATE operator_organization_user
+    `UPDATE console_organization_user
         SET role = 'owner'
       WHERE organization_id = ${sqlString(organizationId)}
         AND user_id = (
-          SELECT id FROM operator_user WHERE email = ${sqlString(email)} COLLATE NOCASE
+          SELECT id FROM console_user WHERE email = ${sqlString(email)} COLLATE NOCASE
         );`,
   );
 }

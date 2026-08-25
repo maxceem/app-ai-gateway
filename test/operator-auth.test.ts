@@ -18,11 +18,11 @@ async function signup(email: string): Promise<{ cookie: string; organizationId: 
     body: JSON.stringify({ name: email.split("@")[0], email, password: "correct-horse-42" }),
   });
   expect(response.status, await response.clone().text()).toBe(200);
-  const user = await env.DB.prepare("SELECT id FROM operator_user WHERE email = ?")
+  const user = await env.DB.prepare("SELECT id FROM console_user WHERE email = ?")
     .bind(email)
     .first<{ id: string }>();
   const membership = await env.DB.prepare(
-    "SELECT organization_id FROM operator_organization_user WHERE user_id = ?",
+    "SELECT organization_id FROM console_organization_user WHERE user_id = ?",
   ).bind(user!.id).first<{ organization_id: string }>();
   return { cookie: cookieFrom(response), organizationId: membership!.organization_id };
 }
@@ -36,7 +36,7 @@ function sessionHeaders(cookie: string, json = false): Record<string, string> {
 }
 
 async function userIdFor(email: string): Promise<string> {
-  const row = await env.DB.prepare("SELECT id FROM operator_user WHERE email = ?")
+  const row = await env.DB.prepare("SELECT id FROM console_user WHERE email = ?")
     .bind(email)
     .first<{ id: string }>();
   return row!.id;
@@ -47,10 +47,10 @@ async function seedOrganization(name: string, userId: string, role = "owner"): P
   const now = new Date().toISOString();
   const organizationId = `org-${name}`;
   await env.DB.prepare(
-    "INSERT INTO operator_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO console_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
   ).bind(organizationId, name, userId, now, now).run();
   await env.DB.prepare(
-    "INSERT INTO operator_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, ?, 'active', ?)",
+    "INSERT INTO console_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, ?, 'active', ?)",
   ).bind(`membership-${name}`, organizationId, userId, role, now).run();
   return organizationId;
 }
@@ -154,7 +154,7 @@ describe("operator authentication", () => {
   it("lets members read their organization but rejects mutations", async () => {
     const { cookie, organizationId } = await signup("member@example.test");
     await env.DB.prepare(
-      "UPDATE operator_organization_user SET role = 'member' WHERE organization_id = ?",
+      "UPDATE console_organization_user SET role = 'member' WHERE organization_id = ?",
     ).bind(organizationId).run();
 
     const read = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
@@ -167,7 +167,7 @@ describe("operator authentication", () => {
     await expect(write.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
 
     await env.DB.prepare(
-      "UPDATE operator_organization_user SET role = 'admin' WHERE organization_id = ?",
+      "UPDATE console_organization_user SET role = 'admin' WHERE organization_id = ?",
     ).bind(organizationId).run();
     expect((await createApp(cookie, "admin-can-create")).status).toBe(201);
   });
@@ -210,7 +210,7 @@ describe("operator authentication", () => {
     );
 
     // Demote the caller everywhere: switching must not require mutation rights.
-    await env.DB.prepare("UPDATE operator_organization_user SET role = 'member' WHERE user_id = ?")
+    await env.DB.prepare("UPDATE console_organization_user SET role = 'member' WHERE user_id = ?")
       .bind(userId).run();
 
     const wrongVerb = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
@@ -249,7 +249,7 @@ describe("operator authentication", () => {
     const otherId = await userIdFor("second-seat@example.test");
     const foreignId = await userIdFor("foreign-seat@example.test");
     await env.DB.prepare(
-      "INSERT INTO operator_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'member', 'active', ?)",
+      "INSERT INTO console_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'member', 'active', ?)",
     ).bind("membership-second-seat", organizationId, otherId, new Date().toISOString()).run();
 
     const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/members`, {

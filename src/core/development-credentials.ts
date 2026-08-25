@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { database } from "../db";
-import { developmentCredentials } from "../db/schema";
+import { appDevelopmentCredential } from "../db/schema";
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const encoder = new TextEncoder();
@@ -43,11 +43,11 @@ export async function verifyDevelopmentCredential(
   secret: string,
 ): Promise<boolean> {
   const secretHash = await hashDevelopmentSecret(secret);
-  const row = await database(env.DB).query.developmentCredentials.findFirst({
+  const row = await database(env.DB).query.appDevelopmentCredential.findFirst({
     columns: { appId: true },
     where: and(
-      eq(developmentCredentials.appId, appId),
-      eq(developmentCredentials.secretHash, secretHash),
+      eq(appDevelopmentCredential.appId, appId),
+      eq(appDevelopmentCredential.secretHash, secretHash),
     ),
   });
   return row !== undefined;

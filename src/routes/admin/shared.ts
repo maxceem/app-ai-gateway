@@ -1,6 +1,6 @@
 import { and, eq, gte, lte, sql, type SQL } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
-import { usageEvents } from "../../db/schema";
+import { appUsageEvent } from "../../db/schema";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/u;
 const MONTH = /^\d{4}-\d{2}$/u;
@@ -41,21 +41,21 @@ export function parseRange(from: string | undefined, to: string | undefined, day
 }
 
 /** `created_at` is `YYYY-MM-DD HH:MM:SS`, so the day prefix compares lexically. */
-export const eventDay = sql<string>`substr(${usageEvents.createdAt}, 1, 10)`;
+export const eventDay = sql<string>`substr(${appUsageEvent.createdAt}, 1, 10)`;
 
 export function inRange(appId: string, range: DateRange): SQL | undefined {
-  return and(eq(usageEvents.appId, appId), gte(eventDay, range.from), lte(eventDay, range.to));
+  return and(eq(appUsageEvent.appId, appId), gte(eventDay, range.from), lte(eventDay, range.to));
 }
 
 export const usageTotals = {
   requests: sql<number>`COUNT(*)`,
-  input_tokens: sql<number>`COALESCE(SUM(${usageEvents.inputTokens}), 0)`,
-  cached_input_tokens: sql<number>`COALESCE(SUM(${usageEvents.cachedInputTokens}), 0)`,
-  cache_write_tokens: sql<number>`COALESCE(SUM(${usageEvents.cacheWriteTokens}), 0)`,
-  output_tokens: sql<number>`COALESCE(SUM(${usageEvents.outputTokens}), 0)`,
-  cost_usd: sql<number>`COALESCE(SUM(${usageEvents.costUsd}), 0)`,
-  errors: sql<number>`SUM(CASE WHEN ${usageEvents.status} = 'provider_error' THEN 1 ELSE 0 END)`,
-  blocked: sql<number>`SUM(CASE WHEN ${usageEvents.status} LIKE 'blocked_%' THEN 1 ELSE 0 END)`,
+  input_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.inputTokens}), 0)`,
+  cached_input_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.cachedInputTokens}), 0)`,
+  cache_write_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.cacheWriteTokens}), 0)`,
+  output_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.outputTokens}), 0)`,
+  cost_usd: sql<number>`COALESCE(SUM(${appUsageEvent.costUsd}), 0)`,
+  errors: sql<number>`SUM(CASE WHEN ${appUsageEvent.status} = 'provider_error' THEN 1 ELSE 0 END)`,
+  blocked: sql<number>`SUM(CASE WHEN ${appUsageEvent.status} LIKE 'blocked_%' THEN 1 ELSE 0 END)`,
 };
 
 export function parseLimit(value: string | undefined, fallback: number, max: number): number {

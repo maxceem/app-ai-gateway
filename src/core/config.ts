@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { database } from "../db";
-import { apps } from "../db/schema";
+import { app } from "../db/schema";
 import { GatewayError } from "./errors";
 import { hasModelPrice } from "./usage";
 import type {
@@ -414,7 +414,7 @@ export function parseStoredAppConfig(raw: unknown): {
   };
 }
 
-function fromRow(row: typeof apps.$inferSelect): AppConfig {
+function fromRow(row: typeof app.$inferSelect): AppConfig {
   const parsed = parseStoredAppConfig(row.config);
   return {
     id: row.id,
@@ -435,7 +435,7 @@ export function hasAppLevelLimits(app: AppConfig): boolean {
 export async function loadAppConfig(env: Env, appId: string): Promise<AppConfig> {
   const cached = appCache.get(appId);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const row = await database(env.DB).query.apps.findFirst({ where: eq(apps.id, appId) });
+  const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   const value = fromRow(row);
   appCache.set(appId, { expiresAt: Date.now() + CONFIG_CACHE_TTL_MS, value });

@@ -104,7 +104,7 @@ describe("per-app development authentication", () => {
       authMethod: "dev",
     });
     await expect(
-      env.DB.prepare("SELECT id FROM users WHERE app_id = ? AND id = ?")
+      env.DB.prepare("SELECT id FROM app_user WHERE app_id = ? AND id = ?")
         .bind("dev-success", "firebase-uid")
         .first(),
     ).resolves.not.toBeNull();
@@ -202,7 +202,7 @@ describe("per-app App Attest environments", () => {
       environment: "development",
     });
     await expect(
-      env.DB.prepare("SELECT attest_env FROM users WHERE app_id = ? AND id = ?")
+      env.DB.prepare("SELECT attest_env FROM app_user WHERE app_id = ? AND id = ?")
         .bind("attest-environment-store", "registered-user")
         .first<{ attest_env: string | null }>(),
     ).resolves.toEqual({ attest_env: "development" });
@@ -225,14 +225,14 @@ describe("per-app App Attest environments", () => {
       publicKeyPem: "public-key",
       environment: "development",
     });
-    const row = await env.DB.prepare("SELECT config_json FROM apps WHERE id = ?")
+    const row = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?")
       .bind("attest-revoked")
       .first<{ config_json: string }>();
     const updatedConfig = JSON.parse(row!.config_json) as {
       authentication: { app_attest: { environments: string[] } };
     };
     updatedConfig.authentication.app_attest.environments = ["production"];
-    await env.DB.prepare("UPDATE apps SET config_json = ? WHERE id = ?")
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?")
       .bind(JSON.stringify(updatedConfig), "attest-revoked")
       .run();
     invalidateAppConfig("attest-revoked");

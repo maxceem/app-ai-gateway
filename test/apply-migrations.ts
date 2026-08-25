@@ -12,7 +12,7 @@ beforeAll(async () => {
   const now = new Date();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT OR IGNORE INTO operator_user(
+      `INSERT OR IGNORE INTO console_user(
         id, name, email, email_verified, created_at, updated_at
       ) VALUES (?, ?, ?, 1, ?, ?)`,
     ).bind(
@@ -23,7 +23,7 @@ beforeAll(async () => {
       now.getTime(),
     ),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO operator_organization(
+      `INSERT OR IGNORE INTO console_organization(
         id, name, created_by_user_id, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?)`,
     ).bind(
@@ -34,7 +34,7 @@ beforeAll(async () => {
       now.toISOString(),
     ),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO operator_organization_user(
+      `INSERT OR IGNORE INTO console_organization_user(
         id, organization_id, user_id, role, status, joined_at
       ) VALUES (?, ?, ?, 'owner', 'active', ?)`,
     ).bind(
@@ -44,7 +44,7 @@ beforeAll(async () => {
       now.toISOString(),
     ),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO operator_api_key(
+      `INSERT OR IGNORE INTO console_api_key(
         id, organization_id, name, token_hash, created_at
       ) VALUES (?, ?, ?, ?, ?)`,
     ).bind(

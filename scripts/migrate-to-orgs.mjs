@@ -74,15 +74,15 @@ const membershipId = randomUUID();
 const passwordHash = await hashPassword(password);
 
 const statements = [
-  `INSERT INTO operator_user(id, name, email, email_verified, created_at, updated_at)
+  `INSERT INTO console_user(id, name, email, email_verified, created_at, updated_at)
    VALUES (${sqlString(userId)}, ${sqlString(name)}, ${sqlString(email)}, 1, ${nowEpoch}, ${nowEpoch});`,
-  `INSERT INTO operator_account(id, account_id, provider_id, user_id, password, created_at, updated_at)
+  `INSERT INTO console_user_account(id, account_id, provider_id, user_id, password, created_at, updated_at)
    VALUES (${sqlString(accountId)}, ${sqlString(userId)}, 'credential', ${sqlString(userId)}, ${sqlString(passwordHash)}, ${nowEpoch}, ${nowEpoch});`,
-  `INSERT INTO operator_organization(id, name, created_by_user_id, created_at, updated_at)
+  `INSERT INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
    VALUES (${sqlString(organizationId)}, ${sqlString(organizationName)}, ${sqlString(userId)}, ${sqlString(nowIso)}, ${sqlString(nowIso)});`,
-  `INSERT INTO operator_organization_user(id, organization_id, user_id, role, status, joined_at)
+  `INSERT INTO console_organization_user(id, organization_id, user_id, role, status, joined_at)
    VALUES (${sqlString(membershipId)}, ${sqlString(organizationId)}, ${sqlString(userId)}, 'owner', 'active', ${sqlString(nowIso)});`,
-  `UPDATE apps SET organization_id = ${sqlString(organizationId)} WHERE organization_id IS NULL;`,
+  `UPDATE app SET organization_id = ${sqlString(organizationId)} WHERE organization_id IS NULL;`,
 ];
 
 const wranglerBin = fileURLToPath(new URL("../node_modules/.bin/wrangler", import.meta.url));

@@ -3,7 +3,7 @@ import { Hono, type Context, type Next } from "hono";
 import prices from "../../core/prices.json";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
-import { apps } from "../../db/schema";
+import { app } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { appRoutes } from "./apps";
 import { developmentCredentialRoutes } from "./development-credentials";
@@ -23,8 +23,8 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(404, "app_not_found", "App is not registered");
   const organizationId = c.get("admin").organizationId;
-  const row = await database(c.env.DB).query.apps.findFirst({
-    where: and(eq(apps.id, appId), eq(apps.organizationId, organizationId)),
+  const row = await database(c.env.DB).query.app.findFirst({
+    where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
 
   if (!row) {
@@ -32,9 +32,9 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
     const upsertOnly = (c.req.method === "POST" || c.req.method === "PUT")
       && c.req.path === `/v1/admin/apps/${appId}`;
     if (validationOnly || upsertOnly) {
-      const occupied = await database(c.env.DB).query.apps.findFirst({
+      const occupied = await database(c.env.DB).query.app.findFirst({
         columns: { id: true },
-        where: eq(apps.id, appId),
+        where: eq(app.id, appId),
       });
       if (!occupied) {
         await next();

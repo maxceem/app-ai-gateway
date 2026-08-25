@@ -7,13 +7,13 @@ describe("admin API", () => {
     await seedApp("admin-rollup");
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO usage_events(
+        `INSERT INTO app_usage_event(
            app_id, user_id, provider, model, route, input_tokens,
            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind("admin-rollup", "user-1", "openai", "known", "openai/v1/responses", 10, 2, 0, 3, 0.01, "ok"),
       env.DB.prepare(
-        `INSERT INTO usage_events(
+        `INSERT INTO app_usage_event(
            app_id, user_id, provider, model, route, input_tokens,
            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -45,7 +45,7 @@ describe("admin API", () => {
     const userId = "user-1";
     await seedApp(appId, { appBudgetUsd: 100 });
     await env.DB.prepare(
-      `INSERT INTO usage_events(
+      `INSERT INTO app_usage_event(
          app_id, user_id, provider, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -96,7 +96,7 @@ describe("admin API", () => {
       recalculated_cost_usd: 0.0000373,
       reconciled_users: 1,
     });
-    const row = await env.DB.prepare("SELECT cost_usd FROM usage_events WHERE app_id = ?")
+    const row = await env.DB.prepare("SELECT cost_usd FROM app_usage_event WHERE app_id = ?")
       .bind(appId)
       .first<{ cost_usd: number }>();
     expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);

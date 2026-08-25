@@ -3,7 +3,7 @@ import { issueGatewayToken } from "../src/core/jwt";
 import { hashApiKey } from "../src/core/apikeys";
 import { hashDevelopmentSecret } from "../src/core/development-credentials";
 import { database } from "../src/db";
-import { apiKeys, apps, developmentCredentials } from "../src/db/schema";
+import { app, appApiKey, appDevelopmentCredential } from "../src/db/schema";
 import type { StoredAppConfig } from "../src/core/types";
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
@@ -135,7 +135,7 @@ export function defaultProxyConfig(): Record<string, unknown> {
 export async function seedApp(appId: string, options: SeedOptions = {}): Promise<void> {
   const issuer = options.auth ?? {};
   const developmentAccess = options.auth === undefined || issuer.dev_access !== undefined;
-  await database(env.DB).insert(apps).values({
+  await database(env.DB).insert(app).values({
     id: appId,
     organizationId: options.organizationId === undefined
       ? TEST_ORGANIZATION_ID
@@ -166,7 +166,7 @@ export async function seedApp(appId: string, options: SeedOptions = {}): Promise
     status: "active",
   });
   if (developmentAccess) {
-    await database(env.DB).insert(developmentCredentials).values({
+    await database(env.DB).insert(appDevelopmentCredential).values({
       appId,
       secretHash: await hashDevelopmentSecret(TEST_DEVELOPMENT_SECRET),
       secretPrefix: TEST_DEVELOPMENT_SECRET.slice(0, 12),
@@ -180,7 +180,7 @@ export async function seedServerApp(
 ): Promise<string> {
   const suffix = `${appId.replace(/[^0-9A-Za-z]/gu, "")}0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`;
   const key = options.key ?? `agw_${suffix.padEnd(48, "A").slice(0, 48)}`;
-  await database(env.DB).insert(apps).values({
+  await database(env.DB).insert(app).values({
     id: appId,
     organizationId: options.organizationId === undefined
       ? TEST_ORGANIZATION_ID
@@ -197,7 +197,7 @@ export async function seedServerApp(
     } as unknown as StoredAppConfig,
     status: "active",
   });
-  await database(env.DB).insert(apiKeys).values({
+  await database(env.DB).insert(appApiKey).values({
     id: `key_${appId}`,
     appId,
     name: "Test server key",

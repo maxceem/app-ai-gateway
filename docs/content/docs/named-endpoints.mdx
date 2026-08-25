@@ -67,5 +67,5 @@ When a provider call throws, rate limits, or returns a server error, and nothing
 has been streamed to the client yet, the gateway retries the next `{provider,
 model}` pair with the same prepared body. Usage is recorded against the target
 that actually served the request, and every attempt is recorded with the endpoint
-slug in `usage_events.endpoint_slug`, which the console exposes as the "By
+slug in `app_usage_event.endpoint_slug`, which the console exposes as the "By
 endpoint" usage breakdown.

@@ -5,7 +5,7 @@ import type { Provider } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { database } from "../../db";
-import { usageEvents } from "../../db/schema";
+import { appUsageEvent } from "../../db/schema";
 import type { UserLimiter } from "../../do/UserLimiter";
 import type { AdminVariables } from "../../middleware/admin";
 import { currentMonth, eventDay, inRange, parseLimit, parseRange, usageTotals } from "./shared";
@@ -13,13 +13,13 @@ import { currentMonth, eventDay, inRange, parseLimit, parseRange, usageTotals } 
 export const usageRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
 
 const BREAKDOWN_COLUMNS = {
-  model: usageEvents.model,
-  provider: usageEvents.provider,
-  user: usageEvents.userId,
-  status: usageEvents.status,
-  route: usageEvents.route,
-  endpoint: usageEvents.endpointSlug,
-  app_version: usageEvents.appVersion,
+  model: appUsageEvent.model,
+  provider: appUsageEvent.provider,
+  user: appUsageEvent.userId,
+  status: appUsageEvent.status,
+  route: appUsageEvent.route,
+  endpoint: appUsageEvent.endpointSlug,
+  app_version: appUsageEvent.appVersion,
 } as const;
 
 type BreakdownKey = keyof typeof BREAKDOWN_COLUMNS;
@@ -36,16 +36,16 @@ usageRoutes.get("/apps/:app/usage", async (c) => {
   const row = await database(c.env.DB)
     .select({
       requests: sql<number>`COUNT(*)`,
-      input_tokens: sql<number>`COALESCE(SUM(${usageEvents.inputTokens}), 0)`,
-      cached_input_tokens: sql<number>`COALESCE(SUM(${usageEvents.cachedInputTokens}), 0)`,
-      cache_write_tokens: sql<number>`COALESCE(SUM(${usageEvents.cacheWriteTokens}), 0)`,
-      output_tokens: sql<number>`COALESCE(SUM(${usageEvents.outputTokens}), 0)`,
-      cost_usd: sql<number>`COALESCE(SUM(${usageEvents.costUsd}), 0)`,
+      input_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.inputTokens}), 0)`,
+      cached_input_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.cachedInputTokens}), 0)`,
+      cache_write_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.cacheWriteTokens}), 0)`,
+      output_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.outputTokens}), 0)`,
+      cost_usd: sql<number>`COALESCE(SUM(${appUsageEvent.costUsd}), 0)`,
     })
-    .from(usageEvents)
+    .from(appUsageEvent)
     .where(and(
-      eq(usageEvents.appId, appId),
-      eq(sql`substr(${usageEvents.createdAt}, 1, 7)`, month),
+      eq(appUsageEvent.appId, appId),
+      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
     ))
     .get();
   return c.json({ app_id: appId, month, ...row });
@@ -70,19 +70,19 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
 
   const rows = await database(c.env.DB)
     .select({
-      id: usageEvents.id,
-      inputTokens: usageEvents.inputTokens,
-      cachedInputTokens: usageEvents.cachedInputTokens,
-      cacheWriteTokens: usageEvents.cacheWriteTokens,
-      outputTokens: usageEvents.outputTokens,
-      costUsd: usageEvents.costUsd,
+      id: appUsageEvent.id,
+      inputTokens: appUsageEvent.inputTokens,
+      cachedInputTokens: appUsageEvent.cachedInputTokens,
+      cacheWriteTokens: appUsageEvent.cacheWriteTokens,
+      outputTokens: appUsageEvent.outputTokens,
+      costUsd: appUsageEvent.costUsd,
     })
-    .from(usageEvents)
+    .from(appUsageEvent)
     .where(and(
-      eq(usageEvents.appId, appId),
-      eq(usageEvents.provider, provider),
-      eq(usageEvents.model, model),
-      eq(sql`substr(${usageEvents.createdAt}, 1, 7)`, month),
+      eq(appUsageEvent.appId, appId),
+      eq(appUsageEvent.provider, provider),
+      eq(appUsageEvent.model, model),
+      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
     ))
     .limit(10_001);
   if (rows.length > 10_000) {
@@ -104,22 +104,22 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     for (let offset = 0; offset < repriced.length; offset += 100) {
       const chunk = repriced.slice(offset, offset + 100);
       await c.env.DB.batch(chunk.map((row) => c.env.DB
-        .prepare("UPDATE usage_events SET cost_usd = ? WHERE id = ? AND app_id = ?")
+        .prepare("UPDATE app_usage_event SET cost_usd = ? WHERE id = ? AND app_id = ?")
         .bind(row.costUsd, row.id, appId)));
     }
 
     const monthFilter = and(
-      eq(usageEvents.appId, appId),
-      eq(sql`substr(${usageEvents.createdAt}, 1, 7)`, month),
+      eq(appUsageEvent.appId, appId),
+      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
     );
     const userTotals = await database(c.env.DB)
       .select({
-        userId: usageEvents.userId,
-        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${usageEvents.costUsd} * 1000000)), 0) AS INTEGER)`,
+        userId: appUsageEvent.userId,
+        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
       })
-      .from(usageEvents)
+      .from(appUsageEvent)
       .where(monthFilter)
-      .groupBy(usageEvents.userId);
+      .groupBy(appUsageEvent.userId);
     for (const total of userTotals) {
       const limiter = c.env.USER_LIMITER.getByName(`${appId}:${total.userId}`) as DurableObjectStub<UserLimiter>;
       await limiter.reconcileMonth(month, total.microusd);
@@ -128,9 +128,9 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
 
     const appTotal = await database(c.env.DB)
       .select({
-        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${usageEvents.costUsd} * 1000000)), 0) AS INTEGER)`,
+        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
       })
-      .from(usageEvents)
+      .from(appUsageEvent)
       .where(monthFilter)
       .get();
     const appLimiter = c.env.USER_LIMITER.getByName(appId) as DurableObjectStub<UserLimiter>;
@@ -156,10 +156,10 @@ usageRoutes.get("/apps/:app/usage/timeseries", async (c) => {
   const appId = c.req.param("app");
   const range = parseRange(c.req.query("from"), c.req.query("to"));
   const rows = await database(c.env.DB)
-    .select({ date: eventDay, provider: usageEvents.provider, ...usageTotals })
-    .from(usageEvents)
+    .select({ date: eventDay, provider: appUsageEvent.provider, ...usageTotals })
+    .from(appUsageEvent)
     .where(inRange(appId, range))
-    .groupBy(eventDay, usageEvents.provider)
+    .groupBy(eventDay, appUsageEvent.provider)
     .orderBy(eventDay);
   return c.json({ app_id: appId, ...range, buckets: rows });
 });
@@ -179,7 +179,7 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
   const limit = parseLimit(c.req.query("limit"), 50, 200);
   const rows = await database(c.env.DB)
     .select({ key: column, ...usageTotals })
-    .from(usageEvents)
+    .from(appUsageEvent)
     .where(inRange(appId, range))
     .groupBy(column)
     .orderBy(desc(usageTotals.requests))
@@ -190,21 +190,21 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
 usageRoutes.get("/apps/:app/events", async (c) => {
   const appId = c.req.param("app");
   const limit = parseLimit(c.req.query("limit"), 50, 200);
-  const filters = [eq(usageEvents.appId, appId)];
+  const filters = [eq(appUsageEvent.appId, appId)];
 
   const status = c.req.query("status");
   if (status) {
     if (!USAGE_STATUSES.includes(status as UsageStatusFilter)) {
       throw new GatewayError(400, "invalid_request", `status must be one of ${USAGE_STATUSES.join(", ")}`);
     }
-    filters.push(eq(usageEvents.status, status as UsageStatusFilter));
+    filters.push(eq(appUsageEvent.status, status as UsageStatusFilter));
   }
   const provider = c.req.query("provider");
-  if (provider) filters.push(eq(usageEvents.provider, provider));
+  if (provider) filters.push(eq(appUsageEvent.provider, provider));
   const user = c.req.query("user");
-  if (user) filters.push(eq(usageEvents.userId, user));
+  if (user) filters.push(eq(appUsageEvent.userId, user));
   const model = c.req.query("model");
-  if (model) filters.push(eq(usageEvents.model, model));
+  if (model) filters.push(eq(appUsageEvent.model, model));
 
   const before = c.req.query("before_id");
   if (before !== undefined) {
@@ -212,14 +212,14 @@ usageRoutes.get("/apps/:app/events", async (c) => {
     if (!Number.isInteger(cursor) || cursor < 1) {
       throw new GatewayError(400, "invalid_request", "before_id must be a positive integer");
     }
-    filters.push(lt(usageEvents.id, cursor));
+    filters.push(lt(appUsageEvent.id, cursor));
   }
 
   const rows = await database(c.env.DB)
     .select()
-    .from(usageEvents)
+    .from(appUsageEvent)
     .where(and(...filters))
-    .orderBy(desc(usageEvents.id))
+    .orderBy(desc(appUsageEvent.id))
     .limit(limit);
 
   return c.json({

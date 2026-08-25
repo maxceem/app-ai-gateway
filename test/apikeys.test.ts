@@ -8,7 +8,7 @@ import {
   verifyApiKey,
 } from "../src/core/apikeys";
 import { database } from "../src/db";
-import { apiKeys } from "../src/db/schema";
+import { appApiKey } from "../src/db/schema";
 import { devToken, seedApp, seedServerApp } from "./helpers";
 
 beforeEach(() => clearApiKeyCache());
@@ -40,9 +40,9 @@ describe("server tenant API keys", () => {
     });
 
     await database(env.DB)
-      .update(apiKeys)
+      .update(appApiKey)
       .set({ status: "revoked" })
-      .where(eq(apiKeys.id, "key_key-cache"));
+      .where(eq(appApiKey.id, "key_key-cache"));
     await expect(verifyApiKey(key, env, "key-cache", null)).resolves.toMatchObject({
       userId: "key_key-cache",
     });

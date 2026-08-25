@@ -4,7 +4,7 @@ import { log } from "./log";
 import type { GatewayAuthMethod, Provider, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
-import { usageEvents } from "../db/schema";
+import { appUsageEvent } from "../db/schema";
 
 interface Price {
   input?: number;
@@ -309,7 +309,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   if (cost === null) {
     throw new Error(`Refusing to persist usage for unpriced model ${input.provider}/${input.model}`);
   }
-  await database(input.env.DB).insert(usageEvents).values({
+  await database(input.env.DB).insert(appUsageEvent).values({
     appId: input.appId,
     userId: input.userId,
     provider: input.provider,
@@ -348,7 +348,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
 }
 
 export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Promise<void> {
-  await database(input.env.DB).insert(usageEvents).values({
+  await database(input.env.DB).insert(appUsageEvent).values({
     appId: input.appId,
     userId: input.userId,
     provider: input.provider,
