@@ -14,15 +14,12 @@ describe("initial database migration", () => {
       notnull: number;
     }>();
     const apiKeyColumns = await env.DB.prepare("PRAGMA table_info(app_api_key)").all<{ name: string }>();
-    const developmentCredentialColumns = await env.DB
-      .prepare("PRAGMA table_info(app_development_credential)")
-      .all<{ name: string }>();
     const apiKeyIndexes = await env.DB.prepare("PRAGMA index_list(app_api_key)").all<{
       name: string;
       unique: number;
     }>();
 
-    expect(userColumns.results.map((column) => column.name)).toContain("attest_env");
+    expect(userColumns.results.map((column) => column.name)).not.toContain("attest_env");
     expect(usageColumns.results.map((column) => column.name)).toContain("auth_method");
     expect(usageColumns.results.find((column) => column.name === "cost_usd")).toMatchObject({
       notnull: 1,
@@ -45,7 +42,6 @@ describe("initial database migration", () => {
       "app",
       "app_api_key",
       "app_auth_challenge",
-      "app_development_credential",
       "app_usage_event",
       "app_user",
     ]);
@@ -75,13 +71,6 @@ describe("initial database migration", () => {
       expect.objectContaining({ name: "idx_api_keys_app" }),
       expect.objectContaining({ name: "api_keys_key_hash_unique", unique: 1 }),
     ]));
-    expect(developmentCredentialColumns.results.map((column) => column.name)).toEqual([
-      "app_id",
-      "secret_hash",
-      "secret_prefix",
-      "created_at",
-      "rotated_at",
-    ]);
   });
 
   it("rejects usage events without a cost", async () => {

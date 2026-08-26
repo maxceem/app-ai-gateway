@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { devToken, seedApp, seedServerApp } from "./helpers";
+import { gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -113,7 +113,7 @@ describe("named endpoints", () => {
         chat: { ...CHAT_ENDPOINTS.chat, max_output_tokens: 4096 },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured = captureUpstream(usageResponse);
 
     const response = await endpointRequest({
@@ -155,7 +155,7 @@ describe("named endpoints", () => {
   it("records usage with the endpoint slug", async () => {
     const appId = "endpoint-usage";
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     captureUpstream(usageResponse);
 
     const response = await endpointRequest({
@@ -182,7 +182,7 @@ describe("named endpoints", () => {
   it("leaves the endpoint slug null for passthrough proxy traffic", async () => {
     const appId = "endpoint-passthrough";
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     captureUpstream(usageResponse);
 
     const response = await workerFetch(
@@ -207,7 +207,7 @@ describe("named endpoints", () => {
   it("streams a provider-native SSE response unbuffered", async () => {
     const appId = "endpoint-stream";
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const first = "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n";
     const second = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n";
     let secondSent = false;
@@ -244,7 +244,7 @@ describe("named endpoints", () => {
   it("injects the configured model into an OpenAI multipart transcription", async () => {
     const appId = "endpoint-transcribe";
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured = captureUpstream(() =>
       Response.json({ text: "hello", duration: 1.25 }),
     );
@@ -280,7 +280,7 @@ describe("named endpoints", () => {
         voice: { api_style: "transcription", provider: "xai", model: "grok-transcribe" },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured = captureUpstream(() => Response.json({ text: "hello", duration: 1 }));
 
     const form = new FormData();
@@ -298,7 +298,7 @@ describe("named endpoints", () => {
   it("rejects a JSON body for a transcription endpoint", async () => {
     const appId = "endpoint-transcribe-json";
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const response = await endpointRequest({
@@ -324,7 +324,7 @@ describe("named endpoints", () => {
         },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured = captureUpstream((attempt) =>
       attempt === 0
         ? Response.json({ error: { message: "upstream exploded" } }, { status: 500 })
@@ -368,7 +368,7 @@ describe("named endpoints", () => {
         chat: { ...CHAT_ENDPOINTS.chat, fallback: [{ provider: "xai", model: "grok-4.5" }] },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured = captureUpstream(() =>
       Response.json({ error: { message: "still broken" } }, { status: 503 }),
     );
@@ -393,7 +393,7 @@ describe("named endpoints", () => {
         chat: { ...CHAT_ENDPOINTS.chat, fallback: [{ provider: "xai", model: "grok-4.5" }] },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     let attempts = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       attempts += 1;
@@ -421,7 +421,7 @@ describe("named endpoints", () => {
   ])("returns endpoint_not_found for %s", async (_label, slug) => {
     const appId = `endpoint-404-${slug.toLowerCase()}`;
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const response = await endpointRequest({
@@ -441,7 +441,7 @@ describe("named endpoints", () => {
 
   it("returns endpoint_not_found when the app configures no endpoints", async () => {
     await seedApp("endpoint-none");
-    const token = await devToken("endpoint-none");
+    const token = await gatewayToken("endpoint-none");
     const response = await endpointRequest({
       appId: "endpoint-none",
       slug: "chat",
@@ -460,7 +460,7 @@ describe("named endpoints", () => {
     await seedApp(appId, {
       endpoints: { chat: { ...CHAT_ENDPOINTS.chat, max_output_tokens: 128 } },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const response = await endpointRequest({
@@ -480,7 +480,7 @@ describe("named endpoints", () => {
 
   it("requires X-App-Version for issuer clients but not for server API keys", async () => {
     await seedApp("endpoint-version", { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken("endpoint-version");
+    const token = await gatewayToken("endpoint-version");
     const missingVersion = await workerFetch(
       "https://example.test/v1/apps/endpoint-version/endpoints/chat",
       {
@@ -507,7 +507,7 @@ describe("named endpoints", () => {
 
   it("rejects bodies larger than 20 MB before contacting the provider", async () => {
     await seedApp("endpoint-size", { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken("endpoint-size");
+    const token = await gatewayToken("endpoint-size");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await workerFetch(
       "https://example.test/v1/apps/endpoint-size/endpoints/chat",
@@ -529,7 +529,7 @@ describe("named endpoints", () => {
 
   it("does not serve named endpoints over GET", async () => {
     await seedApp("endpoint-method", { endpoints: CHAT_ENDPOINTS });
-    const token = await devToken("endpoint-method");
+    const token = await gatewayToken("endpoint-method");
     const response = await workerFetch(
       "https://example.test/v1/apps/endpoint-method/endpoints/chat",
       { method: "GET", headers: { authorization: `Bearer ${token}`, "x-app-version": "1.2.3" } },

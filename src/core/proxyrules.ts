@@ -211,9 +211,7 @@ export function sanitizedHeaders(
     "authorization",
     "x-api-key",
     "x-goog-api-key",
-    app.authentication.type === "apple_app_attest"
-      ? app.authentication.issuer.token_header
-      : undefined,
+    app.authentication.issuer?.token_header,
     tokenHeader,
     "x-end-user-id",
     "cf-aig-authorization",

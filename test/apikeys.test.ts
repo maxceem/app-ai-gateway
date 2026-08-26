@@ -9,7 +9,7 @@ import {
 } from "../src/core/apikeys";
 import { database } from "../src/db";
 import { appApiKey } from "../src/db/schema";
-import { devToken, seedApp, seedServerApp } from "./helpers";
+import { gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 beforeEach(() => clearApiKeyCache());
 afterEach(() => vi.restoreAllMocks());
@@ -56,7 +56,7 @@ describe("server tenant API keys", () => {
 
   it("keeps issuer JWTs and API keys exclusive to their configured mode", async () => {
     const key = await seedServerApp("mode-server");
-    const jwt = await devToken("mode-server");
+    const jwt = await gatewayToken("mode-server");
     const serverWithJwt = await exports.default.fetch(
       "https://example.test/v1/apps/mode-server/proxy/openai/v1/responses",
       {

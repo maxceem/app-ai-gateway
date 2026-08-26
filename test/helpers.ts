@@ -1,14 +1,11 @@
 import { env } from "cloudflare:workers";
 import { issueGatewayToken } from "../src/core/jwt";
 import { hashApiKey } from "../src/core/apikeys";
-import { hashDevelopmentSecret } from "../src/core/development-credentials";
 import { database } from "../src/db";
-import { app, appApiKey, appDevelopmentCredential } from "../src/db/schema";
+import { app, appApiKey } from "../src/db/schema";
 import type { StoredAppConfig } from "../src/core/types";
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
-
-export const TEST_DEVELOPMENT_SECRET = "test-per-app-development-secret-12345";
 
 export interface SeedOptions {
   organizationId?: string | null;
@@ -62,7 +59,7 @@ export function serverConfig(input: {
 
 export function appleConfig(
   issuer: Record<string, unknown>,
-  input: { environments?: unknown; developmentAccess?: boolean; proxy?: Record<string, unknown> } = {},
+  input: { proxy?: Record<string, unknown> } = {},
 ): Record<string, unknown> {
   return {
     authentication: {
@@ -76,9 +73,7 @@ export function appleConfig(
       app_attest: {
         team_id: "AAAAAAAAAA",
         bundle_id: "com.example.test",
-        environments: input.environments ?? ["production"],
       },
-      development_access: input.developmentAccess ?? false,
     },
     routing: routingConfig(input.proxy ?? {}),
     limits: {
@@ -134,7 +129,6 @@ export function defaultProxyConfig(): Record<string, unknown> {
 
 export async function seedApp(appId: string, options: SeedOptions = {}): Promise<void> {
   const issuer = options.auth ?? {};
-  const developmentAccess = options.auth === undefined || issuer.dev_access !== undefined;
   await database(env.DB).insert(app).values({
     id: appId,
     organizationId: options.organizationId === undefined
@@ -154,10 +148,7 @@ export async function seedApp(appId: string, options: SeedOptions = {}): Promise
         app_attest: {
           team_id: "AAAAAAAAAA",
           bundle_id: `com.example.${appId}`,
-          environments: (issuer.appattest_environments as string[] | undefined)
-            ?? ["production", "development"],
         },
-        development_access: developmentAccess,
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       limits: limitsConfig(options),
@@ -165,18 +156,11 @@ export async function seedApp(appId: string, options: SeedOptions = {}): Promise
     } as unknown as StoredAppConfig,
     status: "active",
   });
-  if (developmentAccess) {
-    await database(env.DB).insert(appDevelopmentCredential).values({
-      appId,
-      secretHash: await hashDevelopmentSecret(TEST_DEVELOPMENT_SECRET),
-      secretPrefix: TEST_DEVELOPMENT_SECRET.slice(0, 12),
-    });
-  }
 }
 
 export async function seedServerApp(
   appId: string,
-  options: SeedOptions & { key?: string } = {},
+  options: SeedOptions & { key?: string; issuer?: Record<string, unknown> } = {},
 ): Promise<string> {
   const suffix = `${appId.replace(/[^0-9A-Za-z]/gu, "")}0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`;
   const key = options.key ?? `agw_${suffix.padEnd(48, "A").slice(0, 48)}`;
@@ -189,6 +173,15 @@ export async function seedServerApp(
     config: {
       authentication: {
         type: "api_key",
+        ...(options.issuer === undefined ? {} : {
+          issuer: {
+            jwks_url: options.issuer.jwks_url ?? "https://issuer.test/.well-known/jwks.json",
+            user_id_claim: options.issuer.user_id_claim ?? "sub",
+            ...(options.issuer.token_header === undefined ? {} : { token_header: options.issuer.token_header }),
+            required_claims: options.issuer.required_claims ?? [],
+            max_token_lifetime_seconds: options.issuer.max_token_lifetime_seconds ?? 3600,
+          },
+        }),
         end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
@@ -207,7 +200,7 @@ export async function seedServerApp(
   return key;
 }
 
-export async function devToken(appId: string, userId = "user-1"): Promise<string> {
-  const issued = await issueGatewayToken(env.JWT_SECRET, appId, userId, "dev", 3600);
+export async function gatewayToken(appId: string, userId = "user-1"): Promise<string> {
+  const issued = await issueGatewayToken(env.JWT_SECRET, appId, userId, "attest", 3600);
   return issued.token;
 }

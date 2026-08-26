@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
@@ -74,9 +73,7 @@ function genericConfig(row, oldAuth, oldProxy, oldLimits) {
         app_attest: {
           team_id: row.apple_team_id,
           bundle_id: row.apple_bundle_id,
-          environments: oldAuth.appattest_environments ?? ["production"],
         },
-        development_access: oldAuth.dev_access?.secret != null,
       };
   return {
     authentication,
@@ -89,9 +86,6 @@ const statements = ["PRAGMA foreign_keys = ON;"];
 for (const row of apps) {
   const oldAuth = json(row.auth_config_json);
   const config = genericConfig(row, oldAuth, json(row.proxy_config_json), json(row.limits_json));
-  if (oldAuth.dev_access?.secret != null && config.authentication.type === "apple_app_attest") {
-    config.authentication.development_access = true;
-  }
   statements.push(
     `INSERT INTO app(id, name, config_json, status, created_at, updated_at) VALUES (${[
       row.id,
@@ -102,17 +96,6 @@ for (const row of apps) {
       row.created_at,
     ].map(sql).join(", ")});`,
   );
-  const secret = oldAuth.dev_access?.secret;
-  if (typeof secret === "string") {
-    statements.push(
-      `INSERT INTO app_development_credential(app_id, secret_hash, secret_prefix, created_at) VALUES (${[
-        row.id,
-        createHash("sha256").update(secret).digest("hex"),
-        secret.slice(0, 12),
-        row.created_at,
-      ].map(sql).join(", ")});`,
-    );
-  }
 }
 
 for (const key of apiKeys) {

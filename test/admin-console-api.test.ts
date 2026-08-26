@@ -63,7 +63,6 @@ describe("admin console API", () => {
     expect(app).toMatchObject({
       name: "Test list-apps",
       status: "active",
-      dev_access_enabled: true,
       users: { total: 2, blocked: 1 },
     });
     expect(app.providers.sort()).toEqual(["anthropic", "gemini", "openai", "xai"]);
@@ -73,64 +72,6 @@ describe("admin console API", () => {
       output_tokens: 10,
       cost_usd: 0.05,
     });
-  });
-
-  it("creates, rotates, and revokes a one-time development credential", async () => {
-    await seedApp("development-credential", {
-      auth: {
-        jwks_url: "https://issuer.test/jwks",
-        dev_access: undefined,
-      },
-    });
-
-    const disabled = await get("/v1/admin/apps/development-credential/development-credential");
-    expect(disabled.body).toMatchObject({ enabled: false, secret_prefix: null });
-
-    const createdResponse = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/development-credential/development-credential`,
-      { method: "POST", headers: JSON_AUTH },
-    );
-    expect(createdResponse.status).toBe(201);
-    const created = await createdResponse.json<any>();
-    expect(created.secret).toMatch(/^dev_[A-Za-z0-9]{48}$/u);
-    expect(created.secret_prefix).toBe(created.secret.slice(0, 12));
-
-    const metadata = await get("/v1/admin/apps/development-credential/development-credential");
-    expect(metadata.body).toMatchObject({ enabled: true, secret_prefix: created.secret_prefix });
-    expect(metadata.body).not.toHaveProperty("secret");
-    const app = await get("/v1/admin/apps/development-credential");
-    expect(app.body.app.config.authentication.development_access).toBe(true);
-
-    const rotatedResponse = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/development-credential/development-credential/rotate`,
-      { method: "POST", headers: JSON_AUTH },
-    );
-    expect(rotatedResponse.status).toBe(200);
-    const rotated = await rotatedResponse.json<any>();
-    expect(rotated.secret).not.toBe(created.secret);
-
-    const revoked = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/development-credential/development-credential`,
-      { method: "DELETE", headers: AUTH },
-    );
-    expect(revoked.status).toBe(200);
-    expect((await get("/v1/admin/apps/development-credential")).body.app.config.authentication.development_access)
-      .toBe(false);
-  });
-
-  it("rejects enabling development access through config without a credential", async () => {
-    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/no-development-credential`, {
-      method: "POST",
-      headers: JSON_AUTH,
-      body: JSON.stringify({
-        name: "No development credential",
-        config: appleConfig(
-          { jwks_url: "https://issuer.test/jwks" },
-          { developmentAccess: true },
-        ),
-      }),
-    });
-    expect(response.status).toBe(400);
   });
 
   it("validates a candidate config without writing it", async () => {

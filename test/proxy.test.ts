@@ -3,7 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import type { OutputClampStyle, Provider } from "../src/core/types";
-import { defaultProxyConfig, devToken, seedApp, seedServerApp } from "./helpers";
+import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -239,7 +239,7 @@ describe("provider-native proxy", () => {
   ])("allows every provider and path with a priced model in %s", async (_label, proxy) => {
     const appId = `proxy-all-${crypto.randomUUID()}`;
     await seedApp(appId, { proxy });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -268,7 +268,7 @@ describe("provider-native proxy", () => {
     await seedApp(appId, {
       proxy: { provider_mode: "selected", model_rewrites: {} },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const response = await proxyRequest({
@@ -320,7 +320,7 @@ describe("provider-native proxy", () => {
       max_output_tokens: 128,
     };
     await seedApp(appId, { proxy });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       Response.json(
         { error: { message: "Provider rate limit exceeded" } },
@@ -341,7 +341,7 @@ describe("provider-native proxy", () => {
 
   it("streams the upstream response byte-for-byte without waiting for completion", async () => {
     await seedApp("proxy-stream");
-    const token = await devToken("proxy-stream");
+    const token = await gatewayToken("proxy-stream");
     const first = "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n";
     const second = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n";
     let secondSent = false;
@@ -394,7 +394,7 @@ describe("provider-native proxy", () => {
 
   it("rejects paths and models outside the tenant allowlists", async () => {
     await seedApp("proxy-deny");
-    const token = await devToken("proxy-deny");
+    const token = await gatewayToken("proxy-deny");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const deniedPath = await proxyRequest({
       appId: "proxy-deny",
@@ -427,7 +427,7 @@ describe("provider-native proxy", () => {
     };
     if (allowedModels !== undefined) openai.allowed_models = allowedModels;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -463,7 +463,7 @@ describe("provider-native proxy", () => {
     };
     if (allowedPaths !== undefined) openai.allowed_paths = allowedPaths;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -503,7 +503,7 @@ describe("provider-native proxy", () => {
         model_rewrites: { "gemini-3.5-flash": "gemini-3.6-flash" },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -536,7 +536,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-unset-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const bodies = captureProviderBodies();
         const rawBody = `${JSON.stringify(testCase.highBody, null, 2)}\n`;
 
@@ -553,7 +553,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-allowed-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase, 128) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const bodies = captureProviderBodies();
         const rawBody = `${JSON.stringify(testCase.allowedBody, null, 2)}\n`;
 
@@ -570,7 +570,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-reject-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase, 128) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const fetchSpy = vi.spyOn(globalThis, "fetch");
 
         const response = await proxyRequest({
@@ -602,7 +602,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-inject-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase, 128) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const bodies = captureProviderBodies();
 
         const response = await proxyRequest({
@@ -626,7 +626,7 @@ describe("provider-native proxy", () => {
 
   it("rewrites body and Gemini URL models only after allowlist validation", async () => {
     await seedApp("proxy-rewrite");
-    const token = await devToken("proxy-rewrite");
+    const token = await gatewayToken("proxy-rewrite");
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -682,7 +682,7 @@ describe("provider-native proxy", () => {
     };
     proxy.model_rewrites = { "gemini-3.5-flash": "gemini-3.6-flash" };
     await seedApp("proxy-gemini-encoding", { proxy });
-    const token = await devToken("proxy-gemini-encoding");
+    const token = await gatewayToken("proxy-gemini-encoding");
     let upstreamUrl = "";
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
       upstreamUrl = typeof request === "string"
@@ -709,7 +709,7 @@ describe("provider-native proxy", () => {
 
   it("uses the body model and chat-completions cap policy for Gemini OpenAI-compatible requests", async () => {
     await seedApp("proxy-gemini-openai");
-    const token = await devToken("proxy-gemini-openai");
+    const token = await gatewayToken("proxy-gemini-openai");
     let upstreamUrl = "";
     let upstreamBody: Record<string, unknown> = {};
     const fixture = [
@@ -754,7 +754,7 @@ describe("provider-native proxy", () => {
 
   it("accepts an Anthropic SDK token in x-api-key and strips it upstream", async () => {
     await seedApp("proxy-native-header");
-    const token = await devToken("proxy-native-header");
+    const token = await gatewayToken("proxy-native-header");
     let upstreamHeaders = new Headers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
       upstreamHeaders = new Headers(init?.headers);
@@ -780,7 +780,7 @@ describe("provider-native proxy", () => {
         token_header: "x-tenant-token",
       },
     });
-    const token = await devToken("proxy-custom-header");
+    const token = await gatewayToken("proxy-custom-header");
     let upstreamHeaders = new Headers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
       upstreamHeaders = new Headers(init?.headers);
@@ -805,7 +805,7 @@ describe("provider-native proxy", () => {
         model_rewrites: { "gpt-4o-mini-transcribe": "gpt-4o-transcribe" },
       },
     });
-    const token = await devToken("proxy-multipart");
+    const token = await gatewayToken("proxy-multipart");
     let upstreamBody: FormData | null = null;
     let upstreamHeaders = new Headers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
@@ -836,7 +836,7 @@ describe("provider-native proxy", () => {
 
   it("forwards fixed-model xAI STT multipart bytes unchanged and records the policy model", async () => {
     await seedApp("proxy-xai-stt");
-    const token = await devToken("proxy-xai-stt");
+    const token = await gatewayToken("proxy-xai-stt");
     const boundary = "calorie-tracker-test-boundary";
     const requestBytes = new TextEncoder().encode(
       `--${boundary}\r\n`
@@ -876,7 +876,7 @@ describe("provider-native proxy", () => {
       if (row) {
         expect(row.model).toBe("grok-transcribe");
         expect(row.cost_usd).toBeCloseTo((1.25 / 3600) * 0.1, 8);
-        expect(row.auth_method).toBe("dev");
+        expect(row.auth_method).toBe("attest");
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -886,7 +886,7 @@ describe("provider-native proxy", () => {
 
   it("rejects bodies larger than 20 MB before contacting the provider", async () => {
     await seedApp("proxy-size");
-    const token = await devToken("proxy-size");
+    const token = await gatewayToken("proxy-size");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await workerFetch(
       "https://example.test/v1/apps/proxy-size/proxy/openai/v1/responses",
@@ -908,7 +908,7 @@ describe("provider-native proxy", () => {
 
   it("returns a malformed provider body unchanged when background usage extraction fails", async () => {
     await seedApp("proxy-malformed-usage");
-    const token = await devToken("proxy-malformed-usage");
+    const token = await gatewayToken("proxy-malformed-usage");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response("not-usage-json", {

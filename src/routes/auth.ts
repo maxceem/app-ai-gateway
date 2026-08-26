@@ -2,17 +2,17 @@ import { Hono } from "hono";
 import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { assertAppActive, loadAppConfig } from "../core/config";
 import { GatewayError } from "../core/errors";
-import { verifyDevelopmentCredential } from "../core/development-credentials";
 import { verifyAppAssertion, verifyAppAttestation } from "../core/appattest";
+import { verifyApiKey } from "../core/apikeys";
 import { verifyIssuerToken } from "../core/issuer";
 import { issueGatewayToken } from "../core/jwt";
-import type { AppAttestEnvironment, AppConfig, AppleAppAttestAuthentication } from "../core/types";
+import type { AppConfig, AppleAppAttestAuthentication } from "../core/types";
 import { database } from "../db";
 import { appAuthChallenge, appUser } from "../db/schema";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
-  DevelopmentTokenRequestSchema,
+  ApiKeyTokenRequestSchema,
 } from "../contracts/schemas";
 
 const GATEWAY_TOKEN_TTL_SECONDS = 3600;
@@ -74,7 +74,6 @@ export async function storeAttestedUser(input: {
   userId: string;
   keyId: string;
   publicKeyPem: string;
-  environment: AppAttestEnvironment;
 }): Promise<void> {
   await database(input.env.DB)
     .insert(appUser)
@@ -84,7 +83,6 @@ export async function storeAttestedUser(input: {
       attestKeyId: input.keyId,
       attestPublicKey: input.publicKeyPem,
       attestCounter: 0,
-      attestEnvironment: input.environment,
       lastSeenAt: sql`datetime('now')`,
     })
     .onConflictDoUpdate({
@@ -93,10 +91,23 @@ export async function storeAttestedUser(input: {
         attestKeyId: input.keyId,
         attestPublicKey: input.publicKeyPem,
         attestCounter: 0,
-        attestEnvironment: input.environment,
         lastSeenAt: sql`datetime('now')`,
       },
     });
+}
+
+async function storeIssuerUser(env: Env, appId: string, userId: string): Promise<void> {
+  const [user] = await database(env.DB)
+    .insert(appUser)
+    .values({ appId, id: userId, lastSeenAt: sql`datetime('now')` })
+    .onConflictDoUpdate({
+      target: [appUser.appId, appUser.id],
+      set: { lastSeenAt: sql`datetime('now')` },
+    })
+    .returning({ status: appUser.status });
+  if (!user || user.status !== "active") {
+    throw new GatewayError(403, "auth_required", "User is blocked");
+  }
 }
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
@@ -129,7 +140,6 @@ authRoutes.post("/register", async (c) => {
   await consumeChallenge(c.env, appId, body.challenge);
   const verifiedAttestation = await verifyAppAttestation({
     appId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
-    allowedEnvironments: auth.app_attest.environments,
     keyId: body.key_id,
     challenge: body.challenge,
     attestation: body.attestation,
@@ -140,7 +150,6 @@ authRoutes.post("/register", async (c) => {
     userId,
     keyId: body.key_id,
     publicKeyPem: verifiedAttestation.publicKeyPem,
-    environment: verifiedAttestation.environment,
   });
   return c.json({ user_id: userId });
 });
@@ -150,32 +159,50 @@ authRoutes.post("/token", async (c) => {
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadAppConfig(c.env, appId);
   assertAppActive(app);
-  const auth = appleAuth(app);
   const rawBody = objectBody(await c.req.json());
 
-  if ("dev_secret" in rawBody) {
-    if (!auth.development_access) {
-      throw new GatewayError(403, "auth_required", "Development access is not enabled for this app");
+  if ("api_key" in rawBody) {
+    if (app.authentication.type !== "api_key") {
+      throw new GatewayError(
+        400,
+        "auth_method_not_supported",
+        "API key token exchange is not supported for this app",
+      );
     }
-    if ("user_id" in rawBody) {
-      throw new GatewayError(400, "invalid_request", "user_id is not accepted");
+    const auth = app.authentication;
+    if (!auth.issuer) {
+      throw new GatewayError(
+        400,
+        "auth_method_not_supported",
+        "API key token exchange requires an issuer configuration",
+      );
     }
-    const body = schemaBody(DevelopmentTokenRequestSchema, rawBody);
-    if (!(await verifyDevelopmentCredential(c.env, appId, body.dev_secret))) {
-      throw new GatewayError(401, "auth_required", "Development credentials were rejected");
+    const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
+    try {
+      await verifyApiKey(body.api_key, c.env, appId, null);
+    } catch (error) {
+      if (error instanceof GatewayError && error.code === "auth_required") {
+        throw new GatewayError(403, "auth_required", "Gateway API key was rejected");
+      }
+      throw error;
     }
     const { userId } = await verifyIssuerToken(body.issuer_token, auth.issuer);
-    await database(c.env.DB)
-      .insert(appUser)
-      .values({ appId, id: userId, lastSeenAt: sql`datetime('now')` })
-      .onConflictDoUpdate({
-        target: [appUser.appId, appUser.id],
-        set: { lastSeenAt: sql`datetime('now')` },
-      });
-    const issued = await issueGatewayToken(c.env.JWT_SECRET, appId, userId, "dev", accessTtl());
+    await storeIssuerUser(c.env, appId, userId);
+    const issued = await issueGatewayToken(c.env.JWT_SECRET, appId, userId, "api_key", accessTtl());
     return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
   }
 
+  if (app.authentication.type === "api_key") {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      app.authentication.issuer
+        ? "api_key and issuer_token are required"
+        : "API key token exchange requires an issuer configuration",
+    );
+  }
+
+  const auth = appleAuth(app);
   const body = schemaBody(AppAttestTokenRequestSchema, rawBody);
   const { userId } = await verifyIssuerToken(body.issuer_token, auth.issuer);
   const user = await database(c.env.DB).query.appUser.findFirst({
@@ -183,7 +210,6 @@ authRoutes.post("/token", async (c) => {
       attestKeyId: true,
       attestPublicKey: true,
       attestCounter: true,
-      attestEnvironment: true,
       status: true,
     },
     where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
@@ -195,12 +221,6 @@ authRoutes.post("/token", async (c) => {
     !user.attestPublicKey
   ) {
     throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
-  }
-  if (
-    user.attestEnvironment !== null &&
-    !auth.app_attest.environments.includes(user.attestEnvironment)
-  ) {
-    throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
   }
   await consumeChallenge(c.env, appId, body.challenge);
   const counter = await verifyAppAssertion({

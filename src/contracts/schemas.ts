@@ -8,25 +8,26 @@ const ClaimRequirementSchema = z.object({
   equals: z.union([z.string(), z.number(), z.boolean()]).optional(),
 });
 
+const IssuerAuthenticationSchema = z.object({
+  jwks_url: z.url(),
+  user_id_claim: z.string(),
+  token_header: z.string().optional(),
+  required_claims: z.array(ClaimRequirementSchema),
+  max_token_lifetime_seconds: z.number().int().positive(),
+});
+
 const AppleAppAttestAuthenticationSchema = z.object({
   type: z.literal("apple_app_attest"),
-  issuer: z.object({
-    jwks_url: z.url(),
-    user_id_claim: z.string(),
-    token_header: z.string().optional(),
-    required_claims: z.array(ClaimRequirementSchema),
-    max_token_lifetime_seconds: z.number().int().positive(),
-  }),
+  issuer: IssuerAuthenticationSchema,
   app_attest: z.object({
     team_id: z.string(),
     bundle_id: z.string(),
-    environments: z.array(z.enum(["production", "development"])).min(1),
   }),
-  development_access: z.boolean(),
 });
 
 const ApiKeyAuthenticationSchema = z.object({
   type: z.literal("api_key"),
+  issuer: IssuerAuthenticationSchema.optional(),
   end_user: z.object({
     header: z.literal("x-end-user-id"),
     required: z.boolean(),
@@ -110,10 +111,10 @@ export const AppAttestTokenRequestSchema = z.object({
   challenge: z.string().min(1),
 }).meta({ id: "AppAttestTokenRequest" });
 
-export const DevelopmentTokenRequestSchema = z.object({
+export const ApiKeyTokenRequestSchema = z.object({
   issuer_token: z.string().min(1),
-  dev_secret: z.string().min(1),
-}).strict().meta({ id: "DevelopmentTokenRequest" });
+  api_key: z.string().min(1),
+}).strict().meta({ id: "ApiKeyTokenRequest" });
 
 export const UsageRepriceRequestSchema = z.object({
   provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"]),

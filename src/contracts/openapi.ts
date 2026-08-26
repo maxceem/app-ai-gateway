@@ -2,8 +2,8 @@ import { OpenAPIHono, z, type RouteConfig } from "@hono/zod-openapi";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
+  ApiKeyTokenRequestSchema,
   AppWriteSchema,
-  DevelopmentTokenRequestSchema,
   OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
@@ -13,9 +13,9 @@ import {
 export {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
+  ApiKeyTokenRequestSchema,
   AppConfigSchema,
   AppWriteSchema,
-  DevelopmentTokenRequestSchema,
   OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
@@ -92,7 +92,7 @@ registry.openAPIRegistry.registerComponent("securitySchemes", "OperatorSession",
 registry.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
   type: "http",
   scheme: "bearer",
-  description: "A gateway access token or server application API key.",
+  description: "A gateway access token, or an application API key for an issuer-less API-key app.",
 });
 
 function register(route: RouteConfig): void {
@@ -230,13 +230,13 @@ register({
   path: "/v1/apps/{app}/auth/token",
   tags: ["Application authentication"],
   operationId: "exchangeGatewayToken",
-  summary: "Exchange issuer and device proof for a gateway token",
-  description: "App Attest clients send key_id, assertion, and challenge. Development clients send dev_secret instead.",
+  summary: "Exchange issuer identity and client proof for a gateway token",
+  description: "App Attest clients send key_id, assertion, and challenge. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
   request: {
     params: AppPath,
     body: { required: true, content: json(z.union([
       AppAttestTokenRequestSchema,
-      DevelopmentTokenRequestSchema,
+      ApiKeyTokenRequestSchema,
     ])) },
   },
   responses: {
@@ -281,8 +281,8 @@ register({
   request: {
     params: ProviderPath,
     headers: z.object({
-      "x-app-version": z.string().optional().openapi({ description: "Required for issuer/App Attest clients; optional for server API keys." }),
-      "x-end-user-id": z.string().optional().openapi({ description: "Optional configured end-user identity for server applications." }),
+      "x-app-version": z.string().optional().openapi({ description: "Required for gateway-token clients; optional for issuer-less API-key clients." }),
+      "x-end-user-id": z.string().optional().openapi({ description: "Optional configured end-user identity for issuer-less API-key applications." }),
     }),
     body: { required: true, content: json(z.record(z.string(), z.unknown()).openapi({
       description: "Provider-native JSON request. Consult the selected provider's API reference for the exact shape.",
@@ -308,8 +308,8 @@ register({
   request: {
     params: EndpointPath,
     headers: z.object({
-      "x-app-version": z.string().optional().openapi({ description: "Required for issuer/App Attest clients; optional for server API keys." }),
-      "x-end-user-id": z.string().optional().openapi({ description: "Optional configured end-user identity for server applications." }),
+      "x-app-version": z.string().optional().openapi({ description: "Required for gateway-token clients; optional for issuer-less API-key clients." }),
+      "x-end-user-id": z.string().optional().openapi({ description: "Optional configured end-user identity for issuer-less API-key applications." }),
     }),
     body: {
       required: true,
@@ -668,10 +668,6 @@ const adminRoutes: Omit<RouteConfig, "responses">[] = [
   { method: "get", path: "/v1/admin/apps/{app}/keys", operationId: "listAppKeys", summary: "List application API keys", request: { params: AppPath } },
   { method: "post", path: "/v1/admin/apps/{app}/keys", operationId: "createAppKey", summary: "Create an application API key", request: { params: AppPath, body: { required: true, content: json(z.object({ name: z.string().optional() })) } } },
   { method: "post", path: "/v1/admin/apps/{app}/keys/{key}/revoke", operationId: "revokeAppKey", summary: "Revoke an application API key", request: { params: KeyPath } },
-  { method: "get", path: "/v1/admin/apps/{app}/development-credential", operationId: "getDevelopmentCredential", summary: "Get development credential metadata", request: { params: AppPath } },
-  { method: "post", path: "/v1/admin/apps/{app}/development-credential", operationId: "createDevelopmentCredential", summary: "Create a development credential", request: { params: AppPath } },
-  { method: "post", path: "/v1/admin/apps/{app}/development-credential/rotate", operationId: "rotateDevelopmentCredential", summary: "Rotate a development credential", request: { params: AppPath } },
-  { method: "delete", path: "/v1/admin/apps/{app}/development-credential", operationId: "deleteDevelopmentCredential", summary: "Delete a development credential", request: { params: AppPath } },
   { method: "get", path: "/v1/admin/apps/{app}/users", operationId: "listAppUsers", summary: "List application users", request: { params: AppPath } },
   { method: "get", path: "/v1/admin/apps/{app}/users/{user}", operationId: "getAppUser", summary: "Get an application user", request: { params: UserPath } },
   { method: "post", path: "/v1/admin/apps/{app}/users/{user}/block", operationId: "blockAppUser", summary: "Block an application user", request: { params: UserPath } },
@@ -705,12 +701,12 @@ export function createOpenAPIDocument() {
     tags: [
       { name: "Operations", description: "Unauthenticated service health." },
       { name: "Operator authentication", description: "Better Auth signup and session lifecycle." },
-      { name: "Application authentication", description: "Issuer and Apple App Attest token exchange." },
+      { name: "Application authentication", description: "Issuer identity plus App Attest or API-key client proof." },
       { name: "Application", description: "Authenticated application-user state." },
       { name: "Provider proxy", description: "Provider-native streaming proxy endpoints." },
       { name: "Named endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
-      { name: "Admin operations", description: "Keys, users, credentials, and usage." },
+      { name: "Admin operations", description: "Keys, users, and usage." },
       { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
       { name: "Admin organizations", description: "Operator identity, organization switching, and membership." },
       { name: "Admin billing", description: "Optional cf-billing service-binding operations." },

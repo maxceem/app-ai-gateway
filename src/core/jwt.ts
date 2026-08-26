@@ -48,8 +48,8 @@ export async function verifyGatewayToken(
       typeof payload.jti !== "string" ||
       typeof payload.exp !== "number" ||
       (payload.auth_method !== undefined &&
-        payload.auth_method !== "dev" &&
-        payload.auth_method !== "attest")
+        payload.auth_method !== "attest" &&
+        payload.auth_method !== "api_key")
     ) {
       throw new Error("Required gateway token claims are missing");
     }

@@ -14,8 +14,7 @@ import type { StoredAppConfig } from "../core/types";
 
 export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
-export type AttestEnvironment = "production" | "development";
-export type AuthMethod = "dev" | "attest" | "api_key";
+export type AuthMethod = "attest" | "api_key";
 export type ApiKeyStatus = "active" | "revoked";
 export type UsageStatus =
   | "ok"
@@ -76,16 +75,6 @@ export const appApiKey = sqliteTable(
   ],
 );
 
-export const appDevelopmentCredential = sqliteTable("app_development_credential", {
-  appId: text("app_id")
-    .primaryKey()
-    .references(() => app.id),
-  secretHash: text("secret_hash").notNull(),
-  secretPrefix: text("secret_prefix").notNull(),
-  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
-  rotatedAt: text("rotated_at"),
-});
-
 export const appUser = sqliteTable(
   "app_user",
   {
@@ -96,7 +85,6 @@ export const appUser = sqliteTable(
     attestKeyId: text("attest_key_id"),
     attestPublicKey: text("attest_public_key"),
     attestCounter: integer("attest_counter").notNull().default(0),
-    attestEnvironment: text("attest_env").$type<AttestEnvironment>(),
     status: text("status").$type<UserStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     lastSeenAt: text("last_seen_at"),

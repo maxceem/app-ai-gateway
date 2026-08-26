@@ -9,7 +9,7 @@ infer production configuration from project-specific examples.
 ## Safe workflow
 
 1. Inspect the target application's identity provider and runtime.
-2. Choose server API-key or issuer plus Apple App Attest authentication.
+2. Choose App Attest or API-key client proof, then decide whether the app needs issuer-backed user identity.
 3. Produce a candidate application JSON document.
 4. Validate it before applying it.
 5. Confirm Cloudflare authentication and required secrets without printing values.
@@ -29,5 +29,5 @@ infer production configuration from project-specific examples.
 
 - Never place secrets in command arguments, source, documentation, or chat output.
 - Use hidden prompts, stdin, ignored files, or a secret manager.
-- Treat initial application API keys and development credentials as one-time outputs.
+- Treat initial application API keys as one-time outputs.
 - Report where a credential was stored rather than repeating its value.

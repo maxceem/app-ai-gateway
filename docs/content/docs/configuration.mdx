@@ -52,6 +52,11 @@ Use API-key authentication for a trusted backend:
 Creating an API-key application returns its initial plaintext key once. Store it
 immediately in the calling application's secret manager.
 
+Add an `issuer` block beside `end_user` when the trusted client acts for real
+users. In that mode the key is client proof only: exchange it with an issuer JWT
+at `/v1/apps/{app}/auth/token`, then use the returned gateway token on data-plane
+requests. See [Authentication](/docs/authentication).
+
 ## Named endpoints
 
 An optional top-level `endpoints` block moves the provider, model, and fixed

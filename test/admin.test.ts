@@ -120,35 +120,32 @@ describe("admin API", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
   });
 
-  it("validates per-app App Attest environments and the development access flag", async () => {
-    const invalidDevelopmentAccess = appleConfig({ jwks_url: "https://issuer.test/jwks" });
-    (invalidDevelopmentAccess.authentication as { development_access: unknown }).development_access = "yes";
-    const invalidPolicies = [
-      appleConfig({ jwks_url: "https://issuer.test/jwks" }, { environments: [] }),
-      appleConfig({ jwks_url: "https://issuer.test/jwks" }, { environments: ["production", "unknown"] }),
-      invalidDevelopmentAccess,
-    ];
-
-    for (const [index, config] of invalidPolicies.entries()) {
-      const response = await exports.default.fetch(
-        `https://example.test/v1/admin/apps/invalid-auth-${index}`,
-        {
-          method: "POST",
-          headers: {
-            authorization: "Bearer agw_mgmt_test-admin-secret",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            name: "Invalid auth policy",
-            config,
-          }),
+  it("validates the optional issuer on API-key applications", async () => {
+    const config = serverConfig({
+      authentication: {
+        type: "api_key",
+        issuer: {
+          jwks_url: "http://issuer.test/jwks",
+          user_id_claim: "sub",
+          required_claims: [],
+          max_token_lifetime_seconds: 3600,
         },
-      );
-      expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({
-        error: { code: "invalid_request" },
-      });
-    }
+        end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
+      },
+    });
+    const response = await exports.default.fetch(
+      "https://example.test/v1/admin/apps/invalid-api-key-issuer",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "Invalid API key issuer", config }),
+      },
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
   });
 
   it("creates, lists, and revokes one-time server API keys", async () => {

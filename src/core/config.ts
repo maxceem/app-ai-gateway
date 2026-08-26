@@ -5,7 +5,6 @@ import { GatewayError } from "./errors";
 import { hasModelPrice } from "./usage";
 import type {
   AllowedPath,
-  AppAttestEnvironment,
   AppConfig,
   AuthenticationConfig,
   ClaimRequirement,
@@ -16,6 +15,7 @@ import type {
   EndpointTarget,
   LimitsConfig,
   LimitScopeConfig,
+  IssuerAuthConfig,
   OutputClampStyle,
   Provider,
   ProviderProxyConfig,
@@ -33,7 +33,6 @@ interface CacheEntry {
 
 const appCache = new Map<string, CacheEntry>();
 export const PROVIDERS: Provider[] = ["openai", "anthropic", "xai", "gemini", "perplexity"];
-const APP_ATTEST_ENVIRONMENTS: AppAttestEnvironment[] = ["production", "development"];
 const CLAMP_STYLES: OutputClampStyle[] = [
   "responses",
   "chat_completions",
@@ -106,23 +105,8 @@ function parseClaims(value: unknown): ClaimRequirement[] {
   });
 }
 
-function parseAuthentication(raw: unknown): AuthenticationConfig {
-  const value = record(raw, "authentication");
-  if (value.type === "api_key") {
-    const endUser = record(value.end_user, "authentication.end_user");
-    if (endUser.header !== "x-end-user-id" || typeof endUser.required !== "boolean" || endUser.fallback !== "api_key") {
-      throw new GatewayError(500, "internal_error", "Invalid authentication.end_user configuration");
-    }
-    return {
-      type: "api_key",
-      end_user: { header: "x-end-user-id", required: endUser.required, fallback: "api_key" },
-    };
-  }
-  if (value.type !== "apple_app_attest") {
-    throw new GatewayError(500, "internal_error", "authentication.type is invalid");
-  }
-
-  const issuer = record(value.issuer, "authentication.issuer");
+function parseIssuer(raw: unknown): IssuerAuthConfig {
+  const issuer = record(raw, "authentication.issuer");
   const jwksUrl = requiredString(issuer.jwks_url, "authentication.issuer.jwks_url");
   let jwks: URL;
   try {
@@ -144,37 +128,41 @@ function parseAuthentication(raw: unknown): AuthenticationConfig {
   if (maxLifetime === null) {
     throw new GatewayError(500, "internal_error", "authentication.issuer.max_token_lifetime_seconds cannot be null");
   }
+  return {
+    jwks_url: jwks.toString(),
+    user_id_claim: userIdClaim,
+    ...(typeof issuer.token_header === "string" ? { token_header: issuer.token_header.toLowerCase() } : {}),
+    required_claims: parseClaims(issuer.required_claims),
+    max_token_lifetime_seconds: maxLifetime,
+  };
+}
+
+function parseAuthentication(raw: unknown): AuthenticationConfig {
+  const value = record(raw, "authentication");
+  if (value.type === "api_key") {
+    const endUser = record(value.end_user, "authentication.end_user");
+    if (endUser.header !== "x-end-user-id" || typeof endUser.required !== "boolean" || endUser.fallback !== "api_key") {
+      throw new GatewayError(500, "internal_error", "Invalid authentication.end_user configuration");
+    }
+    return {
+      type: "api_key",
+      ...(value.issuer === undefined ? {} : { issuer: parseIssuer(value.issuer) }),
+      end_user: { header: "x-end-user-id", required: endUser.required, fallback: "api_key" },
+    };
+  }
+  if (value.type !== "apple_app_attest") {
+    throw new GatewayError(500, "internal_error", "authentication.type is invalid");
+  }
 
   const appAttest = record(value.app_attest, "authentication.app_attest");
-  const environments = appAttest.environments;
-  if (
-    !Array.isArray(environments)
-    || environments.length === 0
-    || environments.some((environment) => !APP_ATTEST_ENVIRONMENTS.includes(environment as AppAttestEnvironment))
-    || new Set(environments).size !== environments.length
-  ) {
-    throw new GatewayError(500, "internal_error", "authentication.app_attest.environments is invalid");
-  }
-
-  if (typeof value.development_access !== "boolean") {
-    throw new GatewayError(500, "internal_error", "authentication.development_access must be a boolean");
-  }
 
   return {
     type: "apple_app_attest",
-    issuer: {
-      jwks_url: jwks.toString(),
-      user_id_claim: userIdClaim,
-      ...(typeof issuer.token_header === "string" ? { token_header: issuer.token_header.toLowerCase() } : {}),
-      required_claims: parseClaims(issuer.required_claims),
-      max_token_lifetime_seconds: maxLifetime,
-    },
+    issuer: parseIssuer(value.issuer),
     app_attest: {
       team_id: requiredString(appAttest.team_id, "authentication.app_attest.team_id"),
       bundle_id: requiredString(appAttest.bundle_id, "authentication.app_attest.bundle_id"),
-      environments: environments as AppAttestEnvironment[],
     },
-    development_access: value.development_access,
   };
 }
 

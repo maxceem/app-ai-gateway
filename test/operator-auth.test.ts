@@ -360,7 +360,6 @@ describe("operator authentication", () => {
       "/v1/admin/apps/org-two-app/users",
       "/v1/admin/apps/org-two-app/usage/timeseries",
       "/v1/admin/apps/org-two-app/events",
-      "/v1/admin/apps/org-two-app/development-credential",
     ]) {
       const response = await exports.default.fetch(`${ORIGIN}${path}`, {
         headers: sessionHeaders(first.cookie),

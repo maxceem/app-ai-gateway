@@ -48,12 +48,10 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   const credential = extractGatewayToken(
     c.req.raw.headers,
     provider,
-    app.authentication.type === "apple_app_attest"
-      ? app.authentication.issuer.token_header
-      : undefined,
+    app.authentication.issuer?.token_header,
   );
   let identity: GatewayIdentity;
-  if (app.authentication.type === "api_key") {
+  if (app.authentication.type === "api_key" && !app.authentication.issuer) {
     const hasEndUserId = c.req.raw.headers.has("x-end-user-id");
     const endUserId = c.req.header("x-end-user-id") ?? null;
     if (hasEndUserId && (endUserId === null || !/^[\x21-\x7e]{1,128}$/u.test(endUserId))) {

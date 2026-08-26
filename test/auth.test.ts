@@ -1,15 +1,18 @@
 import { Buffer } from "node:buffer";
 import { env } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
+import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearApiKeyCache } from "../src/core/apikeys";
 import { appAttestEnvironment } from "../src/core/appattest";
-import { clearAppConfigCache, invalidateAppConfig } from "../src/core/config";
+import { clearAppConfigCache } from "../src/core/config";
 import { clearJwksCache } from "../src/core/issuer";
 import { verifyGatewayToken } from "../src/core/jwt";
-import { storeAttestedUser } from "../src/routes/auth";
+import { database } from "../src/db";
+import { appApiKey, appUser } from "../src/db/schema";
 import app from "../src/index";
-import { seedApp, TEST_DEVELOPMENT_SECRET } from "./helpers";
+import { seedApp, seedServerApp } from "./helpers";
 
 interface SigningFixture {
   publicJwk: JWK;
@@ -38,28 +41,7 @@ async function issuerToken(
     .sign(fixture.privateKey);
 }
 
-function authPolicy(input: {
-  enableDevAccess?: boolean;
-  allowedEnvironments?: string[];
-} = {}): Record<string, unknown> {
-  return {
-    jwks_url: "https://issuer.auth.test/.well-known/jwks.json",
-    user_id_claim: "sub",
-    required_claims: [{ path: "entitlements", contains: "pro" }],
-    appattest_environments: input.allowedEnvironments ?? ["production", "development"],
-    ...(input.enableDevAccess === false
-      ? {}
-      : {
-          dev_access: true,
-        }),
-    max_token_lifetime_seconds: 3600,
-  };
-}
-
-async function exchangeDevelopmentToken(
-  appId: string,
-  body: Record<string, unknown>,
-): Promise<Response> {
+async function exchangeToken(appId: string, body: Record<string, unknown>): Promise<Response> {
   return app.fetch(
     new Request(`https://example.test/v1/apps/${appId}/auth/token`, {
       method: "POST",
@@ -78,82 +60,71 @@ function authDataWithAaguid(aaguid: Uint8Array): Uint8Array {
 }
 
 beforeEach(() => {
+  clearApiKeyCache();
   clearJwksCache();
   clearAppConfigCache();
 });
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("per-app development authentication", () => {
-  it("uses the verified issuer identity and emits auth_method=dev", async () => {
-    const fixture = await signingFixture("dev-success");
+describe("issuer-backed API key exchange", () => {
+  it("uses verified issuer identity and emits auth_method=api_key", async () => {
+    const fixture = await signingFixture("api-key-success");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
-    await seedApp("dev-success", { auth: authPolicy() });
+    const key = await seedServerApp("api-key-success", {
+      issuer: { required_claims: [{ path: "entitlements", contains: "pro" }] },
+    });
 
-    const response = await exchangeDevelopmentToken("dev-success", {
+    const response = await exchangeToken("api-key-success", {
+      api_key: key,
       issuer_token: await issuerToken(fixture, { sub: "firebase-uid", entitlements: ["pro"] }),
-      dev_secret: TEST_DEVELOPMENT_SECRET,
     });
 
     expect(response.status).toBe(200);
     const body = await response.json<{ access_token: string }>();
     await expect(
-      verifyGatewayToken(body.access_token, env.JWT_SECRET, "dev-success"),
-    ).resolves.toMatchObject({
-      userId: "firebase-uid",
-      authMethod: "dev",
-    });
+      verifyGatewayToken(body.access_token, env.JWT_SECRET, "api-key-success"),
+    ).resolves.toMatchObject({ userId: "firebase-uid", authMethod: "api_key" });
     await expect(
       env.DB.prepare("SELECT id FROM app_user WHERE app_id = ? AND id = ?")
-        .bind("dev-success", "firebase-uid")
+        .bind("api-key-success", "firebase-uid")
         .first(),
     ).resolves.not.toBeNull();
   });
 
-  it("rejects a token signed by the wrong issuer", async () => {
-    const trusted = await signingFixture("shared-kid");
-    const wrongIssuer = await signingFixture("shared-kid");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [trusted.publicJwk] }));
-    await seedApp("dev-wrong-issuer", {
-      auth: authPolicy(),
-    });
-
-    const response = await exchangeDevelopmentToken("dev-wrong-issuer", {
-      issuer_token: await issuerToken(wrongIssuer),
-      dev_secret: TEST_DEVELOPMENT_SECRET,
-    });
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "issuer_token_rejected" },
-    });
-  });
-
-  it("rejects the wrong per-app secret without verifying the issuer token", async () => {
+  it("rejects revoked and wrong-app keys before issuer verification", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await seedApp("dev-wrong-secret", { auth: authPolicy() });
+    const revokedKey = await seedServerApp("api-key-revoked", { issuer: {} });
+    const wrongAppKey = await seedServerApp("api-key-other");
+    await database(env.DB)
+      .update(appApiKey)
+      .set({ status: "revoked" })
+      .where(eq(appApiKey.id, "key_api-key-revoked"));
 
-    const response = await exchangeDevelopmentToken("dev-wrong-secret", {
-      issuer_token: "not-a-jwt",
-      dev_secret: "wrong-secret",
-    });
-
-    expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "auth_required" },
-    });
+    for (const key of [revokedKey, wrongAppKey]) {
+      clearApiKeyCache();
+      const response = await exchangeToken("api-key-revoked", {
+        api_key: key,
+        issuer_token: "not-a-jwt",
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "auth_required", message: "Gateway API key was rejected" },
+      });
+    }
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("always enforces required claims for development access", async () => {
-    const fixture = await signingFixture("required-claims");
+  it("enforces issuer required claims", async () => {
+    const fixture = await signingFixture("api-key-required-claims");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
-    const tokenWithoutEntitlement = await issuerToken(fixture);
-    await seedApp("dev-required-claims", { auth: authPolicy() });
+    const key = await seedServerApp("api-key-required-claims", {
+      issuer: { required_claims: [{ path: "entitlements", contains: "pro" }] },
+    });
 
-    const response = await exchangeDevelopmentToken("dev-required-claims", {
-      issuer_token: tokenWithoutEntitlement,
-      dev_secret: TEST_DEVELOPMENT_SECRET,
+    const response = await exchangeToken("api-key-required-claims", {
+      api_key: key,
+      issuer_token: await issuerToken(fixture),
     });
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({
@@ -161,100 +132,87 @@ describe("per-app development authentication", () => {
     });
   });
 
-  it("rejects the legacy user_id development body", async () => {
-    await seedApp("dev-legacy-body", { auth: authPolicy() });
-    const response = await exchangeDevelopmentToken("dev-legacy-body", {
-      user_id: "impersonated-user",
-      dev_secret: TEST_DEVELOPMENT_SECRET,
-    });
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "invalid_request" },
-    });
-  });
-});
-
-describe("per-app App Attest environments", () => {
-  it("accepts development AAGUIDs only when development is allowed", () => {
-    const development = authDataWithAaguid(Buffer.from("appattestdevelop"));
-    expect(appAttestEnvironment(development, ["production", "development"])).toBe("development");
-    expect(() => appAttestEnvironment(development, ["production"])).toThrow();
-  });
-
-  it("accepts production AAGUIDs when production is allowed and rejects unknown values", () => {
-    const production = authDataWithAaguid(
-      Buffer.concat([Buffer.from("appattest"), Buffer.alloc(7)]),
-    );
-    expect(appAttestEnvironment(production, ["production"])).toBe("production");
-    expect(() =>
-      appAttestEnvironment(authDataWithAaguid(Buffer.alloc(16, 7)), ["production", "development"]),
-    ).toThrow();
-  });
-
-  it("records the environment when an attested user is registered", async () => {
-    await seedApp("attest-environment-store");
-    await storeAttestedUser({
-      env,
-      appId: "attest-environment-store",
-      userId: "registered-user",
-      keyId: "registered-key",
-      publicKeyPem: "public-key",
-      environment: "development",
-    });
-    await expect(
-      env.DB.prepare("SELECT attest_env FROM app_user WHERE app_id = ? AND id = ?")
-        .bind("attest-environment-store", "registered-user")
-        .first<{ attest_env: string | null }>(),
-    ).resolves.toEqual({ attest_env: "development" });
-  });
-
-  it("rejects token exchange after a registered environment is removed from policy", async () => {
-    const fixture = await signingFixture("attest-revoked");
+  it("does not mint a token for a blocked issuer user", async () => {
+    const fixture = await signingFixture("api-key-blocked-user");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
-    await seedApp("attest-revoked", {
-      auth: authPolicy({
-        enableDevAccess: false,
-        allowedEnvironments: ["production", "development"],
-      }),
+    const key = await seedServerApp("api-key-blocked-user", { issuer: {} });
+    await database(env.DB).insert(appUser).values({
+      appId: "api-key-blocked-user",
+      id: "blocked-user",
+      status: "blocked",
     });
-    await storeAttestedUser({
-      env,
-      appId: "attest-revoked",
-      userId: "firebase-user",
-      keyId: "development-key",
-      publicKeyPem: "public-key",
-      environment: "development",
-    });
-    const row = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?")
-      .bind("attest-revoked")
-      .first<{ config_json: string }>();
-    const updatedConfig = JSON.parse(row!.config_json) as {
-      authentication: { app_attest: { environments: string[] } };
-    };
-    updatedConfig.authentication.app_attest.environments = ["production"];
-    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?")
-      .bind(JSON.stringify(updatedConfig), "attest-revoked")
-      .run();
-    invalidateAppConfig("attest-revoked");
 
-    const response = await app.fetch(
-      new Request("https://example.test/v1/apps/attest-revoked/auth/token", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          issuer_token: await issuerToken(fixture, { entitlements: ["pro"] }),
-          key_id: "development-key",
-          assertion: "unused-assertion",
-          challenge: "unused-challenge",
-        }),
+    const response = await exchangeToken("api-key-blocked-user", {
+      api_key: key,
+      issuer_token: await issuerToken(fixture, { sub: "blocked-user" }),
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "auth_required", message: "User is blocked" },
+    });
+  });
+
+  it("rejects bare keys on the data plane while issuer-less key apps stay unchanged", async () => {
+    const issuerBackedKey = await seedServerApp("api-key-data-plane-issuer", { issuer: {} });
+    const issuerBacked = await app.fetch(
+      new Request("https://example.test/v1/apps/api-key-data-plane-issuer/me", {
+        headers: { authorization: `Bearer ${issuerBackedKey}` },
       }),
       env,
       createExecutionContext(),
     );
+    expect(issuerBacked.status).toBe(401);
 
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "attest_failed" },
+    const machineKey = await seedServerApp("api-key-data-plane-machine");
+    const machine = await app.fetch(
+      new Request("https://example.test/v1/apps/api-key-data-plane-machine/me", {
+        headers: {
+          authorization: `Bearer ${machineKey}`,
+          "x-end-user-id": "machine-customer",
+        },
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(machine.status).toBe(200);
+    await expect(machine.json()).resolves.toMatchObject({ user_id: "machine-customer" });
+  });
+
+  it("rejects unsupported token-exchange combinations clearly", async () => {
+    await seedApp("attest-rejects-api-key");
+    const attest = await exchangeToken("attest-rejects-api-key", {
+      api_key: "agw_not-for-attest",
+      issuer_token: "unused",
     });
+    expect(attest.status).toBe(400);
+    await expect(attest.json()).resolves.toMatchObject({
+      error: { code: "auth_method_not_supported" },
+    });
+
+    const machineKey = await seedServerApp("machine-no-exchange");
+    const machine = await exchangeToken("machine-no-exchange", {
+      api_key: machineKey,
+      issuer_token: "unused",
+    });
+    expect(machine.status).toBe(400);
+    await expect(machine.json()).resolves.toMatchObject({
+      error: { code: "auth_method_not_supported" },
+    });
+  });
+});
+
+describe("production-only App Attest", () => {
+  it("rejects the development AAGUID and accepts production", () => {
+    const development = authDataWithAaguid(Buffer.from("appattestdevelop"));
+    expect(() => appAttestEnvironment(development)).toThrow();
+
+    const production = authDataWithAaguid(
+      Buffer.concat([Buffer.from("appattest"), Buffer.alloc(7)]),
+    );
+    expect(appAttestEnvironment(production)).toBe("production");
+  });
+
+  it("rejects unknown AAGUIDs", () => {
+    expect(() => appAttestEnvironment(authDataWithAaguid(Buffer.alloc(16, 7)))).toThrow();
   });
 });

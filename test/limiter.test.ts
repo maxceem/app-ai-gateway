@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultProxyConfig, devToken, seedApp, seedServerApp } from "./helpers";
+import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -60,7 +60,7 @@ describe("UserLimiter", () => {
 
   it("records a zero-token usage event when the limiter rejects a request", async () => {
     await seedApp("limiter-usage-event", { budgetUsd: 0 });
-    const token = await devToken("limiter-usage-event");
+    const token = await gatewayToken("limiter-usage-event");
     const path = "/v1/apps/limiter-usage-event/proxy/openai/v1/responses";
     const response = await exports.default.fetch(`https://example.test${path}`, {
       method: "POST",

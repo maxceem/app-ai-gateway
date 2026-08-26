@@ -6,8 +6,7 @@ export interface ClaimRequirement {
   equals?: string | number | boolean;
 }
 
-export type AppAttestEnvironment = "production" | "development";
-export type GatewayAuthMethod = "dev" | "attest" | "api_key";
+export type GatewayAuthMethod = "attest" | "api_key";
 
 export interface IssuerAuthConfig {
   jwks_url: string;
@@ -23,13 +22,12 @@ export interface AppleAppAttestAuthentication {
   app_attest: {
     team_id: string;
     bundle_id: string;
-    environments: AppAttestEnvironment[];
   };
-  development_access: boolean;
 }
 
 export interface ApiKeyAuthentication {
   type: "api_key";
+  issuer?: IssuerAuthConfig;
   end_user: {
     header: "x-end-user-id";
     required: boolean;

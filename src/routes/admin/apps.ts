@@ -23,7 +23,6 @@ import {
   appApiKey,
   app,
   appAuthChallenge,
-  appDevelopmentCredential,
   appUsageEvent,
   appUser,
 } from "../../db/schema";
@@ -126,9 +125,6 @@ function summary(config: ReturnType<typeof validateAppConfigJson>) {
     monthly_app_budget_usd: config.limits.per_app.spending.monthly_usd,
     providers,
     allowed_model_count: models.size,
-    dev_access_enabled:
-      config.authentication.type === "apple_app_attest"
-      && config.authentication.development_access,
   };
 }
 
@@ -236,7 +232,6 @@ appRoutes.get("/apps", async (c) => {
         monthly_app_budget_usd: null;
         providers: string[];
         allowed_model_count: number;
-        dev_access_enabled: false;
       };
       try {
         configSummary = summary(validateAppConfigJson(row.config));
@@ -248,7 +243,6 @@ appRoutes.get("/apps", async (c) => {
           monthly_app_budget_usd: null,
           providers: [],
           allowed_model_count: 0,
-          dev_access_enabled: false,
         };
       }
       return {
@@ -286,14 +280,6 @@ appRoutes.post("/apps", async (c) => {
   if (raw.id !== undefined && typeof raw.id !== "string") throw new GatewayError(400, "invalid_request", "id must be a lowercase slug");
   const requestedId = raw.id === undefined ? slugifyAppName(name) : assertAppId(raw.id);
   const config = validatedConfig(body.config, planLimits);
-  if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      "Create the app with development_access false, then generate its development credential",
-    );
-  }
-
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
   let appId = requestedId;
@@ -371,16 +357,7 @@ appRoutes.post("/apps/:app/validate", async (c) => {
       eq(app.organizationId, c.get("admin").organizationId),
     ),
   });
-  const config = validatedConfig(body.config, planLimits);
-  if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
-    const credential = await database(c.env.DB).query.appDevelopmentCredential.findFirst({
-      columns: { appId: true },
-      where: eq(appDevelopmentCredential.appId, appId),
-    });
-    if (!credential) {
-      throw new GatewayError(400, "invalid_request", "Generate a development credential before enabling development access");
-    }
-  }
+  validatedConfig(body.config, planLimits);
   return c.json({ valid: true, app_id: appId, exists: existing !== undefined });
 });
 
@@ -390,15 +367,6 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
   const config = validatedConfig(body.config, planLimits);
-  if (config.authentication.type === "apple_app_attest" && config.authentication.development_access) {
-    const credential = await db.query.appDevelopmentCredential.findFirst({
-      columns: { appId: true },
-      where: eq(appDevelopmentCredential.appId, appId),
-    });
-    if (!credential) {
-      throw new GatewayError(400, "invalid_request", "Generate a development credential before enabling development access");
-    }
-  }
   const organizationId = c.get("admin").organizationId;
   const values = {
     id: appId,
@@ -422,9 +390,6 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     }
     throw new GatewayError(409, "invalid_request", "The application changed concurrently; retry the request");
   }
-  if (config.authentication.type !== "apple_app_attest" || !config.authentication.development_access) {
-    await db.delete(appDevelopmentCredential).where(eq(appDevelopmentCredential.appId, appId));
-  }
   invalidateAppConfig(appId);
   const loaded = await loadAppConfig(c.env, appId);
   return c.json({ app: loaded }, 200);
@@ -444,7 +409,6 @@ appRoutes.delete("/apps/:app", async (c) => {
   const removedUsers = await db.delete(appUser).where(eq(appUser.appId, appId)).returning({ id: appUser.id });
   await db.delete(appAuthChallenge).where(eq(appAuthChallenge.appId, appId));
   await db.delete(appApiKey).where(eq(appApiKey.appId, appId));
-  await db.delete(appDevelopmentCredential).where(eq(appDevelopmentCredential.appId, appId));
   await db.delete(app).where(and(
     eq(app.id, appId),
     eq(app.organizationId, c.get("admin").organizationId),

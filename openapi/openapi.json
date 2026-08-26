@@ -22,7 +22,7 @@
     },
     {
       "name": "Application authentication",
-      "description": "Issuer and Apple App Attest token exchange."
+      "description": "Issuer identity plus App Attest or API-key client proof."
     },
     {
       "name": "Application",
@@ -42,7 +42,7 @@
     },
     {
       "name": "Admin operations",
-      "description": "Keys, users, credentials, and usage."
+      "description": "Keys, users, and usage."
     },
     {
       "name": "Admin management keys",
@@ -78,7 +78,7 @@
       "GatewayBearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A gateway access token or server application API key."
+        "description": "A gateway access token, or an application API key for an issuer-less API-key app."
       }
     },
     "schemas": {
@@ -159,21 +159,21 @@
           "challenge"
         ]
       },
-      "DevelopmentTokenRequest": {
+      "ApiKeyTokenRequest": {
         "type": "object",
         "properties": {
           "issuer_token": {
             "type": "string",
             "minLength": 1
           },
-          "dev_secret": {
+          "api_key": {
             "type": "string",
             "minLength": 1
           }
         },
         "required": [
           "issuer_token",
-          "dev_secret"
+          "api_key"
         ],
         "additionalProperties": false
       },
@@ -293,34 +293,18 @@
                       },
                       "bundle_id": {
                         "type": "string"
-                      },
-                      "environments": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "enum": [
-                            "production",
-                            "development"
-                          ]
-                        },
-                        "minItems": 1
                       }
                     },
                     "required": [
                       "team_id",
-                      "bundle_id",
-                      "environments"
+                      "bundle_id"
                     ]
-                  },
-                  "development_access": {
-                    "type": "boolean"
                   }
                 },
                 "required": [
                   "type",
                   "issuer",
-                  "app_attest",
-                  "development_access"
+                  "app_attest"
                 ]
               },
               {
@@ -330,6 +314,72 @@
                     "type": "string",
                     "enum": [
                       "api_key"
+                    ]
+                  },
+                  "issuer": {
+                    "type": "object",
+                    "properties": {
+                      "jwks_url": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "user_id_claim": {
+                        "type": "string"
+                      },
+                      "token_header": {
+                        "type": "string"
+                      },
+                      "required_claims": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string"
+                            },
+                            "contains": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "minItems": 1
+                                }
+                              ]
+                            },
+                            "equals": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "path"
+                          ]
+                        }
+                      },
+                      "max_token_lifetime_seconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "required": [
+                      "jwks_url",
+                      "user_id_claim",
+                      "required_claims",
+                      "max_token_lifetime_seconds"
                     ]
                   },
                   "end_user": {
@@ -1543,8 +1593,8 @@
           "Application authentication"
         ],
         "operationId": "exchangeGatewayToken",
-        "summary": "Exchange issuer and device proof for a gateway token",
-        "description": "App Attest clients send key_id, assertion, and challenge. Development clients send dev_secret instead.",
+        "summary": "Exchange issuer identity and client proof for a gateway token",
+        "description": "App Attest clients send key_id, assertion, and challenge. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
         "parameters": [
           {
             "schema": {
@@ -1566,7 +1616,7 @@
                     "$ref": "#/components/schemas/AppAttestTokenRequest"
                   },
                   {
-                    "$ref": "#/components/schemas/DevelopmentTokenRequest"
+                    "$ref": "#/components/schemas/ApiKeyTokenRequest"
                   }
                 ]
               }
@@ -1828,20 +1878,20 @@
           {
             "schema": {
               "type": "string",
-              "description": "Required for issuer/App Attest clients; optional for server API keys."
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
             },
             "required": false,
-            "description": "Required for issuer/App Attest clients; optional for server API keys.",
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
             "name": "x-app-version",
             "in": "header"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Optional configured end-user identity for server applications."
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
             },
             "required": false,
-            "description": "Optional configured end-user identity for server applications.",
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
           }
@@ -1976,20 +2026,20 @@
           {
             "schema": {
               "type": "string",
-              "description": "Required for issuer/App Attest clients; optional for server API keys."
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
             },
             "required": false,
-            "description": "Required for issuer/App Attest clients; optional for server API keys.",
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
             "name": "x-app-version",
             "in": "header"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Optional configured end-user identity for server applications."
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
             },
             "required": false,
-            "description": "Optional configured end-user identity for server applications.",
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
           }
@@ -4833,314 +4883,6 @@
             },
             "required": true,
             "name": "key",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/admin/apps/{app}/development-credential": {
-      "get": {
-        "operationId": "getDevelopmentCredential",
-        "summary": "Get development credential metadata",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "OperatorSession": []
-          },
-          {
-            "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createDevelopmentCredential",
-        "summary": "Create a development credential",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "OperatorSession": []
-          },
-          {
-            "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteDevelopmentCredential",
-        "summary": "Delete a development credential",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "OperatorSession": []
-          },
-          {
-            "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/admin/apps/{app}/development-credential/rotate": {
-      "post": {
-        "operationId": "rotateDevelopmentCredential",
-        "summary": "Rotate a development credential",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "OperatorSession": []
-          },
-          {
-            "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
             "in": "path"
           }
         ],

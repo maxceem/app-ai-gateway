@@ -6,7 +6,6 @@ import { database } from "../../db";
 import { app } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { appRoutes } from "./apps";
-import { developmentCredentialRoutes } from "./development-credentials";
 import { keyRoutes } from "./keys";
 import { usageRoutes } from "./usage";
 import { userRoutes } from "./users";
@@ -61,7 +60,6 @@ adminRoutes.use("/billing/*", async (c, next) => {
 adminRoutes.get("/prices", (c) => c.json({ prices }));
 
 adminRoutes.route("/", appRoutes);
-adminRoutes.route("/", developmentCredentialRoutes);
 adminRoutes.route("/", keyRoutes);
 adminRoutes.route("/", userRoutes);
 adminRoutes.route("/", usageRoutes);

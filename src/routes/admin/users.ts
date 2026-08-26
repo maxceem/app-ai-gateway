@@ -15,7 +15,6 @@ interface UserIdentityRow {
   attest_key_id: string | null;
   attest_public_key: string | null;
   attest_counter: number;
-  attest_env: "production" | "development" | null;
   created_at: string;
   last_seen_at: string | null;
   is_virtual: number;
@@ -28,7 +27,6 @@ function serializeUser(row: UserIdentityRow) {
     attest_key_id: row.attest_key_id,
     attest_registered: row.attest_public_key !== null,
     attest_counter: row.attest_counter,
-    attest_env: row.attest_env,
     created_at: row.created_at,
     last_seen_at: row.last_seen_at,
     is_virtual: row.is_virtual === 1,
@@ -38,12 +36,12 @@ function serializeUser(row: UserIdentityRow) {
 const IDENTITIES_SQL = `
   WITH identities AS (
     SELECT id, status, attest_key_id, attest_public_key, attest_counter,
-           attest_env, created_at, last_seen_at, 0 AS is_virtual
+           created_at, last_seen_at, 0 AS is_virtual
       FROM app_user
      WHERE app_id = ?
     UNION ALL
     SELECT events.user_id AS id, 'active' AS status, NULL AS attest_key_id,
-           NULL AS attest_public_key, 0 AS attest_counter, NULL AS attest_env,
+           NULL AS attest_public_key, 0 AS attest_counter,
            MIN(events.created_at) AS created_at, MAX(events.created_at) AS last_seen_at,
            1 AS is_virtual
       FROM app_usage_event AS events
@@ -150,7 +148,6 @@ userRoutes.get("/apps/:app/users/:user", async (c) => {
         attest_key_id: stored.attestKeyId,
         attest_public_key: stored.attestPublicKey,
         attest_counter: stored.attestCounter,
-        attest_env: stored.attestEnvironment,
         created_at: stored.createdAt,
         last_seen_at: stored.lastSeenAt,
         is_virtual: 0,
@@ -159,7 +156,7 @@ userRoutes.get("/apps/:app/users/:user", async (c) => {
   if (!row) {
     row = await c.env.DB.prepare(
       `SELECT user_id AS id, 'active' AS status, NULL AS attest_key_id,
-              NULL AS attest_public_key, 0 AS attest_counter, NULL AS attest_env,
+              NULL AS attest_public_key, 0 AS attest_counter,
               MIN(created_at) AS created_at, MAX(created_at) AS last_seen_at,
               1 AS is_virtual
          FROM app_usage_event

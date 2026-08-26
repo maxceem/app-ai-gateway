@@ -4,7 +4,6 @@ import * as asn1js from "asn1js";
 import { decode } from "cbor-x";
 import { Certificate } from "pkijs";
 import { GatewayError } from "./errors";
-import type { AppAttestEnvironment } from "./types";
 
 const APPLE_APP_ATTEST_ROOT = new X509Certificate(`-----BEGIN CERTIFICATE-----
 MIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw
@@ -65,19 +64,12 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 export function appAttestEnvironment(
   authData: Uint8Array,
-  allowedEnvironments: AppAttestEnvironment[],
-): AppAttestEnvironment {
+): "production" {
   if (authData.byteLength < 53) fail();
   const aaguid = authData.subarray(37, 53);
-  const developmentAaguid = Buffer.from("appattestdevelop");
   const productionAaguid = Buffer.concat([Buffer.from("appattest"), Buffer.alloc(7)]);
-  const environment = bytesEqual(aaguid, developmentAaguid)
-    ? "development"
-    : bytesEqual(aaguid, productionAaguid)
-      ? "production"
-      : null;
-  if (!environment || !allowedEnvironments.includes(environment)) fail();
-  return environment;
+  if (!bytesEqual(aaguid, productionAaguid)) fail();
+  return "production";
 }
 
 function certificateIsCurrent(certificate: X509Certificate): boolean {
@@ -130,11 +122,10 @@ function assertAttestationShape(value: unknown): {
 
 export async function verifyAppAttestation(input: {
   appId: string;
-  allowedEnvironments: AppAttestEnvironment[];
   keyId: string;
   challenge: string;
   attestation: string;
-}): Promise<{ publicKeyPem: string; environment: AppAttestEnvironment }> {
+}): Promise<{ publicKeyPem: string }> {
   let decoded: unknown;
   try {
     decoded = decode(decodeBase64(input.attestation, "attestation"));
@@ -173,14 +164,14 @@ export async function verifyAppAttestation(input: {
   const expectedRpId = await sha256(Buffer.from(input.appId));
   if (!bytesEqual(proof.authData.subarray(0, 32), expectedRpId)) fail();
   if (uint32(proof.authData, 33) !== 0) fail();
-  const environment = appAttestEnvironment(proof.authData, input.allowedEnvironments);
+  appAttestEnvironment(proof.authData);
   const credentialLength = proof.authData.readUInt16BE(53);
   if (credentialLength !== 32 || proof.authData.byteLength < 55 + credentialLength) fail();
   if (proof.authData.subarray(55, 55 + credentialLength).toString("base64") !== input.keyId) fail();
 
   const exported = credential.publicKey.export({ type: "spki", format: "pem" });
   if (typeof exported !== "string") fail();
-  return { publicKeyPem: exported, environment };
+  return { publicKeyPem: exported };
 }
 
 export function assertionClientData(app: string, challenge: string, keyId: string): Uint8Array {
