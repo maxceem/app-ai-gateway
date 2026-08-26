@@ -65,8 +65,11 @@ export function useAppDraft(appId: string) {
     setDraft((current) => {
       if (!current) return current;
       const authentication = current.config.authentication;
-      const issuer = authIssuer(authentication);
-      // An api_key app has no issuer until the operator enables one.
+      // An api_key app has no issuer until the operator enables one. An App
+      // Attest app always has one, so a config edited into shape without it
+      // starts from the defaults the form is already showing.
+      const issuer = authIssuer(authentication)
+        ?? (authentication.type === "apple_app_attest" ? emptyIssuer() : undefined);
       if (!issuer) return current;
       return {
         ...current,

@@ -141,7 +141,7 @@ export function UsersTab({ appId }: { appId: string }) {
                     {user.attest_registered ? (
                       <div className="flex items-center gap-1.5">
                         <Badge variant="secondary" className="text-[11px] font-normal">
-                          {user.attest_env ?? "production"}
+                          registered
                         </Badge>
                         <span className="tabular text-[11px] text-muted-foreground">
                           counter {user.attest_counter}

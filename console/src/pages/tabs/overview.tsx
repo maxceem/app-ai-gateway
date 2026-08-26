@@ -194,7 +194,18 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
             {window.location.origin}/v1/apps/{appId}/proxy/&#123;provider&#125;/&#123;provider_path&#125;
           </code>
           <p className="mt-2 text-xs text-muted-foreground">
-            Auth exchange lives at <span className="font-mono">/v1/apps/{appId}/auth/token</span>.
+            {issuer ? (
+              <>
+                Auth exchange lives at{" "}
+                <span className="font-mono">/v1/apps/{appId}/auth/token</span>.
+              </>
+            ) : (
+              <>
+                Clients send their API key as the{" "}
+                <span className="font-mono">Authorization</span> bearer credential; this app has no
+                token exchange.
+              </>
+            )}
           </p>
         </CardContent>
       </Card>

@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { SectionHeader } from "@/components/field";
 import { IssuerCards } from "@/components/issuer-form";
 import type { AppDraft } from "@/hooks/use-app-draft";
-import { authIssuer } from "@/lib/config-types";
+import { authIssuer, emptyIssuer } from "@/lib/config-types";
 import { ServerKeys } from "@/pages/server-keys";
 
 const ISSUER_TOGGLE_LABEL = "Require verified user identity (issuer JWT)";
@@ -33,7 +33,7 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
               : "This app accepts long-lived server API keys directly. App Attest registration is disabled."}
           </AlertDescription>
         </Alert>
-        <ServerKeys appId={appId} />
+        <ServerKeys appId={appId} exchanged={issuer !== undefined} />
 
         <Card>
           <CardHeader>
@@ -62,9 +62,11 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
     );
   }
 
+  // App Attest apps always carry an issuer; a config edited without one still
+  // opens on the defaults rather than crashing the tab.
   return (
     <div className="space-y-4">
-      <IssuerCards issuer={authentication.issuer} onChange={state.updateIssuer} />
+      <IssuerCards issuer={authentication.issuer ?? emptyIssuer()} onChange={state.updateIssuer} />
     </div>
   );
 }

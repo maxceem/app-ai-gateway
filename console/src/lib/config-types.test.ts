@@ -81,7 +81,7 @@ describe("the optional issuer on an api_key app", () => {
     expect("issuer" in disabled).toBe(false);
   });
 
-  it("keeps the issuer mandatory on an App Attest app", () => {
+  it("keeps the issuer mandatory on an App Attest app without discarding it", () => {
     const appleApp: AuthenticationConfig = {
       type: "apple_app_attest",
       issuer: { jwks_url: "https://issuer.example.test/jwks.json" },
@@ -89,7 +89,17 @@ describe("the optional issuer on an api_key app", () => {
     };
 
     expect(authIssuer(appleApp)).toEqual({ jwks_url: "https://issuer.example.test/jwks.json" });
-    expect(withIssuer(appleApp, undefined)).toEqual({ ...appleApp, issuer: emptyIssuer() });
+    // Clearing is not something App Attest allows, so the configured issuer stays.
+    expect(withIssuer(appleApp, undefined)).toEqual(appleApp);
+  });
+
+  it("materializes an issuer for an App Attest config hand-edited without one", () => {
+    const missing = {
+      type: "apple_app_attest",
+      app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
+    } as unknown as AuthenticationConfig;
+
+    expect(withIssuer(missing, undefined)).toEqual({ ...missing, issuer: emptyIssuer() });
   });
 });
 

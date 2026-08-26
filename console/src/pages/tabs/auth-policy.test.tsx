@@ -86,6 +86,24 @@ describe("AuthPolicyTab issuer section for an api_key app", () => {
     expect(state.updateIssuer).toHaveBeenCalledWith({ jwks_url: `${issuer.jwks_url}x` });
   });
 
+  it("tells key holders which credential the gateway actually accepts", async () => {
+    stubKeys();
+    const { unmount } = renderAuthenticated(
+      <AuthPolicyTab appId={APP_ID} state={draftFor(serverApp())} />,
+    );
+    expect(await screen.findByText(/Authorization bearer credential/i)).toBeTruthy();
+    unmount();
+
+    stubKeys();
+    renderAuthenticated(
+      <AuthPolicyTab
+        appId={APP_ID}
+        state={draftFor(serverApp({ jwks_url: "https://issuer.example.test/jwks.json" }))}
+      />,
+    );
+    expect(await screen.findByText(/send one of these keys with an issuer token/i)).toBeTruthy();
+  });
+
   it("disables the toggle for a read-only member", async () => {
     stubKeys();
     renderAuthenticated(<AuthPolicyTab appId={APP_ID} state={draftFor(serverApp())} />, {

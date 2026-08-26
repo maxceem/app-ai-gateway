@@ -26,6 +26,12 @@ export interface ClaimRequirement {
   equals?: string | number | boolean;
 }
 
+/**
+ * Every field except `token_header` is required by the Worker; they are
+ * optional here because a draft passes through incomplete states while an
+ * operator types, and the raw JSON editor can hold anything. The save is what
+ * enforces the contract.
+ */
 export interface AuthConfig {
   jwks_url?: string;
   user_id_claim?: string;
@@ -135,12 +141,16 @@ export function emptyIssuer(): AuthConfig {
 /**
  * Replaces the issuer block. Clearing it on an api_key app removes the key
  * entirely rather than storing an empty object, which the Worker would reject.
+ * App Attest apps must have one, so clearing there keeps what is configured
+ * rather than blanking it.
  */
 export function withIssuer(
   auth: AuthenticationConfig,
   issuer: AuthConfig | undefined,
 ): AuthenticationConfig {
-  if (auth.type === "apple_app_attest") return { ...auth, issuer: issuer ?? emptyIssuer() };
+  if (auth.type === "apple_app_attest") {
+    return { ...auth, issuer: issuer ?? auth.issuer ?? emptyIssuer() };
+  }
   if (!issuer) {
     const { issuer: _removed, ...rest } = auth;
     return rest;

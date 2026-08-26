@@ -206,7 +206,6 @@ export interface GatewayUser {
   attest_key_id: string | null;
   attest_registered: boolean;
   attest_counter: number;
-  attest_env: "production" | "development" | null;
   created_at: string;
   last_seen_at: string | null;
   usage: UsageTotals;

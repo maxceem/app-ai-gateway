@@ -19,7 +19,11 @@ import { formatRelative } from "@/lib/format";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/lib/queries";
 import type { CreatedApiKey } from "@/lib/types";
 
-export function ServerKeys({ appId }: { appId: string }) {
+/**
+ * `exchanged` mirrors the app's issuer setting: with one configured the key is
+ * only ever presented to the token exchange, never to the proxy.
+ */
+export function ServerKeys({ appId, exchanged = false }: { appId: string; exchanged?: boolean }) {
   const keys = useApiKeys(appId);
   const create = useCreateApiKey(appId);
   const revoke = useRevokeApiKey(appId);
@@ -88,8 +92,11 @@ export function ServerKeys({ appId }: { appId: string }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Tenant backends send one of these keys as an Authorization bearer credential. Store it
-            as a secret and rotate it by creating a replacement before revoking the old key.
+            {exchanged
+              ? "Tenant backends send one of these keys with an issuer token to the auth exchange and use the gateway token it returns; the key itself is rejected on proxy requests."
+              : "Tenant backends send one of these keys as an Authorization bearer credential."}{" "}
+            Store it as a secret and rotate it by creating a replacement before revoking the old
+            key.
           </p>
           <div className="flex max-w-lg gap-2">
             <Input
