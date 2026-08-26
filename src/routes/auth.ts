@@ -110,6 +110,16 @@ async function storeIssuerUser(env: Env, appId: string, userId: string): Promise
   }
 }
 
+async function assertExistingUserActive(env: Env, appId: string, userId: string): Promise<void> {
+  const user = await database(env.DB).query.appUser.findFirst({
+    columns: { status: true },
+    where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
+  });
+  if (user?.status !== undefined && user.status !== "active") {
+    throw new GatewayError(403, "auth_required", "User is blocked");
+  }
+}
+
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
 authRoutes.post("/challenge", async (c) => {
@@ -137,6 +147,9 @@ authRoutes.post("/register", async (c) => {
   const auth = appleAuth(app);
   const body = schemaBody(AppAttestRegisterRequestSchema, await c.req.json());
   const { userId } = await verifyIssuerToken(body.issuer_token, auth.issuer);
+  // Do not spend a challenge or ask Apple to attest a replacement key for a
+  // user whom the operator has blocked.
+  await assertExistingUserActive(c.env, appId, userId);
   await consumeChallenge(c.env, appId, body.challenge);
   const verifiedAttestation = await verifyAppAttestation({
     appId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
@@ -178,8 +191,22 @@ authRoutes.post("/token", async (c) => {
       );
     }
     const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
+    let apiKeyId: string;
     try {
-      await verifyApiKey(body.api_key, c.env, appId, null);
+      // Token exchange is a security boundary where revocation must take effect
+      // immediately. Issuer-less data-plane authentication keeps the existing
+      // short cache, but an exchange always confirms the key's current status.
+      const apiKeyIdentity = await verifyApiKey(
+        body.api_key,
+        c.env,
+        appId,
+        null,
+        { bypassCache: true },
+      );
+      if (!apiKeyIdentity.apiKeyId) {
+        throw new GatewayError(500, "internal_error", "Verified API key identity is incomplete");
+      }
+      apiKeyId = apiKeyIdentity.apiKeyId;
     } catch (error) {
       if (error instanceof GatewayError && error.code === "auth_required") {
         throw new GatewayError(403, "auth_required", "Gateway API key was rejected");
@@ -188,7 +215,14 @@ authRoutes.post("/token", async (c) => {
     }
     const { userId } = await verifyIssuerToken(body.issuer_token, auth.issuer);
     await storeIssuerUser(c.env, appId, userId);
-    const issued = await issueGatewayToken(c.env.JWT_SECRET, appId, userId, "api_key", accessTtl());
+    const issued = await issueGatewayToken(
+      c.env.JWT_SECRET,
+      appId,
+      userId,
+      "api_key",
+      accessTtl(),
+      { apiKeyId },
+    );
     return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
   }
 
@@ -214,12 +248,10 @@ authRoutes.post("/token", async (c) => {
     },
     where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
   });
-  if (
-    !user ||
-    user.status !== "active" ||
-    user.attestKeyId !== body.key_id ||
-    !user.attestPublicKey
-  ) {
+  if (user?.status !== undefined && user.status !== "active") {
+    throw new GatewayError(403, "auth_required", "User is blocked");
+  }
+  if (!user || user.attestKeyId !== body.key_id || !user.attestPublicKey) {
     throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
   }
   await consumeChallenge(c.env, appId, body.challenge);

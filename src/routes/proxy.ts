@@ -22,7 +22,7 @@ type ProxyEnv = { Bindings: Env; Variables: GatewayVariables & ProxyVariables };
 
 export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
   const identity = c.get("identity");
-  if (identity.apiKeyId === undefined && !c.req.header("x-app-version")) {
+  if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
   const providerValue = c.req.param("provider");

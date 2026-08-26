@@ -56,6 +56,21 @@ final class MemoryCredentialStore: GatewayCredentialStoring, @unchecked Sendable
     }
 }
 
+final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    @discardableResult
+    func increment() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+
+    func snapshot() -> Int { lock.withLock { value } }
+}
+
 actor RefreshRecorder {
     private var values: [Bool] = []
     func record(_ value: Bool) { values.append(value) }
@@ -85,9 +100,9 @@ private func response(_ request: URLRequest, status: Int, body: String) -> (HTTP
 struct AIGatewayClientTests {
     @Test
     func issuerBackedAPIKeyExchangeCachesTokenAndBuildsProxyRequest() async throws {
-        var tokenCalls = 0
+        let tokenCalls = LockedCounter()
         MockURLProtocol.handler = { request in
-            tokenCalls += 1
+            tokenCalls.increment()
             return response(request, status: 200, body: #"{"access_token":"gateway-token","expires_in":3600}"#)
         }
         let client = AIGatewayClient(
@@ -101,7 +116,7 @@ struct AIGatewayClientTests {
         )
         #expect(try await client.gatewayAccessToken() == "gateway-token")
         #expect(try await client.gatewayAccessToken() == "gateway-token")
-        #expect(tokenCalls == 1)
+        #expect(tokenCalls.snapshot() == 1)
         let request = try await client.authorizedRequest(provider: "openai", providerPath: "v1/responses")
         #expect(request.url?.absoluteString == "https://gateway.test/v1/apps/test-app/proxy/openai/v1/responses")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
@@ -172,15 +187,14 @@ struct AIGatewayClientTests {
 
     @Test
     func issuerRejectionForcesOneFreshIssuerTokenAndRetries() async throws {
-        var tokenCalls = 0
+        let tokenCalls = LockedCounter()
         let refreshRecorder = RefreshRecorder()
         let recoveryRecorder = RecoveryRecorder()
         MockURLProtocol.handler = { request in
             if request.url!.path.hasSuffix("/auth/challenge") {
                 return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
             }
-            tokenCalls += 1
-            if tokenCalls == 1 {
+            if tokenCalls.increment() == 1 {
                 return response(
                     request,
                     status: 403,
@@ -204,7 +218,43 @@ struct AIGatewayClientTests {
             session: session()
         )
         #expect(try await client.gatewayAccessToken() == "fresh-token")
-        #expect(tokenCalls == 2)
+        #expect(tokenCalls.snapshot() == 2)
+        #expect(await refreshRecorder.snapshot() == [false, true])
+        #expect(await recoveryRecorder.snapshot() == 1)
+    }
+
+    @Test
+    func issuerBackedAPIKeyRejectionForcesOneFreshIssuerTokenAndRetries() async throws {
+        let tokenCalls = LockedCounter()
+        let refreshRecorder = RefreshRecorder()
+        let recoveryRecorder = RecoveryRecorder()
+        MockURLProtocol.handler = { request in
+            if tokenCalls.increment() == 1 {
+                return response(
+                    request,
+                    status: 403,
+                    body: #"{"error":{"code":"issuer_token_rejected","message":"refresh"}}"#
+                )
+            }
+            return response(request, status: 200, body: #"{"access_token":"fresh-token","expires_in":3600}"#)
+        }
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { forceRefresh in
+                    await refreshRecorder.record(forceRefresh)
+                    return forceRefresh ? "issuer-fresh" : "issuer-old"
+                }
+            ),
+            issuerRejectionRecovery: {
+                await recoveryRecorder.record()
+            },
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "fresh-token")
+        #expect(tokenCalls.snapshot() == 2)
         #expect(await refreshRecorder.snapshot() == [false, true])
         #expect(await recoveryRecorder.snapshot() == 1)
     }
@@ -215,17 +265,17 @@ struct AIGatewayClientTests {
     /// recovering from a rejection alone left a reinstalled app stuck.
     @Test
     func aKeyThisDeviceCannotSignWithIsReplaced() async throws {
-        var registerCalls = 0
-        var tokenCalls = 0
+        let registerCalls = LockedCounter()
+        let tokenCalls = LockedCounter()
         MockURLProtocol.handler = { request in
             if request.url!.path.hasSuffix("/auth/challenge") {
                 return response(request, status: 200, body: #"{"challenge":"Y2hhbGxlbmdl"}"#)
             }
             if request.url!.path.hasSuffix("/auth/register") {
-                registerCalls += 1
+                registerCalls.increment()
                 return response(request, status: 200, body: #"{"user_id":"user-1"}"#)
             }
-            tokenCalls += 1
+            tokenCalls.increment()
             return response(request, status: 200, body: #"{"access_token":"recovered","expires_in":3600}"#)
         }
         let store = MemoryCredentialStore(keyID: "key-from-previous-install")
@@ -239,20 +289,20 @@ struct AIGatewayClientTests {
         )
         #expect(try await client.gatewayAccessToken() == "recovered")
         // Registered once, and the replacement is what gets stored.
-        #expect(registerCalls == 1)
-        #expect(tokenCalls == 1)
+        #expect(registerCalls.snapshot() == 1)
+        #expect(tokenCalls.snapshot() == 1)
         #expect(try store.appAttestKeyID(for: "test-app") == "generated-key")
     }
 
     @Test
-    func proactivelyRefreshesBeforeTokenExpiry() async throws {
-        var tokenCalls = 0
+    func shortLivedTokensUseProportionalRefreshLeewayWithoutLooping() async throws {
+        let tokenCalls = LockedCounter()
         MockURLProtocol.handler = { request in
-            tokenCalls += 1
+            let call = tokenCalls.increment()
             return response(
                 request,
                 status: 200,
-                body: "{\"access_token\":\"token-\(tokenCalls)\",\"expires_in\":301}"
+                body: "{\"access_token\":\"token-\(call)\",\"expires_in\":120}"
             )
         }
         let client = AIGatewayClient(
@@ -265,9 +315,35 @@ struct AIGatewayClientTests {
             session: session()
         )
         #expect(try await client.gatewayAccessToken() == "token-1")
+        #expect(try await client.gatewayAccessToken() == "token-1")
         try await Task.sleep(for: .seconds(1.2))
-        #expect(tokenCalls >= 2)
+        #expect(tokenCalls.snapshot() == 1)
+        #expect(AIGatewayClient.refreshDelay(for: 120) == 96)
+        #expect(AIGatewayClient.refreshDelay(for: 3600) == 3300)
         _ = client
+    }
+
+    @Test
+    func concurrentTokenRequestsShareOneExchange() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            tokenCalls.increment()
+            return response(request, status: 200, body: #"{"access_token":"shared-token","expires_in":3600}"#)
+        }
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
+            session: session()
+        )
+
+        async let first = client.gatewayAccessToken()
+        async let second = client.gatewayAccessToken()
+        #expect(try await [first, second] == ["shared-token", "shared-token"])
+        #expect(tokenCalls.snapshot() == 1)
     }
 
     @Test
@@ -278,9 +354,9 @@ struct AIGatewayClientTests {
 
     @Test
     func issuerlessAPIKeyIsAttachedDirectlyWithOptionalEndUserID() async throws {
-        var networkCalls = 0
+        let networkCalls = LockedCounter()
         MockURLProtocol.handler = { request in
-            networkCalls += 1
+            networkCalls.increment()
             return response(request, status: 500, body: "{}")
         }
         let client = AIGatewayClient(
@@ -295,6 +371,6 @@ struct AIGatewayClientTests {
         let request = try await client.authorizedRequest(endpointSlug: "chat")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer agw_machine-key")
         #expect(request.value(forHTTPHeaderField: "X-End-User-ID") == "customer-42")
-        #expect(networkCalls == 0)
+        #expect(networkCalls.snapshot() == 0)
     }
 }

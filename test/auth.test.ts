@@ -53,6 +53,18 @@ async function exchangeToken(appId: string, body: Record<string, unknown>): Prom
   );
 }
 
+async function registerAttestKey(appId: string, body: Record<string, unknown>): Promise<Response> {
+  return app.fetch(
+    new Request(`https://example.test/v1/apps/${appId}/auth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    env,
+    createExecutionContext(),
+  );
+}
+
 function authDataWithAaguid(aaguid: Uint8Array): Uint8Array {
   const authData = Buffer.alloc(87);
   Buffer.from(aaguid).copy(authData, 37);
@@ -84,7 +96,12 @@ describe("issuer-backed API key exchange", () => {
     const body = await response.json<{ access_token: string }>();
     await expect(
       verifyGatewayToken(body.access_token, env.JWT_SECRET, "api-key-success"),
-    ).resolves.toMatchObject({ userId: "firebase-uid", authMethod: "api_key" });
+    ).resolves.toMatchObject({
+      userId: "firebase-uid",
+      authMethod: "api_key",
+      credentialType: "gateway_token",
+      apiKeyId: "key_api-key-success",
+    });
     await expect(
       env.DB.prepare("SELECT id FROM app_user WHERE app_id = ? AND id = ?")
         .bind("api-key-success", "firebase-uid")
@@ -113,6 +130,35 @@ describe("issuer-backed API key exchange", () => {
       });
     }
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a revoked key from the API-key cache", async () => {
+    const fixture = await signingFixture("api-key-revocation-cache");
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    const key = await seedServerApp("api-key-revocation-cache", { issuer: {} });
+    const token = await issuerToken(fixture, { sub: "cache-user" });
+
+    const initial = await exchangeToken("api-key-revocation-cache", {
+      api_key: key,
+      issuer_token: token,
+    });
+    expect(initial.status).toBe(200);
+
+    await database(env.DB)
+      .update(appApiKey)
+      .set({ status: "revoked" })
+      .where(eq(appApiKey.id, "key_api-key-revocation-cache"));
+
+    const revoked = await exchangeToken("api-key-revocation-cache", {
+      api_key: key,
+      issuer_token: token,
+    });
+    expect(revoked.status).toBe(403);
+    await expect(revoked.json()).resolves.toMatchObject({
+      error: { code: "auth_required", message: "Gateway API key was rejected" },
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("enforces issuer required claims", async () => {
@@ -154,14 +200,21 @@ describe("issuer-backed API key exchange", () => {
 
   it("rejects bare keys on the data plane while issuer-less key apps stay unchanged", async () => {
     const issuerBackedKey = await seedServerApp("api-key-data-plane-issuer", { issuer: {} });
-    const issuerBacked = await app.fetch(
-      new Request("https://example.test/v1/apps/api-key-data-plane-issuer/me", {
-        headers: { authorization: `Bearer ${issuerBackedKey}` },
-      }),
-      env,
-      createExecutionContext(),
-    );
-    expect(issuerBacked.status).toBe(401);
+    for (const route of [
+      "me",
+      "proxy/openai/v1/responses",
+      "endpoints/chat",
+    ]) {
+      const issuerBacked = await app.fetch(
+        new Request(`https://example.test/v1/apps/api-key-data-plane-issuer/${route}`, {
+          method: route === "me" ? "GET" : "POST",
+          headers: { authorization: `Bearer ${issuerBackedKey}` },
+        }),
+        env,
+        createExecutionContext(),
+      );
+      expect(issuerBacked.status, route).toBe(401);
+    }
 
     const machineKey = await seedServerApp("api-key-data-plane-machine");
     const machine = await app.fetch(
@@ -197,6 +250,44 @@ describe("issuer-backed API key exchange", () => {
     expect(machine.status).toBe(400);
     await expect(machine.json()).resolves.toMatchObject({
       error: { code: "auth_method_not_supported" },
+    });
+  });
+});
+
+describe("blocked App Attest users", () => {
+  it("rejects registration and token exchange without triggering key replacement", async () => {
+    const fixture = await signingFixture("blocked-attest-register");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    await seedApp("blocked-attest-register");
+    await database(env.DB).insert(appUser).values({
+      appId: "blocked-attest-register",
+      id: "blocked-user",
+      status: "blocked",
+      attestKeyId: "registered-key",
+      attestPublicKey: "not-used",
+    });
+
+    const response = await registerAttestKey("blocked-attest-register", {
+      issuer_token: await issuerToken(fixture, { sub: "blocked-user" }),
+      key_id: "replacement-key",
+      attestation: "not-used",
+      challenge: "not-consumed",
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "auth_required", message: "User is blocked" },
+    });
+
+    const tokenResponse = await exchangeToken("blocked-attest-register", {
+      issuer_token: await issuerToken(fixture, { sub: "blocked-user" }),
+      key_id: "registered-key",
+      assertion: "not-used",
+      challenge: "not-consumed",
+    });
+    expect(tokenResponse.status).toBe(403);
+    await expect(tokenResponse.json()).resolves.toMatchObject({
+      error: { code: "auth_required", message: "User is blocked" },
     });
   });
 });

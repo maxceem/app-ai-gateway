@@ -31,6 +31,32 @@ describe("canonical app configuration", () => {
       .toThrowError("authentication.type");
   });
 
+  it.each([
+    ["authentication.development_access", (config: any) => {
+      config.authentication.development_access = true;
+    }],
+    ["authentication.app_attest.environments", (config: any) => {
+      config.authentication = {
+        type: "apple_app_attest",
+        issuer: {
+          jwks_url: "https://issuer.test/jwks",
+          user_id_claim: "sub",
+          required_claims: [],
+          max_token_lifetime_seconds: 3600,
+        },
+        app_attest: {
+          team_id: "AAAAAAAAAA",
+          bundle_id: "com.example.test",
+          environments: ["development"],
+        },
+      };
+    }],
+  ])("rejects removed config field %s", (field, mutate) => {
+    const config = serverConfig();
+    mutate(config);
+    expect(() => validateAppConfigJson(config)).toThrowError(`${field} is no longer supported`);
+  });
+
   it("rejects allowlisted and fixed models without provider pricing", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: {

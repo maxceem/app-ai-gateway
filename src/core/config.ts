@@ -139,6 +139,13 @@ function parseIssuer(raw: unknown): IssuerAuthConfig {
 
 function parseAuthentication(raw: unknown): AuthenticationConfig {
   const value = record(raw, "authentication");
+  if (Object.hasOwn(value, "development_access")) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      "authentication.development_access is no longer supported",
+    );
+  }
   if (value.type === "api_key") {
     const endUser = record(value.end_user, "authentication.end_user");
     if (endUser.header !== "x-end-user-id" || typeof endUser.required !== "boolean" || endUser.fallback !== "api_key") {
@@ -155,6 +162,13 @@ function parseAuthentication(raw: unknown): AuthenticationConfig {
   }
 
   const appAttest = record(value.app_attest, "authentication.app_attest");
+  if (Object.hasOwn(appAttest, "environments")) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      "authentication.app_attest.environments is no longer supported",
+    );
+  }
 
   return {
     type: "apple_app_attest",

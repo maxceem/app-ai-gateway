@@ -54,9 +54,10 @@ export async function verifyApiKey(
   env: Env,
   expectedAppId: string,
   userId: string | null,
+  options: { bypassCache?: boolean } = {},
 ): Promise<GatewayIdentity> {
   const hash = await hashApiKey(credential);
-  let resolved = apiKeyCache.get(hash);
+  let resolved = options.bypassCache ? undefined : apiKeyCache.get(hash);
   if (!resolved || resolved.expiresAt <= Date.now()) {
     const row = await database(env.DB).query.appApiKey.findFirst({
       columns: { id: true, appId: true },
@@ -77,6 +78,7 @@ export async function verifyApiKey(
     jti: resolved.value.id,
     expiresAt: Number.MAX_SAFE_INTEGER,
     authMethod: "api_key",
+    credentialType: "api_key",
     apiKeyId: resolved.value.id,
   };
 }

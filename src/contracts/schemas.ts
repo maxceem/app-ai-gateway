@@ -14,7 +14,7 @@ const IssuerAuthenticationSchema = z.object({
   token_header: z.string().optional(),
   required_claims: z.array(ClaimRequirementSchema),
   max_token_lifetime_seconds: z.number().int().positive(),
-});
+}).strict();
 
 const AppleAppAttestAuthenticationSchema = z.object({
   type: z.literal("apple_app_attest"),
@@ -22,8 +22,8 @@ const AppleAppAttestAuthenticationSchema = z.object({
   app_attest: z.object({
     team_id: z.string(),
     bundle_id: z.string(),
-  }),
-});
+  }).strict(),
+}).strict();
 
 const ApiKeyAuthenticationSchema = z.object({
   type: z.literal("api_key"),
@@ -32,8 +32,8 @@ const ApiKeyAuthenticationSchema = z.object({
     header: z.literal("x-end-user-id"),
     required: z.boolean(),
     fallback: z.literal("api_key"),
-  }),
-});
+  }).strict(),
+}).strict();
 
 const ProviderPolicySchema = z.object({
   allowed_paths: z.array(z.union([

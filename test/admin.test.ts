@@ -148,6 +148,35 @@ describe("admin API", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
   });
 
+  it.each([
+    ["development_access", () => {
+      const config = serverConfig() as any;
+      config.authentication.development_access = true;
+      return config;
+    }],
+    ["app_attest.environments", () => {
+      const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
+      config.authentication.app_attest.environments = ["development"];
+      return config;
+    }],
+  ])("rejects the removed auth field %s instead of stripping it", async (_field, config) => {
+    const response = await exports.default.fetch(
+      "https://example.test/v1/admin/apps/removed-auth-field",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "Removed auth field", config: config() }),
+      },
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request" },
+    });
+  });
+
   it("creates, lists, and revokes one-time server API keys", async () => {
     const createApp = await exports.default.fetch(
       "https://example.test/v1/admin/apps/admin-server-keys",

@@ -283,7 +283,8 @@
                       "user_id_claim",
                       "required_claims",
                       "max_token_lifetime_seconds"
-                    ]
+                    ],
+                    "additionalProperties": false
                   },
                   "app_attest": {
                     "type": "object",
@@ -298,14 +299,16 @@
                     "required": [
                       "team_id",
                       "bundle_id"
-                    ]
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
                   "type",
                   "issuer",
                   "app_attest"
-                ]
+                ],
+                "additionalProperties": false
               },
               {
                 "type": "object",
@@ -380,7 +383,8 @@
                       "user_id_claim",
                       "required_claims",
                       "max_token_lifetime_seconds"
-                    ]
+                    ],
+                    "additionalProperties": false
                   },
                   "end_user": {
                     "type": "object",
@@ -405,13 +409,15 @@
                       "header",
                       "required",
                       "fallback"
-                    ]
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
                   "type",
                   "end_user"
-                ]
+                ],
+                "additionalProperties": false
               }
             ]
           },

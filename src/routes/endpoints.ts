@@ -32,7 +32,7 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
     throw new GatewayError(404, "invalid_request", "Route not found");
   }
   const identity = c.get("identity");
-  if (identity.apiKeyId === undefined && !c.req.header("x-app-version")) {
+  if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
   const slug = c.req.param("slug") ?? "";

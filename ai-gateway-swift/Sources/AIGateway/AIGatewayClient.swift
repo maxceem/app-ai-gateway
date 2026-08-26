@@ -20,6 +20,7 @@ public actor AIGatewayClient {
     private struct AccessToken: Sendable {
         let value: String
         let expiresAt: Date
+        let refreshAt: Date
     }
 
     private struct TokenResponse: Decodable {
@@ -40,6 +41,7 @@ public actor AIGatewayClient {
     private let credentialStore: any GatewayCredentialStoring
     private let session: URLSession
     private var accessToken: AccessToken?
+    private var tokenExchangeTask: Task<String, Error>?
     private var refreshTask: Task<Void, Never>?
 
     public init(
@@ -62,14 +64,27 @@ public actor AIGatewayClient {
         self.session = session
     }
 
-    deinit { refreshTask?.cancel() }
+    deinit {
+        tokenExchangeTask?.cancel()
+        refreshTask?.cancel()
+    }
 
     public func gatewayAccessToken() async throws -> String {
         if case .apiKey(let key, nil) = authMode { return key }
-        if let accessToken, accessToken.expiresAt.timeIntervalSinceNow > 300 {
+        if let accessToken, accessToken.refreshAt.timeIntervalSinceNow > 0 {
             return accessToken.value
         }
-        return try await exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+        return try await refreshGatewayAccessToken()
+    }
+
+    private func refreshGatewayAccessToken() async throws -> String {
+        if let tokenExchangeTask { return try await tokenExchangeTask.value }
+        let task = Task {
+            try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+        }
+        tokenExchangeTask = task
+        defer { tokenExchangeTask = nil }
+        return try await task.value
     }
 
     public func proxyURL(provider: String, providerPath: String) -> URL {
@@ -129,7 +144,12 @@ public actor AIGatewayClient {
             case .appAttest:
                 response = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
-            let token = AccessToken(value: response.access_token, expiresAt: Date().addingTimeInterval(response.expires_in))
+            let now = Date()
+            let token = AccessToken(
+                value: response.access_token,
+                expiresAt: now.addingTimeInterval(response.expires_in),
+                refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in))
+            )
             accessToken = token
             scheduleRefresh(for: token)
             return token.value
@@ -281,12 +301,17 @@ public actor AIGatewayClient {
 
     private func scheduleRefresh(for token: AccessToken) {
         refreshTask?.cancel()
-        let delay = max(1, token.expiresAt.timeIntervalSinceNow - 300)
+        let delay = max(1, token.refreshAt.timeIntervalSinceNow)
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            _ = try? await self?.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+            _ = try? await self?.refreshGatewayAccessToken()
         }
+    }
+
+    static func refreshDelay(for lifetime: TimeInterval) -> TimeInterval {
+        let leeway = min(300, max(15, lifetime * 0.2))
+        return max(1, lifetime - leeway)
     }
 
     static func assertionClientData(app: String, challenge: String, keyID: String) -> Data {

@@ -144,6 +144,7 @@ export interface GatewayIdentity {
   jti: string;
   expiresAt: number;
   authMethod: GatewayAuthMethod;
+  credentialType: "api_key" | "gateway_token";
   apiKeyId?: string;
 }
 
