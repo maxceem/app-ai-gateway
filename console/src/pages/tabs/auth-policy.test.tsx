@@ -35,7 +35,11 @@ const appleApp = (): AuthenticationConfig => ({
   app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
 });
 
-/** Both branches render the server key list, which fetches on mount. */
+/**
+ * Only the api_key branch renders the server key list, which fetches on mount.
+ * The App Attest tests stub it anyway so a regression that renders it there
+ * fails on the assertion rather than on a live request.
+ */
 function stubKeys() {
   return stubApi({ "/v1/admin/apps": { body: { app_id: APP_ID, keys: [] } } });
 }
@@ -104,14 +108,18 @@ describe("AuthPolicyTab issuer section for an api_key app", () => {
     expect(await screen.findByText(/send one of these keys with an issuer token/i)).toBeTruthy();
   });
 
-  it("disables the toggle for a read-only member", async () => {
+  it("disables the toggle for a read-only member and says why", async () => {
     stubKeys();
     renderAuthenticated(<AuthPolicyTab appId={APP_ID} state={draftFor(serverApp())} />, {
       session: { role: "member" },
     });
 
-    expect(await screen.findByRole("switch", { name: /issuer jwt/i }))
-      .toHaveProperty("disabled", true);
+    const toggle = await screen.findByRole("switch", { name: /issuer jwt/i });
+    expect(toggle).toHaveProperty("disabled", true);
+    // The reason has to be announced, not only shown in a hover tooltip.
+    const describedBy = toggle.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/read-only|cannot/i);
   });
 });
 

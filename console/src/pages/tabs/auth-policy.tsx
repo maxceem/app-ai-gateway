@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { KeyRound } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DisabledReason } from "@/components/guarded-button";
@@ -14,11 +15,12 @@ import { ServerKeys } from "@/pages/server-keys";
 const ISSUER_TOGGLE_LABEL = "Require verified user identity (issuer JWT)";
 
 const ISSUER_HELP =
-  "With an issuer configured, clients exchange their API key plus an issuer JWT for a short-lived gateway token, and per-user identity and entitlements are enforced on every request. Without one, the API key is used directly and user ids are self-reported.";
+  "With an issuer configured, clients exchange their API key plus an issuer JWT for a short-lived gateway token. The claims below are checked at every exchange, and the token carries a verified user id that per-user limits and blocks apply to. Without one, the API key is used directly and user ids are self-reported.";
 
 export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft }) {
   const authentication = state.draft!.config.authentication;
   const { readOnly } = useConsoleSession();
+  const readOnlyReasonId = useId();
   const issuer = authIssuer(authentication);
 
   if (authentication.type === "api_key") {
@@ -42,8 +44,16 @@ export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft
               description={ISSUER_HELP}
               action={
                 readOnly ? (
-                  <DisabledReason reason={READ_ONLY_REASON}>
-                    <Switch checked={issuer !== undefined} disabled aria-label={ISSUER_TOGGLE_LABEL} />
+                  // Same treatment as GuardedButton: the switch keeps its own
+                  // name and points at the reason it cannot be operated.
+                  <DisabledReason reason={READ_ONLY_REASON} reasonId={readOnlyReasonId}>
+                    <Switch
+                      checked={issuer !== undefined}
+                      disabled
+                      aria-disabled="true"
+                      aria-describedby={readOnlyReasonId}
+                      aria-label={ISSUER_TOGGLE_LABEL}
+                    />
                   </DisabledReason>
                 ) : (
                   <Switch

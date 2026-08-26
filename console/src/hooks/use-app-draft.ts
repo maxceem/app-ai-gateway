@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   authIssuer,
@@ -33,11 +33,18 @@ export function useAppDraft(appId: string) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
   const [draftAppId, setDraftAppId] = useState<string | null>(null);
+  /**
+   * What the issuer held the last time one was configured, so switching the
+   * toggle off and back on restores the JWKS URL and claims instead of handing
+   * the operator a blank form.
+   */
+  const lastIssuer = useRef<AuthConfig | null>(null);
 
   const row = query.data?.app;
   useEffect(() => {
     if (!row) return;
     const next = toDraft(row);
+    lastIssuer.current = authIssuer(next.config.authentication) ?? null;
     setDraft(next);
     setBaseline(JSON.stringify(next));
     setDraftAppId(appId);
@@ -84,13 +91,17 @@ export function useAppDraft(appId: string) {
   /**
    * Turns the optional issuer on an api_key app on and off. Disabling drops the
    * block rather than blanking it, so the saved config matches an app that never
-   * had one.
+   * had one, while the dropped values are kept in memory for a re-enable.
    */
   const setIssuerEnabled = useCallback((enabled: boolean) => {
     setDraft((current) => {
       if (!current) return current;
       const authentication = current.config.authentication;
-      const issuer = enabled ? (authIssuer(authentication) ?? emptyIssuer()) : undefined;
+      const configured = authIssuer(authentication);
+      if (configured) lastIssuer.current = configured;
+      const issuer = enabled
+        ? (configured ?? lastIssuer.current ?? emptyIssuer())
+        : undefined;
       return {
         ...current,
         config: { ...current.config, authentication: withIssuer(authentication, issuer) },
@@ -120,7 +131,11 @@ export function useAppDraft(appId: string) {
   }, []);
 
   const reset = useCallback(() => {
-    if (activeBaseline) setDraft(JSON.parse(activeBaseline) as Draft);
+    if (!activeBaseline) return;
+    const restored = JSON.parse(activeBaseline) as Draft;
+    // Discarding also forgets an issuer that only ever existed in the draft.
+    lastIssuer.current = authIssuer(restored.config.authentication) ?? null;
+    setDraft(restored);
   }, [activeBaseline]);
 
   const save = useCallback(async () => {

@@ -4,7 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useAppDraft } from "./use-app-draft";
 import { stubApi, testQueryClient } from "@/test/render";
-import type { AuthenticationConfig } from "@/lib/config-types";
+import { emptyIssuer, type AuthenticationConfig } from "@/lib/config-types";
 
 const APP_ID = "my-app";
 
@@ -118,6 +118,49 @@ describe("the optional issuer on an api_key draft", () => {
     expect("issuer" in auth(view)).toBe(false);
     // Nothing was left behind, so the save bar goes away too.
     expect(view.result.current.dirty).toBe(false);
+  });
+
+  it("restores the configured issuer when the toggle is switched off and on again", async () => {
+    const stored: AuthenticationConfig = {
+      ...SERVER_AUTH,
+      issuer: {
+        jwks_url: "https://issuer.example.test/jwks.json",
+        user_id_claim: "uid",
+        required_claims: [{ path: "claims.plan", contains: "pro" }],
+        max_token_lifetime_seconds: 3600,
+      },
+    };
+    const view = await loadedDraft(stored);
+
+    act(() => view.result.current.setIssuerEnabled(false));
+    act(() => view.result.current.setIssuerEnabled(true));
+
+    expect(auth(view)).toEqual(stored);
+    expect(view.result.current.dirty).toBe(false);
+  });
+
+  it("keeps unsaved issuer edits across a toggle rather than reverting to the defaults", async () => {
+    const view = await loadedDraft(SERVER_AUTH);
+
+    act(() => view.result.current.setIssuerEnabled(true));
+    act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
+    act(() => view.result.current.setIssuerEnabled(false));
+    act(() => view.result.current.setIssuerEnabled(true));
+
+    expect(auth(view)).toMatchObject({
+      issuer: { jwks_url: "https://issuer.example.test/jwks.json" },
+    });
+  });
+
+  it("forgets a draft-only issuer once the edits are discarded", async () => {
+    const view = await loadedDraft(SERVER_AUTH);
+
+    act(() => view.result.current.setIssuerEnabled(true));
+    act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
+    act(() => view.result.current.reset());
+    act(() => view.result.current.setIssuerEnabled(true));
+
+    expect(auth(view)).toMatchObject({ issuer: emptyIssuer() });
   });
 });
 

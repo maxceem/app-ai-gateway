@@ -93,8 +93,8 @@ export function ServerKeys({ appId, exchanged = false }: { appId: string; exchan
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
             {exchanged
-              ? "Tenant backends send one of these keys with an issuer token to the auth exchange and use the gateway token it returns; the key itself is rejected on proxy requests."
-              : "Tenant backends send one of these keys as an Authorization bearer credential."}{" "}
+              ? "Tenant backends send one of these keys with an issuer token to the auth exchange and use the gateway token it returns; the key itself is rejected on proxy requests, and Last used follows the traffic those tokens make. Revoking stops the next exchange at once, though tokens already minted stay valid for up to an hour."
+              : "Tenant backends send one of these keys as an Authorization bearer credential. Revoking takes effect within a minute."}{" "}
             Store it as a secret and rotate it by creating a replacement before revoking the old
             key.
           </p>
