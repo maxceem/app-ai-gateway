@@ -4,13 +4,17 @@ import Foundation
 import UIKit
 #endif
 
-public enum GatewayAuthMode: Sendable {
-    case production
-    case development(secret: String)
-}
-
 public typealias IssuerTokenProvider = @Sendable (_ forceRefresh: Bool) async throws -> String
 public typealias IssuerRejectionRecovery = @Sendable () async throws -> Void
+
+public enum GatewayAuthMode: Sendable {
+    /// App Attest proves the client installation and the issuer token proves the user.
+    case appAttest(issuerTokenProvider: IssuerTokenProvider)
+
+    /// With an issuer provider, the API key is exchanged for a per-user gateway token.
+    /// Without one, the key is sent directly and is valid only for issuer-less apps.
+    case apiKey(key: String, issuerTokenProvider: IssuerTokenProvider? = nil)
+}
 
 public actor AIGatewayClient {
     private struct AccessToken: Sendable {
@@ -30,7 +34,7 @@ public actor AIGatewayClient {
     private let appID: String
     private let baseURL: URL
     private let authMode: GatewayAuthMode
-    private let issuerTokenProvider: IssuerTokenProvider
+    private let endUserId: String?
     private let issuerRejectionRecovery: IssuerRejectionRecovery?
     private let attestProvider: any AppAttestProviding
     private let credentialStore: any GatewayCredentialStoring
@@ -41,8 +45,8 @@ public actor AIGatewayClient {
     public init(
         appID: String,
         baseURL: URL,
-        authMode: GatewayAuthMode = .production,
-        issuerTokenProvider: @escaping IssuerTokenProvider,
+        authMode: GatewayAuthMode,
+        endUserId: String? = nil,
         issuerRejectionRecovery: IssuerRejectionRecovery? = nil,
         attestProvider: any AppAttestProviding = SystemAppAttestProvider(),
         credentialStore: any GatewayCredentialStoring = KeychainGatewayCredentialStore(),
@@ -51,7 +55,7 @@ public actor AIGatewayClient {
         self.appID = appID
         self.baseURL = baseURL
         self.authMode = authMode
-        self.issuerTokenProvider = issuerTokenProvider
+        self.endUserId = endUserId
         self.issuerRejectionRecovery = issuerRejectionRecovery
         self.attestProvider = attestProvider
         self.credentialStore = credentialStore
@@ -61,6 +65,7 @@ public actor AIGatewayClient {
     deinit { refreshTask?.cancel() }
 
     public func gatewayAccessToken() async throws -> String {
+        if case .apiKey(let key, nil) = authMode { return key }
         if let accessToken, accessToken.expiresAt.timeIntervalSinceNow > 300 {
             return accessToken.value
         }
@@ -102,6 +107,9 @@ public actor AIGatewayClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
+        if case .apiKey(_, nil) = authMode, let endUserId {
+            request.setValue(endUserId, forHTTPHeaderField: "X-End-User-ID")
+        }
         request.setValue(Self.appVersion, forHTTPHeaderField: "X-App-Version")
         return request
     }
@@ -110,13 +118,15 @@ public actor AIGatewayClient {
         do {
             let response: TokenResponse
             switch authMode {
-            case .development(let secret):
+            case .apiKey(let key, .some(let issuerTokenProvider)):
                 let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
                 response = try await postJSON(
                     path: "auth/token",
-                    body: Self.developmentTokenBody(issuerToken: issuerToken, secret: secret)
+                    body: Self.apiKeyTokenBody(issuerToken: issuerToken, apiKey: key)
                 )
-            case .production:
+            case .apiKey(let key, nil):
+                return key
+            case .appAttest:
                 response = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
             let token = AccessToken(value: response.access_token, expiresAt: Date().addingTimeInterval(response.expires_in))
@@ -142,7 +152,7 @@ public actor AIGatewayClient {
             throw GatewayError(code: .attestFailed, message: "App Attest key registration failed", statusCode: 0)
         }
         let signed = try await signedAssertion(for: keyID, forceIssuerRefresh: forceIssuerRefresh)
-        let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
+        let issuerToken = try await issuerToken(forceRefresh: forceIssuerRefresh)
         do {
             return try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed))
         } catch let error as GatewayError where error.code == .attestFailed {
@@ -215,7 +225,7 @@ public actor AIGatewayClient {
         let challenge = try await challenge()
         let challengeData = try Self.base64URLData(challenge)
         let attestation = try await attestProvider.attestKey(keyID, clientDataHash: challengeData.sha256)
-        let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
+        let issuerToken = try await issuerToken(forceRefresh: forceIssuerRefresh)
         struct RegisterResponse: Decodable { let user_id: String }
         let _: RegisterResponse = try await postJSON(
             path: "auth/register",
@@ -233,6 +243,21 @@ public actor AIGatewayClient {
     private func challenge() async throws -> String {
         let response: ChallengeResponse = try await postJSON(path: "auth/challenge", body: [:])
         return response.challenge
+    }
+
+    private func issuerToken(forceRefresh: Bool) async throws -> String {
+        switch authMode {
+        case .appAttest(let issuerTokenProvider):
+            return try await issuerTokenProvider(forceRefresh)
+        case .apiKey(_, .some(let issuerTokenProvider)):
+            return try await issuerTokenProvider(forceRefresh)
+        case .apiKey(_, nil):
+            throw GatewayError(
+                code: .unknown,
+                message: "This API-key mode has no issuer token provider",
+                statusCode: 0
+            )
+        }
     }
 
     private func postJSON<Response: Decodable>(path: String, body: [String: String]) async throws -> Response {
@@ -268,8 +293,8 @@ public actor AIGatewayClient {
         Data("{\"app\":\"\(app)\",\"challenge\":\"\(challenge)\",\"key_id\":\"\(keyID)\"}".utf8)
     }
 
-    static func developmentTokenBody(issuerToken: String, secret: String) -> [String: String] {
-        ["issuer_token": issuerToken, "dev_secret": secret]
+    static func apiKeyTokenBody(issuerToken: String, apiKey: String) -> [String: String] {
+        ["issuer_token": issuerToken, "api_key": apiKey]
     }
 
     static func base64URLData(_ value: String) throws -> Data {

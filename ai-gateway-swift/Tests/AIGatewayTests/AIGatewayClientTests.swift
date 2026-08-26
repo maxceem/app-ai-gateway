@@ -84,7 +84,7 @@ private func response(_ request: URLRequest, status: Int, body: String) -> (HTTP
 @Suite(.serialized)
 struct AIGatewayClientTests {
     @Test
-    func developmentExchangeCachesTokenAndBuildsProxyRequest() async throws {
+    func issuerBackedAPIKeyExchangeCachesTokenAndBuildsProxyRequest() async throws {
         var tokenCalls = 0
         MockURLProtocol.handler = { request in
             tokenCalls += 1
@@ -93,8 +93,10 @@ struct AIGatewayClientTests {
         let client = AIGatewayClient(
             appID: "test-app",
             baseURL: URL(string: "https://gateway.test")!,
-            authMode: .development(secret: "dev-secret"),
-            issuerTokenProvider: { _ in "firebase-token" },
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
             session: session()
         )
         #expect(try await client.gatewayAccessToken() == "gateway-token")
@@ -105,10 +107,10 @@ struct AIGatewayClientTests {
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-token")
         #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
         #expect(
-            AIGatewayClient.developmentTokenBody(
+            AIGatewayClient.apiKeyTokenBody(
                 issuerToken: "firebase-token",
-                secret: "dev-secret"
-            ) == ["issuer_token": "firebase-token", "dev_secret": "dev-secret"]
+                apiKey: "agw_test-key"
+            ) == ["issuer_token": "firebase-token", "api_key": "agw_test-key"]
         )
     }
 
@@ -123,8 +125,10 @@ struct AIGatewayClientTests {
         let client = AIGatewayClient(
             appID: "test-app",
             baseURL: URL(string: "https://gateway.test")!,
-            authMode: .development(secret: "dev-secret"),
-            issuerTokenProvider: { _ in "firebase-token" },
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
             session: session()
         )
         #expect(
@@ -145,8 +149,10 @@ struct AIGatewayClientTests {
         let client = AIGatewayClient(
             appID: "calorie-tracker",
             baseURL: URL(string: "https://gateway.test/base")!,
-            authMode: .development(secret: "dev-secret"),
-            issuerTokenProvider: { _ in "firebase-token" },
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
             session: session()
         )
         #expect(
@@ -186,10 +192,10 @@ struct AIGatewayClientTests {
         let client = AIGatewayClient(
             appID: "test-app",
             baseURL: URL(string: "https://gateway.test")!,
-            issuerTokenProvider: { forceRefresh in
+            authMode: .appAttest(issuerTokenProvider: { forceRefresh in
                 await refreshRecorder.record(forceRefresh)
                 return forceRefresh ? "issuer-fresh" : "issuer-old"
-            },
+            }),
             issuerRejectionRecovery: {
                 await recoveryRecorder.record()
             },
@@ -226,7 +232,7 @@ struct AIGatewayClientTests {
         let client = AIGatewayClient(
             appID: "test-app",
             baseURL: URL(string: "https://gateway.test")!,
-            issuerTokenProvider: { _ in "issuer" },
+            authMode: .appAttest(issuerTokenProvider: { _ in "issuer" }),
             attestProvider: MockAttestProvider(deadKeyIDs: ["key-from-previous-install"]),
             credentialStore: store,
             session: session()
@@ -252,8 +258,10 @@ struct AIGatewayClientTests {
         let client = AIGatewayClient(
             appID: "test-app",
             baseURL: URL(string: "https://gateway.test")!,
-            authMode: .development(secret: "dev-secret"),
-            issuerTokenProvider: { _ in "firebase-token" },
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
             session: session()
         )
         #expect(try await client.gatewayAccessToken() == "token-1")
@@ -266,5 +274,27 @@ struct AIGatewayClientTests {
     func assertionClientDataMatchesServerCanonicalForm() {
         let value = AIGatewayClient.assertionClientData(app: "app", challenge: "challenge", keyID: "key")
         #expect(String(data: value, encoding: .utf8) == #"{"app":"app","challenge":"challenge","key_id":"key"}"#)
+    }
+
+    @Test
+    func issuerlessAPIKeyIsAttachedDirectlyWithOptionalEndUserID() async throws {
+        var networkCalls = 0
+        MockURLProtocol.handler = { request in
+            networkCalls += 1
+            return response(request, status: 500, body: "{}")
+        }
+        let client = AIGatewayClient(
+            appID: "machine-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(key: "agw_machine-key"),
+            endUserId: "customer-42",
+            session: session()
+        )
+
+        #expect(try await client.gatewayAccessToken() == "agw_machine-key")
+        let request = try await client.authorizedRequest(endpointSlug: "chat")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer agw_machine-key")
+        #expect(request.value(forHTTPHeaderField: "X-End-User-ID") == "customer-42")
+        #expect(networkCalls == 0)
     }
 }
