@@ -168,9 +168,7 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
                   app_attest: {
                     team_id: appleTeamId.trim(),
                     bundle_id: appleBundleId.trim(),
-                    environments: ["production"],
                   },
-                  development_access: false,
                 },
           routing: { providers: { mode: "all" }, model_rewrites: {} },
           limits: {

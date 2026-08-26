@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -137,15 +136,6 @@ export function AppsPage() {
                       <div className="flex items-center gap-2 font-medium">
                         {app.name}
                         <AppStatusBadge status={app.status} />
-                        {app.dev_access_enabled ? (
-                          <Badge
-                            variant="outline"
-                            className="border-amber-500/40 text-[11px] font-normal text-amber-600 dark:text-amber-400"
-                            title="Simulator secret authentication is enabled for this app"
-                          >
-                            dev access
-                          </Badge>
-                        ) : null}
                       </div>
                       <span className="font-mono text-xs text-muted-foreground">{app.id}</span>
                     </Link>

@@ -149,7 +149,7 @@ export function UsersTab({ appId }: { appId: string }) {
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">
-                        {user.is_virtual ? "server attributed" : "dev access"}
+                        {user.is_virtual ? "server attributed" : "issuer token"}
                       </span>
                     )}
                   </TableCell>

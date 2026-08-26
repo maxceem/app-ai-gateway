@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type {
-  AuthConfig,
-  AuthenticationConfig,
-  EndpointsConfig,
-  LimitsConfig,
-  ProxyConfig,
-  StoredAppConfig,
+import {
+  authIssuer,
+  emptyIssuer,
+  withIssuer,
+  type AuthConfig,
+  type AuthenticationConfig,
+  type EndpointsConfig,
+  type LimitsConfig,
+  type ProxyConfig,
+  type StoredAppConfig,
 } from "@/lib/config-types";
 import { useApp, useSaveApp, useValidateApp } from "@/lib/queries";
 import type { AppRow, AppUpsertBody } from "@/lib/types";
@@ -60,16 +63,34 @@ export function useAppDraft(appId: string) {
 
   const updateIssuer = useCallback((partial: Partial<AuthConfig>) => {
     setDraft((current) => {
-      if (!current || current.config.authentication.type !== "apple_app_attest") return current;
+      if (!current) return current;
+      const authentication = current.config.authentication;
+      const issuer = authIssuer(authentication);
+      // An api_key app has no issuer until the operator enables one.
+      if (!issuer) return current;
       return {
         ...current,
         config: {
           ...current.config,
-          authentication: {
-            ...current.config.authentication,
-            issuer: { ...current.config.authentication.issuer, ...partial },
-          },
+          authentication: withIssuer(authentication, { ...issuer, ...partial }),
         },
+      };
+    });
+  }, []);
+
+  /**
+   * Turns the optional issuer on an api_key app on and off. Disabling drops the
+   * block rather than blanking it, so the saved config matches an app that never
+   * had one.
+   */
+  const setIssuerEnabled = useCallback((enabled: boolean) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const authentication = current.config.authentication;
+      const issuer = enabled ? (authIssuer(authentication) ?? emptyIssuer()) : undefined;
+      return {
+        ...current,
+        config: { ...current.config, authentication: withIssuer(authentication, issuer) },
       };
     });
   }, []);
@@ -133,6 +154,7 @@ export function useAppDraft(appId: string) {
     updateConfig,
     updateAuthentication,
     updateIssuer,
+    setIssuerEnabled,
     updateProxy,
     updateLimits,
     updateEndpoints,

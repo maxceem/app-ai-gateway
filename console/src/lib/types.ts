@@ -143,7 +143,6 @@ export interface AppSummary {
   monthly_app_budget_usd: number | null;
   providers: string[];
   allowed_model_count: number;
-  dev_access_enabled: boolean;
   users: { total: number; blocked: number };
   usage: UsageTotals;
 }
@@ -279,7 +278,7 @@ export interface UsageEvent {
   output_tokens: number;
   cost_usd: number;
   app_version: string | null;
-  auth_method: "dev" | "attest" | "api_key" | null;
+  auth_method: "attest" | "api_key" | null;
   status: UsageStatus;
   latency_ms: number | null;
   created_at: string;
@@ -330,15 +329,4 @@ export interface CreatedApiKey {
   key: string;
   key_prefix: string;
   created_at: string;
-}
-
-export interface DevelopmentCredential {
-  enabled: boolean;
-  secret_prefix: string | null;
-  created_at: string | null;
-  rotated_at: string | null;
-}
-
-export interface CreatedDevelopmentCredential extends DevelopmentCredential {
-  secret: string;
 }

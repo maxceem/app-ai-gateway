@@ -20,9 +20,6 @@ export const CLAMP_STYLES = [
 ] as const;
 export type ClampStyle = (typeof CLAMP_STYLES)[number];
 
-export const ATTEST_ENVIRONMENTS = ["production", "development"] as const;
-export type AttestEnvironment = (typeof ATTEST_ENVIRONMENTS)[number];
-
 export interface ClaimRequirement {
   path: string;
   contains?: string | string[];
@@ -41,12 +38,11 @@ export type AuthenticationConfig =
   | {
       type: "apple_app_attest";
       issuer: AuthConfig;
+      /** App Attest is verified against Apple's production environment only. */
       app_attest: {
         team_id: string;
         bundle_id: string;
-        environments: AttestEnvironment[];
       };
-      development_access: boolean;
     }
   | {
       type: "api_key";
@@ -55,6 +51,13 @@ export type AuthenticationConfig =
         required: boolean;
         fallback: "api_key";
       };
+      /**
+       * Optional. With an issuer, clients exchange their key plus an issuer JWT
+       * for a short-lived gateway token and bare keys stop working on the data
+       * plane. Without one, the key is used directly and user ids are
+       * self-reported through the end-user header.
+       */
+      issuer?: AuthConfig;
     };
 
 export interface AllowedPathObject {
@@ -119,6 +122,30 @@ export interface StoredAppConfig {
   routing: ProxyConfig;
   limits: LimitsConfig;
   endpoints?: EndpointsConfig;
+}
+
+/** The issuer block, which api_key apps only have once an operator enables one. */
+export const authIssuer = (auth: AuthenticationConfig): AuthConfig | undefined => auth.issuer;
+
+/** A fresh issuer block, matching the defaults the Worker applies. */
+export function emptyIssuer(): AuthConfig {
+  return { jwks_url: "", user_id_claim: "sub", required_claims: [], max_token_lifetime_seconds: 86400 };
+}
+
+/**
+ * Replaces the issuer block. Clearing it on an api_key app removes the key
+ * entirely rather than storing an empty object, which the Worker would reject.
+ */
+export function withIssuer(
+  auth: AuthenticationConfig,
+  issuer: AuthConfig | undefined,
+): AuthenticationConfig {
+  if (auth.type === "apple_app_attest") return { ...auth, issuer: issuer ?? emptyIssuer() };
+  if (!issuer) {
+    const { issuer: _removed, ...rest } = auth;
+    return rest;
+  }
+  return { ...auth, issuer };
 }
 
 export const pathOf = (path: AllowedPath): string => (typeof path === "string" ? path : path.path);

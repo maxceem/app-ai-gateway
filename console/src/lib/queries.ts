@@ -19,9 +19,7 @@ import type {
   Capabilities,
   CreatedApiKey,
   CreatedApp,
-  CreatedDevelopmentCredential,
   CreatedManagementKey,
-  DevelopmentCredential,
   BreakdownResponse,
   EventsResponse,
   ManagementKeyListResponse,
@@ -46,7 +44,6 @@ export const keys = {
   apps: (month: string) => ["apps", month] as const,
   app: (appId: string) => ["app", appId] as const,
   apiKeys: (appId: string) => ["api-keys", appId] as const,
-  developmentCredential: (appId: string) => ["development-credential", appId] as const,
   users: (appId: string, params: unknown) => ["users", appId, params] as const,
   usage: (appId: string, month: string) => ["usage", appId, month] as const,
   timeseries: (appId: string, from: string, to: string) => ["timeseries", appId, from, to] as const,
@@ -317,52 +314,6 @@ export function useDeleteApp() {
         `/v1/admin/apps/${encodeURIComponent(appId)}${query({ confirm: appId })}`,
       ),
     onSuccess: () => client.invalidateQueries({ queryKey: ["apps"] }),
-  });
-}
-
-export function useDevelopmentCredential(appId: string, enabled = true) {
-  return useQuery({
-    queryKey: keys.developmentCredential(appId),
-    queryFn: () => api.get<DevelopmentCredential>(
-      `/v1/admin/apps/${encodeURIComponent(appId)}/development-credential`,
-    ),
-    enabled,
-  });
-}
-
-export function useCreateDevelopmentCredential(appId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post<CreatedDevelopmentCredential>(
-      `/v1/admin/apps/${encodeURIComponent(appId)}/development-credential`,
-    ),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: keys.app(appId) });
-      void client.invalidateQueries({ queryKey: keys.developmentCredential(appId) });
-    },
-  });
-}
-
-export function useRotateDevelopmentCredential(appId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post<CreatedDevelopmentCredential>(
-      `/v1/admin/apps/${encodeURIComponent(appId)}/development-credential/rotate`,
-    ),
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.developmentCredential(appId) }),
-  });
-}
-
-export function useDeleteDevelopmentCredential(appId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.delete<{ enabled: false }>(
-      `/v1/admin/apps/${encodeURIComponent(appId)}/development-credential`,
-    ),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: keys.app(appId) });
-      void client.invalidateQueries({ queryKey: keys.developmentCredential(appId) });
-    },
   });
 }
 
