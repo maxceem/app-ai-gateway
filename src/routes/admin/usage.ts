@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
-import type { Provider } from "../../core/types";
+import type { ProviderType } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { database } from "../../db";
@@ -90,7 +90,7 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   }
 
   const repriced = rows.map((row) => {
-    const costUsd = computeCost(provider as Provider, model, row);
+    const costUsd = computeCost(provider as ProviderType, model, row);
     if (costUsd === null) {
       throw new GatewayError(400, "invalid_request", `Unable to compute a token price for ${provider}/${model}`);
     }

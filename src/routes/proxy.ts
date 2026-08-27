@@ -1,17 +1,18 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { hasAppLevelLimits, PROVIDERS } from "../core/config";
+import { hasAppLevelLimits } from "../core/config";
 import { GatewayError } from "../core/errors";
+import { isProviderType } from "../core/providers";
 import {
   prepareProxyRequest,
   providerGatewayUrl,
   type PreparedProxyRequest,
 } from "../core/proxyrules";
-import type { Provider } from "../core/types";
+import type { ProviderType } from "../core/types";
 import { recordUsageEvent } from "../core/usage";
 import type { GatewayVariables } from "../middleware/auth";
 
 export interface ProxyVariables {
-  provider: Provider;
+  provider: ProviderType;
   providerPath: string;
   preparedProxyRequest: PreparedProxyRequest;
   /** Named endpoint routes set this; passthrough proxy traffic leaves it unset. */
@@ -26,10 +27,10 @@ export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
   const providerValue = c.req.param("provider");
-  if (!PROVIDERS.includes(providerValue as Provider)) {
+  if (!isProviderType(providerValue)) {
     throw new GatewayError(403, "path_not_allowed", "Provider is not supported");
   }
-  const provider = providerValue as Provider;
+  const provider = providerValue;
   const marker = `/proxy/${provider}/`;
   const markerIndex = c.req.path.indexOf(marker);
   const providerPath = markerIndex === -1 ? undefined : c.req.path.slice(markerIndex + marker.length);

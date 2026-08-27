@@ -1,11 +1,12 @@
 import { GatewayError } from "./errors";
+import { PROVIDER_REGISTRY } from "./providers";
 import { hasModelPrice } from "./usage";
 import type {
   AllowedPath,
   AllowedPathConfig,
   AppConfig,
   OutputClampStyle,
-  Provider,
+  ProviderType,
   ProviderProxyConfig,
 } from "./types";
 
@@ -16,7 +17,7 @@ const UNRESTRICTED_PROVIDER: ProviderProxyConfig = {
 };
 
 export interface PreparedProxyRequest {
-  provider: Provider;
+  provider: ProviderType;
   providerPath: string;
   model: string;
   body: BodyInit | null;
@@ -82,7 +83,7 @@ function modelIsAllowed(allowedModels: string[], requestedModel: string): boolea
   return allowedModels.length === 0 || allowedModels.includes(requestedModel);
 }
 
-function matchedPath(provider: Provider, path: string, allowed: AllowedPath[]): MatchedPath | null {
+function matchedPath(provider: ProviderType, path: string, allowed: AllowedPath[]): MatchedPath | null {
   if (allowed.length === 0) {
     if (provider === "gemini") {
       // Native Gemini generation requests carry the model in the URL rather
@@ -117,7 +118,7 @@ export function jsonObject(bytes: Uint8Array): Record<string, unknown> {
   }
 }
 
-function inferredClampStyle(provider: Provider, providerPath: string): OutputClampStyle {
+function inferredClampStyle(provider: ProviderType, providerPath: string): OutputClampStyle {
   if (providerPath.endsWith("audio/transcriptions") || providerPath === "v1/stt") return "none";
   if (providerPath.includes("chat/completions")) return "chat_completions";
   if (providerPath.endsWith("responses")) return "responses";
@@ -146,7 +147,7 @@ function validateOutputCap(
 
 export function validateOrInjectOutputCap(
   style: OutputClampStyle,
-  provider: Provider,
+  provider: ProviderType,
   body: Record<string, unknown>,
   cap: number | undefined,
 ): boolean {
@@ -232,7 +233,7 @@ export async function prepareProxyRequest(input: {
   request: Request;
   app: AppConfig;
   userId: string;
-  provider: Provider;
+  provider: ProviderType;
   providerPath: string;
   tokenHeader: string;
   cfAigToken: string;
@@ -365,24 +366,19 @@ export async function providerGatewayUrl(
   env: Env & { CF_AIG_BASE_URL?: string },
   prepared: PreparedProxyRequest,
 ): Promise<string> {
-  const slug: Record<Provider, string> = {
-    openai: "openai",
-    anthropic: "anthropic",
-    xai: "grok",
-    gemini: "google-ai-studio",
-    perplexity: "perplexity-ai",
-  };
-  const path = prepared.provider === "openai"
-    ? prepared.providerPath.replace(/^v1\//u, "")
+  const spec = PROVIDER_REGISTRY[prepared.provider];
+  const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
+  const path = prefix && prepared.providerPath.startsWith(prefix)
+    ? prepared.providerPath.slice(prefix.length)
     : prepared.providerPath;
   const configuredBase = env.CF_AIG_BASE_URL;
   const ai = env.AI;
   let base: string;
   if (configuredBase) {
-    base = `${configuredBase.replace(/\/$/u, "")}/${slug[prepared.provider]}`;
+    base = `${configuredBase.replace(/\/$/u, "")}/${spec.aig.slug}`;
   } else {
     if (!ai) throw new Error("The Workers AI binding is unavailable");
-    base = (await ai.gateway(env.CF_AIG_GATEWAY_ID).getUrl(slug[prepared.provider]))
+    base = (await ai.gateway(env.CF_AIG_GATEWAY_ID).getUrl(spec.aig.slug))
       .replace(/\/$/u, "");
   }
   return `${base}/${path}${prepared.query}`;

@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { ENDPOINT_PROVIDER_TYPES, PROVIDER_TYPES } from "../core/providers.ts";
+
+export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
+
+const EndpointProviderTypeSchema = z.enum(ENDPOINT_PROVIDER_TYPES);
 
 const NullableLimit = z.number().nonnegative().nullable();
 
@@ -49,7 +54,7 @@ const ProviderPolicySchema = z.object({
 });
 
 const EndpointTargetSchema = z.object({
-  provider: z.enum(["openai", "xai"]),
+  provider: EndpointProviderTypeSchema,
   model: z.string().min(1),
 });
 
@@ -77,7 +82,7 @@ export const AppConfigSchema = z.object({
     providers: z.object({
       mode: z.enum(["all", "selected"]),
       selected: z.partialRecord(
-        z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"]),
+        ProviderTypeSchema,
         ProviderPolicySchema,
       ).optional(),
     }),
@@ -117,7 +122,7 @@ export const ApiKeyTokenRequestSchema = z.object({
 }).strict().meta({ id: "ApiKeyTokenRequest" });
 
 export const UsageRepriceRequestSchema = z.object({
-  provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"]),
+  provider: ProviderTypeSchema,
   model: z.string().min(1),
   month: z.string().regex(/^\d{4}-\d{2}$/u),
   apply: z.boolean().default(false),

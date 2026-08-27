@@ -1,4 +1,5 @@
 import { OpenAPIHono, z, type RouteConfig } from "@hono/zod-openapi";
+import { PROVIDER_TYPES } from "../core/providers.ts";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
@@ -50,7 +51,7 @@ const OrganizationMemberPath = z.object({
 });
 
 const ProviderPath = AppPath.extend({
-  provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"])
+  provider: z.enum(PROVIDER_TYPES)
     .openapi({ param: { name: "provider", in: "path" } }),
   path: z.string().openapi({ param: { name: "path", in: "path" }, example: "v1/responses" }),
 });

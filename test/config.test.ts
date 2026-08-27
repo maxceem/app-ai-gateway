@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateAppConfigJson } from "../src/core/config";
+import { providersForEndpointStyle } from "../src/core/providers";
 import { serverConfig } from "./helpers";
 
 describe("canonical app configuration", () => {
@@ -98,6 +99,11 @@ describe("named endpoint configuration", () => {
     max_output_tokens: 4096,
     fallback: [{ provider: "xai", model: "grok-4.5" }],
   };
+
+  it("derives named-endpoint eligibility from provider registry capabilities", () => {
+    expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
+    expect(providersForEndpointStyle("transcription")).toEqual(["openai", "xai"]);
+  });
 
   it("keeps a valid endpoints block verbatim in the stored configuration", () => {
     const stored = validateAppConfigJson(serverConfig({

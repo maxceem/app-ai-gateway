@@ -9,11 +9,11 @@ import {
 import {
   invalidateAppConfig,
   loadAppConfig,
-  PROVIDERS,
   validateAppConfigJson,
 } from "../../core/config";
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
+import { PROVIDER_TYPES } from "../../core/providers";
 import {
   insertAppWithinCapacity,
   upsertAppWithinCapacity,
@@ -110,7 +110,7 @@ function validatedConfig(
 
 function summary(config: ReturnType<typeof validateAppConfigJson>) {
   const providers = config.routing.providers.mode === "all"
-    ? [...PROVIDERS]
+    ? [...PROVIDER_TYPES]
     : Object.keys(config.routing.providers.selected ?? {});
   const models = new Set<string>();
   for (const provider of Object.values(config.routing.providers.selected ?? {})) {

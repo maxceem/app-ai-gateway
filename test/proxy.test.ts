@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import type { OutputClampStyle, Provider } from "../src/core/types";
+import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
@@ -13,7 +13,7 @@ interface CapturedRequest {
 
 interface OutputCapCase {
   name: string;
-  provider: Provider;
+  provider: ProviderType;
   allowedPath: string | { path: string; clamp: OutputClampStyle };
   path: string;
   model: string;

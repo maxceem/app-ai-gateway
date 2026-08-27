@@ -2,6 +2,11 @@ import { eq } from "drizzle-orm";
 import { database } from "../db";
 import { app } from "../db/schema";
 import { GatewayError } from "./errors";
+import {
+  ENDPOINT_API_STYLES,
+  PROVIDER_TYPES,
+  providersForEndpointStyle,
+} from "./providers";
 import { hasModelPrice } from "./usage";
 import type {
   AllowedPath,
@@ -17,7 +22,7 @@ import type {
   LimitScopeConfig,
   IssuerAuthConfig,
   OutputClampStyle,
-  Provider,
+  ProviderType,
   ProviderProxyConfig,
   ResolvedLimitScope,
   ResolvedRoutingConfig,
@@ -32,7 +37,6 @@ interface CacheEntry {
 }
 
 const appCache = new Map<string, CacheEntry>();
-export const PROVIDERS: Provider[] = ["openai", "anthropic", "xai", "gemini", "perplexity"];
 const CLAMP_STYLES: OutputClampStyle[] = [
   "responses",
   "chat_completions",
@@ -42,10 +46,6 @@ const CLAMP_STYLES: OutputClampStyle[] = [
 ];
 const CONFIG_CACHE_TTL_MS = 60_000;
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/u;
-export const ENDPOINT_API_STYLES: EndpointApiStyle[] = ["responses", "transcription"];
-// Named endpoints compose the provider request themselves, so only providers
-// whose Responses and transcription shapes the gateway builds are allowed.
-export const ENDPOINT_PROVIDERS: EndpointProvider[] = ["openai", "xai"];
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -200,7 +200,7 @@ function allowedPaths(value: unknown, label: string): AllowedPath[] {
   });
 }
 
-function parseProvider(raw: unknown, provider: Provider): ProviderProxyConfig {
+function parseProvider(raw: unknown, provider: ProviderType): ProviderProxyConfig {
   const value = record(raw, `routing provider ${provider}`);
   const allowedModels = value.allowed_models ?? [];
   if (
@@ -222,11 +222,11 @@ function parseProvider(raw: unknown, provider: Provider): ProviderProxyConfig {
 }
 
 function validateRoutingPrices(
-  selected: Partial<Record<Provider, ProviderProxyConfig>>,
+  selected: Partial<Record<ProviderType, ProviderProxyConfig>>,
   modelRewrites: Record<string, string>,
 ): void {
   for (const [source, target] of Object.entries(modelRewrites)) {
-    if (!PROVIDERS.some((provider) => hasModelPrice(provider, target))) {
+    if (!PROVIDER_TYPES.some((provider) => hasModelPrice(provider, target))) {
       throw new GatewayError(
         500,
         "internal_error",
@@ -235,7 +235,7 @@ function validateRoutingPrices(
     }
   }
 
-  for (const [provider, config] of Object.entries(selected) as [Provider, ProviderProxyConfig][]) {
+  for (const [provider, config] of Object.entries(selected) as [ProviderType, ProviderProxyConfig][]) {
     const configuredModels = [
       ...config.allowed_models.map((model) => ({ model, label: `${provider}.allowed_models` })),
       ...config.allowed_paths.flatMap((entry, index) => {
@@ -262,7 +262,7 @@ function parseRouting(raw: unknown): { stored: RoutingConfig; resolved: Resolved
   if (providers.mode !== "all" && providers.mode !== "selected") {
     throw new GatewayError(500, "internal_error", "routing.providers.mode must be all or selected");
   }
-  const selected: Partial<Record<Provider, ProviderProxyConfig>> = {};
+  const selected: Partial<Record<ProviderType, ProviderProxyConfig>> = {};
   if (providers.mode === "all") {
     if (providers.selected !== undefined) {
       throw new GatewayError(500, "internal_error", "routing.providers.selected must be omitted in all mode");
@@ -270,11 +270,11 @@ function parseRouting(raw: unknown): { stored: RoutingConfig; resolved: Resolved
   } else {
     const selectedRaw = record(providers.selected, "routing.providers.selected");
     for (const key of Object.keys(selectedRaw)) {
-      if (!PROVIDERS.includes(key as Provider)) {
+      if (!PROVIDER_TYPES.includes(key as ProviderType)) {
         throw new GatewayError(500, "internal_error", `Unknown provider ${key}`);
       }
     }
-    for (const provider of PROVIDERS) {
+    for (const provider of PROVIDER_TYPES) {
       if (selectedRaw[provider] !== undefined) selected[provider] = parseProvider(selectedRaw[provider], provider);
     }
   }
@@ -296,14 +296,19 @@ function parseRouting(raw: unknown): { stored: RoutingConfig; resolved: Resolved
   };
 }
 
-function parseEndpointTarget(raw: unknown, label: string): EndpointTarget {
+function parseEndpointTarget(
+  raw: unknown,
+  label: string,
+  apiStyle: EndpointApiStyle,
+): EndpointTarget {
   const value = record(raw, label);
   const provider = value.provider;
-  if (!ENDPOINT_PROVIDERS.includes(provider as EndpointProvider)) {
+  const eligibleProviders = providersForEndpointStyle(apiStyle);
+  if (!eligibleProviders.includes(provider as EndpointProvider)) {
     throw new GatewayError(
       500,
       "internal_error",
-      `${label}.provider must be one of ${ENDPOINT_PROVIDERS.join(", ")}`,
+      `${label}.provider must be one of ${eligibleProviders.join(", ")}`,
     );
   }
   const model = requiredString(value.model, `${label}.model`);
@@ -319,7 +324,6 @@ function parseEndpointTarget(raw: unknown, label: string): EndpointTarget {
 
 function parseEndpoint(raw: unknown, label: string): EndpointConfig {
   const value = record(raw, label);
-  const target = parseEndpointTarget(value, label);
   if (!ENDPOINT_API_STYLES.includes(value.api_style as EndpointApiStyle)) {
     throw new GatewayError(
       500,
@@ -327,8 +331,10 @@ function parseEndpoint(raw: unknown, label: string): EndpointConfig {
       `${label}.api_style must be one of ${ENDPOINT_API_STYLES.join(", ")}`,
     );
   }
+  const apiStyle = value.api_style as EndpointApiStyle;
+  const target = parseEndpointTarget(value, label, apiStyle);
   const endpoint: EndpointConfig = {
-    api_style: value.api_style as EndpointApiStyle,
+    api_style: apiStyle,
     provider: target.provider,
     model: target.model,
   };
@@ -345,7 +351,7 @@ function parseEndpoint(raw: unknown, label: string): EndpointConfig {
       throw new GatewayError(500, "internal_error", `${label}.fallback must be an array`);
     }
     endpoint.fallback = value.fallback.map((item, index) =>
-      parseEndpointTarget(item, `${label}.fallback[${index}]`),
+      parseEndpointTarget(item, `${label}.fallback[${index}]`, apiStyle),
     );
   }
   return endpoint;

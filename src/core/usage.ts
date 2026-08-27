@@ -1,7 +1,7 @@
 import prices from "./prices.json";
 import { markApiKeyUsed } from "./apikeys";
 import { log } from "./log";
-import type { GatewayAuthMethod, Provider, UsageCounts } from "./types";
+import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
 import { appUsageEvent } from "../db/schema";
@@ -24,8 +24,8 @@ interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
 }
 
-export function hasModelPrice(provider: Provider, model: string): boolean {
-  const price = (prices as Record<Provider, Record<string, Price>>)[provider]?.[model];
+export function hasModelPrice(provider: ProviderType, model: string): boolean {
+  const price = (prices as Record<ProviderType, Record<string, Price>>)[provider]?.[model];
   if (!price) return false;
   if (price.per_minute !== undefined) return Number.isFinite(price.per_minute) && price.per_minute >= 0;
   if (price.per_hour !== undefined) return Number.isFinite(price.per_hour) && price.per_hour >= 0;
@@ -37,8 +37,8 @@ export function hasModelPrice(provider: Provider, model: string): boolean {
     && price.output >= 0;
 }
 
-export function hasTokenModelPrice(provider: Provider, model: string): boolean {
-  const price = (prices as Record<Provider, Record<string, Price>>)[provider]?.[model];
+export function hasTokenModelPrice(provider: ProviderType, model: string): boolean {
+  const price = (prices as Record<ProviderType, Record<string, Price>>)[provider]?.[model];
   return price?.input !== undefined
     && Number.isFinite(price.input)
     && price.input >= 0
@@ -56,7 +56,7 @@ interface UsageEventInput {
   authMethod: GatewayAuthMethod;
   apiKeyId?: string;
   appLevelLimitsEnabled: boolean;
-  provider: Provider;
+  provider: ProviderType;
   model: string;
   route: string;
   /** Set for named endpoint traffic; null for the passthrough proxy. */
@@ -229,7 +229,7 @@ function usageShape(value: unknown): UsageShape | null {
   return "openai";
 }
 
-export function extractUsageText(text: string, contentType: string, _provider: Provider): UsageObservation {
+export function extractUsageText(text: string, contentType: string, _provider: ProviderType): UsageObservation {
   let values: unknown[];
   if (contentType.toLowerCase().includes("text/event-stream")) {
     values = parseSse(text);
@@ -258,11 +258,11 @@ export function extractUsageText(text: string, contentType: string, _provider: P
 }
 
 export function computeCost(
-  provider: Provider,
+  provider: ProviderType,
   model: string,
   usage: UsageObservation,
 ): number | null {
-  const providerPrices = (prices as Record<Provider, Record<string, Price>>)[provider];
+  const providerPrices = (prices as Record<ProviderType, Record<string, Price>>)[provider];
   const price = providerPrices?.[model];
   if (!price) return null;
   if (price.per_minute !== undefined) {
