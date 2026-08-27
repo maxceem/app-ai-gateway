@@ -266,6 +266,12 @@ export type UsageStatus =
 export interface UsageEvent {
   id: number;
   user_id: string;
+  /**
+   * Non-secret ID of the app API key that authenticated the request, including
+   * the client-proof key carried by an exchanged gateway token. Null when the
+   * request was not attributed to a key (for example attested traffic).
+   */
+  api_key_id: string | null;
   provider: string;
   model: string;
   route: string;

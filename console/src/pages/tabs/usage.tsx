@@ -294,7 +294,7 @@ export function UsageTab({ appId }: { appId: string }) {
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead className="pl-6">When</TableHead>
-                <TableHead>User</TableHead>
+                <TableHead>User / key</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Route</TableHead>
                 <TableHead className="text-right">Tokens</TableHead>
@@ -322,7 +322,13 @@ export function UsageTab({ appId }: { appId: string }) {
                     <TableCell className="pl-6 text-xs whitespace-nowrap text-muted-foreground">
                       {formatDateTime(event.created_at)}
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{event.user_id}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {event.user_id}
+                      {/* Key attribution is absent for attested traffic, so only render it when set. */}
+                      {event.api_key_id ? (
+                        <span className="block text-muted-foreground">{event.api_key_id}</span>
+                      ) : null}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{event.model}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
