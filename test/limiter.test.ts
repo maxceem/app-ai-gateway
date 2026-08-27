@@ -76,7 +76,7 @@ describe("UserLimiter", () => {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        `SELECT provider, model, route, input_tokens, cached_input_tokens,
+        `SELECT provider_type AS provider, model, route, input_tokens, cached_input_tokens,
                 cache_write_tokens, output_tokens, cost_usd, app_version, status, latency_ms
            FROM app_usage_event WHERE app_id = ? AND user_id = ?`,
       )

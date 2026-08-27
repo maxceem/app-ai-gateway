@@ -8,7 +8,7 @@ import type { StoredAppConfig } from "../src/core/types";
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
 
 export interface SeedOptions {
-  organizationId?: string | null;
+  organizationId?: string;
   proxy?: Record<string, unknown>;
   auth?: Record<string, unknown>;
   limits?: { rpm: number; rpd: number; app_rpm?: number; app_rpd?: number };

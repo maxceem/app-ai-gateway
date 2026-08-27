@@ -14,7 +14,7 @@ export const usageRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }
 
 const BREAKDOWN_COLUMNS = {
   model: appUsageEvent.model,
-  provider: appUsageEvent.provider,
+  provider: appUsageEvent.providerType,
   user: appUsageEvent.userId,
   status: appUsageEvent.status,
   route: appUsageEvent.route,
@@ -80,7 +80,7 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     .from(appUsageEvent)
     .where(and(
       eq(appUsageEvent.appId, appId),
-      eq(appUsageEvent.provider, provider),
+      eq(appUsageEvent.providerType, provider),
       eq(appUsageEvent.model, model),
       eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
     ))
@@ -156,10 +156,10 @@ usageRoutes.get("/apps/:app/usage/timeseries", async (c) => {
   const appId = c.req.param("app");
   const range = parseRange(c.req.query("from"), c.req.query("to"));
   const rows = await database(c.env.DB)
-    .select({ date: eventDay, provider: appUsageEvent.provider, ...usageTotals })
+    .select({ date: eventDay, provider: appUsageEvent.providerType, ...usageTotals })
     .from(appUsageEvent)
     .where(inRange(appId, range))
-    .groupBy(eventDay, appUsageEvent.provider)
+    .groupBy(eventDay, appUsageEvent.providerType)
     .orderBy(eventDay);
   return c.json({ app_id: appId, ...range, buckets: rows });
 });
@@ -200,7 +200,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
     filters.push(eq(appUsageEvent.status, status as UsageStatusFilter));
   }
   const provider = c.req.query("provider");
-  if (provider) filters.push(eq(appUsageEvent.provider, provider));
+  if (provider) filters.push(eq(appUsageEvent.providerType, provider));
   const user = c.req.query("user");
   if (user) filters.push(eq(appUsageEvent.userId, user));
   const model = c.req.query("model");
@@ -230,7 +230,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       id: row.id,
       user_id: row.userId,
       api_key_id: row.apiKeyId,
-      provider: row.provider,
+      provider: row.providerType,
       model: row.model,
       route: row.route,
       endpoint_slug: row.endpointSlug,

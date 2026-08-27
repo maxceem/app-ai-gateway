@@ -8,13 +8,13 @@ describe("admin API", () => {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO app_usage_event(
-           app_id, user_id, provider, model, route, input_tokens,
+           app_id, user_id, provider_type, model, route, input_tokens,
            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind("admin-rollup", "user-1", "openai", "known", "openai/v1/responses", 10, 2, 0, 3, 0.01, "ok"),
       env.DB.prepare(
         `INSERT INTO app_usage_event(
-           app_id, user_id, provider, model, route, input_tokens,
+           app_id, user_id, provider_type, model, route, input_tokens,
            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind("admin-rollup", "user-1", "openai", "known-2", "openai/v1/responses", 4, 0, 1, 2, 0.02, "ok"),
@@ -46,7 +46,7 @@ describe("admin API", () => {
     await seedApp(appId, { appBudgetUsd: 100 });
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider, model, route, input_tokens,
+         app_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(

@@ -39,7 +39,7 @@ async function recordUsage(
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
-       app_id, user_id, provider, model, route, input_tokens,
+       app_id, user_id, provider_type, model, route, input_tokens,
        cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at,
        api_key_id
      ) VALUES (?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,

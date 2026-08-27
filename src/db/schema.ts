@@ -10,12 +10,22 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import type { StoredAppConfig } from "../core/types";
+import type { ProviderType, StoredAppConfig } from "../core/types";
 
 export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
 export type AuthMethod = "attest" | "api_key";
 export type ApiKeyStatus = "active" | "revoked";
+export type ProviderStatus = "active" | "revoked";
+/** `null` routes straight to the provider's native API; see PROVIDER_GATEWAYS. */
+export type ProviderGateway = "cf_aig";
+/** Non-secret configuration for the org's own Cloudflare AI Gateway. */
+export interface CfAigGatewayConfig {
+  accountId: string;
+  gatewayId: string;
+}
+/** Per-1M-token overrides for models the shipped catalog does not cover. */
+export type ProviderPricing = Record<string, { input: number; output: number }>;
 export type UsageStatus =
   | "ok"
   | "provider_error"
@@ -39,7 +49,9 @@ export const app = sqliteTable(
   "app",
   {
     id: text("id").primaryKey(),
-    organizationId: text("organization_id").references(() => consoleOrganization.id),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => consoleOrganization.id),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" })
       .$type<StoredAppConfig>()
@@ -51,6 +63,50 @@ export const app = sqliteTable(
   (table) => [
     index("idx_apps_organization_id").on(table.organizationId),
     check("apps_status_check", sql`${table.status} IN ('active', 'disabled')`),
+  ],
+);
+
+/**
+ * One row = "this provider, as configured by this organization". There are no
+ * credential kinds: `gateway` is a single optional attribute describing how the
+ * traffic travels (`null` = straight to the provider's native API), and both the
+ * upstream URL shape and the auth injection follow from it.
+ */
+export const provider = sqliteTable(
+  "provider",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => consoleOrganization.id),
+    type: text("type").$type<ProviderType>().notNull(),
+    name: text("name").notNull(),
+    /** Vault blob (`cfkms-env1.…` or `local1.…`); never leaves the server. */
+    secretBlob: text("secret_blob").notNull(),
+    /** Last four characters of the plaintext — the only fragment ever shown again. */
+    secretHint: text("secret_hint").notNull(),
+    gateway: text("gateway").$type<ProviderGateway>(),
+    gatewayConfig: text("gateway_config_json", { mode: "json" }).$type<CfAigGatewayConfig>(),
+    pricing: text("pricing_json", { mode: "json" }).$type<ProviderPricing>(),
+    status: text("status").$type<ProviderStatus>().notNull().default("active"),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("idx_providers_organization").on(table.organizationId),
+    // Resolution is a plain lookup, so at most one active row may exist per
+    // (organization, type). Revoked rows are kept out of the constraint.
+    uniqueIndex("providers_active_type_unique")
+      .on(table.organizationId, table.type)
+      .where(sql`${table.status} = 'active'`),
+    check("providers_status_check", sql`${table.status} IN ('active', 'revoked')`),
+    // Mirrors PROVIDER_TYPES in src/core/providers.ts; widening one means a migration.
+    check(
+      "providers_type_check",
+      sql`${table.type} IN ('openai', 'anthropic', 'xai', 'gemini', 'perplexity')`,
+    ),
+    check("providers_gateway_check", sql`${table.gateway} IS NULL OR ${table.gateway} = 'cf_aig'`),
   ],
 );
 
@@ -102,7 +158,9 @@ export const appUsageEvent = sqliteTable(
     appId: text("app_id").notNull(),
     userId: text("user_id").notNull(),
     apiKeyId: text("api_key_id"),
-    provider: text("provider").notNull(),
+    providerType: text("provider_type").notNull(),
+    /** The provider row that served the traffic; null once that row is deleted. */
+    providerId: text("provider_id"),
     model: text("model").notNull(),
     route: text("route").notNull(),
     endpointSlug: text("endpoint_slug"),
