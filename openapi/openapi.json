@@ -1944,7 +1944,7 @@
         ],
         "operationId": "proxyProviderRequest",
         "summary": "Proxy a provider-native model request",
-        "description": "The body and successful response retain the selected provider's native format. The gateway validates the configured path and model, injects provider credentials through Cloudflare AI Gateway, applies limits, and streams the upstream response without buffering.",
+        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
         "security": [
           {
             "GatewayBearer": []
@@ -1978,9 +1978,11 @@
           {
             "schema": {
               "type": "string",
+              "description": "The provider's native API path verbatim, without a leading slash.",
               "example": "v1/responses"
             },
             "required": true,
+            "description": "The provider's native API path verbatim, without a leading slash.",
             "name": "path",
             "in": "path"
           },

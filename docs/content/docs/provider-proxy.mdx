@@ -13,6 +13,22 @@ Supported provider slugs are `openai`, `anthropic`, `xai`, `gemini`, and
 `perplexity`. The application configuration must allow both the provider path and
 model.
 
+`{provider-path}` is the provider's native API path verbatim, without a leading
+slash. Do not rewrite it to match Cloudflare AI Gateway provider slugs. Typical
+paths are:
+
+| Provider | Native path example |
+| --- | --- |
+| OpenAI | `v1/responses` or `v1/chat/completions` |
+| Anthropic | `v1/messages` |
+| xAI | `v1/responses` or `v1/stt` |
+| Gemini | `v1beta/models/{model}:generateContent` |
+| Perplexity | `chat/completions` |
+
+For the OpenAI SDK, set `baseURL` to
+`https://YOUR-GATEWAY/v1/apps/YOUR-APP/proxy/openai/v1`. The SDK then appends
+standard paths such as `responses` or `chat/completions`.
+
 ## Provider-native contract
 
 The gateway intentionally does not invent a unified model request format. Request

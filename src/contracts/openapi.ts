@@ -53,7 +53,11 @@ const OrganizationMemberPath = z.object({
 const ProviderPath = AppPath.extend({
   provider: z.enum(PROVIDER_TYPES)
     .openapi({ param: { name: "provider", in: "path" } }),
-  path: z.string().openapi({ param: { name: "path", in: "path" }, example: "v1/responses" }),
+  path: z.string().openapi({
+    param: { name: "path", in: "path" },
+    description: "The provider's native API path verbatim, without a leading slash.",
+    example: "v1/responses",
+  }),
 });
 
 const EndpointPath = AppPath.extend({
@@ -306,7 +310,7 @@ register({
   tags: ["Provider proxy"],
   operationId: "proxyProviderRequest",
   summary: "Proxy a provider-native model request",
-  description: "The body and successful response retain the selected provider's native format. The gateway validates the configured path and model, injects provider credentials through Cloudflare AI Gateway, applies limits, and streams the upstream response without buffering.",
+  description: "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
   security: [{ GatewayBearer: [] }],
   request: {
     params: ProviderPath,

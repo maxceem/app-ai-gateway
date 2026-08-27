@@ -416,6 +416,23 @@ describe("provider-native proxy", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("requires the native OpenAI v1 path instead of a gateway-adapted path", async () => {
+    await seedApp("proxy-native-path");
+    const token = await gatewayToken("proxy-native-path");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({
+      appId: "proxy-native-path",
+      token,
+      path: "openai/responses",
+      body: { model: "gpt-5.6-sol", input: "hello" },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["omitted", undefined],
     ["empty", []],
