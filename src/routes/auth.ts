@@ -103,6 +103,7 @@ async function storeIssuerUser(env: Env, appId: string, userId: string): Promise
     .onConflictDoUpdate({
       target: [appUser.appId, appUser.id],
       set: { lastSeenAt: sql`datetime('now')` },
+      setWhere: eq(appUser.status, "active"),
     })
     .returning({ status: appUser.status });
   if (!user || user.status !== "active") {

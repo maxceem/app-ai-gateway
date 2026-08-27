@@ -21,6 +21,7 @@ describe("initial database migration", () => {
 
     expect(userColumns.results.map((column) => column.name)).not.toContain("attest_env");
     expect(usageColumns.results.map((column) => column.name)).toContain("auth_method");
+    expect(usageColumns.results.map((column) => column.name)).toContain("api_key_id");
     expect(usageColumns.results.find((column) => column.name === "cost_usd")).toMatchObject({
       notnull: 1,
       dflt_value: "0",

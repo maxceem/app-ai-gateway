@@ -25,6 +25,7 @@ async function recordUsage(
     cost: number;
     status: string;
     createdAt: string;
+    apiKeyId: string | null;
   }> = {},
 ) {
   const {
@@ -34,14 +35,16 @@ async function recordUsage(
     cost = 0.02,
     status = "ok",
     createdAt = new Date().toISOString().slice(0, 19).replace("T", " "),
+    apiKeyId = null,
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
        app_id, user_id, provider, model, route, input_tokens,
-       cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?)`,
+       cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at,
+       api_key_id
+     ) VALUES (?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
   )
-    .bind(appId, user, provider, model, `${provider}/v1/responses`, cost, status, createdAt)
+    .bind(appId, user, provider, model, `${provider}/v1/responses`, cost, status, createdAt, apiKeyId)
     .run();
 }
 
@@ -228,7 +231,11 @@ describe("admin console API", () => {
   it("groups usage by day and by dimension, and pages the event feed", async () => {
     await seedApp("usage-shapes");
     const today = new Date().toISOString().slice(0, 10);
-    await recordUsage("usage-shapes", { provider: "openai", createdAt: `${today} 01:00:00` });
+    await recordUsage("usage-shapes", {
+      provider: "openai",
+      createdAt: `${today} 01:00:00`,
+      apiKeyId: "key_usage-shapes",
+    });
     await recordUsage("usage-shapes", { provider: "anthropic", model: "claude-sonnet-5", createdAt: `${today} 02:00:00` });
     await recordUsage("usage-shapes", { provider: "openai", status: "provider_error", createdAt: `${today} 03:00:00` });
 
@@ -255,6 +262,9 @@ describe("admin console API", () => {
 
     const errors = await get("/v1/admin/apps/usage-shapes/events?status=provider_error");
     expect(errors.body.events).toHaveLength(1);
+    const attributed = [...firstPage.body.events, ...secondPage.body.events]
+      .find((event: any) => event.api_key_id !== null);
+    expect(attributed?.api_key_id).toBe("key_usage-shapes");
   });
 
   // The console's issuer presets generate exactly these shapes. If the config

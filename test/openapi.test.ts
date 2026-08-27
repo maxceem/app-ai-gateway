@@ -30,6 +30,10 @@ describe("generated OpenAPI contract", () => {
     expect(document.paths).toHaveProperty("/v1/admin/billing/checkout");
     expect(document.components?.securitySchemes).toHaveProperty("OperatorSession");
     expect(document.components?.securitySchemes).toHaveProperty("ManagementBearer");
+    expect(document.components?.schemas?.UsageEvent).toHaveProperty(
+      "properties.api_key_id.type",
+      ["string", "null"],
+    );
   });
 
   it("accepts representative server and mobile application examples", () => {

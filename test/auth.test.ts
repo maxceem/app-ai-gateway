@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { env } from "cloudflare:workers";
-import { createExecutionContext } from "cloudflare:test";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -186,6 +186,7 @@ describe("issuer-backed API key exchange", () => {
       appId: "api-key-blocked-user",
       id: "blocked-user",
       status: "blocked",
+      lastSeenAt: "2026-01-02 03:04:05",
     });
 
     const response = await exchangeToken("api-key-blocked-user", {
@@ -195,6 +196,67 @@ describe("issuer-backed API key exchange", () => {
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "auth_required", message: "User is blocked" },
+    });
+    await expect(
+      env.DB.prepare("SELECT last_seen_at FROM app_user WHERE app_id = ? AND id = ?")
+        .bind("api-key-blocked-user", "blocked-user")
+        .first<{ last_seen_at: string | null }>(),
+    ).resolves.toEqual({ last_seen_at: "2026-01-02 03:04:05" });
+  });
+
+  it("persists the client-proof key ID from an exchanged token into usage events", async () => {
+    const fixture = await signingFixture("api-key-usage-attribution");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes("issuer.test")) return Response.json({ keys: [fixture.publicJwk] });
+      return Response.json({
+        usage: { input_tokens: 2, output_tokens: 1 },
+      });
+    });
+    const key = await seedServerApp("api-key-usage-attribution", {
+      issuer: {},
+      endpoints: {
+        chat: { api_style: "responses", provider: "openai", model: "gpt-5.6-sol" },
+      },
+    });
+    const exchange = await exchangeToken("api-key-usage-attribution", {
+      api_key: key,
+      issuer_token: await issuerToken(fixture, { sub: "attributed-user" }),
+    });
+    expect(exchange.status).toBe(200);
+    const { access_token: accessToken } = await exchange.json<{ access_token: string }>();
+    const ctx = createExecutionContext();
+    const response = await app.fetch(
+      new Request(
+        "https://example.test/v1/apps/api-key-usage-attribution/endpoints/chat",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${accessToken}`,
+            "content-type": "application/json",
+            "x-app-version": "1.0",
+          },
+          body: JSON.stringify({ input: "hello" }),
+        },
+      ),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+
+    await expect(
+      env.DB.prepare(
+        "SELECT api_key_id, auth_method, user_id, endpoint_slug FROM app_usage_event WHERE app_id = ?",
+      )
+        .bind("api-key-usage-attribution")
+        .first(),
+    ).resolves.toEqual({
+      api_key_id: "key_api-key-usage-attribution",
+      auth_method: "api_key",
+      user_id: "attributed-user",
+      endpoint_slug: "chat",
     });
   });
 
@@ -266,12 +328,15 @@ describe("blocked App Attest users", () => {
       attestKeyId: "registered-key",
       attestPublicKey: "not-used",
     });
+    await env.DB.prepare(
+      "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
+    ).bind("blocked-challenge", "blocked-attest-register").run();
 
     const response = await registerAttestKey("blocked-attest-register", {
       issuer_token: await issuerToken(fixture, { sub: "blocked-user" }),
       key_id: "replacement-key",
       attestation: "not-used",
-      challenge: "not-consumed",
+      challenge: "blocked-challenge",
     });
 
     expect(response.status).toBe(403);
@@ -283,11 +348,27 @@ describe("blocked App Attest users", () => {
       issuer_token: await issuerToken(fixture, { sub: "blocked-user" }),
       key_id: "registered-key",
       assertion: "not-used",
-      challenge: "not-consumed",
+      challenge: "blocked-challenge",
     });
     expect(tokenResponse.status).toBe(403);
     await expect(tokenResponse.json()).resolves.toMatchObject({
       error: { code: "auth_required", message: "User is blocked" },
+    });
+    await expect(
+      env.DB.prepare("SELECT challenge FROM app_auth_challenge WHERE app_id = ?")
+        .bind("blocked-attest-register")
+        .first(),
+    ).resolves.toEqual({ challenge: "blocked-challenge" });
+    await expect(
+      env.DB.prepare(
+        "SELECT attest_key_id, attest_public_key, last_seen_at FROM app_user WHERE app_id = ? AND id = ?",
+      )
+        .bind("blocked-attest-register", "blocked-user")
+        .first(),
+    ).resolves.toEqual({
+      attest_key_id: "registered-key",
+      attest_public_key: "not-used",
+      last_seen_at: null,
     });
   });
 });

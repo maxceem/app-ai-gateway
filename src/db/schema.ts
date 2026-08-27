@@ -101,6 +101,7 @@ export const appUsageEvent = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     appId: text("app_id").notNull(),
     userId: text("user_id").notNull(),
+    apiKeyId: text("api_key_id"),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     route: text("route").notNull(),

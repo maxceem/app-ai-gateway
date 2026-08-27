@@ -312,6 +312,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   await database(input.env.DB).insert(appUsageEvent).values({
     appId: input.appId,
     userId: input.userId,
+    apiKeyId: input.apiKeyId ?? null,
     provider: input.provider,
     model: input.model,
     route: input.route,
@@ -351,6 +352,7 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
   await database(input.env.DB).insert(appUsageEvent).values({
     appId: input.appId,
     userId: input.userId,
+    apiKeyId: input.apiKeyId ?? null,
     provider: input.provider,
     model: input.model,
     route: input.route,

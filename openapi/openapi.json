@@ -921,6 +921,109 @@
           "role"
         ]
       },
+      "UsageEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "api_key_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Non-secret ID of the application API key that authenticated the request, including the client-proof key carried by an exchanged gateway token."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string"
+          },
+          "endpoint_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "cached_input_tokens": {
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "attest",
+              "api_key",
+              null
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "provider_error",
+              "blocked_rate",
+              "blocked_budget",
+              "blocked_user"
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "api_key_id",
+          "provider",
+          "model",
+          "route",
+          "endpoint_slug",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "cost_usd",
+          "app_version",
+          "auth_method",
+          "status",
+          "latency_ms",
+          "created_at"
+        ]
+      },
       "UsageRepriceRequest": {
         "type": "object",
         "properties": {
@@ -4688,6 +4791,112 @@
         }
       }
     },
+    "/v1/admin/apps/{app}/events": {
+      "get": {
+        "operationId": "listAppEvents",
+        "summary": "List application usage events",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated application usage events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "next_before_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UsageEvent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "app_id",
+                    "limit",
+                    "next_before_id",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/apps/{app}/keys": {
       "get": {
         "operationId": "listAppKeys",
@@ -5531,84 +5740,6 @@
       "get": {
         "operationId": "getAppUsageBreakdown",
         "summary": "Get grouped application usage",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "OperatorSession": []
-          },
-          {
-            "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/admin/apps/{app}/events": {
-      "get": {
-        "operationId": "listAppEvents",
-        "summary": "List application usage events",
         "tags": [
           "Admin operations"
         ],

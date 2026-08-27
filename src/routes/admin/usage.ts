@@ -229,6 +229,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
     events: rows.map((row) => ({
       id: row.id,
       user_id: row.userId,
+      api_key_id: row.apiKeyId,
       provider: row.provider,
       model: row.model,
       route: row.route,

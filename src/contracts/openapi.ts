@@ -76,6 +76,35 @@ const errorResponses = {
   404: response("The requested resource does not exist.", ErrorResponseSchema),
 };
 
+const UsageEventSchema = z.object({
+  id: z.number().int(),
+  user_id: z.string(),
+  api_key_id: z.string().nullable().openapi({
+    description: "Non-secret ID of the application API key that authenticated the request, including the client-proof key carried by an exchanged gateway token.",
+  }),
+  provider: z.string(),
+  model: z.string(),
+  route: z.string(),
+  endpoint_slug: z.string().nullable(),
+  input_tokens: z.number().int(),
+  cached_input_tokens: z.number().int(),
+  cache_write_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cost_usd: z.number(),
+  app_version: z.string().nullable(),
+  auth_method: z.enum(["attest", "api_key"]).nullable(),
+  status: z.enum(["ok", "provider_error", "blocked_rate", "blocked_budget", "blocked_user"]),
+  latency_ms: z.number().int().nullable(),
+  created_at: z.string(),
+}).openapi("UsageEvent");
+
+const UsageEventListSchema = z.object({
+  app_id: z.string(),
+  limit: z.number().int(),
+  next_before_id: z.number().int().nullable(),
+  events: z.array(UsageEventSchema),
+});
+
 const registry = new OpenAPIHono();
 registry.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
   type: "http",
@@ -676,9 +705,19 @@ const adminRoutes: Omit<RouteConfig, "responses">[] = [
   { method: "post", path: "/v1/admin/apps/{app}/usage/reprice", operationId: "repriceAppUsage", summary: "Preview or apply current catalog prices to stored usage", request: { params: AppPath, body: { required: true, content: json(UsageRepriceRequestSchema) } } },
   { method: "get", path: "/v1/admin/apps/{app}/usage/timeseries", operationId: "getAppUsageTimeseries", summary: "Get application usage over time", request: { params: AppPath } },
   { method: "get", path: "/v1/admin/apps/{app}/usage/breakdown", operationId: "getAppUsageBreakdown", summary: "Get grouped application usage", request: { params: AppPath } },
-  { method: "get", path: "/v1/admin/apps/{app}/events", operationId: "listAppEvents", summary: "List application usage events", request: { params: AppPath } },
   { method: "get", path: "/v1/admin/prices", operationId: "listModelPrices", summary: "List known model prices" },
 ];
+
+register({
+  method: "get",
+  path: "/v1/admin/apps/{app}/events",
+  operationId: "listAppEvents",
+  summary: "List application usage events",
+  tags: ["Admin operations"],
+  security: operatorSecurity,
+  request: { params: AppPath },
+  responses: { 200: response("Paginated application usage events.", UsageEventListSchema), ...errorResponses },
+});
 
 for (const route of adminRoutes) {
   register({

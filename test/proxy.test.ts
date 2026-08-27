@@ -1003,12 +1003,13 @@ describe("provider-native proxy", () => {
 
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const row = await env.DB.prepare(
-        `SELECT user_id, input_tokens, output_tokens, cost_usd, app_version, auth_method
+        `SELECT user_id, api_key_id, input_tokens, output_tokens, cost_usd, app_version, auth_method
            FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
       )
         .bind("proxy-perplexity")
         .first<{
           user_id: string;
+          api_key_id: string | null;
           input_tokens: number;
           output_tokens: number;
           cost_usd: number;
@@ -1021,6 +1022,7 @@ describe("provider-native proxy", () => {
       if (row && keyRow?.last_used_at) {
         expect(row).toEqual({
           user_id: "grower-user-7",
+          api_key_id: "key_proxy-perplexity",
           input_tokens: 100,
           output_tokens: 20,
           cost_usd: 0.0006,

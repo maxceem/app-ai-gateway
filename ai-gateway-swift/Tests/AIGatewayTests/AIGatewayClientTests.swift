@@ -347,6 +347,40 @@ struct AIGatewayClientTests {
     }
 
     @Test
+    func failedSingleFlightReleasesTheNextExchange() async throws {
+        let tokenCalls = LockedCounter()
+        MockURLProtocol.handler = { request in
+            if tokenCalls.increment() == 1 {
+                return response(
+                    request,
+                    status: 503,
+                    body: #"{"error":{"code":"provider_error","message":"retry"}}"#
+                )
+            }
+            return response(request, status: 200, body: #"{"access_token":"recovered","expires_in":3600}"#)
+        }
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { _ in "firebase-token" }
+            ),
+            session: session()
+        )
+
+        var firstFailed = false
+        do {
+            _ = try await client.gatewayAccessToken()
+        } catch {
+            firstFailed = true
+        }
+        #expect(firstFailed)
+        #expect(try await client.gatewayAccessToken() == "recovered")
+        #expect(tokenCalls.snapshot() == 2)
+    }
+
+    @Test
     func assertionClientDataMatchesServerCanonicalForm() {
         let value = AIGatewayClient.assertionClientData(app: "app", challenge: "challenge", keyID: "key")
         #expect(String(data: value, encoding: .utf8) == #"{"app":"app","challenge":"challenge","key_id":"key"}"#)

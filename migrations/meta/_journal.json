@@ -71,6 +71,13 @@
       "when": 1787727507295,
       "tag": "0009_illegal_jean_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1787732689826,
+      "tag": "0010_short_annihilus",
+      "breakpoints": true
     }
   ]
 }

@@ -19,7 +19,6 @@ public enum GatewayAuthMode: Sendable {
 public actor AIGatewayClient {
     private struct AccessToken: Sendable {
         let value: String
-        let expiresAt: Date
         let refreshAt: Date
     }
 
@@ -147,7 +146,6 @@ public actor AIGatewayClient {
             let now = Date()
             let token = AccessToken(
                 value: response.access_token,
-                expiresAt: now.addingTimeInterval(response.expires_in),
                 refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in))
             )
             accessToken = token
