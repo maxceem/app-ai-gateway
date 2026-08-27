@@ -10,6 +10,9 @@ interface Env {
   BILLING?: import("cf-billing").BillingRuntime;
   CF_AIG_GATEWAY_ID: string;
   CF_AIG_TOKEN: string;
+  SECRET_VAULT_KMS_URL?: string;
+  SECRET_VAULT_KMS_TOKEN?: string;
+  SECRET_VAULT_LOCAL_KEK_V1?: string;
 }
 
 declare namespace Cloudflare {
@@ -22,5 +25,8 @@ declare namespace Cloudflare {
     BILLING?: import("cf-billing").BillingRuntime;
     CF_AIG_GATEWAY_ID: string;
     CF_AIG_TOKEN: string;
+    SECRET_VAULT_KMS_URL?: string;
+    SECRET_VAULT_KMS_TOKEN?: string;
+    SECRET_VAULT_LOCAL_KEK_V1?: string;
   }
 }

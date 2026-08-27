@@ -1087,11 +1087,19 @@
                       "enum": [
                         "ai-gateway"
                       ]
+                    },
+                    "vault": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "misconfigured"
+                      ]
                     }
                   },
                   "required": [
                     "ok",
-                    "service"
+                    "service",
+                    "vault"
                   ]
                 }
               }

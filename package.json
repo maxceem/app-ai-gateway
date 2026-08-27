@@ -2,7 +2,7 @@
   "name": "@calories-tracker/ai-gateway",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@11.24.0",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --env local",
@@ -41,6 +41,7 @@
     "@better-auth/drizzle-adapter": "1.6.9",
     "@hono/zod-openapi": "^1.5.1",
     "@maxceem/cf-auth": "file:../../maxceem/packages/cf-auth",
+    "@maxceem/cf-kms": "file:../../maxceem/services/cf-kms",
     "asn1js": "^3.0.7",
     "better-auth": "1.6.9",
     "cbor-x": "^1.6.0",
@@ -70,6 +71,9 @@
       },
       "CF_AIG_TOKEN": {
         "description": "After creating the gateway, open its Settings and select **Create authentication token**. Save the one-time token and paste it here; it includes the required AI Gateway Run permission."
+      },
+      "SECRET_VAULT_LOCAL_KEK_V1": {
+        "description": "Generate a unique local vault key with `openssl rand -base64 32`. It encrypts provider credentials at rest and must be backed up securely."
       }
     }
   }

@@ -148,6 +148,7 @@ register({
     200: response("The Worker is accepting requests.", z.object({
       ok: z.literal(true),
       service: z.literal("ai-gateway"),
+      vault: z.enum(["ok", "misconfigured"]),
     })),
   },
 });

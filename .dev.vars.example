@@ -3,6 +3,11 @@
 CF_AIG_GATEWAY_ID=
 CF_AIG_TOKEN=
 
+# Self-hosted default: generate with `openssl rand -base64 32`.
+SECRET_VAULT_MODE=local
+SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=1
+SECRET_VAULT_LOCAL_KEK_V1=
+
 # JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
 # For local development, run `pnpm run secrets:setup-local` to generate it.
 ALLOW_PUBLIC_REGISTRATION=true

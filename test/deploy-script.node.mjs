@@ -32,9 +32,14 @@ test("reports missing user-provided deployment values", () => {
   assert.deepEqual(missingRequiredSecrets(new Set()), [
     "CF_AIG_GATEWAY_ID",
     "CF_AIG_TOKEN",
+    "SECRET_VAULT_LOCAL_KEK_V1",
   ]);
   assert.deepEqual(
-    missingRequiredSecrets(new Set(["CF_AIG_GATEWAY_ID", "CF_AIG_TOKEN"])),
+    missingRequiredSecrets(new Set([
+      "CF_AIG_GATEWAY_ID",
+      "CF_AIG_TOKEN",
+      "SECRET_VAULT_LOCAL_KEK_V1",
+    ])),
     [],
   );
 });
@@ -52,12 +57,15 @@ test("deploy button requests an existing gateway before its required token", () 
   assert.deepEqual(Object.keys(packageJson.cloudflare.bindings), [
     "CF_AIG_GATEWAY_ID",
     "CF_AIG_TOKEN",
+    "SECRET_VAULT_LOCAL_KEK_V1",
   ]);
   assert.match(packageJson.cloudflare.bindings.CF_AIG_GATEWAY_ID.description, /Create a Cloudflare AI Gateway/u);
   assert.match(packageJson.cloudflare.bindings.CF_AIG_GATEWAY_ID.description, /does not create/u);
   assert.match(packageJson.cloudflare.bindings.CF_AIG_TOKEN.description, /Create authentication token/u);
+  assert.match(packageJson.cloudflare.bindings.SECRET_VAULT_LOCAL_KEK_V1.description, /openssl rand -base64 32/u);
   assert.match(secretTemplate, /^CF_AIG_GATEWAY_ID=$/mu);
   assert.match(secretTemplate, /^CF_AIG_TOKEN=$/mu);
+  assert.match(secretTemplate, /^SECRET_VAULT_LOCAL_KEK_V1=$/mu);
   assert.ok(
     secretTemplate.indexOf("CF_AIG_GATEWAY_ID=") < secretTemplate.indexOf("CF_AIG_TOKEN="),
   );
@@ -93,7 +101,8 @@ appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify(entry) + "\\n");
 if (args[0] === "secret" && args[1] === "list") {
   console.log(JSON.stringify([
     { name: "CF_AIG_GATEWAY_ID" },
-    { name: "CF_AIG_TOKEN" }
+    { name: "CF_AIG_TOKEN" },
+    { name: "SECRET_VAULT_LOCAL_KEK_V1" }
   ]));
 }
 if (
