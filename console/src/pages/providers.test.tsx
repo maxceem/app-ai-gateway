@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, draftsToPricing } from "./providers";
@@ -70,11 +71,29 @@ function stubProviders(rows: ProviderCredential[] = [DIRECT, VIA_GATEWAY]) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("draftsToPricing", () => {
-  it("drops blank rows and keeps a zero price", () => {
+  it("drops an entirely blank row and keeps a deliberate zero", () => {
     expect(draftsToPricing([
       { model: "free-model", input: "0", output: "0" },
       { model: "", input: "", output: "" },
     ])).toEqual({ pricing: { "free-model": { input: 0, output: 0 } } });
+  });
+
+  it.each([
+    ["an empty input price", { model: "m", input: "", output: "2" }],
+    ["an empty output price", { model: "m", input: "1", output: "" }],
+    ["whitespace instead of a price", { model: "m", input: " ", output: "2" }],
+  ])("refuses to read %s as free", (_label, draft) => {
+    // Number("") is 0, so an empty field must never become a $0 allowance.
+    expect(draftsToPricing([draft])).toEqual({
+      error: "Enter both prices for m — use 0 only if it is genuinely free",
+    });
+  });
+
+  it("rejects a duplicated model instead of letting the last row win", () => {
+    expect(draftsToPricing([
+      { model: "m", input: "1", output: "2" },
+      { model: " m ", input: "3", output: "4" },
+    ])).toEqual({ error: "m is priced twice — remove the duplicate row" });
   });
 
   it("names the row that cannot be saved", () => {
@@ -187,6 +206,28 @@ describe("ProvidersPage", () => {
       // Nothing about the credential travels with a pricing edit.
       expect(call?.body.secret).toBeUndefined();
     });
+  });
+
+  it("refuses to save a pricing row with a missing price", async () => {
+    const calls = stubProviders();
+    const errorToast = vi.spyOn(toast, "error");
+    renderAuthenticated(<ProvidersPage />);
+
+    await userEvent.click((await screen.findAllByRole("button", { name: "Pricing" }))[0]!);
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: /add model/i }));
+    await userEvent.type(within(dialog).getByLabelText("Model 2"), "half-priced");
+    await userEvent.type(within(dialog).getByLabelText("Input price 2"), "2");
+    await userEvent.click(within(dialog).getByRole("button", { name: /save pricing/i }));
+
+    await waitFor(() => {
+      expect(errorToast).toHaveBeenCalledWith(
+        "Enter both prices for half-priced — use 0 only if it is genuinely free",
+      );
+    });
+    // Nothing was sent, and the dialog stays open on the row that needs fixing.
+    expect(calls.some((call) => call.method === "PUT")).toBe(false);
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
   it("spells out that deleting breaks apps within a minute", async () => {

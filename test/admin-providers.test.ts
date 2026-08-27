@@ -302,6 +302,46 @@ describe("admin provider API", () => {
     expect(response.body.error.code).toBe("invalid_request");
   });
 
+  it("answers 404 when the row is deleted mid-update", async () => {
+    stubProbe("ok");
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Prod OpenAI",
+      secret: "sk-original-value",
+    });
+    const id = (created.body.provider as ProviderSummary).id;
+    // Stand in for losing the race between the lookup and the write.
+    await database(env.DB).delete(provider).where(eq(provider.id, id));
+
+    const response = await call("PUT", `/v1/admin/providers/${id}`, { name: "Renamed" });
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("not_found");
+  });
+
+  it("refuses to rotate a cf_aig row whose gateway configuration is missing", async () => {
+    const urls = stubProbe("ok");
+    await database(env.DB).insert(provider).values({
+      id: "corrupt-cf-aig",
+      organizationId: TEST_ORGANIZATION_ID,
+      type: "openai",
+      name: "Corrupt",
+      secretBlob: "local1.1.iv.ct",
+      secretHint: "zzzz",
+      gateway: "cf_aig",
+      gatewayConfig: null,
+      createdBy: "operator-test-owner",
+    });
+
+    const response = await call("PUT", "/v1/admin/providers/corrupt-cf-aig", {
+      secret: "cf-aig-new-token",
+    });
+
+    expect(response.status).toBe(502);
+    expect(response.body.error.code).toBe("provider_unavailable");
+    // No probe against a URL built from empty path segments.
+    expect(urls).toHaveLength(0);
+  });
+
   it("hard-deletes a provider and its overrides", async () => {
     stubProbe("ok");
     const created = await call("POST", "/v1/admin/providers", {

@@ -6,7 +6,11 @@ import {
   ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
-import { probeCfAigPreset, probeProviderKey } from "../../core/provider-probe";
+import {
+  probeCfAigPreset,
+  probeProviderKey,
+  type ProbeResult,
+} from "../../core/provider-probe";
 import {
   encryptionContext,
   invalidateOrganizationProviders,
@@ -122,6 +126,29 @@ async function insertProvider(
   return row!;
 }
 
+/**
+ * Re-probes a credential on rotation, through whatever intermediary the row
+ * already describes. A cf_aig row with no stored configuration is corrupt data,
+ * not something to paper over with empty URL segments — the same judgement
+ * `providerUpstream` makes on the hot path.
+ */
+async function probeRotation(row: ProviderRow, secret: string): Promise<ProbeResult> {
+  if (row.gateway !== "cf_aig") return probeProviderKey(row.type, secret);
+  const config = row.gatewayConfig;
+  if (!config) {
+    throw new GatewayError(
+      502,
+      "provider_unavailable",
+      "Provider is routed through a Cloudflare AI Gateway with no stored configuration",
+    );
+  }
+  return probeCfAigPreset({
+    accountId: config.accountId,
+    gatewayId: config.gatewayId,
+    token: secret,
+  });
+}
+
 export const providerRoutes = new Hono<ProviderEnv>();
 
 providerRoutes.get("/providers", async (c) => {
@@ -227,13 +254,7 @@ providerRoutes.put("/providers/:id", async (c) => {
   if (body.secret !== undefined) {
     // Rotation keeps the id, so the encryption context — and everything bound
     // to it — is unchanged.
-    validated = (row.gateway === "cf_aig"
-      ? await probeCfAigPreset({
-        accountId: row.gatewayConfig?.accountId ?? "",
-        gatewayId: row.gatewayConfig?.gatewayId ?? "",
-        token: body.secret,
-      })
-      : await probeProviderKey(row.type, body.secret)).validated;
+    validated = (await probeRotation(row, body.secret)).validated;
     updates.secretBlob = await secretVault(c.env).encryptSecret(
       body.secret,
       encryptionContext(admin.organizationId, row.id),
@@ -246,8 +267,11 @@ providerRoutes.put("/providers/:id", async (c) => {
     .set(updates)
     .where(and(eq(provider.id, id), eq(provider.organizationId, admin.organizationId)))
     .returning();
+  // The row can be deleted between the lookup and the write. Nothing was
+  // updated, so the honest answer is the same 404 the lookup would have given.
+  if (!updated) throw new GatewayError(404, "not_found", "Provider was not found");
   invalidateOrganizationProviders(admin.organizationId);
-  return c.json({ provider: serialize(updated!), validated });
+  return c.json({ provider: serialize(updated), validated });
 });
 
 providerRoutes.delete("/providers/:id", async (c) => {

@@ -65,7 +65,11 @@ function toDrafts(pricing: ProviderPricing | null): PricingDraft[] {
 
 /**
  * Returns the object to send, or a message naming the first unusable row.
- * Blank rows are dropped so an operator can leave one lying around.
+ *
+ * A row left entirely blank is dropped, so an operator can leave a spare one
+ * lying around. Anything else must be complete: `Number("")` is 0, and a price
+ * of $0 has to be a deliberate answer rather than an empty field, because
+ * entering a price is what allows a model to be proxied at all.
  */
 export function draftsToPricing(
   drafts: PricingDraft[],
@@ -73,14 +77,26 @@ export function draftsToPricing(
   const pricing: ProviderPricing = {};
   for (const draft of drafts) {
     const model = draft.model.trim();
-    if (!model && !draft.input.trim() && !draft.output.trim()) continue;
+    const input = draft.input.trim();
+    const output = draft.output.trim();
+    if (!model && !input && !output) continue;
     if (!model) return { error: "Every pricing row needs a model name" };
-    const input = Number(draft.input);
-    const output = Number(draft.output);
-    if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) {
+    if (!input || !output) {
+      return { error: `Enter both prices for ${model} — use 0 only if it is genuinely free` };
+    }
+    const inputPrice = Number(input);
+    const outputPrice = Number(output);
+    if (
+      !Number.isFinite(inputPrice) || inputPrice < 0
+      || !Number.isFinite(outputPrice) || outputPrice < 0
+    ) {
       return { error: `Prices for ${model} must be numbers of 0 or more` };
     }
-    pricing[model] = { input, output };
+    // Two rows for one model would otherwise let the last one win in silence.
+    if (Object.hasOwn(pricing, model)) {
+      return { error: `${model} is priced twice — remove the duplicate row` };
+    }
+    pricing[model] = { input: inputPrice, output: outputPrice };
   }
   return { pricing };
 }
