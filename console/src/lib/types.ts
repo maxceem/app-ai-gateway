@@ -75,6 +75,71 @@ export interface CreatedManagementKey extends ManagementKey {
   plaintext: string;
 }
 
+/**
+ * Provider credentials are write-only: `secretHint` is the only fragment of a
+ * stored secret the API ever returns, so no type here carries a plaintext.
+ */
+export type ProviderGateway = "cf_aig";
+
+export interface CfAigGatewayConfig {
+  accountId: string;
+  gatewayId: string;
+}
+
+/** Per-1M-token overrides, keyed by model name. */
+export type ProviderPricing = Record<string, { input: number; output: number }>;
+
+export interface ProviderCredential {
+  id: string;
+  type: import("./config-types").Provider;
+  name: string;
+  secretHint: string;
+  /** `null` routes straight to the provider's native API. */
+  gateway: ProviderGateway | null;
+  gatewayConfig: CfAigGatewayConfig | null;
+  pricing: ProviderPricing | null;
+  status: "active" | "revoked";
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface ProviderListResponse {
+  providers: ProviderCredential[];
+}
+
+export interface ProviderCreateBody {
+  type: import("./config-types").Provider;
+  name: string;
+  secret: string;
+  pricing?: ProviderPricing;
+}
+
+export interface CfAigPresetBody {
+  accountId: string;
+  gatewayId: string;
+  token: string;
+  types: import("./config-types").Provider[];
+  name: string;
+}
+
+export interface ProviderUpdateBody {
+  name?: string;
+  secret?: string;
+  pricing?: ProviderPricing | null;
+}
+
+export interface ProviderResponse {
+  provider: ProviderCredential;
+  /** `false` means the probe was inconclusive, not that the key is bad. */
+  validated: boolean | null;
+}
+
+export interface CfAigPresetResponse {
+  providers: ProviderCredential[];
+  conflicts: import("./config-types").Provider[];
+  validated: boolean;
+}
+
 export type BillingInactiveReason =
   | "trial_expired"
   | "past_due"

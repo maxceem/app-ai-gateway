@@ -11,6 +11,7 @@ import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
 import { MembersPage } from "@/pages/members";
 import { ProfilePage } from "@/pages/profile";
+import { ProvidersPage } from "@/pages/providers";
 import { SignupPage } from "@/pages/signup";
 import { ConsoleSessionProvider } from "@/lib/console-session";
 import { DEFAULT_LANDING, loginUrlFor, returnPathFrom } from "@/lib/auth-redirect";
@@ -71,6 +72,7 @@ function AuthenticatedConsole() {
           <Route path="/apps" element={<AppsPage />} />
           <Route path="/apps/:appId" element={<Navigate to="overview" replace />} />
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
+          <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/keys" element={<ManagementKeysPage />} />
           <Route path="/members" element={<MembersPage />} />
           <Route path="/profile" element={<ProfilePage />} />

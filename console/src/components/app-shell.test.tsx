@@ -35,6 +35,13 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: /view plans/i })).toBeTruthy();
   });
 
+  it("offers Providers to every role, since credentials are readable by members", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, { session: { role: "member" } });
+
+    expect(screen.getByRole("link", { name: /providers/i }).getAttribute("href"))
+      .toBe("/providers");
+  });
+
   it("hides the members nav from a read-only member and flags the role", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { session: { role: "member" } });
 

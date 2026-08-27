@@ -27,7 +27,13 @@ import type {
   MonthlyUsage,
   OrganizationListResponse,
   OrganizationRole,
+  CfAigPresetBody,
+  CfAigPresetResponse,
   PricesResponse,
+  ProviderCreateBody,
+  ProviderListResponse,
+  ProviderResponse,
+  ProviderUpdateBody,
   SessionResponse,
   TimeseriesResponse,
   UserListResponse,
@@ -39,6 +45,7 @@ export const keys = {
   organizations: ["organizations"] as const,
   members: ["members"] as const,
   managementKeys: ["management-keys"] as const,
+  providers: ["providers"] as const,
   billingStatus: ["billing", "status"] as const,
   billingPlans: ["billing", "plans"] as const,
   apps: (month: string) => ["apps", month] as const,
@@ -200,6 +207,60 @@ export function useRevokeManagementKey() {
     mutationFn: (keyId: string) =>
       api.post(`/v1/admin/keys/${encodeURIComponent(keyId)}/revoke`),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
+  });
+}
+
+export function useProviders() {
+  return useQuery({
+    queryKey: keys.providers,
+    queryFn: () => api.get<ProviderListResponse>("/v1/admin/providers"),
+  });
+}
+
+/**
+ * Provider credentials are submitted once and never returned. `gcTime: 0` keeps
+ * the plaintext out of the mutation cache the moment the call settles, the same
+ * way management-key creation does.
+ */
+export function useCreateProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProviderCreateBody) =>
+      api.post<ProviderResponse>("/v1/admin/providers", body),
+    gcTime: 0,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+export function useCreateCfAigPreset() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CfAigPresetBody) =>
+      api.post<CfAigPresetResponse>("/v1/admin/providers/cf-aig-preset", body),
+    gcTime: 0,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+/** Rotation, rename and pricing edits share one endpoint. */
+export function useUpdateProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ProviderUpdateBody }) =>
+      api.put<ProviderResponse>(`/v1/admin/providers/${encodeURIComponent(id)}`, body),
+    gcTime: 0,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+export function useDeleteProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.delete<{ deleted: true; provider_id: string }>(
+        `/v1/admin/providers/${encodeURIComponent(id)}`,
+      ),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
   });
 }
 

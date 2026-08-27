@@ -31,6 +31,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { MissingProvidersAlert } from "@/components/missing-providers-alert";
 import { AppStatusBadge } from "@/components/status-badge";
 import { useAppDraft } from "@/hooks/use-app-draft";
 import { useConsoleSession } from "@/lib/console-session";
@@ -177,6 +178,8 @@ export function AppDetailPage() {
           </AlertDescription>
         </Alert>
       ) : null}
+
+      {draft ? <MissingProvidersAlert proxy={draft.config.routing} /> : null}
 
       <Tabs value={tab} onValueChange={(next) => navigate(`/apps/${appId}/${next}`)}>
         <TabsList className="w-full justify-start overflow-x-auto">
