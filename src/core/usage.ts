@@ -4,7 +4,7 @@ import { log } from "./log";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
-import { appUsageEvent } from "../db/schema";
+import { appUsageEvent, type ProviderPricing } from "../db/schema";
 
 interface Price {
   input?: number;
@@ -24,8 +24,27 @@ interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
 }
 
-export function hasModelPrice(provider: ProviderType, model: string): boolean {
-  const price = (prices as Record<ProviderType, Record<string, Price>>)[provider]?.[model];
+/**
+ * Model pricing is a two-level lookup: the resolved provider row's own
+ * overrides win, then the deployment-global catalog. A model priced by neither
+ * never proxies, so `cost_usd` can never end up NULL.
+ */
+function modelPrice(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): Price | undefined {
+  const override = overrides?.[model];
+  if (override) return { input: override.input, output: override.output };
+  return (prices as Record<ProviderType, Record<string, Price>>)[provider]?.[model];
+}
+
+export function hasModelPrice(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): boolean {
+  const price = modelPrice(provider, model, overrides);
   if (!price) return false;
   if (price.per_minute !== undefined) return Number.isFinite(price.per_minute) && price.per_minute >= 0;
   if (price.per_hour !== undefined) return Number.isFinite(price.per_hour) && price.per_hour >= 0;
@@ -37,8 +56,12 @@ export function hasModelPrice(provider: ProviderType, model: string): boolean {
     && price.output >= 0;
 }
 
-export function hasTokenModelPrice(provider: ProviderType, model: string): boolean {
-  const price = (prices as Record<ProviderType, Record<string, Price>>)[provider]?.[model];
+export function hasTokenModelPrice(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): boolean {
+  const price = modelPrice(provider, model, overrides);
   return price?.input !== undefined
     && Number.isFinite(price.input)
     && price.input >= 0
@@ -57,6 +80,10 @@ interface UsageEventInput {
   apiKeyId?: string;
   appLevelLimitsEnabled: boolean;
   provider: ProviderType;
+  /** The provider row that served the traffic. */
+  providerId: string;
+  /** That row's per-model pricing overrides, which win over the catalog. */
+  pricing?: ProviderPricing | null;
   model: string;
   route: string;
   /** Set for named endpoint traffic; null for the passthrough proxy. */
@@ -73,6 +100,8 @@ interface BlockedUsageEventInput {
   authMethod: GatewayAuthMethod;
   apiKeyId?: string;
   provider: string;
+  /** Unset when the request was blocked before a provider row was resolved. */
+  providerId?: string | null;
   model: string;
   route: string;
   endpointSlug?: string | null;
@@ -261,9 +290,9 @@ export function computeCost(
   provider: ProviderType,
   model: string,
   usage: UsageObservation,
+  overrides?: ProviderPricing | null,
 ): number | null {
-  const providerPrices = (prices as Record<ProviderType, Record<string, Price>>)[provider];
-  const price = providerPrices?.[model];
+  const price = modelPrice(provider, model, overrides);
   if (!price) return null;
   if (price.per_minute !== undefined) {
     return ((usage.audioSeconds ?? 0) / 60) * price.per_minute;
@@ -305,7 +334,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
-  const cost = computeCost(input.provider, input.model, usage);
+  const cost = computeCost(input.provider, input.model, usage, input.pricing);
   if (cost === null) {
     throw new Error(`Refusing to persist usage for unpriced model ${input.provider}/${input.model}`);
   }
@@ -314,6 +343,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     userId: input.userId,
     apiKeyId: input.apiKeyId ?? null,
     providerType: input.provider,
+    providerId: input.providerId,
     model: input.model,
     route: input.route,
     endpointSlug: input.endpointSlug ?? null,
@@ -354,6 +384,7 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
     userId: input.userId,
     apiKeyId: input.apiKeyId ?? null,
     providerType: input.provider,
+    providerId: input.providerId ?? null,
     model: input.model,
     route: input.route,
     endpointSlug: input.endpointSlug ?? null,

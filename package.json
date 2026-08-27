@@ -66,12 +66,6 @@
   },
   "cloudflare": {
     "bindings": {
-      "CF_AIG_GATEWAY_ID": {
-        "description": "Required. [Create a Cloudflare AI Gateway](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fai-gateway) first, then enter its exact Gateway ID (slug). This deployment does not create a gateway."
-      },
-      "CF_AIG_TOKEN": {
-        "description": "After creating the gateway, open its Settings and select **Create authentication token**. Save the one-time token and paste it here; it includes the required AI Gateway Run permission."
-      },
       "SECRET_VAULT_LOCAL_KEK_V1": {
         "description": "Generate a unique local vault key with `openssl rand -base64 32`. It encrypts provider credentials at rest and must be backed up securely."
       }

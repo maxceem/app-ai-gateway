@@ -1,11 +1,60 @@
 import { env } from "cloudflare:workers";
 import { issueGatewayToken } from "../src/core/jwt";
 import { hashApiKey } from "../src/core/apikeys";
+import { clearProviderCaches, encryptionContext } from "../src/core/provider-store";
+import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
-import { app, appApiKey } from "../src/db/schema";
-import type { StoredAppConfig } from "../src/core/types";
+import { app, appApiKey, provider, type CfAigGatewayConfig, type ProviderPricing } from "../src/db/schema";
+import type { ProviderType, StoredAppConfig } from "../src/core/types";
+import { secretVault } from "../src/vault";
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
+export const TEST_OPERATOR_USER_ID = "operator-test-owner";
+
+/** One recognisable plaintext per provider so header assertions read clearly. */
+export function testProviderSecret(type: ProviderType): string {
+  return `test-${type}-secret`;
+}
+
+/**
+ * Inserts a provider row with a real vault blob, so the hot path exercises the
+ * same encrypt/decrypt round trip production uses.
+ */
+export async function seedProvider(input: {
+  type: ProviderType;
+  id?: string;
+  organizationId?: string;
+  secret?: string;
+  name?: string;
+  gateway?: "cf_aig";
+  gatewayConfig?: CfAigGatewayConfig;
+  pricing?: ProviderPricing;
+  status?: "active" | "revoked";
+}): Promise<string> {
+  const organizationId = input.organizationId ?? TEST_ORGANIZATION_ID;
+  const id = input.id ?? `provider_${organizationId}_${input.type}`;
+  const secret = input.secret ?? testProviderSecret(input.type);
+  await database(env.DB).insert(provider).values({
+    id,
+    organizationId,
+    type: input.type,
+    name: input.name ?? `Test ${input.type}`,
+    secretBlob: await secretVault(env).encryptSecret(secret, encryptionContext(organizationId, id)),
+    secretHint: secret.slice(-4),
+    gateway: input.gateway ?? null,
+    gatewayConfig: input.gatewayConfig ?? null,
+    pricing: input.pricing ?? null,
+    status: input.status ?? "active",
+    createdBy: TEST_OPERATOR_USER_ID,
+  });
+  clearProviderCaches();
+  return id;
+}
+
+/** The default fixture: every provider configured, all routed natively. */
+export async function seedAllProviders(organizationId = TEST_ORGANIZATION_ID): Promise<void> {
+  for (const type of PROVIDER_TYPES) await seedProvider({ type, organizationId });
+}
 
 export interface SeedOptions {
   organizationId?: string;

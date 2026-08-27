@@ -9,10 +9,12 @@ import {
 import {
   invalidateAppConfig,
   loadAppConfig,
+  parseStoredAppConfig,
   validateAppConfigJson,
 } from "../../core/config";
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
+import { organizationPricing, type OrganizationPricing } from "../../core/provider-store";
 import { PROVIDER_TYPES } from "../../core/providers";
 import {
   insertAppWithinCapacity,
@@ -97,12 +99,18 @@ function asBadRequest(error: unknown): never {
   throw error;
 }
 
+/**
+ * Writes are validated against the global price catalog merged with this
+ * organization's own overrides, so a model the operator has priced under
+ * Providers is configurable here too.
+ */
 function validatedConfig(
   next: Record<string, unknown>,
-  ceilings: BillingPlanLimits = {},
+  ceilings: BillingPlanLimits,
+  pricing: OrganizationPricing,
 ): ReturnType<typeof validateAppConfigJson> {
   try {
-    return validateAppConfigJson(next, ceilings);
+    return validateAppConfigJson(next, ceilings, pricing);
   } catch (error) {
     asBadRequest(error);
   }
@@ -234,7 +242,7 @@ appRoutes.get("/apps", async (c) => {
         allowed_model_count: number;
       };
       try {
-        configSummary = summary(validateAppConfigJson(row.config));
+        configSummary = summary(parseStoredAppConfig(row.config, null).stored);
       } catch {
         configSummary = {
           authentication_type: "invalid",
@@ -279,9 +287,13 @@ appRoutes.post("/apps", async (c) => {
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
   if (raw.id !== undefined && typeof raw.id !== "string") throw new GatewayError(400, "invalid_request", "id must be a lowercase slug");
   const requestedId = raw.id === undefined ? slugifyAppName(name) : assertAppId(raw.id);
-  const config = validatedConfig(body.config, planLimits);
-  const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
+  const config = validatedConfig(
+    body.config,
+    planLimits,
+    await organizationPricing(c.env, organizationId),
+  );
+  const db = database(c.env.DB);
   let appId = requestedId;
   let created = false;
   for (let attempt = 0; attempt < 16; attempt += 1) {
@@ -339,7 +351,7 @@ appRoutes.get("/apps/:app", async (c) => {
   let resolved: unknown = null;
   let configError: string | null = null;
   try {
-    validateAppConfigJson(row.config);
+    parseStoredAppConfig(row.config, null);
     resolved = await loadAppConfig(c.env, appId);
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
@@ -357,7 +369,11 @@ appRoutes.post("/apps/:app/validate", async (c) => {
       eq(app.organizationId, c.get("admin").organizationId),
     ),
   });
-  validatedConfig(body.config, planLimits);
+  validatedConfig(
+    body.config,
+    planLimits,
+    await organizationPricing(c.env, c.get("admin").organizationId),
+  );
   return c.json({ valid: true, app_id: appId, exists: existing !== undefined });
 });
 
@@ -366,8 +382,12 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
-  const config = validatedConfig(body.config, planLimits);
   const organizationId = c.get("admin").organizationId;
+  const config = validatedConfig(
+    body.config,
+    planLimits,
+    await organizationPricing(c.env, organizationId),
+  );
   const values = {
     id: appId,
     organizationId,

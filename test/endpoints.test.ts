@@ -133,9 +133,7 @@ describe("named endpoints", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("server-timing")).toContain("provider_ttfb");
     expect(captured).toHaveLength(1);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/responses",
-    );
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
     expect(JSON.parse(captured[0]!.body)).toEqual({
       model: "gpt-5.6-luna",
       input: "hello",
@@ -144,12 +142,9 @@ describe("named endpoints", () => {
       store: false,
       max_output_tokens: 4096,
     });
-    expect(captured[0]?.headers.get("authorization")).toBeNull();
-    expect(captured[0]?.headers.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
-    expect(JSON.parse(captured[0]?.headers.get("cf-aig-metadata") ?? "null")).toEqual({
-      app_id: appId,
-      user_id: "user-1",
-    });
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+    expect(captured[0]?.headers.get("cf-aig-authorization")).toBeNull();
+    expect(captured[0]?.headers.get("cf-aig-metadata")).toBeNull();
   });
 
   it("records usage with the endpoint slug", async () => {
@@ -256,9 +251,7 @@ describe("named endpoints", () => {
     await response.text();
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/audio/transcriptions",
-    );
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/audio/transcriptions");
     expect(captured[0]?.form?.get("model")).toBe("gpt-4o-mini-transcribe");
     expect(captured[0]?.form?.get("language")).toBe("en");
     expect((captured[0]?.form?.get("file") as File).size).toBe(3);
@@ -289,9 +282,7 @@ describe("named endpoints", () => {
     await response.text();
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/grok/v1/stt",
-    );
+    expect(captured[0]?.url).toBe("https://api.x.ai/v1/stt");
     expect(captured[0]?.form?.get("model")).toBe("grok-transcribe");
   });
 
@@ -342,8 +333,8 @@ describe("named endpoints", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ id: "from-fallback" });
     expect(captured).toHaveLength(2);
-    expect(captured[0]?.url).toContain("/openai/responses");
-    expect(captured[1]?.url).toContain("/grok/v1/responses");
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
+    expect(captured[1]?.url).toBe("https://api.x.ai/v1/responses");
     expect(JSON.parse(captured[1]!.body)).toMatchObject({ model: "grok-4.5", input: "hello" });
 
     const rows = await latestUsage(appId, 2);

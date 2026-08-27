@@ -15,6 +15,7 @@ export const limiterGate: MiddlewareHandler<{
   const identity = c.get("identity");
   const provider = c.get("provider");
   const providerPath = c.get("providerPath");
+  const providerId = c.get("resolvedProvider").id;
   const model = c.get("preparedProxyRequest").model;
   const now = Date.now();
   let result: Awaited<ReturnType<UserLimiter["checkAndIncrement"]>>;
@@ -43,6 +44,7 @@ export const limiterGate: MiddlewareHandler<{
           authMethod: identity.authMethod,
           apiKeyId: identity.apiKeyId,
           provider,
+          providerId,
           model,
           route: `${provider}/${providerPath}`,
           endpointSlug: c.get("endpointSlug") ?? null,
@@ -83,6 +85,7 @@ export const limiterGate: MiddlewareHandler<{
         authMethod: identity.authMethod,
         apiKeyId: identity.apiKeyId,
         provider,
+        providerId,
         model,
         route: `${provider}/${providerPath}`,
         appVersion: c.req.header("x-app-version") ?? null,

@@ -36,7 +36,8 @@ export function endpointProviderPath(
   provider: EndpointProvider,
 ): string {
   if (style === "transcription") {
-    // Cloudflare's openai slug drops the leading v1/; the grok slug keeps it.
+    // Native provider paths: OpenAI transcribes at v1/audio/transcriptions,
+    // xAI at v1/stt.
     return provider === "openai" ? "v1/audio/transcriptions" : "v1/stt";
   }
   return "v1/responses";
@@ -101,15 +102,12 @@ export function endpointAttempt(
 export async function prepareEndpointRequest(input: {
   request: Request;
   app: AppConfig;
-  userId: string;
   slug: string;
   endpoint: EndpointConfig;
   tokenHeader: string;
-  cfAigToken: string;
 }): Promise<PreparedEndpointRequest> {
   const bytes = await readBodyLimited(input.request);
-  const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader, input.cfAigToken);
-  headers.set("cf-aig-metadata", JSON.stringify({ app_id: input.app.id, user_id: input.userId }));
+  const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
 
   if (input.endpoint.api_style === "transcription") {

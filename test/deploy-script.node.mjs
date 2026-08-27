@@ -29,22 +29,11 @@ test("parses Wrangler's JSON secret list", () => {
 });
 
 test("reports missing user-provided deployment values", () => {
-  assert.deepEqual(missingRequiredSecrets(new Set()), [
-    "CF_AIG_GATEWAY_ID",
-    "CF_AIG_TOKEN",
-    "SECRET_VAULT_LOCAL_KEK_V1",
-  ]);
-  assert.deepEqual(
-    missingRequiredSecrets(new Set([
-      "CF_AIG_GATEWAY_ID",
-      "CF_AIG_TOKEN",
-      "SECRET_VAULT_LOCAL_KEK_V1",
-    ])),
-    [],
-  );
+  assert.deepEqual(missingRequiredSecrets(new Set()), ["SECRET_VAULT_LOCAL_KEK_V1"]);
+  assert.deepEqual(missingRequiredSecrets(new Set(["SECRET_VAULT_LOCAL_KEK_V1"])), []);
 });
 
-test("deploy button requests an existing gateway before its required token", () => {
+test("deploy button requests only the local vault key", () => {
   const projectRoot = new URL("..", import.meta.url);
   const packageJson = JSON.parse(readFileSync(new URL("package.json", projectRoot), "utf8"));
   const wranglerConfig = JSON.parse(
@@ -53,22 +42,16 @@ test("deploy button requests an existing gateway before its required token", () 
   );
   const secretTemplate = readFileSync(new URL(".dev.vars.example", projectRoot), "utf8");
 
-  assert.equal(wranglerConfig.vars?.CF_AIG_GATEWAY_ID, undefined);
-  assert.deepEqual(Object.keys(packageJson.cloudflare.bindings), [
-    "CF_AIG_GATEWAY_ID",
-    "CF_AIG_TOKEN",
-    "SECRET_VAULT_LOCAL_KEK_V1",
-  ]);
-  assert.match(packageJson.cloudflare.bindings.CF_AIG_GATEWAY_ID.description, /Create a Cloudflare AI Gateway/u);
-  assert.match(packageJson.cloudflare.bindings.CF_AIG_GATEWAY_ID.description, /does not create/u);
-  assert.match(packageJson.cloudflare.bindings.CF_AIG_TOKEN.description, /Create authentication token/u);
+  // The deployment-wide Cloudflare AI Gateway credentials are gone: routing
+  // through one is now an optional per-organization choice, not a prerequisite.
+  assert.equal(secretTemplate.includes("CF_AIG"), false);
+  assert.equal(JSON.stringify(packageJson).includes("CF_AIG"), false);
+  assert.equal(JSON.stringify(wranglerConfig).includes("CF_AIG"), false);
+  assert.equal(JSON.stringify(wranglerConfig).includes('"AI"'), false);
+  assert.deepEqual(Object.keys(packageJson.cloudflare.bindings), ["SECRET_VAULT_LOCAL_KEK_V1"]);
   assert.match(packageJson.cloudflare.bindings.SECRET_VAULT_LOCAL_KEK_V1.description, /openssl rand -base64 32/u);
-  assert.match(secretTemplate, /^CF_AIG_GATEWAY_ID=$/mu);
-  assert.match(secretTemplate, /^CF_AIG_TOKEN=$/mu);
   assert.match(secretTemplate, /^SECRET_VAULT_LOCAL_KEK_V1=$/mu);
-  assert.ok(
-    secretTemplate.indexOf("CF_AIG_GATEWAY_ID=") < secretTemplate.indexOf("CF_AIG_TOKEN="),
-  );
+  assert.equal(wranglerConfig.vars?.SECRET_VAULT_MODE, "local");
 });
 
 test("generates internal signing secrets once and leaves existing values alone", () => {
@@ -99,11 +82,7 @@ const previous = existsSync(process.env.FAKE_WRANGLER_LOG)
   : "";
 appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify(entry) + "\\n");
 if (args[0] === "secret" && args[1] === "list") {
-  console.log(JSON.stringify([
-    { name: "CF_AIG_GATEWAY_ID" },
-    { name: "CF_AIG_TOKEN" },
-    { name: "SECRET_VAULT_LOCAL_KEK_V1" }
-  ]));
+  console.log(JSON.stringify([{ name: "SECRET_VAULT_LOCAL_KEK_V1" }]));
 }
 if (
   args[0] === "d1"

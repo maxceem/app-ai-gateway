@@ -258,9 +258,7 @@ describe("provider-native proxy", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/perplexity-ai/chat/completions",
-    );
+    expect(captured[0]?.url).toBe("https://api.perplexity.ai/chat/completions");
   });
 
   it("allows individual mode to disable every provider", async () => {
@@ -380,15 +378,10 @@ describe("provider-native proxy", () => {
     const secondChunk = await reader.read();
     expect(new TextDecoder().decode(secondChunk.value)).toBe(second);
     expect((await reader.read()).done).toBe(true);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/responses",
-    );
-    expect(captured[0]?.headers.get("authorization")).toBeNull();
-    expect(captured[0]?.headers.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
-    expect(JSON.parse(captured[0]?.headers.get("cf-aig-metadata") ?? "null")).toEqual({
-      app_id: "proxy-stream",
-      user_id: "user-1",
-    });
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+    expect(captured[0]?.headers.get("cf-aig-authorization")).toBeNull();
+    expect(captured[0]?.headers.get("cf-aig-metadata")).toBeNull();
     expect(JSON.parse(captured[0]!.body)).toMatchObject({ model: "gpt-5.6-sol", max_output_tokens: 128 });
   });
 
@@ -499,9 +492,7 @@ describe("provider-native proxy", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/chat/completions",
-    );
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/chat/completions");
   });
 
   it.each([
@@ -540,7 +531,7 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
     );
     expect(JSON.parse(captured[0]!.body)).toMatchObject({
       generationConfig: { maxOutputTokens: 128 },
@@ -670,7 +661,7 @@ describe("provider-native proxy", () => {
     });
     await gemini.text();
     expect(captured[1]?.url).toContain(
-      "/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
     );
     expect(captured[1]?.url).toContain("alt=sse");
     expect(captured[1]?.url).not.toContain("must-not-leak");
@@ -720,7 +711,7 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(upstreamUrl).toContain(
-      "/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
     );
   });
 
@@ -759,7 +750,9 @@ describe("provider-native proxy", () => {
     });
 
     await expect(response.text()).resolves.toBe(fixture);
-    expect(upstreamUrl).toContain("/google-ai-studio/v1beta/openai/chat/completions");
+    expect(upstreamUrl).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    );
     expect(upstreamBody).toMatchObject({
       model: "gemini-3.6-flash",
       max_tokens: 100,
@@ -786,8 +779,10 @@ describe("provider-native proxy", () => {
     });
     await response.text();
     expect(response.status).toBe(200);
-    expect(upstreamHeaders.get("x-api-key")).toBeNull();
-    expect(upstreamHeaders.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
+    // The client's own key is stripped and replaced with the organization's.
+    expect(upstreamHeaders.get("x-api-key")).toBe("test-anthropic-secret");
+    expect(upstreamHeaders.get("authorization")).toBeNull();
+    expect(upstreamHeaders.get("cf-aig-authorization")).toBeNull();
   });
 
   it("accepts a tenant-configured token header and strips it upstream", async () => {
@@ -1004,17 +999,15 @@ describe("provider-native proxy", () => {
     );
     expect(response.status).toBe(200);
     await response.text();
-    expect(upstreamUrl).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/perplexity-ai/chat/completions",
-    );
-    expect(upstreamHeaders.get("authorization")).toBeNull();
+    expect(upstreamUrl).toBe("https://api.perplexity.ai/chat/completions");
+    expect(upstreamHeaders.get("authorization")).toBe("Bearer test-perplexity-secret");
     expect(upstreamHeaders.get("x-end-user-id")).toBeNull();
-    expect(upstreamHeaders.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
-    expect(JSON.parse(upstreamHeaders.get("cf-aig-metadata") ?? "null")).toEqual({
-      app_id: "proxy-perplexity",
-      user_id: "grower-user-7",
-    });
-    expect(upstreamHeaders.get("cf-aig-cache-ttl")).toBe("600");
+    // Nothing in front of a natively routed provider speaks cf-aig-*, so none
+    // of it is forwarded — including the headers a client may legitimately send
+    // when the same provider is routed through a Cloudflare AI Gateway.
+    expect(upstreamHeaders.get("cf-aig-authorization")).toBeNull();
+    expect(upstreamHeaders.get("cf-aig-metadata")).toBeNull();
+    expect(upstreamHeaders.get("cf-aig-cache-ttl")).toBeNull();
     expect(upstreamHeaders.get("cf-aig-unknown-control")).toBeNull();
     expect(upstreamBody).toMatchObject({ model: "sonar-pro", max_tokens: 256 });
 

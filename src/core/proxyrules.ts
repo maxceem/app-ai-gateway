@@ -1,4 +1,6 @@
+import type { ProviderPricing } from "../db/schema";
 import { GatewayError } from "./errors";
+import type { ResolvedProvider } from "./provider-store";
 import { PROVIDER_REGISTRY } from "./providers";
 import { hasModelPrice } from "./usage";
 import type {
@@ -23,6 +25,14 @@ export interface PreparedProxyRequest {
   body: BodyInit | null;
   headers: Headers;
   query: string;
+}
+
+/**
+ * Entering a price *is* the explicit allowance for a model, so the message has
+ * to say exactly where to enter it.
+ */
+export function unpricedMessage(provider: ProviderType, model: string): string {
+  return `Model ${model} has no pricing for ${provider} — add it under custom model pricing in the provider settings`;
 }
 
 export function sanitizedQuery(request: Request): string {
@@ -189,24 +199,33 @@ export function validateOrInjectOutputCap(
   return true;
 }
 
+/**
+ * Client-controlled routing headers a Cloudflare AI Gateway understands. They
+ * are forwarded only when the resolved provider actually routes through one.
+ */
+const CLIENT_AI_GATEWAY_HEADERS = new Set([
+  "cf-aig-cache-ttl",
+  "cf-aig-skip-cache",
+  "cf-aig-max-attempts",
+  "cf-aig-backoff",
+  "cf-aig-retry-delay",
+]);
+
+/**
+ * Strips everything the client must not influence. Provider authentication is
+ * injected later by {@link providerUpstream}, once the organization's provider
+ * row is resolved and the routing decision is known.
+ */
 export function sanitizedHeaders(
   request: Request,
   app: AppConfig,
   tokenHeader: string,
-  cfAigToken: string,
 ): Headers {
   const headers = new Headers(request.headers);
-  const allowedAiGatewayHeaders = new Set([
-    "cf-aig-cache-ttl",
-    "cf-aig-skip-cache",
-    "cf-aig-max-attempts",
-    "cf-aig-backoff",
-    "cf-aig-retry-delay",
-  ]);
   const headerNames: string[] = [];
   headers.forEach((_value, name) => headerNames.push(name));
   for (const name of headerNames) {
-    if (name.startsWith("cf-aig-") && !allowedAiGatewayHeaders.has(name)) headers.delete(name);
+    if (name.startsWith("cf-aig-") && !CLIENT_AI_GATEWAY_HEADERS.has(name)) headers.delete(name);
   }
   for (const name of [
     "authorization",
@@ -222,10 +241,6 @@ export function sanitizedHeaders(
   ]) {
     if (name) headers.delete(name);
   }
-  // AI Gateway's Workers AI binding provides the account-aware URL, but an
-  // authenticated gateway still requires its Run token on an ordinary fetch.
-  // Always replace any client-supplied value with the server-owned secret.
-  headers.set("cf-aig-authorization", `Bearer ${cfAigToken}`);
   return headers;
 }
 
@@ -236,7 +251,8 @@ export async function prepareProxyRequest(input: {
   provider: ProviderType;
   providerPath: string;
   tokenHeader: string;
-  cfAigToken: string;
+  /** The resolved row's per-model overrides; they win over the global catalog. */
+  pricing: ProviderPricing | null;
 }): Promise<PreparedProxyRequest> {
   const config = input.app.routing.providerMode === "all"
     ? UNRESTRICTED_PROVIDER
@@ -253,16 +269,7 @@ export async function prepareProxyRequest(input: {
   let body: BodyInit;
   let bodyChanged = false;
   let providerPath = input.providerPath;
-  const headers = sanitizedHeaders(
-    input.request,
-    input.app,
-    input.tokenHeader,
-    input.cfAigToken,
-  );
-  headers.set(
-    "cf-aig-metadata",
-    JSON.stringify({ app_id: input.app.id, user_id: input.userId }),
-  );
+  const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
 
   if (isMultipart) {
     let parsed: FormData | null = null;
@@ -287,12 +294,8 @@ export async function prepareProxyRequest(input: {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
     }
     const actualModel = input.app.routing.modelRewrites[requestedModel] ?? requestedModel;
-    if (!hasModelPrice(input.provider, actualModel)) {
-      throw new GatewayError(
-        400,
-        "pricing_not_configured",
-        `Model ${actualModel} does not have pricing configured for ${input.provider}`,
-      );
+    if (!hasModelPrice(input.provider, actualModel, input.pricing)) {
+      throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
     }
     if (match.modelFromPath && actualModel !== requestedModel) {
       providerPath = match.entry.path.replace("{model}", encodeURIComponent(actualModel));
@@ -330,12 +333,8 @@ export async function prepareProxyRequest(input: {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
   const actualModel = input.app.routing.modelRewrites[requestedModel] ?? requestedModel;
-  if (!hasModelPrice(input.provider, actualModel)) {
-    throw new GatewayError(
-      400,
-      "pricing_not_configured",
-      `Model ${actualModel} does not have pricing configured for ${input.provider}`,
-    );
+  if (!hasModelPrice(input.provider, actualModel, input.pricing)) {
+    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
   }
   if (match.modelFromPath) {
     providerPath = actualModel === requestedModel
@@ -362,24 +361,62 @@ export async function prepareProxyRequest(input: {
   };
 }
 
-export async function providerGatewayUrl(
-  env: Env & { CF_AIG_BASE_URL?: string },
-  prepared: PreparedProxyRequest,
-): Promise<string> {
+export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
+
+/**
+ * Builds the upstream URL and the final header set from the organization's
+ * resolved provider row. Clients never supply a URL, so there is no SSRF
+ * surface: both shapes are derived in code from the closed `gateway` set.
+ *
+ * - `gateway === null` — the provider's native API, path passed through
+ *   verbatim, authenticated with the registry's own header.
+ * - `gateway === "cf_aig"` — the organization's own Cloudflare AI Gateway,
+ *   which injects the provider key from its own store, so only the gateway
+ *   token travels and no provider-auth header is sent.
+ */
+export function providerUpstream(input: {
+  resolved: ResolvedProvider;
+  prepared: PreparedProxyRequest;
+  appId: string;
+  userId: string;
+}): { url: string; headers: Headers } {
+  const { resolved, prepared } = input;
   const spec = PROVIDER_REGISTRY[prepared.provider];
-  const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
-  const path = prefix && prepared.providerPath.startsWith(prefix)
-    ? prepared.providerPath.slice(prefix.length)
-    : prepared.providerPath;
-  const configuredBase = env.CF_AIG_BASE_URL;
-  const ai = env.AI;
-  let base: string;
-  if (configuredBase) {
-    base = `${configuredBase.replace(/\/$/u, "")}/${spec.aig.slug}`;
-  } else {
-    if (!ai) throw new Error("The Workers AI binding is unavailable");
-    base = (await ai.gateway(env.CF_AIG_GATEWAY_ID).getUrl(spec.aig.slug))
-      .replace(/\/$/u, "");
+  const headers = new Headers(prepared.headers);
+
+  if (resolved.gateway === "cf_aig") {
+    const config = resolved.gatewayConfig;
+    if (!config) {
+      throw new GatewayError(
+        502,
+        "provider_unavailable",
+        "Provider is routed through a Cloudflare AI Gateway with no stored configuration",
+      );
+    }
+    headers.set("cf-aig-authorization", `Bearer ${resolved.secret}`);
+    headers.set("cf-aig-metadata", JSON.stringify({ app_id: input.appId, user_id: input.userId }));
+    const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
+    const path = prefix && prepared.providerPath.startsWith(prefix)
+      ? prepared.providerPath.slice(prefix.length)
+      : prepared.providerPath;
+    const base = [
+      CF_AI_GATEWAY_BASE_URL,
+      encodeURIComponent(config.accountId),
+      encodeURIComponent(config.gatewayId),
+      spec.aig.slug,
+    ].join("/");
+    return { url: `${base}/${path}${prepared.query}`, headers };
   }
-  return `${base}/${path}${prepared.query}`;
+
+  // Nothing in front of the provider understands cf-aig-*, so none of it goes out.
+  const names: string[] = [];
+  headers.forEach((_value, name) => names.push(name));
+  for (const name of names) {
+    if (name.startsWith("cf-aig-")) headers.delete(name);
+  }
+  headers.set(spec.auth.header, `${"scheme" in spec.auth ? spec.auth.scheme : ""}${resolved.secret}`);
+  return {
+    url: `${spec.directBaseUrl}${prepared.providerPath}${prepared.query}`,
+    headers,
+  };
 }

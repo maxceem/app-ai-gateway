@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
 import type { ProviderType } from "../../core/types";
+import { organizationPricing } from "../../core/provider-store";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { database } from "../../db";
@@ -64,7 +65,9 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     throw new GatewayError(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request");
   }
   const { provider, model, month, apply } = parsed.data;
-  if (!hasTokenModelPrice(provider, model)) {
+  // Repricing follows the same two-level lookup as the hot path.
+  const pricing = (await organizationPricing(c.env, c.get("admin").organizationId))[provider as ProviderType];
+  if (!hasTokenModelPrice(provider, model, pricing)) {
     throw new GatewayError(400, "invalid_request", `No token price is configured for ${provider}/${model}`);
   }
 
@@ -90,7 +93,7 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   }
 
   const repriced = rows.map((row) => {
-    const costUsd = computeCost(provider as ProviderType, model, row);
+    const costUsd = computeCost(provider as ProviderType, model, row, pricing);
     if (costUsd === null) {
       throw new GatewayError(400, "invalid_request", `Unable to compute a token price for ${provider}/${model}`);
     }

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { database } from "../db";
 import { app } from "../db/schema";
 import { GatewayError } from "./errors";
+import type { OrganizationPricing } from "./provider-store";
 import {
   ENDPOINT_API_STYLES,
   PROVIDER_TYPES,
@@ -224,9 +225,10 @@ function parseProvider(raw: unknown, provider: ProviderType): ProviderProxyConfi
 function validateRoutingPrices(
   selected: Partial<Record<ProviderType, ProviderProxyConfig>>,
   modelRewrites: Record<string, string>,
+  pricing: OrganizationPricing,
 ): void {
   for (const [source, target] of Object.entries(modelRewrites)) {
-    if (!PROVIDER_TYPES.some((provider) => hasModelPrice(provider, target))) {
+    if (!PROVIDER_TYPES.some((provider) => hasModelPrice(provider, target, pricing[provider]))) {
       throw new GatewayError(
         500,
         "internal_error",
@@ -245,7 +247,7 @@ function validateRoutingPrices(
     ];
     for (const configured of configuredModels) {
       const resolved = modelRewrites[configured.model] ?? configured.model;
-      if (!hasModelPrice(provider, resolved)) {
+      if (!hasModelPrice(provider, resolved, pricing[provider])) {
         throw new GatewayError(
           500,
           "internal_error",
@@ -256,7 +258,10 @@ function validateRoutingPrices(
   }
 }
 
-function parseRouting(raw: unknown): { stored: RoutingConfig; resolved: ResolvedRoutingConfig } {
+function parseRouting(
+  raw: unknown,
+  pricing: OrganizationPricing | null,
+): { stored: RoutingConfig; resolved: ResolvedRoutingConfig } {
   const value = record(raw, "routing");
   const providers = record(value.providers, "routing.providers");
   if (providers.mode !== "all" && providers.mode !== "selected") {
@@ -283,7 +288,7 @@ function parseRouting(raw: unknown): { stored: RoutingConfig; resolved: Resolved
   for (const [source, target] of Object.entries(rewrites)) {
     modelRewrites[source] = requiredString(target, `routing.model_rewrites.${source}`);
   }
-  validateRoutingPrices(selected, modelRewrites);
+  if (pricing) validateRoutingPrices(selected, modelRewrites, pricing);
   return {
     stored: {
       providers: {
@@ -300,6 +305,7 @@ function parseEndpointTarget(
   raw: unknown,
   label: string,
   apiStyle: EndpointApiStyle,
+  pricing: OrganizationPricing | null,
 ): EndpointTarget {
   const value = record(raw, label);
   const provider = value.provider;
@@ -312,7 +318,7 @@ function parseEndpointTarget(
     );
   }
   const model = requiredString(value.model, `${label}.model`);
-  if (!hasModelPrice(provider as EndpointProvider, model)) {
+  if (pricing && !hasModelPrice(provider as EndpointProvider, model, pricing[provider as EndpointProvider])) {
     throw new GatewayError(
       500,
       "internal_error",
@@ -322,7 +328,11 @@ function parseEndpointTarget(
   return { provider: provider as EndpointProvider, model };
 }
 
-function parseEndpoint(raw: unknown, label: string): EndpointConfig {
+function parseEndpoint(
+  raw: unknown,
+  label: string,
+  pricing: OrganizationPricing | null,
+): EndpointConfig {
   const value = record(raw, label);
   if (!ENDPOINT_API_STYLES.includes(value.api_style as EndpointApiStyle)) {
     throw new GatewayError(
@@ -332,7 +342,7 @@ function parseEndpoint(raw: unknown, label: string): EndpointConfig {
     );
   }
   const apiStyle = value.api_style as EndpointApiStyle;
-  const target = parseEndpointTarget(value, label, apiStyle);
+  const target = parseEndpointTarget(value, label, apiStyle, pricing);
   const endpoint: EndpointConfig = {
     api_style: apiStyle,
     provider: target.provider,
@@ -351,13 +361,13 @@ function parseEndpoint(raw: unknown, label: string): EndpointConfig {
       throw new GatewayError(500, "internal_error", `${label}.fallback must be an array`);
     }
     endpoint.fallback = value.fallback.map((item, index) =>
-      parseEndpointTarget(item, `${label}.fallback[${index}]`, apiStyle),
+      parseEndpointTarget(item, `${label}.fallback[${index}]`, apiStyle, pricing),
     );
   }
   return endpoint;
 }
 
-function parseEndpoints(raw: unknown): EndpointsConfig {
+function parseEndpoints(raw: unknown, pricing: OrganizationPricing | null): EndpointsConfig {
   if (raw === undefined) return {};
   const value = record(raw, "endpoints");
   const endpoints: EndpointsConfig = {};
@@ -369,7 +379,7 @@ function parseEndpoints(raw: unknown): EndpointsConfig {
         `endpoints.${slug} is not a valid slug; use 1-64 characters from a-z, 0-9, and -`,
       );
     }
-    endpoints[slug] = parseEndpoint(definition, `endpoints.${slug}`);
+    endpoints[slug] = parseEndpoint(definition, `endpoints.${slug}`, pricing);
   }
   return endpoints;
 }
@@ -394,18 +404,28 @@ function parseLimitScope(raw: unknown, label: string): { stored: LimitScopeConfi
   };
 }
 
-export function parseStoredAppConfig(raw: unknown): {
+/**
+ * Model pricing is validated when a configuration is *written*, against the
+ * global catalog merged with the organization's own overrides. Reading a stored
+ * configuration deliberately skips that check (`pricing: null`): a price that
+ * disappears after the fact must surface as a `pricing_not_configured` response
+ * on the request that needs it, never as an unparseable app.
+ */
+export function parseStoredAppConfig(
+  raw: unknown,
+  pricing: OrganizationPricing | null = {},
+): {
   stored: StoredAppConfig;
   resolved: Omit<AppConfig, "id" | "organizationId" | "name" | "status">;
 } {
   const value = record(raw, "app");
   const authentication = parseAuthentication(value.authentication);
-  const routing = parseRouting(value.routing);
+  const routing = parseRouting(value.routing, pricing);
   const limitsValue = record(value.limits, "limits");
   const perUser = parseLimitScope(limitsValue.per_user, "limits.per_user");
   const perApp = parseLimitScope(limitsValue.per_app, "limits.per_app");
   const limits: LimitsConfig = { per_user: perUser.stored, per_app: perApp.stored };
-  const endpoints = parseEndpoints(value.endpoints);
+  const endpoints = parseEndpoints(value.endpoints, pricing);
   return {
     stored: {
       authentication,
@@ -423,7 +443,7 @@ export function parseStoredAppConfig(raw: unknown): {
 }
 
 function fromRow(row: typeof app.$inferSelect): AppConfig {
-  const parsed = parseStoredAppConfig(row.config);
+  const parsed = parseStoredAppConfig(row.config, null);
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -485,8 +505,9 @@ function assertBillingCeilings(config: StoredAppConfig, ceilings: BillingPlanLim
 export function validateAppConfigJson(
   config: unknown,
   ceilings: BillingPlanLimits = {},
+  pricing: OrganizationPricing = {},
 ): StoredAppConfig {
-  const stored = parseStoredAppConfig(config).stored;
+  const stored = parseStoredAppConfig(config, pricing).stored;
   assertBillingCeilings(stored, ceilings);
   return stored;
 }

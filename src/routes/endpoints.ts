@@ -6,8 +6,18 @@ import {
   type PreparedEndpointRequest,
 } from "../core/endpointrules";
 import { GatewayError } from "../core/errors";
-import { providerGatewayUrl, type PreparedProxyRequest } from "../core/proxyrules";
-import { recordUsageEvent } from "../core/usage";
+import {
+  requireProvider,
+  resolveProvider,
+  type ResolvedProvider,
+} from "../core/provider-store";
+import {
+  providerUpstream,
+  unpricedMessage,
+  type PreparedProxyRequest,
+} from "../core/proxyrules";
+import type { ProviderType } from "../core/types";
+import { hasModelPrice, recordUsageEvent } from "../core/usage";
 import type { GatewayVariables } from "../middleware/auth";
 import type { ProxyVariables } from "./proxy";
 
@@ -47,14 +57,46 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
   const prepared = await prepareEndpointRequest({
     request: c.req.raw,
     app,
-    userId: identity.userId,
     slug,
     endpoint,
     tokenHeader: c.get("authHeaderName"),
-    cfAigToken: c.env.CF_AIG_TOKEN,
   });
+
+  // Every target needs its own credential, because a fallback may point at a
+  // different provider. The primary target must work; a fallback the
+  // organization has not configured (or cannot price) is simply dropped from
+  // the chain rather than turned into a request that is certain to fail.
+  const resolvedProviders = new Map<ProviderType, ResolvedProvider>();
+  const usableTargets: typeof prepared.targets = [];
+  for (const [index, target] of prepared.targets.entries()) {
+    const primary = index === 0;
+    let entry = resolvedProviders.get(target.provider);
+    if (!entry) {
+      const found = primary
+        ? await requireProvider(c.env, app.organizationId, target.provider)
+        : await resolveProvider(c.env, app.organizationId, target.provider);
+      if (!found) continue;
+      entry = found;
+      resolvedProviders.set(target.provider, entry);
+    }
+    if (!hasModelPrice(target.provider, target.model, entry.pricing)) {
+      if (primary) {
+        throw new GatewayError(
+          400,
+          "pricing_not_configured",
+          unpricedMessage(target.provider, target.model),
+        );
+      }
+      continue;
+    }
+    usableTargets.push(target);
+  }
+  prepared.targets = usableTargets;
+
   const attempt = endpointAttempt(prepared, prepared.targets[0]!);
   c.set("preparedEndpointRequest", prepared);
+  c.set("resolvedProviders", resolvedProviders);
+  c.set("resolvedProvider", resolvedProviders.get(attempt.provider)!);
   c.set("endpointSlug", slug);
   c.set("provider", attempt.provider);
   c.set("providerPath", attempt.providerPath);
@@ -70,8 +112,11 @@ endpointRoutes.post("/:slug", async (c) => {
   const prepared = c.get("preparedEndpointRequest");
   const slug = prepared.slug;
 
+  const resolvedProviders = c.get("resolvedProviders")!;
+
   const record = (input: {
     attempt: PreparedProxyRequest;
+    resolved: ResolvedProvider;
     stream: ReadableStream<Uint8Array> | null;
     contentType: string;
     status: "ok" | "provider_error";
@@ -88,6 +133,8 @@ endpointRoutes.post("/:slug", async (c) => {
         apiKeyId: identity.apiKeyId,
         appLevelLimitsEnabled: hasAppLevelLimits(app),
         provider: input.attempt.provider,
+        providerId: input.resolved.id,
+        pricing: input.resolved.pricing,
         model: input.attempt.model,
         route: `${input.attempt.provider}/${input.attempt.providerPath}`,
         endpointSlug: slug,
@@ -104,18 +151,26 @@ endpointRoutes.post("/:slug", async (c) => {
     const attempt = index === 0
       ? c.get("preparedProxyRequest")
       : endpointAttempt(prepared, target);
+    const resolved = resolvedProviders.get(attempt.provider)!;
+    const upstreamRequest = providerUpstream({
+      resolved,
+      prepared: attempt,
+      appId: app.id,
+      userId: identity.userId,
+    });
     const providerStart = performance.now();
     let upstream: Response;
     try {
-      upstream = await fetch(await providerGatewayUrl(c.env, attempt), {
+      upstream = await fetch(upstreamRequest.url, {
         method: "POST",
-        headers: attempt.headers,
+        headers: upstreamRequest.headers,
         body: attempt.body,
         redirect: "manual",
       });
     } catch {
       record({
         attempt,
+        resolved,
         stream: null,
         contentType: "",
         status: "provider_error",
@@ -132,6 +187,7 @@ endpointRoutes.post("/:slug", async (c) => {
       await upstream.body?.cancel();
       record({
         attempt,
+        resolved,
         stream: null,
         contentType: "",
         status: "provider_error",
@@ -153,6 +209,7 @@ endpointRoutes.post("/:slug", async (c) => {
     if (upstream.body) [clientStream, observerStream] = upstream.body.tee();
     record({
       attempt,
+      resolved,
       stream: observerStream,
       contentType: upstream.headers.get("content-type") ?? "",
       status: upstream.ok ? "ok" : "provider_error",

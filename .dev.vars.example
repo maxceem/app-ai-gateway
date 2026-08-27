@@ -1,9 +1,7 @@
-# Required values requested by the Deploy to Cloudflare flow.
-# Create the AI Gateway before deployment. Never commit real values.
-CF_AIG_GATEWAY_ID=
-CF_AIG_TOKEN=
-
-# Self-hosted default: generate with `openssl rand -base64 32`.
+# Required value requested by the Deploy to Cloudflare flow. Never commit real
+# values. Provider credentials themselves are added per organization in the
+# console and encrypted with the key below.
+# Generate with `openssl rand -base64 32`.
 SECRET_VAULT_MODE=local
 SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=1
 SECRET_VAULT_LOCAL_KEK_V1=

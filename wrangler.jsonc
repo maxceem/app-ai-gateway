@@ -20,9 +20,6 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/v1/*"]
   },
-  "ai": {
-    "binding": "AI"
-  },
   "d1_databases": [
     {
       "binding": "DB",
@@ -51,9 +48,6 @@
         "ALLOW_PUBLIC_REGISTRATION": "true",
         "SECRET_VAULT_MODE": "kms"
       },
-      "ai": {
-        "binding": "AI"
-      },
       "d1_databases": [
         {
           "binding": "DB",
@@ -80,10 +74,6 @@
         "ALLOW_PUBLIC_REGISTRATION": "true",
         "SECRET_VAULT_MODE": "local",
         "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
-      },
-      "ai": {
-        "binding": "AI",
-        "remote": true
       },
       "d1_databases": [
         {
