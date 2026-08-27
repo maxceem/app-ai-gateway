@@ -128,6 +128,46 @@ export const UsageRepriceRequestSchema = z.object({
   apply: z.boolean().default(false),
 }).strict().meta({ id: "UsageRepriceRequest" });
 
+/**
+ * Per-1M-token overrides for models the shipped catalog does not cover, or
+ * covers with a stale price. `$0` is enterable for genuinely free models.
+ */
+export const ProviderPricingSchema = z.record(
+  z.string().trim().min(1).max(200),
+  z.object({
+    input: z.number().finite().nonnegative(),
+    output: z.number().finite().nonnegative(),
+  }).strict(),
+).meta({ id: "ProviderPricing" });
+
+const ProviderNameSchema = z.string().trim().min(1).max(100);
+const ProviderSecretSchema = z.string().min(1).max(4096);
+
+export const ProviderCreateRequestSchema = z.object({
+  type: ProviderTypeSchema,
+  name: ProviderNameSchema,
+  secret: ProviderSecretSchema,
+  pricing: ProviderPricingSchema.optional(),
+}).strict().meta({ id: "ProviderCreateRequest" });
+
+export const ProviderCfAigPresetRequestSchema = z.object({
+  accountId: z.string().trim().min(1).max(100),
+  gatewayId: z.string().trim().min(1).max(100),
+  token: ProviderSecretSchema,
+  types: z.array(ProviderTypeSchema).min(1),
+  name: ProviderNameSchema,
+}).strict().meta({ id: "ProviderCfAigPresetRequest" });
+
+export const ProviderUpdateRequestSchema = z.object({
+  name: ProviderNameSchema.optional(),
+  secret: ProviderSecretSchema.optional(),
+  /** A full replace; `null` clears every override. */
+  pricing: ProviderPricingSchema.nullable().optional(),
+}).strict().refine(
+  (value) => value.name !== undefined || value.secret !== undefined || value.pricing !== undefined,
+  { message: "Provide at least one of name, secret, or pricing" },
+).meta({ id: "ProviderUpdateRequest" });
+
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 
 export const OrganizationSelectRequestSchema = z.object({

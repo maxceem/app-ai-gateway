@@ -8,6 +8,10 @@ import {
   OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
+  ProviderCfAigPresetRequestSchema,
+  ProviderCreateRequestSchema,
+  ProviderPricingSchema,
+  ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
@@ -20,6 +24,10 @@ export {
   OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
+  ProviderCfAigPresetRequestSchema,
+  ProviderCreateRequestSchema,
+  ProviderPricingSchema,
+  ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
@@ -565,6 +573,131 @@ register({
   request: { params: ManagementKeyPath },
   responses: {
     200: response("Revoked management key metadata.", z.object({ key: ManagementKeySummarySchema })),
+    ...errorResponses,
+  },
+});
+
+const ProviderIdPath = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, example: "b0a1…" }),
+});
+
+const ProviderSummarySchema = z.object({
+  id: z.string(),
+  type: z.enum(PROVIDER_TYPES),
+  name: z.string(),
+  secretHint: z.string().openapi({
+    description: "The last characters of the credential. The credential itself is never returned by any endpoint.",
+  }),
+  gateway: z.literal("cf_aig").nullable().openapi({
+    description: "null routes straight to the provider's native API; cf_aig routes through the organization's own Cloudflare AI Gateway.",
+  }),
+  gatewayConfig: z.object({
+    accountId: z.string(),
+    gatewayId: z.string(),
+  }).nullable(),
+  pricing: ProviderPricingSchema.nullable(),
+  status: z.enum(["active", "revoked"]),
+  createdAt: z.string(),
+  createdBy: z.string(),
+}).openapi("Provider");
+
+const ProviderValidatedSchema = z.boolean().openapi({
+  description: "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid.",
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/providers",
+  tags: ["Admin providers"],
+  operationId: "listProviders",
+  summary: "List the organization's provider credentials",
+  security: operatorSecurity,
+  responses: {
+    200: response("Provider metadata without credentials.", z.object({
+      providers: z.array(ProviderSummarySchema),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/providers",
+  tags: ["Admin providers"],
+  operationId: "createProvider",
+  summary: "Store a provider credential for the organization",
+  description:
+    "The credential is probed live, encrypted through the secret vault, and never returned again. At most one active credential may exist per provider type.",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(ProviderCreateRequestSchema) } },
+  responses: {
+    201: response("Stored provider.", z.object({
+      provider: ProviderSummarySchema,
+      validated: ProviderValidatedSchema,
+    })),
+    409: response("An active credential already exists for this provider type.", ErrorResponseSchema),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/providers/cf-aig-preset",
+  tags: ["Admin providers"],
+  operationId: "createCfAigPresetProviders",
+  summary: "Route several providers through the organization's Cloudflare AI Gateway",
+  description:
+    "Probes the account id, gateway id and token once, then creates one provider row per listed type. Provider keys themselves must be stored in that gateway's own BYOK store.",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(ProviderCfAigPresetRequestSchema) } },
+  responses: {
+    201: response("Created providers, with any per-type conflicts reported.", z.object({
+      providers: z.array(ProviderSummarySchema),
+      conflicts: z.array(z.enum(PROVIDER_TYPES)),
+      validated: ProviderValidatedSchema,
+    })),
+    409: response("Every listed provider type is already configured.", ErrorResponseSchema),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "put",
+  path: "/v1/admin/providers/{id}",
+  tags: ["Admin providers"],
+  operationId: "updateProvider",
+  summary: "Rotate a credential, rename it, or replace its custom pricing",
+  security: operatorSecurity,
+  request: {
+    params: ProviderIdPath,
+    body: { required: true, content: json(ProviderUpdateRequestSchema) },
+  },
+  responses: {
+    200: response("Updated provider.", z.object({
+      provider: ProviderSummarySchema,
+      validated: ProviderValidatedSchema.nullable().openapi({
+        description: "null when the request did not rotate the credential.",
+      }),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "delete",
+  path: "/v1/admin/providers/{id}",
+  tags: ["Admin providers"],
+  operationId: "deleteProvider",
+  summary: "Delete a provider credential and its custom pricing",
+  description:
+    "A hard delete. Applications using this provider start failing with provider_not_configured within a minute.",
+  security: operatorSecurity,
+  request: { params: ProviderIdPath },
+  responses: {
+    200: response("Provider deleted.", z.object({
+      deleted: z.literal(true),
+      provider_id: z.string(),
+    })),
     ...errorResponses,
   },
 });
