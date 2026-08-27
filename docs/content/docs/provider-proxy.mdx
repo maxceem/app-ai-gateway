@@ -41,8 +41,26 @@ the provider documentation remains authoritative for its exact fields.
 Upstream response bodies are streamed to the client. The gateway tees the stream
 for usage accounting without buffering the complete provider response.
 
-## Forwarded controls
+## Credentials and forwarded controls
 
-Only the documented Cloudflare AI Gateway control headers are forwarded. The
-Worker strips other `cf-aig-*` headers and supplies its own encrypted authenticated
-gateway token.
+The organization's own credential for the requested provider is injected
+server-side; a client never sends a provider key, and any it does send is
+stripped. Which headers travel upstream follows how that provider is routed
+(see [Providers](/docs/providers)):
+
+- **Direct to the provider** — the provider's own auth header
+  (`authorization`, `x-api-key`, or `x-goog-api-key`) and **no** `cf-aig-*`
+  header of any kind.
+- **Through your Cloudflare AI Gateway** — `cf-aig-authorization`,
+  `cf-aig-metadata`, and the documented `cf-aig-cache-ttl`,
+  `cf-aig-skip-cache`, `cf-aig-max-attempts`, `cf-aig-backoff` and
+  `cf-aig-retry-delay` controls a client may set. Everything else `cf-aig-*` is
+  stripped.
+
+## Failures worth knowing
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `provider_not_configured` | 502 | The organization has no active credential for this provider. Add one under Providers. |
+| `provider_unavailable` | 502 | The stored credential could not be decrypted — usually a misconfigured secret vault. Check `/v1/healthz`. |
+| `pricing_not_configured` | 400 | Neither the shipped catalog nor the provider's custom pricing knows this model. |

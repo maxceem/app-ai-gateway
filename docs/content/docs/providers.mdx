@@ -1,0 +1,122 @@
+---
+title: Providers
+description: Bring your own provider credentials, route them directly or through your Cloudflare AI Gateway, and price the models the catalog does not know.
+---
+
+Every organization brings its own provider credentials. You add them once in the
+console, the gateway encrypts them before storage, and no API ever returns them
+again — only the last few characters, so you can tell two keys apart.
+
+## The model: one row per provider
+
+A provider row is exactly what it sounds like: *this provider, as configured by
+this organization*. There are no credential "kinds" and no fallback tiers.
+
+| Field | Meaning |
+| --- | --- |
+| `type` | `openai`, `anthropic`, `xai`, `gemini`, or `perplexity` |
+| `name` | Your label, e.g. "Prod OpenAI" |
+| `secretHint` | The last few characters of the credential — display only |
+| `gateway` | `null` for the provider's native API, `cf_aig` for your own Cloudflare AI Gateway |
+| `pricing` | Optional per-model price overrides (see below) |
+
+At most one **active** row may exist per (organization, provider). Resolution is
+therefore a plain lookup with no precedence rules: a request for a provider the
+organization has not configured fails with `502 provider_not_configured`.
+
+## Adding a key
+
+Open **Providers** in the console, pick the provider, name the credential, and
+paste the key. Before storing it the gateway runs the cheapest authenticated call
+the provider offers:
+
+| Provider | Probe |
+| --- | --- |
+| OpenAI | `GET /v1/models` |
+| xAI | `GET /v1/models` |
+| Anthropic | `GET /v1/models` |
+| Gemini | `GET /v1beta/models` |
+| Perplexity | none — accepted unvalidated |
+
+If the provider answers `401` or `403`, the key is rejected with
+`provider_key_invalid` and nothing is stored. Any other outcome — a timeout, an
+outage, a provider with no probe — stores the key and reports
+`validated: false`. A provider being down is not a reason to stop you saving a
+key you know is correct.
+
+`PUT /v1/admin/providers/{id}` rotates a credential in place: same row, same id,
+same custom pricing, re-probed and re-encrypted. Rotation is preferable to
+delete-and-recreate for exactly that reason.
+
+## Routing through your own Cloudflare AI Gateway
+
+Cloudflare AI Gateway is a **preset**, not a second kind of credential. The
+**Connect Cloudflare AI Gateway** tab asks for an account id, a gateway id, a
+gateway token, and which providers to route. One probe proves all three, then one
+row is created per selected provider with `gateway = "cf_aig"`.
+
+Requests for those providers are then sent to
+`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<slug>/…` with only
+`cf-aig-authorization` and `cf-aig-metadata`. **The provider keys themselves must
+live in that gateway's own stored-keys (BYOK) store** — this gateway sends no
+provider-auth header on that path, because your gateway supplies it.
+
+Rows routed natively are the opposite: the provider's own auth header, and no
+`cf-aig-*` header at all.
+
+Upstream URLs are always derived in code from the stored, non-secret gateway
+configuration. Clients never supply a URL, so there is no server-side request
+forgery surface to validate.
+
+## Custom model pricing
+
+Model pricing ships with the deployment as a code-level catalog, because prices
+are market data about models rather than per-organization state. A model the
+catalog does not know — or knows at a stale price — is unblocked by adding it
+under **custom model pricing** on the provider.
+
+Lookup is a two-level merge:
+
+1. the provider row's own `pricing` entry for the requested model, then
+2. the shipped catalog.
+
+A model priced by neither is refused with `400 pricing_not_configured` and a
+message naming where to fix it. Entering the price *is* the explicit allowance:
+nothing unpriced ever proxies, no usage goes unaccounted, and `cost_usd` on a
+usage event is never null. `$0` is enterable for genuinely free models.
+
+<Callout type="warn" title="Deleting a provider deletes its overrides">
+  Custom pricing lives on the provider row. Rotating a credential keeps it;
+  deleting the provider discards it along with the credential.
+</Callout>
+
+## Security model
+
+- **Encryption at rest.** Every credential is stored as a vault blob, bound to
+  its own row by an encryption context of
+  `{ service, organizationId, providerId }`. A blob lifted from one row cannot be
+  replayed in another, and a D1 dump on its own is worthless.
+  - *Self-hosted (`SECRET_VAULT_MODE=local`)*: AES-256-GCM in the Worker under a
+    key encryption key you hold as a Worker secret. Honest limitation: anyone
+    with secret-read access to your own Cloudflare account can read that key.
+  - *Hosted (`SECRET_VAULT_MODE=kms`)*: envelope encryption through a
+    [cf-kms](https://github.com/maxceem/cf-kms) deployment in a dedicated
+    security account. The root key never enters the gateway's account, and every
+    decrypt is an audited call that can be revoked.
+- **Write-only API.** No response body from any endpoint contains a submitted
+  secret. The console clears its form state and its query cache the moment a
+  create or rotate call settles.
+- **Revocation tail.** Resolved credentials are cached per isolate for up to 60
+  seconds, so a rotation or deletion takes effect within a minute on a warm
+  isolate — the same propagation window as an application configuration change.
+- **In memory while proxying.** Stated plainly: a credential is decrypted into
+  isolate memory to sign the upstream request. The gateway holds plaintext for
+  the life of that request. What the vault protects is the data at rest and, in
+  `kms` mode, the root key itself.
+
+## When a provider is missing
+
+An app that allows a provider the organization has not configured keeps working
+for every other provider; only that provider's requests fail. The console shows a
+non-blocking banner on the app's pages naming the missing providers and linking
+to the Providers page.

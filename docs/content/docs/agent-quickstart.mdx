@@ -71,7 +71,8 @@ curl --fail-with-body -sS \
   "$GATEWAY_URL/v1/apps/curl-agent/proxy/openai/v1/responses"
 ```
 
-Provider key alias `default` must already exist in the configured Cloudflare AI
-Gateway. Clear the exported keys from shell history or close the shell after
-placing them in a secret manager. Then close public registration for a private
-deployment.
+The organization must already have an OpenAI credential, added under
+[Providers](/docs/providers) or with `POST /v1/admin/providers`; without one the
+proxy answers `502 provider_not_configured`. Clear the exported keys from shell
+history or close the shell after placing them in a secret manager. Then close
+public registration for a private deployment.

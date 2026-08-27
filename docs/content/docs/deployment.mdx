@@ -1,24 +1,65 @@
 ---
 title: Deployment
-description: Deploy safely through Cloudflare's template flow or Wrangler.
+description: Deploy safely through Cloudflare's template flow or Wrangler, and choose a secret vault mode.
 ---
+
+## The one secret you must supply
+
+Provider credentials are added per organization in the console, not at deploy
+time. The deployment itself needs exactly one operator-supplied secret: the key
+that encrypts those credentials at rest.
+
+| Value | Purpose |
+|---|---|
+| `SECRET_VAULT_LOCAL_KEK_V1` | Key encryption key for the self-hosted vault. Generate with `openssl rand -base64 32`. |
+
+`JWT_SECRET` and `BETTER_AUTH_SECRET` are generated for you on first deployment.
+
+<Callout type="warn" title="Back the vault key up">
+  Losing `SECRET_VAULT_LOCAL_KEK_V1` makes every stored provider credential
+  permanently unreadable. There is no recovery path; re-adding the keys in the
+  console is the only fix.
+</Callout>
+
+## Secret vault modes
+
+The vault mode is explicit — nothing is inferred from which secrets happen to be
+present, and a missing or mixed configuration is a hard error rather than a quiet
+fallback.
+
+| `SECRET_VAULT_MODE` | Requires | Use it when |
+|---|---|---|
+| `local` (default) | `SECRET_VAULT_LOCAL_KEK_V1`, optional `SECRET_VAULT_LOCAL_KEK_V<n>` and `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Self-hosting. AES-256-GCM in the Worker under a key you hold. No second service to run. |
+| `kms` | `SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN` | Hardened deployments. Envelope encryption through a [cf-kms](https://github.com/maxceem/cf-kms) worker in a separate security account, so the root key never enters this account and every decrypt is audited and revocable. |
+
+Setting a variable belonging to the *other* mode is also an error: a
+`SECRET_VAULT_LOCAL_KEK_V1` present in `kms` mode is a configuration mistake, not
+something to ignore. A broken vault is visible immediately — `/v1/healthz`
+reports a non-secret `vault` field:
+
+```json
+{ "ok": true, "service": "ai-gateway", "vault": "ok" }
+```
+
+`"vault": "misconfigured"` means every credential-touching request will fail with
+`provider_unavailable`; the structured Worker log names the offending binding.
+
+### Running kms mode
+
+Deploy a cf-kms instance dedicated to this service (`cf-kms-ai-gateway`) in your
+security account, on a custom domain, with its own `KEK_V1` and a `CALLERS` entry
+of `{ "name": "ai-gateway", "requiredContext": { "service": "app-ai-gateway" } }`.
+Then set `SECRET_VAULT_MODE=kms` plus the URL and caller token on this Worker.
+Blobs are self-describing by prefix (`local1.…` versus `cfkms-env1.…`), so
+switching modes is a decrypt-and-re-encrypt migration and a mismatch fails loudly
+rather than silently.
 
 ## Deploy to Cloudflare
 
 The repository's deploy button is the shortest interactive path. Cloudflare forks
 the repository, provisions the Worker and compatible bindings, applies migrations,
-and connects subsequent pushes to Workers Builds.
-
-Before starting, create a Cloudflare AI Gateway and an authenticated gateway token.
-The form asks for:
-
-| Value | Purpose |
-|---|---|
-| `CF_AIG_GATEWAY_ID` | The exact existing Cloudflare AI Gateway ID |
-| `CF_AIG_TOKEN` | Its authenticated gateway token |
-
-Provider API keys do not belong in these Worker secrets. Store them in Cloudflare
-AI Gateway under **Provider Keys**, using alias `default`.
+and connects subsequent pushes to Workers Builds. The form asks only for the
+vault key above.
 
 ## Deploy with Wrangler
 
@@ -27,9 +68,10 @@ From a clean checkout:
 ```sh
 pnpm install
 cp .dev.vars.example .dev.vars
+openssl rand -base64 32   # paste into SECRET_VAULT_LOCAL_KEK_V1
 ```
 
-Fill the two required values without committing the file, then run:
+Then run:
 
 ```sh
 pnpm run secrets:upload
@@ -37,13 +79,12 @@ pnpm run deploy
 ```
 
 The deploy command preserves existing secrets, creates missing JWT and Better
-Auth signing secrets, provisions D1 when necessary, applies migrations by binding name, and
-deploys the console and API.
+Auth signing secrets, provisions D1 when necessary, applies migrations by binding
+name, and deploys the console and API.
 
-The public `wrangler.jsonc` intentionally has no custom production domain,
-Cloudflare account-specific D1 database ID, or AI Gateway ID. Add a custom route
-and the identifiers for resources you own in your private deployment
-configuration. Keep `CF_AIG_GATEWAY_ID` and `CF_AIG_TOKEN` out of source control.
+The public `wrangler.jsonc` intentionally has no custom production domain or
+Cloudflare account-specific D1 database ID. Add a custom route and the
+identifiers for resources you own in your private deployment configuration.
 
 ## Verify
 
@@ -53,9 +94,15 @@ Call the deployed health endpoint and then sign in to the console:
 curl https://YOUR-WORKER.workers.dev/v1/healthz
 ```
 
+Confirm `"vault": "ok"` before adding provider credentials.
+
 Create the initial operator with `/v1/auth/sign-up/email`, then set
 `ALLOW_PUBLIC_REGISTRATION=false` for a private deployment. Admin automation uses
 organization-scoped `agw_mgmt_` keys created under `/v1/admin/keys`.
+
+Finally, add provider credentials under **Providers** in the console — see
+[Providers](/docs/providers). Until an organization has a credential for a
+provider, its requests answer `502 provider_not_configured`.
 
 <Callout type="warn" title="Migration state is separate from Worker versions">
   A Worker rollback does not roll back D1. Review new migrations before deploying

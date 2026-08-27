@@ -14,14 +14,23 @@ pnpm run deploy:dry-run
 pnpm run startup:check
 ```
 
-## Rotate the administrator token
+## Rotate a provider credential
 
-```sh
-pnpm run admin-token:rotate
-```
+Rotate in place from the console's **Providers** page, or with
+`PUT /v1/admin/providers/{id}`. The row keeps its id, encryption context, and
+custom pricing; the new credential is re-probed and re-encrypted. Warm isolates
+pick it up within about a minute, which is also the tail on a deletion.
 
-Wrangler prompts without putting the new secret value in command history. Rotation
-invalidates the previous administrator token.
+## Rotate the vault key
+
+In `local` mode, add `SECRET_VAULT_LOCAL_KEK_V2` as a Worker secret and set
+`SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=2`. Older versions stay accepted for
+decryption, so existing blobs keep working and new writes use the new key; there
+is no bulk re-encryption script yet, so keep the old version until every
+credential has been rotated through the console. In `kms` mode, key rotation is a
+cf-kms operation and does not touch this Worker.
+
+Use Wrangler secret commands or stdin so no secret value enters shell history.
 
 ## Database migrations
 
@@ -34,3 +43,11 @@ schema and generated migration artifacts. Apply remote migrations through the
 The Worker enables Cloudflare logs and sampled traces. Proxy responses also return
 `Server-Timing` measurements for authentication, limit evaluation, and provider
 time-to-first-byte.
+
+## Health
+
+`GET /v1/healthz` reports a non-secret `vault` field. `"misconfigured"` means the
+`SECRET_VAULT_*` configuration is incomplete, contradictory, or invalid, and every
+credential-touching request will answer `provider_unavailable`. The structured
+`secret_vault_misconfigured` log line names the offending binding without
+printing its value. Monitor this field after any secret change.
