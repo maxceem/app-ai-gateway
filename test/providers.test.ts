@@ -262,6 +262,42 @@ describe("provider resolution on the hot path", () => {
     clearProviderCaches();
   });
 
+  it("reports provider_unavailable when the vault itself is misconfigured", async () => {
+    const appId = "provider-broken-vault";
+    await seedApp(appId, { proxy: UNRESTRICTED });
+    const token = await gatewayToken(appId);
+    const fetchSpy = captureUpstream();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const executionCtx = createExecutionContext();
+
+    // Flipping the mode without clearing the other mode's bindings is caught as
+    // mixed configuration; a deployment that cannot open its vault must say so
+    // rather than proxy unauthenticated.
+    const response = await worker.fetch(
+      new Request(`https://example.test/v1/apps/${appId}/proxy/openai/v1/responses`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      { ...env, SECRET_VAULT_MODE: "kms" },
+      executionCtx,
+    );
+    pending.push(executionCtx);
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "provider_unavailable" },
+    });
+    expect(fetchSpy).toHaveLength(0);
+    const logged = errorSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("secret_vault_misconfigured");
+    expect(logged).toContain("SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION is not allowed in kms mode");
+  });
+
   it("keeps a revoked credential in rotation only until the cache TTL expires", async () => {
     const appId = "provider-revocation";
     await seedApp(appId, { proxy: UNRESTRICTED, organizationId: OTHER_ORGANIZATION_ID });

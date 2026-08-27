@@ -159,7 +159,11 @@ export const appUsageEvent = sqliteTable(
     userId: text("user_id").notNull(),
     apiKeyId: text("api_key_id"),
     providerType: text("provider_type").notNull(),
-    /** The provider row that served the traffic; null once that row is deleted. */
+    /**
+     * The provider row that served the traffic. Deliberately not a foreign key:
+     * deleting a provider is a hard delete, and usage history must survive it
+     * with its attribution intact. Null for traffic blocked before resolution.
+     */
     providerId: text("provider_id"),
     model: text("model").notNull(),
     route: text("route").notNull(),
