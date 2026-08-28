@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { applyD1Migrations } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 describe("initial database migration", () => {
@@ -127,5 +128,74 @@ describe("initial database migration", () => {
     // A revoked row does not occupy the slot.
     await insert("provider-3", "revoked");
     await expect(insert("provider-4", "sideways")).rejects.toThrow(/CHECK constraint failed/u);
+  });
+});
+
+/**
+ * The suite-wide fixture applies every migration to an empty database, which is
+ * the one situation in which a table rebuild cannot trip a foreign key. These
+ * run against a second, empty database so a migration meets the data a real
+ * deployment has.
+ */
+describe("migration 0011 against a populated database", () => {
+  const upTo = (tag: string) =>
+    env.TEST_MIGRATIONS.slice(0, env.TEST_MIGRATIONS.findIndex((entry) => entry.name.startsWith(tag)) + 1);
+
+  it("rebuilds the app table while child rows still reference it", async () => {
+    const db = env.MIGRATION_DB;
+    await applyD1Migrations(db, upTo("0010_"));
+
+    const now = new Date();
+    await db.batch([
+      db.prepare(
+        `INSERT INTO console_user(id, name, email, email_verified, created_at, updated_at)
+         VALUES ('rebuild-owner', 'Owner', 'owner@rebuild.test', 1, ?, ?)`,
+      ).bind(now.getTime(), now.getTime()),
+      db.prepare(
+        `INSERT INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+         VALUES ('rebuild-org', 'Rebuild', 'rebuild-owner', ?, ?)`,
+      ).bind(now.toISOString(), now.toISOString()),
+      db.prepare(
+        `INSERT INTO app(id, organization_id, name, config_json, status)
+         VALUES ('rebuild-app', 'rebuild-org', 'Rebuild app', '{}', 'active')`,
+      ),
+      // Each of the three tables that REFERENCE app. Without a deferred check,
+      // DROP TABLE app in the rebuild fails on these.
+      db.prepare(
+        `INSERT INTO app_api_key(id, app_id, name, key_hash, key_prefix)
+         VALUES ('rebuild-key', 'rebuild-app', 'Key', 'hash', 'agw_prefix')`,
+      ),
+      db.prepare("INSERT INTO app_user(app_id, id, status) VALUES ('rebuild-app', 'user-1', 'active')"),
+      db.prepare(
+        `INSERT INTO app_auth_challenge(challenge, app_id, expires_at)
+         VALUES ('rebuild-challenge', 'rebuild-app', ?)`,
+      ).bind(now.toISOString()),
+    ]);
+
+    await expect(applyD1Migrations(db, upTo("0011_"))).resolves.toBeUndefined();
+
+    const appColumns = await db.prepare("PRAGMA table_info(app)").all<{
+      name: string;
+      notnull: number;
+    }>();
+    expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
+    for (const [table, column, value] of [
+      ["app", "id", "rebuild-app"],
+      ["app_api_key", "id", "rebuild-key"],
+      ["app_user", "app_id", "rebuild-app"],
+      ["app_auth_challenge", "challenge", "rebuild-challenge"],
+    ] as const) {
+      const row = await db.prepare(
+        `SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`,
+      ).bind(value).first<{ count: number }>();
+      expect({ table, count: row?.count }).toEqual({ table, count: 1 });
+    }
+
+    // The rebuilt table is still the target of the children's foreign keys.
+    await expect(
+      db.prepare(
+        "INSERT INTO app_user(app_id, id, status) VALUES ('no-such-app', 'user-2', 'active')",
+      ).run(),
+    ).rejects.toThrow(/FOREIGN KEY constraint failed/u);
   });
 });

@@ -9,6 +9,9 @@ export default defineConfig({
       return {
         wrangler: { configPath: "./wrangler.jsonc", environment: "local" },
         miniflare: {
+          // A second, empty database so a migration can be replayed step by step
+          // against realistic data. Test-only: the Worker never binds it.
+          d1Databases: { MIGRATION_DB: "migration-test-db" },
           bindings: {
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-thirty-two-bytes",

@@ -25,7 +25,12 @@ CREATE TABLE `provider` (
 CREATE INDEX `idx_providers_organization` ON `provider` (`organization_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `providers_active_type_unique` ON `provider` (`organization_id`,`type`) WHERE "provider"."status" = 'active';--> statement-breakpoint
 ALTER TABLE `app_usage_event` ADD `provider_id` text;--> statement-breakpoint
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
+-- D1 wraps a migration in a transaction, where PRAGMA foreign_keys is a no-op.
+-- Deferring instead is what actually lets the rebuild drop `app` while
+-- app_api_key, app_user and app_auth_challenge still reference it; the
+-- constraints are rechecked at commit, by which point the rename has restored
+-- every referenced row.
+PRAGMA defer_foreign_keys = true;--> statement-breakpoint
 CREATE TABLE `__new_app` (
 	`id` text PRIMARY KEY NOT NULL,
 	`organization_id` text NOT NULL,
@@ -41,5 +46,5 @@ CREATE TABLE `__new_app` (
 INSERT INTO `__new_app`("id", "organization_id", "name", "config_json", "status", "created_at", "updated_at") SELECT "id", "organization_id", "name", "config_json", "status", "created_at", "updated_at" FROM `app`;--> statement-breakpoint
 DROP TABLE `app`;--> statement-breakpoint
 ALTER TABLE `__new_app` RENAME TO `app`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
+PRAGMA defer_foreign_keys = false;--> statement-breakpoint
 CREATE INDEX `idx_apps_organization_id` ON `app` (`organization_id`);
