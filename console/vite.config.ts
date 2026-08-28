@@ -15,11 +15,12 @@ export default defineConfig({
     proxy: {
       "/v1": {
         target: "http://localhost:8787",
-        changeOrigin: false,
         // Better Auth rejects state-changing requests whose Origin is not
-        // trusted, and the Worker trusts only its own origin. The browser sends
-        // the dev server's origin, so rewrite it to the proxy target or every
-        // sign-in POST fails in development.
+        // trusted, and the Worker trusts only its own origin — which it derives
+        // from the request URL, i.e. the Host header. Host and Origin must
+        // therefore both point at the proxy target, or every sign-in POST
+        // fails in development.
+        changeOrigin: true,
         headers: { origin: "http://localhost:8787" },
       },
     },
