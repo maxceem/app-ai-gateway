@@ -48,6 +48,29 @@ import {
 } from "@/lib/queries";
 import type { ProviderCredential, ProviderPricing } from "@/lib/types";
 
+/**
+ * Browsers ignore `autocomplete="off"` on anything that looks like a sign-in
+ * form: a text input next to a password input is heuristically username +
+ * password, so the operator's own saved site credentials get filled into a
+ * provider name and its API key. `new-password` is the value Chrome and Safari
+ * actually honour, and the `data-*` opt-outs cover 1Password and LastPass.
+ */
+const NO_AUTOFILL = {
+  "data-1p-ignore": "true",
+  "data-lpignore": "true",
+};
+
+/** Text fields that sit beside a credential and must not be read as a username. */
+const PLAIN_FIELD = { autoComplete: "off", ...NO_AUTOFILL };
+
+/** Every field that accepts a provider credential. */
+const SECRET_FIELD = {
+  type: "password",
+  autoComplete: "new-password",
+  spellCheck: false,
+  ...NO_AUTOFILL,
+} as const;
+
 /** A repeatable pricing row while it is still being typed. */
 interface PricingDraft {
   model: string;
@@ -300,6 +323,7 @@ function AddProviderForm({ readOnly }: { readOnly: boolean }) {
   return (
     <form
       className="grid gap-4 sm:grid-cols-3"
+      autoComplete="off"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -322,6 +346,7 @@ function AddProviderForm({ readOnly }: { readOnly: boolean }) {
       <Field label="Name" htmlFor="provider-name" hint="How this credential appears in the list.">
         <Input
           id="provider-name"
+          {...PLAIN_FIELD}
           value={name}
           placeholder="Prod OpenAI"
           disabled={readOnly}
@@ -335,9 +360,7 @@ function AddProviderForm({ readOnly }: { readOnly: boolean }) {
       >
         <Input
           id="provider-secret"
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
+          {...SECRET_FIELD}
           value={secret}
           placeholder="sk-…"
           disabled={readOnly}
@@ -398,6 +421,7 @@ function ConnectCfAigForm({ readOnly }: { readOnly: boolean }) {
   return (
     <form
       className="space-y-4"
+      autoComplete="off"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -421,8 +445,8 @@ function ConnectCfAigForm({ readOnly }: { readOnly: boolean }) {
         <Field label="Account ID" htmlFor="cf-aig-account">
           <Input
             id="cf-aig-account"
+            {...PLAIN_FIELD}
             value={accountId}
-            autoComplete="off"
             disabled={readOnly}
             onChange={(event) => setAccountId(event.target.value)}
           />
@@ -430,8 +454,8 @@ function ConnectCfAigForm({ readOnly }: { readOnly: boolean }) {
         <Field label="Gateway ID" htmlFor="cf-aig-gateway">
           <Input
             id="cf-aig-gateway"
+            {...PLAIN_FIELD}
             value={gatewayId}
-            autoComplete="off"
             disabled={readOnly}
             onChange={(event) => setGatewayId(event.target.value)}
           />
@@ -439,9 +463,7 @@ function ConnectCfAigForm({ readOnly }: { readOnly: boolean }) {
         <Field label="Gateway token" htmlFor="cf-aig-token">
           <Input
             id="cf-aig-token"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
+            {...SECRET_FIELD}
             value={token}
             disabled={readOnly}
             onChange={(event) => setToken(event.target.value)}
@@ -450,6 +472,7 @@ function ConnectCfAigForm({ readOnly }: { readOnly: boolean }) {
         <Field label="Name" htmlFor="cf-aig-name">
           <Input
             id="cf-aig-name"
+            {...PLAIN_FIELD}
             value={name}
             disabled={readOnly}
             onChange={(event) => setName(event.target.value)}
@@ -524,9 +547,7 @@ function RotateDialog({
         <Field label="New API key" htmlFor="rotate-secret">
           <Input
             id="rotate-secret"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
+            {...SECRET_FIELD}
             value={secret}
             onChange={(event) => setSecret(event.target.value)}
           />

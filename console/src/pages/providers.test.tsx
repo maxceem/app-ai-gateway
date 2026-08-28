@@ -137,8 +137,41 @@ describe("ProvidersPage", () => {
     // The plaintext exists nowhere the operator or the cache can read it back.
     await waitFor(() => expect((secretField as HTMLInputElement).value).toBe(""));
     expect(secretField.getAttribute("type")).toBe("password");
-    expect(secretField.getAttribute("autocomplete")).toBe("off");
+    // autocomplete="off" is ignored on login-shaped forms, which is how the
+    // operator's own saved password ended up in a provider key field.
+    expect(secretField.getAttribute("autocomplete")).toBe("new-password");
     expect(document.body.textContent).not.toContain(SECRET);
+  });
+
+  it("opts every credential field out of browser and manager autofill", async () => {
+    stubProviders();
+    renderAuthenticated(<ProvidersPage />);
+
+    const secretFields = [await screen.findByLabelText("API key")];
+    const plainFields = [screen.getByLabelText("Name")];
+    await userEvent.click(screen.getByRole("tab", { name: /connect cloudflare/i }));
+    secretFields.push(screen.getByLabelText("Gateway token"));
+    plainFields.push(
+      screen.getByLabelText("Account ID"),
+      screen.getByLabelText("Gateway ID"),
+      screen.getByLabelText("Name"),
+    );
+    await userEvent.click(screen.getByRole("tab", { name: /add a provider key/i }));
+    await userEvent.click((await screen.findAllByRole("button", { name: "Rotate" }))[0]!);
+    secretFields.push(await screen.findByLabelText("New API key"));
+
+    for (const field of secretFields) {
+      expect(field.getAttribute("autocomplete")).toBe("new-password");
+    }
+    // The text inputs matter too: a field beside a password is what makes the
+    // browser treat the whole form as a sign-in and offer a saved username.
+    for (const field of plainFields) {
+      expect(field.getAttribute("autocomplete")).toBe("off");
+    }
+    for (const field of [...secretFields, ...plainFields]) {
+      expect(field.getAttribute("data-1p-ignore")).toBe("true");
+      expect(field.getAttribute("data-lpignore")).toBe("true");
+    }
   });
 
   it("connects a Cloudflare AI Gateway for the checked providers", async () => {
