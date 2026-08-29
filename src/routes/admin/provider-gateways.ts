@@ -1,0 +1,229 @@
+import { and, eq, sql } from "drizzle-orm";
+import { Hono } from "hono";
+import {
+  ProviderGatewayCreateRequestSchema,
+  ProviderGatewayRotateRequestSchema,
+  ProviderGatewayUpdateRequestSchema,
+} from "../../contracts/schemas";
+import { GatewayError } from "../../core/errors";
+import { probeCfAigPreset } from "../../core/provider-probe";
+import {
+  gatewayEncryptionContext,
+  invalidateOrganizationProviders,
+} from "../../core/provider-store";
+import { database } from "../../db";
+import { provider, providerGateway } from "../../db/schema";
+import type { AdminVariables } from "../../middleware/admin";
+import { secretVault } from "../../vault";
+import {
+  databaseErrorMatches,
+  providerRequestBody,
+  providerSchemaBody,
+  secretHint,
+} from "./provider-shared";
+
+type ProviderGatewayEnv = { Bindings: Env; Variables: AdminVariables };
+type ProviderGatewayRow = typeof providerGateway.$inferSelect;
+
+/**
+ * `providerCount` is what the gateway currently serves; `referencedCount` also
+ * counts revoked rows, which are retained for audit and keep the foreign key
+ * alive. Deletion is governed by the second number, so the console must disable
+ * delete on `referencedCount`, not on `providerCount`.
+ */
+interface GatewayCounts {
+  active: number;
+  total: number;
+}
+
+function serialize(row: ProviderGatewayRow, counts: GatewayCounts): Record<string, unknown> {
+  return {
+    id: row.id,
+    type: row.type,
+    name: row.name,
+    config: row.config,
+    secretHint: row.secretHint,
+    providerCount: counts.active,
+    referencedCount: counts.total,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    createdBy: row.createdBy,
+  };
+}
+
+const NO_REFERENCES: GatewayCounts = { active: 0, total: 0 };
+
+export const providerGatewayRoutes = new Hono<ProviderGatewayEnv>();
+
+providerGatewayRoutes.get("/provider-gateways", async (c) => {
+  const organizationId = c.get("admin").organizationId;
+  const db = database(c.env.DB);
+  const [gateways, counts] = await Promise.all([
+    db.select().from(providerGateway)
+      .where(eq(providerGateway.organizationId, organizationId)),
+    db.select({
+      providerGatewayId: provider.providerGatewayId,
+      active: sql<number>`SUM(CASE WHEN ${provider.status} = 'active' THEN 1 ELSE 0 END)`,
+      total: sql<number>`COUNT(*)`,
+    }).from(provider).where(
+      eq(provider.organizationId, organizationId),
+    ).groupBy(provider.providerGatewayId),
+  ]);
+  const countById = new Map(counts.flatMap((row) =>
+    row.providerGatewayId === null
+      ? []
+      : [[row.providerGatewayId, { active: row.active, total: row.total }] as const]
+  ));
+  return c.json({
+    gateways: gateways.map((row) => serialize(row, countById.get(row.id) ?? NO_REFERENCES)),
+  });
+});
+
+providerGatewayRoutes.post("/provider-gateways", async (c) => {
+  const admin = c.get("admin");
+  const body = providerSchemaBody(
+    ProviderGatewayCreateRequestSchema,
+    await providerRequestBody(c),
+  );
+  const probe = await probeCfAigPreset(body);
+  const id = crypto.randomUUID();
+  const secretBlob = await secretVault(c.env).encryptSecret(
+    body.token,
+    gatewayEncryptionContext(admin.organizationId, id),
+  );
+  const [row] = await database(c.env.DB).insert(providerGateway).values({
+    id,
+    organizationId: admin.organizationId,
+    type: body.type,
+    name: body.name,
+    config: { accountId: body.accountId, gatewayId: body.gatewayId },
+    secretBlob,
+    secretHint: secretHint(body.token),
+    createdBy: admin.userId,
+  }).returning();
+  invalidateOrganizationProviders(admin.organizationId);
+  return c.json({ gateway: serialize(row!, NO_REFERENCES), validated: probe.validated }, 201);
+});
+
+providerGatewayRoutes.patch("/provider-gateways/:id", async (c) => {
+  const admin = c.get("admin");
+  const id = c.req.param("id");
+  const body = providerSchemaBody(
+    ProviderGatewayUpdateRequestSchema,
+    await providerRequestBody(c),
+  );
+  const [row] = await database(c.env.DB).update(providerGateway).set({
+    name: body.name,
+    updatedAt: new Date().toISOString(),
+  }).where(and(
+    eq(providerGateway.id, id),
+    eq(providerGateway.organizationId, admin.organizationId),
+    eq(providerGateway.status, "active"),
+  )).returning();
+  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  invalidateOrganizationProviders(admin.organizationId);
+  const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
+  return c.json({ gateway: serialize(row, counts) });
+});
+
+providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) => {
+  const admin = c.get("admin");
+  const id = c.req.param("id");
+  const body = providerSchemaBody(
+    ProviderGatewayRotateRequestSchema,
+    await providerRequestBody(c),
+  );
+  const existing = await database(c.env.DB).query.providerGateway.findFirst({
+    where: and(
+      eq(providerGateway.id, id),
+      eq(providerGateway.organizationId, admin.organizationId),
+      eq(providerGateway.status, "active"),
+    ),
+  });
+  if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  const probe = await probeCfAigPreset({
+    ...existing.config,
+    token: body.token,
+  });
+  const secretBlob = await secretVault(c.env).encryptSecret(
+    body.token,
+    gatewayEncryptionContext(admin.organizationId, id),
+  );
+  const [row] = await database(c.env.DB).update(providerGateway).set({
+    secretBlob,
+    secretHint: secretHint(body.token),
+    updatedAt: new Date().toISOString(),
+  }).where(and(
+    eq(providerGateway.id, id),
+    eq(providerGateway.organizationId, admin.organizationId),
+  )).returning();
+  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  invalidateOrganizationProviders(admin.organizationId);
+  const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
+  return c.json({
+    gateway: serialize(row, counts),
+    validated: probe.validated,
+  });
+});
+
+providerGatewayRoutes.delete("/provider-gateways/:id", async (c) => {
+  const admin = c.get("admin");
+  const id = c.req.param("id");
+  const existing = await database(c.env.DB).query.providerGateway.findFirst({
+    columns: { id: true },
+    where: and(
+      eq(providerGateway.id, id),
+      eq(providerGateway.organizationId, admin.organizationId),
+    ),
+  });
+  if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  // Revoked rows are kept for audit and still hold the foreign key, so they
+  // block deletion exactly like active ones do.
+  const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
+  if (counts.total > 0) throw gatewayInUse(counts);
+  try {
+    await database(c.env.DB).delete(providerGateway).where(and(
+      eq(providerGateway.id, id),
+      eq(providerGateway.organizationId, admin.organizationId),
+    ));
+  } catch (error) {
+    if (databaseErrorMatches(error, /FOREIGN KEY constraint failed/u)) throw gatewayInUse();
+    throw error;
+  }
+  invalidateOrganizationProviders(admin.organizationId);
+  return c.json({ deleted: true, provider_gateway_id: id });
+});
+
+async function gatewayCounts(
+  d1: D1Database,
+  organizationId: string,
+  providerGatewayId: string,
+): Promise<GatewayCounts> {
+  const row = await database(d1).select({
+    active: sql<number>`SUM(CASE WHEN ${provider.status} = 'active' THEN 1 ELSE 0 END)`,
+    total: sql<number>`COUNT(*)`,
+  })
+    .from(provider)
+    .where(and(
+      eq(provider.organizationId, organizationId),
+      eq(provider.providerGatewayId, providerGatewayId),
+    ))
+    .get();
+  return { active: row?.active ?? 0, total: row?.total ?? 0 };
+}
+
+/**
+ * The foreign key counts every referencing row, not just the ones still
+ * serving traffic, so a gateway whose providers were all revoked is still
+ * undeletable. Saying "active" there would be a lie the operator cannot act on.
+ */
+function gatewayInUse(counts: GatewayCounts = { active: 1, total: 1 }): GatewayError {
+  const revoked = counts.total - counts.active;
+  const message = counts.active > 0
+    ? revoked > 0
+      ? "Delete the active and revoked provider instances routed through this gateway first"
+      : "Delete every active provider instance routed through this gateway first"
+    : "Revoked provider instances still reference this gateway; delete them to release it";
+  return new GatewayError(409, "gateway_in_use", message);
+}

@@ -49,6 +49,14 @@
       "description": "Organization-scoped agw_mgmt_ credentials."
     },
     {
+      "name": "Admin providers",
+      "description": "Named provider instances and their credentials."
+    },
+    {
+      "name": "Admin provider gateways",
+      "description": "Reusable Cloudflare AI Gateway connections shared by provider instances."
+    },
+    {
       "name": "Admin organizations",
       "description": "Operator identity, organization switching, and membership."
     },
@@ -436,272 +444,58 @@
                   },
                   "selected": {
                     "type": "object",
-                    "properties": {
-                      "openai": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "allowed_paths": {
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string"
                                   },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
+                                  "fixed_model": {
+                                    "type": "string"
+                                  },
+                                  "clamp": {
+                                    "type": "string",
+                                    "enum": [
+                                      "responses",
+                                      "chat_completions",
+                                      "gemini_native",
+                                      "anthropic",
+                                      "none"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "path"
+                                ]
+                              }
+                            ]
                           }
                         },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
+                        "allowed_models": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "max_output_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        }
                       },
-                      "anthropic": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      },
-                      "xai": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      },
-                      "gemini": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      },
-                      "perplexity": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      }
+                      "required": [
+                        "allowed_paths",
+                        "allowed_models"
+                      ]
                     }
                   }
                 },
@@ -831,10 +625,7 @@
               "properties": {
                 "provider": {
                   "type": "string",
-                  "enum": [
-                    "openai",
-                    "xai"
-                  ]
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
                 },
                 "model": {
                   "type": "string",
@@ -862,10 +653,7 @@
                     "properties": {
                       "provider": {
                         "type": "string",
-                        "enum": [
-                          "openai",
-                          "xai"
-                        ]
+                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
                       },
                       "model": {
                         "type": "string",
@@ -892,6 +680,299 @@
           "routing",
           "limits"
         ]
+      },
+      "Provider": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "description": "Organization-unique URL segment used under /proxy/{slug}/."
+          },
+          "name": {
+            "type": "string"
+          },
+          "secretHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last characters of a direct provider key; null when a shared provider gateway owns the token."
+          },
+          "providerGatewayId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ProviderPricing"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "slug",
+          "name",
+          "secretHint",
+          "providerGatewayId",
+          "pricing",
+          "status",
+          "createdAt",
+          "createdBy"
+        ]
+      },
+      "ProviderPricing": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "output": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "input",
+            "output"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ProviderCreateRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "providerGatewayId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ProviderPricing"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ProviderPricing"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderGateway": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "cf_aig"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "config": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string"
+              },
+              "gatewayId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "accountId",
+              "gatewayId"
+            ]
+          },
+          "secretHint": {
+            "type": "string",
+            "description": "The last characters of the gateway token. The token itself is never returned."
+          },
+          "providerCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active provider instances routed through this gateway."
+          },
+          "referencedCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "name",
+          "config",
+          "secretHint",
+          "providerCount",
+          "referencedCount",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "createdBy"
+        ]
+      },
+      "ProviderGatewayCreateRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "cf_aig"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "accountId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "gatewayId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "accountId",
+          "gatewayId",
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderGatewayUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderGatewayRotateRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
       },
       "OrganizationSelectRequest": {
         "type": "object",
@@ -939,6 +1020,12 @@
           },
           "provider": {
             "type": "string"
+          },
+          "provider_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "model": {
             "type": "string"
@@ -1009,6 +1096,7 @@
           "user_id",
           "api_key_id",
           "provider",
+          "provider_slug",
           "model",
           "route",
           "endpoint_slug",
@@ -1043,7 +1131,7 @@
           },
           "month": {
             "type": "string",
-            "pattern": "^\\d{4}-\\d{2}$/u"
+            "pattern": "^\\d{4}-\\d{2}$"
           },
           "apply": {
             "type": "boolean",
@@ -1087,11 +1175,19 @@
                       "enum": [
                         "ai-gateway"
                       ]
+                    },
+                    "vault": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "misconfigured"
+                      ]
                     }
                   },
                   "required": [
                     "ok",
-                    "service"
+                    "service",
+                    "vault"
                   ]
                 }
               }
@@ -1944,7 +2040,7 @@
         ],
         "operationId": "proxyProviderRequest",
         "summary": "Proxy a provider-native model request",
-        "description": "The body and successful response retain the selected provider's native format. The gateway validates the configured path and model, injects provider credentials through Cloudflare AI Gateway, applies limits, and streams the upstream response without buffering.",
+        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
         "security": [
           {
             "GatewayBearer": []
@@ -1963,13 +2059,8 @@
           {
             "schema": {
               "type": "string",
-              "enum": [
-                "openai",
-                "anthropic",
-                "xai",
-                "gemini",
-                "perplexity"
-              ]
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "example": "openai-dev"
             },
             "required": true,
             "name": "provider",
@@ -1978,9 +2069,11 @@
           {
             "schema": {
               "type": "string",
+              "description": "The provider's native API path verbatim, without a leading slash.",
               "example": "v1/responses"
             },
             "required": true,
+            "description": "The provider's native API path verbatim, without a leading slash.",
             "name": "path",
             "in": "path"
           },
@@ -2125,7 +2218,7 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^[a-z0-9-]{1,64}$/u",
+              "pattern": "^[a-z0-9-]{1,64}$",
               "example": "chat"
             },
             "required": true,
@@ -3767,6 +3860,863 @@
                   },
                   "required": [
                     "key"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/providers": {
+      "get": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "listProviders",
+        "summary": "List the organization's provider credentials",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider metadata without credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Provider"
+                      }
+                    }
+                  },
+                  "required": [
+                    "providers"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "createProvider",
+        "summary": "Store a provider credential for the organization",
+        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among active instances.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stored provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "$ref": "#/components/schemas/Provider"
+                    },
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The requested active provider slug is already in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/providers/{id}": {
+      "put": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "updateProvider",
+        "summary": "Rotate a credential, rename it, or replace its custom pricing",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "$ref": "#/components/schemas/Provider"
+                    },
+                    "validated": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "null when the request did not rotate the credential."
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "deleteProvider",
+        "summary": "Delete a provider credential and its custom pricing",
+        "description": "A hard delete. Applications using this provider start failing with provider_not_configured within a minute.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "provider_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deleted",
+                    "provider_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways": {
+      "get": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "listProviderGateways",
+        "summary": "List reusable provider gateways",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider gateway metadata without tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateways": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ProviderGateway"
+                      }
+                    }
+                  },
+                  "required": [
+                    "gateways"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "createProviderGateway",
+        "summary": "Create a reusable Cloudflare AI Gateway connection",
+        "description": "Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created provider gateway.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateway": {
+                      "$ref": "#/components/schemas/ProviderGateway"
+                    },
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                    }
+                  },
+                  "required": [
+                    "gateway",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways/{id}": {
+      "patch": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "updateProviderGateway",
+        "summary": "Rename a provider gateway",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated provider gateway.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateway": {
+                      "$ref": "#/components/schemas/ProviderGateway"
+                    }
+                  },
+                  "required": [
+                    "gateway"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "deleteProviderGateway",
+        "summary": "Delete an unused provider gateway",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider gateway deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "provider_gateway_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deleted",
+                    "provider_gateway_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provider instances still reference this gateway. Revoked rows are retained for audit and block deletion too; see referencedCount.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways/{id}/rotate": {
+      "post": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "rotateProviderGateway",
+        "summary": "Rotate a shared provider gateway token",
+        "description": "Re-probes and re-encrypts the token once for every provider instance referencing this gateway.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayRotateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotated provider gateway.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateway": {
+                      "$ref": "#/components/schemas/ProviderGateway"
+                    },
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                    }
+                  },
+                  "required": [
+                    "gateway",
+                    "validated"
                   ]
                 }
               }

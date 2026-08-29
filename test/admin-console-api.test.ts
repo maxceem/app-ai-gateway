@@ -1,9 +1,11 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { clearProviderCaches } from "../src/core/provider-store";
 import {
   appleConfig,
   defaultProxyConfig,
   seedApp,
+  seedProvider,
   serverConfig,
 } from "./helpers";
 
@@ -21,6 +23,7 @@ async function recordUsage(
   overrides: Partial<{
     user: string;
     provider: string;
+    providerSlug: string;
     model: string;
     cost: number;
     status: string;
@@ -31,6 +34,7 @@ async function recordUsage(
   const {
     user = "user-1",
     provider = "openai",
+    providerSlug = provider,
     model = "gpt-5.6-terra",
     cost = 0.02,
     status = "ok",
@@ -39,12 +43,12 @@ async function recordUsage(
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
-       app_id, user_id, provider, model, route, input_tokens,
+       app_id, user_id, provider_type, provider_slug, model, route, input_tokens,
        cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at,
        api_key_id
-     ) VALUES (?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
   )
-    .bind(appId, user, provider, model, `${provider}/v1/responses`, cost, status, createdAt, apiKeyId)
+    .bind(appId, user, provider, providerSlug, model, `${providerSlug}/v1/responses`, cost, status, createdAt, apiKeyId)
     .run();
 }
 
@@ -102,7 +106,82 @@ describe("admin console API", () => {
     });
     expect(invalid.status).toBe(400);
 
+    const unknownProvider = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/validate-only/validate`,
+      {
+        method: "POST",
+        headers: JSON_AUTH,
+        body: JSON.stringify({
+          name: "Validate only",
+          config: appleConfig(
+            { jwks_url: "https://issuer.test/jwks" },
+            {
+              proxy: {
+                "missing-instance": {
+                  allowed_paths: ["v1/responses"],
+                  allowed_models: ["gpt-5.6-sol"],
+                },
+              },
+            },
+          ),
+        }),
+      },
+    );
+    expect(unknownProvider.status).toBe(400);
+    await expect(unknownProvider.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "Unknown provider instance missing-instance" },
+    });
+
     expect((await get("/v1/admin/apps/validate-only")).status).toBe(404);
+  });
+
+  // Deleting a provider must not brick every later edit of an app that still
+  // names its slug; only newly introduced slugs have to exist.
+  it("keeps editing an app whose stored provider instance was deleted", async () => {
+    const appId = "grandfathered-slug";
+    await seedProvider({ type: "openai", id: "grandfathered-openai-dev", slug: "openai-dev" });
+    clearProviderCaches();
+    const config = (extra: Record<string, unknown> = {}) => serverConfig({
+      proxy: {
+        "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+        ...extra,
+      },
+    });
+    const put = (name: string, body: Record<string, unknown>) => exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/${appId}`,
+      { method: "PUT", headers: JSON_AUTH, body: JSON.stringify({ name, config: body }) },
+    );
+
+    expect((await put("Grandfathered", config())).status).toBe(200);
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'grandfathered-openai-dev'").run();
+    clearProviderCaches();
+
+    // An unrelated edit still saves, and validate agrees with the write.
+    const renamed = await put("Grandfathered renamed", config());
+    expect(renamed.status).toBe(200);
+    const validated = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}/validate`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Grandfathered renamed", config: config() }),
+    });
+    expect(validated.status).toBe(200);
+
+    // A slug the stored configuration never named is still refused.
+    const introduced = await put("Grandfathered renamed", config({
+      "openai-staging": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+    }));
+    expect(introduced.status).toBe(400);
+    await expect(introduced.json()).resolves.toMatchObject({
+      error: { message: "Unknown provider instance openai-staging" },
+    });
+
+    // Creating a brand-new app on a dangling slug stays strict.
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "grandfathered-new", name: "New", config: config() }),
+    });
+    expect(created.status).toBe(400);
   });
 
   it("creates apps without overwriting id collisions and returns a server key once", async () => {
@@ -237,7 +316,12 @@ describe("admin console API", () => {
       apiKeyId: "key_usage-shapes",
     });
     await recordUsage("usage-shapes", { provider: "anthropic", model: "claude-sonnet-5", createdAt: `${today} 02:00:00` });
-    await recordUsage("usage-shapes", { provider: "openai", status: "provider_error", createdAt: `${today} 03:00:00` });
+    await recordUsage("usage-shapes", {
+      provider: "openai",
+      providerSlug: "openai-dev",
+      status: "provider_error",
+      createdAt: `${today} 03:00:00`,
+    });
 
     const series = await get(`/v1/admin/apps/usage-shapes/usage/timeseries?from=${today}&to=${today}`);
     expect(series.status).toBe(200);
@@ -247,6 +331,12 @@ describe("admin console API", () => {
     const byProvider = await get(`/v1/admin/apps/usage-shapes/usage/breakdown?by=provider&from=${today}&to=${today}`);
     const openai = byProvider.body.rows.find((row: any) => row.key === "openai");
     expect(openai).toMatchObject({ requests: 2, errors: 1 });
+
+    const bySlug = await get(`/v1/admin/apps/usage-shapes/usage/breakdown?by=provider_slug&from=${today}&to=${today}`);
+    expect(bySlug.body.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "openai", requests: 1 }),
+      expect.objectContaining({ key: "openai-dev", requests: 1, errors: 1 }),
+    ]));
 
     const rejected = await get("/v1/admin/apps/usage-shapes/usage/breakdown?by=nonsense");
     expect(rejected.status).toBe(400);
@@ -265,6 +355,7 @@ describe("admin console API", () => {
     const attributed = [...firstPage.body.events, ...secondPage.body.events]
       .find((event: any) => event.api_key_id !== null);
     expect(attributed?.api_key_id).toBe("key_usage-shapes");
+    expect(firstPage.body.events.some((event: any) => event.provider_slug === "openai-dev")).toBe(true);
   });
 
   // The console's issuer presets generate exactly these shapes. If the config

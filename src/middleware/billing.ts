@@ -20,9 +20,6 @@ export const billingEntitlementGate: MiddlewareHandler<{
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadAppConfig(c.env, appId);
-  if (!app.organizationId) {
-    throw new GatewayError(402, "payment_required", "This app is not assigned to a billing organization");
-  }
   requireActiveBilling(await getBillingAccess(
     c.env,
     app.organizationId,

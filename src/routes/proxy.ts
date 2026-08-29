@@ -1,21 +1,28 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { hasAppLevelLimits, PROVIDERS } from "../core/config";
+import { hasAppLevelLimits } from "../core/config";
 import { GatewayError } from "../core/errors";
+import { requireProvider, type ResolvedProvider } from "../core/provider-store";
+import { PROVIDER_SLUG_PATTERN } from "../core/providers";
 import {
   prepareProxyRequest,
-  providerGatewayUrl,
+  providerUpstream,
   type PreparedProxyRequest,
 } from "../core/proxyrules";
-import type { Provider } from "../core/types";
+import type { ProviderType } from "../core/types";
 import { recordUsageEvent } from "../core/usage";
 import type { GatewayVariables } from "../middleware/auth";
 
 export interface ProxyVariables {
-  provider: Provider;
+  provider: ProviderType;
+  providerSlug: string;
   providerPath: string;
   preparedProxyRequest: PreparedProxyRequest;
+  /** The organization's credential for the requested provider type. */
+  resolvedProvider: ResolvedProvider;
   /** Named endpoint routes set this; passthrough proxy traffic leaves it unset. */
   endpointSlug?: string;
+  /** Fallback targets may span providers, so each attempt resolves its own row. */
+  resolvedProviders?: Map<string, ResolvedProvider>;
 }
 
 type ProxyEnv = { Bindings: Env; Variables: GatewayVariables & ProxyVariables };
@@ -25,26 +32,30 @@ export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
   if (identity.credentialType === "gateway_token" && !c.req.header("x-app-version")) {
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
-  const providerValue = c.req.param("provider");
-  if (!PROVIDERS.includes(providerValue as Provider)) {
-    throw new GatewayError(403, "path_not_allowed", "Provider is not supported");
+  const providerSlug = c.req.param("provider") ?? "";
+  if (!PROVIDER_SLUG_PATTERN.test(providerSlug)) {
+    throw new GatewayError(403, "path_not_allowed", "Provider slug is invalid");
   }
-  const provider = providerValue as Provider;
-  const marker = `/proxy/${provider}/`;
+  const marker = `/proxy/${providerSlug}/`;
   const markerIndex = c.req.path.indexOf(marker);
   const providerPath = markerIndex === -1 ? undefined : c.req.path.slice(markerIndex + marker.length);
   if (!providerPath) throw new GatewayError(403, "path_not_allowed", "Provider path is required");
   const app = c.get("appConfig");
+  const resolved = await requireProvider(c.env, app.organizationId, providerSlug);
+  const provider = resolved.type;
   const preparedProxyRequest = await prepareProxyRequest({
     request: c.req.raw,
     app,
     userId: identity.userId,
     provider,
+    providerSlug,
     providerPath,
     tokenHeader: c.get("authHeaderName"),
-    cfAigToken: c.env.CF_AIG_TOKEN,
+    pricing: resolved.pricing,
   });
+  c.set("resolvedProvider", resolved);
   c.set("provider", provider);
+  c.set("providerSlug", providerSlug);
   c.set("providerPath", providerPath);
   c.set("preparedProxyRequest", preparedProxyRequest);
   await next();
@@ -58,12 +69,19 @@ proxyRoutes.all("/:provider/*", async (c) => {
   const provider = c.get("provider");
   const providerPath = c.get("providerPath");
   const prepared = c.get("preparedProxyRequest");
+  const resolved = c.get("resolvedProvider");
+  const upstreamRequest = providerUpstream({
+    resolved,
+    prepared,
+    appId: app.id,
+    userId: identity.userId,
+  });
   const providerStart = performance.now();
   let upstream: Response;
   try {
-    upstream = await fetch(await providerGatewayUrl(c.env, prepared), {
+    upstream = await fetch(upstreamRequest.url, {
       method: c.req.method,
-      headers: prepared.headers,
+      headers: upstreamRequest.headers,
       body: prepared.body,
       redirect: "manual",
     });
@@ -80,8 +98,11 @@ proxyRoutes.all("/:provider/*", async (c) => {
         apiKeyId: identity.apiKeyId,
         appLevelLimitsEnabled: hasAppLevelLimits(app),
         provider,
+        providerId: resolved.id,
+        providerSlug: resolved.slug,
+        pricing: resolved.pricing,
         model: prepared.model,
-        route: `${provider}/${providerPath}`,
+        route: `${resolved.slug}/${providerPath}`,
         appVersion: c.req.header("x-app-version") ?? null,
         status: "provider_error",
         latencyMs,
@@ -115,8 +136,11 @@ proxyRoutes.all("/:provider/*", async (c) => {
       apiKeyId: identity.apiKeyId,
       appLevelLimitsEnabled: hasAppLevelLimits(app),
       provider,
+      providerId: resolved.id,
+      providerSlug: resolved.slug,
+      pricing: resolved.pricing,
       model: prepared.model,
-      route: `${provider}/${providerPath}`,
+      route: `${resolved.slug}/${providerPath}`,
       appVersion: c.req.header("x-app-version") ?? null,
       status,
       latencyMs: Math.round(providerTtfb),

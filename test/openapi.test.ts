@@ -36,6 +36,41 @@ describe("generated OpenAPI contract", () => {
     );
   });
 
+  // The zod-to-OpenAPI conversion stringifies a flagged RegExp with its flag
+  // still attached ("…$/u"), which every standard validator then reads as part
+  // of the expression and uses to reject values the gateway accepts.
+  it("publishes bare regular expressions, never JavaScript literals", () => {
+    const patterns: { path: string; pattern: string }[] = [];
+    const walk = (node: unknown, path: string): void => {
+      if (Array.isArray(node)) {
+        node.forEach((item, index) => walk(item, `${path}/${index}`));
+      } else if (typeof node === "object" && node !== null) {
+        for (const [key, value] of Object.entries(node)) {
+          if (key === "pattern" && typeof value === "string") {
+            patterns.push({ path, pattern: value });
+          }
+          walk(value, `${path}/${key}`);
+        }
+      }
+    };
+    walk(createOpenAPIDocument(), "");
+
+    expect(patterns.length).toBeGreaterThan(0);
+    for (const { path, pattern } of patterns) {
+      expect(pattern, path).not.toMatch(/\/[dgimsuvy]*$/);
+      expect(new RegExp(pattern).source, path).toBe(pattern);
+    }
+
+    // The documented patterns must accept the values the gateway itself does.
+    const documented = (path: string) =>
+      patterns.find((entry) => entry.path.endsWith(path))?.pattern;
+    const slug = documented("/components/schemas/ProviderCreateRequest/properties/slug");
+    expect(slug).toBeDefined();
+    expect(new RegExp(slug!).test("openai")).toBe(true);
+    expect(new RegExp(slug!).test("openai-dev")).toBe(true);
+    expect(new RegExp(slug!).test("Openai")).toBe(false);
+  });
+
   it("accepts representative server and mobile application examples", () => {
     for (const [name, config] of [
       ["server", serverConfig()],

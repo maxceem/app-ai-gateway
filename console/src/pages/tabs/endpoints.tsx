@@ -12,22 +12,29 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EmptyState, Field, SectionHeader } from "@/components/field";
+import { DisabledReason } from "@/components/guarded-button";
 import { JsonEditor, parseJson } from "@/components/json-editor";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
   ENDPOINT_API_STYLES,
-  ENDPOINT_PROVIDERS,
   PROVIDER_LABELS,
   emptyEndpoint,
+  endpointInstances,
   endpointSlugError,
+  instanceModels,
   nextEndpointSlug,
   renameEndpoint,
   type EndpointConfig,
-  type EndpointProvider,
   type EndpointsConfig,
   type EndpointTarget,
+  type ProviderInstance,
 } from "@/lib/config-types";
-import { usePrices } from "@/lib/queries";
+import { usePrices, useProviderInstances } from "@/lib/queries";
+
+/** Only OpenAI- and xAI-typed instances compose these request shapes. */
+const NO_ELIGIBLE_INSTANCE =
+  "Add an OpenAI or xAI provider first — no other instance can serve a named endpoint";
+const NO_ELIGIBLE_INSTANCE_ID = "add-endpoint-disabled-reason";
 
 const API_STYLE_HINTS: Record<EndpointConfig["api_style"], string> = {
   responses: "Clients send an OpenAI Responses body. The gateway overwrites the model and deep-merges the parameters below.",
@@ -65,6 +72,55 @@ function ModelSelect({
           options.map((model) => (
             <SelectItem key={model} value={model} className="font-mono text-xs">
               {model}
+            </SelectItem>
+          ))
+        )}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
+ * Endpoints name a provider *instance* slug, so the options are the
+ * organization's own instances whose type can serve this API style. A slug that
+ * is no longer configured stays selectable, or editing the endpoint would
+ * silently repoint it at another instance.
+ */
+function ProviderSelect({
+  value,
+  instances,
+  label,
+  onChange,
+}: {
+  value: string;
+  instances: ProviderInstance[];
+  label: string;
+  onChange: (slug: string) => void;
+}) {
+  const options = useMemo(() => {
+    const known = instances.map((instance) => ({
+      slug: instance.slug,
+      label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`,
+    }));
+    return value && !instances.some((instance) => instance.slug === value)
+      ? [{ slug: value, label: `${value} — not configured` }, ...known]
+      : known;
+  }, [instances, value]);
+
+  return (
+    <Select value={value || undefined} onValueChange={onChange}>
+      <SelectTrigger className="w-full" aria-label={label}>
+        <SelectValue placeholder="Select a provider" />
+      </SelectTrigger>
+      <SelectContent>
+        {options.length === 0 ? (
+          <SelectItem value="__none" disabled>
+            No provider instance supports this API style
+          </SelectItem>
+        ) : (
+          options.map((option) => (
+            <SelectItem key={option.slug} value={option.slug} className="text-xs">
+              {option.label}
             </SelectItem>
           ))
         )}
@@ -131,6 +187,7 @@ function EndpointCard({
   endpoint,
   endpoints,
   appId,
+  instances,
   modelsFor,
   onRename,
   onChange,
@@ -140,13 +197,17 @@ function EndpointCard({
   endpoint: EndpointConfig;
   endpoints: EndpointsConfig;
   appId: string;
-  modelsFor: (provider: EndpointProvider) => string[];
+  instances: ProviderInstance[];
+  modelsFor: (provider: string) => string[];
   onRename: (next: string) => void;
   onChange: (next: EndpointConfig) => void;
   onRemove: () => void;
 }) {
   const slugError = endpointSlugError(slug, endpoints, slug);
   const fallback = endpoint.fallback ?? [];
+  // Only openai- and xai-typed instances compose these request shapes, and the
+  // eligible set is per style, exactly as the Worker validates it.
+  const eligible = endpointInstances(endpoint.api_style, instances);
 
   const setFallback = (next: EndpointTarget[]) =>
     onChange({ ...endpoint, ...(next.length === 0 ? { fallback: undefined } : { fallback: next }) });
@@ -207,23 +268,12 @@ function EndpointCard({
 
         <div className="flex flex-wrap gap-3">
           <Field label="Provider" className="min-w-[180px] flex-1">
-            <Select
+            <ProviderSelect
+              label="Provider"
               value={endpoint.provider}
-              onValueChange={(next) =>
-                onChange({ ...endpoint, provider: next as EndpointProvider, model: "" })
-              }
-            >
-              <SelectTrigger className="w-full" aria-label="Provider">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {ENDPOINT_PROVIDERS.map((provider) => (
-                  <SelectItem key={provider} value={provider}>
-                    {PROVIDER_LABELS[provider]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              instances={eligible}
+              onChange={(next) => onChange({ ...endpoint, provider: next, model: "" })}
+            />
           </Field>
           <Field
             label="Model"
@@ -292,29 +342,18 @@ function EndpointCard({
                 <div key={index} className="flex flex-wrap items-end gap-2">
                   <div className="min-w-[150px] flex-1">
                     <Label className="mb-1.5 text-xs text-muted-foreground">Provider</Label>
-                    <Select
+                    <ProviderSelect
+                      label={`Fallback ${index + 1} provider`}
                       value={target.provider}
-                      onValueChange={(next) =>
+                      instances={eligible}
+                      onChange={(next) =>
                         setFallback(
                           fallback.map((item, position) =>
-                            position === index
-                              ? { provider: next as EndpointProvider, model: "" }
-                              : item,
+                            position === index ? { provider: next, model: "" } : item,
                           ),
                         )
                       }
-                    >
-                      <SelectTrigger className="w-full" aria-label={`Fallback ${index + 1} provider`}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ENDPOINT_PROVIDERS.map((provider) => (
-                          <SelectItem key={provider} value={provider}>
-                            {PROVIDER_LABELS[provider]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    />
                   </div>
                   <div className="min-w-[200px] flex-[2]">
                     <Label className="mb-1.5 text-xs text-muted-foreground">Model</Label>
@@ -358,7 +397,18 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
   const entries = Object.entries(endpoints);
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
-  const modelsFor = (provider: EndpointProvider) => Object.keys(providerPrices?.[provider] ?? {});
+  const instances = useProviderInstances().data ?? [];
+  // Catalog prices belong to the provider type, custom ones to the row, so the
+  // model list is only knowable per instance slug.
+  const bySlug = new Map(instances.map((instance) => [instance.slug, instance]));
+  const modelsFor = (provider: string) => {
+    const instance = bySlug.get(provider);
+    return instance ? instanceModels(instance, providerPrices) : [];
+  };
+  // A new endpoint has to name an instance that can serve it; with none, there
+  // is nothing to create rather than a target that cannot be saved.
+  const eligible = endpointInstances("responses", instances);
+  const newEndpoint = () => emptyEndpoint(eligible[0]?.slug);
 
   const replace = (slug: string, endpoint: EndpointConfig) =>
     state.updateEndpoints({ ...endpoints, [slug]: endpoint });
@@ -371,19 +421,34 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
             title="Named endpoints"
             description="A stable slug whose provider, model, parameters, and fallbacks live here instead of in the client. Endpoints ignore the proxy allowlists; this configuration is the policy."
             action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  state.updateEndpoints({
-                    ...endpoints,
-                    [nextEndpointSlug(endpoints)]: emptyEndpoint(),
-                  })
-                }
-              >
-                <Plus className="size-3.5" />
-                Add endpoint
-              </Button>
+              eligible.length === 0 ? (
+                <DisabledReason reason={NO_ELIGIBLE_INSTANCE} reasonId={NO_ELIGIBLE_INSTANCE_ID}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled
+                    aria-disabled="true"
+                    aria-describedby={NO_ELIGIBLE_INSTANCE_ID}
+                  >
+                    <Plus className="size-3.5" />
+                    Add endpoint
+                  </Button>
+                </DisabledReason>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    state.updateEndpoints({
+                      ...endpoints,
+                      [nextEndpointSlug(endpoints)]: newEndpoint(),
+                    })
+                  }
+                >
+                  <Plus className="size-3.5" />
+                  Add endpoint
+                </Button>
+              )
             }
           />
         </CardHeader>
@@ -404,6 +469,7 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
           endpoint={endpoint}
           endpoints={endpoints}
           appId={appId}
+          instances={instances}
           modelsFor={modelsFor}
           onRename={(next) => state.updateEndpoints(renameEndpoint(endpoints, slug, next))}
           onChange={(next) => replace(slug, next)}

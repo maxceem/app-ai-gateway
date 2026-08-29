@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
 import { beforeAll } from "vitest";
 import { hashApiKeyToken } from "@maxceem/cf-auth";
+import { seedAllProviders } from "./helpers";
 
 export const TEST_OPERATOR_USER_ID = "operator-test-owner";
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
@@ -55,4 +56,7 @@ beforeAll(async () => {
       now.toISOString(),
     ),
   ]);
+  // Every suite that proxies needs the test organization to have credentials,
+  // so the default fixture configures all five providers natively.
+  await seedAllProviders();
 });

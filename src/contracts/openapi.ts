@@ -1,4 +1,5 @@
 import { OpenAPIHono, z, type RouteConfig } from "@hono/zod-openapi";
+import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
@@ -7,6 +8,12 @@ import {
   OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
+  ProviderCreateRequestSchema,
+  ProviderGatewayCreateRequestSchema,
+  ProviderGatewayRotateRequestSchema,
+  ProviderGatewayUpdateRequestSchema,
+  ProviderPricingSchema,
+  ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
@@ -19,6 +26,13 @@ export {
   OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
+  ProviderCreateRequestSchema,
+  ProviderGatewayCreateRequestSchema,
+  ProviderGatewayRotateRequestSchema,
+  ProviderGatewayUpdateRequestSchema,
+  ProviderPricingSchema,
+  SlugSchema,
+  ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
@@ -49,14 +63,20 @@ const OrganizationMemberPath = z.object({
   user: z.string().openapi({ param: { name: "user", in: "path" }, example: "user_123" }),
 });
 
+const ProviderSlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
+
 const ProviderPath = AppPath.extend({
-  provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"])
-    .openapi({ param: { name: "provider", in: "path" } }),
-  path: z.string().openapi({ param: { name: "path", in: "path" }, example: "v1/responses" }),
+  provider: ProviderSlugSchema
+    .openapi({ param: { name: "provider", in: "path" }, example: "openai-dev" }),
+  path: z.string().openapi({
+    param: { name: "path", in: "path" },
+    description: "The provider's native API path verbatim, without a leading slash.",
+    example: "v1/responses",
+  }),
 });
 
 const EndpointPath = AppPath.extend({
-  slug: z.string().regex(/^[a-z0-9-]{1,64}$/u)
+  slug: z.string().regex(/^[a-z0-9-]{1,64}$/)
     .openapi({ param: { name: "slug", in: "path" }, example: "chat" }),
 });
 
@@ -83,6 +103,7 @@ const UsageEventSchema = z.object({
     description: "Non-secret ID of the application API key that authenticated the request, including the client-proof key carried by an exchanged gateway token.",
   }),
   provider: z.string(),
+  provider_slug: z.string().nullable(),
   model: z.string(),
   route: z.string(),
   endpoint_slug: z.string().nullable(),
@@ -143,6 +164,7 @@ register({
     200: response("The Worker is accepting requests.", z.object({
       ok: z.literal(true),
       service: z.literal("ai-gateway"),
+      vault: z.enum(["ok", "misconfigured"]),
     })),
   },
 });
@@ -305,7 +327,7 @@ register({
   tags: ["Provider proxy"],
   operationId: "proxyProviderRequest",
   summary: "Proxy a provider-native model request",
-  description: "The body and successful response retain the selected provider's native format. The gateway validates the configured path and model, injects provider credentials through Cloudflare AI Gateway, applies limits, and streams the upstream response without buffering.",
+  description: "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
   security: [{ GatewayBearer: [] }],
   request: {
     params: ProviderPath,
@@ -563,6 +585,218 @@ register({
   },
 });
 
+const ProviderIdPath = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, example: "b0a1…" }),
+});
+
+const ProviderSummarySchema = z.object({
+  id: z.string(),
+  type: z.enum(PROVIDER_TYPES),
+  slug: ProviderSlugSchema.openapi({ description: "Organization-unique URL segment used under /proxy/{slug}/." }),
+  name: z.string(),
+  secretHint: z.string().nullable().openapi({
+    description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
+  }),
+  providerGatewayId: z.string().nullable(),
+  pricing: ProviderPricingSchema.nullable(),
+  status: z.enum(["active", "revoked"]),
+  createdAt: z.string(),
+  createdBy: z.string(),
+}).openapi("Provider");
+
+const ProviderValidatedSchema = z.boolean().openapi({
+  description: "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid.",
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/providers",
+  tags: ["Admin providers"],
+  operationId: "listProviders",
+  summary: "List the organization's provider credentials",
+  security: operatorSecurity,
+  responses: {
+    200: response("Provider metadata without credentials.", z.object({
+      providers: z.array(ProviderSummarySchema),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/providers",
+  tags: ["Admin providers"],
+  operationId: "createProvider",
+  summary: "Store a provider credential for the organization",
+  description:
+    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among active instances.",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(ProviderCreateRequestSchema) } },
+  responses: {
+    201: response("Stored provider.", z.object({
+      provider: ProviderSummarySchema,
+      validated: ProviderValidatedSchema,
+    })),
+    409: response("The requested active provider slug is already in use.", ErrorResponseSchema),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "put",
+  path: "/v1/admin/providers/{id}",
+  tags: ["Admin providers"],
+  operationId: "updateProvider",
+  summary: "Rotate a credential, rename it, or replace its custom pricing",
+  security: operatorSecurity,
+  request: {
+    params: ProviderIdPath,
+    body: { required: true, content: json(ProviderUpdateRequestSchema) },
+  },
+  responses: {
+    200: response("Updated provider.", z.object({
+      provider: ProviderSummarySchema,
+      validated: ProviderValidatedSchema.nullable().openapi({
+        description: "null when the request did not rotate the credential.",
+      }),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "delete",
+  path: "/v1/admin/providers/{id}",
+  tags: ["Admin providers"],
+  operationId: "deleteProvider",
+  summary: "Delete a provider credential and its custom pricing",
+  description:
+    "A hard delete. Applications using this provider start failing with provider_not_configured within a minute.",
+  security: operatorSecurity,
+  request: { params: ProviderIdPath },
+  responses: {
+    200: response("Provider deleted.", z.object({
+      deleted: z.literal(true),
+      provider_id: z.string(),
+    })),
+    ...errorResponses,
+  },
+});
+
+const ProviderGatewaySummarySchema = z.object({
+  id: z.string(),
+  type: z.literal("cf_aig"),
+  name: z.string(),
+  config: z.object({ accountId: z.string(), gatewayId: z.string() }),
+  secretHint: z.string().openapi({
+    description: "The last characters of the gateway token. The token itself is never returned.",
+  }),
+  providerCount: z.number().int().nonnegative().openapi({
+    description: "Active provider instances routed through this gateway.",
+  }),
+  referencedCount: z.number().int().nonnegative().openapi({
+    description:
+      "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero.",
+  }),
+  status: z.enum(["active", "revoked"]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  createdBy: z.string(),
+}).openapi("ProviderGateway");
+
+register({
+  method: "get",
+  path: "/v1/admin/provider-gateways",
+  tags: ["Admin provider gateways"],
+  operationId: "listProviderGateways",
+  summary: "List reusable provider gateways",
+  security: operatorSecurity,
+  responses: {
+    200: response("Provider gateway metadata without tokens.", z.object({
+      gateways: z.array(ProviderGatewaySummarySchema),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/provider-gateways",
+  tags: ["Admin provider gateways"],
+  operationId: "createProviderGateway",
+  summary: "Create a reusable Cloudflare AI Gateway connection",
+  description: "Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(ProviderGatewayCreateRequestSchema) } },
+  responses: {
+    201: response("Created provider gateway.", z.object({
+      gateway: ProviderGatewaySummarySchema,
+      validated: ProviderValidatedSchema,
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "patch",
+  path: "/v1/admin/provider-gateways/{id}",
+  tags: ["Admin provider gateways"],
+  operationId: "updateProviderGateway",
+  summary: "Rename a provider gateway",
+  security: operatorSecurity,
+  request: {
+    params: ProviderIdPath,
+    body: { required: true, content: json(ProviderGatewayUpdateRequestSchema) },
+  },
+  responses: {
+    200: response("Updated provider gateway.", z.object({ gateway: ProviderGatewaySummarySchema })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/provider-gateways/{id}/rotate",
+  tags: ["Admin provider gateways"],
+  operationId: "rotateProviderGateway",
+  summary: "Rotate a shared provider gateway token",
+  description: "Re-probes and re-encrypts the token once for every provider instance referencing this gateway.",
+  security: operatorSecurity,
+  request: {
+    params: ProviderIdPath,
+    body: { required: true, content: json(ProviderGatewayRotateRequestSchema) },
+  },
+  responses: {
+    200: response("Rotated provider gateway.", z.object({
+      gateway: ProviderGatewaySummarySchema,
+      validated: ProviderValidatedSchema,
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "delete",
+  path: "/v1/admin/provider-gateways/{id}",
+  tags: ["Admin provider gateways"],
+  operationId: "deleteProviderGateway",
+  summary: "Delete an unused provider gateway",
+  security: operatorSecurity,
+  request: { params: ProviderIdPath },
+  responses: {
+    200: response("Provider gateway deleted.", z.object({
+      deleted: z.literal(true),
+      provider_gateway_id: z.string(),
+    })),
+    409: response(
+      "Provider instances still reference this gateway. Revoked rows are retained for audit and block deletion too; see referencedCount.",
+      ErrorResponseSchema,
+    ),
+    ...errorResponses,
+  },
+});
+
 const OrganizationSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -747,6 +981,8 @@ export function createOpenAPIDocument() {
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, and usage." },
       { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
+      { name: "Admin providers", description: "Named provider instances and their credentials." },
+      { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },
       { name: "Admin organizations", description: "Operator identity, organization switching, and membership." },
       { name: "Admin billing", description: "Optional cf-billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },

@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
+
+export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
+export const SlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
 
 const NullableLimit = z.number().nonnegative().nullable();
 
@@ -49,7 +53,7 @@ const ProviderPolicySchema = z.object({
 });
 
 const EndpointTargetSchema = z.object({
-  provider: z.enum(["openai", "xai"]),
+  provider: SlugSchema,
   model: z.string().min(1),
 });
 
@@ -76,10 +80,7 @@ export const AppConfigSchema = z.object({
   routing: z.object({
     providers: z.object({
       mode: z.enum(["all", "selected"]),
-      selected: z.partialRecord(
-        z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"]),
-        ProviderPolicySchema,
-      ).optional(),
+      selected: z.record(SlugSchema, ProviderPolicySchema).optional(),
     }),
     model_rewrites: z.record(z.string(), z.string()),
   }),
@@ -87,7 +88,7 @@ export const AppConfigSchema = z.object({
     per_user: LimitScopeSchema,
     per_app: LimitScopeSchema,
   }),
-  endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/u), EndpointSchema).optional(),
+  endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), EndpointSchema).optional(),
 }).meta({ id: "AppConfig" });
 
 export const AppWriteSchema = z.object({
@@ -117,11 +118,69 @@ export const ApiKeyTokenRequestSchema = z.object({
 }).strict().meta({ id: "ApiKeyTokenRequest" });
 
 export const UsageRepriceRequestSchema = z.object({
-  provider: z.enum(["openai", "anthropic", "xai", "gemini", "perplexity"]),
+  provider: ProviderTypeSchema,
   model: z.string().min(1),
-  month: z.string().regex(/^\d{4}-\d{2}$/u),
+  month: z.string().regex(/^\d{4}-\d{2}$/),
   apply: z.boolean().default(false),
 }).strict().meta({ id: "UsageRepriceRequest" });
+
+/**
+ * Per-1M-token overrides for models the shipped catalog does not cover, or
+ * covers with a stale price. `$0` is enterable for genuinely free models.
+ */
+export const ProviderPricingSchema = z.record(
+  z.string().trim().min(1).max(200),
+  z.object({
+    input: z.number().finite().nonnegative(),
+    output: z.number().finite().nonnegative(),
+  }).strict(),
+).meta({ id: "ProviderPricing" });
+
+const ProviderNameSchema = z.string().trim().min(1).max(100);
+const ProviderSecretSchema = z.string().min(1).max(4096);
+
+export const ProviderCreateRequestSchema = z.object({
+  type: ProviderTypeSchema,
+  name: ProviderNameSchema,
+  slug: SlugSchema.optional(),
+  secret: ProviderSecretSchema.optional(),
+  providerGatewayId: z.string().trim().min(1).optional(),
+  pricing: ProviderPricingSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: "Provide exactly one of secret or providerGatewayId",
+      path: ["secret"],
+    });
+  }
+}).meta({ id: "ProviderCreateRequest" });
+
+export const ProviderGatewayCreateRequestSchema = z.object({
+  type: z.literal("cf_aig"),
+  name: ProviderNameSchema,
+  accountId: z.string().trim().min(1).max(100),
+  gatewayId: z.string().trim().min(1).max(100),
+  token: ProviderSecretSchema,
+}).strict().meta({ id: "ProviderGatewayCreateRequest" });
+
+export const ProviderGatewayUpdateRequestSchema = z.object({
+  name: ProviderNameSchema,
+}).strict().meta({ id: "ProviderGatewayUpdateRequest" });
+
+export const ProviderGatewayRotateRequestSchema = z.object({
+  token: ProviderSecretSchema,
+}).strict().meta({ id: "ProviderGatewayRotateRequest" });
+
+export const ProviderUpdateRequestSchema = z.object({
+  name: ProviderNameSchema.optional(),
+  secret: ProviderSecretSchema.optional(),
+  /** A full replace; `null` clears every override. */
+  pricing: ProviderPricingSchema.nullable().optional(),
+}).strict().refine(
+  (value) => value.name !== undefined || value.secret !== undefined || value.pricing !== undefined,
+  { message: "Provide at least one of name, secret, or pricing" },
+).meta({ id: "ProviderUpdateRequest" });
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 

@@ -1,10 +1,11 @@
 import prices from "./prices.json";
 import { markApiKeyUsed } from "./apikeys";
 import { log } from "./log";
-import type { GatewayAuthMethod, Provider, UsageCounts } from "./types";
+import { lookup } from "./records";
+import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
-import { appUsageEvent } from "../db/schema";
+import { appUsageEvent, type ProviderPricing } from "../db/schema";
 
 interface Price {
   input?: number;
@@ -24,8 +25,30 @@ interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
 }
 
-export function hasModelPrice(provider: Provider, model: string): boolean {
-  const price = (prices as Record<Provider, Record<string, Price>>)[provider]?.[model];
+/**
+ * Model pricing is a two-level lookup: the resolved provider row's own
+ * overrides win, then the deployment-global catalog. A model priced by neither
+ * never proxies, so `cost_usd` can never end up NULL.
+ */
+function modelPrice(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): Price | undefined {
+  // The model name comes from the request body, and "constructor" is a legal
+  // one: an unguarded read would answer with a function off Object.prototype
+  // and price a model nobody listed.
+  const override = lookup(overrides, model);
+  if (override) return { input: override.input, output: override.output };
+  return lookup((prices as Record<ProviderType, Record<string, Price>>)[provider], model);
+}
+
+export function hasModelPrice(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): boolean {
+  const price = modelPrice(provider, model, overrides);
   if (!price) return false;
   if (price.per_minute !== undefined) return Number.isFinite(price.per_minute) && price.per_minute >= 0;
   if (price.per_hour !== undefined) return Number.isFinite(price.per_hour) && price.per_hour >= 0;
@@ -37,8 +60,12 @@ export function hasModelPrice(provider: Provider, model: string): boolean {
     && price.output >= 0;
 }
 
-export function hasTokenModelPrice(provider: Provider, model: string): boolean {
-  const price = (prices as Record<Provider, Record<string, Price>>)[provider]?.[model];
+export function hasTokenModelPrice(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): boolean {
+  const price = modelPrice(provider, model, overrides);
   return price?.input !== undefined
     && Number.isFinite(price.input)
     && price.input >= 0
@@ -56,7 +83,13 @@ interface UsageEventInput {
   authMethod: GatewayAuthMethod;
   apiKeyId?: string;
   appLevelLimitsEnabled: boolean;
-  provider: Provider;
+  provider: ProviderType;
+  /** The provider row that served the traffic. */
+  providerId: string;
+  /** Caller-visible provider instance slug at the time of the request. */
+  providerSlug: string;
+  /** That row's per-model pricing overrides, which win over the catalog. */
+  pricing?: ProviderPricing | null;
   model: string;
   route: string;
   /** Set for named endpoint traffic; null for the passthrough proxy. */
@@ -73,6 +106,9 @@ interface BlockedUsageEventInput {
   authMethod: GatewayAuthMethod;
   apiKeyId?: string;
   provider: string;
+  /** Unset when the request was blocked before a provider row was resolved. */
+  providerId?: string | null;
+  providerSlug?: string | null;
   model: string;
   route: string;
   endpointSlug?: string | null;
@@ -229,7 +265,7 @@ function usageShape(value: unknown): UsageShape | null {
   return "openai";
 }
 
-export function extractUsageText(text: string, contentType: string, _provider: Provider): UsageObservation {
+export function extractUsageText(text: string, contentType: string, _provider: ProviderType): UsageObservation {
   let values: unknown[];
   if (contentType.toLowerCase().includes("text/event-stream")) {
     values = parseSse(text);
@@ -258,12 +294,12 @@ export function extractUsageText(text: string, contentType: string, _provider: P
 }
 
 export function computeCost(
-  provider: Provider,
+  provider: ProviderType,
   model: string,
   usage: UsageObservation,
+  overrides?: ProviderPricing | null,
 ): number | null {
-  const providerPrices = (prices as Record<Provider, Record<string, Price>>)[provider];
-  const price = providerPrices?.[model];
+  const price = modelPrice(provider, model, overrides);
   if (!price) return null;
   if (price.per_minute !== undefined) {
     return ((usage.audioSeconds ?? 0) / 60) * price.per_minute;
@@ -305,7 +341,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
-  const cost = computeCost(input.provider, input.model, usage);
+  const cost = computeCost(input.provider, input.model, usage, input.pricing);
   if (cost === null) {
     throw new Error(`Refusing to persist usage for unpriced model ${input.provider}/${input.model}`);
   }
@@ -313,7 +349,9 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     appId: input.appId,
     userId: input.userId,
     apiKeyId: input.apiKeyId ?? null,
-    provider: input.provider,
+    providerType: input.provider,
+    providerId: input.providerId,
+    providerSlug: input.providerSlug,
     model: input.model,
     route: input.route,
     endpointSlug: input.endpointSlug ?? null,
@@ -341,6 +379,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     appId: input.appId,
     userId: input.userId,
     provider: input.provider,
+    providerSlug: input.providerSlug,
     model: input.model,
     status: input.status,
     ...usage,
@@ -353,7 +392,9 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
     appId: input.appId,
     userId: input.userId,
     apiKeyId: input.apiKeyId ?? null,
-    provider: input.provider,
+    providerType: input.provider,
+    providerId: input.providerId ?? null,
+    providerSlug: input.providerSlug ?? null,
     model: input.model,
     route: input.route,
     endpointSlug: input.endpointSlug ?? null,

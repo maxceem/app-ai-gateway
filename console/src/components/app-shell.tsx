@@ -7,6 +7,7 @@ import {
   Eye,
   KeyRound,
   LogOut,
+  Waypoints,
   Monitor,
   Moon,
   Sun,
@@ -167,6 +168,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const items: NavItem[] = [
     { to: "/apps", label: "Apps" },
+    { to: "/providers", label: "Providers", icon: Waypoints },
     { to: "/keys", label: "Management keys", icon: KeyRound },
     // Listing members is owner/admin-only on the server.
     ...(canManage ? [{ to: "/members", label: "Members", icon: Users }] : []),

@@ -5,14 +5,26 @@ import {
   emptyEndpoint,
   emptyIssuer,
   emptyProvider,
+  endpointInstances,
+  endpointProviderTypes,
   endpointSlugError,
+  instanceModels,
   nextEndpointSlug,
   providerMode,
   renameEndpoint,
+  selectedSlugs,
   withIssuer,
   type AuthenticationConfig,
   type EndpointsConfig,
+  type ProviderInstance,
 } from "./config-types";
+
+/** The organization's rows, which is what a slug-keyed policy is read against. */
+const INSTANCES: ProviderInstance[] = [
+  { slug: "openai", type: "openai", name: "Prod OpenAI" },
+  { slug: "openai-dev", type: "openai", name: "Dev OpenAI" },
+  { slug: "claude", type: "anthropic", name: "Anthropic" },
+];
 
 describe("provider configuration defaults", () => {
   it("creates an unrestricted provider until an operator enters an output cap", () => {
@@ -25,7 +37,8 @@ describe("provider configuration defaults", () => {
   it("uses explicit all-provider mode", () => {
     const proxy = { providers: { mode: "all" as const }, model_rewrites: {} };
     expect(providerMode(proxy)).toBe("all");
-    expect(enabledProviders(proxy)).toEqual([
+    expect(selectedSlugs(proxy)).toEqual([]);
+    expect(enabledProviders(proxy, INSTANCES)).toEqual([
       "openai",
       "anthropic",
       "xai",
@@ -34,19 +47,96 @@ describe("provider configuration defaults", () => {
     ]);
   });
 
-  it("uses providers nested under selected mode", () => {
+  it("uses instance slugs nested under selected mode", () => {
     const proxy = {
       providers: { mode: "selected" as const, selected: { openai: emptyProvider() } },
       model_rewrites: {},
     };
     expect(providerMode(proxy)).toBe("selected");
-    expect(enabledProviders(proxy)).toEqual(["openai"]);
+    expect(selectedSlugs(proxy)).toEqual(["openai"]);
+    expect(enabledProviders(proxy, INSTANCES)).toEqual(["openai"]);
+  });
+
+  it("resolves a custom slug to the type its instance carries", () => {
+    // The policy never names a type, so the org's rows are what make
+    // "openai-dev" an OpenAI app and "claude" an Anthropic one.
+    const proxy = {
+      providers: {
+        mode: "selected" as const,
+        selected: { "openai-dev": emptyProvider(), claude: emptyProvider() },
+      },
+      model_rewrites: {},
+    };
+    expect(enabledProviders(proxy, INSTANCES)).toEqual(["openai", "anthropic"]);
+  });
+
+  it("ignores a custom slug no instance answers to", () => {
+    const proxy = {
+      providers: { mode: "selected" as const, selected: { "openai-gone": emptyProvider() } },
+      model_rewrites: {},
+    };
+    expect(enabledProviders(proxy, INSTANCES)).toEqual([]);
+  });
+
+  it("still reads a default slug as its type when the org has no such instance", () => {
+    // The gateway reserves the slug `openai` for OpenAI rows, so an app that
+    // allows it names OpenAI whether or not a key exists yet.
+    const proxy = {
+      providers: { mode: "selected" as const, selected: { openai: emptyProvider() } },
+      model_rewrites: {},
+    };
+    expect(enabledProviders(proxy, [])).toEqual(["openai"]);
+  });
+
+  it("treats a switched-off instance as unselected before the save drops it", () => {
+    const proxy = {
+      providers: { mode: "selected" as const, selected: { openai: undefined } },
+      model_rewrites: {},
+    };
+    expect(selectedSlugs(proxy)).toEqual([]);
+    expect(enabledProviders(proxy, INSTANCES)).toEqual([]);
   });
 
   it("can explicitly select no providers", () => {
     const proxy = { providers: { mode: "selected" as const, selected: {} }, model_rewrites: {} };
     expect(providerMode(proxy)).toBe("selected");
-    expect(enabledProviders(proxy)).toEqual([]);
+    expect(enabledProviders(proxy, INSTANCES)).toEqual([]);
+  });
+});
+
+describe("the models an instance can be asked for", () => {
+  const catalog = { openai: { "gpt-5.6-luna": {}, "gpt-5.7": {} } };
+
+  it("adds the instance's own priced models to its type's catalog", () => {
+    // A model only this row prices is still usable — through this row.
+    expect(instanceModels(
+      { slug: "openai-dev", type: "openai", name: "Dev", pricing: { "gpt-lab-only": {} } },
+      catalog,
+    )).toEqual(["gpt-5.6-luna", "gpt-5.7", "gpt-lab-only"]);
+  });
+
+  it("never lists an overridden model twice", () => {
+    expect(instanceModels(
+      { slug: "openai", type: "openai", name: "Prod", pricing: { "gpt-5.7": {} } },
+      catalog,
+    )).toEqual(["gpt-5.6-luna", "gpt-5.7"]);
+  });
+
+  it("falls back to the catalog for a row with no overrides", () => {
+    expect(instanceModels({ slug: "openai", type: "openai", name: "Prod" }, catalog))
+      .toEqual(["gpt-5.6-luna", "gpt-5.7"]);
+    expect(instanceModels({ slug: "claude", type: "anthropic", name: "A", pricing: null }, catalog))
+      .toEqual([]);
+  });
+});
+
+describe("named endpoint targets", () => {
+  it("only offers instances whose type composes the endpoint request shape", () => {
+    expect(endpointProviderTypes("responses")).toEqual(["openai", "xai"]);
+    expect(endpointProviderTypes("transcription")).toEqual(["openai", "xai"]);
+    // The Anthropic instance is not an option, whatever its slug.
+    expect(endpointInstances("responses", INSTANCES).map((entry) => entry.slug))
+      .toEqual(["openai", "openai-dev"]);
   });
 });
 

@@ -28,6 +28,13 @@ import type {
   OrganizationListResponse,
   OrganizationRole,
   PricesResponse,
+  ProviderCreateBody,
+  ProviderGatewayCreateBody,
+  ProviderGatewayListResponse,
+  ProviderGatewayResponse,
+  ProviderListResponse,
+  ProviderResponse,
+  ProviderUpdateBody,
   SessionResponse,
   TimeseriesResponse,
   UserListResponse,
@@ -39,6 +46,8 @@ export const keys = {
   organizations: ["organizations"] as const,
   members: ["members"] as const,
   managementKeys: ["management-keys"] as const,
+  providers: ["providers"] as const,
+  providerGateways: ["provider-gateways"] as const,
   billingStatus: ["billing", "status"] as const,
   billingPlans: ["billing", "plans"] as const,
   apps: (month: string) => ["apps", month] as const,
@@ -200,6 +209,131 @@ export function useRevokeManagementKey() {
     mutationFn: (keyId: string) =>
       api.post(`/v1/admin/keys/${encodeURIComponent(keyId)}/revoke`),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
+  });
+}
+
+export function useProviders() {
+  return useQuery({
+    queryKey: keys.providers,
+    queryFn: () => api.get<ProviderListResponse>("/v1/admin/providers"),
+  });
+}
+
+/**
+ * The same list, narrowed to the rows app policy can name: revoked rows resolve
+ * to nothing on the data plane, so offering them would author a broken config.
+ */
+export function useProviderInstances() {
+  return useQuery({
+    queryKey: keys.providers,
+    queryFn: () => api.get<ProviderListResponse>("/v1/admin/providers"),
+    select: (data) => data.providers.filter((row) => row.status === "active"),
+  });
+}
+
+/**
+ * Adding or removing a provider row also moves its gateway's `providerCount`,
+ * which is what enables or blocks that gateway's delete action on the same
+ * screen — so both lists are refreshed together.
+ */
+function invalidateProviderLists(client: ReturnType<typeof useQueryClient>): void {
+  void client.invalidateQueries({ queryKey: keys.providers });
+  void client.invalidateQueries({ queryKey: keys.providerGateways });
+}
+
+/**
+ * Provider credentials are submitted once and never returned. `gcTime: 0` keeps
+ * the plaintext out of the mutation cache the moment the call settles, the same
+ * way management-key creation does.
+ */
+export function useCreateProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProviderCreateBody) =>
+      api.post<ProviderResponse>("/v1/admin/providers", body),
+    gcTime: 0,
+    onSuccess: () => invalidateProviderLists(client),
+  });
+}
+
+export function useProviderGateways() {
+  return useQuery({
+    queryKey: keys.providerGateways,
+    queryFn: () => api.get<ProviderGatewayListResponse>("/v1/admin/provider-gateways"),
+  });
+}
+
+/**
+ * Gateway mutations refresh the provider list too: a provider row is labelled
+ * with its gateway's name. `gcTime: 0` keeps the tokens create and rotate carry
+ * out of the mutation cache, as provider creation does.
+ */
+function useGatewayMutation<TVariables, TData>(
+  mutationFn: (variables: TVariables) => Promise<TData>,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn,
+    gcTime: 0,
+    onSuccess: () => invalidateProviderLists(client),
+  });
+}
+
+export function useCreateProviderGateway() {
+  return useGatewayMutation((body: ProviderGatewayCreateBody) =>
+    api.post<ProviderGatewayResponse>("/v1/admin/provider-gateways", body),
+  );
+}
+
+export function useRenameProviderGateway() {
+  return useGatewayMutation(({ id, name }: { id: string; name: string }) =>
+    api.patch<ProviderGatewayResponse>(
+      `/v1/admin/provider-gateways/${encodeURIComponent(id)}`,
+      { name },
+    ),
+  );
+}
+
+/** A single re-encryption, shared by every provider behind the gateway. */
+export function useRotateProviderGateway() {
+  return useGatewayMutation(({ id, token }: { id: string; token: string }) =>
+    api.post<ProviderGatewayResponse>(
+      `/v1/admin/provider-gateways/${encodeURIComponent(id)}/rotate`,
+      { token },
+    ),
+  );
+}
+
+export function useDeleteProviderGateway() {
+  return useGatewayMutation((id: string) =>
+    api.delete<{ deleted: true; provider_gateway_id: string }>(
+      `/v1/admin/provider-gateways/${encodeURIComponent(id)}`,
+    ),
+  );
+}
+
+/**
+ * Rotation, rename and pricing edits share one endpoint. None of them can move
+ * a row between gateways, so no gateway count changes here.
+ */
+export function useUpdateProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ProviderUpdateBody }) =>
+      api.put<ProviderResponse>(`/v1/admin/providers/${encodeURIComponent(id)}`, body),
+    gcTime: 0,
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+  });
+}
+
+export function useDeleteProvider() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.delete<{ deleted: true; provider_id: string }>(
+        `/v1/admin/providers/${encodeURIComponent(id)}`,
+      ),
+    onSuccess: () => invalidateProviderLists(client),
   });
 }
 

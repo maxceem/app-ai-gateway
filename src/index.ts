@@ -18,6 +18,7 @@ import {
 } from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
 import { proxyPrepare, proxyRoutes, type ProxyVariables } from "./routes/proxy";
+import { vaultStatus } from "./vault";
 
 export { UserLimiter };
 
@@ -31,7 +32,11 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/v1/healthz", (c) => c.json({ ok: true, service: "ai-gateway" }));
+app.get("/v1/healthz", (c) => c.json({
+  ok: true,
+  service: "ai-gateway",
+  vault: vaultStatus(c.env),
+}));
 
 app.route("/v1/auth", operatorAuthRoutes);
 app.route("/v1/console", consoleRoutes);

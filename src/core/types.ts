@@ -1,4 +1,6 @@
-export type Provider = "openai" | "anthropic" | "xai" | "gemini" | "perplexity";
+import type { EndpointApiStyle } from "./providers";
+
+export type { EndpointApiStyle, ProviderType } from "./providers";
 
 export interface ClaimRequirement {
   path: string;
@@ -61,14 +63,14 @@ export type AllowedPath = string | AllowedPathConfig;
 export interface RoutingConfig {
   providers: {
     mode: "all" | "selected";
-    selected?: Partial<Record<Provider, ProviderProxyConfig>>;
+    selected?: Record<string, ProviderProxyConfig>;
   };
   model_rewrites: Record<string, string>;
 }
 
 export interface ResolvedRoutingConfig {
   providerMode: "all" | "selected";
-  providers: Partial<Record<Provider, ProviderProxyConfig>>;
+  providers: Record<string, ProviderProxyConfig>;
   modelRewrites: Record<string, string>;
 }
 
@@ -92,11 +94,9 @@ export interface LimitsConfig {
  * swap models without shipping a new client. Only providers whose native
  * request shape the gateway can compose are allowed.
  */
-export type EndpointApiStyle = "responses" | "transcription";
-export type EndpointProvider = Extract<Provider, "openai" | "xai">;
-
 export interface EndpointTarget {
-  provider: EndpointProvider;
+  /** Provider instance slug, resolved to a provider type at request time. */
+  provider: string;
   model: string;
 }
 
@@ -129,7 +129,7 @@ export interface ResolvedLimitsConfig {
 
 export interface AppConfig {
   id: string;
-  organizationId: string | null;
+  organizationId: string;
   name: string;
   authentication: AuthenticationConfig;
   routing: ResolvedRoutingConfig;

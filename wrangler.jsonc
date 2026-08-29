@@ -6,6 +6,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "vars": {
+    "SECRET_VAULT_MODE": "local",
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
+  },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },
@@ -15,9 +19,6 @@
     "directory": "./console/dist",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/v1/*"]
-  },
-  "ai": {
-    "binding": "AI"
   },
   "d1_databases": [
     {
@@ -44,10 +45,8 @@
         "ENVIRONMENT": "production",
         "GATEWAY_TOKEN_TTL_SECONDS": "3600",
         "CONFIG_CACHE_TTL_SECONDS": "60",
-        "ALLOW_PUBLIC_REGISTRATION": "true"
-      },
-      "ai": {
-        "binding": "AI"
+        "ALLOW_PUBLIC_REGISTRATION": "true",
+        "SECRET_VAULT_MODE": "kms"
       },
       "d1_databases": [
         {
@@ -72,11 +71,9 @@
       },
       "vars": {
         "ENVIRONMENT": "local",
-        "ALLOW_PUBLIC_REGISTRATION": "true"
-      },
-      "ai": {
-        "binding": "AI",
-        "remote": true
+        "ALLOW_PUBLIC_REGISTRATION": "true",
+        "SECRET_VAULT_MODE": "local",
+        "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
       },
       "d1_databases": [
         {

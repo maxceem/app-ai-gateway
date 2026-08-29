@@ -1,14 +1,97 @@
 import { env } from "cloudflare:workers";
 import { issueGatewayToken } from "../src/core/jwt";
 import { hashApiKey } from "../src/core/apikeys";
+import {
+  clearProviderCaches,
+  encryptionContext,
+  gatewayEncryptionContext,
+} from "../src/core/provider-store";
+import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
-import { app, appApiKey } from "../src/db/schema";
-import type { StoredAppConfig } from "../src/core/types";
+import {
+  app,
+  appApiKey,
+  provider,
+  providerGateway,
+  type CfAigConfig,
+  type ProviderPricing,
+} from "../src/db/schema";
+import type { ProviderType, StoredAppConfig } from "../src/core/types";
+import { secretVault } from "../src/vault";
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
+export const TEST_OPERATOR_USER_ID = "operator-test-owner";
+
+/** One recognisable plaintext per provider so header assertions read clearly. */
+export function testProviderSecret(type: ProviderType): string {
+  return `test-${type}-secret`;
+}
+
+/**
+ * Inserts a provider row with a real vault blob, so the hot path exercises the
+ * same encrypt/decrypt round trip production uses.
+ */
+export async function seedProvider(input: {
+  type: ProviderType;
+  id?: string;
+  slug?: string;
+  organizationId?: string;
+  secret?: string;
+  name?: string;
+  gateway?: "cf_aig";
+  gatewayConfig?: CfAigConfig;
+  providerGatewayId?: string;
+  pricing?: ProviderPricing;
+  status?: "active" | "revoked";
+}): Promise<string> {
+  const organizationId = input.organizationId ?? TEST_ORGANIZATION_ID;
+  const id = input.id ?? `provider_${organizationId}_${input.type}`;
+  const slug = input.slug ?? input.type;
+  const secret = input.secret ?? testProviderSecret(input.type);
+  let providerGatewayId = input.providerGatewayId ?? null;
+  if (input.gateway === "cf_aig") {
+    providerGatewayId = providerGatewayId ?? `gateway_${organizationId}_${slug}`;
+    const config = input.gatewayConfig ?? { accountId: "test-account", gatewayId: "test-gateway" };
+    await database(env.DB).insert(providerGateway).values({
+      id: providerGatewayId,
+      organizationId,
+      type: "cf_aig",
+      name: `Test gateway for ${slug}`,
+      config,
+      secretBlob: await secretVault(env).encryptSecret(
+        secret,
+        gatewayEncryptionContext(organizationId, providerGatewayId),
+      ),
+      secretHint: secret.slice(-4),
+      createdBy: TEST_OPERATOR_USER_ID,
+    }).onConflictDoNothing();
+  }
+  await database(env.DB).insert(provider).values({
+    id,
+    organizationId,
+    type: input.type,
+    slug,
+    name: input.name ?? `Test ${input.type}`,
+    secretBlob: providerGatewayId === null
+      ? await secretVault(env).encryptSecret(secret, encryptionContext(organizationId, id))
+      : null,
+    secretHint: providerGatewayId === null ? secret.slice(-4) : null,
+    providerGatewayId,
+    pricing: input.pricing ?? null,
+    status: input.status ?? "active",
+    createdBy: TEST_OPERATOR_USER_ID,
+  });
+  clearProviderCaches();
+  return id;
+}
+
+/** The default fixture: every provider configured, all routed natively. */
+export async function seedAllProviders(organizationId = TEST_ORGANIZATION_ID): Promise<void> {
+  for (const type of PROVIDER_TYPES) await seedProvider({ type, organizationId });
+}
 
 export interface SeedOptions {
-  organizationId?: string | null;
+  organizationId?: string;
   proxy?: Record<string, unknown>;
   auth?: Record<string, unknown>;
   limits?: { rpm: number; rpd: number; app_rpm?: number; app_rpd?: number };

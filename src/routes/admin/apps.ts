@@ -9,11 +9,16 @@ import {
 import {
   invalidateAppConfig,
   loadAppConfig,
-  PROVIDERS,
+  parseStoredAppConfig,
+  referencedProviderSlugs,
   validateAppConfigJson,
 } from "../../core/config";
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
+import {
+  organizationProviders,
+  type OrganizationProviders,
+} from "../../core/provider-store";
 import {
   insertAppWithinCapacity,
   upsertAppWithinCapacity,
@@ -97,20 +102,32 @@ function asBadRequest(error: unknown): never {
   throw error;
 }
 
+/**
+ * Writes are validated against the global price catalog merged with this
+ * organization's own overrides, so a model the operator has priced under
+ * Providers is configurable here too. `grandfathered` carries the slugs the
+ * app's stored configuration already names, which an update may keep even if
+ * the instance behind one has since been deleted; creates pass nothing.
+ */
 function validatedConfig(
   next: Record<string, unknown>,
-  ceilings: BillingPlanLimits = {},
+  ceilings: BillingPlanLimits,
+  providers: OrganizationProviders,
+  grandfathered?: ReadonlySet<string>,
 ): ReturnType<typeof validateAppConfigJson> {
   try {
-    return validateAppConfigJson(next, ceilings);
+    return validateAppConfigJson(next, ceilings, providers, grandfathered);
   } catch (error) {
     asBadRequest(error);
   }
 }
 
-function summary(config: ReturnType<typeof validateAppConfigJson>) {
-  const providers = config.routing.providers.mode === "all"
-    ? [...PROVIDERS]
+function summary(
+  config: ReturnType<typeof validateAppConfigJson>,
+  providerIndex: OrganizationProviders,
+) {
+  const providerSlugs = config.routing.providers.mode === "all"
+    ? Object.keys(providerIndex)
     : Object.keys(config.routing.providers.selected ?? {});
   const models = new Set<string>();
   for (const provider of Object.values(config.routing.providers.selected ?? {})) {
@@ -123,7 +140,7 @@ function summary(config: ReturnType<typeof validateAppConfigJson>) {
       : null,
     monthly_user_budget_usd: config.limits.per_user.spending.monthly_usd,
     monthly_app_budget_usd: config.limits.per_app.spending.monthly_usd,
-    providers,
+    providers: providerSlugs,
     allowed_model_count: models.size,
   };
 }
@@ -177,6 +194,7 @@ appRoutes.get("/apps", async (c) => {
   const bounds = monthBounds(month);
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
+  const providerIndex = await organizationProviders(c.env, organizationId);
   const rows = await db
     .select()
     .from(app)
@@ -234,7 +252,7 @@ appRoutes.get("/apps", async (c) => {
         allowed_model_count: number;
       };
       try {
-        configSummary = summary(validateAppConfigJson(row.config));
+        configSummary = summary(parseStoredAppConfig(row.config, null).stored, providerIndex);
       } catch {
         configSummary = {
           authentication_type: "invalid",
@@ -279,9 +297,13 @@ appRoutes.post("/apps", async (c) => {
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
   if (raw.id !== undefined && typeof raw.id !== "string") throw new GatewayError(400, "invalid_request", "id must be a lowercase slug");
   const requestedId = raw.id === undefined ? slugifyAppName(name) : assertAppId(raw.id);
-  const config = validatedConfig(body.config, planLimits);
-  const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
+  const config = validatedConfig(
+    body.config,
+    planLimits,
+    await organizationProviders(c.env, organizationId),
+  );
+  const db = database(c.env.DB);
   let appId = requestedId;
   let created = false;
   for (let attempt = 0; attempt < 16; attempt += 1) {
@@ -339,7 +361,7 @@ appRoutes.get("/apps/:app", async (c) => {
   let resolved: unknown = null;
   let configError: string | null = null;
   try {
-    validateAppConfigJson(row.config);
+    parseStoredAppConfig(row.config, null);
     resolved = await loadAppConfig(c.env, appId);
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
@@ -357,7 +379,12 @@ appRoutes.post("/apps/:app/validate", async (c) => {
       eq(app.organizationId, c.get("admin").organizationId),
     ),
   });
-  validatedConfig(body.config, planLimits);
+  validatedConfig(
+    body.config,
+    planLimits,
+    await organizationProviders(c.env, c.get("admin").organizationId),
+    existing ? referencedProviderSlugs(existing.config) : undefined,
+  );
   return c.json({ valid: true, app_id: appId, exists: existing !== undefined });
 });
 
@@ -366,8 +393,19 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
-  const config = validatedConfig(body.config, planLimits);
   const organizationId = c.get("admin").organizationId;
+  // An upsert of an existing app is an update: the slugs it already names stay
+  // writable even if their provider rows were deleted in the meantime.
+  const existing = await db.query.app.findFirst({
+    columns: { config: true },
+    where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
+  });
+  const config = validatedConfig(
+    body.config,
+    planLimits,
+    await organizationProviders(c.env, organizationId),
+    existing ? referencedProviderSlugs(existing.config) : undefined,
+  );
   const values = {
     id: appId,
     organizationId,

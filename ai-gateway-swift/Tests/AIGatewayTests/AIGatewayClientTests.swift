@@ -178,6 +178,16 @@ struct AIGatewayClientTests {
             await client.proxyURL(provider: "openai", providerPath: "v1/responses").absoluteString
                 == "https://gateway.test/base/v1/apps/calorie-tracker/proxy/openai/v1/responses"
         )
+        #expect(
+            await client.proxyURL(provider: .openai, providerPath: "v1/responses").absoluteString
+                == "https://gateway.test/base/v1/apps/calorie-tracker/proxy/openai/v1/responses"
+        )
+        // A second instance of a provider type is addressed by its own slug.
+        #expect(
+            await client.proxyURL(provider: .custom("openai-dev"), providerPath: "v1/responses")
+                .absoluteString
+                == "https://gateway.test/base/v1/apps/calorie-tracker/proxy/openai-dev/v1/responses"
+        )
     }
 
     @Test

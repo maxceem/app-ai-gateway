@@ -1,9 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-export const REQUIRED_USER_SECRETS = [
-  "CF_AIG_GATEWAY_ID",
-  "CF_AIG_TOKEN",
-];
+export const REQUIRED_USER_SECRETS = ["SECRET_VAULT_LOCAL_KEK_V1"];
 
 export function parseSecretList(output) {
   const parsed = JSON.parse(output.trim());

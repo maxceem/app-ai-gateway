@@ -2,7 +2,8 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { gatewayToken, seedApp, seedServerApp } from "./helpers";
+import { clearProviderCaches } from "../src/core/provider-store";
+import { gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -13,6 +14,7 @@ interface CapturedRequest {
 
 interface UsageRow {
   provider: string;
+  provider_slug: string | null;
   model: string;
   route: string;
   endpoint_slug: string | null;
@@ -88,7 +90,7 @@ async function endpointRequest(input: {
 async function latestUsage(appId: string, expected = 1): Promise<UsageRow[]> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const rows = await env.DB.prepare(
-      `SELECT provider, model, route, endpoint_slug, status, app_version
+      `SELECT provider_type AS provider, provider_slug, model, route, endpoint_slug, status, app_version
          FROM app_usage_event WHERE app_id = ? ORDER BY id`,
     )
       .bind(appId)
@@ -133,9 +135,7 @@ describe("named endpoints", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("server-timing")).toContain("provider_ttfb");
     expect(captured).toHaveLength(1);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/responses",
-    );
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
     expect(JSON.parse(captured[0]!.body)).toEqual({
       model: "gpt-5.6-luna",
       input: "hello",
@@ -144,12 +144,9 @@ describe("named endpoints", () => {
       store: false,
       max_output_tokens: 4096,
     });
-    expect(captured[0]?.headers.get("authorization")).toBeNull();
-    expect(captured[0]?.headers.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
-    expect(JSON.parse(captured[0]?.headers.get("cf-aig-metadata") ?? "null")).toEqual({
-      app_id: appId,
-      user_id: "user-1",
-    });
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+    expect(captured[0]?.headers.get("cf-aig-authorization")).toBeNull();
+    expect(captured[0]?.headers.get("cf-aig-metadata")).toBeNull();
   });
 
   it("records usage with the endpoint slug", async () => {
@@ -171,12 +168,100 @@ describe("named endpoints", () => {
     const [row] = await latestUsage(appId);
     expect(row).toMatchObject({
       provider: "openai",
+      provider_slug: "openai",
       model: "gpt-5.6-luna",
       route: "openai/v1/responses",
       endpoint_slug: "chat",
       status: "ok",
       app_version: "1.2.3",
     });
+  });
+
+  it("falls back across two instances of the same provider type", async () => {
+    const appId = "endpoint-same-type-fallback";
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-dev",
+      slug: "openai-dev",
+      secret: "openai-dev-key",
+    });
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          fallback: [{ provider: "openai-dev", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream((attempt) => attempt === 0
+      ? Response.json({ error: "busy" }, { status: 503 })
+      : usageResponse());
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    await response.text();
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(2);
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+    expect(captured[1]?.headers.get("authorization")).toBe("Bearer openai-dev-key");
+
+    const usage = await latestUsage(appId, 2);
+    expect(usage.map((row) => [row.provider, row.provider_slug, row.status])).toEqual([
+      ["openai", "openai", "provider_error"],
+      ["openai", "openai-dev", "ok"],
+    ]);
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'endpoint-openai-dev'").run();
+  });
+
+  // A fallback whose gateway was revoked cannot be resolved at all. That is a
+  // reason to drop it from the chain, not to fail a request the primary can serve.
+  it("drops a fallback whose gateway was revoked and still serves the primary", async () => {
+    const appId = "endpoint-broken-fallback";
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-broken",
+      slug: "openai-broken",
+      gateway: "cf_aig",
+      providerGatewayId: "endpoint-gateway-broken",
+    });
+    await env.DB
+      .prepare("UPDATE provider_gateway SET status = 'revoked' WHERE id = 'endpoint-gateway-broken'")
+      .run();
+    clearProviderCaches();
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          fallback: [{ provider: "openai-broken", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(usageResponse);
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    await response.text();
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+
+    const [row] = await latestUsage(appId);
+    expect([row?.provider_slug, row?.status]).toEqual(["openai", "ok"]);
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'endpoint-openai-broken'").run();
+    await env.DB.prepare("DELETE FROM provider_gateway WHERE id = 'endpoint-gateway-broken'").run();
+    clearProviderCaches();
   });
 
   it("leaves the endpoint slug null for passthrough proxy traffic", async () => {
@@ -256,9 +341,7 @@ describe("named endpoints", () => {
     await response.text();
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/openai/audio/transcriptions",
-    );
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/audio/transcriptions");
     expect(captured[0]?.form?.get("model")).toBe("gpt-4o-mini-transcribe");
     expect(captured[0]?.form?.get("language")).toBe("en");
     expect((captured[0]?.form?.get("file") as File).size).toBe(3);
@@ -289,9 +372,7 @@ describe("named endpoints", () => {
     await response.text();
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/test-gateway/grok/v1/stt",
-    );
+    expect(captured[0]?.url).toBe("https://api.x.ai/v1/stt");
     expect(captured[0]?.form?.get("model")).toBe("grok-transcribe");
   });
 
@@ -342,8 +423,8 @@ describe("named endpoints", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ id: "from-fallback" });
     expect(captured).toHaveLength(2);
-    expect(captured[0]?.url).toContain("/openai/responses");
-    expect(captured[1]?.url).toContain("/grok/v1/responses");
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
+    expect(captured[1]?.url).toBe("https://api.x.ai/v1/responses");
     expect(JSON.parse(captured[1]!.body)).toMatchObject({ model: "grok-4.5", input: "hello" });
 
     const rows = await latestUsage(appId, 2);

@@ -17,6 +17,9 @@ importers:
       '@maxceem/cf-auth':
         specifier: file:../../maxceem/packages/cf-auth
         version: file:../../maxceem/packages/cf-auth(@better-auth/drizzle-adapter@1.6.9(@better-auth/core@1.6.9(@better-auth/utils@0.4.0)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@5.20260723.1)(better-call@1.3.5(zod@4.4.3))(jose@6.2.4)(kysely@0.28.17)(nanostores@1.5.2))(@better-auth/utils@0.4.0)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)))(better-auth@1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.16.9)(tsx@4.23.1)(yaml@2.9.0))))(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(hono@4.12.31)
+      '@maxceem/cf-kms':
+        specifier: file:../../maxceem/services/cf-kms
+        version: file:../../maxceem/services/cf-kms
       asn1js:
         specifier: ^3.0.7
         version: 3.0.10
@@ -1411,6 +1414,10 @@ packages:
       better-auth: ^1.6.9
       drizzle-orm: ^0.45.2
       hono: ^4.12.8
+
+  '@maxceem/cf-kms@file:../../maxceem/services/cf-kms':
+    resolution: {directory: ../../maxceem/services/cf-kms, type: directory}
+    engines: {node: '>=20'}
 
   '@mdx-js/mdx@3.1.1':
     resolution: {integrity: sha512-f6ZO2ifpwAQIpzGWaBQT2TXxPv6z3RBzQKpVftEWN78Vl/YweF1uwussDx8ECAXVtr3Rs89fKyG9YlzUs9DyGQ==}
@@ -5388,6 +5395,8 @@ snapshots:
       better-auth: 1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.16.9)(tsx@4.23.1)(yaml@2.9.0)))
       drizzle-orm: 0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)
       hono: 4.12.31
+
+  '@maxceem/cf-kms@file:../../maxceem/services/cf-kms': {}
 
   '@mdx-js/mdx@3.1.1(supports-color@10.2.2)':
     dependencies:

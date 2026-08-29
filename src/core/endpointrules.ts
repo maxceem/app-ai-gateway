@@ -1,4 +1,5 @@
 import { GatewayError } from "./errors";
+import { lookup } from "./records";
 import {
   jsonObject,
   readBodyLimited,
@@ -10,8 +11,8 @@ import type {
   AppConfig,
   EndpointApiStyle,
   EndpointConfig,
-  EndpointProvider,
   EndpointTarget,
+  ProviderType,
 } from "./types";
 
 /**
@@ -33,10 +34,11 @@ export interface PreparedEndpointRequest {
 
 export function endpointProviderPath(
   style: EndpointApiStyle,
-  provider: EndpointProvider,
+  provider: ProviderType,
 ): string {
   if (style === "transcription") {
-    // Cloudflare's openai slug drops the leading v1/; the grok slug keeps it.
+    // Native provider paths: OpenAI transcribes at v1/audio/transcriptions,
+    // xAI at v1/stt.
     return provider === "openai" ? "v1/audio/transcriptions" : "v1/stt";
   }
   return "v1/responses";
@@ -53,7 +55,10 @@ export function deepMerge(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(overlay)) {
-    const current = result[key];
+    // `__proto__` would be a prototype assignment rather than a stored key, and
+    // `result["constructor"]` would read one from Object.prototype.
+    if (key === "__proto__") continue;
+    const current = lookup(result, key);
     result[key] = plainObject(current) && plainObject(value)
       ? deepMerge(current, value)
       : value;
@@ -81,13 +86,24 @@ function formWithModel(source: FormData, model: string): FormData {
 export function endpointAttempt(
   prepared: PreparedEndpointRequest,
   target: EndpointTarget,
+  provider: ProviderType,
 ): PreparedProxyRequest {
-  const providerPath = endpointProviderPath(prepared.endpoint.api_style, target.provider);
-  const body: BodyInit = prepared.form
-    ? formWithModel(prepared.form, target.model)
-    : JSON.stringify({ ...prepared.json, model: target.model });
+  const providerPath = endpointProviderPath(prepared.endpoint.api_style, provider);
+  let body: BodyInit;
+  if (prepared.form) {
+    body = formWithModel(prepared.form, target.model);
+  } else {
+    const json = { ...prepared.json, model: target.model };
+    validateOrInjectOutputCap(
+      "responses",
+      provider,
+      json,
+      prepared.endpoint.max_output_tokens,
+    );
+    body = JSON.stringify(json);
+  }
   return {
-    provider: target.provider,
+    provider,
     providerPath,
     model: target.model,
     body,
@@ -101,15 +117,12 @@ export function endpointAttempt(
 export async function prepareEndpointRequest(input: {
   request: Request;
   app: AppConfig;
-  userId: string;
   slug: string;
   endpoint: EndpointConfig;
   tokenHeader: string;
-  cfAigToken: string;
 }): Promise<PreparedEndpointRequest> {
   const bytes = await readBodyLimited(input.request);
-  const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader, input.cfAigToken);
-  headers.set("cf-aig-metadata", JSON.stringify({ app_id: input.app.id, user_id: input.userId }));
+  const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
 
   if (input.endpoint.api_style === "transcription") {
@@ -141,12 +154,6 @@ export async function prepareEndpointRequest(input: {
   }
 
   const merged = deepMerge(jsonObject(bytes), input.endpoint.params ?? {});
-  validateOrInjectOutputCap(
-    "responses",
-    input.endpoint.provider,
-    merged,
-    input.endpoint.max_output_tokens,
-  );
   headers.set("content-type", "application/json");
   return {
     slug: input.slug,

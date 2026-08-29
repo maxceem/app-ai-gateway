@@ -75,6 +75,104 @@ export interface CreatedManagementKey extends ManagementKey {
   plaintext: string;
 }
 
+/**
+ * Provider credentials are write-only: `secretHint` is the only fragment of a
+ * stored secret the API ever returns, so no type here carries a plaintext.
+ */
+export type ProviderGatewayType = "cf_aig";
+
+export interface CfAigConfig {
+  accountId: string;
+  gatewayId: string;
+}
+
+/**
+ * A reusable connection to someone else's gateway. Its token is encrypted once
+ * and shared by every provider instance routed through it.
+ */
+export interface ProviderGateway {
+  id: string;
+  type: ProviderGatewayType;
+  name: string;
+  config: CfAigConfig;
+  secretHint: string;
+  /** Active provider instances routed through this gateway. */
+  providerCount: number;
+  /**
+   * Every row referencing the gateway, revoked ones included. Those are kept for
+   * audit and still hold the foreign key, so this — not `providerCount` — is
+   * what decides whether the gateway can be deleted.
+   */
+  referencedCount: number;
+  status: "active" | "revoked";
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface ProviderGatewayListResponse {
+  gateways: ProviderGateway[];
+}
+
+export interface ProviderGatewayCreateBody {
+  type: ProviderGatewayType;
+  name: string;
+  accountId: string;
+  gatewayId: string;
+  token: string;
+}
+
+export interface ProviderGatewayResponse {
+  gateway: ProviderGateway;
+  /** Absent on rename, which never re-probes the connection. */
+  validated?: boolean;
+}
+
+/** Per-1M-token overrides, keyed by model name. */
+export type ProviderPricing = Record<string, { input: number; output: number }>;
+
+export interface ProviderCredential {
+  id: string;
+  type: import("./config-types").Provider;
+  /** The `/proxy/{slug}/…` path segment; defaults to the provider type. */
+  slug: string;
+  name: string;
+  /** `null` on a gateway-routed row, which owns no secret of its own. */
+  secretHint: string | null;
+  /** `null` routes straight to the provider's native API. */
+  providerGatewayId: string | null;
+  pricing: ProviderPricing | null;
+  status: "active" | "revoked";
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface ProviderListResponse {
+  providers: ProviderCredential[];
+}
+
+/** Exactly one of `secret` and `providerGatewayId`, mirroring the API. */
+export interface ProviderCreateBody {
+  type: import("./config-types").Provider;
+  name: string;
+  slug?: string;
+  secret?: string;
+  providerGatewayId?: string;
+  pricing?: ProviderPricing;
+}
+
+export interface ProviderUpdateBody {
+  name?: string;
+  secret?: string;
+  pricing?: ProviderPricing | null;
+}
+
+export interface ProviderResponse {
+  provider: ProviderCredential;
+  /** `false` means the probe was inconclusive, not that the key is bad. */
+  validated: boolean | null;
+}
+
 export type BillingInactiveReason =
   | "trial_expired"
   | "past_due"
