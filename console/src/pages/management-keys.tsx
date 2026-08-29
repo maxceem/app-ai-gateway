@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { AlertCircle, Check, Copy, Loader2, X } from "lucide-react";
+import { AlertCircle, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,8 +14,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Field } from "@/components/field";
+import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
-import { useConsoleSession } from "@/lib/console-session";
+import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
 import { formatDateTime } from "@/lib/format";
 import {
   useCreateManagementKey,
@@ -26,11 +27,11 @@ import {
 import type { CreatedManagementKey, ManagementKey } from "@/lib/types";
 
 export function ManagementKeysPage() {
-  const { readOnly } = useConsoleSession();
   const list = useManagementKeys();
   const createKey = useCreateManagementKey();
   const revokeKey = useRevokeManagementKey();
 
+  const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [created, setCreated] = useState<CreatedManagementKey | null>(null);
   const [pendingRevoke, setPendingRevoke] = useState<ManagementKey | null>(null);
@@ -39,8 +40,9 @@ export function ManagementKeysPage() {
     if (!name.trim()) return;
     try {
       const result = await createKey.mutateAsync(name.trim());
-      setCreated(result.key);
+      setCreating(false);
       setName("");
+      setCreated(result.key);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create the key");
     }
@@ -61,27 +63,25 @@ export function ManagementKeysPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-1">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="max-w-2xl space-y-1">
           <h1 className="text-xl font-semibold tracking-tight">Management keys</h1>
           <p className="text-sm text-muted-foreground">
-            Organization-scoped <code className="font-mono text-xs">agw_mgmt_</code> credentials for
-            scripts and CI. They act with full authority inside this organization.
+            Management keys let you manage everything in this console through the API — from CI,
+            scripts, or an AI agent.
           </p>
         </div>
-      </div>
-
-      {created ? (
-        <OneTimeKey
-          created={created}
-          onDismiss={() => {
-            setCreated(null);
-            // The plaintext also sits in the mutation's cached result; drop it
-            // so the only copy of a live credential is the operator's.
-            createKey.reset();
+        <GuardedButton
+          size="sm"
+          onClick={() => {
+            setName("");
+            setCreating(true);
           }}
-        />
-      ) : null}
+        >
+          <Plus className="size-4" />
+          New key
+        </GuardedButton>
+      </div>
 
       {list.isError ? (
         <Alert variant="destructive">
@@ -92,22 +92,6 @@ export function ManagementKeysPage() {
           </AlertDescription>
         </Alert>
       ) : null}
-
-      <div className="flex max-w-lg gap-2">
-        <Input
-          value={name}
-          placeholder="Key name, e.g. CI deploy"
-          disabled={readOnly}
-          onChange={(event) => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") void create();
-          }}
-        />
-        <GuardedButton disabled={!name.trim() || createKey.isPending} onClick={() => void create()}>
-          {createKey.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-          Create key
-        </GuardedButton>
-      </div>
 
       <Card className="overflow-hidden py-0">
         <Table>
@@ -168,6 +152,50 @@ export function ManagementKeysPage() {
         </Table>
       </Card>
 
+      <FormDialog
+        open={creating}
+        onOpenChange={setCreating}
+        title="Create a management key"
+        description="Name it after whatever will use it, so you can tell keys apart when it is time to revoke one."
+        submitLabel="Create key"
+        pending={createKey.isPending}
+        disabled={!name.trim()}
+        onSubmit={() => void create()}
+      >
+        <Field label="Key name" htmlFor="management-key-name">
+          <Input
+            id="management-key-name"
+            value={name}
+            placeholder="CI deploy"
+            maxLength={100}
+            autoFocus
+            autoComplete="off"
+            onChange={(event) => setName(event.target.value)}
+          />
+        </Field>
+      </FormDialog>
+
+      <SecretRevealDialog
+        open={created !== null}
+        title="Copy your new key now"
+        description={
+          <>
+            This is the only time the plaintext for{" "}
+            <span className="font-medium text-foreground">{created?.name}</span> is available — you
+            will not see it again. The gateway stores only a hash.
+          </>
+        }
+        label="Management key"
+        secret={created?.plaintext ?? ""}
+        footnote="Store it in your secret manager. It acts with full authority inside this organization."
+        onAcknowledge={() => {
+          setCreated(null);
+          // The plaintext also sits in the mutation's cached result; drop it
+          // so the only copy of a live credential is the operator's.
+          createKey.reset();
+        }}
+      />
+
       <ConfirmDialog
         open={pendingRevoke !== null}
         onOpenChange={(open) => {
@@ -186,54 +214,5 @@ export function ManagementKeysPage() {
         onConfirm={() => void revoke()}
       />
     </div>
-  );
-}
-
-/**
- * The plaintext token exists only in this response. The panel stays until
- * dismissed so a copy failure is recoverable, and says so explicitly.
- */
-function OneTimeKey({
-  created,
-  onDismiss,
-}: {
-  created: CreatedManagementKey;
-  onDismiss: () => void;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(created.plaintext);
-      setCopied(true);
-      toast.success("Key copied to clipboard");
-    } catch {
-      toast.error("Could not copy. Select the value and copy it manually.");
-    }
-  };
-
-  return (
-    <Alert>
-      <AlertTitle>Copy your new key now — you will not see it again</AlertTitle>
-      <AlertDescription className="space-y-3">
-        <p>
-          This is the only time the plaintext for{" "}
-          <span className="font-medium text-foreground">{created.name}</span> is available. The
-          gateway stores only a hash.
-        </p>
-        <div className="flex w-full items-center gap-2">
-          <code className="flex-1 overflow-x-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs whitespace-nowrap text-foreground">
-            {created.plaintext}
-          </code>
-          <Button variant="outline" size="sm" onClick={() => void copy()}>
-            {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-            {copied ? "Copied" : "Copy"}
-          </Button>
-          <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onDismiss}>
-            <X className="size-4" />
-          </Button>
-        </div>
-      </AlertDescription>
-    </Alert>
   );
 }

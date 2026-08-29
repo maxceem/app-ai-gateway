@@ -28,6 +28,13 @@ function stubKeys(created?: unknown) {
   return fetchMock;
 }
 
+/** Walks the modal flow: open it, name the key, submit. */
+async function createKey(name: string) {
+  await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
+  await userEvent.type(await screen.findByLabelText(/key name/i), name);
+  await userEvent.click(screen.getByRole("button", { name: /create key/i }));
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ManagementKeysPage", () => {
@@ -39,29 +46,39 @@ describe("ManagementKeysPage", () => {
     expect(screen.getByText("Active")).toBeTruthy();
   });
 
+  it("names the key in a modal and sends it", async () => {
+    const fetchMock = stubKeys();
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await createKey("Automation");
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(post && JSON.parse(String(post[1]?.body)).name).toBe("Automation");
+    });
+  });
+
   it("reveals the plaintext exactly once and warns it will not reappear", async () => {
     stubKeys();
     renderAuthenticated(<ManagementKeysPage />);
 
-    await userEvent.type(await screen.findByPlaceholderText(/key name/i), "Automation");
-    await userEvent.click(screen.getByRole("button", { name: /create key/i }));
+    await createKey("Automation");
 
-    expect(await screen.findByText(PLAINTEXT)).toBeTruthy();
+    expect(await screen.findByDisplayValue(PLAINTEXT)).toBeTruthy();
     expect(screen.getByText(/you will not see it again/i)).toBeTruthy();
   });
 
-  it("removes the plaintext from the screen when dismissed", async () => {
+  it("removes the plaintext from the screen once acknowledged", async () => {
     stubKeys();
     renderAuthenticated(<ManagementKeysPage />);
 
-    await userEvent.type(await screen.findByPlaceholderText(/key name/i), "Automation");
-    await userEvent.click(screen.getByRole("button", { name: /create key/i }));
-    await screen.findByText(PLAINTEXT);
+    await createKey("Automation");
+    await screen.findByDisplayValue(PLAINTEXT);
 
-    await userEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    await userEvent.click(screen.getByRole("button", { name: /saved this key/i }));
 
     // The credential must not survive anywhere the operator can read it again.
-    await waitFor(() => expect(screen.queryByText(PLAINTEXT)).toBeNull());
+    await waitFor(() => expect(screen.queryByDisplayValue(PLAINTEXT)).toBeNull());
   });
 
   it("stops a read-only member creating or revoking keys", async () => {
@@ -69,9 +86,8 @@ describe("ManagementKeysPage", () => {
     renderAuthenticated(<ManagementKeysPage />, { session: { role: "member" } });
 
     await screen.findByText("CI deploy");
-    expect(screen.getByRole("button", { name: /create key/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /new key/i })).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: /revoke/i })).toHaveProperty("disabled", true);
-    expect(screen.getByPlaceholderText(/key name/i)).toHaveProperty("disabled", true);
   });
 
   it("lets an owner revoke a key after confirming", async () => {
