@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppShell } from "./app-shell";
-import { renderAuthenticated } from "@/test/render";
+import { membership, renderAuthenticated } from "@/test/render";
 
 /** The account block at the foot of the sidebar holds the admin destinations. */
 async function openAccountMenu() {
@@ -30,6 +30,30 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: /apps/i }).getAttribute("aria-current")).toBeNull();
   });
 
+  it("names only the operator in the sidebar, never their organization", async () => {
+    renderAuthenticated(<AppShell>content</AppShell>);
+
+    expect(screen.getByText("ada@example.test")).toBeTruthy();
+    // Acme is the session's organization; the rail is the operator's, not the org's.
+    expect(screen.queryByText("Acme")).toBeNull();
+
+    // It reappears in the menu only for an operator who can act as another org.
+    await openAccountMenu();
+    expect(screen.queryByRole("menuitem", { name: /acme/i })).toBeNull();
+  });
+
+  it("offers the organizations a multi-org operator can act as, in the menu", async () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      session: { memberships: [membership("org-1", "Acme"), membership("org-2", "Globex")] },
+    });
+
+    expect(screen.queryByText("Globex")).toBeNull();
+
+    await openAccountMenu();
+
+    expect(screen.getByRole("menuitem", { name: /globex/i })).toBeTruthy();
+  });
+
   it("moves account and organization administration into the user menu", async () => {
     renderAuthenticated(<AppShell>content</AppShell>);
 
@@ -40,7 +64,6 @@ describe("AppShell navigation", () => {
 
     expect(screen.getByRole("menuitem", { name: /profile/i })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /management keys/i })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /members/i })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /sign out/i })).toBeTruthy();
   });
 
@@ -86,24 +109,15 @@ describe("AppShell navigation", () => {
       .toBe("/providers");
   });
 
-  it("hides the members entry from a read-only member and flags the role", async () => {
+  it("flags a read-only member's role in the sidebar", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { session: { role: "member" } });
 
     expect(screen.getByText(/read-only/i)).toBeTruthy();
-
-    await openAccountMenu();
-
-    // The server refuses to list members for a member, so the entry would only 403.
-    expect(screen.queryByRole("menuitem", { name: /members/i })).toBeNull();
   });
 
-  it("shows the members entry to an admin without the read-only flag", async () => {
+  it("leaves an admin unflagged", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { session: { role: "admin" } });
 
     expect(screen.queryByText(/read-only/i)).toBeNull();
-
-    await openAccountMenu();
-
-    expect(screen.getByRole("menuitem", { name: /members/i })).toBeTruthy();
   });
 });

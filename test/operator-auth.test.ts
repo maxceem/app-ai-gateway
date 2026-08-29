@@ -241,74 +241,7 @@ describe("operator authentication", () => {
     await expect(foreign.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
   });
 
-  it("administers organization members and protects the last owner", async () => {
-    const { cookie, organizationId } = await signup("owner-seat@example.test");
-    const secondSeat = await signup("second-seat@example.test");
-    await signup("foreign-seat@example.test");
-    const ownerId = await userIdFor("owner-seat@example.test");
-    const otherId = await userIdFor("second-seat@example.test");
-    const foreignId = await userIdFor("foreign-seat@example.test");
-    await env.DB.prepare(
-      "INSERT INTO console_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, 'member', 'active', ?)",
-    ).bind("membership-second-seat", organizationId, otherId, new Date().toISOString()).run();
-
-    const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/members`, {
-      headers: sessionHeaders(cookie),
-    });
-    expect(listed.status).toBe(200);
-    const members = await listed.json<{ members: Array<{ id: string; role: string }> }>();
-    expect(members.members).toHaveLength(2);
-    expect(members.members.find((member) => member.id === otherId)?.role).toBe("member");
-    expect(members.members.find((member) => member.id === foreignId)).toBeUndefined();
-
-    const promoted = await exports.default.fetch(`${ORIGIN}/v1/admin/members/${otherId}`, {
-      method: "PUT",
-      headers: sessionHeaders(cookie, true),
-      body: JSON.stringify({ role: "admin" }),
-    });
-    expect(promoted.status).toBe(200);
-    await expect(promoted.json()).resolves.toMatchObject({ member: { role: "admin" } });
-
-    const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
-      method: "POST",
-      headers: sessionHeaders(secondSeat.cookie, true),
-      body: JSON.stringify({ organizationId }),
-    });
-    expect(selected.status).toBe(200);
-    const adminCookie = `${secondSeat.cookie}; ${cookieFrom(selected)}`;
-    const adminCannotDemoteOwner = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/members/${ownerId}`,
-      {
-        method: "PUT",
-        headers: sessionHeaders(adminCookie, true),
-        body: JSON.stringify({ role: "member" }),
-      },
-    );
-    expect(adminCannotDemoteOwner.status).toBe(403);
-    await expect(adminCannotDemoteOwner.json()).resolves.toMatchObject({
-      error: { code: "forbidden" },
-    });
-
-    const selfDemotion = await exports.default.fetch(`${ORIGIN}/v1/admin/members/${ownerId}`, {
-      method: "PUT",
-      headers: sessionHeaders(cookie, true),
-      body: JSON.stringify({ role: "member" }),
-    });
-    expect(selfDemotion.status).toBe(409);
-    await expect(selfDemotion.json()).resolves.toMatchObject({ error: { code: "last_owner" } });
-
-    const removed = await exports.default.fetch(`${ORIGIN}/v1/admin/members/${otherId}`, {
-      method: "DELETE",
-      headers: sessionHeaders(cookie),
-    });
-    expect(removed.status).toBe(200);
-    const after = await exports.default.fetch(`${ORIGIN}/v1/admin/members`, {
-      headers: sessionHeaders(cookie),
-    });
-    await expect(after.json()).resolves.toMatchObject({ members: [{ id: ownerId }] });
-  }, 10_000);
-
-  it("keeps management-key callers out of organization switching and membership", async () => {
+  it("keeps management-key callers out of organization switching", async () => {
     const { cookie, organizationId } = await signup("machine-seat@example.test");
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
       method: "POST",
@@ -328,9 +261,6 @@ describe("operator authentication", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({ organizationId }),
-      }),
-      new Request(`${ORIGIN}/v1/admin/members`, {
-        headers: { authorization: `Bearer ${key.plaintext}` },
       }),
     ]) {
       const response = await exports.default.fetch(request);

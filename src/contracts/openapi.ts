@@ -5,7 +5,6 @@ import {
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
   AppWriteSchema,
-  OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -23,7 +22,6 @@ export {
   ApiKeyTokenRequestSchema,
   AppConfigSchema,
   AppWriteSchema,
-  OrganizationMemberRoleUpdateRequestSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -57,10 +55,6 @@ const KeyPath = AppPath.extend({
 
 const ManagementKeyPath = z.object({
   id: z.string().openapi({ param: { name: "id", in: "path" }, example: "key_123" }),
-});
-
-const OrganizationMemberPath = z.object({
-  user: z.string().openapi({ param: { name: "user", in: "path" }, example: "user_123" }),
 });
 
 const ProviderSlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
@@ -810,18 +804,6 @@ const OrganizationMembershipSchema = z.object({
   joinedAt: z.string(),
 });
 
-const OrganizationMemberSchema = z.object({
-  id: z.string(),
-  name: z.string().nullable(),
-  email: z.string(),
-  emailVerified: z.boolean(),
-  image: z.string().nullable(),
-  createdAt: z.string(),
-  role: OrganizationRoleSchema,
-  status: z.literal("active"),
-  joinedAt: z.string(),
-});
-
 const OperatorSessionSchema = z.object({
   session: z.object({
     user: z.object({
@@ -876,55 +858,6 @@ register({
   security: [{ OperatorSession: [] }],
   request: { body: { required: true, content: json(OrganizationSelectRequestSchema) } },
   responses: { 200: response("Session rescoped to the selected organization.", OperatorSessionSchema), ...errorResponses },
-});
-
-register({
-  method: "get",
-  path: "/v1/admin/members",
-  tags: ["Admin organizations"],
-  operationId: "listOrganizationMembers",
-  summary: "List members of the current organization",
-  description: "Requires an owner/admin user session.",
-  security: [{ OperatorSession: [] }],
-  responses: {
-    200: response("Organization members.", z.object({ members: z.array(OrganizationMemberSchema) })),
-    ...errorResponses,
-  },
-});
-
-register({
-  method: "put",
-  path: "/v1/admin/members/{user}",
-  tags: ["Admin organizations"],
-  operationId: "updateOrganizationMemberRole",
-  summary: "Change a member's role",
-  description: "Requires an owner/admin user session. Granting or removing the owner role requires an owner.",
-  security: [{ OperatorSession: [] }],
-  request: {
-    params: OrganizationMemberPath,
-    body: { required: true, content: json(OrganizationMemberRoleUpdateRequestSchema) },
-  },
-  responses: {
-    200: response("Updated membership.", z.object({ member: OrganizationMembershipSchema })),
-    409: response("The organization would be left without an owner.", ErrorResponseSchema),
-    ...errorResponses,
-  },
-});
-
-register({
-  method: "delete",
-  path: "/v1/admin/members/{user}",
-  tags: ["Admin organizations"],
-  operationId: "removeOrganizationMember",
-  summary: "Remove a member from the current organization",
-  description: "Requires an owner/admin user session. Removing an owner requires an owner.",
-  security: [{ OperatorSession: [] }],
-  request: { params: OrganizationMemberPath },
-  responses: {
-    200: response("Removed membership.", z.object({ removed: OrganizationMembershipSchema })),
-    409: response("The organization would be left without an owner.", ErrorResponseSchema),
-    ...errorResponses,
-  },
 });
 
 const adminRoutes: Omit<RouteConfig, "responses">[] = [
@@ -983,7 +916,7 @@ export function createOpenAPIDocument() {
       { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
       { name: "Admin providers", description: "Named provider instances and their credentials." },
       { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },
-      { name: "Admin organizations", description: "Operator identity, organization switching, and membership." },
+      { name: "Admin organizations", description: "Operator identity and organization switching." },
       { name: "Admin billing", description: "Optional cf-billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },
     ],

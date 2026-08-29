@@ -7,7 +7,6 @@ import {
   LayoutGrid,
   LogOut,
   User,
-  Users,
   Waypoints,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Brand } from "@/components/brand";
-import { OrganizationSwitcher } from "@/components/org-switcher";
+import { OrganizationMenuItems } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
@@ -30,7 +29,7 @@ import { cn } from "@/lib/utils";
 interface NavItem {
   to: string;
   label: string;
-  icon: typeof Users;
+  icon: typeof LayoutGrid;
 }
 
 /**
@@ -67,12 +66,13 @@ function initialsFor(name: string | null | undefined, email: string): string {
 }
 
 /**
- * The account block. Shows who is signed in; opening it reveals the
- * account-scoped and organization-scoped screens plus sign-out.
+ * The account block. Names the operator and nothing else; opening it reveals
+ * the account-scoped and organization-scoped screens, the organizations they
+ * can act as, and sign-out.
  */
 function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
-  const { session, capabilities, canManage } = useConsoleSession();
+  const { session, capabilities } = useConsoleSession();
   const signOut = useSignOut();
 
   const logout = async () => {
@@ -123,15 +123,6 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
             Management keys
           </Link>
         </DropdownMenuItem>
-        {/* Listing members is owner/admin-only on the server. */}
-        {canManage ? (
-          <DropdownMenuItem asChild>
-            <Link to="/members" onClick={onNavigate}>
-              <Users className="size-4" />
-              Members
-            </Link>
-          </DropdownMenuItem>
-        ) : null}
         {capabilities.billing ? (
           <DropdownMenuItem asChild>
             <Link to="/billing" onClick={onNavigate}>
@@ -140,6 +131,7 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
             </Link>
           </DropdownMenuItem>
         ) : null}
+        <OrganizationMenuItems />
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={signOut.isPending} onSelect={() => void logout()}>
           <LogOut className="size-4" />
@@ -195,7 +187,6 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             <ReadOnlyBadge />
           </div>
         ) : null}
-        <OrganizationSwitcher />
         <UserMenu onNavigate={onNavigate} />
       </div>
     </div>

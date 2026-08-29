@@ -1,21 +1,16 @@
 import type { AuthState } from "@maxceem/cf-auth";
 import { Hono, type Context } from "hono";
 import { rethrowCfAuthError } from "../../auth/operator";
-import {
-  OrganizationMemberRoleUpdateRequestSchema,
-  OrganizationSelectRequestSchema,
-} from "../../contracts/schemas";
+import { OrganizationSelectRequestSchema } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
 
 type OrganizationEnv = { Bindings: Env; Variables: AdminVariables };
 
 /**
- * Identity, organization membership and member administration for operator
- * clients.
+ * Identity and organization membership for operator clients.
  *
  * These are thin wrappers over `cfAuth.service.*`: every authorization rule
- * (owner-only owner changes, last-owner protection, manager-only member reads)
  * already lives in the service, so the routes only translate HTTP into service
  * calls and cf-auth errors into the gateway error envelope.
  */
@@ -112,59 +107,6 @@ organizationRoutes.post("/organizations/select", async (c) => {
         role: state.role ?? admin.role,
       }),
     });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
-});
-
-/**
- * Members are always read within the caller's current organization, matching
- * how every other admin route derives its tenant from the session.
- */
-organizationRoutes.get("/members", async (c) => {
-  const admin = c.get("admin");
-  const actorUserId = sessionActor(admin);
-  try {
-    const members = await c.get("operatorAuth").service.listOrganizationMembers(
-      actorUserId,
-      admin.organizationId,
-    );
-    return c.json({ members });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
-});
-
-organizationRoutes.put("/members/:user", async (c) => {
-  const admin = c.get("admin");
-  const actorUserId = sessionActor(admin);
-  const { role } = schemaBody(
-    OrganizationMemberRoleUpdateRequestSchema,
-    await requestBody(c),
-  );
-  try {
-    const member = await c.get("operatorAuth").service.updateOrganizationMemberRole({
-      actorUserId,
-      organizationId: admin.organizationId,
-      userId: c.req.param("user"),
-      role,
-    });
-    return c.json({ member });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
-});
-
-organizationRoutes.delete("/members/:user", async (c) => {
-  const admin = c.get("admin");
-  const actorUserId = sessionActor(admin);
-  try {
-    const removed = await c.get("operatorAuth").service.removeOrganizationMember({
-      actorUserId,
-      organizationId: admin.organizationId,
-      userId: c.req.param("user"),
-    });
-    return c.json({ removed });
   } catch (error) {
     rethrowCfAuthError(error);
   }

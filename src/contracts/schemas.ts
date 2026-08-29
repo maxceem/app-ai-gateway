@@ -187,7 +187,3 @@ export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 export const OrganizationSelectRequestSchema = z.object({
   organizationId: z.string().trim().min(1),
 }).meta({ id: "OrganizationSelectRequest" });
-
-export const OrganizationMemberRoleUpdateRequestSchema = z.object({
-  role: OrganizationRoleSchema,
-}).meta({ id: "OrganizationMemberRoleUpdateRequest" });

@@ -31,12 +31,6 @@ export interface OrganizationMembership {
   joinedAt: string;
 }
 
-export interface OrganizationMember extends OperatorUser {
-  role: OrganizationRole;
-  status: "active";
-  joinedAt: string;
-}
-
 /** The console's identity: who the operator is and what they may do here. */
 export interface Session {
   user: OperatorUser | null;
@@ -52,10 +46,6 @@ export interface SessionResponse {
 
 export interface OrganizationListResponse {
   organizations: OrganizationMembership[];
-}
-
-export interface MemberListResponse {
-  members: OrganizationMember[];
 }
 
 export interface ManagementKey {

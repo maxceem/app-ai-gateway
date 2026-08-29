@@ -23,10 +23,8 @@ import type {
   BreakdownResponse,
   EventsResponse,
   ManagementKeyListResponse,
-  MemberListResponse,
   MonthlyUsage,
   OrganizationListResponse,
-  OrganizationRole,
   PricesResponse,
   ProviderCreateBody,
   ProviderGatewayCreateBody,
@@ -44,7 +42,6 @@ export const keys = {
   capabilities: ["capabilities"] as const,
   session: ["session"] as const,
   organizations: ["organizations"] as const,
-  members: ["members"] as const,
   managementKeys: ["management-keys"] as const,
   providers: ["providers"] as const,
   providerGateways: ["provider-gateways"] as const,
@@ -141,47 +138,6 @@ export function useSelectOrganization() {
       client.clear();
       client.setQueryData(keys.session, result.session);
     },
-  });
-}
-
-export function useMembers(enabled = true) {
-  return useQuery({
-    queryKey: keys.members,
-    queryFn: () => api.get<MemberListResponse>("/v1/admin/members"),
-    enabled,
-  });
-}
-
-export function useUpdateMemberRole() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({ userId, role }: { userId: string; role: OrganizationRole }) =>
-      api.put(`/v1/admin/members/${encodeURIComponent(userId)}`, { role }),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: keys.members });
-      void client.invalidateQueries({ queryKey: keys.session });
-    },
-  });
-}
-
-export function useRemoveMember() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (userId: string) => api.delete(`/v1/admin/members/${encodeURIComponent(userId)}`),
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.members }),
-  });
-}
-
-/**
- * Self-removal. Leaving changes which organization the operator acts in — and
- * may leave them with none, in which case the gateway provisions a fresh
- * default — so every organization-scoped cache is dropped.
- */
-export function useLeaveOrganization() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (userId: string) => api.delete(`/v1/admin/members/${encodeURIComponent(userId)}`),
-    onSuccess: () => client.clear(),
   });
 }
 

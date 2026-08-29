@@ -9,7 +9,6 @@ import { AppsPage } from "@/pages/apps";
 import { BillingPage } from "@/pages/billing";
 import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
-import { MembersPage } from "@/pages/members";
 import { ProfilePage } from "@/pages/profile";
 import { ProvidersPage } from "@/pages/providers";
 import { SignupPage } from "@/pages/signup";
@@ -74,7 +73,6 @@ function AuthenticatedConsole() {
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/keys" element={<ManagementKeysPage />} />
-          <Route path="/members" element={<MembersPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           {capabilities.data.billing ? (
             <Route path="/billing" element={<BillingPage />} />

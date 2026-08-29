@@ -1,23 +1,35 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { OrganizationSwitcher } from "./org-switcher";
+import { OrganizationMenuItems } from "./org-switcher";
+import { DropdownMenu, DropdownMenuContent } from "@/components/ui/dropdown-menu";
 import { membership, renderAuthenticated } from "@/test/render";
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("OrganizationSwitcher", () => {
-  it("shows a plain label, not a switcher, for a single membership", () => {
-    renderAuthenticated(<OrganizationSwitcher />, {
+/** The section only ever renders inside the account menu, so tests open one. */
+function inOpenMenu() {
+  return (
+    <DropdownMenu open>
+      <DropdownMenuContent>
+        <OrganizationMenuItems />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+describe("OrganizationMenuItems", () => {
+  it("renders nothing for a single membership", () => {
+    renderAuthenticated(inOpenMenu(), {
       session: { memberships: [membership("org-1", "Acme")] },
     });
 
-    expect(screen.getByText("Acme")).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText("Acme")).toBeNull();
+    expect(screen.queryByText(/organizations/i)).toBeNull();
   });
 
-  it("offers a switcher listing every membership when there are several", async () => {
-    renderAuthenticated(<OrganizationSwitcher />, {
+  it("lists every membership when there are several", async () => {
+    renderAuthenticated(inOpenMenu(), {
       session: {
         memberships: [
           membership("org-1", "Acme", "owner"),
@@ -25,9 +37,6 @@ describe("OrganizationSwitcher", () => {
         ],
       },
     });
-
-    const trigger = screen.getByRole("button", { name: /acme/i });
-    await userEvent.click(trigger);
 
     expect(await screen.findByRole("menuitem", { name: /globex/i })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /acme/i })).toBeTruthy();
@@ -47,7 +56,7 @@ describe("OrganizationSwitcher", () => {
       new Response(JSON.stringify(nextSession), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { client } = renderAuthenticated(<OrganizationSwitcher />, {
+    const { client } = renderAuthenticated(inOpenMenu(), {
       session: {
         memberships: [
           membership("org-1", "Acme", "owner"),
@@ -58,7 +67,6 @@ describe("OrganizationSwitcher", () => {
     // Data belonging to the organization being switched away from.
     client.setQueryData(["apps", "2026-08"], { apps: [{ id: "acme-only-app" }] });
 
-    await userEvent.click(screen.getByRole("button", { name: /acme/i }));
     await userEvent.click(await screen.findByRole("menuitem", { name: /globex/i }));
 
     await waitFor(() => {
@@ -70,8 +78,8 @@ describe("OrganizationSwitcher", () => {
     });
   });
 
-  it("stays available to a read-only member", () => {
-    renderAuthenticated(<OrganizationSwitcher />, {
+  it("stays available to a read-only member", async () => {
+    renderAuthenticated(inOpenMenu(), {
       session: {
         role: "member",
         memberships: [
@@ -81,6 +89,7 @@ describe("OrganizationSwitcher", () => {
       },
     });
 
-    expect(screen.getByRole("button", { name: /acme/i })).toHaveProperty("disabled", false);
+    const item = await screen.findByRole("menuitem", { name: /globex/i });
+    expect(item.getAttribute("data-disabled")).toBeNull();
   });
 });
