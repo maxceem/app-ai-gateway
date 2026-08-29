@@ -18,9 +18,21 @@ const PROBE_PATHS: Partial<Record<ProviderType, string>> = {
 
 const PROBE_TIMEOUT_MS = 4_000;
 
+/** Why a probe proved nothing. Absent when the credential was confirmed. */
+export type ProbeReason =
+  /** This provider offers no cheap authenticated call to probe with. */
+  | "no_probe"
+  /** The request never completed: DNS, connection, or the timeout above. */
+  | "unreachable"
+  /** Something answered, but not with the success that would prove anything. */
+  | "unexpected_status";
+
 export interface ProbeResult {
   /** `false` means "not proven good", never "proven bad" — see below. */
   validated: boolean;
+  reason?: ProbeReason;
+  /** The status behind an `unexpected_status`, which is what names the fault. */
+  status?: number;
 }
 
 /**
@@ -47,7 +59,7 @@ async function runProbe(
       probe: label,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { validated: false };
+    return { validated: false, reason: "unreachable" };
   }
   await response.body?.cancel();
   if (response.status === 401 || response.status === 403) {
@@ -59,8 +71,10 @@ async function runProbe(
     );
   }
   if (!response.ok) {
+    // A gateway that holds no key for this provider answers here, so the status
+    // is the only thing that tells the operator what to go and fix.
     log("warn", "provider_probe_inconclusive", { probe: label, status: response.status });
-    return { validated: false };
+    return { validated: false, reason: "unexpected_status", status: response.status };
   }
   return { validated: true };
 }
@@ -70,7 +84,7 @@ export async function probeProviderKey(
   secret: string,
 ): Promise<ProbeResult> {
   const path = PROBE_PATHS[type];
-  if (!path) return { validated: false };
+  if (!path) return { validated: false, reason: "no_probe" };
   const spec = PROVIDER_REGISTRY[type];
   const headers: Record<string, string> = {
     [spec.auth.header]: `${"scheme" in spec.auth ? spec.auth.scheme : ""}${secret}`,
@@ -88,7 +102,7 @@ export async function probeProviderGateway(input: {
   token: string;
 }): Promise<ProbeResult> {
   const probePath = PROBE_PATHS[input.type];
-  if (!probePath) return { validated: false };
+  if (!probePath) return { validated: false, reason: "no_probe" };
   const spec = PROVIDER_REGISTRY[input.type];
   const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
   const path = prefix && probePath.startsWith(prefix)

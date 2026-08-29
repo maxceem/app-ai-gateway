@@ -813,6 +813,34 @@
         ],
         "additionalProperties": false
       },
+      "ProviderTestRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity"
+            ]
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "providerGatewayId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "additionalProperties": false
+      },
       "ProviderUpdateRequest": {
         "type": "object",
         "properties": {
@@ -4062,6 +4090,108 @@
           },
           "409": {
             "description": "The requested active provider slug is already in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/providers/test": {
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "testProviderCredential",
+        "summary": "Probe a provider credential without storing it",
+        "description": "Runs the same live probe a create runs, against a credential that does not exist yet. Nothing is stored. Supply exactly one direct provider secret or an existing providerGatewayId.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Probe outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status"
+                      ],
+                      "description": "Why an unvalidated probe proved nothing. Absent when validated is true."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status reason."
+                    }
+                  },
+                  "required": [
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
             "content": {
               "application/json": {
                 "schema": {

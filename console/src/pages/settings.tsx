@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/field";
 import { useConsoleSession } from "@/lib/console-session";
 import { authErrorMessage } from "@/lib/auth-errors";
 import { formatDateTime } from "@/lib/format";
@@ -47,7 +48,7 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+      <PageHeader title="Settings" />
 
       <div className="flex flex-col gap-6 lg:flex-row">
         <nav aria-label="Settings sections" className="flex gap-1 overflow-x-auto lg:w-56 lg:shrink-0 lg:flex-col">

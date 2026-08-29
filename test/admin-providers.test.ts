@@ -242,6 +242,95 @@ describe("admin provider instances", () => {
     expect(inconclusive.body.validated).toBe(false);
   });
 
+  it("probes a credential that has no row yet, and stores nothing", async () => {
+    const urls = stubProbe();
+    const tested = await call("POST", "/v1/admin/providers/test", {
+      type: "openai",
+      secret: "sk-live-super-secret-value",
+    });
+
+    expect(tested.status, tested.text).toBe(200);
+    expect(tested.body).toEqual({ validated: true });
+    expect(urls).toEqual(["https://api.openai.com/v1/models"]);
+    // A test is a dry run: the operator can still change their mind.
+    expect(tested.text).not.toContain("sk-live-super-secret-value");
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.body.providers).toEqual([]);
+  });
+
+  it("reports a refused credential and an inconclusive probe apart", async () => {
+    stubProbe("rejected");
+    const refused = await call("POST", "/v1/admin/providers/test", {
+      type: "anthropic",
+      secret: "bad-key",
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe("provider_key_invalid");
+
+    vi.restoreAllMocks();
+    stubProbe("outage");
+    const inconclusive = await call("POST", "/v1/admin/providers/test", {
+      type: "xai",
+      secret: "xai-key",
+    });
+    // Nothing was proven either way, which is not the same as a bad key — and
+    // the status is what tells the operator which end to go and fix.
+    expect(inconclusive.status).toBe(200);
+    expect(inconclusive.body).toEqual({
+      validated: false,
+      reason: "unexpected_status",
+      status: 503,
+    });
+
+    vi.restoreAllMocks();
+    const urls = stubProbe();
+    const unprobeable = await call("POST", "/v1/admin/providers/test", {
+      type: "perplexity",
+      secret: "pplx-key",
+    });
+    // Perplexity has no cheap authenticated call, so nothing was even asked.
+    expect(unprobeable.body).toEqual({ validated: false, reason: "no_probe" });
+    expect(urls).toEqual([]);
+  });
+
+  it("probes an existing gateway through its own stored token", async () => {
+    stubProbe();
+    const gateway = await createGateway();
+    vi.restoreAllMocks();
+    const urls = stubProbe();
+
+    const tested = await call("POST", "/v1/admin/providers/test", {
+      type: "anthropic",
+      providerGatewayId: gateway.id,
+    });
+
+    expect(tested.status, tested.text).toBe(200);
+    expect(tested.body).toEqual({ validated: true });
+    expect(urls[0]).toContain("/acct-1/gw-1/anthropic/");
+    expect(tested.text).not.toContain("cf-aig-original-token");
+  });
+
+  it("refuses to probe a gateway belonging to nobody", async () => {
+    stubProbe();
+    const missing = await call("POST", "/v1/admin/providers/test", {
+      type: "openai",
+      providerGatewayId: "gw-does-not-exist",
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe("not_found");
+  });
+
+  it("insists on exactly one credential to probe", async () => {
+    stubProbe();
+    const both = await call("POST", "/v1/admin/providers/test", {
+      type: "openai",
+      secret: "sk-live",
+      providerGatewayId: "gw-1",
+    });
+    expect(both.status).toBe(400);
+    expect(both.body.error.code).toBe("invalid_request");
+  });
+
   it("rotates direct credentials in place and preserves pricing", async () => {
     stubProbe();
     const created = await call("POST", "/v1/admin/providers", {

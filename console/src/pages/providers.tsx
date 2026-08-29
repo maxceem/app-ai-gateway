@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, CircleCheck, Info, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -18,6 +18,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -31,12 +32,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { EmptyState, Field, SectionHeader } from "@/components/field";
+import { EmptyState, Field, PageHeader } from "@/components/field";
+import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/config-types";
 import { formatDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
   useCreateProvider,
   useCreateProviderGateway,
@@ -46,9 +49,15 @@ import {
   useProviders,
   useRenameProviderGateway,
   useRotateProviderGateway,
+  useTestProvider,
   useUpdateProvider,
 } from "@/lib/queries";
-import type { ProviderCredential, ProviderGateway, ProviderPricing } from "@/lib/types";
+import type {
+  ProviderCredential,
+  ProviderGateway,
+  ProviderPricing,
+  ProviderTestResult,
+} from "@/lib/types";
 
 /**
  * Browsers ignore `autocomplete="off"` on anything that looks like a sign-in
@@ -185,6 +194,7 @@ export function ProvidersPage() {
   const gatewayList = useProviderGateways();
   const deleteProvider = useDeleteProvider();
 
+  const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<ProviderCredential | null>(null);
   const [rotating, setRotating] = useState<ProviderCredential | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProviderCredential | null>(null);
@@ -205,13 +215,16 @@ export function ProvidersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Providers</h1>
-        <p className="text-sm text-muted-foreground">
-          Your own credentials for the model providers this organization uses. They are encrypted
-          before storage and never shown again — only the last few characters.
-        </p>
-      </div>
+      <PageHeader
+        title="Providers"
+        description="Set up the AI providers your apps use. API keys are encrypted and can never be read again."
+        action={
+          <GuardedButton size="sm" onClick={() => setAdding(true)}>
+            <Plus className="size-4" />
+            New provider
+          </GuardedButton>
+        }
+      />
 
       {list.isError ? (
         <Alert variant="destructive">
@@ -220,12 +233,6 @@ export function ProvidersPage() {
           <AlertDescription>{errorMessage(list.error, "Unknown error")}</AlertDescription>
         </Alert>
       ) : null}
-
-      <Card>
-        <CardContent>
-          <AddProviderForm readOnly={readOnly} providers={providers} gateways={gateways} />
-        </CardContent>
-      </Card>
 
       <Card className="overflow-hidden py-0">
         <Table>
@@ -315,6 +322,12 @@ export function ProvidersPage() {
         error={gatewayList.isError ? gatewayList.error : null}
       />
 
+      <AddProviderDialog
+        open={adding}
+        onOpenChange={setAdding}
+        providers={providers}
+        gateways={gateways}
+      />
       <RotateDialog provider={rotating} onClose={() => setRotating(null)} />
       <PricingDialog provider={editing} onClose={() => setEditing(null)} readOnly={readOnly} />
 
@@ -346,29 +359,117 @@ export function ProvidersPage() {
   );
 }
 
-function validationNotice(validated: boolean | null): string | undefined {
-  return validated === false
-    ? "Saved, but the provider did not confirm the credential. Check it if requests start failing."
-    : undefined;
-}
-
 /** The gateway select's sentinel value, which opens the gateway modal instead. */
 const NEW_GATEWAY = "__new__";
 
 /**
- * One provider-first form. The connection choice decides what the row carries:
- * its own API key, or a reference to a gateway whose token authenticates it.
+ * What a dry run of a credential can say. "Unconfirmed" is its own answer, not
+ * a failure: a provider outage, or a provider with no probe of its own, proves
+ * nothing about a key the operator may well know is right.
  */
-function AddProviderForm({
-  readOnly,
+type TestOutcome =
+  | { status: "works" }
+  | { status: "unconfirmed"; message: string }
+  | { status: "failed"; message: string };
+
+const TEST_STYLES = {
+  works: {
+    icon: CircleCheck,
+    className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  },
+  unconfirmed: { icon: Info, className: "bg-muted text-muted-foreground" },
+  failed: { icon: AlertCircle, className: "bg-destructive/10 text-destructive" },
+} as const;
+
+/**
+ * A refusal the operator can act on, as opposed to a check that could not be
+ * made. 5xx and 429 are the upstream having a moment and say nothing about the
+ * credential; every other status means something rejected the request.
+ */
+function isRefusal(result: ProviderTestResult): boolean {
+  return (
+    result.reason === "unexpected_status"
+    && result.status !== undefined
+    && result.status < 500
+    && result.status !== 429
+  );
+}
+
+/**
+ * Says what stopped the check rather than that it was inconclusive.
+ *
+ * A gateway that holds no key for this provider, or a wrong gateway id, answers
+ * with a status of its own — naming it is the difference between an operator
+ * knowing where to look and being told nothing at all.
+ */
+function testMessage(result: ProviderTestResult, type: Provider, viaGateway: boolean): string {
+  const label = PROVIDER_LABELS[type];
+  const responder = viaGateway ? "The gateway" : label;
+  switch (result.reason) {
+    case "no_probe":
+      return `There is no test call for ${label}, so nothing was checked. Add it if you know it is right.`;
+    case "unreachable":
+      return `${responder} did not answer in time, so nothing is proven either way.`;
+    case "unexpected_status":
+      if (!isRefusal(result)) {
+        return `${responder} answered with HTTP ${result.status}, so nothing is proven either way.`;
+      }
+      return viaGateway
+        ? `The gateway answered with HTTP ${result.status}. Check that it holds a stored key for ${label}.`
+        : `${label} answered with HTTP ${result.status}, so this key could not be used.`;
+    default:
+      return "Nothing is proven either way. Add it if you know it is right.";
+  }
+}
+
+/** The verdict, with a refusal shown as the error it is. */
+function testOutcome(
+  result: ProviderTestResult,
+  type: Provider,
+  viaGateway: boolean,
+): TestOutcome {
+  if (result.validated) return { status: "works" };
+  const message = testMessage(result, type, viaGateway);
+  return isRefusal(result) ? { status: "failed", message } : { status: "unconfirmed", message };
+}
+
+function TestResult({ outcome }: { outcome: TestOutcome }) {
+  const { icon: Icon, className } = TEST_STYLES[outcome.status];
+  return (
+    <p
+      // The operator pressed a button and is waiting for this line to appear.
+      aria-live="polite"
+      className={cn("flex items-start gap-2 rounded-md px-3 py-2 text-xs", className)}
+    >
+      <Icon className="mt-px size-3.5 shrink-0" />
+      {outcome.status === "works"
+        ? "Works. The provider accepted this credential."
+        : outcome.message}
+    </p>
+  );
+}
+
+/**
+ * The whole add-provider flow, from the first field to the created row.
+ *
+ * The connection choice decides what the row carries: its own API key, or a
+ * reference to a gateway whose token authenticates it. Choosing a gateway that
+ * does not exist yet opens the gateway modal on top of this one, so the
+ * provider being described is never thrown away to go and create it.
+ */
+function AddProviderDialog({
+  open,
+  onOpenChange,
   providers,
   gateways,
 }: {
-  readOnly: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   providers: ProviderCredential[];
   gateways: ProviderGateway[];
 }) {
   const createProvider = useCreateProvider();
+  const testProvider = useTestProvider();
   const [type, setType] = useState<Provider>("openai");
   const [name, setName] = useState("");
   const [connection, setConnection] = useState<"key" | "gateway">("key");
@@ -377,12 +478,14 @@ function AddProviderForm({
   const [slug, setSlug] = useState("");
   const [slugTaken, setSlugTaken] = useState(false);
   const [gatewayOpen, setGatewayOpen] = useState(false);
-  // A gateway created from this form, kept until the refetched list contains it:
-  // a select whose value has no option would drop the pre-selection.
+  // A gateway created from this modal, kept until the refetched list contains
+  // it: a select whose value has no option would drop the pre-selection.
   const [created, setCreated] = useState<ProviderGateway | null>(null);
+  const [tested, setTested] = useState<TestOutcome | null>(null);
 
   const slugInput = useRef<HTMLInputElement>(null);
-  // Focus follows the operator's own action — opening the page must not steal it.
+  // Focus follows the operator's own action — opening the modal must not take
+  // it off the first field.
   const focusSlug = useRef(false);
   useEffect(() => {
     if (!focusSlug.current || !slugInput.current) return;
@@ -404,6 +507,8 @@ function AddProviderForm({
   const chooseType = (next: Provider) => {
     setType(next);
     setSlugTaken(false);
+    // A verdict belongs to the credential that was probed, not to the next one.
+    setTested(null);
     if (defaultSlugTaken(next)) {
       focusSlug.current = true;
     } else {
@@ -415,10 +520,53 @@ function AddProviderForm({
   const credentialReady = connection === "key" ? Boolean(secret) : Boolean(gatewayId);
   const ready = Boolean(name.trim()) && credentialReady && (!slugRequired || Boolean(slug.trim()));
 
+  const clear = () => {
+    setType("openai");
+    setName("");
+    setConnection("key");
+    setSecret("");
+    setGatewayId("");
+    setSlug("");
+    setSlugTaken(false);
+    setCreated(null);
+    setTested(null);
+    createProvider.reset();
+    testProvider.reset();
+  };
+
+  const close = () => {
+    clear();
+    onOpenChange(false);
+  };
+
+  /**
+   * Optional, and deliberately not a gate on adding the provider: a probe that
+   * proves nothing must not stand between an operator and a key they trust.
+   */
+  const test = async () => {
+    if (!credentialReady) return;
+    setTested(null);
+    try {
+      const result = await testProvider.mutateAsync({
+        type,
+        ...(connection === "key" ? { secret } : { providerGatewayId: gatewayId }),
+      });
+      setTested(testOutcome(result, type, connection === "gateway"));
+    } catch (error) {
+      setTested({
+        status: "failed",
+        message: errorMessage(error, "The credential could not be checked"),
+      });
+    } finally {
+      // The submitted secret also sits in the mutation's variables; drop it.
+      testProvider.reset();
+    }
+  };
+
   const submit = async () => {
     if (!ready) return;
     try {
-      const result = await createProvider.mutateAsync({
+      await createProvider.mutateAsync({
         type,
         name: name.trim(),
         ...(slug.trim() ? { slug: slug.trim() } : {}),
@@ -426,15 +574,11 @@ function AddProviderForm({
       });
       // The plaintext leaves component state and the mutation cache immediately;
       // the server never returns it again.
-      setSecret("");
-      setName("");
-      setSlug("");
-      setSlugTaken(false);
-      createProvider.reset();
-      toast.success(`Added ${PROVIDER_LABELS[type]}`, {
-        description: validationNotice(result.validated),
-      });
+      close();
+      toast.success(`Added ${PROVIDER_LABELS[type]}`);
     } catch (error) {
+      // Everything but the credential survives, so the operator only retypes
+      // the one field the failure could have burned.
       setSecret("");
       if (error instanceof ApiError && error.code === "slug_taken") {
         setSlugTaken(true);
@@ -446,150 +590,171 @@ function AddProviderForm({
 
   return (
     <>
-      <form
-        className="grid gap-4 sm:grid-cols-3"
-        autoComplete="off"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <Field
-          label="Provider"
-          htmlFor="provider-type"
-          // With no slug of its own the instance takes the default one, so the
-          // URL callers already use is the promise being made here.
-          hint={
-            slugRequired ? undefined : (
-              <>
-                Callers reach it at <code className="font-mono">/proxy/{type}/…</code>
-              </>
-            )
-          }
-        >
-          <Select value={type} onValueChange={(next) => chooseType(next as Provider)}>
-            <SelectTrigger id="provider-type" className="w-full" disabled={readOnly}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PROVIDERS.map((entry) => (
-                <SelectItem key={entry} value={entry}>
-                  {PROVIDER_LABELS[entry]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label="Name" htmlFor="provider-name" hint="How this credential appears in the list.">
-          <Input
-            id="provider-name"
-            {...PLAIN_FIELD}
-            value={name}
-            placeholder="Prod OpenAI"
-            disabled={readOnly}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </Field>
-        <Field
-          label="Connection"
-          htmlFor="provider-connection"
-          hint="How the gateway authenticates to this provider."
-        >
-          <Select
-            value={connection}
-            onValueChange={(next) => setConnection(next as "key" | "gateway")}
+      <FormDialog
+        open={open}
+        onOpenChange={(next) => (next ? onOpenChange(true) : close())}
+        title="Add a provider"
+        submitLabel="Add provider"
+        pending={createProvider.isPending}
+        disabled={!ready}
+        onSubmit={() => void submit()}
+        secondaryAction={
+          <Button
+            type="button"
+            variant="secondary"
+            // Away from Cancel and Add provider: a dry run is not a way out of
+            // the form, and it should not read as one.
+            className="sm:mr-auto"
+            disabled={!credentialReady || testProvider.isPending}
+            onClick={() => void test()}
           >
-            <SelectTrigger id="provider-connection" className="w-full" disabled={readOnly}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="key">API key</SelectItem>
-              <SelectItem value="gateway">Via gateway</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-        {connection === "key" ? (
+            {testProvider.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+            Test provider
+          </Button>
+        }
+      >
+        {/* One field per row, in the order they are decided: what to call it,
+            which provider it is, and only then how it authenticates. */}
+        <div className="space-y-4">
           <Field
-            label="API key"
-            htmlFor="provider-secret"
-            hint="Checked against the provider before it is stored."
+            label="Name"
+            htmlFor="provider-name"
+            hint="How this provider is named in the list."
           >
             <Input
-              id="provider-secret"
-              {...SECRET_FIELD}
-              value={secret}
-              placeholder="sk-…"
-              disabled={readOnly}
-              onChange={(event) => setSecret(event.target.value)}
+              id="provider-name"
+              {...PLAIN_FIELD}
+              value={name}
+              placeholder="Prod OpenAI"
+              autoFocus
+              onChange={(event) => setName(event.target.value)}
             />
           </Field>
-        ) : (
-          <Field
-            label="Gateway"
-            htmlFor="provider-gateway"
-            hint="The provider's own key lives in that gateway; this row carries no secret."
-          >
-            <Select
-              value={gatewayId}
-              onValueChange={(next) => {
-                // Radix echoes an empty value from its hidden native select for
-                // one commit after a freshly created gateway is pre-selected,
-                // before that option is registered. No item is ever empty.
-                if (!next) return;
-                if (next === NEW_GATEWAY) {
-                  setGatewayOpen(true);
-                  return;
-                }
-                setGatewayId(next);
-              }}
-            >
-              <SelectTrigger id="provider-gateway" className="w-full" disabled={readOnly}>
-                <SelectValue placeholder="Choose a gateway" />
+          <Field label="Provider" htmlFor="provider-type">
+            <Select value={type} onValueChange={(next) => chooseType(next as Provider)}>
+              <SelectTrigger id="provider-type" className="w-full">
+                <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {active.map((entry) => (
-                  <SelectItem key={entry.id} value={entry.id}>
-                    {entry.name}
+                {PROVIDERS.map((entry) => (
+                  <SelectItem key={entry} value={entry}>
+                    {PROVIDER_LABELS[entry]}
                   </SelectItem>
                 ))}
-                <SelectItem value={NEW_GATEWAY}>Configure new gateway…</SelectItem>
               </SelectContent>
             </Select>
           </Field>
-        )}
-        {slugRequired ? (
           <Field
-            label="Slug"
-            htmlFor="provider-slug"
-            hint={
-              <>
-                Another instance already uses <code className="font-mono">{type}</code>, so this one
-                needs its own <code className="font-mono">/proxy/&lt;slug&gt;/…</code> segment.
-              </>
-            }
+            label="Authentication"
+            htmlFor="provider-authentication"
+            hint="Call the provider directly, or route through a gateway."
           >
-            <Input
-              id="provider-slug"
-              ref={slugInput}
-              {...PLAIN_FIELD}
-              className="font-mono"
-              value={slug}
-              placeholder={`${type}-dev`}
-              disabled={readOnly}
-              onChange={(event) => setSlug(event.target.value)}
-            />
+            <Select
+              value={connection}
+              onValueChange={(next) => {
+                setConnection(next as "key" | "gateway");
+                setTested(null);
+              }}
+            >
+              <SelectTrigger id="provider-authentication" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="key">API key</SelectItem>
+                <SelectItem value="gateway">Use gateway</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
-        ) : null}
-        <div className="sm:col-span-3">
-          <GuardedButton type="submit" disabled={!ready || createProvider.isPending}>
-            {createProvider.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-            Add provider
-          </GuardedButton>
+          {connection === "key" ? (
+            <Field label="API key" htmlFor="provider-secret">
+              <Input
+                id="provider-secret"
+                {...SECRET_FIELD}
+                value={secret}
+                placeholder="sk-…"
+                onChange={(event) => {
+                  setSecret(event.target.value);
+                  setTested(null);
+                }}
+              />
+            </Field>
+          ) : (
+            <Field
+              label="Gateway"
+              htmlFor="provider-gateway"
+              hint="The provider's own key lives in that gateway; this row carries no secret."
+            >
+              <Select
+                value={gatewayId}
+                onValueChange={(next) => {
+                  // Radix echoes an empty value from its hidden native select for
+                  // one commit after a freshly created gateway is pre-selected,
+                  // before that option is registered. No item is ever empty.
+                  if (!next) return;
+                  if (next === NEW_GATEWAY) {
+                    setGatewayOpen(true);
+                    return;
+                  }
+                  setGatewayId(next);
+                  setTested(null);
+                }}
+              >
+                <SelectTrigger id="provider-gateway" className="w-full">
+                  <SelectValue
+                    placeholder={active.length ? "Choose a gateway" : "No gateways yet"}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {active.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </SelectItem>
+                  ))}
+                  {/* Last, behind a rule, in the accent colour and led by a
+                      plus: everything above is a gateway to pick, this one is
+                      an action that opens a form. The ellipsis says so too. */}
+                  {active.length ? <SelectSeparator /> : null}
+                  <SelectItem
+                    value={NEW_GATEWAY}
+                    className="font-medium text-primary focus:text-primary"
+                  >
+                    <Plus className="size-4 text-primary" />
+                    New gateway…
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+          {slugRequired ? (
+            <Field
+              label="Slug"
+              htmlFor="provider-slug"
+              hint={
+                <>
+                  Another instance already uses <code className="font-mono">{type}</code>, so this
+                  one needs its own <code className="font-mono">/proxy/&lt;slug&gt;/…</code>{" "}
+                  segment.
+                </>
+              }
+            >
+              <Input
+                id="provider-slug"
+                ref={slugInput}
+                {...PLAIN_FIELD}
+                className="font-mono"
+                value={slug}
+                placeholder={`${type}-dev`}
+                onChange={(event) => setSlug(event.target.value)}
+              />
+            </Field>
+          ) : null}
+          {tested ? <TestResult outcome={tested} /> : null}
         </div>
-      </form>
+      </FormDialog>
 
-      {/* Outside the form: a dialog rendered inside it would bubble its own
-          submit through the React tree and add the provider prematurely. */}
+      {/* A sibling of the dialog, not a child: rendered inside it, this form
+          would bubble its own submit through the React tree and add the
+          provider prematurely. */}
       <GatewayDialog
         open={gatewayOpen}
         onOpenChange={setGatewayOpen}
@@ -630,30 +795,21 @@ function GatewaysSection({
 
   return (
     <div className="space-y-3">
-      <SectionHeader
-        title="Gateways"
-        description={
-          <>
-            Reusable connections to your own Cloudflare AI Gateway. The provider keys themselves
-            live in that gateway&rsquo;s stored-keys (BYOK) store — only the gateway token is kept
-            here, encrypted once and shared by every provider routed through it.{" "}
-            <a
-              className="underline underline-offset-4"
-              href="https://developers.cloudflare.com/ai-gateway/configuration/authentication/"
-              target="_blank"
-              rel="noreferrer"
-            >
-              How to create the token
-            </a>
-            .
-          </>
-        }
-        action={
-          <GuardedButton size="sm" onClick={() => setAdding(true)}>
-            Add gateway
-          </GuardedButton>
-        }
-      />
+      {/* The console's other section headers sit inside cards, where a smaller
+          description is right. This one is a section of the page itself, under
+          the page header, so its description is set like the page's own. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-3">
+        <div className="min-w-0 flex-1 basis-80 space-y-1">
+          <h2 className="text-sm font-semibold">Gateways</h2>
+          <p className="text-sm text-muted-foreground">
+            Set up the gateways you use to reach AI providers.
+          </p>
+        </div>
+        <GuardedButton size="sm" onClick={() => setAdding(true)}>
+          <Plus className="size-4" />
+          Add gateway
+        </GuardedButton>
+      </div>
 
       {error ? (
         <Alert variant="destructive">
@@ -754,7 +910,7 @@ function GatewaysSection({
 
 /**
  * The one place gateway details are entered, whether the operator started from
- * the add-provider form or from the gateways section.
+ * the add-provider modal or from the gateways section.
  */
 function GatewayDialog({
   open,
@@ -797,9 +953,7 @@ function GatewayDialog({
         token,
       });
       clear();
-      toast.success(`Added ${result.gateway.name}`, {
-        description: validationNotice(result.validated ?? null),
-      });
+      toast.success(`Added ${result.gateway.name}`);
       onCreated?.(result.gateway);
       onOpenChange(false);
     } catch (error) {
@@ -809,63 +963,63 @@ function GatewayDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Add gateway</DialogTitle>
-          <DialogDescription>
-            A Cloudflare AI Gateway this organization already owns. Providers are attached to it one
-            at a time, from the add-provider form.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Name" htmlFor="gateway-name">
-            <Input
-              id="gateway-name"
-              {...PLAIN_FIELD}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Field>
-          <Field label="Account ID" htmlFor="gateway-account">
-            <Input
-              id="gateway-account"
-              {...PLAIN_FIELD}
-              value={accountId}
-              onChange={(event) => setAccountId(event.target.value)}
-            />
-          </Field>
-          <Field label="Gateway ID" htmlFor="gateway-gateway">
-            <Input
-              id="gateway-gateway"
-              {...PLAIN_FIELD}
-              value={gatewayId}
-              onChange={(event) => setGatewayId(event.target.value)}
-            />
-          </Field>
-          <Field label="Gateway token" htmlFor="gateway-token">
-            <Input
-              id="gateway-token"
-              {...SECRET_FIELD}
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-            />
-          </Field>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={close}>
-            Cancel
-          </Button>
-          <GuardedButton
-            disabled={!ready || createGateway.isPending}
-            onClick={() => void submit()}
-          >
-            {createGateway.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-            Save gateway
-          </GuardedButton>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open={open}
+      onOpenChange={(next) => (next ? onOpenChange(true) : close())}
+      title="Add gateway"
+      submitLabel="Add gateway"
+      pending={createGateway.isPending}
+      disabled={!ready}
+      onSubmit={() => void submit()}
+    >
+      <div className="space-y-4">
+        <Field label="Name" htmlFor="gateway-name">
+          <Input
+            id="gateway-name"
+            {...PLAIN_FIELD}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </Field>
+        <Field label="Cloudflare Account ID" htmlFor="gateway-account">
+          <Input
+            id="gateway-account"
+            {...PLAIN_FIELD}
+            value={accountId}
+            onChange={(event) => setAccountId(event.target.value)}
+          />
+        </Field>
+        <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
+          <Input
+            id="gateway-gateway"
+            {...PLAIN_FIELD}
+            value={gatewayId}
+            onChange={(event) => setGatewayId(event.target.value)}
+          />
+        </Field>
+        <Field
+          label="Gateway token"
+          htmlFor="gateway-token"
+          hint={
+            <a
+              className="underline underline-offset-4"
+              href="https://developers.cloudflare.com/ai-gateway/configuration/authentication/"
+              target="_blank"
+              rel="noreferrer"
+            >
+              How to create the token
+            </a>
+          }
+        >
+          <Input
+            id="gateway-token"
+            {...SECRET_FIELD}
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+          />
+        </Field>
+      </div>
+    </FormDialog>
   );
 }
 
@@ -952,12 +1106,10 @@ function RotateGatewayDialog({
   const submit = async () => {
     if (!gateway || !token) return;
     try {
-      const result = await rotateGateway.mutateAsync({ id: gateway.id, token });
+      await rotateGateway.mutateAsync({ id: gateway.id, token });
       setToken("");
       rotateGateway.reset();
-      toast.success(`Rotated ${gateway.name}`, {
-        description: validationNotice(result.validated ?? null),
-      });
+      toast.success(`Rotated ${gateway.name}`);
       onClose();
     } catch (error) {
       setToken("");
@@ -1016,12 +1168,10 @@ function RotateDialog({
   const submit = async () => {
     if (!provider || !secret) return;
     try {
-      const result = await updateProvider.mutateAsync({ id: provider.id, body: { secret } });
+      await updateProvider.mutateAsync({ id: provider.id, body: { secret } });
       setSecret("");
       updateProvider.reset();
-      toast.success(`Rotated ${provider.name}`, {
-        description: validationNotice(result.validated),
-      });
+      toast.success(`Rotated ${provider.name}`);
       onClose();
     } catch (error) {
       setSecret("");

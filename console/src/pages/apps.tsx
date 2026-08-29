@@ -12,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { PageHeader } from "@/components/field";
 import { MonthPicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
 import { AppStatusBadge } from "@/components/status-badge";
@@ -59,13 +60,15 @@ export function AppsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold tracking-tight">Apps</h1>
-        <div className="flex items-center gap-2">
-          <MonthPicker value={month} onChange={setMonth} />
-          <NewAppDialog existingIds={apps.data?.apps.map((app) => app.id) ?? []} />
-        </div>
-      </div>
+      <PageHeader
+        title="Apps"
+        action={
+          <>
+            <MonthPicker value={month} onChange={setMonth} />
+            <NewAppDialog existingIds={apps.data?.apps.map((app) => app.id) ?? []} />
+          </>
+        }
+      />
 
       {apps.isError ? (
         <Alert variant="destructive">

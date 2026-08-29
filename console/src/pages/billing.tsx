@@ -13,6 +13,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
 import {
@@ -86,12 +87,7 @@ export function BillingPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Billing</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage this organization&rsquo;s subscription.
-        </p>
-      </div>
+      <PageHeader title="Billing" description="Manage this organization’s subscription." />
 
       {status.isError ? (
         <Alert variant="destructive">

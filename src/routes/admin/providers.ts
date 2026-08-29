@@ -1,7 +1,8 @@
 import { and, eq } from "drizzle-orm";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   ProviderCreateRequestSchema,
+  ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
@@ -111,6 +112,52 @@ providerRoutes.get("/providers", async (c) => {
   return c.json({ providers: rows.map(serialize) });
 });
 
+/**
+ * Reads the gateway token an instance would authenticate with. Kept separate
+ * from the create path so a probe never needs a stored row to exist.
+ */
+async function gatewayToken(
+  c: Context<ProviderEnv>,
+  organizationId: string,
+  gatewayId: string,
+): Promise<{ accountId: string; gatewayId: string; token: string }> {
+  const gateway = await database(c.env.DB).query.providerGateway.findFirst({
+    where: and(
+      eq(providerGateway.id, gatewayId),
+      eq(providerGateway.organizationId, organizationId),
+      eq(providerGateway.status, "active"),
+    ),
+  });
+  if (!gateway) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  return {
+    accountId: gateway.config.accountId,
+    gatewayId: gateway.config.gatewayId,
+    token: await decryptProviderGatewaySecret(
+      c.env,
+      organizationId,
+      gateway.id,
+      gateway.secretBlob,
+    ),
+  };
+}
+
+/**
+ * Probes a credential without storing anything, so an operator can check a key
+ * before committing to it. Nothing is written and nothing is echoed back: the
+ * answer is the probe's own, including why it proved nothing, and a credential
+ * the provider refuses fails with provider_key_invalid as it would on create.
+ */
+providerRoutes.post("/providers/test", async (c) => {
+  const admin = c.get("admin");
+  const body = providerSchemaBody(ProviderTestRequestSchema, await providerRequestBody(c));
+  if (body.secret !== undefined) {
+    return c.json(await probeProviderKey(body.type, body.secret));
+  }
+  // The schema admits exactly one of the two, so this is the gateway case.
+  const gateway = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
+  return c.json(await probeProviderGateway({ type: body.type, ...gateway }));
+});
+
 providerRoutes.post("/providers", async (c) => {
   const admin = c.get("admin");
   const body = providerSchemaBody(ProviderCreateRequestSchema, await providerRequestBody(c));
@@ -139,28 +186,8 @@ providerRoutes.post("/providers", async (c) => {
       throw new GatewayError(400, "invalid_request", "providerGatewayId is required");
     }
     providerGatewayId = gatewayId;
-    const gateway = await database(c.env.DB).query.providerGateway.findFirst({
-      where: and(
-        eq(providerGateway.id, gatewayId),
-        eq(providerGateway.organizationId, admin.organizationId),
-        eq(providerGateway.status, "active"),
-      ),
-    });
-    if (!gateway) {
-      throw new GatewayError(404, "not_found", "Provider gateway was not found");
-    }
-    const token = await decryptProviderGatewaySecret(
-      c.env,
-      admin.organizationId,
-      gateway.id,
-      gateway.secretBlob,
-    );
-    validated = (await probeProviderGateway({
-      type: body.type,
-      accountId: gateway.config.accountId,
-      gatewayId: gateway.config.gatewayId,
-      token,
-    })).validated;
+    const gateway = await gatewayToken(c, admin.organizationId, gatewayId);
+    validated = (await probeProviderGateway({ type: body.type, ...gateway })).validated;
   }
 
   let row: ProviderRow;

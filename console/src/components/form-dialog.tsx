@@ -29,6 +29,7 @@ export function FormDialog({
   pending,
   disabled,
   onSubmit,
+  secondaryAction,
   className,
   children,
 }: {
@@ -40,6 +41,7 @@ export function FormDialog({
   pending?: boolean;
   disabled?: boolean;
   onSubmit: () => void;
+  secondaryAction?: ReactNode;
   className?: string;
   children: ReactNode;
 }) {
@@ -50,9 +52,18 @@ export function FormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={className ?? "sm:max-w-md"}>
+      <DialogContent
+        className={className ?? "sm:max-w-md"}
+        // Radix points the content at a description id it renders itself, and
+        // warns when no description exists to match it. A title and labelled
+        // fields are enough for some forms, so the pointer is dropped instead.
+        {...(description ? {} : { "aria-describedby": undefined })}
+      >
         <form
           className="space-y-5"
+          // Credential fields sit in these forms, and a text input beside a
+          // password reads to a browser as a sign-in it should autofill.
+          autoComplete="off"
           onSubmit={(event) => {
             event.preventDefault();
             if (blocked) return;
@@ -69,6 +80,10 @@ export function FormDialog({
           {children}
 
           <DialogFooter>
+            {/* Anything the form offers besides finishing it — a dry run of the
+                credential, say. It opens the footer row, so the caller can hold
+                it away from Cancel, and it must never submit. */}
+            {secondaryAction}
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>

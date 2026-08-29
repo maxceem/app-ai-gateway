@@ -151,6 +151,23 @@ export interface ProviderCreateBody {
   pricing?: ProviderPricing;
 }
 
+/** A credential probed before it exists: the same secret, without the row. */
+export interface ProviderTestBody {
+  type: import("./config-types").Provider;
+  secret?: string;
+  providerGatewayId?: string;
+}
+
+/**
+ * A probe's answer. `validated: false` is never "the credential is bad" — the
+ * reason says what stopped the check, which is what the operator can act on.
+ */
+export interface ProviderTestResult {
+  validated: boolean;
+  reason?: "no_probe" | "unreachable" | "unexpected_status";
+  status?: number;
+}
+
 export interface ProviderUpdateBody {
   name?: string;
   secret?: string;

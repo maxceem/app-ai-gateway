@@ -156,6 +156,24 @@ export const ProviderCreateRequestSchema = z.object({
   }
 }).meta({ id: "ProviderCreateRequest" });
 
+/**
+ * A dry run of {@link ProviderCreateRequestSchema}: the same credential, minus
+ * everything that only matters once a row is stored.
+ */
+export const ProviderTestRequestSchema = z.object({
+  type: ProviderTypeSchema,
+  secret: ProviderSecretSchema.optional(),
+  providerGatewayId: z.string().trim().min(1).optional(),
+}).strict().superRefine((value, context) => {
+  if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: "Provide exactly one of secret or providerGatewayId",
+      path: ["secret"],
+    });
+  }
+}).meta({ id: "ProviderTestRequest" });
+
 export const ProviderGatewayCreateRequestSchema = z.object({
   type: z.literal("cf_aig"),
   name: ProviderNameSchema,

@@ -27,6 +27,8 @@ import type {
   OrganizationListResponse,
   PricesResponse,
   ProviderCreateBody,
+  ProviderTestBody,
+  ProviderTestResult,
   ProviderGatewayCreateBody,
   ProviderGatewayListResponse,
   ProviderGatewayResponse,
@@ -209,6 +211,19 @@ export function useCreateProvider() {
       api.post<ProviderResponse>("/v1/admin/providers", body),
     gcTime: 0,
     onSuccess: () => invalidateProviderLists(client),
+  });
+}
+
+/**
+ * Checks a credential against the provider without storing it, so testing is
+ * something the operator may do rather than a gate on adding the provider.
+ * `gcTime: 0` keeps the submitted secret out of the mutation cache.
+ */
+export function useTestProvider() {
+  return useMutation({
+    mutationFn: (body: ProviderTestBody) =>
+      api.post<ProviderTestResult>("/v1/admin/providers/test", body),
+    gcTime: 0,
   });
 }
 

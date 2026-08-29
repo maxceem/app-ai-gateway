@@ -95,6 +95,7 @@ function stubProviders(
     providers?: ProviderCredential[];
     gateways?: ProviderGateway[];
     createProvider?: { status: number; body: unknown };
+    testProvider?: { status: number; body: unknown };
   } = {},
 ) {
   const providers = options.providers ?? [DIRECT, VIA_GATEWAY];
@@ -115,6 +116,10 @@ function stubProviders(
       // Create and rotate answer with the same envelope.
       return json({ gateway: CREATED_GATEWAY, validated: true }, url.endsWith("/rotate") ? 200 : 201);
     }
+    if (url.endsWith("/v1/admin/providers/test")) {
+      const stub = options.testProvider;
+      return stub ? json(stub.body, stub.status) : json({ validated: true });
+    }
     if (method === "POST") {
       const stub = options.createProvider;
       return stub ? json(stub.body, stub.status) : json({ provider: DIRECT, validated: true }, 201);
@@ -131,6 +136,22 @@ function stubProviders(
 async function choose(trigger: HTMLElement, option: RegExp | string) {
   await userEvent.click(trigger);
   await userEvent.click(await screen.findByRole("option", { name: option }));
+}
+
+/**
+ * The newest dialog. Radix hides the layers below it from the accessibility
+ * tree, but the gateway modal opens on top of the provider one, and both carry
+ * a "Name" field — every query has to say which of them it means.
+ */
+async function topDialog(): Promise<HTMLElement> {
+  const dialogs = await screen.findAllByRole("dialog");
+  return dialogs[dialogs.length - 1]!;
+}
+
+/** Providers are added the same way apps and management keys are: in a modal. */
+async function openAddProvider(): Promise<HTMLElement> {
+  await userEvent.click(await screen.findByRole("button", { name: /new provider/i }));
+  return topDialog();
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -195,41 +216,49 @@ describe("ProvidersPage", () => {
     expect(screen.getByText(/no gateways yet/i)).toBeTruthy();
   });
 
-  it("submits a new key and clears it from the form afterwards", async () => {
+  it("submits a new key from the modal and leaves nothing behind", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.type(await screen.findByLabelText("Name"), "Prod OpenAI");
-    const secretField = screen.getByLabelText("API key");
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
+    const secretField = within(dialog).getByLabelText("API key");
     await userEvent.type(secretField, SECRET);
-    await userEvent.click(screen.getByRole("button", { name: /add provider/i }));
+    expect(secretField.getAttribute("type")).toBe("password");
+    // autocomplete="off" is ignored on login-shaped forms, which is how the
+    // operator's own saved password ended up in a provider key field.
+    expect(secretField.getAttribute("autocomplete")).toBe("new-password");
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
 
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "POST");
       expect(call?.body).toEqual({ type: "openai", name: "Prod OpenAI", secret: SECRET });
     });
-    // The plaintext exists nowhere the operator or the cache can read it back.
-    await waitFor(() => expect((secretField as HTMLInputElement).value).toBe(""));
-    expect(secretField.getAttribute("type")).toBe("password");
-    // autocomplete="off" is ignored on login-shaped forms, which is how the
-    // operator's own saved password ended up in a provider key field.
-    expect(secretField.getAttribute("autocomplete")).toBe("new-password");
+    // Creating finishes in the modal, so it closes on success.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.body.textContent).not.toContain(SECRET);
+
+    // The plaintext exists nowhere the operator or the cache can read it back.
+    const reopened = await openAddProvider();
+    expect((within(reopened).getByLabelText("API key") as HTMLInputElement).value).toBe("");
+    expect((within(reopened).getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 
   it("opts every credential field out of browser and manager autofill", async () => {
     stubProviders({ providers: [], gateways: [] });
     renderAuthenticated(<ProvidersPage />);
 
-    const secretFields = [await screen.findByLabelText("API key")];
-    const plainFields = [screen.getByLabelText("Name")];
+    const provider = await openAddProvider();
+    const secretFields = [within(provider).getByLabelText("API key")];
+    const plainFields = [within(provider).getByLabelText("Name")];
+    await userEvent.click(within(provider).getByRole("button", { name: /cancel/i }));
 
     await userEvent.click(screen.getByRole("button", { name: /add gateway/i }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await topDialog();
     secretFields.push(within(dialog).getByLabelText("Gateway token"));
     plainFields.push(
-      within(dialog).getByLabelText("Account ID"),
-      within(dialog).getByLabelText("Gateway ID"),
+      within(dialog).getByLabelText("Cloudflare Account ID"),
+      within(dialog).getByLabelText("Cloudflare Gateway ID"),
       within(dialog).getByLabelText("Name"),
     );
     await userEvent.click(within(dialog).getByRole("button", { name: /cancel/i }));
@@ -252,12 +281,13 @@ describe("ProvidersPage", () => {
     const calls = stubProviders({ providers: [], gateways: [GATEWAY] });
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.type(await screen.findByLabelText("Name"), "OpenAI via CF");
-    await choose(screen.getByLabelText("Connection"), /via gateway/i);
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "OpenAI via CF");
+    await choose(within(dialog).getByLabelText("Authentication"), /use gateway/i);
     // A routed instance carries no secret of its own.
-    expect(screen.queryByLabelText("API key")).toBeNull();
-    await choose(screen.getByLabelText("Gateway"), /prod cf gateway/i);
-    await userEvent.click(screen.getByRole("button", { name: /add provider/i }));
+    expect(within(dialog).queryByLabelText("API key")).toBeNull();
+    await choose(within(dialog).getByLabelText("Gateway"), /prod cf gateway/i);
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
 
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "POST");
@@ -270,21 +300,24 @@ describe("ProvidersPage", () => {
     });
   });
 
-  it("creates a gateway from the add-provider form and keeps it selected", async () => {
+  it("creates a gateway in a second modal without losing the provider", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.type(await screen.findByLabelText("Name"), "OpenAI via CF");
-    await choose(screen.getByLabelText("Connection"), /via gateway/i);
-    await choose(screen.getByLabelText("Gateway"), /configure new gateway/i);
+    const provider = await openAddProvider();
+    await userEvent.type(within(provider).getByLabelText("Name"), "OpenAI via CF");
+    await choose(within(provider).getByLabelText("Authentication"), /use gateway/i);
+    await choose(within(provider).getByLabelText("Gateway"), /new gateway/i);
 
-    const dialog = await screen.findByRole("dialog");
+    // The gateway modal opens on top of the provider one, which keeps its state.
+    const dialog = await topDialog();
+    expect(dialog).not.toBe(provider);
     await userEvent.clear(within(dialog).getByLabelText("Name"));
     await userEvent.type(within(dialog).getByLabelText("Name"), "Fresh gateway");
-    await userEvent.type(within(dialog).getByLabelText("Account ID"), "acct-1");
-    await userEvent.type(within(dialog).getByLabelText("Gateway ID"), "cf-gw");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Account ID"), "acct-1");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Gateway ID"), "cf-gw");
     await userEvent.type(within(dialog).getByLabelText("Gateway token"), "cf-aig-run-token");
-    await userEvent.click(within(dialog).getByRole("button", { name: /save gateway/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /^add gateway$/i }));
 
     await waitFor(() => {
       const call = calls.find(
@@ -298,12 +331,14 @@ describe("ProvidersPage", () => {
         token: "cf-aig-run-token",
       });
     });
-    // Saving the gateway only pre-selects it; the provider is still being added.
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Only the gateway modal closes; the provider it was created for is still
+    // half-written underneath, with the new gateway pre-selected.
+    await waitFor(() => expect(screen.queryByLabelText("Gateway token")).toBeNull());
+    expect(within(provider).getByLabelText("Name")).toHaveProperty("value", "OpenAI via CF");
     expect(calls.some((entry) => entry.method === "POST" && entry.url.endsWith("/providers")))
       .toBe(false);
 
-    await userEvent.click(screen.getByRole("button", { name: /add provider/i }));
+    await userEvent.click(within(provider).getByRole("button", { name: /add provider/i }));
     await waitFor(() => {
       const call = calls.find(
         (entry) => entry.method === "POST" && entry.url.endsWith("/providers"),
@@ -312,19 +347,141 @@ describe("ProvidersPage", () => {
     });
   });
 
+  it("checks a credential on request without storing it", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    const test = within(dialog).getByRole("button", { name: /test provider/i });
+    // Nothing to check until a credential is entered.
+    expect(test).toHaveProperty("disabled", true);
+
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    expect(test).toHaveProperty("disabled", false);
+    await userEvent.click(test);
+
+    expect(await within(dialog).findByText(/the provider accepted this credential/i)).toBeTruthy();
+    const probe = calls.find((entry) => entry.url.endsWith("/providers/test"));
+    expect(probe?.method).toBe("POST");
+    expect(probe?.body).toEqual({ type: "openai", secret: SECRET });
+    // A test is not a create: the modal stays open and nothing was stored.
+    expect(calls.some((entry) => entry.method === "POST" && entry.url.endsWith("/providers")))
+      .toBe(false);
+    expect(document.body.textContent).not.toContain(SECRET);
+  });
+
+  it("does not gate adding a provider on the test, and drops a stale verdict", async () => {
+    const calls = stubProviders({
+      providers: [],
+      gateways: [],
+      testProvider: {
+        status: 400,
+        body: {
+          error: {
+            code: "provider_key_invalid",
+            message: "The credential was rejected by the provider (HTTP 401)",
+          },
+        },
+      },
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
+    await userEvent.type(within(dialog).getByLabelText("API key"), "sk-wrong");
+    await userEvent.click(within(dialog).getByRole("button", { name: /test provider/i }));
+
+    expect(await within(dialog).findByText(/rejected by the provider/i)).toBeTruthy();
+    // A failed check is advice, not a lock: the operator may still add it.
+    const add = within(dialog).getByRole("button", { name: /add provider/i });
+    expect(add).toHaveProperty("disabled", false);
+
+    // Editing the credential retires the verdict, which was about the old one.
+    await userEvent.type(within(dialog).getByLabelText("API key"), "-corrected");
+    expect(within(dialog).queryByText(/rejected by the provider/i)).toBeNull();
+
+    await userEvent.click(add);
+    await waitFor(() => {
+      const call = calls.find(
+        (entry) => entry.method === "POST" && entry.url.endsWith("/providers"),
+      );
+      expect(call?.body).toMatchObject({ secret: "sk-wrong-corrected" });
+    });
+  });
+
+  it("names what stopped a gateway check instead of calling it inconclusive", async () => {
+    stubProviders({
+      providers: [],
+      gateways: [GATEWAY],
+      testProvider: {
+        status: 200,
+        body: { validated: false, reason: "unexpected_status", status: 400 },
+      },
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await choose(within(dialog).getByLabelText("Authentication"), /use gateway/i);
+    await choose(within(dialog).getByLabelText("Gateway"), /prod cf gateway/i);
+    await userEvent.click(within(dialog).getByRole("button", { name: /test provider/i }));
+
+    // The status is the operator's only clue about which end is misconfigured.
+    const refused = await within(dialog).findByText(/gateway answered with HTTP 400/i);
+    expect(refused.textContent).toMatch(/stored key for OpenAI/i);
+    // Something rejected the request, so it reads as the error it is.
+    expect(refused.className).toContain("text-destructive");
+  });
+
+  it("keeps an upstream outage neutral rather than blaming the credential", async () => {
+    stubProviders({
+      providers: [],
+      gateways: [],
+      testProvider: {
+        status: 200,
+        body: { validated: false, reason: "unexpected_status", status: 503 },
+      },
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    await userEvent.click(within(dialog).getByRole("button", { name: /test provider/i }));
+
+    // A provider having a moment proves nothing either way, so it is not an error.
+    const line = await within(dialog).findByText(/HTTP 503/i);
+    expect(line.textContent).toMatch(/nothing is proven either way/i);
+    expect(line.className).not.toContain("text-destructive");
+  });
+
+  it("says when a provider has no check of its own", async () => {
+    stubProviders({
+      providers: [],
+      gateways: [],
+      testProvider: { status: 200, body: { validated: false, reason: "no_probe" } },
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await choose(within(dialog).getByLabelText("Provider"), /perplexity/i);
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    await userEvent.click(within(dialog).getByRole("button", { name: /test provider/i }));
+
+    expect(await within(dialog).findByText(/no test call for Perplexity/i)).toBeTruthy();
+  });
+
   it("adds a gateway on its own, with no provider selection", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
     renderAuthenticated(<ProvidersPage />);
 
     await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await topDialog();
     // The old batch flow picked provider types here; each row is added on its own now.
     expect(within(dialog).queryByRole("checkbox")).toBeNull();
-    await userEvent.type(within(dialog).getByLabelText("Account ID"), "acct-1");
-    await userEvent.type(within(dialog).getByLabelText("Gateway ID"), "cf-gw");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Account ID"), "acct-1");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Gateway ID"), "cf-gw");
     const tokenField = within(dialog).getByLabelText("Gateway token");
     await userEvent.type(tokenField, "cf-aig-run-token");
-    await userEvent.click(within(dialog).getByRole("button", { name: /save gateway/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /^add gateway$/i }));
 
     await waitFor(() => {
       expect(calls.some((entry) => entry.method === "POST" && entry.url.endsWith("/provider-gateways")))
@@ -353,10 +510,11 @@ describe("ProvidersPage", () => {
         .length;
 
     await waitFor(() => expect(gatewayReads()).toBe(1));
-    await userEvent.type(await screen.findByLabelText("Name"), "OpenAI via CF");
-    await choose(screen.getByLabelText("Connection"), /via gateway/i);
-    await choose(screen.getByLabelText("Gateway"), /prod cf gateway/i);
-    await userEvent.click(screen.getByRole("button", { name: /add provider/i }));
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "OpenAI via CF");
+    await choose(within(dialog).getByLabelText("Authentication"), /use gateway/i);
+    await choose(within(dialog).getByLabelText("Gateway"), /prod cf gateway/i);
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
 
     // The new row moves the gateway's providerCount, which is what decides
     // whether its delete action stays available.
@@ -384,7 +542,8 @@ describe("ProvidersPage", () => {
     renderAuthenticated(<ProvidersPage />);
 
     await screen.findByText("openai-legacy");
-    expect(screen.queryByLabelText("Slug")).toBeNull();
+    const dialog = await openAddProvider();
+    expect(within(dialog).queryByLabelText("Slug")).toBeNull();
   });
 
   it("asks for a slug only once the default one is taken", async () => {
@@ -392,22 +551,24 @@ describe("ProvidersPage", () => {
     renderAuthenticated(<ProvidersPage />);
 
     // OpenAI is taken, so the default slug is unavailable and must be replaced.
-    const slugField = await screen.findByLabelText("Slug");
-    await userEvent.type(await screen.findByLabelText("Name"), "Dev OpenAI");
-    await userEvent.type(screen.getByLabelText("API key"), SECRET);
-    expect(screen.getByRole("button", { name: /add provider/i }))
+    const dialog = await openAddProvider();
+    const slugField = within(dialog).getByLabelText("Slug");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Dev OpenAI");
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    expect(within(dialog).getByRole("button", { name: /add provider/i }))
       .toHaveProperty("disabled", true);
 
     await userEvent.type(slugField, "openai-dev");
-    await userEvent.click(screen.getByRole("button", { name: /add provider/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "POST");
       expect(call?.body).toMatchObject({ slug: "openai-dev", type: "openai" });
     });
 
     // A type with no instance keeps today's URLs, so the field disappears.
-    await choose(screen.getByLabelText("Provider"), /gemini/i);
-    expect(screen.queryByLabelText("Slug")).toBeNull();
+    const reopened = await openAddProvider();
+    await choose(within(reopened).getByLabelText("Provider"), /gemini/i);
+    expect(within(reopened).queryByLabelText("Slug")).toBeNull();
   });
 
   it("reveals and focuses the slug field when the API reports the slug taken", async () => {
@@ -422,12 +583,14 @@ describe("ProvidersPage", () => {
     renderAuthenticated(<ProvidersPage />);
 
     // The client's list said nothing was configured, so no slug was asked for.
-    await userEvent.type(await screen.findByLabelText("Name"), "Prod OpenAI");
-    expect(screen.queryByLabelText("Slug")).toBeNull();
-    await userEvent.type(screen.getByLabelText("API key"), SECRET);
-    await userEvent.click(screen.getByRole("button", { name: /add provider/i }));
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
+    expect(within(dialog).queryByLabelText("Slug")).toBeNull();
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
 
-    const slugField = await screen.findByLabelText("Slug");
+    // A rejected credential keeps the modal open on the field that fixes it.
+    const slugField = await within(dialog).findByLabelText("Slug");
     await waitFor(() => expect(document.activeElement).toBe(slugField));
   });
 
@@ -603,9 +766,10 @@ describe("ProvidersPage", () => {
     renderAuthenticated(<ProvidersPage />, { session: { role: "member" } });
 
     await screen.findByText("Prod OpenAI");
-    expect(screen.getByRole("button", { name: /add provider/i })).toHaveProperty("disabled", true);
+    // The creation flows live behind these two buttons, so a read-only member
+    // never reaches a field at all.
+    expect(screen.getByRole("button", { name: /new provider/i })).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: /add gateway/i })).toHaveProperty("disabled", true);
-    expect(screen.getByLabelText("API key")).toHaveProperty("disabled", true);
     for (const button of screen.getAllByRole("button", { name: "Rotate" })) {
       expect(button).toHaveProperty("disabled", true);
     }

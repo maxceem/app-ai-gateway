@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { Field } from "@/components/field";
+import { Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
@@ -63,25 +63,22 @@ export function ManagementKeysPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="max-w-2xl space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight">Management keys</h1>
-          <p className="text-sm text-muted-foreground">
-            Management keys let you manage everything in this console through the API — from CI,
-            scripts, or an AI agent.
-          </p>
-        </div>
-        <GuardedButton
-          size="sm"
-          onClick={() => {
-            setName("");
-            setCreating(true);
-          }}
-        >
-          <Plus className="size-4" />
-          New key
-        </GuardedButton>
-      </div>
+      <PageHeader
+        title="Management keys"
+        description="Management keys let you manage everything in this console through the API — from CI, scripts, or an AI agent."
+        action={
+          <GuardedButton
+            size="sm"
+            onClick={() => {
+              setName("");
+              setCreating(true);
+            }}
+          >
+            <Plus className="size-4" />
+            New key
+          </GuardedButton>
+        }
+      />
 
       {list.isError ? (
         <Alert variant="destructive">

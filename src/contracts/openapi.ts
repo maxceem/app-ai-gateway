@@ -12,6 +12,7 @@ import {
   ProviderGatewayRotateRequestSchema,
   ProviderGatewayUpdateRequestSchema,
   ProviderPricingSchema,
+  ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
@@ -30,6 +31,7 @@ export {
   ProviderGatewayUpdateRequestSchema,
   ProviderPricingSchema,
   SlugSchema,
+  ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
@@ -633,6 +635,30 @@ register({
       validated: ProviderValidatedSchema,
     })),
     409: response("The requested active provider slug is already in use.", ErrorResponseSchema),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/providers/test",
+  tags: ["Admin providers"],
+  operationId: "testProviderCredential",
+  summary: "Probe a provider credential without storing it",
+  description:
+    "Runs the same live probe a create runs, against a credential that does not exist yet. Nothing is stored. Supply exactly one direct provider secret or an existing providerGatewayId.",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(ProviderTestRequestSchema) } },
+  responses: {
+    200: response("Probe outcome.", z.object({
+      validated: ProviderValidatedSchema,
+      reason: z.enum(["no_probe", "unreachable", "unexpected_status"]).optional().openapi({
+        description: "Why an unvalidated probe proved nothing. Absent when validated is true.",
+      }),
+      status: z.number().int().optional().openapi({
+        description: "The upstream status behind an unexpected_status reason.",
+      }),
+    })),
     ...errorResponses,
   },
 });
