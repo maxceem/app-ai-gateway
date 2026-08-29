@@ -181,6 +181,13 @@ export const appUsageEvent = sqliteTable(
   "app_usage_event",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
+    /**
+     * Recording identity, generated once per event and reused by every retry so
+     * the insert can be replayed without duplicating the row. Null on rows
+     * written before recording became idempotent; SQLite's unique index treats
+     * each NULL as distinct, so those rows coexist.
+     */
+    eventId: text("event_id"),
     appId: text("app_id").notNull(),
     userId: text("user_id").notNull(),
     apiKeyId: text("api_key_id"),
@@ -210,6 +217,7 @@ export const appUsageEvent = sqliteTable(
   (table) => [
     index("idx_usage_user_month").on(table.appId, table.userId, table.createdAt),
     index("idx_usage_app_month").on(table.appId, table.createdAt),
+    uniqueIndex("usage_events_event_id_unique").on(table.eventId),
     check(
       "usage_events_status_check",
       sql`${table.status} IN ('ok', 'provider_error', 'blocked_rate', 'blocked_budget', 'blocked_user')`,

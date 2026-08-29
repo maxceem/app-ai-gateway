@@ -26,6 +26,7 @@ describe("initial database migration", () => {
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_type");
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_id");
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_slug");
+    expect(usageColumns.results.map((column) => column.name)).toContain("event_id");
     expect(usageColumns.results.map((column) => column.name)).not.toContain("provider");
     expect(usageColumns.results.find((column) => column.name === "cost_usd")).toMatchObject({
       notnull: 1,
@@ -120,6 +121,20 @@ describe("initial database migration", () => {
          VALUES ('migration-cost', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', NULL, 'ok')`,
       ).run(),
     ).rejects.toThrow(/NOT NULL constraint failed: app_usage_event.cost_usd/u);
+  });
+
+  it("rejects a repeated usage event id while tolerating rows recorded before it existed", async () => {
+    const insert = (eventId: string | null) =>
+      env.DB.prepare(
+        `INSERT INTO app_usage_event(event_id, app_id, user_id, provider_type, model, route, cost_usd, status)
+         VALUES (?, 'migration-event-id', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 0, 'ok')`,
+      ).bind(eventId).run();
+
+    // Pre-migration rows carry NULL, and SQLite counts every NULL as distinct.
+    await insert(null);
+    await expect(insert(null)).resolves.toBeDefined();
+    await insert("migration-event-1");
+    await expect(insert("migration-event-1")).rejects.toThrow(/UNIQUE constraint failed/u);
   });
 
   it("allows one active provider row per organization and slug", async () => {

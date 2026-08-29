@@ -327,13 +327,149 @@ export function computeCost(
   ) / 1_000_000;
 }
 
+/**
+ * A usage event, complete before anything is written. Construction is kept
+ * separate from `persistUsageEvent` so the same value could later be handed to
+ * a queue without changing how it is settled or stored.
+ */
+export interface UsageEvent {
+  /** Stable across every retry and replay: it is what makes each step a no-op the second time. */
+  eventId: string;
+  /** The `app_usage_event` row exactly as it will be inserted. */
+  row: typeof appUsageEvent.$inferInsert;
+  /** Cost to settle against the limiters; zero when there is nothing to spend. */
+  costMicrousd: number;
+  /** Whether the app-wide limiter settles this event alongside the per-user one. */
+  appLevelLimitsEnabled: boolean;
+  /**
+   * Billed duration for per-minute and per-hour models, which price on time
+   * rather than tokens. Log-only: the row has no column for it, and the logged
+   * value is the sole record of what a transcription cost was computed from.
+   */
+  audioSeconds?: number;
+}
+
+const RECORD_ATTEMPTS = 3;
+const RECORD_RETRY_DELAY_MS = 25;
+
+/**
+ * Retries one recording step within the current `waitUntil`. Retrying is only
+ * safe because every step is idempotent: an ambiguous failure that actually
+ * landed costs a wasted no-op, never a double charge or a duplicate row.
+ */
+async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= RECORD_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < RECORD_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, RECORD_RETRY_DELAY_MS * attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Runs a step to exhaustion and reports whether it landed. A step that never
+ * succeeds is logged under one code and abandoned rather than rethrown: the
+ * response was served long ago, and partial progress stays valid because a
+ * later duplicate attempt is harmless.
+ */
+async function recordStep(
+  step: string,
+  event: UsageEvent,
+  operation: () => Promise<unknown>,
+): Promise<boolean> {
+  try {
+    await withRetry(operation);
+    return true;
+  } catch (error) {
+    log("error", "usage_record_failed", {
+      eventId: event.eventId,
+      appId: event.row.appId,
+      userId: event.row.userId,
+      step,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+/** Conflict on the unique `event_id` means a previous attempt already stored the row. */
+function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
+  return database(env.DB)
+    .insert(appUsageEvent)
+    .values(event.row)
+    .onConflictDoNothing({ target: appUsageEvent.eventId });
+}
+
+/**
+ * Writes one event everywhere it belongs. Limiter settlement runs first so a
+ * monthly budget starts blocking as soon as the spend is known; the D1 row and
+ * the API key timestamp are reporting and can lag. Steps are retried
+ * independently, and all of them are idempotent, so re-persisting the same
+ * event after a partial failure converges instead of double-counting.
+ */
+export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<void> {
+  const outcomes: boolean[] = [];
+  if (event.costMicrousd > 0) {
+    const now = Date.now();
+    const limiter = env.USER_LIMITER.getByName(
+      `${event.row.appId}:${event.row.userId}`,
+    ) as DurableObjectStub<UserLimiter>;
+    const settlements = [
+      recordStep("limiter_user", event, () =>
+        limiter.addCost(event.eventId, now, event.costMicrousd)),
+    ];
+    if (event.appLevelLimitsEnabled) {
+      const appLimiter = env.USER_LIMITER.getByName(
+        event.row.appId,
+      ) as DurableObjectStub<UserLimiter>;
+      settlements.push(
+        recordStep("limiter_app", event, () =>
+          appLimiter.addCost(event.eventId, now, event.costMicrousd)),
+      );
+    }
+    outcomes.push(...(await Promise.all(settlements)));
+  }
+  outcomes.push(await recordStep("usage_insert", event, () => insertUsageEvent(env, event)));
+  const apiKeyId = event.row.apiKeyId;
+  if (apiKeyId) {
+    outcomes.push(await recordStep("api_key_used", event, () => markApiKeyUsed(env, apiKeyId)));
+  }
+  if (!outcomes.every(Boolean)) return;
+  log("info", "usage_recorded", {
+    eventId: event.eventId,
+    appId: event.row.appId,
+    userId: event.row.userId,
+    provider: event.row.providerType,
+    providerSlug: event.row.providerSlug,
+    model: event.row.model,
+    status: event.row.status,
+    inputTokens: event.row.inputTokens,
+    cachedInputTokens: event.row.cachedInputTokens,
+    cacheWriteTokens: event.row.cacheWriteTokens,
+    outputTokens: event.row.outputTokens,
+    // Undefined for token-priced traffic, where JSON.stringify drops the field.
+    audioSeconds: event.audioSeconds,
+    costUsd: event.row.costUsd,
+  });
+}
+
 export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
+  // Minted before any work, so the observer read, the retries below and any
+  // later replay of this same event all settle under one identity.
+  const eventId = crypto.randomUUID();
   let usage: UsageObservation = EMPTY;
   if (input.stream) {
     try {
       usage = extractUsageText(await readObserver(input.stream), input.contentType, input.provider);
     } catch (error) {
       log("warn", "usage_extraction_failed", {
+        eventId,
         appId: input.appId,
         userId: input.userId,
         provider: input.provider,
@@ -341,80 +477,79 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
-  const cost = computeCost(input.provider, input.model, usage, input.pricing);
-  if (cost === null) {
-    throw new Error(`Refusing to persist usage for unpriced model ${input.provider}/${input.model}`);
+  const price = computeCost(input.provider, input.model, usage, input.pricing);
+  if (price === null) {
+    // Unpriced models are refused before they proxy, so reaching here means the
+    // catalog and the gate disagree. Recording at zero keeps the event and its
+    // tokens; the dedicated code makes the mispricing alertable, where the old
+    // throw only vanished inside `waitUntil`.
+    log("error", "usage_unpriced_model", {
+      eventId,
+      appId: input.appId,
+      userId: input.userId,
+      provider: input.provider,
+      providerSlug: input.providerSlug,
+      model: input.model,
+    });
   }
-  await database(input.env.DB).insert(appUsageEvent).values({
-    appId: input.appId,
-    userId: input.userId,
-    apiKeyId: input.apiKeyId ?? null,
-    providerType: input.provider,
-    providerId: input.providerId,
-    providerSlug: input.providerSlug,
-    model: input.model,
-    route: input.route,
-    endpointSlug: input.endpointSlug ?? null,
-    inputTokens: usage.inputTokens,
-    cachedInputTokens: usage.cachedInputTokens,
-    cacheWriteTokens: usage.cacheWriteTokens,
-    outputTokens: usage.outputTokens,
-    costUsd: cost,
-    appVersion: input.appVersion,
-    authMethod: input.authMethod,
-    status: input.status,
-    latencyMs: input.latencyMs,
-  });
-  const costMicrousd = Math.max(0, Math.round(cost * 1_000_000));
-  const now = Date.now();
-  const limiter = input.env.USER_LIMITER.getByName(`${input.appId}:${input.userId}`) as DurableObjectStub<UserLimiter>;
-  const writes: Promise<unknown>[] = [limiter.addCost(now, costMicrousd)];
-  if (input.appLevelLimitsEnabled) {
-    const appLimiter = input.env.USER_LIMITER.getByName(input.appId) as DurableObjectStub<UserLimiter>;
-    writes.push(appLimiter.addCost(now, costMicrousd));
-  }
-  if (input.apiKeyId) writes.push(markApiKeyUsed(input.env, input.apiKeyId));
-  await Promise.all(writes);
-  log("info", "usage_recorded", {
-    appId: input.appId,
-    userId: input.userId,
-    provider: input.provider,
-    providerSlug: input.providerSlug,
-    model: input.model,
-    status: input.status,
-    ...usage,
-    costUsd: cost,
+  const cost = price ?? 0;
+  await persistUsageEvent(input.env, {
+    eventId,
+    row: {
+      eventId,
+      appId: input.appId,
+      userId: input.userId,
+      apiKeyId: input.apiKeyId ?? null,
+      providerType: input.provider,
+      providerId: input.providerId,
+      providerSlug: input.providerSlug,
+      model: input.model,
+      route: input.route,
+      endpointSlug: input.endpointSlug ?? null,
+      inputTokens: usage.inputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
+      outputTokens: usage.outputTokens,
+      costUsd: cost,
+      appVersion: input.appVersion,
+      authMethod: input.authMethod,
+      status: input.status,
+      latencyMs: input.latencyMs,
+    },
+    costMicrousd: Math.max(0, Math.round(cost * 1_000_000)),
+    appLevelLimitsEnabled: input.appLevelLimitsEnabled,
+    audioSeconds: usage.audioSeconds,
   });
 }
 
 export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Promise<void> {
-  await database(input.env.DB).insert(appUsageEvent).values({
-    appId: input.appId,
-    userId: input.userId,
-    apiKeyId: input.apiKeyId ?? null,
-    providerType: input.provider,
-    providerId: input.providerId ?? null,
-    providerSlug: input.providerSlug ?? null,
-    model: input.model,
-    route: input.route,
-    endpointSlug: input.endpointSlug ?? null,
-    costUsd: 0,
-    appVersion: input.appVersion,
-    authMethod: input.authMethod,
-    status: input.status,
-    latencyMs: input.latencyMs,
-  });
-  if (input.apiKeyId) await markApiKeyUsed(input.env, input.apiKeyId);
-  log("info", "usage_recorded", {
-    appId: input.appId,
-    userId: input.userId,
-    provider: input.provider,
-    model: input.model,
-    status: input.status,
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    cacheWriteTokens: 0,
-    outputTokens: 0,
-    costUsd: 0,
+  const eventId = crypto.randomUUID();
+  // A blocked request spent nothing, so there is no limiter settlement: only
+  // the row and the key timestamp, both idempotent under the same identity.
+  await persistUsageEvent(input.env, {
+    eventId,
+    row: {
+      eventId,
+      appId: input.appId,
+      userId: input.userId,
+      apiKeyId: input.apiKeyId ?? null,
+      providerType: input.provider,
+      providerId: input.providerId ?? null,
+      providerSlug: input.providerSlug ?? null,
+      model: input.model,
+      route: input.route,
+      endpointSlug: input.endpointSlug ?? null,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      appVersion: input.appVersion,
+      authMethod: input.authMethod,
+      status: input.status,
+      latencyMs: input.latencyMs,
+    },
+    costMicrousd: 0,
+    appLevelLimitsEnabled: false,
   });
 }

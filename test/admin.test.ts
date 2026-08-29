@@ -64,8 +64,8 @@ describe("admin API", () => {
     ).run();
     const userLimiter = env.USER_LIMITER.getByName(`${appId}:${userId}`);
     const appLimiter = env.USER_LIMITER.getByName(appId);
-    await userLimiter.addCost(Date.now(), 184);
-    await appLimiter.addCost(Date.now(), 184);
+    await userLimiter.addCost(crypto.randomUUID(), Date.now(), 184);
+    await appLimiter.addCost(crypto.randomUUID(), Date.now(), 184);
     const month = new Date().toISOString().slice(0, 7);
     const url = `https://example.test/v1/admin/apps/${appId}/usage/reprice`;
     const request = (apply: boolean) => exports.default.fetch(url, {
