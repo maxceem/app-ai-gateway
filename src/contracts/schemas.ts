@@ -193,19 +193,30 @@ export const ProviderTestRequestSchema = z.object({
 }).meta({ id: "ProviderTestRequest" });
 
 /**
- * Creation is Cloudflare-only while it is the only gateway type with an
- * adapter. The stored `type` column already admits every planned name, so
- * adding a gateway is an adapter plus a literal here — never a table rebuild.
+ * One member per gateway type that has an adapter, discriminated by `type`
+ * because each gateway needs a different set of non-secret fields to be
+ * reachable at all. The stored `type` column already admits every planned name,
+ * so adding a gateway is an adapter plus a member here — never a table rebuild.
+ *
+ * Vercel asks for nothing but a name and a token: its origin is fixed in
+ * adapter code, and the token alone identifies the Vercel team.
  */
-export const ProviderGatewayCreateRequestSchema = z.object({
-  type: z.literal("cf_aig", {
-    error: "Only cf_aig provider gateways can be created by this deployment",
-  }),
-  name: ProviderNameSchema,
-  accountId: z.string().trim().min(1).max(100),
-  gatewayId: z.string().trim().min(1).max(100),
-  token: ProviderSecretSchema,
-}).strict().meta({ id: "ProviderGatewayCreateRequest" });
+export const ProviderGatewayCreateRequestSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("cf_aig"),
+    name: ProviderNameSchema,
+    accountId: z.string().trim().min(1).max(100),
+    gatewayId: z.string().trim().min(1).max(100),
+    token: ProviderSecretSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("vercel"),
+    name: ProviderNameSchema,
+    token: ProviderSecretSchema,
+  }).strict(),
+], {
+  error: "Provider gateway type must be one of cf_aig, vercel",
+}).meta({ id: "ProviderGatewayCreateRequest" });
 
 export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,

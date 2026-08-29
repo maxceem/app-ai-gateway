@@ -7,7 +7,12 @@ import {
 } from "../../contracts/schemas";
 import { assertRouteServesProvider } from "../../core/capabilities";
 import { GatewayError } from "../../core/errors";
-import { assertGatewayRoute, isGatewayType } from "../../core/gateways";
+import {
+  assertGatewayRoute,
+  isGatewayType,
+  resolveGateway,
+  type ResolvedGateway,
+} from "../../core/gateways";
 import { probeProviderGateway, probeProviderKey } from "../../core/provider-probe";
 import {
   decryptProviderGatewaySecret,
@@ -21,7 +26,6 @@ import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
-  type ProviderGatewayType,
   type ProviderPricing,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -127,40 +131,28 @@ async function gatewayToken(
   c: Context<ProviderEnv>,
   organizationId: string,
   gatewayId: string,
-): Promise<{
-  type: ProviderGatewayType;
-  accountId: string;
-  gatewayId: string;
-  token: string;
-}> {
-  const gateway = await database(c.env.DB).query.providerGateway.findFirst({
+): Promise<{ gateway: ResolvedGateway; token: string }> {
+  const row = await database(c.env.DB).query.providerGateway.findFirst({
     where: and(
       eq(providerGateway.id, gatewayId),
       eq(providerGateway.organizationId, organizationId),
       eq(providerGateway.status, "active"),
     ),
   });
-  if (!gateway) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   // The stored type comes from a CHECK wider than the adapter registry, so a
   // row this deployment cannot serve is refused here rather than mis-read as
-  // Cloudflare configuration.
-  if (!isGatewayType(gateway.type)) {
+  // another gateway's configuration.
+  if (!isGatewayType(row.type)) {
     throw new GatewayError(
       400,
       "invalid_request",
-      `This deployment has no adapter for ${gateway.type} provider gateways`,
+      `This deployment has no adapter for ${row.type} provider gateways`,
     );
   }
   return {
-    type: gateway.type,
-    accountId: gateway.config.accountId,
-    gatewayId: gateway.config.gatewayId,
-    token: await decryptProviderGatewaySecret(
-      c.env,
-      organizationId,
-      gateway.id,
-      gateway.secretBlob,
-    ),
+    gateway: resolveGateway(row.type, row.config),
+    token: await decryptProviderGatewaySecret(c.env, organizationId, row.id, row.secretBlob),
   };
 }
 
@@ -177,15 +169,11 @@ providerRoutes.post("/providers/test", async (c) => {
     return c.json(await probeProviderKey(body.type, body.secret));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
-  const { type: gatewayType, ...gateway } = await gatewayToken(
-    c,
-    admin.organizationId,
-    body.providerGatewayId!,
-  );
+  const resolved = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
   // Said here rather than reported as an inconclusive probe: "this gateway does
   // not serve DeepSeek" and "nothing could be proven" are different answers.
-  assertRouteServesProvider(gatewayType, body.type);
-  return c.json(await probeProviderGateway({ type: body.type, ...gateway }));
+  assertRouteServesProvider(resolved.gateway.type, body.type);
+  return c.json(await probeProviderGateway({ type: body.type, ...resolved }));
 });
 
 providerRoutes.post("/providers", async (c) => {
@@ -218,14 +206,14 @@ providerRoutes.post("/providers", async (c) => {
       throw new GatewayError(400, "invalid_request", "providerGatewayId is required");
     }
     providerGatewayId = gatewayId;
-    const { type: gatewayType, ...gateway } = await gatewayToken(c, admin.organizationId, gatewayId);
+    const resolved = await gatewayToken(c, admin.organizationId, gatewayId);
     // A gateway with no mapping for this provider type could never carry one of
     // its requests, so the row is refused instead of being stored dead.
-    assertRouteServesProvider(gatewayType, body.type);
+    assertRouteServesProvider(resolved.gateway.type, body.type);
     // The adapter that will carry the traffic is the only judge of its own
     // routing configuration, so a route is never stored unvalidated.
-    assertGatewayRoute(gatewayType, gatewayRoute);
-    validated = (await probeProviderGateway({ type: body.type, ...gateway })).validated;
+    assertGatewayRoute(resolved.gateway.type, gatewayRoute);
+    validated = (await probeProviderGateway({ type: body.type, ...resolved })).validated;
   }
 
   let row: ProviderRow;
@@ -269,7 +257,7 @@ providerRoutes.put("/providers/:id", async (c) => {
   if (body.gatewayRoute !== undefined) {
     const gatewayType = row.providerGatewayId === null
       ? null
-      : (await gatewayToken(c, admin.organizationId, row.providerGatewayId)).type;
+      : (await gatewayToken(c, admin.organizationId, row.providerGatewayId)).gateway.type;
     assertGatewayRoute(gatewayType, body.gatewayRoute);
     updates.gatewayRoute = body.gatewayRoute;
   }

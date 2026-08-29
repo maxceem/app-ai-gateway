@@ -1,4 +1,4 @@
-import type { ProviderGatewayType, ProviderPricing } from "../db/schema";
+import type { GatewayRouteConfig, ProviderGatewayType, ProviderPricing } from "../db/schema";
 import { apiStyleFromPath, outputClampStyle, type ApiStyle } from "./api-styles";
 import {
   assertApiStyleSupported,
@@ -6,7 +6,7 @@ import {
   type ProviderRoute,
 } from "./capabilities";
 import { GatewayError } from "./errors";
-import { GATEWAY_ADAPTERS, gatewayUpstream } from "./gateways";
+import { GATEWAY_ADAPTERS, gatewayBodyMutation, gatewayUpstream } from "./gateways";
 import type { ResolvedProvider } from "./provider-store";
 import {
   PROVIDER_REGISTRY,
@@ -299,6 +299,8 @@ export async function prepareProxyRequest(input: {
   providerPath: string;
   /** How the resolved row reaches the provider; the matrix judges the pair. */
   route: ProviderRoute;
+  /** The row's stored routing configuration, if its gateway takes one. */
+  gatewayRoute?: GatewayRouteConfig | null;
   tokenHeader: string;
   /** The resolved row's per-model overrides; they win over the global catalog. */
   pricing: ProviderPricing | null;
@@ -348,7 +350,12 @@ export async function prepareProxyRequest(input: {
     if (!isBillable(input.provider, actualModel, input.pricing)) {
       throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
     }
-    const wireModel = routeWireModel(input.route, input.provider, actualModel);
+    const wireModel = routeWireModel(
+      input.route,
+      input.provider,
+      actualModel,
+      input.gatewayRoute,
+    );
     if (match.modelFromPath && wireModel !== requestedModel) {
       providerPath = match.entry.path.replace("{model}", encodeURIComponent(wireModel));
       body = Uint8Array.from(bytes).buffer;
@@ -390,7 +397,7 @@ export async function prepareProxyRequest(input: {
   }
   // Everything above judged the canonical model; only the outbound request
   // speaks the route's own namespace, and only where the adapter declares one.
-  const wireModel = routeWireModel(input.route, input.provider, actualModel);
+  const wireModel = routeWireModel(input.route, input.provider, actualModel, input.gatewayRoute);
   if (match.modelFromPath) {
     providerPath = wireModel === requestedModel
       ? input.providerPath
@@ -405,6 +412,15 @@ export async function prepareProxyRequest(input: {
     validateOrInjectOutputCap(clampStyle, input.provider, parsed, config.max_output_tokens)
     || bodyChanged;
   bodyChanged = injectCostReport(input.provider, apiStyle, parsed) || bodyChanged;
+  // The gateway's own routing directive, applied last so it wins over anything
+  // a client put in the same field. Same-protocol: it steers the gateway, and
+  // the provider behind it sees the payload it would have seen anyway.
+  bodyChanged = gatewayBodyMutation({
+    gatewayType: input.route === "direct" ? null : input.route,
+    route: input.gatewayRoute ?? null,
+    style: apiStyle,
+    body: parsed,
+  }) || bodyChanged;
   headers.set("content-type", "application/json");
   body = bodyChanged ? JSON.stringify(parsed) : new TextDecoder().decode(bytes);
   return {

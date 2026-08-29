@@ -79,6 +79,38 @@ beforeAll(async () => {
     gateway: "cf_aig",
     providerGatewayId: "attribution-gateway",
   });
+  // One canonical model, three routes. Prices, allowlists, and recorded usage
+  // must agree across all of them; only the wire body may differ.
+  await seedProvider({
+    type: "gemini",
+    id: "attribution-gemini-direct",
+    slug: "gemini-direct",
+    secret: "sk-gemini-direct",
+  });
+  await seedProvider({
+    type: "gemini",
+    id: "attribution-gemini-cf",
+    slug: "gemini-cf",
+    secret: "cf-aig-gemini-token",
+    gateway: "cf_aig",
+    providerGatewayId: "attribution-gemini-cf-gateway",
+  });
+  await seedProvider({
+    type: "gemini",
+    id: "attribution-gemini-vercel",
+    slug: "gemini-vercel",
+    secret: "vck_gemini_token",
+    gateway: "vercel",
+    providerGatewayId: "attribution-vercel-gateway",
+  });
+  await seedProvider({
+    type: "gemini",
+    id: "attribution-gemini-vercel-pinned",
+    slug: "gemini-vercel-pinned",
+    secret: "vck_gemini_token",
+    providerGatewayId: "attribution-vercel-gateway",
+    gatewayRoute: { providerOnly: ["vertex"] },
+  });
   await seedProvider({
     type: "openrouter",
     id: "attribution-openrouter",
@@ -107,6 +139,14 @@ afterAll(async () => {
   await db.delete(provider).where(eq(provider.id, "attribution-routed"));
   await db.delete(provider).where(eq(provider.id, "attribution-openrouter"));
   await db.delete(provider).where(eq(provider.id, "attribution-openrouter-priced"));
+  for (const id of [
+    "attribution-gemini-direct",
+    "attribution-gemini-cf",
+    "attribution-gemini-vercel",
+    "attribution-gemini-vercel-pinned",
+  ]) {
+    await db.delete(provider).where(eq(provider.id, id));
+  }
   clearProviderCaches();
   clearAppConfigCache();
 });
@@ -202,6 +242,157 @@ describe("gateway attribution on recorded usage", () => {
       served_model: null,
       reported_cost_usd: null,
     });
+  });
+});
+
+/**
+ * The plan's central claim, end to end: one canonical model ID priced and
+ * recorded identically on three routes, with the namespace living only on the
+ * wire — and an OpenAI payload reaching Vercel as an OpenAI payload, because
+ * this gateway never converts between provider protocols.
+ */
+describe("canonical model identity across direct, cf_aig, and vercel routes", () => {
+  const MODEL = "gemini-2.5-flash";
+  let sent: { url: string; headers: Headers; body: unknown }[] = [];
+
+  function stubUpstream(): void {
+    sent = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      sent.push({
+        url: typeof request === "string" ? request : String(request),
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body,
+      });
+      return Response.json({
+        // Echoed back namespaced, exactly as Vercel does: the recorded model
+        // must come back canonical.
+        model: "google/gemini-2.5-flash",
+        usage: { prompt_tokens: 1000, completion_tokens: 500 },
+      });
+    });
+  }
+
+  /** The same OpenAI chat-completions request, whichever instance carries it. */
+  async function chat(slug: string, body?: Record<string, unknown>): Promise<Response> {
+    stubUpstream();
+    const response = await workerFetch(
+      `${ORIGIN}/v1/apps/${APP_ID}/proxy/${slug}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(APP_ID)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [{ role: "user", content: "hello" }],
+          ...body,
+        }),
+      },
+    );
+    await response.text();
+    return response;
+  }
+
+  it("prices and records one canonical model identically on all three routes", async () => {
+    const recorded: Record<string, EventRow> = {};
+    for (const slug of ["gemini-direct", "gemini-cf", "gemini-vercel"]) {
+      expect([slug, (await chat(slug)).status]).toEqual([slug, 200]);
+      recorded[slug] = await lastEvent(slug);
+    }
+    for (const slug of ["gemini-cf", "gemini-vercel"]) {
+      expect([slug, recorded[slug]!.cost_usd]).toEqual([slug, recorded["gemini-direct"]!.cost_usd]);
+      expect([slug, recorded[slug]!.model]).toEqual([slug, MODEL]);
+      expect([slug, recorded[slug]!.cost_source]).toEqual([slug, "computed"]);
+      expect([slug, recorded[slug]!.model_author]).toEqual([slug, "Google"]);
+    }
+    // A real number, not two matching zeroes.
+    expect(recorded["gemini-direct"]!.cost_usd).toBeGreaterThan(0);
+  });
+
+  it("puts the namespace on the wire and nowhere else", async () => {
+    await chat("gemini-vercel");
+    expect(sent[0]!.url).toBe("https://ai-gateway.vercel.sh/v1/chat/completions");
+    expect(sent[0]!.body).toMatchObject({ model: "google/gemini-2.5-flash" });
+    // Recorded canonical, from a response that named the model the other way.
+    expect(await lastEvent("gemini-vercel")).toMatchObject({
+      model: MODEL,
+      provider_gateway_id: "attribution-vercel-gateway",
+      provider_gateway_type: "vercel",
+      // Vercel documents BYOK as preferred with a fallback to its own
+      // credentials, so no route-level guarantee exists to record.
+      credential_source: null,
+    });
+
+    // The other two routes speak the provider's own IDs verbatim.
+    await chat("gemini-cf");
+    expect(sent[0]!.body).toMatchObject({ model: MODEL });
+    await chat("gemini-direct");
+    expect(sent[0]!.body).toMatchObject({ model: MODEL });
+  });
+
+  it("forwards an OpenAI payload unchanged apart from the model rewrite", async () => {
+    const extras = {
+      messages: [{ role: "user", content: "hello" }],
+      temperature: 0.3,
+      stream: false,
+      tools: [{ type: "function", function: { name: "lookup", parameters: {} } }],
+      response_format: { type: "json_object" },
+    };
+    await chat("gemini-vercel", extras);
+    // No conversion to Gemini's `contents`/`generationConfig`, no fields added
+    // or dropped: Vercel translates once, downstream of this gateway.
+    expect(sent[0]!.body).toEqual({ ...extras, model: "google/gemini-2.5-flash" });
+  });
+
+  it("applies a row's provider pin as a same-protocol body option", async () => {
+    await chat("gemini-vercel-pinned");
+    expect(sent[0]!.body).toMatchObject({
+      model: "google/gemini-2.5-flash",
+      providerOptions: { gateway: { only: ["vertex"] } },
+    });
+    // The unpinned row on the same gateway is left alone.
+    await chat("gemini-vercel");
+    expect(sent[0]!.body).not.toHaveProperty("providerOptions");
+  });
+
+  it("refuses an API Vercel does not serve for this provider", async () => {
+    stubUpstream();
+    const response = await workerFetch(
+      `${ORIGIN}/v1/apps/${APP_ID}/proxy/gemini-vercel/v1beta/models/${MODEL}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(APP_ID)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: JSON.stringify({ contents: [] }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect((await response.json() as { error: { code: string } }).error.code)
+      .toBe("api_style_not_supported");
+    // Refused at the edge: nothing was sent upstream to be 404ed.
+    expect(sent).toEqual([]);
+
+    // The same request on the same provider type goes through on cf_aig, which
+    // forwards to Gemini's own API and so does carry the native operation.
+    const native = await workerFetch(
+      `${ORIGIN}/v1/apps/${APP_ID}/proxy/gemini-cf/v1beta/models/${MODEL}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(APP_ID)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: JSON.stringify({ contents: [] }),
+      },
+    );
+    expect(native.status).toBe(200);
+    await native.text();
   });
 });
 

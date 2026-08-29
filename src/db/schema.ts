@@ -31,18 +31,24 @@ export type ProviderGatewayTypeName = (typeof PROVIDER_GATEWAY_TYPE_NAMES)[numbe
  * can be created or can serve traffic. A name the database admits but no
  * adapter implements is rejected by the contracts, never by the CHECK.
  */
-export type ProviderGatewayType = "cf_aig";
+export type ProviderGatewayType = "cf_aig" | "vercel";
 /** Non-secret configuration for the org's own Cloudflare AI Gateway. */
 export interface CfAigConfig {
   accountId: string;
   gatewayId: string;
 }
 /**
- * What `provider_gateway.config_json` holds. `cf_aig` is the only gateway type
- * with an adapter, so this is one shape today; it becomes a union discriminated
- * by the row's `type` when the Vercel adapter lands.
+ * Vercel's AI Gateway is one fixed origin serving every team, and the team is
+ * identified by the token alone: there is nothing per-connection to store. The
+ * empty shape exists so the union has a place to grow without another rebuild.
  */
-export type ProviderGatewayConfig = CfAigConfig;
+export type VercelConfig = Record<string, never>;
+/**
+ * What `provider_gateway.config_json` holds, discriminated at runtime by the
+ * row's `type`. The adapter registry resolves the pair — see `resolveGateway`
+ * in `src/core/gateways.ts`, which is the only place the two are joined.
+ */
+export type ProviderGatewayConfig = CfAigConfig | VercelConfig;
 /**
  * What `provider.gateway_route_json` holds: how one provider row is routed
  * inside its gateway. The referenced `provider_gateway.type` selects the schema,

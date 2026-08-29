@@ -37,9 +37,9 @@ interface ProviderSummary {
 
 interface GatewaySummary {
   id: string;
-  type: "cf_aig";
+  type: "cf_aig" | "vercel";
   name: string;
-  config: { accountId: string; gatewayId: string };
+  config: Record<string, string>;
   secretHint: string;
   providerCount: number;
   status: string;
@@ -555,14 +555,110 @@ describe("admin provider gateway API", () => {
 describe("gateway routing configuration", () => {
   it("refuses to create a gateway type this deployment has no adapter for", async () => {
     const created = await call("POST", "/v1/admin/provider-gateways", {
+      type: "litellm",
+      name: "Self-hosted",
+      token: "some-token",
+    });
+    expect(created.status, created.text).toBe(400);
+    expect(created.body.error.message).toContain("cf_aig");
+  });
+
+  it("refuses Cloudflare's fields on a Vercel gateway, and Vercel's shape on Cloudflare", async () => {
+    stubProbe();
+    const withCfFields = await call("POST", "/v1/admin/provider-gateways", {
       type: "vercel",
       name: "Vercel",
       accountId: "acct-1",
       gatewayId: "gw-1",
       token: "vercel-token",
     });
+    expect(withCfFields.status, withCfFields.text).toBe(400);
+    const withoutCfFields = await call("POST", "/v1/admin/provider-gateways", {
+      type: "cf_aig",
+      name: "CF",
+      token: "cf-token",
+    });
+    expect(withoutCfFields.status, withoutCfFields.text).toBe(400);
+  });
+
+  it("creates a Vercel gateway from a name and a token, probing its credits endpoint", async () => {
+    const urls = stubProbe();
+    const created = await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Team gateway",
+      token: "vck_live_super_secret",
+    });
+    expect(created.status, created.text).toBe(201);
+    expect(created.text).not.toContain("vck_live_super_secret");
+    expect(created.body.gateway.type).toBe("vercel");
+    // Empty by construction: the origin is in adapter code and the token names
+    // the team, so there is nothing per-connection to store.
+    expect(created.body.gateway.config).toEqual({});
+    expect(created.body.validated).toBe(true);
+    expect(urls).toEqual(["https://ai-gateway.vercel.sh/v1/credits"]);
+
+    // Rotation re-probes the same connection through the same adapter.
+    urls.length = 0;
+    const rotated = await call(
+      "POST",
+      `/v1/admin/provider-gateways/${created.body.gateway.id}/rotate`,
+      { token: "vck_live_rotated_secret" },
+    );
+    expect(rotated.status, rotated.text).toBe(200);
+    expect(rotated.text).not.toContain("vck_live_rotated_secret");
+    expect(urls).toEqual(["https://ai-gateway.vercel.sh/v1/credits"]);
+  });
+
+  it("refuses a Vercel token the gateway rejects, on create and on rotate", async () => {
+    stubProbe("rejected");
+    const created = await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Team gateway",
+      token: "vck_not_a_key",
+    });
     expect(created.status, created.text).toBe(400);
-    expect(created.body.error.message).toContain("cf_aig");
+    expect(created.body.error.code).toBe("provider_key_invalid");
+    expect((await call("GET", "/v1/admin/provider-gateways")).body.gateways).toEqual([]);
+  });
+
+  it("stores and validates a Vercel-routed instance's routing configuration", async () => {
+    stubProbe();
+    const gateway = (await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Team gateway",
+      token: "vck_live_super_secret",
+    })).body.gateway as { id: string };
+
+    // A provider type Vercel's catalog has no namespace for is refused at
+    // configuration time rather than on its first request.
+    const unmapped = await call("POST", "/v1/admin/providers", {
+      type: "mistral",
+      name: "Mistral via Vercel",
+      providerGatewayId: gateway.id,
+    });
+    expect(unmapped.status, unmapped.text).toBe(400);
+    expect(unmapped.body.error.code).toBe("provider_not_supported_by_gateway");
+
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "gemini",
+      slug: "gemini-vercel",
+      name: "Gemini via Vercel",
+      providerGatewayId: gateway.id,
+      gatewayRoute: { providerOnly: ["google"] },
+    });
+    expect(routed.status, routed.text).toBe(201);
+    expect(routed.body.provider.gatewayRoute).toEqual({ providerOnly: ["google"] });
+
+    const badPrefix = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      gatewayRoute: { modelPrefix: "google" },
+    });
+    expect(badPrefix.status, badPrefix.text).toBe(400);
+    expect(badPrefix.body.error.message).toContain("end with a slash");
+
+    const unknownKey = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      gatewayRoute: { modelPrefix: "google/", region: "us" },
+    });
+    expect(unknownKey.status, unknownKey.text).toBe(400);
   });
 
   it("stores no routing configuration for a Cloudflare-routed instance", async () => {

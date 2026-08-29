@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { database } from "../db";
 import { app } from "../db/schema";
-import { providersForEndpointStyle } from "./capabilities";
+import { supportsEndpointStyle } from "./capabilities";
 import { GatewayError } from "./errors";
 import type { OrganizationProviders } from "./provider-store";
 import { emptyRecord, lookup, recordFromEntries } from "./records";
@@ -49,7 +49,7 @@ const CONFIG_CACHE_TTL_MS = 60_000;
 const WELL_KNOWN_PROVIDER_INSTANCES: OrganizationProviders = recordFromEntries(
   PROVIDER_TYPES.map((type) => [
     type,
-    { id: type, slug: type, type, pricing: null },
+    { id: type, slug: type, type, route: "direct" as const, pricing: null },
   ] as const),
 );
 const NO_GRANDFATHERED_SLUGS: ReadonlySet<string> = new Set();
@@ -350,12 +350,15 @@ function parseEndpointTarget(
   if (scope && !instance && !scope.grandfathered.has(provider)) {
     throw new GatewayError(500, "internal_error", `${label}.provider ${provider} is not configured`);
   }
-  const eligibleProviders = providersForEndpointStyle(apiStyle);
-  if (instance && !eligibleProviders.some((type) => type === instance.type)) {
+  // Route-aware: a gateway may carry fewer of a provider's operations than the
+  // provider itself has, so which instance this is matters as much as its type.
+  if (instance && !supportsEndpointStyle(instance.route, instance.type, apiStyle)) {
     throw new GatewayError(
       500,
       "internal_error",
-      `${label}.provider ${provider} is a ${instance.type} instance, which does not support ${apiStyle}`,
+      instance.route === "direct"
+        ? `${label}.provider ${provider} is a ${instance.type} instance, which does not support ${apiStyle}`
+        : `${label}.provider ${provider} is a ${instance.type} instance routed through a ${instance.route} gateway, which does not support ${apiStyle}`,
     );
   }
   const model = requiredString(value.model, `${label}.model`);

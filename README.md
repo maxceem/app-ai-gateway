@@ -28,10 +28,11 @@ then set `ALLOW_PUBLIC_REGISTRATION=false` for a private deployment.
 
 Model-provider credentials are added per organization under **Providers** in the
 console. They are probed, encrypted, and never displayed again. An organization
-can also route any provider through its own Cloudflare AI Gateway by supplying an
-account id, gateway id, and gateway token once — an optional routing choice, not
-a deployment requirement. Never put provider keys in this repository or in Worker
-variables.
+can also route a provider through its own **Cloudflare AI Gateway** (account id,
+gateway id, and token) or **Vercel AI Gateway** (an API key) by supplying the
+connection once — an optional routing choice, not a deployment requirement.
+Model IDs stay the provider's own on every route. Never put provider keys in this
+repository or in Worker variables.
 
 Hardened deployments can instead set `SECRET_VAULT_MODE=kms` with
 `SECRET_VAULT_KMS_URL` and `SECRET_VAULT_KMS_TOKEN`, which keeps the root key in

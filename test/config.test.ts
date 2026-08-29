@@ -89,6 +89,7 @@ describe("canonical app configuration", () => {
         id: "provider-openai-dev",
         slug: "openai-dev",
         type: "openai" as const,
+        route: "direct" as const,
         pricing: null,
       },
     };
@@ -136,6 +137,7 @@ describe("canonical app configuration", () => {
         id: "provider-openai-dev",
         slug: "openai-dev",
         type: "openai" as const,
+        route: "direct" as const,
         pricing: { "released-today": { input: 1, output: 2 } },
       },
     })).not.toThrow();
@@ -162,6 +164,7 @@ describe("canonical app configuration", () => {
         id: "provider-constructor",
         slug: "constructor",
         type: "openai" as const,
+        route: "direct" as const,
         pricing: null,
       },
     })).not.toThrow();
@@ -286,6 +289,48 @@ describe("named endpoint configuration", () => {
       }))).toThrowError(`endpoints.chat.fallback[0].provider ${provider} is a ${provider} instance, which does not support responses`);
     },
   );
+
+  /**
+   * The provider type is eligible; its *route* is not. Vercel serves no
+   * transcription API, so an endpoint naming a Vercel-routed instance is
+   * refused on save rather than stored and discovered on its first request.
+   */
+  it("rejects an endpoint style the instance's own route cannot carry", () => {
+    const instance = (route: "direct" | "cf_aig" | "vercel") => ({
+      "openai-routed": {
+        id: "provider-openai-routed",
+        slug: "openai-routed",
+        type: "openai" as const,
+        route,
+        pricing: null,
+      },
+    });
+    const transcribe = serverConfig({
+      endpoints: {
+        speech: {
+          api_style: "transcription",
+          provider: "openai-routed",
+          model: "gpt-4o-transcribe",
+        },
+      },
+    });
+    expect(() => validateAppConfigJson(transcribe, {}, instance("vercel"))).toThrowError(
+      "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support transcription",
+    );
+    // The same endpoint is fine on either route that reaches OpenAI's own API.
+    for (const route of ["direct", "cf_aig"] as const) {
+      expect(() => validateAppConfigJson(transcribe, {}, instance(route))).not.toThrow();
+    }
+    // A Responses endpoint works on all three: Vercel serves that one.
+    const respond = serverConfig({
+      endpoints: {
+        chat: { api_style: "responses", provider: "openai-routed", model: "gpt-5.6-luna" },
+      },
+    });
+    for (const route of ["direct", "cf_aig", "vercel"] as const) {
+      expect(() => validateAppConfigJson(respond, {}, instance(route))).not.toThrow();
+    }
+  });
 
   it("rejects an unknown api_style", () => {
     expect(() => validateAppConfigJson(serverConfig({

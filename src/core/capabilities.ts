@@ -1,4 +1,4 @@
-import type { ProviderGatewayType } from "../db/schema";
+import type { GatewayRouteConfig, ProviderGatewayType } from "../db/schema";
 import { API_STYLES, type ApiStyle } from "./api-styles";
 import { GatewayError } from "./errors";
 import {
@@ -81,9 +81,12 @@ export function narrowedCapability(
 ): RouteCapability | null {
   if (!route) return null;
   const allowed = route.apiStyles;
+  const allowedEndpoints = route.endpointStyles;
   return {
     apiStyles: allowed ? base.apiStyles.filter((style) => allowed.includes(style)) : base.apiStyles,
-    endpointStyles: base.endpointStyles,
+    endpointStyles: allowedEndpoints
+      ? base.endpointStyles.filter((style) => allowedEndpoints.includes(style))
+      : base.endpointStyles,
   };
 }
 
@@ -114,8 +117,10 @@ export function routeWireModel(
   route: ProviderRoute,
   provider: ProviderType,
   canonical: string,
+  /** The row's own routing configuration; its `modelPrefix` wins if it set one. */
+  config?: GatewayRouteConfig | null,
 ): string {
-  return wireModel(gatewayRoute(route, provider), canonical);
+  return wireModel(gatewayRoute(route, provider), canonical, config);
 }
 
 /** A model ID observed on the wire, back to canonical. Strips only this route's own prefix. */
@@ -123,8 +128,9 @@ export function routeCanonicalModel(
   route: ProviderRoute,
   provider: ProviderType,
   observed: string,
+  config?: GatewayRouteConfig | null,
 ): string {
-  return canonicalModel(gatewayRoute(route, provider), observed);
+  return canonicalModel(gatewayRoute(route, provider), observed, config);
 }
 
 /**

@@ -37,6 +37,7 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
+import { gatewayApiSurface } from "@/lib/capabilities";
 import {
   CREATABLE_GATEWAY_TYPES,
   GATEWAY_TYPE_LABELS,
@@ -207,6 +208,52 @@ function RoutedVia({
   );
 }
 
+/**
+ * How to call one instance, derived from the capability matrix rather than
+ * configured: the client APIs this route carries and the path each is reached
+ * at, the ones it cannot carry, and the rule for the `model` field. Direct rows
+ * keep the per-provider prose on the app's proxy-policy tab instead, because
+ * their paths are the provider's own and differ per provider.
+ */
+function ClientApis({
+  row,
+  gateways,
+}: {
+  row: ProviderCredential;
+  gateways: ProviderGateway[];
+}) {
+  const gateway = row.providerGatewayId === null
+    ? null
+    : gateways.find((entry) => entry.id === row.providerGatewayId);
+  const surface = gateway ? gatewayApiSurface(gateway.type, row.type) : null;
+  // Direct rows, and gateways that forward to the provider's own API, have no
+  // list of their own — their paths are the provider's, described per provider
+  // type on the app's proxy-policy tab.
+  if (!surface?.narrowed) return <span className="text-muted-foreground">Provider's own API</span>;
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-1">
+        {surface.available.map((entry) => (
+          <Badge
+            key={entry.style}
+            variant="secondary"
+            className="font-normal"
+            title={`POST /v1/apps/{app}/proxy/${row.slug}/${entry.path}`}
+          >
+            {entry.label}
+          </Badge>
+        ))}
+      </div>
+      {surface.unavailable.length > 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          Not available: {surface.unavailable.map((entry) => entry.label).join(", ")}
+        </p>
+      ) : null}
+      <p className="text-[11px] text-muted-foreground">{surface.modelIds}</p>
+    </div>
+  );
+}
+
 export function ProvidersPage() {
   const { readOnly } = useConsoleSession();
   const list = useProviders();
@@ -262,6 +309,7 @@ export function ProvidersPage() {
               <TableHead>Name</TableHead>
               <TableHead>Key</TableHead>
               <TableHead>Routed via</TableHead>
+              <TableHead>Client APIs</TableHead>
               <TableHead>Custom pricing</TableHead>
               <TableHead>Created</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -271,14 +319,14 @@ export function ProvidersPage() {
             {list.isPending ? (
               [0, 1, 2].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={8}>
+                  <TableCell colSpan={9}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : providers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
                   No providers yet. Add a key per provider, or route one through a gateway.
                 </TableCell>
               </TableRow>
@@ -296,6 +344,9 @@ export function ProvidersPage() {
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     <RoutedVia row={row} gateways={gateways} />
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    <ClientApis row={row} gateways={gateways} />
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     {Object.keys(row.pricing ?? {}).length || "—"}
@@ -942,8 +993,8 @@ function GatewayDialog({
 }) {
   const createGateway = useCreateProviderGateway();
   // The list is what makes a second gateway type a data change: the selector
-  // below appears only once there is something to select, so today's form is
-  // exactly the Cloudflare one it has always been.
+  // below appears only once there is something to select, and each entry says
+  // which fields its own connection needs.
   const [type, setType] = useState<CreatableGatewayType>(CREATABLE_GATEWAY_TYPES[0].value);
   const gatewayType = CREATABLE_GATEWAY_TYPES.find((entry) => entry.value === type)
     ?? CREATABLE_GATEWAY_TYPES[0];
@@ -952,7 +1003,11 @@ function GatewayDialog({
   const [gatewayId, setGatewayId] = useState("");
   const [token, setToken] = useState("");
 
-  const ready = Boolean(name.trim() && accountId.trim() && gatewayId.trim() && token);
+  const ready = Boolean(
+    name.trim()
+    && token
+    && (!gatewayType.needsCloudflareIds || (accountId.trim() && gatewayId.trim())),
+  );
 
   const clear = () => {
     setType(CREATABLE_GATEWAY_TYPES[0].value);
@@ -963,6 +1018,17 @@ function GatewayDialog({
     createGateway.reset();
   };
 
+  /** A type switch carries none of the previous type's fields with it. */
+  const chooseType = (next: CreatableGatewayType) => {
+    const entry = CREATABLE_GATEWAY_TYPES.find((item) => item.value === next);
+    if (!entry) return;
+    setType(next);
+    setName(entry.defaultName);
+    setAccountId("");
+    setGatewayId("");
+    setToken("");
+  };
+
   const close = () => {
     clear();
     onOpenChange(false);
@@ -971,13 +1037,19 @@ function GatewayDialog({
   const submit = async () => {
     if (!ready) return;
     try {
-      const result = await createGateway.mutateAsync({
-        type: gatewayType.value,
-        name: name.trim(),
-        accountId: accountId.trim(),
-        gatewayId: gatewayId.trim(),
-        token,
-      });
+      // Each gateway's request body is exactly its own: the API rejects a field
+      // the chosen type has no use for, so the branch is on the discriminant.
+      const result = await createGateway.mutateAsync(
+        gatewayType.value === "cf_aig"
+          ? {
+              type: "cf_aig",
+              name: name.trim(),
+              accountId: accountId.trim(),
+              gatewayId: gatewayId.trim(),
+              token,
+            }
+          : { type: "vercel", name: name.trim(), token },
+      );
       clear();
       toast.success(`Added ${result.gateway.name}`);
       onCreated?.(result.gateway);
@@ -1005,7 +1077,7 @@ function GatewayDialog({
               id="gateway-type"
               className="h-9 w-full rounded-md border bg-transparent px-3 text-sm"
               value={type}
-              onChange={(event) => setType(event.target.value as CreatableGatewayType)}
+              onChange={(event) => chooseType(event.target.value as CreatableGatewayType)}
             >
               {CREATABLE_GATEWAY_TYPES.map((entry) => (
                 <option key={entry.value} value={entry.value}>
@@ -1023,22 +1095,26 @@ function GatewayDialog({
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
-        <Field label="Cloudflare Account ID" htmlFor="gateway-account">
-          <Input
-            id="gateway-account"
-            {...PLAIN_FIELD}
-            value={accountId}
-            onChange={(event) => setAccountId(event.target.value)}
-          />
-        </Field>
-        <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
-          <Input
-            id="gateway-gateway"
-            {...PLAIN_FIELD}
-            value={gatewayId}
-            onChange={(event) => setGatewayId(event.target.value)}
-          />
-        </Field>
+        {gatewayType.needsCloudflareIds ? (
+          <>
+            <Field label="Cloudflare Account ID" htmlFor="gateway-account">
+              <Input
+                id="gateway-account"
+                {...PLAIN_FIELD}
+                value={accountId}
+                onChange={(event) => setAccountId(event.target.value)}
+              />
+            </Field>
+            <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
+              <Input
+                id="gateway-gateway"
+                {...PLAIN_FIELD}
+                value={gatewayId}
+                onChange={(event) => setGatewayId(event.target.value)}
+              />
+            </Field>
+          </>
+        ) : null}
         <Field
           label="Gateway token"
           htmlFor="gateway-token"
@@ -1060,6 +1136,7 @@ function GatewayDialog({
             onChange={(event) => setToken(event.target.value)}
           />
         </Field>
+        <p className="text-xs text-muted-foreground">{gatewayType.credentialNote}</p>
       </div>
     </FormDialog>
   );

@@ -41,27 +41,32 @@ chat-completions path is listed for each.
 
 | `type` | Service | Chat completions path | Routable through a gateway |
 | --- | --- | --- | --- |
-| `openai` | OpenAI | `v1/chat/completions` | Cloudflare AI Gateway |
-| `anthropic` | Anthropic | `v1/messages` | Cloudflare AI Gateway |
-| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare AI Gateway |
-| `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare AI Gateway |
-| `perplexity` | Perplexity | `chat/completions` | Cloudflare AI Gateway |
-| `deepseek` | DeepSeek | `chat/completions` | — direct only |
+| `openai` | OpenAI | `v1/chat/completions` | Cloudflare, Vercel |
+| `anthropic` | Anthropic | `v1/messages` | Cloudflare, Vercel |
+| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare, Vercel |
+| `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare, Vercel |
+| `perplexity` | Perplexity | `chat/completions` | Cloudflare, Vercel |
+| `deepseek` | DeepSeek | `chat/completions` | Vercel |
+| `moonshot` | Moonshot AI (Kimi) | `v1/chat/completions` | Vercel |
 | `groq` | Groq | `openai/v1/chat/completions` | — direct only |
 | `mistral` | Mistral | `v1/chat/completions` | — direct only |
 | `together` | Together AI | `v1/chat/completions` | — direct only |
 | `fireworks` | Fireworks AI | `inference/v1/chat/completions` | — direct only |
 | `cerebras` | Cerebras | `v1/chat/completions` | — direct only |
-| `moonshot` | Moonshot AI (Kimi) | `v1/chat/completions` | — direct only |
 | `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | — direct only |
 | `baseten` | Baseten Model APIs | `v1/chat/completions` | — direct only |
 | `bytedance` | BytePlus ModelArk | `chat/completions` | — direct only |
 | `openrouter` | OpenRouter | `v1/chat/completions` | — direct only |
 
 "Direct only" is the default, not a limitation of the type: a provider type is
-offered on a gateway once that pairing has been verified against a live gateway,
-because a provider slug guessed from documentation is a guess about a URL *and*
-about which keys that gateway holds. Connect these types with their own API key.
+offered on a gateway once that pairing has been verified against that gateway's
+live catalog, because a provider slug or model namespace guessed from
+documentation is a guess about a URL *and* about which keys that gateway holds.
+Connect these types with their own API key.
+
+The paths in that table are for **direct** instances, where the path is the
+provider's own. A gateway-routed instance uses the gateway's paths instead — see
+[provider gateways](#provider-gateways).
 
 A few types carry caveats worth knowing before you add a key:
 
@@ -185,20 +190,26 @@ instances have no key of their own, so they rotate at the gateway instead.
 
 ## Provider gateways
 
-A **provider gateway** is a reusable connection to your own Cloudflare AI
-Gateway, stored once and referenced by as many provider instances as you like.
+A **provider gateway** is a reusable connection to somebody else's gateway,
+stored once and referenced by as many provider instances as you like. Two types
+are supported: **Cloudflare AI Gateway** (`cf_aig`) and **Vercel AI Gateway**
+(`vercel`).
 
 | Field | Meaning |
 | --- | --- |
-| `type` | `cf_aig` |
+| `type` | `cf_aig` or `vercel` |
 | `name` | Your label, e.g. "Prod CF gateway" |
-| `config` | `{ accountId, gatewayId }` — non-secret |
+| `config` | `{ accountId, gatewayId }` for `cf_aig`; `{}` for `vercel` |
 | `secretHint` | Last few characters of the gateway token — display only |
 | `providerCount` | Active provider instances routing through it |
 | `referencedCount` | Every instance referencing it, revoked rows included |
 
-`POST /v1/admin/provider-gateways` takes `{ type, name, accountId, gatewayId,
-token }`, proves all three with a single probe, and encrypts the token **once**.
+`POST /v1/admin/provider-gateways` takes the fields that gateway needs and
+nothing else — `{ type: "cf_aig", name, accountId, gatewayId, token }` or
+`{ type: "vercel", name, token }` — proves them with a single probe, and
+encrypts the token **once**. A field the chosen type has no use for is rejected
+rather than ignored.
+
 It creates the gateway only; providers are attached one at a time through the
 normal provider create call with `providerGatewayId` set, each probed through the
 gateway for its own type. Attaching a provider type the gateway does not serve is
@@ -218,18 +229,110 @@ which.
   undeletable until `referencedCount` reaches zero; the error message names
   which of the two is holding it.
 
-Requests for a gateway-routed instance are sent to
+### Cloudflare AI Gateway
+
+Requests for a Cloudflare-routed instance are sent to
 `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<provider>/…` with only
 `cf-aig-authorization` and `cf-aig-metadata`. **The provider keys themselves must
 live in that gateway's own stored-keys (BYOK) store** — this gateway sends no
 provider-auth header on that path, because your gateway supplies it.
 
-Instances routed natively are the opposite: the provider's own auth header, and
-no `cf-aig-*` header at all.
+Cloudflare forwards to each provider's own API, so every API that provider has
+survives the trip, native ones included: Gemini `generateContent` works on a
+Cloudflare-routed Gemini instance. Model IDs are the provider's own, unchanged.
+
+Cloudflare AI Gateway takes no per-provider routing configuration; sending a
+`gatewayRoute` on one of its instances is refused.
+
+### Vercel AI Gateway
+
+Create one with a name and an [AI Gateway API
+key](https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys). There
+is no account or gateway id: the origin is fixed in code and the key identifies
+your Vercel team. The token is proved against Vercel's authenticated
+`GET /v1/credits` endpoint, which rejects a key that is not real.
+
+Requests are sent to `https://ai-gateway.vercel.sh/` with the client's path
+appended verbatim, authenticated with `Authorization: Bearer <your gateway
+token>`. Vercel names the provider in the model ID rather than in the URL, so one
+URL space serves every provider:
+
+| Client API | Path after your instance slug |
+| --- | --- |
+| OpenAI Responses | `v1/responses` |
+| OpenAI Chat Completions | `v1/chat/completions` |
+| Anthropic Messages | `v1/messages` |
+
+Anything else on a Vercel-routed instance is refused with
+`403 api_style_not_supported` before a request leaves this gateway. In
+particular **Gemini's native `generateContent` API is not available through
+Vercel** (use a direct or Cloudflare-routed Gemini instance for that), and
+neither is transcription — `v1/audio/transcriptions` does not exist on Vercel's
+origin, so `transcription` [named endpoints](/docs/named-endpoints) cannot use a
+Vercel-routed instance either.
+
+**Model IDs stay canonical.** Everywhere you can see a model — `allowed_models`,
+`fixed_model`, custom pricing, model rewrites, recorded usage — it is the
+provider's own ID (`gemini-2.5-flash`), exactly as on a direct instance. The
+adapter adds Vercel's namespace on the way out and strips it from anything
+Vercel echoes back, so one price row covers a model on every route and moving an
+app between routes changes no configuration:
+
+| Provider type | Vercel namespace | Example wire model |
+| --- | --- | --- |
+| `openai` | `openai/` | `openai/gpt-5.6-sol` |
+| `anthropic` | `anthropic/` | `anthropic/claude-opus-5` |
+| `gemini` | `google/` | `google/gemini-2.5-flash` |
+| `xai` | `spacexai/` | `spacexai/grok-4.5` |
+| `perplexity` | `perplexity/` | `perplexity/sonar-pro` |
+| `deepseek` | `deepseek/` | `deepseek/deepseek-v4-pro` |
+| `moonshot` | `moonshotai/` | `moonshotai/kimi-k3` |
+
+Vercel's catalog does not publish the other provider types' own model IDs, so
+those types stay direct-only there. If Vercel names one of your models
+differently from the provider, set `gatewayRoute.modelPrefix` on that instance
+to override the namespace — it must end with `/`.
+
+**Credential policy: your key is preferred, not guaranteed.** Vercel documents
+BYOK provider credentials configured in its dashboard as preferred, *and*
+documents falling back to its own system credentials when yours fail. Nothing at
+configuration time settles which one paid for a given request, so usage events
+routed through Vercel record `credential_source` as unknown (`null`) rather than
+claiming `byok`. Local pricing still applies: Vercel charges provider list price
+with no token markup, so the shipped catalog stays accurate.
+
+**Pinning the serving provider.** Vercel may serve one model from several
+upstreams (Claude from Anthropic, Bedrock, or Vertex). Set
+`gatewayRoute.providerOnly` on an instance to restrict it — the values are
+Vercel's own provider slugs, and the gateway sends them as
+`providerOptions.gateway.only` in the outbound body. That is a routing
+directive, not a translation: the payload the serving provider eventually sees
+is the one your client sent.
+
+```json
+{ "providerOnly": ["vertex", "anthropic"] }
+```
+
+### Both gateways
+
+Instances routed natively are the opposite of either: the provider's own auth
+header, and none of a gateway's control headers at all.
+
+A gateway's own headers are reserved on every route. A client value in
+`cf-aig-*`, `authorization`, `x-api-key`, or Vercel's `ai-reporting-*` never
+reaches an upstream — the strip list is derived from the adapter declarations
+themselves, so it cannot drift.
 
 Upstream URLs are always derived in code from the stored, non-secret gateway
 configuration. Clients never supply a URL, so there is no server-side request
 forgery surface to validate.
+
+**No protocol translation, ever.** This gateway forwards the API your client
+called, in that API's own format. Calling OpenAI Chat Completions on a
+Gemini-via-Vercel instance sends an OpenAI body to Vercel, and Vercel translates
+it once. The only changes made to a body are same-protocol ones: the model
+namespace rewrite, configured parameter merges on named endpoints, the output
+cap, `providerOnly`, and cost-report opt-ins.
 
 ## Custom model pricing
 

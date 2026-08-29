@@ -9,8 +9,9 @@ import {
   type ProviderPricing,
 } from "../db/schema";
 import { secretVault } from "../vault";
+import type { ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
-import { isGatewayType, type ResolvedGateway } from "./gateways";
+import { isGatewayType, resolveGateway, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
 import { recordFromEntries } from "./records";
 import type { ProviderType } from "./types";
@@ -58,6 +59,14 @@ export interface OrganizationProvider {
   id: string;
   slug: string;
   type: ProviderType;
+  /**
+   * How this instance reaches its provider, so configuration can be validated
+   * against the same capability matrix requests are. A row whose gateway is
+   * revoked or has no adapter reads as `direct` here: it cannot serve traffic
+   * at all, and refusing to *save* an app that mentions it would be a worse
+   * failure than the `provider_unavailable` its next request already gets.
+   */
+  route: ProviderRoute;
   pricing: ProviderPricing | null;
 }
 
@@ -206,7 +215,7 @@ export async function resolveProvider(
   const gateway = row.providerGatewayId === null
     ? null
     : row.gatewayType && row.gatewayConfig && isGatewayType(row.gatewayType)
-      ? { id: row.providerGatewayId, type: row.gatewayType, config: row.gatewayConfig }
+      ? { id: row.providerGatewayId, ...resolveGateway(row.gatewayType, row.gatewayConfig) }
       : null;
   if (row.providerGatewayId !== null && gateway === null) {
     throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");
@@ -246,6 +255,12 @@ export async function organizationProviders(
   // would answer for it whether or not the organization configured one.
   return recordFromEntries((await organizationRows(env, organizationId)).map((row) => [
     row.slug,
-    { id: row.id, slug: row.slug, type: row.type, pricing: row.pricing },
+    {
+      id: row.id,
+      slug: row.slug,
+      type: row.type,
+      route: row.gatewayType && isGatewayType(row.gatewayType) ? row.gatewayType : "direct",
+      pricing: row.pricing,
+    },
   ] as const));
 }

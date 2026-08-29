@@ -51,6 +51,7 @@ export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
     providerSlug,
     providerPath,
     route: resolved.gateway?.type ?? "direct",
+    gatewayRoute: resolved.gatewayRoute,
     tokenHeader: c.get("authHeaderName"),
     pricing: resolved.pricing,
   });
@@ -102,6 +103,7 @@ proxyRoutes.all("/:provider/*", async (c) => {
         providerId: resolved.id,
         providerSlug: resolved.slug,
         gateway: resolved.gateway,
+        gatewayRoute: resolved.gatewayRoute,
         pricing: resolved.pricing,
         model: prepared.model,
         route: `${resolved.slug}/${providerPath}`,
@@ -141,6 +143,7 @@ proxyRoutes.all("/:provider/*", async (c) => {
       providerId: resolved.id,
       providerSlug: resolved.slug,
       gateway: resolved.gateway,
+      gatewayRoute: resolved.gatewayRoute,
       pricing: resolved.pricing,
       model: prepared.model,
       route: `${resolved.slug}/${providerPath}`,

@@ -1101,43 +1101,74 @@
         ]
       },
       "ProviderGatewayCreateRequest": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "cf_aig"
-            ]
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cf_aig"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
           },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "accountId": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "gatewayId": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "token": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vercel"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "token"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "type",
-          "name",
-          "accountId",
-          "gatewayId",
-          "token"
-        ],
-        "additionalProperties": false
+        ]
       },
       "ProviderGatewayUpdateRequest": {
         "type": "object",
@@ -4767,8 +4798,8 @@
           "Admin provider gateways"
         ],
         "operationId": "createProviderGateway",
-        "summary": "Create a reusable Cloudflare AI Gateway connection",
-        "description": "Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
+        "summary": "Create a reusable provider gateway connection",
+        "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
         "security": [
           {
             "OperatorSession": []

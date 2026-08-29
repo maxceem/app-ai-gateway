@@ -121,6 +121,7 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
     primary,
     primaryResolved.type,
     primaryResolved.gateway?.type ?? "direct",
+    primaryResolved.gatewayRoute,
   );
   c.set("preparedEndpointRequest", prepared);
   c.set("resolvedProviders", resolvedProviders);
@@ -165,6 +166,7 @@ endpointRoutes.post("/:slug", async (c) => {
         providerId: input.resolved.id,
         providerSlug: input.resolved.slug,
         gateway: input.resolved.gateway,
+        gatewayRoute: input.resolved.gatewayRoute,
         pricing: input.resolved.pricing,
         model: input.attempt.model,
         route: `${input.resolved.slug}/${input.attempt.providerPath}`,
@@ -182,7 +184,13 @@ endpointRoutes.post("/:slug", async (c) => {
     const resolved = resolvedProviders.get(target.provider)!;
     const attempt = index === 0
       ? c.get("preparedProxyRequest")
-      : endpointAttempt(prepared, target, resolved.type, resolved.gateway?.type ?? "direct");
+      : endpointAttempt(
+        prepared,
+        target,
+        resolved.type,
+        resolved.gateway?.type ?? "direct",
+        resolved.gatewayRoute,
+      );
     const upstreamRequest = providerUpstream({
       resolved,
       prepared: attempt,

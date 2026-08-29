@@ -69,6 +69,26 @@ export const CREATABLE_GATEWAY_TYPES = [
     label: GATEWAY_TYPE_LABELS.cf_aig,
     defaultName: "Our CF gateway",
     tokenDocsUrl: "https://developers.cloudflare.com/ai-gateway/configuration/authentication/",
+    /**
+     * Non-secret connection fields this gateway needs before a token means
+     * anything. Cloudflare's URL is built from the account and gateway pair.
+     */
+    needsCloudflareIds: true,
+    credentialNote:
+      "Requests use the provider keys stored in your Cloudflare AI Gateway's own key store.",
+  },
+  {
+    value: "vercel",
+    label: GATEWAY_TYPE_LABELS.vercel,
+    defaultName: "Our Vercel gateway",
+    tokenDocsUrl: "https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys",
+    // The origin is fixed in adapter code and the token identifies the Vercel
+    // team, so there is nothing else to ask for.
+    needsCloudflareIds: false,
+    // Deliberately not "using your key": Vercel documents BYOK as preferred,
+    // with a fallback to its own system credentials when a stored key fails.
+    credentialNote:
+      "Your provider credential stored in Vercel is preferred. Vercel may fall back to system credentials.",
   },
 ] as const;
 
@@ -201,13 +221,22 @@ export function endpointProviderTypes(style: EndpointApiStyle): EndpointProvider
   return ENDPOINT_PROVIDERS.filter((type) => ENDPOINT_PROVIDER_STYLES[type].includes(style));
 }
 
-/** The instances a named endpoint of this style may target. */
+/**
+ * The instances a named endpoint of this style may target. The provider type
+ * decides which request shapes the gateway composes at all; the instance's
+ * *route* decides whether the upstream serves them — Vercel has no transcription
+ * API, so a Vercel-routed OpenAI row cannot back a transcription endpoint. Pass
+ * `serves` to apply the second half; without it only the type is checked.
+ */
 export function endpointInstances<T extends ProviderInstance>(
   style: EndpointApiStyle,
   instances: T[],
+  serves?: (instance: T, style: EndpointApiStyle) => boolean,
 ): T[] {
   const eligible: readonly Provider[] = endpointProviderTypes(style);
-  return instances.filter((instance) => eligible.includes(instance.type));
+  return instances.filter((instance) =>
+    eligible.includes(instance.type) && (serves?.(instance, style) ?? true)
+  );
 }
 
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;

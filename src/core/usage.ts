@@ -12,6 +12,7 @@ import {
   appUsageEvent,
   type CostSource,
   type CredentialSource,
+  type GatewayRouteConfig,
   type ProviderGatewayType,
   type ProviderPricing,
 } from "../db/schema";
@@ -152,6 +153,12 @@ interface UsageEventInput {
    * unlike the observed fields below, which the upstream has to volunteer.
    */
   gateway?: { id: string; type: ProviderGatewayType } | null;
+  /**
+   * That row's stored routing configuration. It carries the namespace override
+   * an observed model ID has to be stripped with, so canonicalizing inbound
+   * uses exactly the prefix the outbound rewrite used.
+   */
+  gatewayRoute?: GatewayRouteConfig | null;
   /** That row's per-model pricing overrides, which win over the catalog. */
   pricing?: ProviderPricing | null;
   /** Canonical model ID: the provider's own, whatever the route called it. */
@@ -809,7 +816,9 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
         : credentialSource(gateway),
       modelAuthor: resolveModelAuthor(input.provider, input.model),
       servedProvider: input.servedProvider ?? report?.servedProvider ?? null,
-      servedModel: servedModel ? routeCanonicalModel(route, input.provider, servedModel) : null,
+      servedModel: servedModel
+        ? routeCanonicalModel(route, input.provider, servedModel, input.gatewayRoute)
+        : null,
       model: input.model,
       route: input.route,
       endpointSlug: input.endpointSlug ?? null,

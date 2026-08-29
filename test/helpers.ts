@@ -14,6 +14,8 @@ import {
   provider,
   providerGateway,
   type CfAigConfig,
+  type GatewayRouteConfig,
+  type ProviderGatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
 import type { ProviderType, StoredAppConfig } from "../src/core/types";
@@ -38,8 +40,10 @@ export async function seedProvider(input: {
   organizationId?: string;
   secret?: string;
   name?: string;
-  gateway?: "cf_aig";
+  gateway?: ProviderGatewayType;
   gatewayConfig?: CfAigConfig;
+  /** The row's gateway-type-specific routing configuration. */
+  gatewayRoute?: GatewayRouteConfig;
   providerGatewayId?: string;
   pricing?: ProviderPricing;
   status?: "active" | "revoked";
@@ -49,13 +53,15 @@ export async function seedProvider(input: {
   const slug = input.slug ?? input.type;
   const secret = input.secret ?? testProviderSecret(input.type);
   let providerGatewayId = input.providerGatewayId ?? null;
-  if (input.gateway === "cf_aig") {
+  if (input.gateway !== undefined) {
     providerGatewayId = providerGatewayId ?? `gateway_${organizationId}_${slug}`;
-    const config = input.gatewayConfig ?? { accountId: "test-account", gatewayId: "test-gateway" };
+    const config = input.gateway === "cf_aig"
+      ? input.gatewayConfig ?? { accountId: "test-account", gatewayId: "test-gateway" }
+      : {};
     await database(env.DB).insert(providerGateway).values({
       id: providerGatewayId,
       organizationId,
-      type: "cf_aig",
+      type: input.gateway,
       name: `Test gateway for ${slug}`,
       config,
       secretBlob: await secretVault(env).encryptSecret(
@@ -77,6 +83,7 @@ export async function seedProvider(input: {
       : null,
     secretHint: providerGatewayId === null ? secret.slice(-4) : null,
     providerGatewayId,
+    gatewayRoute: input.gatewayRoute ?? null,
     pricing: input.pricing ?? null,
     status: input.status ?? "active",
     createdBy: TEST_OPERATOR_USER_ID,

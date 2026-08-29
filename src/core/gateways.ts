@@ -2,12 +2,14 @@ import type {
   CfAigConfig,
   CredentialSource,
   GatewayRouteConfig,
+  ProviderGatewayConfig,
   ProviderGatewayType,
   ProviderGatewayTypeName,
+  VercelConfig,
 } from "../db/schema";
 import type { ApiStyle } from "./api-styles";
 import { GatewayError } from "./errors";
-import type { ProviderType } from "./types";
+import type { EndpointApiStyle, ProviderType } from "./types";
 
 /**
  * Non-secret configuration per gateway type. The key set *is*
@@ -16,6 +18,7 @@ import type { ProviderType } from "./types";
  */
 export interface GatewayConfigs {
   cf_aig: CfAigConfig;
+  vercel: VercelConfig;
 }
 
 /** A gateway connection as resolved from an organization's row. */
@@ -29,8 +32,12 @@ export type ResolvedGateway = {
  * type never requires touching an adapter.
  */
 export interface GatewayProviderRoute {
-  /** Path segment naming the provider inside the gateway's URL space. */
-  slug: string;
+  /**
+   * Path segment naming the provider inside the gateway's URL space. Absent
+   * where the gateway has no per-provider URL space at all: Vercel names the
+   * provider in the model ID and serves every one of them from the same paths.
+   */
+  slug?: string;
   /** Prefix the slug already implies, stripped from the client's path. */
   stripPathPrefix?: string;
   /**
@@ -38,6 +45,12 @@ export interface GatewayProviderRoute {
    * gateway is transparent and the provider itself is the only judge.
    */
   apiStyles?: readonly ApiStyle[];
+  /**
+   * When present, the only named-endpoint styles this route composes. Absent
+   * means the gateway carries whatever the provider's own API offers, which is
+   * true of a transparent gateway and false of one that reimplements a subset.
+   */
+  endpointStyles?: readonly EndpointApiStyle[];
   /**
    * The gateway's namespace for this provider's models. Canonical model IDs —
    * the provider's own, which are what `prices.json`, `allowed_models` and the
@@ -47,9 +60,27 @@ export interface GatewayProviderRoute {
   modelPrefix?: string;
 }
 
+/**
+ * The namespace actually in force: the row's own override where it set one,
+ * the adapter's per-provider default otherwise. A stored override reached
+ * {@link GatewayAdapter.validateRoute} first, so it is one this gateway agreed
+ * to; the default is what an unconfigured row gets.
+ */
+export function routePrefix(
+  route: GatewayProviderRoute | undefined,
+  config: GatewayRouteConfig | null | undefined,
+): string | undefined {
+  return config?.modelPrefix ?? route?.modelPrefix;
+}
+
 /** Canonical model ID to what this route puts on the wire. */
-export function wireModel(route: GatewayProviderRoute | undefined, canonical: string): string {
-  return route?.modelPrefix ? `${route.modelPrefix}${canonical}` : canonical;
+export function wireModel(
+  route: GatewayProviderRoute | undefined,
+  canonical: string,
+  config?: GatewayRouteConfig | null,
+): string {
+  const prefix = routePrefix(route, config);
+  return prefix ? `${prefix}${canonical}` : canonical;
 }
 
 /**
@@ -58,8 +89,12 @@ export function wireModel(route: GatewayProviderRoute | undefined, canonical: st
  * (`fal-ai/fast-sdxl`, and every OpenRouter slug), so "everything before the
  * first slash" would silently rename them.
  */
-export function canonicalModel(route: GatewayProviderRoute | undefined, wire: string): string {
-  const prefix = route?.modelPrefix;
+export function canonicalModel(
+  route: GatewayProviderRoute | undefined,
+  wire: string,
+  config?: GatewayRouteConfig | null,
+): string {
+  const prefix = routePrefix(route, config);
   return prefix && wire.startsWith(prefix) ? wire.slice(prefix.length) : wire;
 }
 
@@ -85,8 +120,22 @@ export interface GatewayProbeInput<Type extends ProviderGatewayType> {
   config: GatewayConfigs[Type];
   secret: string;
   provider: ProviderType;
-  /** The provider's own probe path, adapted by the same rules as live traffic. */
-  path: string;
+  /**
+   * The provider's own probe path, adapted by the same rules as live traffic,
+   * or `null` where that provider has none. A gateway whose credential is its
+   * own — not a per-provider key it holds — has a probe regardless and ignores
+   * this; a gateway that forwards to the provider's key store does not.
+   */
+  path: string | null;
+}
+
+/** Body the adapter may rewrite in place, and what it is allowed to know. */
+export interface GatewayBodyInput {
+  /** The provider row's stored routing configuration, already validated. */
+  route: GatewayRouteConfig | null;
+  style: ApiStyle;
+  /** Mutated in place; the caller re-serializes only if `true` comes back. */
+  body: Record<string, unknown>;
 }
 
 export interface GatewayAdapter<Type extends ProviderGatewayType> {
@@ -111,8 +160,15 @@ export interface GatewayAdapter<Type extends ProviderGatewayType> {
   readonly credentialSource: CredentialSource | null;
   readonly routes: Partial<Record<ProviderType, GatewayProviderRoute>>;
   upstream(input: GatewayUpstreamInput<Type>): GatewayRequest;
-  /** `null` when this gateway does not serve the provider type at all. */
+  /** `null` when this gateway has nothing cheap and authenticated to call. */
   probe(input: GatewayProbeInput<Type>): GatewayRequest | null;
+  /**
+   * A same-protocol rewrite this gateway's routing configuration asks for —
+   * the kind model rewrites and output caps already are, never a conversion
+   * between provider API formats. Returns whether the body changed. Absent
+   * where a gateway expresses nothing in the body, which is the default.
+   */
+  mutateBody?(input: GatewayBodyInput): boolean;
   /**
    * Rejects a provider row's `gateway_route_json` this gateway cannot honour.
    * Called on every create and update, so a stored route is always one its
@@ -134,7 +190,7 @@ export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
  * diagnose. A type with no entry is direct-only, which is the safe default and
  * costs nothing but a gateway option the console never offers.
  */
-const CF_AIG_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute>> = {
+const CF_AIG_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute & { slug: string }>> = {
   openai: { slug: "openai", stripPathPrefix: "v1/" },
   anthropic: { slug: "anthropic" },
   xai: { slug: "grok" },
@@ -144,7 +200,11 @@ const CF_AIG_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute>> = {
 
 /** The single place a Cloudflare AI Gateway URL is built: live traffic and
  *  credential probes join the same segments from the same route entry. */
-function cfAigUrl(config: CfAigConfig, route: GatewayProviderRoute, path: string): string {
+function cfAigUrl(
+  config: CfAigConfig,
+  route: GatewayProviderRoute & { slug: string },
+  path: string,
+): string {
   const adapted = route.stripPathPrefix && path.startsWith(route.stripPathPrefix)
     ? path.slice(route.stripPathPrefix.length)
     : path;
@@ -188,7 +248,9 @@ const cfAigAdapter: GatewayAdapter<"cf_aig"> = {
   },
   probe(input) {
     const route = CF_AIG_ROUTES[input.provider];
-    if (!route) return null;
+    // Cloudflare holds the provider's own key and forwards to the provider's
+    // own API, so the only thing worth calling is a path that provider has.
+    if (!route || input.path === null) return null;
     return {
       url: cfAigUrl(input.config, route, input.path),
       headers: { "cf-aig-authorization": `Bearer ${input.secret}` },
@@ -208,9 +270,197 @@ const cfAigAdapter: GatewayAdapter<"cf_aig"> = {
   },
 };
 
+/**
+ * One origin for every provider and every API. Vercel puts no account, team, or
+ * provider segment in the URL: the token names the team and the model ID names
+ * the provider, so a client path (`v1/chat/completions`, `v1/responses`,
+ * `v1/messages`) is appended verbatim and nothing is stripped or inserted.
+ *
+ * Verified against Vercel's docs (August 2026): the Chat Completions and
+ * Responses APIs document `https://ai-gateway.vercel.sh/v1` as their base URL
+ * with `/chat/completions` and `/responses` under it, and the Anthropic
+ * Messages API documents `https://ai-gateway.vercel.sh` with `POST /v1/messages`
+ * — the same absolute paths either way.
+ */
+export const VERCEL_AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/";
+
+/**
+ * The cheapest authenticated call on the gateway itself: it answers 401 to a
+ * token that is not a real key, which is the whole point of a probe. Vercel's
+ * `v1/models` is public and answers 200 with no credential at all, so it would
+ * report a garbage key as good the moment a caller forgot the header.
+ */
+const VERCEL_PROBE_PATH = "v1/credits";
+
+/**
+ * The three client APIs Vercel documents in front of every model: OpenAI
+ * Responses, OpenAI Chat Completions, and Anthropic Messages. Vercel translates
+ * between them and the serving provider's own protocol; this gateway does not,
+ * and forwards whichever one the client called unchanged.
+ *
+ * `gemini_native` is deliberately absent — Vercel publishes no
+ * `generateContent` surface, so a Gemini row routed here is refused that API at
+ * the edge instead of 404ing upstream. `audio_transcription` is absent for the
+ * same reason, verified rather than assumed: `v1/audio/transcriptions` answers
+ * `404 not_found_error` on this origin.
+ */
+const VERCEL_API_STYLES: readonly ApiStyle[] = [
+  "responses",
+  "chat_completions",
+  "anthropic_messages",
+];
+
+/**
+ * Named endpoints this gateway can compose. `responses` only: `transcription`
+ * would post to `v1/audio/transcriptions`, which Vercel does not serve.
+ */
+const VERCEL_ENDPOINT_STYLES: readonly EndpointApiStyle[] = ["responses"];
+
+/**
+ * Vercel's model-ID namespace per provider type, and the *only* thing that maps
+ * one of our provider types onto its catalog. Each entry was checked against the
+ * live `https://ai-gateway.vercel.sh/v1/models` listing, not inferred from a
+ * provider's name: the namespace is the model's *creator*, so it matches the
+ * provider type only for types that serve their own models.
+ *
+ * `xai` is the trap the check exists for — Vercel lists Grok under
+ * `spacexai/`, not `xai/`, so a guessed prefix would 404 every request.
+ *
+ * Absent, and why:
+ * - `mistral` — Vercel's IDs are release-pinned (`mistral/mistral-large-3`)
+ *   while Mistral's own API IDs are the `-latest` aliases, so canonical + prefix
+ *   is not the wire ID and every request would miss.
+ * - `bytedance` — same mismatch: Vercel serves `bytedance/seed-*` where ModelArk
+ *   takes its own `seed-*-<date>` endpoint IDs.
+ * - `groq`, `together`, `fireworks`, `cerebras`, `huggingface`, `baseten` —
+ *   these are *hosts*, not model authors. Vercel has no namespace for them at
+ *   all; it names them as serving providers instead ({@link GatewayRouteConfig}
+ *   `providerOnly`). A row of one of these types stays direct-only.
+ * - `openrouter` — an aggregator whose slugs are already its canonical models.
+ */
+const VERCEL_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute>> = {
+  openai: { modelPrefix: "openai/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+  anthropic: { modelPrefix: "anthropic/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+  // Google AI Studio's models are Google's, and Vercel namespaces them by
+  // author: `gemini-2.5-flash` goes out as `google/gemini-2.5-flash`.
+  gemini: { modelPrefix: "google/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+  xai: { modelPrefix: "spacexai/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+  perplexity: { modelPrefix: "perplexity/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+  deepseek: { modelPrefix: "deepseek/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+  // Moonshot's own IDs are the Kimi ones, and Vercel publishes them verbatim
+  // under the lab's name rather than the product's: `moonshotai/kimi-k3`.
+  moonshot: { modelPrefix: "moonshotai/", apiStyles: VERCEL_API_STYLES, endpointStyles: VERCEL_ENDPOINT_STYLES },
+};
+
+/**
+ * Vercel's own request-metadata headers. A client value in either would rewrite
+ * the operator's Vercel-side spend attribution, so both are reserved and set
+ * server-side, exactly like `cf-aig-metadata`.
+ */
+const VERCEL_REPORTING_USER = "ai-reporting-user";
+const VERCEL_REPORTING_TAGS = "ai-reporting-tags";
+/** Vercel rejects the whole request with a 400 when either exceeds its limit. */
+const VERCEL_USER_MAX = 256;
+const VERCEL_TAG_MAX = 64;
+
+/**
+ * Attribution Vercel will accept. Anything over its documented limit is dropped
+ * rather than truncated: a truncated id is a wrong id, and sending it would
+ * turn every request into a 400 or attribute it to somebody else.
+ */
+function vercelReportingHeaders(appId: string, userId: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (userId && userId.length <= VERCEL_USER_MAX) headers[VERCEL_REPORTING_USER] = userId;
+  const tag = `app:${appId}`;
+  if (appId && tag.length <= VERCEL_TAG_MAX) headers[VERCEL_REPORTING_TAGS] = tag;
+  return headers;
+}
+
+const vercelAdapter: GatewayAdapter<"vercel"> = {
+  type: "vercel",
+  reservedHeaders: [
+    // Vercel accepts the gateway key in either header and lets it win over any
+    // OIDC token, so a client value in either would spend somebody else's
+    // credit — or, worse, the operator's under a key they cannot see.
+    "authorization",
+    "x-api-key",
+    VERCEL_REPORTING_USER,
+    VERCEL_REPORTING_TAGS,
+  ],
+  headerPrefix: "ai-reporting-",
+  // Nothing in that namespace is client-settable: it is Vercel's spend
+  // attribution, and this gateway is the only thing that knows the real app and
+  // user behind a request.
+  clientHeaders: [],
+  // Vercel documents BYOK as *preferred*, with a documented fallback to its own
+  // system credentials when a stored key fails — so no per-request guarantee
+  // exists at configuration time. Null means "read it per event or record
+  // unknown", never a claim that the organization's own key paid.
+  credentialSource: null,
+  routes: VERCEL_ROUTES,
+  upstream(input) {
+    const route = VERCEL_ROUTES[input.provider];
+    if (!route) throw unsupportedProvider("vercel", input.provider);
+    return {
+      // No provider segment and no prefix surgery: the client path is already
+      // the absolute path Vercel documents.
+      url: `${VERCEL_AI_GATEWAY_BASE_URL}${input.providerPath}${input.query}`,
+      headers: {
+        authorization: `Bearer ${input.secret}`,
+        ...vercelReportingHeaders(input.appId, input.userId),
+      },
+    };
+  },
+  probe(input) {
+    // Provider-independent on purpose, and the provider's own probe path is
+    // ignored: the credential here is the Vercel key, one per gateway, and the
+    // provider keys it may use live in Vercel's dashboard where this deployment
+    // cannot see them. The credits call proves exactly what this row will
+    // authenticate with.
+    if (!VERCEL_ROUTES[input.provider]) return null;
+    return {
+      url: `${VERCEL_AI_GATEWAY_BASE_URL}${VERCEL_PROBE_PATH}`,
+      headers: { authorization: `Bearer ${input.secret}` },
+    };
+  },
+  mutateBody(input) {
+    const only = input.route?.providerOnly;
+    if (!only || only.length === 0) return false;
+    if (!VERCEL_API_STYLES.includes(input.style)) return false;
+    // `providerOptions.gateway.only` is documented identically on all three of
+    // Vercel's request shapes, and it is a routing directive rather than a
+    // model-protocol field: the payload the provider eventually sees is
+    // unchanged. Server-set, so a client cannot widen the pin it was given.
+    const options = plainRecord(input.body.providerOptions);
+    const gateway = plainRecord(options.gateway);
+    input.body.providerOptions = { ...options, gateway: { ...gateway, only: [...only] } };
+    return true;
+  },
+  validateRoute(route) {
+    if (route === null) return;
+    if (route.modelPrefix !== undefined && !route.modelPrefix.endsWith("/")) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        "Vercel model namespaces end with a slash, for example google/",
+      );
+    }
+    // `providerOnly` is checked by the schema for shape and by Vercel for
+    // membership: its provider slugs are a live catalog, and a list frozen here
+    // would reject a provider Vercel added last week.
+  },
+};
+
+function plainRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 /** Closed registry: every gateway type has exactly one adapter. */
 export const GATEWAY_ADAPTERS: { [Type in ProviderGatewayType]: GatewayAdapter<Type> } = {
   cf_aig: cfAigAdapter,
+  vercel: vercelAdapter,
 };
 
 export function gatewayAdapter<Type extends ProviderGatewayType>(
@@ -286,8 +536,39 @@ export function gatewayProbe(input: {
   gateway: ResolvedGateway;
   secret: string;
   provider: ProviderType;
-  path: string;
+  path: string | null;
 }): GatewayRequest | null {
   const { gateway, ...rest } = input;
   return gatewayAdapter(gateway.type).probe({ ...rest, config: gateway.config });
+}
+
+/**
+ * The gateway's own same-protocol rewrite of an outbound body, if it has one.
+ * Returns whether the body changed, so an untouched request keeps its original
+ * bytes — the pass-through guarantee is that nothing is re-encoded for free.
+ */
+export function gatewayBodyMutation(input: {
+  gatewayType: ProviderGatewayType | null;
+  route: GatewayRouteConfig | null;
+  style: ApiStyle;
+  body: Record<string, unknown>;
+}): boolean {
+  if (input.gatewayType === null) return false;
+  const adapter: GatewayAdapter<ProviderGatewayType> = gatewayAdapter(input.gatewayType);
+  return adapter.mutateBody?.({ route: input.route, style: input.style, body: input.body }) ?? false;
+}
+
+/**
+ * Joins a stored `type`/`config_json` pair into the discriminated union the
+ * adapters take. The database keeps the two in separate columns and its CHECK
+ * is wider than the adapter registry, so this is the one place they are matched
+ * up — call it only behind {@link isGatewayType}.
+ */
+export function resolveGateway(
+  type: ProviderGatewayType,
+  config: ProviderGatewayConfig,
+): ResolvedGateway {
+  return type === "cf_aig"
+    ? { type, config: config as CfAigConfig }
+    : { type, config: config as VercelConfig };
 }

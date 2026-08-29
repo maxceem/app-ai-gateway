@@ -24,12 +24,14 @@ import {
   instanceModels,
   nextEndpointSlug,
   renameEndpoint,
+  type EndpointApiStyle,
   type EndpointConfig,
   type EndpointsConfig,
   type EndpointTarget,
   type ProviderInstance,
 } from "@/lib/config-types";
-import { usePrices, useProviderInstances } from "@/lib/queries";
+import { routeServesEndpointStyle } from "@/lib/capabilities";
+import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
 
 /** Only OpenAI- and xAI-typed instances compose these request shapes. */
 const NO_ELIGIBLE_INSTANCE =
@@ -188,6 +190,7 @@ function EndpointCard({
   endpoints,
   appId,
   instances,
+  serves,
   modelsFor,
   onRename,
   onChange,
@@ -198,6 +201,8 @@ function EndpointCard({
   endpoints: EndpointsConfig;
   appId: string;
   instances: ProviderInstance[];
+  /** Whether one instance's own route serves a style, from the capability matrix. */
+  serves: (instance: ProviderInstance, style: EndpointApiStyle) => boolean;
   modelsFor: (provider: string) => string[];
   onRename: (next: string) => void;
   onChange: (next: EndpointConfig) => void;
@@ -205,9 +210,9 @@ function EndpointCard({
 }) {
   const slugError = endpointSlugError(slug, endpoints, slug);
   const fallback = endpoint.fallback ?? [];
-  // Only openai- and xai-typed instances compose these request shapes, and the
-  // eligible set is per style, exactly as the Worker validates it.
-  const eligible = endpointInstances(endpoint.api_style, instances);
+  // Only openai- and xai-typed instances compose these request shapes, and only
+  // on a route that serves them — exactly as the Worker validates it.
+  const eligible = endpointInstances(endpoint.api_style, instances, serves);
 
   const setFallback = (next: EndpointTarget[]) =>
     onChange({ ...endpoint, ...(next.length === 0 ? { fallback: undefined } : { fallback: next }) });
@@ -398,16 +403,25 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const instances = useProviderInstances().data ?? [];
+  const gateways = useProviderGateways().data?.gateways ?? [];
   // Catalog prices belong to the provider type, custom ones to the row, so the
   // model list is only knowable per instance slug.
   const bySlug = new Map(instances.map((instance) => [instance.slug, instance]));
+  // A gateway may carry fewer of a provider's operations than the provider has,
+  // so eligibility is per instance rather than per provider type.
+  const routeBySlug = new Map(instances.map((instance) => [
+    instance.slug,
+    gateways.find((gateway) => gateway.id === instance.providerGatewayId)?.type ?? null,
+  ]));
+  const serves = (instance: ProviderInstance, style: EndpointApiStyle) =>
+    routeServesEndpointStyle(routeBySlug.get(instance.slug) ?? null, instance.type, style);
   const modelsFor = (provider: string) => {
     const instance = bySlug.get(provider);
     return instance ? instanceModels(instance, providerPrices) : [];
   };
   // A new endpoint has to name an instance that can serve it; with none, there
   // is nothing to create rather than a target that cannot be saved.
-  const eligible = endpointInstances("responses", instances);
+  const eligible = endpointInstances("responses", instances, serves);
   const newEndpoint = () => emptyEndpoint(eligible[0]?.slug);
 
   const replace = (slug: string, endpoint: EndpointConfig) =>
@@ -470,6 +484,7 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
           endpoints={endpoints}
           appId={appId}
           instances={instances}
+          serves={serves}
           modelsFor={modelsFor}
           onRename={(next) => state.updateEndpoints(renameEndpoint(endpoints, slug, next))}
           onChange={(next) => replace(slug, next)}

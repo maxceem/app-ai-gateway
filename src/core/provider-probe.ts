@@ -1,5 +1,5 @@
 import { GatewayError } from "./errors";
-import { gatewayProbe } from "./gateways";
+import { gatewayProbe, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
 import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
 import type { ProviderType } from "./types";
@@ -124,47 +124,42 @@ export async function probeProviderKey(
 }
 
 /**
- * Probes one provider through a reusable Cloudflare AI Gateway connection. The
- * URL and the gateway auth header come from the adapter that serves live
- * traffic, so a probe can never test a route production does not use.
+ * Probes one provider through a reusable gateway connection. The URL and the
+ * gateway auth header come from the adapter that serves live traffic, so a
+ * probe can never test a route production does not use — and the adapter
+ * decides whether the provider's own path is even the right thing to call.
  */
 export async function probeProviderGateway(input: {
   type: ProviderType;
-  accountId: string;
-  gatewayId: string;
+  gateway: ResolvedGateway;
   token: string;
 }): Promise<ProbeResult> {
-  const probePath = PROBE_PATHS[input.type];
-  if (!probePath) return { validated: false, reason: "no_probe" };
   const request = gatewayProbe({
-    gateway: {
-      type: "cf_aig",
-      config: { accountId: input.accountId, gatewayId: input.gatewayId },
-    },
+    gateway: input.gateway,
     secret: input.token,
     provider: input.type,
-    path: probePath,
+    // Null where this provider has no cheap authenticated call of its own. A
+    // gateway that authenticates with its own credential still has one.
+    path: PROBE_PATHS[input.type] ?? null,
   });
-  // A provider type this gateway does not serve has nothing to prove here.
+  // Nothing to prove: either this gateway does not serve the provider type, or
+  // the only thing it could call is a provider path that does not exist.
   if (!request) return { validated: false, reason: "no_probe" };
   const headers: Record<string, string> = { ...request.headers };
   if (input.type === "anthropic") headers["anthropic-version"] = "2023-06-01";
-  return runProbe(`${input.type}_via_cf_aig`, request.url, headers);
+  return runProbe(`${input.type}_via_${input.gateway.type}`, request.url, headers);
 }
 
 /**
- * One call proves the account id, the gateway id, and the token together, which
- * is exactly the set of mistakes the preset form can produce.
+ * Proves a whole gateway connection — every non-secret field plus the token —
+ * in one call, which is exactly the set of mistakes the create form can
+ * produce. `openai` is the stand-in provider: Cloudflare's URL needs *some*
+ * provider slug to be a URL at all, and Vercel's probe is provider-independent
+ * because its credential is, so both adapters answer for the connection itself.
  */
-export async function probeCfAigPreset(input: {
-  accountId: string;
-  gatewayId: string;
-  token: string;
-}): Promise<ProbeResult> {
-  return probeProviderGateway({
-    type: "openai",
-    accountId: input.accountId,
-    gatewayId: input.gatewayId,
-    token: input.token,
-  });
+export async function probeGatewayPreset(
+  gateway: ResolvedGateway,
+  token: string,
+): Promise<ProbeResult> {
+  return probeProviderGateway({ type: "openai", gateway, token });
 }

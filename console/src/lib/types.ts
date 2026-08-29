@@ -117,14 +117,14 @@ export interface ProviderGatewayListResponse {
   gateways: ProviderGateway[];
 }
 
-/** Only Cloudflare gateways are creatable today; the type is still explicit. */
-export interface ProviderGatewayCreateBody {
-  type: "cf_aig";
-  name: string;
-  accountId: string;
-  gatewayId: string;
-  token: string;
-}
+/**
+ * Discriminated the same way the API's create schema is: each gateway asks for
+ * exactly the non-secret fields it needs to be reachable, and the API rejects
+ * any it has no use for.
+ */
+export type ProviderGatewayCreateBody =
+  | { type: "cf_aig"; name: string; accountId: string; gatewayId: string; token: string }
+  | { type: "vercel"; name: string; token: string };
 
 export interface ProviderGatewayResponse {
   gateway: ProviderGateway;

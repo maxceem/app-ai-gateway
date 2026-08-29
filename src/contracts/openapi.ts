@@ -758,9 +758,9 @@ const providerGatewayFields = {
 };
 
 /**
- * Discriminated by `type`, because each gateway's `config` is its own shape.
- * Only `cf_aig` can be created today — `vercel` rows are readable ahead of the
- * adapter that serves them, and the create request refuses the type outright.
+ * Discriminated by `type`, because each gateway's `config` is its own shape:
+ * Cloudflare's account and gateway pair, and nothing at all for Vercel, whose
+ * origin is fixed in adapter code and whose team is named by the token.
  */
 const ProviderGatewaySummarySchema = z.discriminatedUnion("type", [
   z.object({
@@ -797,8 +797,8 @@ register({
   path: "/v1/admin/provider-gateways",
   tags: ["Admin provider gateways"],
   operationId: "createProviderGateway",
-  summary: "Create a reusable Cloudflare AI Gateway connection",
-  description: "Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
+  summary: "Create a reusable provider gateway connection",
+  description: "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(ProviderGatewayCreateRequestSchema) } },
   responses: {

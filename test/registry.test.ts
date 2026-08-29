@@ -24,6 +24,7 @@ import {
   CF_AI_GATEWAY_BASE_URL,
   credentialSource,
   GATEWAY_ADAPTERS,
+  gatewayBodyMutation,
   gatewayProbe,
   gatewayUpstream,
   wireModel,
@@ -172,11 +173,11 @@ describe("capability matrix", () => {
     }
   });
 
-  it.each(OPENAI_COMPATIBLE_PROVIDERS)("serves %s directly and on no gateway", (type) => {
+  it.each(OPENAI_COMPATIBLE_PROVIDERS)("serves %s directly and never through cf_aig", (type) => {
     for (const style of API_STYLES) {
       expect(supportsApiStyle("direct", type, style)).toBe(true);
-      // No mapping means direct-only: the request is refused at the edge rather
-      // than sent to a Cloudflare URL guessed from the provider's name.
+      // No mapping means direct-only for that gateway: the request is refused at
+      // the edge rather than sent to a Cloudflare URL guessed from the name.
       expect(supportsApiStyle("cf_aig", type, style)).toBe(false);
     }
     expect(routeCapability("cf_aig", type)).toBeNull();
@@ -185,6 +186,15 @@ describe("capability matrix", () => {
     expect(() => assertRouteServesProvider("cf_aig", type))
       .toThrow(/do not serve/u);
     expect(() => assertRouteServesProvider("direct", type)).not.toThrow();
+  });
+
+  it("keeps the rest of the batch direct-only on Vercel too", () => {
+    // Vercel adds `deepseek` and `moonshot` — the two whose Vercel model IDs
+    // really are the provider's own — and nothing else from this batch.
+    for (const type of OPENAI_COMPATIBLE_PROVIDERS) {
+      const served = type === "deepseek" || type === "moonshot";
+      expect([type, routeCapability("vercel", type) !== null]).toEqual([type, served]);
+    }
   });
 
   /**
@@ -478,8 +488,7 @@ describe("Cloudflare AI Gateway adapter", () => {
 
     await expect(probeProviderGateway({
       type: "anthropic",
-      accountId: "acct-1",
-      gatewayId: "gw-1",
+      gateway: { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } },
       token: "gateway-token",
     })).resolves.toEqual({ validated: true });
     expect(urls).toEqual([`${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/anthropic/v1/models`]);
@@ -487,6 +496,254 @@ describe("Cloudflare AI Gateway adapter", () => {
       "cf-aig-authorization": "Bearer gateway-token",
       "anthropic-version": "2023-06-01",
     });
+  });
+});
+
+/**
+ * Facts checked against Vercel's own documentation and its live public model
+ * catalog (August 2026), not against memory: the origin, the three APIs it
+ * republishes, and one namespace per provider type. `spacexai/` is why the
+ * catalog check exists — the obvious guess for xAI would 404 every request.
+ */
+describe("Vercel AI Gateway adapter", () => {
+  const adapter = GATEWAY_ADAPTERS.vercel;
+  const VERCEL = { type: "vercel", config: {} } as const;
+  const VERCEL_PROVIDERS = [
+    "openai",
+    "anthropic",
+    "gemini",
+    "xai",
+    "perplexity",
+    "deepseek",
+    "moonshot",
+  ] as const;
+
+  it("maps only the provider types whose Vercel namespace was verified", () => {
+    expect(Object.keys(adapter.routes).sort()).toEqual([...VERCEL_PROVIDERS].sort());
+    // Vercel namespaces a model ID by its *author*, so a host that serves other
+    // labs' weights has no namespace at all and stays direct-only — as do the
+    // types whose Vercel IDs are not the provider's own.
+    for (const type of ["groq", "together", "fireworks", "cerebras", "huggingface", "baseten", "mistral", "bytedance", "openrouter"] as const) {
+      expect([type, adapter.routes[type]]).toEqual([type, undefined]);
+    }
+    expect(
+      Object.fromEntries(
+        VERCEL_PROVIDERS.map((type) => [type, adapter.routes[type]?.modelPrefix]),
+      ),
+    ).toEqual({
+      openai: "openai/",
+      anthropic: "anthropic/",
+      gemini: "google/",
+      xai: "spacexai/",
+      perplexity: "perplexity/",
+      deepseek: "deepseek/",
+      moonshot: "moonshotai/",
+    });
+  });
+
+  it("carries three client APIs and refuses the native ones it does not have", () => {
+    for (const type of VERCEL_PROVIDERS) {
+      expect([type, adapter.routes[type]?.apiStyles]).toEqual([
+        type,
+        ["responses", "chat_completions", "anthropic_messages"],
+      ]);
+      // Not a URL space per provider: `gemini_native` has no Vercel path, and
+      // `v1/audio/transcriptions` answers 404 on this origin.
+      expect(supportsApiStyle("vercel", type, "gemini_native")).toBe(false);
+      expect(supportsApiStyle("vercel", type, "audio_transcription")).toBe(false);
+      expect(supportsApiStyle("vercel", type, "other")).toBe(false);
+      for (const style of ["responses", "chat_completions", "anthropic_messages"] as const) {
+        expect([type, style, supportsApiStyle("vercel", type, style)]).toEqual([type, style, true]);
+      }
+    }
+    // Named endpoints narrow the same way: a Responses endpoint composes a body
+    // Vercel serves, a transcription endpoint one it does not.
+    expect(supportsEndpointStyle("vercel", "openai", "responses")).toBe(true);
+    expect(supportsEndpointStyle("vercel", "openai", "transcription")).toBe(false);
+    expect(supportsEndpointStyle("cf_aig", "openai", "transcription")).toBe(true);
+  });
+
+  it.each([
+    ["v1/chat/completions", "https://ai-gateway.vercel.sh/v1/chat/completions"],
+    ["v1/responses", "https://ai-gateway.vercel.sh/v1/responses"],
+    ["v1/messages", "https://ai-gateway.vercel.sh/v1/messages"],
+  ])("appends the client path %s verbatim", (providerPath, url) => {
+    const request = gatewayUpstream({
+      gateway: VERCEL,
+      secret: "vck_gateway_token",
+      provider: "gemini",
+      providerPath,
+      query: "?stream=true",
+      appId: "app-1",
+      userId: "user-1",
+    });
+    // No account, team, or provider segment, and nothing stripped: Vercel names
+    // the provider in the model ID, so one URL space serves all of them.
+    expect(request.url).toBe(`${url}?stream=true`);
+    expect(request.headers).toEqual({
+      authorization: "Bearer vck_gateway_token",
+      "ai-reporting-user": "user-1",
+      "ai-reporting-tags": "app:app-1",
+    });
+  });
+
+  it("drops attribution Vercel would reject rather than sending a wrong value", () => {
+    const request = gatewayUpstream({
+      gateway: VERCEL,
+      secret: "vck_gateway_token",
+      provider: "openai",
+      providerPath: "v1/responses",
+      query: "",
+      // Over Vercel's documented 256-character limit for `user`; sending a
+      // truncated id would attribute the spend to somebody else, and sending
+      // the full one would 400 the whole request.
+      appId: "app-1",
+      userId: "u".repeat(300),
+    });
+    expect(request.headers["ai-reporting-user"]).toBeUndefined();
+    expect(request.headers["ai-reporting-tags"]).toBe("app:app-1");
+    expect(request.headers.authorization).toBe("Bearer vck_gateway_token");
+  });
+
+  it("probes the gateway's own credits endpoint, whatever provider it is asked about", () => {
+    // Provider-independent because the credential is: one Vercel key per
+    // gateway, and the provider keys it may use are in Vercel's dashboard.
+    for (const type of VERCEL_PROVIDERS) {
+      expect(gatewayProbe({
+        gateway: VERCEL,
+        secret: "vck_gateway_token",
+        provider: type,
+        // Perplexity has no probe path of its own; the gateway still has one.
+        path: type === "perplexity" ? null : "v1/models",
+      })).toEqual({
+        url: "https://ai-gateway.vercel.sh/v1/credits",
+        headers: { authorization: "Bearer vck_gateway_token" },
+      });
+    }
+    expect(gatewayProbe({
+      gateway: VERCEL,
+      secret: "vck_gateway_token",
+      provider: "groq",
+      path: "openai/v1/models",
+    })).toBeNull();
+  });
+
+  it("claims no credential source, because Vercel documents a fallback", () => {
+    // BYOK is *preferred*, and Vercel documents retrying with its own system
+    // credentials when a stored key fails. Nothing at configuration time
+    // settles which one paid, so nothing is claimed.
+    expect(adapter.credentialSource).toBeNull();
+    expect(credentialSource({ type: "vercel" })).toBeNull();
+  });
+
+  it("accepts the routing configuration it can honour and rejects the rest", () => {
+    expect(() => assertGatewayRoute("vercel", null)).not.toThrow();
+    expect(() => assertGatewayRoute("vercel", {})).not.toThrow();
+    expect(() => assertGatewayRoute("vercel", { modelPrefix: "google/" })).not.toThrow();
+    expect(() => assertGatewayRoute("vercel", { providerOnly: ["vertex", "google"] }))
+      .not.toThrow();
+    expect(() => assertGatewayRoute("vercel", {
+      modelPrefix: "google/",
+      providerOnly: ["google"],
+    })).not.toThrow();
+    // A namespace with no separator would concatenate into a model ID nothing
+    // serves, which is a 404 an operator cannot diagnose.
+    expect(() => assertGatewayRoute("vercel", { modelPrefix: "google" }))
+      .toThrow(/end with a slash/u);
+  });
+
+  it("pins the serving provider in the body, on every API it carries", () => {
+    for (const style of ["responses", "chat_completions", "anthropic_messages"] as const) {
+      const body: Record<string, unknown> = { model: "google/gemini-2.5-flash" };
+      expect(adapter.mutateBody!({ route: { providerOnly: ["vertex"] }, style, body })).toBe(true);
+      expect(body).toEqual({
+        model: "google/gemini-2.5-flash",
+        providerOptions: { gateway: { only: ["vertex"] } },
+      });
+    }
+  });
+
+  it("overrides a client's pin and keeps every other provider option", () => {
+    const body: Record<string, unknown> = {
+      model: "google/gemini-2.5-flash",
+      providerOptions: {
+        google: { thinkingBudget: 1 },
+        gateway: { only: ["anything"], sort: "cost" },
+      },
+    };
+    expect(adapter.mutateBody!({
+      route: { providerOnly: ["vertex"] },
+      style: "chat_completions",
+      body,
+    })).toBe(true);
+    expect(body.providerOptions).toEqual({
+      google: { thinkingBudget: 1 },
+      // The operator's pin wins; the client's other gateway options survive.
+      gateway: { only: ["vertex"], sort: "cost" },
+    });
+  });
+
+  it("leaves the body alone when no pin is configured", () => {
+    const body: Record<string, unknown> = { model: "google/gemini-2.5-flash" };
+    for (const route of [null, {}, { modelPrefix: "google/" }, { providerOnly: [] }]) {
+      expect(adapter.mutateBody!({ route, style: "chat_completions", body })).toBe(false);
+    }
+    expect(body).toEqual({ model: "google/gemini-2.5-flash" });
+    // A direct row has no gateway to steer, so nothing dispatches at all.
+    expect(gatewayBodyMutation({
+      gatewayType: null,
+      route: { providerOnly: ["vertex"] },
+      style: "chat_completions",
+      body,
+    })).toBe(false);
+    // Cloudflare declares no body mutation of its own.
+    expect(gatewayBodyMutation({
+      gatewayType: "cf_aig",
+      route: null,
+      style: "chat_completions",
+      body,
+    })).toBe(false);
+    expect(body).toEqual({ model: "google/gemini-2.5-flash" });
+  });
+});
+
+/**
+ * The plan's central claim: a model is the provider's own ID everywhere policy,
+ * pricing, and reporting can see it, and only the wire carries a route's
+ * namespace. Same canonical ID, three routes, one price row.
+ */
+describe("canonical model identity across routes", () => {
+  it("puts one canonical ID on three different wires", () => {
+    const routes: ProviderRoute[] = ["direct", "cf_aig", "vercel"];
+    expect(routes.map((route) => routeWireModel(route, "gemini", "gemini-2.5-flash"))).toEqual([
+      "gemini-2.5-flash",
+      "gemini-2.5-flash",
+      "google/gemini-2.5-flash",
+    ]);
+    // And back again: what Vercel echoes is canonicalized by the same prefix.
+    expect(routeCanonicalModel("vercel", "gemini", "google/gemini-2.5-flash"))
+      .toBe("gemini-2.5-flash");
+    // Only the route's own prefix comes off. Another gateway's namespace, or a
+    // canonical ID that contains a slash, survives intact.
+    expect(routeCanonicalModel("vercel", "gemini", "vertex/gemini-2.5-flash"))
+      .toBe("vertex/gemini-2.5-flash");
+    expect(routeCanonicalModel("direct", "openrouter", "google/gemini-2.5-flash"))
+      .toBe("google/gemini-2.5-flash");
+    expect(routeCanonicalModel("vercel", "xai", "spacexai/grok-4.5")).toBe("grok-4.5");
+  });
+
+  it("lets a row's own namespace override the adapter default, both ways", () => {
+    const override = { modelPrefix: "vertex-anthropic/" };
+    expect(routeWireModel("vercel", "anthropic", "claude-opus-5", override))
+      .toBe("vertex-anthropic/claude-opus-5");
+    expect(routeCanonicalModel("vercel", "anthropic", "vertex-anthropic/claude-opus-5", override))
+      .toBe("claude-opus-5");
+    // The default still applies to a row that configured nothing.
+    expect(routeWireModel("vercel", "anthropic", "claude-opus-5", null))
+      .toBe("anthropic/claude-opus-5");
+    // A route config on a gateway with no namespace of its own is refused
+    // before it can be stored, so nothing here can be reached with one.
+    expect(() => assertGatewayRoute("cf_aig", override)).toThrow();
   });
 });
 
@@ -509,10 +766,19 @@ describe("declared headers are never client-controlled", () => {
       gateway: "cf_aig",
       gatewayConfig: { accountId: "acct-1", gatewayId: "gw-1" },
     });
+    await seedProvider({
+      type: "openai",
+      id: "reserved-headers-vercel",
+      slug: "openai-vercel",
+      secret: "vercel-run-token",
+      gateway: "vercel",
+    });
   });
 
   afterAll(async () => {
-    await database(env.DB).delete(provider).where(eq(provider.id, "reserved-headers-openai"));
+    for (const id of ["reserved-headers-openai", "reserved-headers-vercel"]) {
+      await database(env.DB).delete(provider).where(eq(provider.id, id));
+    }
     clearProviderCaches();
   });
 
@@ -583,6 +849,25 @@ describe("declared headers are never client-controlled", () => {
       expect(upstream.get("cf-aig-authorization")).toBe("Bearer cf-aig-run-token");
       expect(upstream.get("authorization")).toBeNull();
       expect(upstream.get("x-api-key")).toBeNull();
+    },
+  );
+
+  it.each(RESERVED_UPSTREAM_HEADERS)(
+    "drops a client %s on a vercel route",
+    async (header) => {
+      const token = await gatewayToken(APP_ID);
+      const upstream = await proxyWith({ appId: APP_ID, slug: "openai-vercel", header, token });
+      upstream.forEach((value) => {
+        expect(value).not.toContain(MARKER);
+        expect(value).not.toContain(token);
+      });
+      // Vercel's own token, its own attribution, and no second credential:
+      // `x-api-key` would out-rank the bearer at Vercel, and a client value in
+      // `ai-reporting-*` would rewrite the operator's Vercel-side spend report.
+      expect(upstream.get("authorization")).toBe("Bearer vercel-run-token");
+      expect(upstream.get("x-api-key")).toBeNull();
+      expect(upstream.get("ai-reporting-tags")).toBe(`app:${APP_ID}`);
+      expect(upstream.get("cf-aig-authorization")).toBeNull();
     },
   );
 });

@@ -28,9 +28,10 @@ import {
   type AllowedPathObject,
   type Provider,
   type ProviderConfig,
-  type ProviderInstance,
 } from "@/lib/config-types";
-import { usePrices, useProviderInstances } from "@/lib/queries";
+import { gatewayApiSurface } from "@/lib/capabilities";
+import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
+import type { ProviderCredential, ProviderGateway } from "@/lib/types";
 
 /**
  * What to put after the slug. The path is the provider's own, verbatim, and the
@@ -59,6 +60,26 @@ const PROVIDER_HINTS: Record<Provider, string> = {
   openrouter:
     "Direct only, chat completions only. Models are OpenRouter slugs, e.g. google/gemini-3.6-flash, and need no local price: cost is reported by OpenRouter per request.",
 };
+
+/**
+ * What to put after the slug on a gateway-routed instance, which the gateway
+ * decides rather than the provider: one URL space for every provider it serves,
+ * and canonical model IDs whichever route they take. Derived from the capability
+ * matrix, so it cannot drift from what the backend will actually accept.
+ */
+function gatewayHint(instance: ProviderCredential, gateways: ProviderGateway[]): string | null {
+  if (instance.providerGatewayId === null) return null;
+  const gateway = gateways.find((entry) => entry.id === instance.providerGatewayId);
+  const surface = gateway ? gatewayApiSurface(gateway.type, instance.type) : null;
+  // A gateway that forwards to the provider's own API keeps the provider's own
+  // hint; only a gateway with a URL space of its own replaces it.
+  if (!surface?.narrowed) return null;
+  const paths = surface.available.map((entry) => `${entry.label} at ${entry.path}`).join(", ");
+  const missing = surface.unavailable.length > 0
+    ? ` Not available on this route: ${surface.unavailable.map((entry) => entry.label).join(", ")}.`
+    : "";
+  return `Routed through ${gateway!.name}: ${paths}.${missing} Models: ${surface.modelIds}.`;
+}
 
 /** One card per provider instance; an unknown slug still gets one so it can be removed. */
 interface PolicyRow {
@@ -237,7 +258,8 @@ function ProviderCard({
 
 /** Instances first, then any slug the config names that no longer resolves. */
 function policyRows(
-  instances: ProviderInstance[],
+  instances: ProviderCredential[],
+  gateways: ProviderGateway[],
   selected: string[],
   prices: Record<Provider, Record<string, unknown>> | undefined,
 ): PolicyRow[] {
@@ -247,7 +269,8 @@ function policyRows(
     description: (
       <>
         <span className="font-mono">/proxy/{instance.slug}/…</span> ·{" "}
-        {PROVIDER_LABELS[instance.type]} — {PROVIDER_HINTS[instance.type]}
+        {PROVIDER_LABELS[instance.type]} —{" "}
+        {gatewayHint(instance, gateways) ?? PROVIDER_HINTS[instance.type]}
       </>
     ),
     // Includes models only this instance prices: the allowlist is per instance,
@@ -272,10 +295,12 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const selected = selectedSlugs(proxy);
   const instanceList = useProviderInstances();
   const instances = instanceList.data ?? [];
+  const gatewayList = useProviderGateways();
+  const gateways = gatewayList.data?.gateways ?? [];
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const rewrites = Object.entries(proxy.model_rewrites ?? {});
-  const rows = policyRows(instances, selected, providerPrices);
+  const rows = policyRows(instances, gateways, selected, providerPrices);
 
   const setRewrites = (entries: [string, string][]) =>
     state.updateProxy({ model_rewrites: Object.fromEntries(entries.filter(([key]) => key !== "")) });

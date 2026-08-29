@@ -6,7 +6,8 @@ import {
   ProviderGatewayUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
-import { probeCfAigPreset } from "../../core/provider-probe";
+import { isGatewayType, resolveGateway, type ResolvedGateway } from "../../core/gateways";
+import { probeGatewayPreset } from "../../core/provider-probe";
 import {
   gatewayEncryptionContext,
   invalidateOrganizationProviders,
@@ -86,7 +87,12 @@ providerGatewayRoutes.post("/provider-gateways", async (c) => {
     ProviderGatewayCreateRequestSchema,
     await providerRequestBody(c),
   );
-  const probe = await probeCfAigPreset(body);
+  // The config union is built here and nowhere else, so a stored row's
+  // `type`/`config_json` pair is always one the adapter registry can resolve.
+  const gateway: ResolvedGateway = body.type === "cf_aig"
+    ? { type: "cf_aig", config: { accountId: body.accountId, gatewayId: body.gatewayId } }
+    : { type: "vercel", config: {} };
+  const probe = await probeGatewayPreset(gateway, body.token);
   const id = crypto.randomUUID();
   const secretBlob = await secretVault(c.env).encryptSecret(
     body.token,
@@ -95,9 +101,9 @@ providerGatewayRoutes.post("/provider-gateways", async (c) => {
   const [row] = await database(c.env.DB).insert(providerGateway).values({
     id,
     organizationId: admin.organizationId,
-    type: body.type,
+    type: gateway.type,
     name: body.name,
-    config: { accountId: body.accountId, gatewayId: body.gatewayId },
+    config: gateway.config,
     secretBlob,
     secretHint: secretHint(body.token),
     createdBy: admin.userId,
@@ -142,10 +148,19 @@ providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) => {
     ),
   });
   if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  const probe = await probeCfAigPreset({
-    ...existing.config,
-    token: body.token,
-  });
+  // A stored type the CHECK admits but no adapter implements cannot be probed,
+  // and rotating a token onto a route nothing can serve would be a silent no-op.
+  if (!isGatewayType(existing.type)) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `This deployment has no adapter for ${existing.type} provider gateways`,
+    );
+  }
+  const probe = await probeGatewayPreset(
+    resolveGateway(existing.type, existing.config),
+    body.token,
+  );
   const secretBlob = await secretVault(c.env).encryptSecret(
     body.token,
     gatewayEncryptionContext(admin.organizationId, id),

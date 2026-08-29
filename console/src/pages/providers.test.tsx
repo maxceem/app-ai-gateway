@@ -69,6 +69,32 @@ const RETIRED_GATEWAY: ProviderGateway = {
   referencedCount: 2,
 };
 
+const VERCEL_GATEWAY: ProviderGateway = {
+  id: "gw-vercel",
+  type: "vercel",
+  name: "Team Vercel gateway",
+  // Vercel's origin is fixed in adapter code, so there is nothing to store.
+  config: {},
+  secretHint: "1abc",
+  providerCount: 1,
+  referencedCount: 1,
+  status: "active",
+  createdAt: "2026-02-01T00:00:00.000Z",
+  updatedAt: "2026-02-01T00:00:00.000Z",
+  createdBy: "user-1",
+};
+
+const VIA_VERCEL: ProviderCredential = {
+  ...DIRECT,
+  id: "provider-3",
+  type: "gemini",
+  slug: "gemini-vercel",
+  name: "Gemini via Vercel",
+  secretHint: null,
+  providerGatewayId: "gw-vercel",
+  pricing: null,
+};
+
 const CREATED_GATEWAY: ProviderGateway = {
   ...GATEWAY,
   id: "gw-new",
@@ -209,6 +235,33 @@ describe("ProvidersPage", () => {
     expect(within(routed).queryByText(/cf-gw/)).toBeNull();
   });
 
+  it("shows a gateway-routed instance the client APIs its route carries", async () => {
+    stubProviders({
+      providers: [DIRECT, VIA_VERCEL],
+      gateways: [GATEWAY, VERCEL_GATEWAY],
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    const routed = (await screen.findByText("Gemini via Vercel")).closest("tr")!;
+    for (const label of ["Responses", "Chat Completions", "Anthropic Messages"]) {
+      expect(within(routed).getByText(label)).toBeTruthy();
+    }
+    // Derived, not configured: Vercel publishes no generateContent surface, so
+    // the row says so rather than letting a client find out with a 403.
+    expect(within(routed).getByText(/Not available: Gemini generateContent/i)).toBeTruthy();
+    // The canonical-model rule, stated where the model IDs get typed.
+    expect(within(routed).getByText(/no "google\/" prefix/i)).toBeTruthy();
+    // The path each API is reached at, without a column of its own.
+    expect(
+      within(routed).getByTitle("POST /v1/apps/{app}/proxy/gemini-vercel/v1/messages"),
+    ).toBeTruthy();
+
+    // A direct row keeps the provider's own API; its paths are per provider and
+    // are described on the app's proxy-policy tab instead.
+    const direct = screen.getByText("Prod OpenAI").closest("tr")!;
+    expect(within(direct).getByText(/provider's own api/i)).toBeTruthy();
+  });
+
   it("offers onboarding copy when nothing is configured", async () => {
     stubProviders({ providers: [], gateways: [] });
     renderAuthenticated(<ProvidersPage />);
@@ -276,6 +329,43 @@ describe("ProvidersPage", () => {
       expect(field.getAttribute("data-1p-ignore")).toBe("true");
       expect(field.getAttribute("data-lpignore")).toBe("true");
     }
+  });
+
+  it("asks a Vercel gateway for nothing but a name and a token", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderAuthenticated(<ProvidersPage />);
+
+    await userEvent.click(screen.getByRole("button", { name: /add gateway/i }));
+    const dialog = await topDialog();
+    // Cloudflare is still the first entry, so its own fields are what shows.
+    expect(within(dialog).getByLabelText("Cloudflare Account ID")).toBeTruthy();
+
+    await userEvent.selectOptions(
+      within(dialog).getByLabelText("Gateway type"),
+      "vercel",
+    );
+    // Its origin is fixed in adapter code and its token names the team, so
+    // there is nothing else to ask for.
+    expect(within(dialog).queryByLabelText("Cloudflare Account ID")).toBeNull();
+    expect(within(dialog).queryByLabelText("Cloudflare Gateway ID")).toBeNull();
+    // Honest wording: preferred, never "using your key".
+    expect(within(dialog).getByText(/may fall back to system credentials/i)).toBeTruthy();
+
+    await userEvent.clear(within(dialog).getByLabelText("Name"));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Team Vercel gateway");
+    await userEvent.type(within(dialog).getByLabelText("Gateway token"), "vck_live_token");
+    await userEvent.click(within(dialog).getByRole("button", { name: /^add gateway$/i }));
+
+    await waitFor(() => {
+      const call = calls.find(
+        (entry) => entry.method === "POST" && entry.url.endsWith("/provider-gateways"),
+      );
+      expect(call?.body).toEqual({
+        type: "vercel",
+        name: "Team Vercel gateway",
+        token: "vck_live_token",
+      });
+    });
   });
 
   it("adds a provider through an existing gateway instead of a key", async () => {
