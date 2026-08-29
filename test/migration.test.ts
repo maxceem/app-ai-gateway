@@ -27,6 +27,11 @@ describe("initial database migration", () => {
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_id");
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_slug");
     expect(usageColumns.results.map((column) => column.name)).toContain("event_id");
+    // Additive and nullable: adding it must not have rebuilt a populated table.
+    expect(usageColumns.results.find((column) => column.name === "cost_source")).toMatchObject({
+      notnull: 0,
+      dflt_value: null,
+    });
     expect(usageColumns.results.map((column) => column.name)).not.toContain("provider");
     expect(usageColumns.results.find((column) => column.name === "cost_usd")).toMatchObject({
       notnull: 1,

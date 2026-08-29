@@ -108,6 +108,9 @@ const UsageEventSchema = z.object({
   cache_write_tokens: z.number().int(),
   output_tokens: z.number().int(),
   cost_usd: z.number(),
+  cost_source: z.enum(["computed", "unresolved"]).nullable().openapi({
+    description: "How cost_usd was determined. `unresolved` means the provider answered successfully but reported no usage this deployment could read, so the zero cost is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
+  }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
   status: z.enum(["ok", "provider_error", "blocked_rate", "blocked_budget", "blocked_user"]),

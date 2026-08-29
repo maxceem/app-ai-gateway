@@ -32,6 +32,12 @@ export type UsageStatus =
   | "blocked_rate"
   | "blocked_budget"
   | "blocked_user";
+/**
+ * Where a proxied request's `cost_usd` came from. `unresolved` marks a
+ * successful provider response whose usage this deployment could not read, so
+ * its zero cost is an unknown rather than a measurement.
+ */
+export type CostSource = "computed" | "unresolved";
 
 /** Console-plane auth tables are namespaced away from end-user gateway data. */
 export const consoleAuthTables = createCfAuthTables({ tablePrefix: "console_" });
@@ -208,6 +214,14 @@ export const appUsageEvent = sqliteTable(
     cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
     costUsd: real("cost_usd").notNull().default(0),
+    /**
+     * How `cost_usd` was arrived at, for events that reached a provider. Null on
+     * blocked traffic, which never had a cost to source, and on rows written
+     * before the column existed. Deliberately unconstrained text: the value set
+     * grows as new cost sources land, and a CHECK on this table would make each
+     * addition a full rebuild.
+     */
+    costSource: text("cost_source").$type<CostSource>(),
     appVersion: text("app_version"),
     authMethod: text("auth_method").$type<AuthMethod>(),
     status: text("status").$type<UsageStatus>().notNull(),

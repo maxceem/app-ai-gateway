@@ -58,6 +58,7 @@ const BREAKDOWNS = [
   { value: "provider", label: "By provider" },
   { value: "user", label: "By user" },
   { value: "status", label: "By status" },
+  { value: "cost_source", label: "By cost source" },
   { value: "route", label: "By route" },
   { value: "endpoint", label: "By endpoint" },
   { value: "app_version", label: "By app version" },
@@ -336,7 +337,21 @@ export function UsageTab({ appId }: { appId: string }) {
                     <TableCell className="tabular text-right text-xs">
                       {formatCompact(totalTokens(event))}
                     </TableCell>
-                    <TableCell className="tabular text-right text-xs">{formatCost(event.cost_usd)}</TableCell>
+                    <TableCell className="tabular text-right text-xs">
+                      {/* An unresolved event was not billed because its usage
+                          was unreadable, so showing $0.00 would be a claim the
+                          gateway cannot make. */}
+                      {event.cost_source === "unresolved" ? (
+                        <span
+                          className="text-amber-600 dark:text-amber-400"
+                          title="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
+                        >
+                          unresolved
+                        </span>
+                      ) : (
+                        formatCost(event.cost_usd)
+                      )}
+                    </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}
                     </TableCell>

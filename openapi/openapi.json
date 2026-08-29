@@ -1066,6 +1066,18 @@
           "cost_usd": {
             "type": "number"
           },
+          "cost_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "computed",
+              "unresolved",
+              null
+            ],
+            "description": "How cost_usd was determined. `unresolved` means the provider answered successfully but reported no usage this deployment could read, so the zero cost is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed."
+          },
           "app_version": {
             "type": [
               "string",
@@ -1117,6 +1129,7 @@
           "cache_write_tokens",
           "output_tokens",
           "cost_usd",
+          "cost_source",
           "app_version",
           "auth_method",
           "status",

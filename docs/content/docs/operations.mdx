@@ -43,6 +43,25 @@ answers `400 invalid_request` and nothing is written, so a month is never left
 half-repriced. Clear the preview's `unpriced_events` first, either by re-adding
 the missing custom price or by narrowing the month.
 
+## Unresolved usage
+
+Usage is read from the provider's own response. When a provider answers
+successfully but reports usage in a shape this gateway does not know, there is
+nothing to price: the request is served, the event is stored with no tokens, and
+its cost is zero because nothing was measurable — not because nothing was spent.
+
+Those events are marked `cost_source: "unresolved"` instead of `"computed"`, are
+shown as **unresolved** rather than `$0.00` in the console's event list, and can
+be counted with the **By cost source** breakdown. Each one also emits an
+`error`-level `usage_unresolved_cost` log line naming the app, provider, model,
+and route, so a new provider or a changed response format surfaces as an alert
+rather than as free traffic. Live requests are never rejected for it.
+
+A sustained count above zero means real spend is escaping the budget, and the
+gateway cannot fix that on its own: the response shape has to be added to usage
+extraction. Blocked requests never reached a provider and carry no
+`cost_source`; events recorded before the field existed carry none either.
+
 ## Rotate the vault key
 
 In `local` mode, add `SECRET_VAULT_LOCAL_KEK_V2` as a Worker secret and set

@@ -370,6 +370,13 @@ export type UsageStatus =
   | "blocked_budget"
   | "blocked_user";
 
+/**
+ * How an event's cost was arrived at. `unresolved` is a successful provider
+ * response whose usage the gateway could not read: its `cost_usd` is zero
+ * because nothing was measurable, not because nothing was spent.
+ */
+export type CostSource = "computed" | "unresolved";
+
 export interface UsageEvent {
   id: number;
   user_id: string;
@@ -389,6 +396,8 @@ export interface UsageEvent {
   cache_write_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  /** Null on blocked traffic and on events recorded before the field existed. */
+  cost_source: CostSource | null;
   app_version: string | null;
   auth_method: "attest" | "api_key" | null;
   status: UsageStatus;

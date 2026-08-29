@@ -221,6 +221,143 @@ describe("usage recording idempotency", () => {
     expect(row?.cost_usd).toBeCloseTo(0.009, 8);
   });
 
+  it("marks a successful response with an unreadable usage shape as unresolved", async () => {
+    const appId = "usage-record-unresolved";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await recordUsageEvent({
+      env,
+      // Cohere's shape: the request proxied fine, and nothing here is priceable.
+      stream: new Response(
+        JSON.stringify({ text: "hello", usage: { billed_units: { input_tokens: 120 } } }),
+      ).body,
+      contentType: "application/json",
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      appLevelLimitsEnabled: false,
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "ok",
+      latencyMs: 11,
+    });
+
+    const row = await env.DB.prepare(
+      "SELECT event_id, cost_source, cost_usd, input_tokens, output_tokens, status FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{
+        event_id: string | null;
+        cost_source: string | null;
+        cost_usd: number;
+        input_tokens: number;
+        output_tokens: number;
+        status: string;
+      }>();
+    expect(row).toMatchObject({
+      cost_source: "unresolved",
+      cost_usd: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      // The client got its 200; only the metering is in doubt.
+      status: "ok",
+    });
+    const unresolved = errors.mock.calls
+      .map((call) => JSON.parse(String(call[0])))
+      .find((entry) => entry.message === "usage_unresolved_cost");
+    expect(unresolved).toMatchObject({
+      level: "error",
+      appId,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      eventId: row?.event_id,
+    });
+  });
+
+  it("records a provider-reported zero as a measured cost, not an unresolved one", async () => {
+    const appId = "usage-record-reported-zero";
+
+    await recordUsageEvent({
+      env,
+      stream: new Response(JSON.stringify({ usage: { input_tokens: 0, output_tokens: 0 } })).body,
+      contentType: "application/json",
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      appLevelLimitsEnabled: false,
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "ok",
+      latencyMs: 5,
+    });
+
+    const row = await env.DB.prepare("SELECT cost_source, cost_usd FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_source: string | null; cost_usd: number }>();
+    expect(row).toMatchObject({ cost_source: "computed", cost_usd: 0 });
+  });
+
+  it("leaves a failed provider response computed, since an error owes no usage", async () => {
+    const appId = "usage-record-provider-error";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await recordUsageEvent({
+      env,
+      stream: new Response(JSON.stringify({ error: { message: "rate limited" } })).body,
+      contentType: "application/json",
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      appLevelLimitsEnabled: false,
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "provider_error",
+      latencyMs: 7,
+    });
+
+    const row = await env.DB.prepare("SELECT cost_source, cost_usd FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_source: string | null; cost_usd: number }>();
+    expect(row).toMatchObject({ cost_source: "computed", cost_usd: 0 });
+    expect(errorCodes(errors)).not.toContain("usage_unresolved_cost");
+  });
+
+  it("leaves a blocked event without a cost source, having metered nothing", async () => {
+    const appId = "usage-record-blocked-source";
+    await recordBlockedUsageEvent({
+      env,
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "blocked_rate",
+      latencyMs: 2,
+    });
+
+    const row = await env.DB.prepare("SELECT cost_source FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_source: string | null }>();
+    expect(row?.cost_source).toBeNull();
+  });
+
   it("gives blocked events an identity that makes a replay a no-op", async () => {
     const appId = "usage-record-blocked";
     await recordBlockedUsageEvent({

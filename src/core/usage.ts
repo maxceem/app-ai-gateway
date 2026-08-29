@@ -135,12 +135,26 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * Whether a `usage` object carries at least one counter this pipeline can
+ * price. An object made only of fields we do not know — Cohere's
+ * `usage.billed_units`, for instance — reads as all-zero and is otherwise
+ * indistinguishable from a genuinely free request, which is exactly the silent
+ * $0 the caller must never be handed.
+ */
+function countsAny(usage: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => typeof usage[key] === "number" && Number.isFinite(usage[key]));
+}
+
 function openAiUsage(value: unknown): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
   const response = asRecord(root.response) ?? root;
   const usage = asRecord(response.usage);
   if (!usage) return null;
+  if (!countsAny(usage, ["input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"])) {
+    return null;
+  }
   const inputTotal = numberAt(usage, "input_tokens") || numberAt(usage, "prompt_tokens");
   const details = asRecord(usage.input_tokens_details) ?? asRecord(usage.prompt_tokens_details);
   const cached = details ? numberAt(details, "cached_tokens") : 0;
@@ -159,6 +173,16 @@ function anthropicUsage(value: unknown): UsageCounts | null {
   const message = asRecord(root.message) ?? root;
   const usage = asRecord(message.usage) ?? asRecord(root.usage);
   if (!usage) return null;
+  if (
+    !countsAny(usage, [
+      "input_tokens",
+      "output_tokens",
+      "cache_read_input_tokens",
+      "cache_creation_input_tokens",
+    ])
+  ) {
+    return null;
+  }
   return {
     inputTokens: numberAt(usage, "input_tokens"),
     cachedInputTokens: numberAt(usage, "cache_read_input_tokens"),
@@ -172,6 +196,9 @@ function geminiUsage(value: unknown): UsageCounts | null {
   if (!root) return null;
   const usage = asRecord(root.usageMetadata);
   if (!usage) return null;
+  if (!countsAny(usage, ["promptTokenCount", "cachedContentTokenCount", "candidatesTokenCount"])) {
+    return null;
+  }
   const promptTotal = numberAt(usage, "promptTokenCount");
   const cached = numberAt(usage, "cachedContentTokenCount");
   return {
@@ -265,7 +292,17 @@ function usageShape(value: unknown): UsageShape | null {
   return "openai";
 }
 
-export function extractUsageText(text: string, contentType: string, _provider: ProviderType): UsageObservation {
+/**
+ * Reads the usage a provider reported, or `null` when the response carries none
+ * this deployment recognises. That distinction is the whole point: a provider
+ * that reports zero tokens and a provider whose usage object we cannot read both
+ * cost `$0` to compute, and only the second one is a metering failure.
+ */
+export function extractUsageText(
+  text: string,
+  contentType: string,
+  _provider: ProviderType,
+): UsageObservation | null {
   let values: unknown[];
   if (contentType.toLowerCase().includes("text/event-stream")) {
     values = parseSse(text);
@@ -278,7 +315,7 @@ export function extractUsageText(text: string, contentType: string, _provider: P
     }
   }
   const anthropicValues = values.filter((value) => usageShape(value) === "anthropic");
-  if (anthropicValues.length > 0) return mergeAnthropicEvents(anthropicValues) ?? EMPTY;
+  if (anthropicValues.length > 0) return mergeAnthropicEvents(anthropicValues);
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const shape = usageShape(values[index]);
     const parsed = shape === "gemini"
@@ -290,7 +327,7 @@ export function extractUsageText(text: string, contentType: string, _provider: P
         : null;
     if (parsed) return parsed;
   }
-  return EMPTY;
+  return null;
 }
 
 export function computeCost(
@@ -456,6 +493,7 @@ export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<vo
     // Undefined for token-priced traffic, where JSON.stringify drops the field.
     audioSeconds: event.audioSeconds,
     costUsd: event.row.costUsd,
+    costSource: event.row.costSource,
   });
 }
 
@@ -463,10 +501,14 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // Minted before any work, so the observer read, the retries below and any
   // later replay of this same event all settle under one identity.
   const eventId = crypto.randomUUID();
-  let usage: UsageObservation = EMPTY;
+  let observed: UsageObservation | null = null;
   if (input.stream) {
     try {
-      usage = extractUsageText(await readObserver(input.stream), input.contentType, input.provider);
+      observed = extractUsageText(
+        await readObserver(input.stream),
+        input.contentType,
+        input.provider,
+      );
     } catch (error) {
       log("warn", "usage_extraction_failed", {
         eventId,
@@ -477,6 +519,24 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
+  // A provider that answered successfully and reported nothing readable would
+  // otherwise bill a legitimate-looking $0 and consume no budget — a silent
+  // spend-limit bypass. The event is still recorded and the response has already
+  // been served: the traffic is marked, not refused.
+  const unresolved = input.status === "ok" && observed === null;
+  if (unresolved) {
+    log("error", "usage_unresolved_cost", {
+      eventId,
+      appId: input.appId,
+      userId: input.userId,
+      provider: input.provider,
+      providerSlug: input.providerSlug,
+      model: input.model,
+      route: input.route,
+      contentType: input.contentType,
+    });
+  }
+  const usage: UsageObservation = observed ?? EMPTY;
   const price = computeCost(input.provider, input.model, usage, input.pricing);
   if (price === null) {
     // Unpriced models are refused before they proxy, so reaching here means the
@@ -511,6 +571,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       cacheWriteTokens: usage.cacheWriteTokens,
       outputTokens: usage.outputTokens,
       costUsd: cost,
+      costSource: unresolved ? "unresolved" : "computed",
       appVersion: input.appVersion,
       authMethod: input.authMethod,
       status: input.status,
@@ -544,6 +605,9 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
       cacheWriteTokens: 0,
       outputTokens: 0,
       costUsd: 0,
+      // A blocked request never reached a provider, so its zero cost has no
+      // source to record: nothing was metered and nothing is missing.
+      costSource: null,
       appVersion: input.appVersion,
       authMethod: input.authMethod,
       status: input.status,
