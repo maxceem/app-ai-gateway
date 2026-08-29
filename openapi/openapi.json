@@ -974,6 +974,39 @@
         ],
         "additionalProperties": false
       },
+      "ProviderGatewayTestRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "cf_aig"
+            ]
+          },
+          "accountId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "gatewayId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "type",
+          "accountId",
+          "gatewayId",
+          "token"
+        ],
+        "additionalProperties": false
+      },
       "ProviderGatewayUpdateRequest": {
         "type": "object",
         "properties": {
@@ -4177,7 +4210,7 @@
                     },
                     "status": {
                       "type": "integer",
-                      "description": "The upstream status behind an unexpected_status reason."
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
                     }
                   },
                   "required": [
@@ -4515,7 +4548,7 @@
         ],
         "operationId": "createProviderGateway",
         "summary": "Create a reusable Cloudflare AI Gateway connection",
-        "description": "Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
+        "description": "Probes and encrypts the gateway token once, and stores the connection whatever the probe found. Provider instances are attached separately through the providers API.",
         "security": [
           {
             "OperatorSession": []
@@ -4547,11 +4580,128 @@
                     },
                     "validated": {
                       "type": "boolean",
-                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                      "description": "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status",
+                        "rejected"
+                      ],
+                      "description": "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
                     }
                   },
                   "required": [
                     "gateway",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways/test": {
+      "post": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "testProviderGateway",
+        "summary": "Probe a gateway connection without storing it",
+        "description": "Runs the same live probe a create runs, against a connection that does not exist yet. Nothing is stored. Unlike the providers API, a refused token is reported as reason: rejected rather than raised as provider_key_invalid, because the same 401 means both a wrong token and a gateway that is not finished being set up.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Probe outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status",
+                        "rejected"
+                      ],
+                      "description": "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
+                    }
+                  },
+                  "required": [
                     "validated"
                   ]
                 }
@@ -4809,7 +4959,7 @@
         ],
         "operationId": "rotateProviderGateway",
         "summary": "Rotate a shared provider gateway token",
-        "description": "Re-probes and re-encrypts the token once for every provider instance referencing this gateway.",
+        "description": "Re-probes and re-encrypts the token once for every provider instance referencing this gateway, and stores it whatever the probe found.",
         "security": [
           {
             "OperatorSession": []
@@ -4852,7 +5002,21 @@
                     },
                     "validated": {
                       "type": "boolean",
-                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                      "description": "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status",
+                        "rejected"
+                      ],
+                      "description": "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
                     }
                   },
                   "required": [

@@ -182,6 +182,17 @@ export const ProviderGatewayCreateRequestSchema = z.object({
   token: ProviderSecretSchema,
 }).strict().meta({ id: "ProviderGatewayCreateRequest" });
 
+/**
+ * A dry run of {@link ProviderGatewayCreateRequestSchema}: the connection is
+ * probed exactly as a create would probe it, without a row having to exist.
+ */
+export const ProviderGatewayTestRequestSchema = z.object({
+  type: z.literal("cf_aig"),
+  accountId: z.string().trim().min(1).max(100),
+  gatewayId: z.string().trim().min(1).max(100),
+  token: ProviderSecretSchema,
+}).strict().meta({ id: "ProviderGatewayTestRequest" });
+
 export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,
 }).strict().meta({ id: "ProviderGatewayUpdateRequest" });

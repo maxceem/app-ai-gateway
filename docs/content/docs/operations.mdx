@@ -16,15 +16,16 @@ pnpm run startup:check
 
 ## Rotate a provider credential
 
-Rotate in place from the console's **Providers** page, or with
-`PUT /v1/admin/providers/{id}`. The row keeps its id, slug, encryption context,
-and custom pricing; the new credential is re-probed and re-encrypted. Warm
-isolates pick it up within about a minute, which is also the tail on a deletion.
+Rotate in place from the console's **Providers** page — **Update key** in the
+row's actions menu — or with `PUT /v1/admin/providers/{id}`. The row keeps its
+id, slug, encryption context, and custom pricing; the new credential is
+re-probed and re-encrypted. Warm isolates pick it up within about a minute,
+which is also the tail on a deletion.
 
 A gateway-routed instance owns no key of its own, so that call answers
-`409 provider_gateway_managed`. Rotate the shared token once with
-`POST /v1/admin/provider-gateways/{id}/rotate` and every instance behind that
-gateway follows. See [Providers](/docs/providers).
+`409 provider_gateway_managed`. Rotate the shared token once with **Update
+token** on the gateway's row, or `POST /v1/admin/provider-gateways/{id}/rotate`,
+and every instance behind that gateway follows. See [Providers](/docs/providers).
 
 ## Reprice stored usage
 

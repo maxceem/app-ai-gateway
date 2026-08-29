@@ -10,6 +10,7 @@ import {
   ProviderCreateRequestSchema,
   ProviderGatewayCreateRequestSchema,
   ProviderGatewayRotateRequestSchema,
+  ProviderGatewayTestRequestSchema,
   ProviderGatewayUpdateRequestSchema,
   ProviderPricingSchema,
   ProviderTestRequestSchema,
@@ -28,6 +29,7 @@ export {
   ProviderCreateRequestSchema,
   ProviderGatewayCreateRequestSchema,
   ProviderGatewayRotateRequestSchema,
+  ProviderGatewayTestRequestSchema,
   ProviderGatewayUpdateRequestSchema,
   ProviderPricingSchema,
   SlugSchema,
@@ -608,6 +610,14 @@ const ProviderValidatedSchema = z.boolean().openapi({
   description: "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid.",
 });
 
+const ProbeReasonSchema = z.enum(["no_probe", "unreachable", "unexpected_status"]).openapi({
+  description: "Why an unvalidated probe proved nothing. Absent when validated is true.",
+});
+
+const ProbeStatusSchema = z.number().int().openapi({
+  description: "The upstream status behind an unexpected_status or rejected reason.",
+});
+
 register({
   method: "get",
   path: "/v1/admin/providers",
@@ -656,12 +666,8 @@ register({
   responses: {
     200: response("Probe outcome.", z.object({
       validated: ProviderValidatedSchema,
-      reason: z.enum(["no_probe", "unreachable", "unexpected_status"]).optional().openapi({
-        description: "Why an unvalidated probe proved nothing. Absent when validated is true.",
-      }),
-      status: z.number().int().optional().openapi({
-        description: "The upstream status behind an unexpected_status reason.",
-      }),
+      reason: ProbeReasonSchema.optional(),
+      status: ProbeStatusSchema.optional(),
     })),
     ...errorResponses,
   },
@@ -744,19 +750,51 @@ register({
   },
 });
 
+const GatewayValidatedSchema = z.boolean().openapi({
+  description: "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test.",
+});
+
+const GatewayProbeReasonSchema = z
+  .enum(["no_probe", "unreachable", "unexpected_status", "rejected"])
+  .openapi({
+    description: "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token.",
+  });
+
 register({
   method: "post",
   path: "/v1/admin/provider-gateways",
   tags: ["Admin provider gateways"],
   operationId: "createProviderGateway",
   summary: "Create a reusable Cloudflare AI Gateway connection",
-  description: "Probes and encrypts the gateway token once. Provider instances are attached separately through the providers API.",
+  description: "Probes and encrypts the gateway token once, and stores the connection whatever the probe found. Provider instances are attached separately through the providers API.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(ProviderGatewayCreateRequestSchema) } },
   responses: {
     201: response("Created provider gateway.", z.object({
       gateway: ProviderGatewaySummarySchema,
-      validated: ProviderValidatedSchema,
+      validated: GatewayValidatedSchema,
+      reason: GatewayProbeReasonSchema.optional(),
+      status: ProbeStatusSchema.optional(),
+    })),
+    ...errorResponses,
+  },
+});
+
+register({
+  method: "post",
+  path: "/v1/admin/provider-gateways/test",
+  tags: ["Admin provider gateways"],
+  operationId: "testProviderGateway",
+  summary: "Probe a gateway connection without storing it",
+  description:
+    "Runs the same live probe a create runs, against a connection that does not exist yet. Nothing is stored. Unlike the providers API, a refused token is reported as reason: rejected rather than raised as provider_key_invalid, because the same 401 means both a wrong token and a gateway that is not finished being set up.",
+  security: operatorSecurity,
+  request: { body: { required: true, content: json(ProviderGatewayTestRequestSchema) } },
+  responses: {
+    200: response("Probe outcome.", z.object({
+      validated: GatewayValidatedSchema,
+      reason: GatewayProbeReasonSchema.optional(),
+      status: ProbeStatusSchema.optional(),
     })),
     ...errorResponses,
   },
@@ -785,7 +823,7 @@ register({
   tags: ["Admin provider gateways"],
   operationId: "rotateProviderGateway",
   summary: "Rotate a shared provider gateway token",
-  description: "Re-probes and re-encrypts the token once for every provider instance referencing this gateway.",
+  description: "Re-probes and re-encrypts the token once for every provider instance referencing this gateway, and stores it whatever the probe found.",
   security: operatorSecurity,
   request: {
     params: ProviderIdPath,
@@ -794,7 +832,9 @@ register({
   responses: {
     200: response("Rotated provider gateway.", z.object({
       gateway: ProviderGatewaySummarySchema,
-      validated: ProviderValidatedSchema,
+      validated: GatewayValidatedSchema,
+      reason: GatewayProbeReasonSchema.optional(),
+      status: ProbeStatusSchema.optional(),
     })),
     ...errorResponses,
   },

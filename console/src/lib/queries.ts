@@ -32,6 +32,7 @@ import type {
   ProviderGatewayCreateBody,
   ProviderGatewayListResponse,
   ProviderGatewayResponse,
+  ProviderGatewayTestBody,
   ProviderListResponse,
   ProviderResponse,
   ProviderUpdateBody,
@@ -223,6 +224,14 @@ export function useTestProvider() {
   return useMutation({
     mutationFn: (body: ProviderTestBody) =>
       api.post<ProviderTestResult>("/v1/admin/providers/test", body),
+    gcTime: 0,
+  });
+}
+
+export function useTestProviderGateway() {
+  return useMutation({
+    mutationFn: (body: ProviderGatewayTestBody) =>
+      api.post<ProviderTestResult>("/v1/admin/provider-gateways/test", body),
     gcTime: 0,
   });
 }

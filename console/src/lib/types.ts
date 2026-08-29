@@ -118,6 +118,21 @@ export interface ProviderGatewayResponse {
   gateway: ProviderGateway;
   /** Absent on rename, which never re-probes the connection. */
   validated?: boolean;
+  /**
+   * Why the probe did not confirm the connection. A gateway write reports its
+   * probe rather than failing on it, so this is how a stored-but-unconfirmed
+   * connection explains itself.
+   */
+  reason?: ProbeReason;
+  status?: number;
+}
+
+/** A gateway connection probed on its own, before any row exists. */
+export interface ProviderGatewayTestBody {
+  type: ProviderGatewayType;
+  accountId: string;
+  gatewayId: string;
+  token: string;
 }
 
 /** Per-1M-token overrides, keyed by model name. */
@@ -161,12 +176,19 @@ export interface ProviderTestBody {
 }
 
 /**
+ * Why a probe did not confirm a credential. Only `rejected` is a verdict
+ * against it, and only a gateway write reports one: the providers API turns
+ * that same refusal into a `provider_key_invalid` error instead.
+ */
+export type ProbeReason = "no_probe" | "unreachable" | "unexpected_status" | "rejected";
+
+/**
  * A probe's answer. `validated: false` is never "the credential is bad" — the
  * reason says what stopped the check, which is what the operator can act on.
  */
 export interface ProviderTestResult {
   validated: boolean;
-  reason?: "no_probe" | "unreachable" | "unexpected_status";
+  reason?: ProbeReason;
   status?: number;
 }
 

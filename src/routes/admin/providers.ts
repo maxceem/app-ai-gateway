@@ -6,7 +6,11 @@ import {
   ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
-import { probeProviderGateway, probeProviderKey } from "../../core/provider-probe";
+import {
+  assertNotRejected,
+  probeProviderGateway,
+  probeProviderKey,
+} from "../../core/provider-probe";
 import {
   decryptProviderGatewaySecret,
   encryptionContext,
@@ -151,11 +155,11 @@ providerRoutes.post("/providers/test", async (c) => {
   const admin = c.get("admin");
   const body = providerSchemaBody(ProviderTestRequestSchema, await providerRequestBody(c));
   if (body.secret !== undefined) {
-    return c.json(await probeProviderKey(body.type, body.secret));
+    return c.json(assertNotRejected(await probeProviderKey(body.type, body.secret)));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
   const gateway = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
-  return c.json(await probeProviderGateway({ type: body.type, ...gateway }));
+  return c.json(assertNotRejected(await probeProviderGateway({ type: body.type, ...gateway })));
 });
 
 providerRoutes.post("/providers", async (c) => {
@@ -179,7 +183,7 @@ providerRoutes.post("/providers", async (c) => {
   let providerGatewayId: string | undefined;
   if (body.secret !== undefined) {
     secret = body.secret;
-    validated = (await probeProviderKey(body.type, body.secret)).validated;
+    validated = assertNotRejected(await probeProviderKey(body.type, body.secret)).validated;
   } else {
     const gatewayId = body.providerGatewayId;
     if (!gatewayId) {
@@ -187,7 +191,9 @@ providerRoutes.post("/providers", async (c) => {
     }
     providerGatewayId = gatewayId;
     const gateway = await gatewayToken(c, admin.organizationId, gatewayId);
-    validated = (await probeProviderGateway({ type: body.type, ...gateway })).validated;
+    validated = assertNotRejected(
+      await probeProviderGateway({ type: body.type, ...gateway }),
+    ).validated;
   }
 
   let row: ProviderRow;
@@ -237,7 +243,7 @@ providerRoutes.put("/providers/:id", async (c) => {
         `This provider uses a shared gateway token; rotate it at /v1/admin/provider-gateways/${row.providerGatewayId}/rotate`,
       );
     }
-    validated = (await probeProviderKey(row.type, body.secret)).validated;
+    validated = assertNotRejected(await probeProviderKey(row.type, body.secret)).validated;
     updates.secretBlob = await secretVault(c.env).encryptSecret(
       body.secret,
       encryptionContext(admin.organizationId, row.id),

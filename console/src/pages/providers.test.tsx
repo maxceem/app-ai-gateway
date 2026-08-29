@@ -96,6 +96,8 @@ function stubProviders(
     gateways?: ProviderGateway[];
     createProvider?: { status: number; body: unknown };
     testProvider?: { status: number; body: unknown };
+    testGateway?: { status: number; body: unknown };
+    createGateway?: { status: number; body: unknown };
   } = {},
 ) {
   const providers = options.providers ?? [DIRECT, VIA_GATEWAY];
@@ -113,6 +115,12 @@ function stubProviders(
       if (method === "GET") return json({ gateways });
       if (method === "DELETE") return json({ deleted: true, provider_gateway_id: SPARE_GATEWAY.id });
       if (method === "PATCH") return json({ gateway: { ...GATEWAY, name: "Renamed gateway" } });
+      if (url.endsWith("/test")) {
+        const stub = options.testGateway;
+        return stub ? json(stub.body, stub.status) : json({ validated: true });
+      }
+      const stub = options.createGateway;
+      if (stub && !url.endsWith("/rotate")) return json(stub.body, stub.status);
       // Create and rotate answer with the same envelope.
       return json({ gateway: CREATED_GATEWAY, validated: true }, url.endsWith("/rotate") ? 200 : 201);
     }
@@ -146,6 +154,18 @@ async function choose(trigger: HTMLElement, option: RegExp | string) {
 async function topDialog(): Promise<HTMLElement> {
   const dialogs = await screen.findAllByRole("dialog");
   return dialogs[dialogs.length - 1]!;
+}
+
+/** Every row action lives behind the row's menu, so a test opens that first. */
+async function openRowActions(label: string): Promise<HTMLElement> {
+  await userEvent.click(await screen.findByRole("button", { name: `Actions for ${label}` }));
+  return await screen.findByRole("menu");
+}
+
+/** Opens a row's menu and runs one of its actions. */
+async function runRowAction(label: string, action: RegExp) {
+  const menu = await openRowActions(label);
+  await userEvent.click(within(menu).getByRole("menuitem", { name: action }));
 }
 
 /** Providers are added the same way apps and management keys are: in a modal. */
@@ -492,6 +512,86 @@ describe("ProvidersPage", () => {
     expect(document.body.textContent).not.toContain("cf-aig-run-token");
   });
 
+  it("checks a gateway connection on demand, without storing it", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderAuthenticated(<ProvidersPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
+    const dialog = await topDialog();
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Account ID"), "acct-1");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Gateway ID"), "cf-gw");
+    await userEvent.type(within(dialog).getByLabelText("Gateway token"), "cf-aig-probe-token");
+    await userEvent.click(within(dialog).getByRole("button", { name: /test gateway/i }));
+
+    expect(await within(dialog).findByText(/the gateway accepted this token/i)).toBeTruthy();
+    const test = calls.find((entry) => entry.url.endsWith("/provider-gateways/test"));
+    expect(test?.body).toEqual({
+      type: "cf_aig",
+      accountId: "acct-1",
+      gatewayId: "cf-gw",
+      token: "cf-aig-probe-token",
+    });
+    // A dry run stores nothing: the form is still open on the same fields.
+    expect(calls.some((entry) =>
+      entry.method === "POST" && entry.url.endsWith("/provider-gateways"))).toBe(false);
+    expect(document.body.textContent).not.toContain("cf-aig-probe-token");
+  });
+
+  it("says a refused token can still be saved, and drops the verdict when it changes", async () => {
+    stubProviders({
+      providers: [],
+      gateways: [],
+      testGateway: { status: 200, body: { validated: false, reason: "rejected", status: 401 } },
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
+    const dialog = await topDialog();
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Account ID"), "acct-1");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Gateway ID"), "cf-gw");
+    await userEvent.type(within(dialog).getByLabelText("Gateway token"), "cf-aig-bad-token");
+    await userEvent.click(within(dialog).getByRole("button", { name: /test gateway/i }));
+
+    // The refusal names both things it can mean, and never disables the submit.
+    const line = await within(dialog).findByText(/refused this token \(HTTP 401\)/i);
+    expect(line.textContent).toMatch(/authentication is turned on/i);
+    expect(within(dialog).getByRole("button", { name: /^add gateway$/i }))
+      .toHaveProperty("disabled", false);
+
+    // A verdict belongs to the connection that was probed, not the next one.
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Gateway ID"), "-2");
+    expect(within(dialog).queryByText(/refused this token/i)).toBeNull();
+  });
+
+  it("stores a gateway the probe could not confirm, and says so", async () => {
+    const warn = vi.spyOn(toast, "warning");
+    const calls = stubProviders({
+      providers: [],
+      gateways: [],
+      createGateway: {
+        status: 201,
+        body: { gateway: CREATED_GATEWAY, validated: false, reason: "rejected", status: 401 },
+      },
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
+    const dialog = await topDialog();
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Account ID"), "acct-1");
+    await userEvent.type(within(dialog).getByLabelText("Cloudflare Gateway ID"), "cf-gw");
+    await userEvent.type(within(dialog).getByLabelText("Gateway token"), "cf-aig-unproven");
+    await userEvent.click(within(dialog).getByRole("button", { name: /^add gateway$/i }));
+
+    // The gateway is stored either way; the operator is told what the probe found.
+    await waitFor(() => {
+      expect(calls.some((entry) => entry.method === "POST" && entry.url.endsWith("/provider-gateways")))
+        .toBe(true);
+    });
+    await waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/refused the token/i));
+    });
+  });
+
   it("links a routed provider to its gateway's row", async () => {
     stubProviders();
     renderAuthenticated(<ProvidersPage />);
@@ -529,7 +629,7 @@ describe("ProvidersPage", () => {
         .length;
 
     await waitFor(() => expect(gatewayReads()).toBe(1));
-    await userEvent.click(await screen.findByRole("button", { name: /delete prod openai/i }));
+    await runRowAction("Prod OpenAI", /delete provider/i);
     await userEvent.click(screen.getByRole("button", { name: /^delete provider$/i }));
 
     await waitFor(() => expect(gatewayReads()).toBe(2));
@@ -605,10 +705,13 @@ describe("ProvidersPage", () => {
     const retired = screen.getByText("Retired gateway").closest("tr")!;
     expect(within(retired).getByText("0")).toBeTruthy();
     // A gateway still in use cannot be deleted, and says why.
-    expect(screen.getByRole("button", { name: /delete prod cf gateway/i }))
-      .toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: /delete spare gateway/i }))
-      .toHaveProperty("disabled", false);
+    const inUse = await openRowActions("Prod CF gateway");
+    expect(within(inUse).getByRole("menuitem", { name: /delete gateway/i }))
+      .toHaveProperty("ariaDisabled", "true");
+    await userEvent.keyboard("{Escape}");
+    const unused = await openRowActions("Spare gateway");
+    expect(within(unused).getByRole("menuitem", { name: /delete gateway/i }))
+      .toHaveProperty("ariaDisabled", null);
   });
 
   it("blocks deleting a gateway only revoked rows still reference", async () => {
@@ -617,8 +720,9 @@ describe("ProvidersPage", () => {
 
     // Nothing routes through it, but the foreign key counts revoked rows too,
     // so "delete the active instances first" would be unactionable advice.
-    const blocked = await screen.findByRole("button", { name: /delete retired gateway/i });
-    expect(blocked).toHaveProperty("disabled", true);
+    const menu = await openRowActions("Retired gateway");
+    const blocked = within(menu).getByRole("menuitem", { name: /delete gateway/i });
+    expect(blocked).toHaveProperty("ariaDisabled", "true");
     expect(screen.getByText(/revoked provider instances still reference this gateway/i))
       .toBeTruthy();
   });
@@ -627,10 +731,10 @@ describe("ProvidersPage", () => {
     const calls = stubProviders();
     renderAuthenticated(<ProvidersPage />);
 
-    const gatewayRow = (await screen.findByText("acct-1 · cf-gw")).closest("tr")!;
-    await userEvent.click(within(gatewayRow).getByRole("button", { name: "Rotate" }));
+    await screen.findByText("acct-1 · cf-gw");
+    await runRowAction("Prod CF gateway", /update token/i);
     await userEvent.type(await screen.findByLabelText("New gateway token"), "cf-aig-new-token");
-    await userEvent.click(screen.getByRole("button", { name: /rotate token/i }));
+    await userEvent.click(screen.getByRole("button", { name: /update token/i }));
 
     await waitFor(() => {
       const call = calls.find((entry) => entry.url.includes("/rotate"));
@@ -644,8 +748,8 @@ describe("ProvidersPage", () => {
     const calls = stubProviders();
     renderAuthenticated(<ProvidersPage />);
 
-    const gatewayRow = (await screen.findByText("acct-1 · cf-gw")).closest("tr")!;
-    await userEvent.click(within(gatewayRow).getByRole("button", { name: "Rename" }));
+    await screen.findByText("acct-1 · cf-gw");
+    await runRowAction("Prod CF gateway", /rename/i);
     const dialog = await screen.findByRole("dialog");
     await userEvent.clear(within(dialog).getByLabelText("Name"));
     await userEvent.type(within(dialog).getByLabelText("Name"), "Renamed gateway");
@@ -662,7 +766,7 @@ describe("ProvidersPage", () => {
     const calls = stubProviders({ gateways: [SPARE_GATEWAY] });
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /delete spare gateway/i }));
+    await runRowAction("Spare gateway", /delete gateway/i);
     await userEvent.click(await screen.findByRole("button", { name: /^delete gateway$/i }));
 
     await waitFor(() => {
@@ -675,10 +779,10 @@ describe("ProvidersPage", () => {
     const calls = stubProviders();
     renderAuthenticated(<ProvidersPage />);
 
-    const row = (await screen.findByText("Prod OpenAI")).closest("tr")!;
-    await userEvent.click(within(row).getByRole("button", { name: "Rotate" }));
+    await screen.findByText("Prod OpenAI");
+    await runRowAction("Prod OpenAI", /update key/i);
     await userEvent.type(await screen.findByLabelText("New API key"), "sk-rotated");
-    await userEvent.click(screen.getByRole("button", { name: /rotate key/i }));
+    await userEvent.click(screen.getByRole("button", { name: /update key/i }));
 
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "PUT");
@@ -692,9 +796,9 @@ describe("ProvidersPage", () => {
     stubProviders();
     renderAuthenticated(<ProvidersPage />);
 
-    const row = (await screen.findByText("Anthropic via CF")).closest("tr")!;
-    const rotate = within(row).getByRole("button", { name: "Rotate" });
-    expect(rotate).toHaveProperty("disabled", true);
+    const menu = await openRowActions("Anthropic via CF");
+    const rotate = within(menu).getByRole("menuitem", { name: /update key/i });
+    expect(rotate).toHaveProperty("ariaDisabled", "true");
     expect(rotate.getAttribute("aria-describedby")).toBeTruthy();
   });
 
@@ -702,7 +806,7 @@ describe("ProvidersPage", () => {
     const calls = stubProviders();
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.click((await screen.findAllByRole("button", { name: "Pricing" }))[0]!);
+    await runRowAction("Prod OpenAI", /pricing/i);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByDisplayValue("gpt-brand-new")).toBeTruthy();
 
@@ -730,7 +834,7 @@ describe("ProvidersPage", () => {
     const errorToast = vi.spyOn(toast, "error");
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.click((await screen.findAllByRole("button", { name: "Pricing" }))[0]!);
+    await runRowAction("Prod OpenAI", /pricing/i);
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: /add model/i }));
     await userEvent.type(within(dialog).getByLabelText("Model 2"), "half-priced");
@@ -751,7 +855,7 @@ describe("ProvidersPage", () => {
     const calls = stubProviders();
     renderAuthenticated(<ProvidersPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /delete prod openai/i }));
+    await runRowAction("Prod OpenAI", /delete provider/i);
     expect(await screen.findByText(/start failing within a minute/i)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /^delete provider$/i }));
 
@@ -770,8 +874,14 @@ describe("ProvidersPage", () => {
     // never reaches a field at all.
     expect(screen.getByRole("button", { name: /new provider/i })).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: /add gateway/i })).toHaveProperty("disabled", true);
-    for (const button of screen.getAllByRole("button", { name: "Rotate" })) {
-      expect(button).toHaveProperty("disabled", true);
-    }
+    // The row menus still open, and each action says why it is unavailable.
+    const menu = await openRowActions("Prod OpenAI");
+    expect(within(menu).getByRole("menuitem", { name: /update key/i }))
+      .toHaveProperty("ariaDisabled", "true");
+    expect(within(menu).getByRole("menuitem", { name: /delete provider/i }))
+      .toHaveProperty("ariaDisabled", "true");
+    // Pricing is only a view until its own save button, which is guarded.
+    expect(within(menu).getByRole("menuitem", { name: /pricing/i }))
+      .toHaveProperty("ariaDisabled", null);
   });
 });

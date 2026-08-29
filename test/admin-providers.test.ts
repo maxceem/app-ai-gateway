@@ -424,6 +424,81 @@ describe("admin provider gateway API", () => {
     })).status).toBe(404);
   });
 
+  it("stores a connection the gateway refuses, and says the gateway refused it", async () => {
+    stubProbe("rejected");
+    // A Cloudflare AI Gateway answers 401 for a wrong token and for one that is
+    // not finished being set up, so the write reports the probe instead of
+    // failing on it — the operator can add the connection and fix the rest.
+    const created = await call("POST", "/v1/admin/provider-gateways", {
+      type: "cf_aig",
+      name: "Half-built gateway",
+      accountId: "acct-1",
+      gatewayId: "gw-1",
+      token: "cf-aig-unproven-token",
+    });
+    expect(created.status, created.text).toBe(201);
+    expect(created.body).toMatchObject({
+      validated: false,
+      reason: "rejected",
+      status: 401,
+    });
+    expect(created.text).not.toContain("cf-aig-unproven-token");
+
+    const listed = await call("GET", "/v1/admin/provider-gateways");
+    expect(listed.body.gateways).toHaveLength(1);
+
+    // The same is true of a token replaced later.
+    const rotated = await call(
+      "POST",
+      `/v1/admin/provider-gateways/${created.body.gateway.id}/rotate`,
+      { token: "cf-aig-still-unproven" },
+    );
+    expect(rotated.status, rotated.text).toBe(200);
+    expect(rotated.body).toMatchObject({ validated: false, reason: "rejected", status: 401 });
+  });
+
+  it("probes a gateway connection that has no row yet, and stores nothing", async () => {
+    const urls = stubProbe();
+    const tested = await call("POST", "/v1/admin/provider-gateways/test", {
+      type: "cf_aig",
+      accountId: "acct-1",
+      gatewayId: "gw-1",
+      token: "cf-aig-candidate-token",
+    });
+    expect(tested.status, tested.text).toBe(200);
+    expect(tested.body).toEqual({ validated: true });
+    expect(urls).toEqual(["https://gateway.ai.cloudflare.com/v1/acct-1/gw-1/openai/models"]);
+    expect(tested.text).not.toContain("cf-aig-candidate-token");
+    expect((await call("GET", "/v1/admin/provider-gateways")).body.gateways).toEqual([]);
+
+    // A refusal is a verdict the operator reads, not an error: the providers
+    // API raises provider_key_invalid here, and this one deliberately does not.
+    vi.restoreAllMocks();
+    stubProbe("rejected");
+    const refused = await call("POST", "/v1/admin/provider-gateways/test", {
+      type: "cf_aig",
+      accountId: "acct-1",
+      gatewayId: "gw-1",
+      token: "cf-aig-bad-token",
+    });
+    expect(refused.status).toBe(200);
+    expect(refused.body).toEqual({ validated: false, reason: "rejected", status: 401 });
+
+    vi.restoreAllMocks();
+    stubProbe("outage");
+    const inconclusive = await call("POST", "/v1/admin/provider-gateways/test", {
+      type: "cf_aig",
+      accountId: "acct-1",
+      gatewayId: "gw-1",
+      token: "cf-aig-candidate-token",
+    });
+    expect(inconclusive.body).toEqual({
+      validated: false,
+      reason: "unexpected_status",
+      status: 503,
+    });
+  });
+
   it("attaches providers individually, probes by type, and never stores per-row secrets", async () => {
     const urls = stubProbe();
     const gateway = await createGateway();
