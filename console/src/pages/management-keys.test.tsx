@@ -10,11 +10,12 @@ const EXISTING = {
   id: "key-1",
   organizationId: "org-1",
   name: "CI deploy",
+  tokenHint: "6789",
   createdAt: "2026-02-01T00:00:00.000Z",
   revokedAt: null,
 };
 
-function stubKeys(created?: unknown) {
+function stubKeys(created?: unknown, keys: unknown[] = [EXISTING]) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/v1/admin/keys") && init?.method === "POST") {
@@ -22,7 +23,7 @@ function stubKeys(created?: unknown) {
         status: 201,
       });
     }
-    return new Response(JSON.stringify({ keys: [EXISTING] }), { status: 200 });
+    return new Response(JSON.stringify({ keys }), { status: 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -43,7 +44,17 @@ describe("ManagementKeysPage", () => {
     renderAuthenticated(<ManagementKeysPage />);
 
     expect(await screen.findByText("CI deploy")).toBeTruthy();
+    expect(screen.getByText("…6789")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
+  });
+
+  it("shows a placeholder for keys created before hints were recorded", async () => {
+    stubKeys(undefined, [{ ...EXISTING, tokenHint: null }]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await screen.findByText("CI deploy");
+    expect(screen.getByText("—")).toBeTruthy();
+    expect(screen.queryByText(/…/)).toBeNull();
   });
 
   it("names the key in a modal and sends it", async () => {

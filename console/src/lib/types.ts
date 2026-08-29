@@ -52,6 +52,8 @@ export interface ManagementKey {
   id: string;
   organizationId: string;
   name: string;
+  /** Last characters of the token; null for keys created before hints existed. */
+  tokenHint: string | null;
   createdAt: string;
   revokedAt: string | null;
 }

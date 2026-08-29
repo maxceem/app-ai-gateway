@@ -530,6 +530,10 @@ const ManagementKeySummarySchema = z.object({
   id: z.string(),
   organizationId: z.string(),
   name: z.string(),
+  tokenHint: z.string().nullable().openapi({
+    description: "Last characters of the token for display. Null for keys created before hints were recorded.",
+    example: "x9Qb",
+  }),
   createdAt: z.string(),
   revokedAt: z.string().nullable(),
 });

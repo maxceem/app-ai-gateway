@@ -95,6 +95,7 @@ export function ManagementKeysPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Key</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -104,14 +105,14 @@ export function ManagementKeysPage() {
             {list.isPending ? (
               [0, 1, 2].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={4}>
+                  <TableCell colSpan={5}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : keys.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
                   No management keys yet.
                 </TableCell>
               </TableRow>
@@ -119,6 +120,9 @@ export function ManagementKeysPage() {
               keys.map((key) => (
                 <TableRow key={key.id}>
                   <TableCell className="font-medium">{key.name}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {key.tokenHint === null ? "—" : `…${key.tokenHint}`}
+                  </TableCell>
                   <TableCell className="tabular text-muted-foreground">
                     {formatDateTime(key.createdAt)}
                   </TableCell>

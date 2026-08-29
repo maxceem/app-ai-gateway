@@ -3613,6 +3613,14 @@
                           "name": {
                             "type": "string"
                           },
+                          "tokenHint": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
+                            "example": "x9Qb"
+                          },
                           "createdAt": {
                             "type": "string"
                           },
@@ -3627,6 +3635,7 @@
                           "id",
                           "organizationId",
                           "name",
+                          "tokenHint",
                           "createdAt",
                           "revokedAt"
                         ]
@@ -3734,6 +3743,14 @@
                         "name": {
                           "type": "string"
                         },
+                        "tokenHint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
+                          "example": "x9Qb"
+                        },
                         "createdAt": {
                           "type": "string"
                         },
@@ -3751,6 +3768,7 @@
                         "id",
                         "organizationId",
                         "name",
+                        "tokenHint",
                         "createdAt",
                         "revokedAt",
                         "plaintext"
@@ -3851,6 +3869,14 @@
                         "name": {
                           "type": "string"
                         },
+                        "tokenHint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
+                          "example": "x9Qb"
+                        },
                         "createdAt": {
                           "type": "string"
                         },
@@ -3865,6 +3891,7 @@
                         "id",
                         "organizationId",
                         "name",
+                        "tokenHint",
                         "createdAt",
                         "revokedAt"
                       ]

@@ -86,8 +86,9 @@ describe("operator authentication", () => {
       body: JSON.stringify({ name: "Automation" }),
     });
     expect(created.status).toBe(201);
-    const body = await created.json<{ key: { id: string; plaintext: string } }>();
+    const body = await created.json<{ key: { id: string; plaintext: string; tokenHint: string } }>();
     expect(body.key.plaintext).toMatch(/^agw_mgmt_/u);
+    expect(body.key.tokenHint).toBe(body.key.plaintext.slice(-4));
 
     const keyAccess = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       headers: { authorization: `Bearer ${body.key.plaintext}` },
@@ -113,6 +114,7 @@ describe("operator authentication", () => {
     const listedText = await listed.text();
     expect(listed.status).toBe(200);
     expect(listedText).not.toContain(body.key.plaintext);
+    expect(listedText).toContain(body.key.tokenHint);
 
     const revoked = await exports.default.fetch(
       `${ORIGIN}/v1/admin/keys/${body.key.id}/revoke`,
