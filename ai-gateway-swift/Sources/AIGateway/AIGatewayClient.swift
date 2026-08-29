@@ -7,6 +7,38 @@ import UIKit
 public typealias IssuerTokenProvider = @Sendable (_ forceRefresh: Bool) async throws -> String
 public typealias IssuerRejectionRecovery = @Sendable () async throws -> Void
 
+/// The second path segment of a proxy URL: `/v1/apps/{app}/proxy/{slug}/…`.
+///
+/// A slug names one *provider instance* configured by the organization, not a
+/// provider type. The first instance of each type takes its type name as the
+/// default slug, which is what the well-known constants below spell; extra
+/// instances carry a slug of their own, e.g. `.custom("openai-dev")`.
+public struct ProviderSlug: RawRepresentable, Hashable, Sendable,
+    ExpressibleByStringLiteral, CustomStringConvertible {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(stringLiteral value: StringLiteralType) {
+        self.rawValue = value
+    }
+
+    /// Any slug the organization configured, including extra instances of a type.
+    public static func custom(_ slug: String) -> ProviderSlug {
+        ProviderSlug(rawValue: slug)
+    }
+
+    public static let openai: ProviderSlug = "openai"
+    public static let anthropic: ProviderSlug = "anthropic"
+    public static let xai: ProviderSlug = "xai"
+    public static let gemini: ProviderSlug = "gemini"
+    public static let perplexity: ProviderSlug = "perplexity"
+
+    public var description: String { rawValue }
+}
+
 public enum GatewayAuthMode: Sendable {
     /// App Attest proves the client installation and the issuer token proves the user.
     case appAttest(issuerTokenProvider: IssuerTokenProvider)
@@ -86,10 +118,15 @@ public actor AIGatewayClient {
         return try await task.value
     }
 
+    /// `provider` is a provider instance slug, not a provider type. See ``ProviderSlug``.
     public func proxyURL(provider: String, providerPath: String) -> URL {
         baseURL
             .appending(path: "v1/apps/\(appID)/proxy/\(provider)")
             .appending(path: providerPath)
+    }
+
+    public func proxyURL(provider: ProviderSlug, providerPath: String) -> URL {
+        proxyURL(provider: provider.rawValue, providerPath: providerPath)
     }
 
     public func authorizedRequest(
@@ -99,6 +136,18 @@ public actor AIGatewayClient {
     ) async throws -> URLRequest {
         try await authorizedRequest(
             url: proxyURL(provider: provider, providerPath: providerPath),
+            method: method
+        )
+    }
+
+    public func authorizedRequest(
+        provider: ProviderSlug,
+        providerPath: String,
+        method: String = "POST"
+    ) async throws -> URLRequest {
+        try await authorizedRequest(
+            provider: provider.rawValue,
+            providerPath: providerPath,
             method: method
         )
     }

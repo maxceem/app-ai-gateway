@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ArrowRight, CheckCircle2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,17 +19,18 @@ import type { AppDraft } from "@/hooks/use-app-draft";
 import {
   CLAMP_STYLES,
   PROVIDER_LABELS,
-  PROVIDERS,
-  enabledProviders,
   emptyProvider,
+  instanceModels,
   normalizePath,
   pathObject,
   providerMode,
+  selectedSlugs,
   type AllowedPathObject,
   type Provider,
   type ProviderConfig,
+  type ProviderInstance,
 } from "@/lib/config-types";
-import { usePrices } from "@/lib/queries";
+import { usePrices, useProviderInstances } from "@/lib/queries";
 
 const PROVIDER_HINTS: Record<Provider, string> = {
   openai: "Forwarded with the leading v1/ stripped, matching Cloudflare's provider-native URL.",
@@ -38,18 +40,25 @@ const PROVIDER_HINTS: Record<Provider, string> = {
   perplexity: "Routed to Cloudflare's perplexity-ai slug; use chat/completions for Sonar models.",
 };
 
+/** One card per provider instance; an unknown slug still gets one so it can be removed. */
+interface PolicyRow {
+  slug: string;
+  title: string;
+  description: ReactNode;
+  knownModels: string[];
+}
+
 function ProviderCard({
-  provider,
+  row,
   config,
   onChange,
-  knownModels,
 }: {
-  provider: Provider;
+  row: PolicyRow;
   config: ProviderConfig | undefined;
   onChange: (next: ProviderConfig | undefined) => void;
-  knownModels: string[];
 }) {
   const paths = (config?.allowed_paths ?? []).map(pathObject);
+  const knownModels = row.knownModels;
 
   const setPaths = (next: AllowedPathObject[]) =>
     onChange({ ...emptyProvider(), ...config, allowed_paths: next.map(normalizePath) });
@@ -58,11 +67,11 @@ function ProviderCard({
     <Card>
       <CardHeader>
         <SectionHeader
-          title={PROVIDER_LABELS[provider]}
-          description={PROVIDER_HINTS[provider]}
+          title={row.title}
+          description={row.description}
           action={
             <Switch
-              aria-label={`Enable ${PROVIDER_LABELS[provider]}`}
+              aria-label={`Enable ${row.slug}`}
               checked={config !== undefined}
               onCheckedChange={(checked) => onChange(checked ? emptyProvider() : undefined)}
             />
@@ -206,13 +215,47 @@ function ProviderCard({
   );
 }
 
+/** Instances first, then any slug the config names that no longer resolves. */
+function policyRows(
+  instances: ProviderInstance[],
+  selected: string[],
+  prices: Record<Provider, Record<string, unknown>> | undefined,
+): PolicyRow[] {
+  const known = instances.map((instance) => ({
+    slug: instance.slug,
+    title: instance.name,
+    description: (
+      <>
+        <span className="font-mono">/proxy/{instance.slug}/…</span> ·{" "}
+        {PROVIDER_LABELS[instance.type]} — {PROVIDER_HINTS[instance.type]}
+      </>
+    ),
+    // Includes models only this instance prices: the allowlist is per instance,
+    // so suggesting them is exactly as correct as the catalog entries.
+    knownModels: instanceModels(instance, prices),
+  }));
+  const orphans = selected
+    .filter((slug) => !instances.some((instance) => instance.slug === slug))
+    .map((slug) => ({
+      slug,
+      title: slug,
+      description:
+        "This app allows an instance that no longer exists. Turn it off, or recreate it on the Providers page.",
+      knownModels: [],
+    }));
+  return [...known, ...orphans];
+}
+
 export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const proxy = state.draft!.config.routing;
   const mode = providerMode(proxy);
-  const selectedProviders = enabledProviders(proxy);
+  const selected = selectedSlugs(proxy);
+  const instanceList = useProviderInstances();
+  const instances = instanceList.data ?? [];
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const rewrites = Object.entries(proxy.model_rewrites ?? {});
+  const rows = policyRows(instances, selected, providerPrices);
 
   const setRewrites = (entries: [string, string][]) =>
     state.updateProxy({ model_rewrites: Object.fromEntries(entries.filter(([key]) => key !== "")) });
@@ -220,7 +263,14 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const setIndividualConfiguration = (enabled: boolean) => {
     state.updateProxy(
       enabled
-        ? { providers: { mode: "selected", selected: { openai: emptyProvider() } } }
+        ? {
+            providers: {
+              mode: "selected",
+              // Policy names instance slugs, so the first switch-on starts from
+              // an instance this organization actually has.
+              selected: instances[0] ? { [instances[0].slug]: emptyProvider() } : {},
+            },
+          }
         : { providers: { mode: "all" } },
     );
   };
@@ -255,21 +305,27 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
                   <CheckCircle2 className="size-5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">All supported providers are allowed</p>
+                  <p className="text-sm font-semibold">Every configured instance is allowed</p>
                   <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                    New providers, paths, and models are available automatically. Turn on
+                    New provider instances, paths, and models are available automatically. Turn on
                     individual configuration only when this application needs restrictions.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-1.5">
-                    {PROVIDERS.map((provider) => (
-                      <Badge
-                        key={provider}
-                        variant="secondary"
-                        className="bg-background/75 text-[11px] font-normal"
-                      >
-                        {PROVIDER_LABELS[provider]}
-                      </Badge>
-                    ))}
+                    {instances.length === 0 ? (
+                      <span className="text-xs text-muted-foreground">
+                        This organization has no provider instances yet.
+                      </span>
+                    ) : (
+                      instances.map((instance) => (
+                        <Badge
+                          key={instance.slug}
+                          variant="secondary"
+                          className="bg-background/75 font-mono text-[11px] font-normal"
+                        >
+                          {instance.slug}
+                        </Badge>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -281,11 +337,11 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
               </span>
               <div>
                 <p className="text-sm font-medium">
-                  {selectedProviders.length} of {PROVIDERS.length} providers enabled
+                  {selected.length} of {instances.length} provider instances enabled
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Use the provider switches below. An enabled provider allows every path and model
-                  until you add a restriction.
+                  Use the switches below. An enabled instance allows every path and model until you
+                  add a restriction, and clients reach it at its own slug.
                 </p>
               </div>
             </div>
@@ -293,17 +349,27 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
         </CardContent>
       </Card>
 
+      {mode === "selected" && rows.length === 0 ? (
+        <Card>
+          <CardContent>
+            <EmptyState>
+              No provider instances to choose from. Add one on the Providers page, then come back to
+              restrict this app to it.
+            </EmptyState>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {mode === "selected"
-        ? PROVIDERS.map((provider) => (
+        ? rows.map((row) => (
             <ProviderCard
-              key={provider}
-              provider={provider}
-              config={proxy.providers.selected?.[provider]}
-              knownModels={Object.keys(providerPrices?.[provider] ?? {})}
+              key={row.slug}
+              row={row}
+              config={proxy.providers.selected?.[row.slug]}
               onChange={(next) => state.updateProxy({
                 providers: {
                   mode: "selected",
-                  selected: { ...proxy.providers.selected, [provider]: next },
+                  selected: { ...proxy.providers.selected, [row.slug]: next },
                 },
               })}
             />

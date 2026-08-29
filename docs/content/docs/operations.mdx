@@ -17,9 +17,31 @@ pnpm run startup:check
 ## Rotate a provider credential
 
 Rotate in place from the console's **Providers** page, or with
-`PUT /v1/admin/providers/{id}`. The row keeps its id, encryption context, and
-custom pricing; the new credential is re-probed and re-encrypted. Warm isolates
-pick it up within about a minute, which is also the tail on a deletion.
+`PUT /v1/admin/providers/{id}`. The row keeps its id, slug, encryption context,
+and custom pricing; the new credential is re-probed and re-encrypted. Warm
+isolates pick it up within about a minute, which is also the tail on a deletion.
+
+A gateway-routed instance owns no key of its own, so that call answers
+`409 provider_gateway_managed`. Rotate the shared token once with
+`POST /v1/admin/provider-gateways/{id}/rotate` and every instance behind that
+gateway follows. See [Providers](/docs/providers).
+
+## Reprice stored usage
+
+`POST /v1/admin/apps/{app}/usage/reprice` recomputes stored `cost_usd` for one
+provider type, model, and month. Each event is priced through the provider
+instance that served it, falling back to the shipped catalog, so two instances of
+one type can reprice the same model differently.
+
+Run it as a dry run first (`apply: false`). The preview is tolerant: events whose
+serving instance was deleted, and which no catalog price covers, are reported as
+`unpriced_events` (with their current spend as `unpriced_cost_usd`) rather than
+failing the call. `matched_events` counts only what would actually be rewritten.
+
+`apply: true` is strict — if any matched event cannot be priced the whole call
+answers `400 invalid_request` and nothing is written, so a month is never left
+half-repriced. Clear the preview's `unpriced_events` first, either by re-adding
+the missing custom price or by narrowing the month.
 
 ## Rotate the vault key
 

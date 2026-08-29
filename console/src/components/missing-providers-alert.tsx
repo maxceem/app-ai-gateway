@@ -15,10 +15,11 @@ export function unconfiguredProviders(
   proxy: ProxyConfig,
   credentials: ProviderCredential[],
 ): Provider[] {
-  const configured = new Set(
-    credentials.filter((row) => row.status === "active").map((row) => row.type),
-  );
-  return enabledProviders(proxy).filter((provider) => !configured.has(provider));
+  const active = credentials.filter((row) => row.status === "active");
+  const configured = new Set(active.map((row) => row.type));
+  // `selected` names instance slugs, so the app's providers are only knowable
+  // through the organization's rows — the same rows that answer "configured?".
+  return enabledProviders(proxy, active).filter((provider) => !configured.has(provider));
 }
 
 /**

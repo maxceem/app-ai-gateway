@@ -2,11 +2,10 @@ import { Hono } from "hono";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
 import type { ProviderType } from "../../core/types";
-import { organizationPricing } from "../../core/provider-store";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { database } from "../../db";
-import { appUsageEvent } from "../../db/schema";
+import { appUsageEvent, provider as providerTable } from "../../db/schema";
 import type { UserLimiter } from "../../do/UserLimiter";
 import type { AdminVariables } from "../../middleware/admin";
 import { currentMonth, eventDay, inRange, parseLimit, parseRange, usageTotals } from "./shared";
@@ -16,6 +15,7 @@ export const usageRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }
 const BREAKDOWN_COLUMNS = {
   model: appUsageEvent.model,
   provider: appUsageEvent.providerType,
+  provider_slug: appUsageEvent.providerSlug,
   user: appUsageEvent.userId,
   status: appUsageEvent.status,
   route: appUsageEvent.route,
@@ -65,22 +65,22 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     throw new GatewayError(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request");
   }
   const { provider, model, month, apply } = parsed.data;
-  // Repricing follows the same two-level lookup as the hot path.
-  const pricing = (await organizationPricing(c.env, c.get("admin").organizationId))[provider as ProviderType];
-  if (!hasTokenModelPrice(provider, model, pricing)) {
-    throw new GatewayError(400, "invalid_request", `No token price is configured for ${provider}/${model}`);
-  }
-
   const rows = await database(c.env.DB)
     .select({
       id: appUsageEvent.id,
+      providerType: appUsageEvent.providerType,
       inputTokens: appUsageEvent.inputTokens,
       cachedInputTokens: appUsageEvent.cachedInputTokens,
       cacheWriteTokens: appUsageEvent.cacheWriteTokens,
       outputTokens: appUsageEvent.outputTokens,
       costUsd: appUsageEvent.costUsd,
+      pricing: providerTable.pricing,
     })
     .from(appUsageEvent)
+    .leftJoin(providerTable, and(
+      eq(appUsageEvent.providerId, providerTable.id),
+      eq(providerTable.organizationId, c.get("admin").organizationId),
+    ))
     .where(and(
       eq(appUsageEvent.appId, appId),
       eq(appUsageEvent.providerType, provider),
@@ -92,13 +92,30 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     throw new GatewayError(400, "invalid_request", "Repricing is limited to 10,000 events per operation");
   }
 
-  const repriced = rows.map((row) => {
-    const costUsd = computeCost(provider as ProviderType, model, row, pricing);
+  // Pricing is per event, through the row that served it, so one event whose
+  // provider instance was deleted can be unpriceable while its siblings are
+  // fine. A dry run reports that instead of refusing to answer; only `apply`
+  // insists on repricing every matched event.
+  const repriced: { id: number; previousCostUsd: number; costUsd: number }[] = [];
+  const skipped: { id: number; previousCostUsd: number }[] = [];
+  for (const row of rows) {
+    const providerType = row.providerType as ProviderType;
+    const costUsd = hasTokenModelPrice(providerType, model, row.pricing)
+      ? computeCost(providerType, model, row, row.pricing)
+      : null;
     if (costUsd === null) {
-      throw new GatewayError(400, "invalid_request", `Unable to compute a token price for ${provider}/${model}`);
+      if (apply) {
+        throw new GatewayError(
+          400,
+          "invalid_request",
+          `No token price is configured for ${providerType}/${model}`,
+        );
+      }
+      skipped.push({ id: row.id, previousCostUsd: row.costUsd });
+      continue;
     }
-    return { id: row.id, previousCostUsd: row.costUsd, costUsd };
-  });
+    repriced.push({ id: row.id, previousCostUsd: row.costUsd, costUsd });
+  }
   const previousCostUsd = repriced.reduce((total, row) => total + row.previousCostUsd, 0);
   const recalculatedCostUsd = repriced.reduce((total, row) => total + row.costUsd, 0);
 
@@ -147,6 +164,9 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     month,
     applied: apply,
     matched_events: repriced.length,
+    /** Dry-run only: matched events whose serving instance can no longer price them. */
+    unpriced_events: skipped.length,
+    unpriced_cost_usd: skipped.reduce((total, row) => total + row.previousCostUsd, 0),
     previous_cost_usd: previousCostUsd,
     recalculated_cost_usd: recalculatedCostUsd,
     delta_usd: recalculatedCostUsd - previousCostUsd,
@@ -234,6 +254,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       user_id: row.userId,
       api_key_id: row.apiKeyId,
       provider: row.providerType,
+      provider_slug: row.providerSlug,
       model: row.model,
       route: row.route,
       endpoint_slug: row.endpointSlug,

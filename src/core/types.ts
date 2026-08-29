@@ -1,6 +1,6 @@
-import type { EndpointApiStyle, EndpointProvider, ProviderType } from "./providers";
+import type { EndpointApiStyle } from "./providers";
 
-export type { EndpointApiStyle, EndpointProvider, ProviderType } from "./providers";
+export type { EndpointApiStyle, ProviderType } from "./providers";
 
 export interface ClaimRequirement {
   path: string;
@@ -63,14 +63,14 @@ export type AllowedPath = string | AllowedPathConfig;
 export interface RoutingConfig {
   providers: {
     mode: "all" | "selected";
-    selected?: Partial<Record<ProviderType, ProviderProxyConfig>>;
+    selected?: Record<string, ProviderProxyConfig>;
   };
   model_rewrites: Record<string, string>;
 }
 
 export interface ResolvedRoutingConfig {
   providerMode: "all" | "selected";
-  providers: Partial<Record<ProviderType, ProviderProxyConfig>>;
+  providers: Record<string, ProviderProxyConfig>;
   modelRewrites: Record<string, string>;
 }
 
@@ -95,7 +95,8 @@ export interface LimitsConfig {
  * request shape the gateway can compose are allowed.
  */
 export interface EndpointTarget {
-  provider: EndpointProvider;
+  /** Provider instance slug, resolved to a provider type at request time. */
+  provider: string;
   model: string;
 }
 

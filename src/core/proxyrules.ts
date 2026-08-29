@@ -2,6 +2,7 @@ import type { ProviderPricing } from "../db/schema";
 import { GatewayError } from "./errors";
 import type { ResolvedProvider } from "./provider-store";
 import { PROVIDER_REGISTRY } from "./providers";
+import { lookup } from "./records";
 import { hasModelPrice } from "./usage";
 import type {
   AllowedPath,
@@ -249,6 +250,7 @@ export async function prepareProxyRequest(input: {
   app: AppConfig;
   userId: string;
   provider: ProviderType;
+  providerSlug: string;
   providerPath: string;
   tokenHeader: string;
   /** The resolved row's per-model overrides; they win over the global catalog. */
@@ -256,7 +258,7 @@ export async function prepareProxyRequest(input: {
 }): Promise<PreparedProxyRequest> {
   const config = input.app.routing.providerMode === "all"
     ? UNRESTRICTED_PROVIDER
-    : input.app.routing.providers[input.provider];
+    : lookup(input.app.routing.providers, input.providerSlug);
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const match = matchedPath(input.provider, input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
@@ -293,7 +295,7 @@ export async function prepareProxyRequest(input: {
     if (!modelIsAllowed(config.allowed_models, requestedModel)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
     }
-    const actualModel = input.app.routing.modelRewrites[requestedModel] ?? requestedModel;
+    const actualModel = lookup(input.app.routing.modelRewrites, requestedModel) ?? requestedModel;
     if (!hasModelPrice(input.provider, actualModel, input.pricing)) {
       throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
     }
@@ -332,7 +334,7 @@ export async function prepareProxyRequest(input: {
   if (!modelIsAllowed(config.allowed_models, requestedModel)) {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
-  const actualModel = input.app.routing.modelRewrites[requestedModel] ?? requestedModel;
+  const actualModel = lookup(input.app.routing.modelRewrites, requestedModel) ?? requestedModel;
   if (!hasModelPrice(input.provider, actualModel, input.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
   }
@@ -370,7 +372,7 @@ export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
  *
  * - `gateway === null` — the provider's native API, path passed through
  *   verbatim, authenticated with the registry's own header.
- * - `gateway === "cf_aig"` — the organization's own Cloudflare AI Gateway,
+ * - `gateway.type === "cf_aig"` — the organization's own Cloudflare AI Gateway,
  *   which injects the provider key from its own store, so only the gateway
  *   token travels and no provider-auth header is sent.
  */
@@ -384,15 +386,8 @@ export function providerUpstream(input: {
   const spec = PROVIDER_REGISTRY[prepared.provider];
   const headers = new Headers(prepared.headers);
 
-  if (resolved.gateway === "cf_aig") {
-    const config = resolved.gatewayConfig;
-    if (!config) {
-      throw new GatewayError(
-        502,
-        "provider_unavailable",
-        "Provider is routed through a Cloudflare AI Gateway with no stored configuration",
-      );
-    }
+  if (resolved.gateway?.type === "cf_aig") {
+    const config = resolved.gateway;
     headers.set("cf-aig-authorization", `Bearer ${resolved.secret}`);
     headers.set("cf-aig-metadata", JSON.stringify({ app_id: input.appId, user_id: input.userId }));
     const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;

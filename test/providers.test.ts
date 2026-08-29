@@ -155,6 +155,135 @@ afterEach(async () => {
 });
 
 describe("provider resolution on the hot path", () => {
+  it("resolves custom slugs independently and enforces selected policy per instance", async () => {
+    const appId = "provider-custom-slug";
+    await seedProvider({
+      type: "openai",
+      id: "custom-slug-default",
+      organizationId: OTHER_ORGANIZATION_ID,
+      secret: "default-openai-key",
+    });
+    await seedProvider({
+      type: "openai",
+      id: "custom-slug-dev",
+      slug: "openai-dev",
+      organizationId: OTHER_ORGANIZATION_ID,
+      secret: "dev-openai-key",
+    });
+    await seedApp(appId, {
+      organizationId: OTHER_ORGANIZATION_ID,
+      proxy: {
+        "openai-dev": {
+          allowed_paths: ["v1/responses"],
+          allowed_models: ["gpt-5.6-sol"],
+        },
+        model_rewrites: {},
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream();
+
+    const disabledDefault = await proxy({
+      appId,
+      token,
+      path: "openai/v1/responses",
+      body: { model: "gpt-5.6-sol", input: "hello" },
+    });
+    expect(disabledDefault.status).toBe(403);
+
+    const custom = await proxy({
+      appId,
+      token,
+      path: "openai-dev/v1/responses",
+      body: { model: "gpt-5.6-sol", input: "hello" },
+    });
+    expect(custom.status).toBe(200);
+    await custom.text();
+    await Promise.all(pending.map((context) => waitOnExecutionContext(context)));
+    pending = [];
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer dev-openai-key");
+    const event = await env.DB.prepare(
+      "SELECT provider_id, provider_slug, provider_type FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+    ).bind(appId).first<{ provider_id: string; provider_slug: string; provider_type: string }>();
+    expect(event).toEqual({
+      provider_id: "custom-slug-dev",
+      provider_slug: "openai-dev",
+      provider_type: "openai",
+    });
+
+    await database(env.DB).delete(provider).where(eq(provider.id, "custom-slug-default"));
+    await database(env.DB).delete(provider).where(eq(provider.id, "custom-slug-dev"));
+  });
+
+  // "constructor" is a legal slug and a legal key on every plain object, so an
+  // unguarded policy lookup would answer with Object.prototype.constructor:
+  // a truthy "policy" with no allowed_paths, which crashes instead of refusing.
+  it("does not read routing policy from Object.prototype for a slug like constructor", async () => {
+    await seedProvider({
+      type: "openai",
+      id: "prototype-slug-openai",
+      slug: "constructor",
+      organizationId: OTHER_ORGANIZATION_ID,
+      secret: "prototype-slug-key",
+    });
+    await seedApp("prototype-slug-denied", {
+      organizationId: OTHER_ORGANIZATION_ID,
+      proxy: {
+        openai: { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+        model_rewrites: {},
+      },
+    });
+    await seedApp("prototype-slug-allowed", {
+      organizationId: OTHER_ORGANIZATION_ID,
+      proxy: {
+        constructor: { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+        model_rewrites: {},
+      },
+    });
+    const captured = captureUpstream();
+
+    const denied = await proxy({
+      appId: "prototype-slug-denied",
+      token: await gatewayToken("prototype-slug-denied"),
+      path: "constructor/v1/responses",
+      body: { model: "gpt-5.6-sol", input: "hello" },
+    });
+    expect(denied.status).toBe(403);
+    await expect(denied.json()).resolves.toMatchObject({
+      error: { code: "path_not_allowed", message: "Provider is disabled for this app" },
+    });
+
+    // A model named "constructor" must not resolve through model_rewrites either.
+    const rewrittenModel = await proxy({
+      appId: "prototype-slug-allowed",
+      token: await gatewayToken("prototype-slug-allowed"),
+      path: "constructor/v1/responses",
+      body: { model: "constructor", input: "hello" },
+    });
+    expect(rewrittenModel.status).toBe(403);
+    await expect(rewrittenModel.json()).resolves.toMatchObject({
+      error: { code: "model_not_allowed" },
+    });
+
+    // The slug still works when the app really does allow it.
+    const allowed = await proxy({
+      appId: "prototype-slug-allowed",
+      token: await gatewayToken("prototype-slug-allowed"),
+      path: "constructor/v1/responses",
+      body: { model: "gpt-5.6-sol", input: "hello" },
+    });
+    expect(allowed.status).toBe(200);
+    await allowed.text();
+    await Promise.all(pending.map((context) => waitOnExecutionContext(context)));
+    pending = [];
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer prototype-slug-key");
+
+    await database(env.DB).delete(provider).where(eq(provider.id, "prototype-slug-openai"));
+  });
+
   it.each(NATIVE_CASES)(
     "sends $type traffic to its native API with the organization's own key",
     async (testCase) => {

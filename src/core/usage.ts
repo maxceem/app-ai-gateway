@@ -1,6 +1,7 @@
 import prices from "./prices.json";
 import { markApiKeyUsed } from "./apikeys";
 import { log } from "./log";
+import { lookup } from "./records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
@@ -34,9 +35,12 @@ function modelPrice(
   model: string,
   overrides?: ProviderPricing | null,
 ): Price | undefined {
-  const override = overrides?.[model];
+  // The model name comes from the request body, and "constructor" is a legal
+  // one: an unguarded read would answer with a function off Object.prototype
+  // and price a model nobody listed.
+  const override = lookup(overrides, model);
   if (override) return { input: override.input, output: override.output };
-  return (prices as Record<ProviderType, Record<string, Price>>)[provider]?.[model];
+  return lookup((prices as Record<ProviderType, Record<string, Price>>)[provider], model);
 }
 
 export function hasModelPrice(
@@ -82,6 +86,8 @@ interface UsageEventInput {
   provider: ProviderType;
   /** The provider row that served the traffic. */
   providerId: string;
+  /** Caller-visible provider instance slug at the time of the request. */
+  providerSlug: string;
   /** That row's per-model pricing overrides, which win over the catalog. */
   pricing?: ProviderPricing | null;
   model: string;
@@ -102,6 +108,7 @@ interface BlockedUsageEventInput {
   provider: string;
   /** Unset when the request was blocked before a provider row was resolved. */
   providerId?: string | null;
+  providerSlug?: string | null;
   model: string;
   route: string;
   endpointSlug?: string | null;
@@ -344,6 +351,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     apiKeyId: input.apiKeyId ?? null,
     providerType: input.provider,
     providerId: input.providerId,
+    providerSlug: input.providerSlug,
     model: input.model,
     route: input.route,
     endpointSlug: input.endpointSlug ?? null,
@@ -371,6 +379,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     appId: input.appId,
     userId: input.userId,
     provider: input.provider,
+    providerSlug: input.providerSlug,
     model: input.model,
     status: input.status,
     ...usage,
@@ -385,6 +394,7 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
     apiKeyId: input.apiKeyId ?? null,
     providerType: input.provider,
     providerId: input.providerId ?? null,
+    providerSlug: input.providerSlug ?? null,
     model: input.model,
     route: input.route,
     endpointSlug: input.endpointSlug ?? null,

@@ -10,12 +10,15 @@ import {
   invalidateAppConfig,
   loadAppConfig,
   parseStoredAppConfig,
+  referencedProviderSlugs,
   validateAppConfigJson,
 } from "../../core/config";
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
-import { organizationPricing, type OrganizationPricing } from "../../core/provider-store";
-import { PROVIDER_TYPES } from "../../core/providers";
+import {
+  organizationProviders,
+  type OrganizationProviders,
+} from "../../core/provider-store";
 import {
   insertAppWithinCapacity,
   upsertAppWithinCapacity,
@@ -102,23 +105,29 @@ function asBadRequest(error: unknown): never {
 /**
  * Writes are validated against the global price catalog merged with this
  * organization's own overrides, so a model the operator has priced under
- * Providers is configurable here too.
+ * Providers is configurable here too. `grandfathered` carries the slugs the
+ * app's stored configuration already names, which an update may keep even if
+ * the instance behind one has since been deleted; creates pass nothing.
  */
 function validatedConfig(
   next: Record<string, unknown>,
   ceilings: BillingPlanLimits,
-  pricing: OrganizationPricing,
+  providers: OrganizationProviders,
+  grandfathered?: ReadonlySet<string>,
 ): ReturnType<typeof validateAppConfigJson> {
   try {
-    return validateAppConfigJson(next, ceilings, pricing);
+    return validateAppConfigJson(next, ceilings, providers, grandfathered);
   } catch (error) {
     asBadRequest(error);
   }
 }
 
-function summary(config: ReturnType<typeof validateAppConfigJson>) {
-  const providers = config.routing.providers.mode === "all"
-    ? [...PROVIDER_TYPES]
+function summary(
+  config: ReturnType<typeof validateAppConfigJson>,
+  providerIndex: OrganizationProviders,
+) {
+  const providerSlugs = config.routing.providers.mode === "all"
+    ? Object.keys(providerIndex)
     : Object.keys(config.routing.providers.selected ?? {});
   const models = new Set<string>();
   for (const provider of Object.values(config.routing.providers.selected ?? {})) {
@@ -131,7 +140,7 @@ function summary(config: ReturnType<typeof validateAppConfigJson>) {
       : null,
     monthly_user_budget_usd: config.limits.per_user.spending.monthly_usd,
     monthly_app_budget_usd: config.limits.per_app.spending.monthly_usd,
-    providers,
+    providers: providerSlugs,
     allowed_model_count: models.size,
   };
 }
@@ -185,6 +194,7 @@ appRoutes.get("/apps", async (c) => {
   const bounds = monthBounds(month);
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
+  const providerIndex = await organizationProviders(c.env, organizationId);
   const rows = await db
     .select()
     .from(app)
@@ -242,7 +252,7 @@ appRoutes.get("/apps", async (c) => {
         allowed_model_count: number;
       };
       try {
-        configSummary = summary(parseStoredAppConfig(row.config, null).stored);
+        configSummary = summary(parseStoredAppConfig(row.config, null).stored, providerIndex);
       } catch {
         configSummary = {
           authentication_type: "invalid",
@@ -291,7 +301,7 @@ appRoutes.post("/apps", async (c) => {
   const config = validatedConfig(
     body.config,
     planLimits,
-    await organizationPricing(c.env, organizationId),
+    await organizationProviders(c.env, organizationId),
   );
   const db = database(c.env.DB);
   let appId = requestedId;
@@ -372,7 +382,8 @@ appRoutes.post("/apps/:app/validate", async (c) => {
   validatedConfig(
     body.config,
     planLimits,
-    await organizationPricing(c.env, c.get("admin").organizationId),
+    await organizationProviders(c.env, c.get("admin").organizationId),
+    existing ? referencedProviderSlugs(existing.config) : undefined,
   );
   return c.json({ valid: true, app_id: appId, exists: existing !== undefined });
 });
@@ -383,10 +394,17 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
+  // An upsert of an existing app is an update: the slugs it already names stay
+  // writable even if their provider rows were deleted in the meantime.
+  const existing = await db.query.app.findFirst({
+    columns: { config: true },
+    where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
+  });
   const config = validatedConfig(
     body.config,
     planLimits,
-    await organizationPricing(c.env, organizationId),
+    await organizationProviders(c.env, organizationId),
+    existing ? referencedProviderSlugs(existing.config) : undefined,
   );
   const values = {
     id: appId,

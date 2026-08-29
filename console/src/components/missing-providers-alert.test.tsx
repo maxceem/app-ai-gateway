@@ -19,10 +19,10 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
   return {
     id: "provider-1",
     type: "openai",
+    slug: "openai",
     name: "Prod OpenAI",
     secretHint: "gain",
-    gateway: null,
-    gatewayConfig: null,
+    providerGatewayId: null,
     pricing: null,
     status: "active",
     createdAt: "2026-02-01T00:00:00.000Z",
@@ -37,6 +37,31 @@ describe("unconfiguredProviders", () => {
   it("ignores a revoked row, because the gateway will not resolve it", () => {
     expect(unconfiguredProviders(SELECTED, [credential({ status: "revoked" })])).toEqual(["openai"]);
     expect(unconfiguredProviders(SELECTED, [credential({})])).toEqual([]);
+  });
+
+  it("reads a slug-keyed policy through the org's instances", () => {
+    const SLUGGED: ProxyConfig = {
+      providers: {
+        mode: "selected",
+        selected: { "openai-dev": { allowed_paths: [], allowed_models: [] } },
+      },
+      model_rewrites: {},
+    };
+    // The app allows an OpenAI instance, and the org has it: nothing missing.
+    expect(unconfiguredProviders(SLUGGED, [credential({ slug: "openai-dev" })])).toEqual([]);
+    // The same policy with no such row leaves the app pointing at nothing;
+    // a default-slug policy still names its type, which is the common case.
+    expect(unconfiguredProviders(SLUGGED, [])).toEqual([]);
+    expect(unconfiguredProviders(SELECTED, [])).toEqual(["openai"]);
+  });
+
+  it("counts any instance of a type, whatever its slug or connection", () => {
+    // A second OpenAI key, or one routed through a gateway, configures the type
+    // just as the default-slug instance does.
+    expect(unconfiguredProviders(
+      SELECTED,
+      [credential({ id: "provider-2", slug: "openai-cf", secretHint: null, providerGatewayId: "gw-1" })],
+    )).toEqual([]);
   });
 
   it("treats an all-providers app as needing every provider", () => {

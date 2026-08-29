@@ -2,10 +2,12 @@ import { eq } from "drizzle-orm";
 import { database } from "../db";
 import { app } from "../db/schema";
 import { GatewayError } from "./errors";
-import type { OrganizationPricing } from "./provider-store";
+import type { OrganizationProviders } from "./provider-store";
+import { emptyRecord, lookup, recordFromEntries } from "./records";
 import {
   ENDPOINT_API_STYLES,
   PROVIDER_TYPES,
+  PROVIDER_SLUG_PATTERN,
   providersForEndpointStyle,
 } from "./providers";
 import { hasModelPrice } from "./usage";
@@ -16,14 +18,12 @@ import type {
   ClaimRequirement,
   EndpointApiStyle,
   EndpointConfig,
-  EndpointProvider,
   EndpointsConfig,
   EndpointTarget,
   LimitsConfig,
   LimitScopeConfig,
   IssuerAuthConfig,
   OutputClampStyle,
-  ProviderType,
   ProviderProxyConfig,
   ResolvedLimitScope,
   ResolvedRoutingConfig,
@@ -46,7 +46,26 @@ const CLAMP_STYLES: OutputClampStyle[] = [
   "none",
 ];
 const CONFIG_CACHE_TTL_MS = 60_000;
-export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/u;
+const WELL_KNOWN_PROVIDER_INSTANCES: OrganizationProviders = recordFromEntries(
+  PROVIDER_TYPES.map((type) => [
+    type,
+    { id: type, slug: type, type, pricing: null },
+  ] as const),
+);
+const NO_GRANDFATHERED_SLUGS: ReadonlySet<string> = new Set();
+
+/**
+ * What a write may reference. `instances` are the organization's active provider
+ * rows; `grandfathered` are slugs the *stored* configuration already names, kept
+ * writable so deleting a provider does not brick every later edit of an app that
+ * mentions it. Requests for a slug with no instance still fail at proxy time
+ * with `provider_not_configured`.
+ */
+interface ProviderScope {
+  instances: OrganizationProviders;
+  grandfathered: ReadonlySet<string>;
+}
+export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -201,7 +220,7 @@ function allowedPaths(value: unknown, label: string): AllowedPath[] {
   });
 }
 
-function parseProvider(raw: unknown, provider: ProviderType): ProviderProxyConfig {
+function parseProvider(raw: unknown, provider: string): ProviderProxyConfig {
   const value = record(raw, `routing provider ${provider}`);
   const allowedModels = value.allowed_models ?? [];
   if (
@@ -223,12 +242,21 @@ function parseProvider(raw: unknown, provider: ProviderType): ProviderProxyConfi
 }
 
 function validateRoutingPrices(
-  selected: Partial<Record<ProviderType, ProviderProxyConfig>>,
+  selected: Record<string, ProviderProxyConfig>,
   modelRewrites: Record<string, string>,
-  pricing: OrganizationPricing,
+  scope: ProviderScope,
 ): void {
+  const providers = scope.instances;
+  // A rewrite target is a model name, not an instance reference, so it is
+  // priced against the superset the organization could ever reach: the shipped
+  // catalog for every provider type, plus any instance's own overrides. An
+  // organization with no providers yet must still be able to save an app.
   for (const [source, target] of Object.entries(modelRewrites)) {
-    if (!PROVIDER_TYPES.some((provider) => hasModelPrice(provider, target, pricing[provider]))) {
+    const priced = PROVIDER_TYPES.some((type) => hasModelPrice(type, target, null))
+      || Object.values(providers).some((provider) =>
+        hasModelPrice(provider.type, target, provider.pricing)
+      );
+    if (!priced) {
       throw new GatewayError(
         500,
         "internal_error",
@@ -237,17 +265,25 @@ function validateRoutingPrices(
     }
   }
 
-  for (const [provider, config] of Object.entries(selected) as [ProviderType, ProviderProxyConfig][]) {
+  for (const [slug, config] of Object.entries(selected)) {
+    const provider = lookup(providers, slug);
+    if (!provider) {
+      if (!scope.grandfathered.has(slug)) {
+        throw new GatewayError(500, "internal_error", `Unknown provider instance ${slug}`);
+      }
+      // No instance to price against; the policy survives untouched.
+      continue;
+    }
     const configuredModels = [
-      ...config.allowed_models.map((model) => ({ model, label: `${provider}.allowed_models` })),
+      ...config.allowed_models.map((model) => ({ model, label: `${slug}.allowed_models` })),
       ...config.allowed_paths.flatMap((entry, index) => {
         if (typeof entry === "string" || entry.fixed_model === undefined) return [];
-        return [{ model: entry.fixed_model, label: `${provider}.allowed_paths[${index}].fixed_model` }];
+        return [{ model: entry.fixed_model, label: `${slug}.allowed_paths[${index}].fixed_model` }];
       }),
     ];
     for (const configured of configuredModels) {
-      const resolved = modelRewrites[configured.model] ?? configured.model;
-      if (!hasModelPrice(provider, resolved, pricing[provider])) {
+      const resolved = lookup(modelRewrites, configured.model) ?? configured.model;
+      if (!hasModelPrice(provider.type, resolved, provider.pricing)) {
         throw new GatewayError(
           500,
           "internal_error",
@@ -260,35 +296,33 @@ function validateRoutingPrices(
 
 function parseRouting(
   raw: unknown,
-  pricing: OrganizationPricing | null,
+  scope: ProviderScope | null,
 ): { stored: RoutingConfig; resolved: ResolvedRoutingConfig } {
   const value = record(raw, "routing");
   const providers = record(value.providers, "routing.providers");
   if (providers.mode !== "all" && providers.mode !== "selected") {
     throw new GatewayError(500, "internal_error", "routing.providers.mode must be all or selected");
   }
-  const selected: Partial<Record<ProviderType, ProviderProxyConfig>> = {};
+  const selected = emptyRecord<ProviderProxyConfig>();
   if (providers.mode === "all") {
     if (providers.selected !== undefined) {
       throw new GatewayError(500, "internal_error", "routing.providers.selected must be omitted in all mode");
     }
   } else {
     const selectedRaw = record(providers.selected, "routing.providers.selected");
-    for (const key of Object.keys(selectedRaw)) {
-      if (!PROVIDER_TYPES.includes(key as ProviderType)) {
-        throw new GatewayError(500, "internal_error", `Unknown provider ${key}`);
+    for (const [slug, policy] of Object.entries(selectedRaw)) {
+      if (!PROVIDER_SLUG_PATTERN.test(slug)) {
+        throw new GatewayError(500, "internal_error", `Invalid provider instance slug ${slug}`);
       }
-    }
-    for (const provider of PROVIDER_TYPES) {
-      if (selectedRaw[provider] !== undefined) selected[provider] = parseProvider(selectedRaw[provider], provider);
+      selected[slug] = parseProvider(policy, slug);
     }
   }
   const rewrites = record(value.model_rewrites, "routing.model_rewrites");
-  const modelRewrites: Record<string, string> = {};
+  const modelRewrites = emptyRecord<string>();
   for (const [source, target] of Object.entries(rewrites)) {
     modelRewrites[source] = requiredString(target, `routing.model_rewrites.${source}`);
   }
-  if (pricing) validateRoutingPrices(selected, modelRewrites, pricing);
+  if (scope) validateRoutingPrices(selected, modelRewrites, scope);
   return {
     stored: {
       providers: {
@@ -305,33 +339,40 @@ function parseEndpointTarget(
   raw: unknown,
   label: string,
   apiStyle: EndpointApiStyle,
-  pricing: OrganizationPricing | null,
+  scope: ProviderScope | null,
 ): EndpointTarget {
   const value = record(raw, label);
-  const provider = value.provider;
+  const provider = requiredString(value.provider, `${label}.provider`);
+  if (!PROVIDER_SLUG_PATTERN.test(provider)) {
+    throw new GatewayError(500, "internal_error", `${label}.provider is not a valid slug`);
+  }
+  const instance = lookup(scope?.instances, provider);
+  if (scope && !instance && !scope.grandfathered.has(provider)) {
+    throw new GatewayError(500, "internal_error", `${label}.provider ${provider} is not configured`);
+  }
   const eligibleProviders = providersForEndpointStyle(apiStyle);
-  if (!eligibleProviders.includes(provider as EndpointProvider)) {
+  if (instance && !eligibleProviders.some((type) => type === instance.type)) {
     throw new GatewayError(
       500,
       "internal_error",
-      `${label}.provider must be one of ${eligibleProviders.join(", ")}`,
+      `${label}.provider ${provider} is a ${instance.type} instance, which does not support ${apiStyle}`,
     );
   }
   const model = requiredString(value.model, `${label}.model`);
-  if (pricing && !hasModelPrice(provider as EndpointProvider, model, pricing[provider as EndpointProvider])) {
+  if (instance && !hasModelPrice(instance.type, model, instance.pricing)) {
     throw new GatewayError(
       500,
       "internal_error",
       `${label}.model ${model} has no configured price for ${String(provider)}`,
     );
   }
-  return { provider: provider as EndpointProvider, model };
+  return { provider, model };
 }
 
 function parseEndpoint(
   raw: unknown,
   label: string,
-  pricing: OrganizationPricing | null,
+  scope: ProviderScope | null,
 ): EndpointConfig {
   const value = record(raw, label);
   if (!ENDPOINT_API_STYLES.includes(value.api_style as EndpointApiStyle)) {
@@ -342,7 +383,7 @@ function parseEndpoint(
     );
   }
   const apiStyle = value.api_style as EndpointApiStyle;
-  const target = parseEndpointTarget(value, label, apiStyle, pricing);
+  const target = parseEndpointTarget(value, label, apiStyle, scope);
   const endpoint: EndpointConfig = {
     api_style: apiStyle,
     provider: target.provider,
@@ -361,16 +402,16 @@ function parseEndpoint(
       throw new GatewayError(500, "internal_error", `${label}.fallback must be an array`);
     }
     endpoint.fallback = value.fallback.map((item, index) =>
-      parseEndpointTarget(item, `${label}.fallback[${index}]`, apiStyle, pricing),
+      parseEndpointTarget(item, `${label}.fallback[${index}]`, apiStyle, scope),
     );
   }
   return endpoint;
 }
 
-function parseEndpoints(raw: unknown, pricing: OrganizationPricing | null): EndpointsConfig {
-  if (raw === undefined) return {};
+function parseEndpoints(raw: unknown, scope: ProviderScope | null): EndpointsConfig {
+  if (raw === undefined) return emptyRecord<EndpointConfig>();
   const value = record(raw, "endpoints");
-  const endpoints: EndpointsConfig = {};
+  const endpoints: EndpointsConfig = emptyRecord<EndpointConfig>();
   for (const [slug, definition] of Object.entries(value)) {
     if (!ENDPOINT_SLUG.test(slug)) {
       throw new GatewayError(
@@ -379,7 +420,7 @@ function parseEndpoints(raw: unknown, pricing: OrganizationPricing | null): Endp
         `endpoints.${slug} is not a valid slug; use 1-64 characters from a-z, 0-9, and -`,
       );
     }
-    endpoints[slug] = parseEndpoint(definition, `endpoints.${slug}`, pricing);
+    endpoints[slug] = parseEndpoint(definition, `endpoints.${slug}`, scope);
   }
   return endpoints;
 }
@@ -405,27 +446,30 @@ function parseLimitScope(raw: unknown, label: string): { stored: LimitScopeConfi
 }
 
 /**
- * Model pricing is validated when a configuration is *written*, against the
- * global catalog merged with the organization's own overrides. Reading a stored
- * configuration deliberately skips that check (`pricing: null`): a price that
- * disappears after the fact must surface as a `pricing_not_configured` response
- * on the request that needs it, never as an unparseable app.
+ * Provider references and model pricing are validated when a configuration is
+ * written. Reading stored configuration skips organization lookups so deleting
+ * an instance later surfaces as provider_not_configured on the request that
+ * needs it instead of making the entire app unparseable.
  */
 export function parseStoredAppConfig(
   raw: unknown,
-  pricing: OrganizationPricing | null = {},
+  organizationProviders: OrganizationProviders | null = null,
+  grandfatheredSlugs: ReadonlySet<string> = NO_GRANDFATHERED_SLUGS,
 ): {
   stored: StoredAppConfig;
   resolved: Omit<AppConfig, "id" | "organizationId" | "name" | "status">;
 } {
+  const scope: ProviderScope | null = organizationProviders === null
+    ? null
+    : { instances: organizationProviders, grandfathered: grandfatheredSlugs };
   const value = record(raw, "app");
   const authentication = parseAuthentication(value.authentication);
-  const routing = parseRouting(value.routing, pricing);
+  const routing = parseRouting(value.routing, scope);
   const limitsValue = record(value.limits, "limits");
   const perUser = parseLimitScope(limitsValue.per_user, "limits.per_user");
   const perApp = parseLimitScope(limitsValue.per_app, "limits.per_app");
   const limits: LimitsConfig = { per_user: perUser.stored, per_app: perApp.stored };
-  const endpoints = parseEndpoints(value.endpoints, pricing);
+  const endpoints = parseEndpoints(value.endpoints, scope);
   return {
     stored: {
       authentication,
@@ -505,11 +549,34 @@ function assertBillingCeilings(config: StoredAppConfig, ceilings: BillingPlanLim
 export function validateAppConfigJson(
   config: unknown,
   ceilings: BillingPlanLimits = {},
-  pricing: OrganizationPricing = {},
+  organizationProviders: OrganizationProviders | null = WELL_KNOWN_PROVIDER_INSTANCES,
+  grandfatheredSlugs: ReadonlySet<string> = NO_GRANDFATHERED_SLUGS,
 ): StoredAppConfig {
-  const stored = parseStoredAppConfig(config, pricing).stored;
+  const stored = parseStoredAppConfig(config, organizationProviders, grandfatheredSlugs).stored;
   assertBillingCeilings(stored, ceilings);
   return stored;
+}
+
+/**
+ * The provider slugs a stored configuration already names. An update may keep
+ * referencing these even after the instance behind one is deleted, so removing a
+ * provider never blocks unrelated edits to apps that mention it. An unparseable
+ * stored configuration grandfathers nothing.
+ */
+export function referencedProviderSlugs(config: unknown): Set<string> {
+  const slugs = new Set<string>();
+  let stored: StoredAppConfig;
+  try {
+    stored = parseStoredAppConfig(config, null).stored;
+  } catch {
+    return slugs;
+  }
+  for (const slug of Object.keys(stored.routing.providers.selected ?? {})) slugs.add(slug);
+  for (const endpoint of Object.values(stored.endpoints ?? {})) {
+    slugs.add(endpoint.provider);
+    for (const fallback of endpoint.fallback ?? []) slugs.add(fallback.provider);
+  }
+  return slugs;
 }
 
 export function assertAppActive(app: AppConfig): void {

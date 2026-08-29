@@ -17,10 +17,10 @@ export type UserStatus = "active" | "blocked";
 export type AuthMethod = "attest" | "api_key";
 export type ApiKeyStatus = "active" | "revoked";
 export type ProviderStatus = "active" | "revoked";
-/** `null` routes straight to the provider's native API; see PROVIDER_GATEWAYS. */
-export type ProviderGateway = "cf_aig";
+export type ProviderGatewayStatus = "active" | "revoked";
+export type ProviderGatewayType = "cf_aig";
 /** Non-secret configuration for the org's own Cloudflare AI Gateway. */
-export interface CfAigGatewayConfig {
+export interface CfAigConfig {
   accountId: string;
   gatewayId: string;
 }
@@ -66,12 +66,36 @@ export const app = sqliteTable(
   ],
 );
 
-/**
- * One row = "this provider, as configured by this organization". There are no
- * credential kinds: `gateway` is a single optional attribute describing how the
- * traffic travels (`null` = straight to the provider's native API), and both the
- * upstream URL shape and the auth injection follow from it.
- */
+/** A reusable connection to an organization's Cloudflare AI Gateway. */
+export const providerGateway = sqliteTable(
+  "provider_gateway",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => consoleOrganization.id),
+    type: text("type").$type<ProviderGatewayType>().notNull(),
+    name: text("name").notNull(),
+    config: text("config_json", { mode: "json" }).$type<CfAigConfig>().notNull(),
+    /** Vault blob for the gateway token; never leaves the server. */
+    secretBlob: text("secret_blob").notNull(),
+    secretHint: text("secret_hint").notNull(),
+    status: text("status").$type<ProviderGatewayStatus>().notNull().default("active"),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("idx_provider_gateways_organization").on(table.organizationId),
+    check("provider_gateways_type_check", sql`${table.type} = 'cf_aig'`),
+    check(
+      "provider_gateways_status_check",
+      sql`${table.status} IN ('active', 'revoked')`,
+    ),
+  ],
+);
+
+/** One row = one named provider instance configured by an organization. */
 export const provider = sqliteTable(
   "provider",
   {
@@ -80,13 +104,14 @@ export const provider = sqliteTable(
       .notNull()
       .references(() => consoleOrganization.id),
     type: text("type").$type<ProviderType>().notNull(),
+    slug: text("slug").notNull(),
     name: text("name").notNull(),
     /** Vault blob (`cfkms-env1.…` or `local1.…`); never leaves the server. */
-    secretBlob: text("secret_blob").notNull(),
+    secretBlob: text("secret_blob"),
     /** Last four characters of the plaintext — the only fragment ever shown again. */
-    secretHint: text("secret_hint").notNull(),
-    gateway: text("gateway").$type<ProviderGateway>(),
-    gatewayConfig: text("gateway_config_json", { mode: "json" }).$type<CfAigGatewayConfig>(),
+    secretHint: text("secret_hint"),
+    providerGatewayId: text("provider_gateway_id")
+      .references(() => providerGateway.id),
     pricing: text("pricing_json", { mode: "json" }).$type<ProviderPricing>(),
     status: text("status").$type<ProviderStatus>().notNull().default("active"),
     createdBy: text("created_by").notNull(),
@@ -95,10 +120,8 @@ export const provider = sqliteTable(
   },
   (table) => [
     index("idx_providers_organization").on(table.organizationId),
-    // Resolution is a plain lookup, so at most one active row may exist per
-    // (organization, type). Revoked rows are kept out of the constraint.
-    uniqueIndex("providers_active_type_unique")
-      .on(table.organizationId, table.type)
+    uniqueIndex("providers_active_slug_unique")
+      .on(table.organizationId, table.slug)
       .where(sql`${table.status} = 'active'`),
     check("providers_status_check", sql`${table.status} IN ('active', 'revoked')`),
     // Mirrors PROVIDER_TYPES in src/core/providers.ts; widening one means a migration.
@@ -106,7 +129,10 @@ export const provider = sqliteTable(
       "providers_type_check",
       sql`${table.type} IN ('openai', 'anthropic', 'xai', 'gemini', 'perplexity')`,
     ),
-    check("providers_gateway_check", sql`${table.gateway} IS NULL OR ${table.gateway} = 'cf_aig'`),
+    check(
+      "providers_secret_source_check",
+      sql`(${table.providerGatewayId} IS NULL) = (${table.secretBlob} IS NOT NULL)`,
+    ),
   ],
 );
 
@@ -165,6 +191,8 @@ export const appUsageEvent = sqliteTable(
      * with its attribution intact. Null for traffic blocked before resolution.
      */
     providerId: text("provider_id"),
+    /** Provider instance slug at request time; survives row deletion or reuse. */
+    providerSlug: text("provider_slug"),
     model: text("model").notNull(),
     route: text("route").notNull(),
     endpointSlug: text("endpoint_slug"),

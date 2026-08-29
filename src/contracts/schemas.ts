@@ -1,9 +1,8 @@
 import { z } from "zod";
-import { ENDPOINT_PROVIDER_TYPES, PROVIDER_TYPES } from "../core/providers.ts";
+import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
 
 export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
-
-const EndpointProviderTypeSchema = z.enum(ENDPOINT_PROVIDER_TYPES);
+export const SlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
 
 const NullableLimit = z.number().nonnegative().nullable();
 
@@ -54,7 +53,7 @@ const ProviderPolicySchema = z.object({
 });
 
 const EndpointTargetSchema = z.object({
-  provider: EndpointProviderTypeSchema,
+  provider: SlugSchema,
   model: z.string().min(1),
 });
 
@@ -81,10 +80,7 @@ export const AppConfigSchema = z.object({
   routing: z.object({
     providers: z.object({
       mode: z.enum(["all", "selected"]),
-      selected: z.partialRecord(
-        ProviderTypeSchema,
-        ProviderPolicySchema,
-      ).optional(),
+      selected: z.record(SlugSchema, ProviderPolicySchema).optional(),
     }),
     model_rewrites: z.record(z.string(), z.string()),
   }),
@@ -92,7 +88,7 @@ export const AppConfigSchema = z.object({
     per_user: LimitScopeSchema,
     per_app: LimitScopeSchema,
   }),
-  endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/u), EndpointSchema).optional(),
+  endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), EndpointSchema).optional(),
 }).meta({ id: "AppConfig" });
 
 export const AppWriteSchema = z.object({
@@ -124,7 +120,7 @@ export const ApiKeyTokenRequestSchema = z.object({
 export const UsageRepriceRequestSchema = z.object({
   provider: ProviderTypeSchema,
   model: z.string().min(1),
-  month: z.string().regex(/^\d{4}-\d{2}$/u),
+  month: z.string().regex(/^\d{4}-\d{2}$/),
   apply: z.boolean().default(false),
 }).strict().meta({ id: "UsageRepriceRequest" });
 
@@ -146,17 +142,35 @@ const ProviderSecretSchema = z.string().min(1).max(4096);
 export const ProviderCreateRequestSchema = z.object({
   type: ProviderTypeSchema,
   name: ProviderNameSchema,
-  secret: ProviderSecretSchema,
+  slug: SlugSchema.optional(),
+  secret: ProviderSecretSchema.optional(),
+  providerGatewayId: z.string().trim().min(1).optional(),
   pricing: ProviderPricingSchema.optional(),
-}).strict().meta({ id: "ProviderCreateRequest" });
+}).strict().superRefine((value, context) => {
+  if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: "Provide exactly one of secret or providerGatewayId",
+      path: ["secret"],
+    });
+  }
+}).meta({ id: "ProviderCreateRequest" });
 
-export const ProviderCfAigPresetRequestSchema = z.object({
+export const ProviderGatewayCreateRequestSchema = z.object({
+  type: z.literal("cf_aig"),
+  name: ProviderNameSchema,
   accountId: z.string().trim().min(1).max(100),
   gatewayId: z.string().trim().min(1).max(100),
   token: ProviderSecretSchema,
-  types: z.array(ProviderTypeSchema).min(1),
+}).strict().meta({ id: "ProviderGatewayCreateRequest" });
+
+export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,
-}).strict().meta({ id: "ProviderCfAigPresetRequest" });
+}).strict().meta({ id: "ProviderGatewayUpdateRequest" });
+
+export const ProviderGatewayRotateRequestSchema = z.object({
+  token: ProviderSecretSchema,
+}).strict().meta({ id: "ProviderGatewayRotateRequest" });
 
 export const ProviderUpdateRequestSchema = z.object({
   name: ProviderNameSchema.optional(),

@@ -14,6 +14,7 @@ export const limiterGate: MiddlewareHandler<{
   const app = c.get("appConfig");
   const identity = c.get("identity");
   const provider = c.get("provider");
+  const providerSlug = c.get("providerSlug");
   const providerPath = c.get("providerPath");
   const providerId = c.get("resolvedProvider").id;
   const model = c.get("preparedProxyRequest").model;
@@ -45,8 +46,9 @@ export const limiterGate: MiddlewareHandler<{
           apiKeyId: identity.apiKeyId,
           provider,
           providerId,
+          providerSlug,
           model,
-          route: `${provider}/${providerPath}`,
+          route: `${providerSlug}/${providerPath}`,
           endpointSlug: c.get("endpointSlug") ?? null,
           appVersion: c.req.header("x-app-version") ?? null,
           status,
@@ -86,8 +88,10 @@ export const limiterGate: MiddlewareHandler<{
         apiKeyId: identity.apiKeyId,
         provider,
         providerId,
+        providerSlug,
         model,
-        route: `${provider}/${providerPath}`,
+        route: `${providerSlug}/${providerPath}`,
+        endpointSlug: c.get("endpointSlug") ?? null,
         appVersion: c.req.header("x-app-version") ?? null,
         status,
         latencyMs: Math.round(limiterDurationMs),

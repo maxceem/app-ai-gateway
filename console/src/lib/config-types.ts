@@ -82,10 +82,41 @@ export interface ProviderConfig {
   max_output_tokens?: number;
 }
 
+/**
+ * A provider row as policy authoring sees it. The slug — not the type — is what
+ * app configuration names, because an organization may run several instances of
+ * one provider type.
+ */
+export interface ProviderInstance {
+  slug: string;
+  type: Provider;
+  name: string;
+  /**
+   * Per-model price overrides. A model priced only here is still usable — but
+   * through this instance alone, which is why model pickers are per slug.
+   */
+  pricing?: Record<string, unknown> | null;
+}
+
+/**
+ * The models an instance can be asked for: its type's catalog first, then the
+ * ones only it prices. The gateway rejects any model it cannot price, and
+ * accepts these, so the picker offers exactly that set.
+ */
+export function instanceModels(
+  instance: ProviderInstance,
+  catalog: Partial<Record<Provider, Record<string, unknown>>> | undefined,
+): string[] {
+  const priced = Object.keys(catalog?.[instance.type] ?? {});
+  const overrides = Object.keys(instance.pricing ?? {});
+  return [...priced, ...overrides.filter((model) => !priced.includes(model))];
+}
+
 export interface ProxyConfig {
   providers: {
     mode: "all" | "selected";
-    selected?: Partial<Record<Provider, ProviderConfig>>;
+    /** Keyed by provider instance slug, matching `/proxy/{slug}/…`. */
+    selected?: Partial<Record<string, ProviderConfig>>;
   };
   model_rewrites?: Record<string, string>;
 }
@@ -97,10 +128,30 @@ export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
 export const ENDPOINT_PROVIDERS = ["openai", "xai"] as const;
 export type EndpointProvider = (typeof ENDPOINT_PROVIDERS)[number];
 
+/** Mirrors `endpointStyles` in the Worker's `PROVIDER_REGISTRY`. */
+const ENDPOINT_PROVIDER_STYLES: Record<EndpointProvider, readonly EndpointApiStyle[]> = {
+  openai: ["responses", "transcription"],
+  xai: ["responses", "transcription"],
+};
+
+export function endpointProviderTypes(style: EndpointApiStyle): EndpointProvider[] {
+  return ENDPOINT_PROVIDERS.filter((type) => ENDPOINT_PROVIDER_STYLES[type].includes(style));
+}
+
+/** The instances a named endpoint of this style may target. */
+export function endpointInstances<T extends ProviderInstance>(
+  style: EndpointApiStyle,
+  instances: T[],
+): T[] {
+  const eligible: readonly Provider[] = endpointProviderTypes(style);
+  return instances.filter((instance) => eligible.includes(instance.type));
+}
+
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 
 export interface EndpointTarget {
-  provider: EndpointProvider;
+  /** A provider instance slug, resolved by the Worker against the organization. */
+  provider: string;
   model: string;
 }
 
@@ -177,8 +228,8 @@ export function emptyProvider(): ProviderConfig {
   return { allowed_paths: [], allowed_models: [] };
 }
 
-export function emptyEndpoint(): EndpointConfig {
-  return { api_style: "responses", provider: "openai", model: "" };
+export function emptyEndpoint(provider = "openai"): EndpointConfig {
+  return { api_style: "responses", provider, model: "" };
 }
 
 /** Suggests an unused slug so adding a second endpoint never silently replaces one. */
@@ -212,8 +263,37 @@ export function providerMode(proxy: ProxyConfig): "all" | "selected" {
   return proxy.providers.mode;
 }
 
-export function enabledProviders(proxy: ProxyConfig): Provider[] {
-  return providerMode(proxy) === "all"
-    ? [...PROVIDERS]
-    : PROVIDERS.filter((provider) => proxy.providers.selected?.[provider] !== undefined);
+/** The instance slugs an app allows; empty in `all` mode, which names none. */
+export function selectedSlugs(proxy: ProxyConfig): string[] {
+  if (providerMode(proxy) === "all") return [];
+  const selected = proxy.providers.selected ?? {};
+  // A draft records a switched-off instance as an undefined value, which the
+  // save drops; it is not an allowed provider in the meantime.
+  return Object.keys(selected).filter((slug) => selected[slug] !== undefined);
+}
+
+export function isProviderType(value: string): value is Provider {
+  return (PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * The provider *types* an app can reach, resolved through the organization's
+ * instances: policy names slugs, but pricing, labels and "is this configured?"
+ * are all properties of the type.
+ *
+ * A slug with no instance still names a type when it *is* a type name — the
+ * gateway reserves those slugs for their own provider — which is how an app
+ * that allows `openai` before any OpenAI key exists still reports the gap.
+ */
+export function enabledProviders(proxy: ProxyConfig, instances: ProviderInstance[]): Provider[] {
+  if (providerMode(proxy) === "all") return [...PROVIDERS];
+  const typeBySlug = new Map(instances.map((instance) => [instance.slug, instance.type]));
+  const enabled = new Set(
+    selectedSlugs(proxy).flatMap((slug) => {
+      const type = typeBySlug.get(slug);
+      if (type) return [type];
+      return isProviderType(slug) ? [slug] : [];
+    }),
+  );
+  return PROVIDERS.filter((provider) => enabled.has(provider));
 }

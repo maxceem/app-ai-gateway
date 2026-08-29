@@ -3,7 +3,9 @@ import { assertAppActive, loadAppConfig } from "../core/config";
 import { verifyApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "../core/jwt";
-import { isProviderType, PROVIDER_REGISTRY } from "../core/providers";
+import { organizationProviders } from "../core/provider-store";
+import { PROVIDER_REGISTRY, PROVIDER_SLUG_PATTERN } from "../core/providers";
+import { lookup } from "../core/records";
 import type { AppConfig, GatewayIdentity, ProviderType } from "../core/types";
 import type { BillingVariables } from "../billing/gateway";
 
@@ -42,8 +44,8 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   const app = await loadAppConfig(c.env, appId);
   assertAppActive(app);
   const rawProvider = c.req.param("provider");
-  const provider = typeof rawProvider === "string" && isProviderType(rawProvider)
-    ? rawProvider
+  const provider = typeof rawProvider === "string" && PROVIDER_SLUG_PATTERN.test(rawProvider)
+    ? lookup(await organizationProviders(c.env, app.organizationId), rawProvider)?.type
     : undefined;
   const credential = extractGatewayToken(
     c.req.raw.headers,

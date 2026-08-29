@@ -83,10 +83,133 @@ describe("canonical app configuration", () => {
     }))).not.toThrow();
   });
 
+  it("validates selected policies against configured provider instance slugs", () => {
+    const providers = {
+      "openai-dev": {
+        id: "provider-openai-dev",
+        slug: "openai-dev",
+        type: "openai" as const,
+        pricing: null,
+      },
+    };
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: {
+        "openai-dev": {
+          allowed_paths: ["v1/responses"],
+          allowed_models: ["gpt-5.6-sol"],
+        },
+      },
+    }), {}, providers)).not.toThrow();
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: {
+        openai: {
+          allowed_paths: ["v1/responses"],
+          allowed_models: ["gpt-5.6-sol"],
+        },
+      },
+    }), {}, providers)).toThrowError("Unknown provider instance openai");
+  });
+
   it("rejects rewrite targets that are absent from every price catalog", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { alias: "released-today" } },
     }))).toThrowError("has no configured price");
+  });
+
+  // A rewrite target names a model, not an instance, so it is priced against the
+  // shipped catalog. An organization that has not added a provider yet must
+  // still be able to save an app that rewrites models.
+  it("prices rewrite targets from the catalog even with no configured providers", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { model_rewrites: { "client-alias": "gpt-5.6-sol" } },
+    }), {}, {})).not.toThrow();
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { model_rewrites: { "client-alias": "released-today" } },
+    }), {}, {})).toThrowError("has no configured price");
+  });
+
+  it("prices a rewrite target from an instance override the catalog does not know", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { model_rewrites: { "client-alias": "released-today" } },
+    }), {}, {
+      "openai-dev": {
+        id: "provider-openai-dev",
+        slug: "openai-dev",
+        type: "openai" as const,
+        pricing: { "released-today": { input: 1, output: 2 } },
+      },
+    })).not.toThrow();
+  });
+
+  // Slugs, model names, and endpoint slugs are all attacker-influenced keys, and
+  // several of them are legal keys on Object.prototype. An unguarded lookup
+  // would let "constructor" pass validation as an instance nobody configured.
+  it("never resolves a provider instance or rewrite from Object.prototype", () => {
+    const selected = (slug: string) => serverConfig({
+      proxy: { [slug]: { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] } },
+    });
+    expect(() => validateAppConfigJson(selected("constructor"), {}, {}))
+      .toThrowError("Unknown provider instance constructor");
+    expect(() => validateAppConfigJson(selected("__proto__"), {}, {}))
+      .toThrowError("Invalid provider instance slug __proto__");
+    expect(() => validateAppConfigJson(serverConfig({
+      endpoints: { chat: { api_style: "responses", provider: "constructor", model: "gpt-5.6-luna" } },
+    }), {}, {})).toThrowError("endpoints.chat.provider constructor is not configured");
+
+    // A real instance named "constructor" is still perfectly usable.
+    expect(() => validateAppConfigJson(selected("constructor"), {}, {
+      constructor: {
+        id: "provider-constructor",
+        slug: "constructor",
+        type: "openai" as const,
+        pricing: null,
+      },
+    })).not.toThrow();
+  });
+
+  it("stores prototype-shaped model rewrite keys as ordinary entries", () => {
+    // Configuration arrives as JSON, and JSON.parse makes "__proto__" an own
+    // key — unlike an object literal, where it is prototype-assignment syntax.
+    const stored = validateAppConfigJson(serverConfig({
+      proxy: {
+        model_rewrites: JSON.parse(
+          '{"__proto__": "gpt-5.6-sol", "constructor": "gpt-5.6-sol"}',
+        ) as Record<string, string>,
+      },
+    }), {}, {});
+    const rewrites = stored.routing.model_rewrites;
+    // Written as own keys rather than swallowed by the prototype, and the map
+    // itself answers for nothing else.
+    expect(Object.hasOwn(rewrites, "__proto__")).toBe(true);
+    expect(Object.hasOwn(rewrites, "constructor")).toBe(true);
+    expect(Object.getPrototypeOf(rewrites)).toBeNull();
+    expect(JSON.parse(JSON.stringify(stored)).routing.model_rewrites).toMatchObject({
+      constructor: "gpt-5.6-sol",
+    });
+  });
+
+  // Deleting a provider must not brick later edits of apps that name its slug.
+  it("tolerates already-stored slugs but not newly introduced ones", () => {
+    const config = serverConfig({
+      proxy: { "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] } },
+    });
+    expect(() => validateAppConfigJson(config, {}, {})).toThrowError(
+      "Unknown provider instance openai-dev",
+    );
+    expect(() => validateAppConfigJson(config, {}, {}, new Set(["openai-dev"])))
+      .not.toThrow();
+    expect(() => validateAppConfigJson(config, {}, {}, new Set(["openai-prod"])))
+      .toThrowError("Unknown provider instance openai-dev");
+    const endpointConfig = serverConfig({
+      endpoints: {
+        chat: { api_style: "responses", provider: "openai-dev", model: "gpt-5.6-luna" },
+      },
+    });
+    expect(() => validateAppConfigJson(endpointConfig, {}, {})).toThrowError(
+      "endpoints.chat.provider openai-dev is not configured",
+    );
+    expect(() => validateAppConfigJson(endpointConfig, {}, {}, new Set(["openai-dev"])))
+      .not.toThrow();
   });
 });
 
@@ -157,10 +280,10 @@ describe("named endpoint configuration", () => {
     (provider) => {
       expect(() => validateAppConfigJson(serverConfig({
         endpoints: { chat: { api_style: "responses", provider, model: "gpt-5.6-luna" } },
-      }))).toThrowError("endpoints.chat.provider must be one of openai, xai");
+      }))).toThrowError(`endpoints.chat.provider ${provider} is a ${provider} instance, which does not support responses`);
       expect(() => validateAppConfigJson(serverConfig({
         endpoints: { chat: { ...chat, fallback: [{ provider, model: "gpt-5.6-luna" }] } },
-      }))).toThrowError("endpoints.chat.fallback[0].provider must be one of openai, xai");
+      }))).toThrowError(`endpoints.chat.fallback[0].provider ${provider} is a ${provider} instance, which does not support responses`);
     },
   );
 

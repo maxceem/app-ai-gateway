@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { appleConfig, seedApp, serverConfig } from "./helpers";
+import { appleConfig, seedApp, seedProvider, serverConfig } from "./helpers";
 
 describe("admin API", () => {
   it("requires operator authentication and returns exact monthly usage rollups", async () => {
@@ -102,6 +102,121 @@ describe("admin API", () => {
     expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);
     expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
     expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
+  });
+
+  it("reprices each event with its serving provider instance override", async () => {
+    const appId = "admin-reprice-instances";
+    await seedApp(appId);
+    await seedProvider({
+      type: "openai",
+      id: "admin-reprice-openai-dev",
+      slug: "openai-dev",
+      pricing: { "gpt-5.6-luna": { input: 0, output: 0 } },
+    });
+    const insert = env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, provider_id, provider_slug, model, route,
+         input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
+       ) VALUES (?, 'user-1', 'openai', ?, ?, 'gpt-5.6-luna', ?, 50, 40, 10, 20, 1, 'ok')`,
+    );
+    await env.DB.batch([
+      insert.bind(
+        appId,
+        "provider_operator-test-organization_openai",
+        "openai",
+        "openai/v1/responses",
+      ),
+      insert.bind(
+        appId,
+        "admin-reprice-openai-dev",
+        "openai-dev",
+        "openai-dev/v1/responses",
+      ),
+    ]);
+    const month = new Date().toISOString().slice(0, 7);
+    const response = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: "openai",
+          model: "gpt-5.6-luna",
+          month,
+          apply: false,
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      matched_events: 2,
+      recalculated_cost_usd: 0.0000373,
+    });
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'admin-reprice-openai-dev'").run();
+  });
+
+  // Pricing is resolved per event through the row that served it, so a deleted
+  // instance can leave a single event unpriceable. A dry run reports that; only
+  // apply refuses to touch a month it cannot reprice completely.
+  it("reports unpriceable events on a dry run and refuses to apply them", async () => {
+    const appId = "admin-reprice-partial";
+    await seedApp(appId);
+    await seedProvider({
+      type: "openai",
+      id: "admin-reprice-custom",
+      slug: "openai-custom",
+      pricing: { "custom-only-model": { input: 1, output: 2 } },
+    });
+    const insert = env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, provider_id, provider_slug, model, route,
+         input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
+       ) VALUES (?, 'user-1', 'openai', ?, ?, 'custom-only-model', 'openai/v1/responses',
+         1000000, 0, 0, 0, 0.5, 'ok')`,
+    );
+    await env.DB.batch([
+      insert.bind(appId, "admin-reprice-custom", "openai-custom"),
+      // The row that served this one is gone, so nothing prices its model.
+      insert.bind(appId, "admin-reprice-deleted", "openai-deleted"),
+    ]);
+    const month = new Date().toISOString().slice(0, 7);
+    const reprice = (apply: boolean) => exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "custom-only-model", month, apply }),
+      },
+    );
+
+    const preview = await reprice(false);
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({
+      applied: false,
+      matched_events: 1,
+      unpriced_events: 1,
+      unpriced_cost_usd: 0.5,
+      recalculated_cost_usd: 1,
+    });
+
+    const applied = await reprice(true);
+    expect(applied.status).toBe(400);
+    await expect(applied.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "No token price is configured for openai/custom-only-model" },
+    });
+    // Nothing was written: a refused apply leaves every stored cost alone.
+    const untouched = await env.DB
+      .prepare("SELECT cost_usd FROM app_usage_event WHERE app_id = ? ORDER BY id")
+      .bind(appId)
+      .all<{ cost_usd: number }>();
+    expect(untouched.results.map((row) => row.cost_usd)).toEqual([0.5, 0.5]);
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'admin-reprice-custom'").run();
   });
 
   it("rejects an insecure issuer URL during app upsert", async () => {

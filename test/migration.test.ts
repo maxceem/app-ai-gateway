@@ -25,6 +25,7 @@ describe("initial database migration", () => {
     expect(usageColumns.results.map((column) => column.name)).toContain("api_key_id");
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_type");
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_id");
+    expect(usageColumns.results.map((column) => column.name)).toContain("provider_slug");
     expect(usageColumns.results.map((column) => column.name)).not.toContain("provider");
     expect(usageColumns.results.find((column) => column.name === "cost_usd")).toMatchObject({
       notnull: 1,
@@ -58,12 +59,27 @@ describe("initial database migration", () => {
       "id",
       "organization_id",
       "type",
+      "slug",
       "name",
       "secret_blob",
       "secret_hint",
-      "gateway",
-      "gateway_config_json",
+      "provider_gateway_id",
       "pricing_json",
+      "status",
+      "created_by",
+      "created_at",
+      "updated_at",
+    ]);
+    const gatewayColumns = await env.DB.prepare("PRAGMA table_info(provider_gateway)")
+      .all<{ name: string }>();
+    expect(gatewayColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "organization_id",
+      "type",
+      "name",
+      "config_json",
+      "secret_blob",
+      "secret_hint",
       "status",
       "created_by",
       "created_at",
@@ -106,7 +122,7 @@ describe("initial database migration", () => {
     ).rejects.toThrow(/NOT NULL constraint failed: app_usage_event.cost_usd/u);
   });
 
-  it("allows one active provider row per organization and type", async () => {
+  it("allows one active provider row per organization and slug", async () => {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO console_user(id, name, email, email_verified, created_at, updated_at)
@@ -117,17 +133,18 @@ describe("initial database migration", () => {
          VALUES ('org-providers', 'Providers', 'provider-owner', datetime('now'), datetime('now'))`,
       ),
     ]);
-    const insert = (id: string, status: string) =>
+    const insert = (id: string, slug: string, status: string) =>
       env.DB.prepare(
-        `INSERT INTO provider(id, organization_id, type, name, secret_blob, secret_hint, status, created_by)
-         VALUES (?, 'org-providers', 'openai', 'Prod OpenAI', 'local1.1.iv.ct', 'abcd', ?, 'provider-owner')`,
-      ).bind(id, status).run();
+        `INSERT INTO provider(id, organization_id, type, slug, name, secret_blob, secret_hint, status, created_by)
+         VALUES (?, 'org-providers', 'openai', ?, 'Prod OpenAI', 'local1.1.iv.ct', 'abcd', ?, 'provider-owner')`,
+      ).bind(id, slug, status).run();
 
-    await insert("provider-1", "active");
-    await expect(insert("provider-2", "active")).rejects.toThrow(/UNIQUE constraint failed/u);
+    await insert("provider-1", "openai", "active");
+    await expect(insert("provider-2", "openai", "active")).rejects.toThrow(/UNIQUE constraint failed/u);
+    await expect(insert("provider-2", "openai-dev", "active")).resolves.toBeDefined();
     // A revoked row does not occupy the slot.
-    await insert("provider-3", "revoked");
-    await expect(insert("provider-4", "sideways")).rejects.toThrow(/CHECK constraint failed/u);
+    await insert("provider-3", "openai", "revoked");
+    await expect(insert("provider-4", "sideways", "sideways")).rejects.toThrow(/CHECK constraint failed/u);
   });
 });
 

@@ -6,12 +6,36 @@ description: Send provider-native requests while the gateway enforces policy and
 The proxy route is:
 
 ```text
-/v1/apps/{app}/proxy/{provider}/{provider-path}
+/v1/apps/{app}/proxy/{slug}/{provider-path}
 ```
 
-Supported provider slugs are `openai`, `anthropic`, `xai`, `gemini`, and
-`perplexity`. The application configuration must allow both the provider path and
-model.
+`{slug}` names one of the organization's **provider instances**, not a provider
+type. Each instance is a credential (or a gateway reference) with a URL segment
+of its own, so an organization can run several keys for the same provider type
+side by side. The application configuration must allow both the provider path and
+the model.
+
+## Slugs
+
+A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique per organization among active
+instances. It defaults to the provider type, so the first instance of each type
+keeps the familiar URLs — `openai`, `anthropic`, `xai`, `gemini`, `perplexity` —
+verbatim. A second instance of a type must be given a custom slug when it is
+created.
+
+| Instance | Slug | Caller URL |
+| --- | --- | --- |
+| OpenAI, first instance | `openai` | `POST /v1/apps/my-app/proxy/openai/v1/responses` |
+| OpenAI, second key for dev | `openai-dev` | `POST /v1/apps/my-app/proxy/openai-dev/v1/responses` |
+| OpenAI routed via a Cloudflare AI Gateway | `openai-cf` | `POST /v1/apps/my-app/proxy/openai-cf/v1/chat/completions` |
+| Anthropic, only instance | `anthropic` | `POST /v1/apps/my-app/proxy/anthropic/v1/messages` |
+
+A slug equal to a provider type name is reserved for instances of that type:
+`/proxy/openai/…` can never resolve to an Anthropic credential. Deleting or
+revoking an instance frees its slug for reuse.
+
+The provider *type* — and therefore the upstream URL, the auth header, and the
+pricing catalog — comes from the resolved instance, never from the URL.
 
 `{provider-path}` is the provider's native API path verbatim, without a leading
 slash. Do not rewrite it to match Cloudflare AI Gateway provider slugs. Typical
@@ -43,9 +67,9 @@ for usage accounting without buffering the complete provider response.
 
 ## Credentials and forwarded controls
 
-The organization's own credential for the requested provider is injected
-server-side; a client never sends a provider key, and any it does send is
-stripped. Which headers travel upstream follows how that provider is routed
+The credential of the resolved provider instance is injected server-side; a
+client never sends a provider key, and any it does send is stripped. Which
+headers travel upstream follows how that instance is routed
 (see [Providers](/docs/providers)):
 
 - **Direct to the provider** — the provider's own auth header
@@ -61,6 +85,6 @@ stripped. Which headers travel upstream follows how that provider is routed
 
 | Code | Status | Meaning |
 | --- | --- | --- |
-| `provider_not_configured` | 502 | The organization has no active credential for this provider. Add one under Providers. |
-| `provider_unavailable` | 502 | The stored credential could not be decrypted — usually a misconfigured secret vault. Check `/v1/healthz`. |
+| `provider_not_configured` | 502 | The organization has no active provider instance with this slug. Add one under Providers. |
+| `provider_unavailable` | 502 | The stored credential could not be decrypted, or the gateway the instance references was revoked — usually a misconfigured secret vault. Check `/v1/healthz`. |
 | `pricing_not_configured` | 400 | Neither the shipped catalog nor the provider's custom pricing knows this model. |

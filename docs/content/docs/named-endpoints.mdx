@@ -42,11 +42,24 @@ Endpoints live in the application config under a top-level `endpoints` block:
 }
 ```
 
-Slugs use `a-z`, `0-9`, and `-`, up to 64 characters. `provider` is `openai` or
-`xai`, for the endpoint itself and for every fallback entry, because those are the
-request shapes the gateway composes. Every model, including fallbacks, must have a
-price in the catalog; a configuration that names an unpriced model is rejected on
-save.
+Endpoint slugs use `a-z`, `0-9`, and `-`, up to 64 characters. `provider` is a
+[provider instance slug](/docs/providers) — the same segment the proxy route
+uses — for the endpoint itself and for every fallback entry. The instance it
+names must exist for the organization (see
+[the create/update rule](/docs/configuration)) and must be an `openai` or `xai`
+instance, because those are the request shapes the gateway composes. Every model,
+including fallbacks, must have a price in the catalog or in that instance's own
+overrides; a configuration that names an unpriced model is rejected on save.
+
+At request time a fallback target that cannot be resolved — no such instance, a
+revoked gateway, an unreadable credential, or a model nothing prices — is dropped
+from the chain instead of failing the request. Only the primary target must
+resolve.
+
+Because targets are addressed by slug, a fallback chain can span two instances of
+the same provider type — `{ "provider": "openai", … }` falling back to
+`{ "provider": "openai-dev", … }` moves traffic to a second key without changing
+the request shape.
 
 ## Request handling
 

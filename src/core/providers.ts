@@ -6,6 +6,10 @@ export const PROVIDER_TYPES = [
   "perplexity",
 ] as const;
 
+// Flag-free on purpose: this source string is published verbatim as an
+// OpenAPI `pattern`, where a trailing JS flag would make the regex invalid.
+export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
 export type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;

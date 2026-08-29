@@ -1,10 +1,21 @@
 import { env } from "cloudflare:workers";
 import { issueGatewayToken } from "../src/core/jwt";
 import { hashApiKey } from "../src/core/apikeys";
-import { clearProviderCaches, encryptionContext } from "../src/core/provider-store";
+import {
+  clearProviderCaches,
+  encryptionContext,
+  gatewayEncryptionContext,
+} from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
-import { app, appApiKey, provider, type CfAigGatewayConfig, type ProviderPricing } from "../src/db/schema";
+import {
+  app,
+  appApiKey,
+  provider,
+  providerGateway,
+  type CfAigConfig,
+  type ProviderPricing,
+} from "../src/db/schema";
 import type { ProviderType, StoredAppConfig } from "../src/core/types";
 import { secretVault } from "../src/vault";
 
@@ -23,26 +34,49 @@ export function testProviderSecret(type: ProviderType): string {
 export async function seedProvider(input: {
   type: ProviderType;
   id?: string;
+  slug?: string;
   organizationId?: string;
   secret?: string;
   name?: string;
   gateway?: "cf_aig";
-  gatewayConfig?: CfAigGatewayConfig;
+  gatewayConfig?: CfAigConfig;
+  providerGatewayId?: string;
   pricing?: ProviderPricing;
   status?: "active" | "revoked";
 }): Promise<string> {
   const organizationId = input.organizationId ?? TEST_ORGANIZATION_ID;
   const id = input.id ?? `provider_${organizationId}_${input.type}`;
+  const slug = input.slug ?? input.type;
   const secret = input.secret ?? testProviderSecret(input.type);
+  let providerGatewayId = input.providerGatewayId ?? null;
+  if (input.gateway === "cf_aig") {
+    providerGatewayId = providerGatewayId ?? `gateway_${organizationId}_${slug}`;
+    const config = input.gatewayConfig ?? { accountId: "test-account", gatewayId: "test-gateway" };
+    await database(env.DB).insert(providerGateway).values({
+      id: providerGatewayId,
+      organizationId,
+      type: "cf_aig",
+      name: `Test gateway for ${slug}`,
+      config,
+      secretBlob: await secretVault(env).encryptSecret(
+        secret,
+        gatewayEncryptionContext(organizationId, providerGatewayId),
+      ),
+      secretHint: secret.slice(-4),
+      createdBy: TEST_OPERATOR_USER_ID,
+    }).onConflictDoNothing();
+  }
   await database(env.DB).insert(provider).values({
     id,
     organizationId,
     type: input.type,
+    slug,
     name: input.name ?? `Test ${input.type}`,
-    secretBlob: await secretVault(env).encryptSecret(secret, encryptionContext(organizationId, id)),
-    secretHint: secret.slice(-4),
-    gateway: input.gateway ?? null,
-    gatewayConfig: input.gatewayConfig ?? null,
+    secretBlob: providerGatewayId === null
+      ? await secretVault(env).encryptSecret(secret, encryptionContext(organizationId, id))
+      : null,
+    secretHint: providerGatewayId === null ? secret.slice(-4) : null,
+    providerGatewayId,
     pricing: input.pricing ?? null,
     status: input.status ?? "active",
     createdBy: TEST_OPERATOR_USER_ID,

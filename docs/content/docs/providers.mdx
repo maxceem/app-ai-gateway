@@ -7,22 +7,47 @@ Every organization brings its own provider credentials. You add them once in the
 console, the gateway encrypts them before storage, and no API ever returns them
 again — only the last few characters, so you can tell two keys apart.
 
-## The model: one row per provider
+## The model: named provider instances
 
-A provider row is exactly what it sounds like: *this provider, as configured by
-this organization*. There are no credential "kinds" and no fallback tiers.
+A provider row is one *instance*: this provider type, with this credential, as
+configured by this organization. There are no credential "kinds" and no fallback
+tiers — an instance either owns a key of its own or references a shared
+[provider gateway](#provider-gateways).
 
 | Field | Meaning |
 | --- | --- |
 | `type` | `openai`, `anthropic`, `xai`, `gemini`, or `perplexity` |
+| `slug` | The URL segment under `/proxy/{slug}/…`; defaults to `type` |
 | `name` | Your label, e.g. "Prod OpenAI" |
-| `secretHint` | The last few characters of the credential — display only |
-| `gateway` | `null` for the provider's native API, `cf_aig` for your own Cloudflare AI Gateway |
+| `secretHint` | Last few characters of a direct key — display only; `null` on gateway-routed rows |
+| `providerGatewayId` | The gateway this instance routes through, or `null` for the provider's native API |
 | `pricing` | Optional per-model price overrides (see below) |
 
-At most one **active** row may exist per (organization, provider). Resolution is
-therefore a plain lookup with no precedence rules: a request for a provider the
-organization has not configured fails with `502 provider_not_configured`.
+Exactly one of `secret` and `providerGatewayId` is supplied on create, and the
+database enforces it: a direct instance owns a key, a gateway-routed instance
+carries no secret at all because the provider keys live in the gateway's own BYOK
+store.
+
+Slugs are unique per organization among **active** rows, so resolution stays a
+plain lookup with no precedence rules. A request for a slug the organization has
+not configured fails with `502 provider_not_configured`.
+
+## Slugs and multiple instances
+
+A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and defaults to the row's `type`, so the
+first OpenAI instance is reachable at `/proxy/openai/…` with nothing to
+configure. Adding a second instance of the same type therefore collides on the
+default and returns `409 slug_taken` until you supply a slug of your own — for
+example `openai-dev` for a second key, or `openai-cf` for one routed through a
+Cloudflare AI Gateway.
+
+A slug equal to a provider type name may only be used by an instance of that
+type, so `/proxy/anthropic/…` can never resolve to an OpenAI key. Revoked and
+deleted rows are outside the constraint, so their slugs become available again.
+
+Per-app routing (`routing.providers.selected`) and named endpoints reference
+instances by slug, which is how one app can be limited to `openai-cf` while
+another uses `openai`.
 
 ## Adding a key
 
@@ -44,25 +69,50 @@ outage, a provider with no probe — stores the key and reports
 `validated: false`. A provider being down is not a reason to stop you saving a
 key you know is correct.
 
-`PUT /v1/admin/providers/{id}` rotates a credential in place: same row, same id,
-same custom pricing, re-probed and re-encrypted. Rotation is preferable to
-delete-and-recreate for exactly that reason.
+`PUT /v1/admin/providers/{id}` rotates a direct credential in place: same row,
+same id, same slug, same custom pricing, re-probed and re-encrypted. Rotation is
+preferable to delete-and-recreate for exactly that reason. Gateway-routed
+instances have no key of their own, so they rotate at the gateway instead.
 
-## Routing through your own Cloudflare AI Gateway
+## Provider gateways
 
-Cloudflare AI Gateway is a **preset**, not a second kind of credential. The
-**Connect Cloudflare AI Gateway** tab asks for an account id, a gateway id, a
-gateway token, and which providers to route. One probe proves all three, then one
-row is created per selected provider with `gateway = "cf_aig"`.
+A **provider gateway** is a reusable connection to your own Cloudflare AI
+Gateway, stored once and referenced by as many provider instances as you like.
 
-Requests for those providers are then sent to
-`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<slug>/…` with only
+| Field | Meaning |
+| --- | --- |
+| `type` | `cf_aig` |
+| `name` | Your label, e.g. "Prod CF gateway" |
+| `config` | `{ accountId, gatewayId }` — non-secret |
+| `secretHint` | Last few characters of the gateway token — display only |
+| `providerCount` | Active provider instances routing through it |
+| `referencedCount` | Every instance referencing it, revoked rows included |
+
+`POST /v1/admin/provider-gateways` takes `{ type, name, accountId, gatewayId,
+token }`, proves all three with a single probe, and encrypts the token **once**.
+It creates the gateway only; providers are attached one at a time through the
+normal provider create call with `providerGatewayId` set, each probed through the
+gateway for its own type.
+
+- `PATCH /v1/admin/provider-gateways/{id}` renames a gateway.
+- `POST /v1/admin/provider-gateways/{id}/rotate` replaces the token: one probe,
+  one re-encryption, and every instance behind it follows immediately. Rotating
+  a gateway-routed provider row directly is refused with
+  `409 provider_gateway_managed` and a pointer to this endpoint.
+- `DELETE /v1/admin/provider-gateways/{id}` refuses with `409 gateway_in_use`
+  while **any** instance references it. Revoked instances are retained for audit
+  and keep that reference, so a gateway showing `providerCount: 0` is still
+  undeletable until `referencedCount` reaches zero; the error message names
+  which of the two is holding it.
+
+Requests for a gateway-routed instance are sent to
+`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<provider>/…` with only
 `cf-aig-authorization` and `cf-aig-metadata`. **The provider keys themselves must
 live in that gateway's own stored-keys (BYOK) store** — this gateway sends no
 provider-auth header on that path, because your gateway supplies it.
 
-Rows routed natively are the opposite: the provider's own auth header, and no
-`cf-aig-*` header at all.
+Instances routed natively are the opposite: the provider's own auth header, and
+no `cf-aig-*` header at all.
 
 Upstream URLs are always derived in code from the stored, non-secret gateway
 configuration. Clients never supply a URL, so there is no server-side request
@@ -87,15 +137,18 @@ usage event is never null. `$0` is enterable for genuinely free models.
 
 <Callout type="warn" title="Deleting a provider deletes its overrides">
   Custom pricing lives on the provider row. Rotating a credential keeps it;
-  deleting the provider discards it along with the credential.
+  deleting the provider discards it along with the credential. Usage events
+  outlive the row, so past traffic priced only by that override can no longer be
+  [repriced](/docs/operations) until the price is re-entered somewhere.
 </Callout>
 
 ## Security model
 
 - **Encryption at rest.** Every credential is stored as a vault blob, bound to
-  its own row by an encryption context of
-  `{ service, organizationId, providerId }`. A blob lifted from one row cannot be
-  replayed in another, and a D1 dump on its own is worthless.
+  its own row by an encryption context: `{ service, organizationId, providerId }`
+  for a direct provider key, `{ service, organizationId, providerGatewayId }` for
+  a gateway token. A blob lifted from one row cannot be replayed in another, and
+  a D1 dump on its own is worthless.
   - *Self-hosted (`SECRET_VAULT_MODE=local`)*: AES-256-GCM in the Worker under a
     key encryption key you hold as a Worker secret. Honest limitation: anyone
     with secret-read access to your own Cloudflare account can read that key.
@@ -116,7 +169,8 @@ usage event is never null. `$0` is enterable for genuinely free models.
 
 ## When a provider is missing
 
-An app that allows a provider the organization has not configured keeps working
-for every other provider; only that provider's requests fail. The console shows a
+An app that allows a slug the organization has not configured keeps working for
+every other instance; only that slug's requests fail. The console shows a
 non-blocking banner on the app's pages naming the missing providers and linking
-to the Providers page.
+to the Providers page — a provider type counts as configured when any instance of
+it exists.

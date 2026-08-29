@@ -80,6 +80,34 @@ export async function probeProviderKey(
   return runProbe(type, `${spec.directBaseUrl}${path}`, headers);
 }
 
+/** Probes one provider through a reusable Cloudflare AI Gateway connection. */
+export async function probeProviderGateway(input: {
+  type: ProviderType;
+  accountId: string;
+  gatewayId: string;
+  token: string;
+}): Promise<ProbeResult> {
+  const probePath = PROBE_PATHS[input.type];
+  if (!probePath) return { validated: false };
+  const spec = PROVIDER_REGISTRY[input.type];
+  const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
+  const path = prefix && probePath.startsWith(prefix)
+    ? probePath.slice(prefix.length)
+    : probePath;
+  const url = [
+    CF_AI_GATEWAY_BASE_URL,
+    encodeURIComponent(input.accountId),
+    encodeURIComponent(input.gatewayId),
+    spec.aig.slug,
+    path,
+  ].join("/");
+  const headers: Record<string, string> = {
+    "cf-aig-authorization": `Bearer ${input.token}`,
+  };
+  if (input.type === "anthropic") headers["anthropic-version"] = "2023-06-01";
+  return runProbe(`${input.type}_via_cf_aig`, url, headers);
+}
+
 /**
  * One call proves the account id, the gateway id, and the token together, which
  * is exactly the set of mistakes the preset form can produce.
@@ -89,12 +117,10 @@ export async function probeCfAigPreset(input: {
   gatewayId: string;
   token: string;
 }): Promise<ProbeResult> {
-  const url = [
-    CF_AI_GATEWAY_BASE_URL,
-    encodeURIComponent(input.accountId),
-    encodeURIComponent(input.gatewayId),
-    "openai",
-    "models",
-  ].join("/");
-  return runProbe("cf_aig", url, { "cf-aig-authorization": `Bearer ${input.token}` });
+  return probeProviderGateway({
+    type: "openai",
+    accountId: input.accountId,
+    gatewayId: input.gatewayId,
+    token: input.token,
+  });
 }

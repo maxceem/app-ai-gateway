@@ -6,10 +6,9 @@ import { Field } from "@/components/field";
 import { StatCard } from "@/components/stat-card";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
-  PROVIDER_LABELS,
   authIssuer,
-  enabledProviders,
   providerMode,
+  selectedSlugs,
 } from "@/lib/config-types";
 import { currentMonth, formatCompact, formatCost, formatNumber } from "@/lib/format";
 import { useMonthlyUsage, useUsers } from "@/lib/queries";
@@ -173,10 +172,10 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
                 label="Providers"
                 value={
                   providerMode(draft.config.routing) === "all"
-                    ? "All supported providers"
-                    : enabledProviders(draft.config.routing)
-                        .map((provider) => PROVIDER_LABELS[provider])
-                        .join(", ") || "none"
+                    ? "Every configured instance"
+                    // Instance slugs, because that is what the policy names and
+                    // what a client puts in the URL.
+                    : selectedSlugs(draft.config.routing).join(", ") || "none"
                 }
               />
               <Fact label="Registered users" value={formatNumber(users.data?.total ?? 0)} />
