@@ -16,7 +16,7 @@ import {
   unpricedMessage,
   type PreparedProxyRequest,
 } from "../core/proxyrules";
-import { providersForEndpointStyle } from "../core/providers";
+import { supportsEndpointStyle } from "../core/capabilities";
 import { lookup } from "../core/records";
 import { hasModelPrice, recordUsageEvent } from "../core/usage";
 import type { GatewayVariables } from "../middleware/auth";
@@ -89,7 +89,8 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
       entry = found;
       resolvedProviders.set(target.provider, entry);
     }
-    if (!providersForEndpointStyle(endpoint.api_style).some((type) => type === entry.type)) {
+    const route = entry.gateway?.type ?? "direct";
+    if (!supportsEndpointStyle(route, entry.type, endpoint.api_style)) {
       if (primary) {
         throw new GatewayError(
           502,

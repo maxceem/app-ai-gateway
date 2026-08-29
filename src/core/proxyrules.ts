@@ -1,7 +1,10 @@
-import type { ProviderPricing } from "../db/schema";
+import type { ProviderGatewayType, ProviderPricing } from "../db/schema";
+import { apiStyleFromPath, outputClampStyle } from "./api-styles";
+import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
+import { GATEWAY_ADAPTERS, gatewayUpstream } from "./gateways";
 import type { ResolvedProvider } from "./provider-store";
-import { PROVIDER_REGISTRY } from "./providers";
+import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
 import { lookup } from "./records";
 import { hasModelPrice } from "./usage";
 import type {
@@ -129,16 +132,6 @@ export function jsonObject(bytes: Uint8Array): Record<string, unknown> {
   }
 }
 
-function inferredClampStyle(provider: ProviderType, providerPath: string): OutputClampStyle {
-  if (providerPath.endsWith("audio/transcriptions") || providerPath === "v1/stt") return "none";
-  if (providerPath.includes("chat/completions")) return "chat_completions";
-  if (providerPath.endsWith("responses")) return "responses";
-  if (providerPath.includes("generateContent")) return "gemini_native";
-  if (provider === "anthropic") return "anthropic";
-  if (provider === "gemini") return "gemini_native";
-  return "responses";
-}
-
 function validateOutputCap(
   body: Record<string, unknown>,
   key: string,
@@ -201,21 +194,25 @@ export function validateOrInjectOutputCap(
 }
 
 /**
- * Client-controlled routing headers a Cloudflare AI Gateway understands. They
- * are forwarded only when the resolved provider actually routes through one.
+ * Every header the gateway itself owns, derived from both registries so the two
+ * can never drift: each provider spec declares the header it authenticates
+ * with, each adapter declares the headers its gateway reads. A client value in
+ * any of them is dropped before the upstream request is built.
  */
-const CLIENT_AI_GATEWAY_HEADERS = new Set([
-  "cf-aig-cache-ttl",
-  "cf-aig-skip-cache",
-  "cf-aig-max-attempts",
-  "cf-aig-backoff",
-  "cf-aig-retry-delay",
-]);
+export const RESERVED_UPSTREAM_HEADERS: readonly string[] = [
+  ...new Set([
+    ...Object.values(PROVIDER_REGISTRY).map((spec) => spec.auth.header),
+    ...Object.values(GATEWAY_ADAPTERS).flatMap((adapter) => adapter.reservedHeaders),
+  ]),
+];
 
 /**
  * Strips everything the client must not influence. Provider authentication is
  * injected later by {@link providerUpstream}, once the organization's provider
- * row is resolved and the routing decision is known.
+ * row is resolved and the routing decision is known. Control headers inside a
+ * gateway's namespace survive only if that adapter names them as client-usable;
+ * {@link providerUpstream} drops even those unless the request really is routed
+ * through it.
  */
 export function sanitizedHeaders(
   request: Request,
@@ -225,17 +222,18 @@ export function sanitizedHeaders(
   const headers = new Headers(request.headers);
   const headerNames: string[] = [];
   headers.forEach((_value, name) => headerNames.push(name));
-  for (const name of headerNames) {
-    if (name.startsWith("cf-aig-") && !CLIENT_AI_GATEWAY_HEADERS.has(name)) headers.delete(name);
+  for (const adapter of Object.values(GATEWAY_ADAPTERS)) {
+    for (const name of headerNames) {
+      if (name.startsWith(adapter.headerPrefix) && !adapter.clientHeaders.includes(name)) {
+        headers.delete(name);
+      }
+    }
   }
   for (const name of [
-    "authorization",
-    "x-api-key",
-    "x-goog-api-key",
+    ...RESERVED_UPSTREAM_HEADERS,
     app.authentication.issuer?.token_header,
     tokenHeader,
     "x-end-user-id",
-    "cf-aig-authorization",
     "host",
     "content-length",
     "connection",
@@ -252,6 +250,8 @@ export async function prepareProxyRequest(input: {
   provider: ProviderType;
   providerSlug: string;
   providerPath: string;
+  /** How the resolved row reaches the provider; the matrix judges the pair. */
+  route: ProviderRoute;
   tokenHeader: string;
   /** The resolved row's per-model overrides; they win over the global catalog. */
   pricing: ProviderPricing | null;
@@ -262,11 +262,13 @@ export async function prepareProxyRequest(input: {
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const match = matchedPath(input.provider, input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+  const apiStyle = apiStyleFromPath(input.providerPath);
+  assertApiStyleSupported(input.route, input.provider, apiStyle);
 
   const bytes = await readBodyLimited(input.request);
   const contentType = input.request.headers.get("content-type") ?? "";
   const isMultipart = contentType.toLowerCase().startsWith("multipart/form-data");
-  const clampStyle = match.entry.clamp ?? inferredClampStyle(input.provider, input.providerPath);
+  const clampStyle = match.entry.clamp ?? outputClampStyle(apiStyle, input.provider);
   let requestedModel: string;
   let body: BodyInit;
   let bodyChanged = false;
@@ -363,18 +365,31 @@ export async function prepareProxyRequest(input: {
   };
 }
 
-export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
+/**
+ * A gateway's control headers mean something only to the gateway that reads
+ * them, so every other namespace is dropped — and on a direct route, all of
+ * them are: nothing in front of the provider understands any of it.
+ */
+function stripGatewayNamespaces(headers: Headers, routedThrough: ProviderGatewayType | null): void {
+  const names: string[] = [];
+  headers.forEach((_value, name) => names.push(name));
+  for (const adapter of Object.values(GATEWAY_ADAPTERS)) {
+    if (adapter.type === routedThrough) continue;
+    for (const name of names) {
+      if (name.startsWith(adapter.headerPrefix)) headers.delete(name);
+    }
+  }
+}
 
 /**
  * Builds the upstream URL and the final header set from the organization's
  * resolved provider row. Clients never supply a URL, so there is no SSRF
- * surface: both shapes are derived in code from the closed `gateway` set.
+ * surface: both shapes are derived in code from the closed registries.
  *
  * - `gateway === null` — the provider's native API, path passed through
  *   verbatim, authenticated with the registry's own header.
- * - `gateway.type === "cf_aig"` — the organization's own Cloudflare AI Gateway,
- *   which injects the provider key from its own store, so only the gateway
- *   token travels and no provider-auth header is sent.
+ * - otherwise — the gateway adapter owns the URL and its own headers, and the
+ *   provider key never travels because the gateway holds it.
  */
 export function providerUpstream(input: {
   resolved: ResolvedProvider;
@@ -383,33 +398,26 @@ export function providerUpstream(input: {
   userId: string;
 }): { url: string; headers: Headers } {
   const { resolved, prepared } = input;
-  const spec = PROVIDER_REGISTRY[prepared.provider];
   const headers = new Headers(prepared.headers);
 
-  if (resolved.gateway?.type === "cf_aig") {
-    const config = resolved.gateway;
-    headers.set("cf-aig-authorization", `Bearer ${resolved.secret}`);
-    headers.set("cf-aig-metadata", JSON.stringify({ app_id: input.appId, user_id: input.userId }));
-    const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
-    const path = prefix && prepared.providerPath.startsWith(prefix)
-      ? prepared.providerPath.slice(prefix.length)
-      : prepared.providerPath;
-    const base = [
-      CF_AI_GATEWAY_BASE_URL,
-      encodeURIComponent(config.accountId),
-      encodeURIComponent(config.gatewayId),
-      spec.aig.slug,
-    ].join("/");
-    return { url: `${base}/${path}${prepared.query}`, headers };
+  if (resolved.gateway) {
+    const upstream = gatewayUpstream({
+      gateway: resolved.gateway,
+      secret: resolved.secret,
+      provider: prepared.provider,
+      providerPath: prepared.providerPath,
+      query: prepared.query,
+      appId: input.appId,
+      userId: input.userId,
+    });
+    stripGatewayNamespaces(headers, resolved.gateway.type);
+    for (const [name, value] of Object.entries(upstream.headers)) headers.set(name, value);
+    return { url: upstream.url, headers };
   }
 
-  // Nothing in front of the provider understands cf-aig-*, so none of it goes out.
-  const names: string[] = [];
-  headers.forEach((_value, name) => names.push(name));
-  for (const name of names) {
-    if (name.startsWith("cf-aig-")) headers.delete(name);
-  }
-  headers.set(spec.auth.header, `${"scheme" in spec.auth ? spec.auth.scheme : ""}${resolved.secret}`);
+  stripGatewayNamespaces(headers, null);
+  const spec = PROVIDER_REGISTRY[prepared.provider];
+  headers.set(spec.auth.header, providerAuthValue(prepared.provider, resolved.secret));
   return {
     url: `${spec.directBaseUrl}${prepared.providerPath}${prepared.query}`,
     headers,

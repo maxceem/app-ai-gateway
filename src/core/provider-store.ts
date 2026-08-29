@@ -3,12 +3,13 @@ import { database } from "../db";
 import {
   provider as providerTable,
   providerGateway as providerGatewayTable,
-  type CfAigConfig,
+  type ProviderGatewayConfig,
   type ProviderGatewayType,
   type ProviderPricing,
 } from "../db/schema";
 import { secretVault } from "../vault";
 import { GatewayError } from "./errors";
+import type { ResolvedGateway } from "./gateways";
 import { log } from "./log";
 import { recordFromEntries } from "./records";
 import type { ProviderType } from "./types";
@@ -19,7 +20,8 @@ export interface ResolvedProvider {
   type: ProviderType;
   /** Provider key for direct rows; gateway token for routed rows. */
   secret: string;
-  gateway: null | ({ type: ProviderGatewayType } & CfAigConfig);
+  /** Null for a direct row; otherwise the gateway that owns the transport. */
+  gateway: ResolvedGateway | null;
   pricing: ProviderPricing | null;
 }
 
@@ -30,7 +32,7 @@ interface ProviderRow {
   secretBlob: string | null;
   providerGatewayId: string | null;
   gatewayType: ProviderGatewayType | null;
-  gatewayConfig: CfAigConfig | null;
+  gatewayConfig: ProviderGatewayConfig | null;
   gatewaySecretBlob: string | null;
   pricing: ProviderPricing | null;
 }
@@ -193,7 +195,7 @@ export async function resolveProvider(
   const gateway = row.providerGatewayId === null
     ? null
     : row.gatewayType && row.gatewayConfig
-      ? { type: row.gatewayType, ...row.gatewayConfig }
+      ? { type: row.gatewayType, config: row.gatewayConfig }
       : null;
   if (row.providerGatewayId !== null && gateway === null) {
     throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");

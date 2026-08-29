@@ -50,6 +50,7 @@ export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
     provider,
     providerSlug,
     providerPath,
+    route: resolved.gateway?.type ?? "direct",
     tokenHeader: c.get("authHeaderName"),
     pricing: resolved.pricing,
   });

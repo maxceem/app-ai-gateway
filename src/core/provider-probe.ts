@@ -1,7 +1,7 @@
 import { GatewayError } from "./errors";
+import { gatewayProbe } from "./gateways";
 import { log } from "./log";
-import { CF_AI_GATEWAY_BASE_URL } from "./proxyrules";
-import { PROVIDER_REGISTRY } from "./providers";
+import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
 import type { ProviderType } from "./types";
 
 /**
@@ -87,14 +87,18 @@ export async function probeProviderKey(
   if (!path) return { validated: false, reason: "no_probe" };
   const spec = PROVIDER_REGISTRY[type];
   const headers: Record<string, string> = {
-    [spec.auth.header]: `${"scheme" in spec.auth ? spec.auth.scheme : ""}${secret}`,
+    [spec.auth.header]: providerAuthValue(type, secret),
   };
   // Anthropic refuses any request without a version header, probe included.
   if (type === "anthropic") headers["anthropic-version"] = "2023-06-01";
   return runProbe(type, `${spec.directBaseUrl}${path}`, headers);
 }
 
-/** Probes one provider through a reusable Cloudflare AI Gateway connection. */
+/**
+ * Probes one provider through a reusable Cloudflare AI Gateway connection. The
+ * URL and the gateway auth header come from the adapter that serves live
+ * traffic, so a probe can never test a route production does not use.
+ */
 export async function probeProviderGateway(input: {
   type: ProviderType;
   accountId: string;
@@ -103,23 +107,20 @@ export async function probeProviderGateway(input: {
 }): Promise<ProbeResult> {
   const probePath = PROBE_PATHS[input.type];
   if (!probePath) return { validated: false, reason: "no_probe" };
-  const spec = PROVIDER_REGISTRY[input.type];
-  const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
-  const path = prefix && probePath.startsWith(prefix)
-    ? probePath.slice(prefix.length)
-    : probePath;
-  const url = [
-    CF_AI_GATEWAY_BASE_URL,
-    encodeURIComponent(input.accountId),
-    encodeURIComponent(input.gatewayId),
-    spec.aig.slug,
-    path,
-  ].join("/");
-  const headers: Record<string, string> = {
-    "cf-aig-authorization": `Bearer ${input.token}`,
-  };
+  const request = gatewayProbe({
+    gateway: {
+      type: "cf_aig",
+      config: { accountId: input.accountId, gatewayId: input.gatewayId },
+    },
+    secret: input.token,
+    provider: input.type,
+    path: probePath,
+  });
+  // A provider type this gateway does not serve has nothing to prove here.
+  if (!request) return { validated: false, reason: "no_probe" };
+  const headers: Record<string, string> = { ...request.headers };
   if (input.type === "anthropic") headers["anthropic-version"] = "2023-06-01";
-  return runProbe(`${input.type}_via_cf_aig`, url, headers);
+  return runProbe(`${input.type}_via_cf_aig`, request.url, headers);
 }
 
 /**

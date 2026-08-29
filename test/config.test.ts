@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateAppConfigJson } from "../src/core/config";
-import { providersForEndpointStyle } from "../src/core/providers";
+import { providersForEndpointStyle } from "../src/core/capabilities";
 import { serverConfig } from "./helpers";
 
 describe("canonical app configuration", () => {

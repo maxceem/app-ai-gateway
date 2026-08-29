@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { database } from "../db";
 import { app } from "../db/schema";
+import { providersForEndpointStyle } from "./capabilities";
 import { GatewayError } from "./errors";
 import type { OrganizationProviders } from "./provider-store";
 import { emptyRecord, lookup, recordFromEntries } from "./records";
@@ -8,7 +9,6 @@ import {
   ENDPOINT_API_STYLES,
   PROVIDER_TYPES,
   PROVIDER_SLUG_PATTERN,
-  providersForEndpointStyle,
 } from "./providers";
 import { hasModelPrice } from "./usage";
 import type {

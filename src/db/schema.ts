@@ -24,6 +24,12 @@ export interface CfAigConfig {
   accountId: string;
   gatewayId: string;
 }
+/**
+ * What `provider_gateway.config_json` holds. `cf_aig` is the only gateway type
+ * the CHECK constraint admits, so this is one shape today; it becomes a union
+ * discriminated by the row's `type` when a second gateway lands.
+ */
+export type ProviderGatewayConfig = CfAigConfig;
 /** Per-1M-token overrides for models the shipped catalog does not cover. */
 export type ProviderPricing = Record<string, { input: number; output: number }>;
 export type UsageStatus =
@@ -82,7 +88,7 @@ export const providerGateway = sqliteTable(
       .references(() => consoleOrganization.id),
     type: text("type").$type<ProviderGatewayType>().notNull(),
     name: text("name").notNull(),
-    config: text("config_json", { mode: "json" }).$type<CfAigConfig>().notNull(),
+    config: text("config_json", { mode: "json" }).$type<ProviderGatewayConfig>().notNull(),
     /** Vault blob for the gateway token; never leaves the server. */
     secretBlob: text("secret_blob").notNull(),
     secretHint: text("secret_hint").notNull(),

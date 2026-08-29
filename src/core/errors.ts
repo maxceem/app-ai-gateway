@@ -22,6 +22,7 @@ export type ErrorCode =
   | "pricing_not_configured"
   | "model_not_allowed"
   | "path_not_allowed"
+  | "api_style_not_supported"
   | "max_output_tokens_exceeded"
   | "payload_too_large"
   | "provider_error"
