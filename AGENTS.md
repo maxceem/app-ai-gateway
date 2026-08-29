@@ -1,7 +1,15 @@
-# Agent workflow
+# App AI Gateway
 
-This repository contains a Cloudflare Worker, React administration console, and
-Fumadocs documentation application. Use Node.js 22+ and the pinned pnpm version.
+This is a minimal AI gateway (proxy) for applications. Its main purpose is to quickly and securely give applications access to AI providers, with rate limits and budgets per application and per user and provide observability of AI usage inside all the applications from one place. 
+
+The primary target is iOS applications, with secure measures for calling AI APIs directly from an iOS app: App Attest, user auth verification, and paid entitlement verification. Support for server applications via API keys is complementary — it makes it possible to observe multiple applications from one place. Android applications are not supported yet, but are planned for the future.
+
+## Main principles
+
+- The main consumers of this gateway are individuals or teams who develop many small to medium load applications and want a fast, easy way to give their apps access to AI providers. Ease of use therefore takes priority over scalability.
+- The main aim is to keep this project simple and easy to use without compromising security and performance. Security, performance, and ease of use are the top 3 priorities.
+- The project is distributed as an open-source, self-hosted project. It should be very easy to deploy for anyone who wants to self-host it.
+- The project is also deployed as a hosted cloud version, so anyone who doesn't want to self-host can start using it right away. The cloud deployment process doesn't have to be as easy as the self-hosted one, but it must prioritize reliability and security for cloud customers.
 
 ## API contract changes
 
