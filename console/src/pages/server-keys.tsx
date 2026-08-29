@@ -112,7 +112,7 @@ export function ServerKeys({ appId, exchanged = false }: { appId: string; exchan
           </div>
 
           <div className="overflow-hidden rounded-md border">
-            <Table>
+            <Table className="[--table-inset:1rem]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>

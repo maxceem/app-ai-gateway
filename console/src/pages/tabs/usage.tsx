@@ -216,18 +216,18 @@ export function UsageTab({ appId }: { appId: string }) {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="pl-6">{dimension}</TableHead>
+                <TableHead>{dimension}</TableHead>
                 <TableHead className="text-right">Requests</TableHead>
                 <TableHead className="text-right">Input</TableHead>
                 <TableHead className="text-right">Cached input</TableHead>
                 <TableHead className="text-right">Output</TableHead>
-                <TableHead className="pr-6 text-right">Cost</TableHead>
+                <TableHead className="text-right">Cost</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {breakdown.isPending ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="px-6">
+                  <TableCell colSpan={6}>
                     <Skeleton className="h-8 w-full" />
                   </TableCell>
                 </TableRow>
@@ -240,7 +240,7 @@ export function UsageTab({ appId }: { appId: string }) {
               ) : (
                 breakdown.data?.rows.map((row) => (
                   <TableRow key={row.key ?? "unknown"}>
-                    <TableCell className="pl-6 font-mono text-xs">
+                    <TableCell className="font-mono text-xs">
                       {row.key ?? <span className="text-muted-foreground">none</span>}
                     </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.requests)}</TableCell>
@@ -252,7 +252,7 @@ export function UsageTab({ appId }: { appId: string }) {
                       </span>
                     </TableCell>
                     <TableCell className="tabular text-right">{formatCompact(row.output_tokens)}</TableCell>
-                    <TableCell className="tabular pr-6 text-right">{formatCost(row.cost_usd)}</TableCell>
+                    <TableCell className="tabular text-right">{formatCost(row.cost_usd)}</TableCell>
                   </TableRow>
                 ))
               )}
@@ -293,20 +293,20 @@ export function UsageTab({ appId }: { appId: string }) {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="pl-6">When</TableHead>
+                <TableHead>When</TableHead>
                 <TableHead>User / key</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Route</TableHead>
                 <TableHead className="text-right">Tokens</TableHead>
                 <TableHead className="text-right">Cost</TableHead>
                 <TableHead className="text-right">Latency</TableHead>
-                <TableHead className="pr-6">Status</TableHead>
+                <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {events.isPending ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="px-6">
+                  <TableCell colSpan={8}>
                     <Skeleton className="h-8 w-full" />
                   </TableCell>
                 </TableRow>
@@ -319,7 +319,7 @@ export function UsageTab({ appId }: { appId: string }) {
               ) : (
                 events.data?.events.map((event) => (
                   <TableRow key={event.id}>
-                    <TableCell className="pl-6 text-xs whitespace-nowrap text-muted-foreground">
+                    <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
                       {formatDateTime(event.created_at)}
                     </TableCell>
                     <TableCell className="font-mono text-xs">
@@ -340,7 +340,7 @@ export function UsageTab({ appId }: { appId: string }) {
                     <TableCell className="tabular text-right text-xs">
                       {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}
                     </TableCell>
-                    <TableCell className="pr-6">
+                    <TableCell>
                       <EventStatusBadge status={event.status} />
                     </TableCell>
                   </TableRow>
