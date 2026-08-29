@@ -9,8 +9,8 @@ import { AppsPage } from "@/pages/apps";
 import { BillingPage } from "@/pages/billing";
 import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
-import { ProfilePage } from "@/pages/profile";
 import { ProvidersPage } from "@/pages/providers";
+import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
 import { ConsoleSessionProvider } from "@/lib/console-session";
 import { DEFAULT_LANDING, loginUrlFor, returnPathFrom } from "@/lib/auth-redirect";
@@ -73,7 +73,11 @@ function AuthenticatedConsole() {
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/keys" element={<ManagementKeysPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
+          <Route
+            path="/settings"
+            element={<Navigate to={`/settings/${DEFAULT_SETTINGS_SECTION}`} replace />}
+          />
+          <Route path="/settings/:section" element={<SettingsPage />} />
           {capabilities.data.billing ? (
             <Route path="/billing" element={<BillingPage />} />
           ) : null}

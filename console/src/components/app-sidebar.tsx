@@ -6,7 +6,7 @@ import {
   KeyRound,
   LayoutGrid,
   LogOut,
-  User,
+  Settings,
   Waypoints,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -112,9 +112,9 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
         className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
       >
         <DropdownMenuItem asChild>
-          <Link to="/profile" onClick={onNavigate}>
-            <User className="size-4" />
-            Profile
+          <Link to="/settings" onClick={onNavigate}>
+            <Settings className="size-4" />
+            Settings
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>

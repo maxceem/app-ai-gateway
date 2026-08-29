@@ -62,7 +62,7 @@ describe("AppShell navigation", () => {
 
     await openAccountMenu();
 
-    expect(screen.getByRole("menuitem", { name: /profile/i })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /settings/i })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /management keys/i })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /sign out/i })).toBeTruthy();
   });

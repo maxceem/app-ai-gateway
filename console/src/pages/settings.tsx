@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -15,44 +15,86 @@ import { Label } from "@/components/ui/label";
 import { useConsoleSession } from "@/lib/console-session";
 import { authErrorMessage } from "@/lib/auth-errors";
 import { formatDateTime } from "@/lib/format";
-import { ROLE_LABELS } from "@/lib/permissions";
 import { useChangePassword } from "@/lib/queries";
+import { cn } from "@/lib/utils";
 
 const MIN_PASSWORD_LENGTH = 8;
 
-export function ProfilePage() {
-  const { session, organization, role } = useConsoleSession();
-  const user = session.user;
+interface SettingsSection {
+  slug: string;
+  label: string;
+  Component: () => React.ReactElement;
+}
+
+/**
+ * Settings is one destination with several subjects, so the subjects live in a
+ * second-level menu beside the panel rather than as separate sidebar entries.
+ * The order here is the order the operator reads down the menu.
+ */
+const SECTIONS: SettingsSection[] = [
+  { slug: "account", label: "Account", Component: AccountSection },
+  { slug: "password", label: "Change password", Component: ChangePasswordSection },
+];
+
+export const DEFAULT_SETTINGS_SECTION = SECTIONS[0]!.slug;
+
+export function SettingsPage() {
+  const { section = DEFAULT_SETTINGS_SECTION } = useParams();
+  const active = SECTIONS.find((entry) => entry.slug === section);
+
+  // An unknown subject is a stale or hand-typed link, not an error worth a screen.
+  if (!active) return <Navigate to={`/settings/${DEFAULT_SETTINGS_SECTION}`} replace />;
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Profile</h1>
-        <p className="text-sm text-muted-foreground">Your operator account for this gateway.</p>
+      <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+
+      <div className="flex flex-col gap-6 lg:flex-row">
+        <nav aria-label="Settings sections" className="flex gap-1 overflow-x-auto lg:w-56 lg:shrink-0 lg:flex-col">
+          {SECTIONS.map((entry) => {
+            const current = entry.slug === active.slug;
+            return (
+              <Link
+                key={entry.slug}
+                to={`/settings/${entry.slug}`}
+                aria-current={current ? "page" : undefined}
+                className={cn(
+                  "flex h-9 shrink-0 items-center rounded-lg px-3 text-sm font-medium transition-colors",
+                  "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  current
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground",
+                )}
+              >
+                {entry.label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="min-w-0 flex-1">
+          <active.Component />
+        </div>
       </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Account</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          <Row label="Name" value={user?.name || "—"} />
-          <Row label="Email" value={user?.email ?? "—"} />
-          <Row
-            label="Organization"
-            value={
-              <span className="flex items-center gap-2">
-                {organization?.name ?? "—"}
-                <Badge variant="secondary">{ROLE_LABELS[role]}</Badge>
-              </span>
-            }
-          />
-          <Row label="Member since" value={formatDateTime(user?.createdAt ?? null)} />
-        </CardContent>
-      </Card>
-
-      <ChangePasswordCard />
     </div>
+  );
+}
+
+function AccountSection() {
+  const { session } = useConsoleSession();
+  const user = session.user;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">Account</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <Row label="Name" value={user?.name || "—"} />
+        <Row label="Email" value={user?.email ?? "—"} />
+        <Row label="Member since" value={formatDateTime(user?.createdAt ?? null)} />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -71,7 +113,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
  * than the form being hidden — the console cannot tell the two apart from the
  * session alone.
  */
-function ChangePasswordCard() {
+function ChangePasswordSection() {
   const changePassword = useChangePassword();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
