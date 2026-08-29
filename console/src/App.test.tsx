@@ -65,7 +65,7 @@ describe("console bootstrap", () => {
 
     renderPublic(<App />, { route: "/apps" });
 
-    expect(await screen.findByRole("link", { name: /management keys/i })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: /providers/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^sign in$/i })).toBeNull();
   });
 

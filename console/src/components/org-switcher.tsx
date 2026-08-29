@@ -1,6 +1,5 @@
 import { Building2, Check, ChevronsUpDown, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,12 +11,16 @@ import {
 import { useConsoleSession } from "@/lib/console-session";
 import { ROLE_LABELS, shouldShowOrganizationSwitcher } from "@/lib/permissions";
 import { useSelectOrganization } from "@/lib/queries";
+import { cn } from "@/lib/utils";
+
+/** Shared geometry so the static label and the switcher occupy the same row. */
+const ROW = "flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-xs";
 
 /**
  * Switches the acting organization.
  *
  * Only rendered when the operator actually belongs to more than one; a single
- * membership makes the control pure noise, so the shell shows a plain label
+ * membership makes the control pure noise, so the sidebar shows a plain label
  * instead. Available to every role — a read-only member still needs to move
  * between their organizations.
  */
@@ -27,10 +30,10 @@ export function OrganizationSwitcher() {
 
   if (!shouldShowOrganizationSwitcher(memberships.length)) {
     return organization ? (
-      <span className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
-        <Building2 className="size-3.5" />
-        {organization.name}
-      </span>
+      <div className={cn(ROW, "text-muted-foreground")}>
+        <Building2 className="size-4 shrink-0" />
+        <span className="truncate">{organization.name}</span>
+      </div>
     ) : null;
   }
 
@@ -45,18 +48,33 @@ export function OrganizationSwitcher() {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-1.5" disabled={select.isPending}>
-          {select.isPending ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Building2 className="size-3.5" />
-          )}
-          <span className="max-w-40 truncate">{organization?.name ?? "Select organization"}</span>
-          <ChevronsUpDown className="size-3.5 text-muted-foreground" />
-        </Button>
+      <DropdownMenuTrigger
+        disabled={select.isPending}
+        className={cn(
+          ROW,
+          "text-muted-foreground transition-colors",
+          "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+          "data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground",
+          "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          "disabled:pointer-events-none disabled:opacity-50",
+        )}
+      >
+        {select.isPending ? (
+          <Loader2 className="size-4 shrink-0 animate-spin" />
+        ) : (
+          <Building2 className="size-4 shrink-0" />
+        )}
+        <span className="flex-1 truncate text-left">
+          {organization?.name ?? "Select organization"}
+        </span>
+        <ChevronsUpDown className="size-4 shrink-0" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-60">
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        sideOffset={8}
+        className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
+      >
         <DropdownMenuLabel>Organizations</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {memberships.map((membership) => {
