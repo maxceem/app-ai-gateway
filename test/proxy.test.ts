@@ -2,6 +2,9 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
+import { API_STYLES } from "../src/core/api-styles";
+import { PROVIDER_TYPES } from "../src/core/providers";
+import { injectCostReport } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
@@ -1237,5 +1240,91 @@ describe("OpenAI-compatible providers", () => {
     expect(((await response.json()) as any).error.code).toBe("pricing_not_configured");
     // Nothing unmeterable reaches the provider at all.
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenRouter", () => {
+  /**
+   * The narrowing is a billing guarantee: OpenRouter answers `/responses`
+   * perfectly well, but reports no cost there and has no local price to fall
+   * back on, so the request would be served and recorded as unresolved. It is
+   * refused before it leaves instead — the same fail-closed rule that stops an
+   * unpriced model on any other type.
+   */
+  it("refuses a surface it reports no cost on, before the request leaves", async () => {
+    const key = await seedServerApp("proxy-openrouter-style", {
+      proxy: {
+        ...defaultProxyConfig(),
+        openrouter: {
+          allowed_paths: ["v1/chat/completions", "v1/responses"],
+          allowed_models: ["google/gemini-3.6-flash"],
+        },
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.1 } }));
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-openrouter-style/proxy/openrouter/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "openrouter-user-1",
+        },
+        body: JSON.stringify({ model: "google/gemini-3.6-flash", input: "hello" }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as any).error.code).toBe("api_style_not_supported");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The one same-protocol mutation a cost-reporting route adds. Unit-level
+ * because the interesting cases are the ones it must *not* touch: a body it
+ * changes for a provider that never asked would be a protocol change.
+ */
+describe("cost report injection", () => {
+  it("adds the opt-in to a chat-completions body on a reporting route", () => {
+    const body: Record<string, unknown> = { model: "google/gemini-3.6-flash", messages: [] };
+    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(true);
+    expect(body.usage).toEqual({ include: true });
+  });
+
+  it("overrides a client that asked for the cost to be left out", () => {
+    // The reported cost is what this route is billed on, so switching the meter
+    // off is not the client's to decide. Everything else under `usage` stays.
+    const body: Record<string, unknown> = { usage: { include: false, keep: "me" } };
+    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(true);
+    expect(body.usage).toEqual({ include: true, keep: "me" });
+  });
+
+  it("leaves a body that already asked for it byte-identical", () => {
+    const body: Record<string, unknown> = { usage: { include: true } };
+    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(false);
+  });
+
+  it("replaces a `usage` value that is not an object", () => {
+    const body: Record<string, unknown> = { usage: "nonsense" };
+    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(true);
+    expect(body.usage).toEqual({ include: true });
+  });
+
+  it("never touches a provider that does not report costs", () => {
+    for (const type of PROVIDER_TYPES.filter((value) => value !== "openrouter")) {
+      const body: Record<string, unknown> = { model: "m" };
+      expect([type, injectCostReport(type, "chat_completions", body)]).toEqual([type, false]);
+      expect([type, body]).toEqual([type, { model: "m" }]);
+    }
+  });
+
+  it("never touches a body that is not a chat completion", () => {
+    for (const style of API_STYLES.filter((value) => value !== "chat_completions")) {
+      const body: Record<string, unknown> = { model: "m" };
+      expect([style, injectCostReport("openrouter", style, body)]).toEqual([style, false]);
+      expect([style, body]).toEqual([style, { model: "m" }]);
+    }
   });
 });

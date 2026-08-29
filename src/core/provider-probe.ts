@@ -39,6 +39,10 @@ const PROBE_PATHS: Partial<Record<ProviderType, string>> = {
   cerebras: "v1/models",
   moonshot: "v1/models",
   baseten: "v1/models",
+  // OpenRouter's key-status call, not its model list: `v1/models` is public and
+  // answers 200 to any token, exactly the trap `huggingface` is absent for.
+  // `v1/key` answers 401 to a key that does not exist.
+  openrouter: "v1/key",
 };
 
 const PROBE_TIMEOUT_MS = 4_000;

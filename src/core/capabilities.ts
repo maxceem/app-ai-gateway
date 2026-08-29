@@ -47,6 +47,13 @@ const PROVIDER_CAPABILITIES = {
   huggingface: { apiStyles: API_STYLES, endpointStyles: [] },
   baseten: { apiStyles: API_STYLES, endpointStyles: [] },
   bytedance: { apiStyles: API_STYLES, endpointStyles: [] },
+  // The one narrowed entry, and it is a metering constraint rather than a
+  // missing surface: OpenRouter also serves `/responses` and `/messages`, but
+  // only its chat-completions response carries `usage.cost`, and its slugs have
+  // no local price. Any other style would proxy traffic nothing could bill —
+  // exactly the silent $0 the fail-closed gate exists to prevent — so it is
+  // refused at the edge instead.
+  openrouter: { apiStyles: ["chat_completions"], endpointStyles: [] },
 } as const satisfies Record<ProviderType, RouteCapability>;
 
 export type EndpointProvider = {

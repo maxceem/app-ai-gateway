@@ -74,6 +74,7 @@ const NATIVE_CLAMP_STYLE: Record<ProviderType, OutputClampStyle> = {
   huggingface: "chat_completions",
   baseten: "chat_completions",
   bytedance: "chat_completions",
+  openrouter: "chat_completions",
 };
 
 export function outputClampStyle(style: ApiStyle, provider: ProviderType): OutputClampStyle {

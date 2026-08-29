@@ -90,6 +90,11 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
       eq(appUsageEvent.providerType, provider),
       eq(appUsageEvent.model, model),
       eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
+      // An event billed on what the upstream charged is already the authoritative
+      // figure; recomputing it from a local price would replace a fact with an
+      // estimate. Written out rather than `!=` because SQL's inequality is false
+      // for the NULLs on older rows, which would exclude every one of them.
+      sql`(${appUsageEvent.costSource} IS NULL OR ${appUsageEvent.costSource} != 'reported')`,
     ))
     .limit(10_001);
   if (rows.length > 10_000) {

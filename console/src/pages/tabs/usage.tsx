@@ -343,6 +343,11 @@ export function UsageTab({ appId }: { appId: string }) {
                       {event.provider_gateway_type ? (
                         <span className="block">via {event.provider_gateway_type}</span>
                       ) : null}
+                      {/* Observed, not configured: only shown when the upstream
+                          named the host that actually served the request. */}
+                      {event.served_provider ? (
+                        <span className="block">Served by {event.served_provider}</span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {formatCompact(totalTokens(event))}
@@ -359,7 +364,18 @@ export function UsageTab({ appId }: { appId: string }) {
                           unresolved
                         </span>
                       ) : (
-                        formatCost(event.cost_usd)
+                        <span
+                          // A reported cost is what the provider charged, not
+                          // what this deployment's catalog estimates — worth
+                          // saying, because the two can differ.
+                          title={
+                            event.cost_source === "reported"
+                              ? "Cost reported by the provider for this request."
+                              : undefined
+                          }
+                        >
+                          {formatCost(event.cost_usd)}
+                        </span>
                       )}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">

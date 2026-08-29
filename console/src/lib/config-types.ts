@@ -17,6 +17,7 @@ export const PROVIDERS = [
   "huggingface",
   "baseten",
   "bytedance",
+  "openrouter",
 ] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
@@ -36,7 +37,20 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   huggingface: "Hugging Face",
   baseten: "Baseten",
   bytedance: "ByteDance Ark",
+  openrouter: "OpenRouter",
 };
+
+/**
+ * Provider types whose own responses say what a request cost. Mirrors
+ * `reportsCost` in `src/core/providers.ts`: their models proxy with no local
+ * price at all, and the recorded cost is the upstream's own figure rather than
+ * this deployment's catalog.
+ */
+const COST_REPORTING_PROVIDERS: readonly string[] = ["openrouter"];
+
+export function reportsCost(type: string): boolean {
+  return COST_REPORTING_PROVIDERS.includes(type);
+}
 
 /** Display names for every gateway type the API can return. */
 export const GATEWAY_TYPE_LABELS = {

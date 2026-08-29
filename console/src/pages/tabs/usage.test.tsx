@@ -79,6 +79,33 @@ describe("UsageTab event costs", () => {
     expect(await screen.findByText(/via cf_aig/u)).toBeTruthy();
   });
 
+  it("names the host that actually served a request, when one was reported", async () => {
+    // Observed, not configured: it appears alongside the route rather than
+    // replacing it, because the two answer different questions.
+    renderUsage([
+      event({
+        provider: "openrouter",
+        model: "google/gemini-3.6-flash",
+        model_author: "Google",
+        served_provider: "Google AI Studio",
+        served_model: "google/gemini-3.6-flash",
+        cost_usd: 0.0012,
+        reported_cost_usd: 0.0012,
+        cost_source: "reported",
+      }),
+    ]);
+    expect(await screen.findByText(/Served by Google AI Studio/u)).toBeTruthy();
+    // A reported cost is shown as the plain figure it is, never as unresolved.
+    expect(screen.getByText("$0.0012")).toBeTruthy();
+    expect(screen.queryByText("unresolved")).toBeNull();
+  });
+
+  it("names no serving host when the upstream reported none", async () => {
+    renderUsage([event({ served_provider: null })]);
+    expect(await screen.findByText("gpt-5.6-sol")).toBeTruthy();
+    expect(screen.queryByText(/Served by/u)).toBeNull();
+  });
+
   it("names no gateway for a direct request, which had none", async () => {
     renderUsage([event({ provider_gateway_type: null, credential_source: "direct" })]);
     expect(await screen.findByText("gpt-5.6-sol")).toBeTruthy();

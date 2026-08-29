@@ -24,6 +24,8 @@ interface EventRow {
   served_provider: string | null;
   served_model: string | null;
   reported_cost_usd: number | null;
+  cost_usd: number;
+  cost_source: string | null;
   model: string;
   endpoint_slug: string | null;
 }
@@ -47,7 +49,8 @@ async function lastEvent(slug: string): Promise<EventRow> {
   await settle();
   const row = await env.DB.prepare(
     `SELECT provider_slug, provider_gateway_id, provider_gateway_type, credential_source,
-            model_author, served_provider, served_model, reported_cost_usd, model, endpoint_slug
+            model_author, served_provider, served_model, reported_cost_usd, cost_usd,
+            cost_source, model, endpoint_slug
        FROM app_usage_event WHERE app_id = ? AND provider_slug = ? ORDER BY id DESC LIMIT 1`,
   ).bind(APP_ID, slug).first<EventRow>();
   if (!row) throw new Error(`No usage event was recorded for ${slug}`);
@@ -76,6 +79,21 @@ beforeAll(async () => {
     gateway: "cf_aig",
     providerGatewayId: "attribution-gateway",
   });
+  await seedProvider({
+    type: "openrouter",
+    id: "attribution-openrouter",
+    slug: "openrouter-reported",
+    secret: "sk-or-attribution",
+  });
+  // The same aggregator with a local price of its own, which is what a
+  // missing cost report falls back to.
+  await seedProvider({
+    type: "openrouter",
+    id: "attribution-openrouter-priced",
+    slug: "openrouter-priced",
+    secret: "sk-or-attribution-priced",
+    pricing: { "google/gemini-3.6-flash": { input: 1, output: 2 } },
+  });
 });
 
 afterEach(async () => {
@@ -87,6 +105,8 @@ afterAll(async () => {
   const db = database(env.DB);
   await db.delete(provider).where(eq(provider.id, "attribution-direct"));
   await db.delete(provider).where(eq(provider.id, "attribution-routed"));
+  await db.delete(provider).where(eq(provider.id, "attribution-openrouter"));
+  await db.delete(provider).where(eq(provider.id, "attribution-openrouter-priced"));
   clearProviderCaches();
   clearAppConfigCache();
 });
@@ -185,6 +205,175 @@ describe("gateway attribution on recorded usage", () => {
   });
 });
 
+/**
+ * The reported-cost route, end to end. What makes it worth an integration test
+ * rather than a unit one: the figure the gateway bills, the metadata it stores,
+ * and the request mutation that asks for both all have to survive the same
+ * request, and the whole point of the type is that no local price is involved.
+ */
+describe("OpenRouter reported-cost metering", () => {
+  const MODEL = "google/gemini-3.6-flash";
+  let sent: { url: string; headers: Headers; body: unknown }[] = [];
+
+  /** One upstream response, with the outbound request captured for assertions. */
+  function stubOpenRouter(body: string, contentType = "application/json"): void {
+    sent = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      sent.push({
+        url: typeof request === "string" ? request : String(request),
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)) as unknown,
+      });
+      return new Response(body, { headers: { "content-type": contentType } });
+    });
+  }
+
+  async function proxy(slug: string, requestBody: Record<string, unknown> = {}): Promise<void> {
+    const response = await workerFetch(
+      `${ORIGIN}/v1/apps/${APP_ID}/proxy/${slug}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(APP_ID)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [{ role: "user", content: "hello" }],
+          ...requestBody,
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+  }
+
+  /** A complete OpenRouter chat completion, as its own schema documents one. */
+  function completion(usage: Record<string, unknown>, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      id: "gen-1",
+      object: "chat.completion",
+      model: MODEL,
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hi" } }],
+      usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, ...usage },
+      openrouter_metadata: {
+        requested: MODEL,
+        strategy: "direct",
+        endpoints: { total: 1, available: [{ provider: "Google", model: MODEL, selected: true }] },
+      },
+      ...extra,
+    });
+  }
+
+  it("bills what OpenRouter says the request cost, not what a catalog guesses", async () => {
+    stubOpenRouter(completion({ cost: 0.001234, is_byok: false }));
+    await proxy("openrouter-reported");
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      cost_usd: 0.001234,
+      reported_cost_usd: 0.001234,
+      cost_source: "reported",
+      // The slug is the canonical model here: nothing strips its namespace.
+      model: MODEL,
+      served_model: MODEL,
+      served_provider: "Google",
+      // Author read off the slug, since no catalog entry prices this model.
+      model_author: "Google",
+      // OpenRouter's own key paid the inference, so the operator's did not.
+      credential_source: null,
+    });
+  });
+
+  it("reads the cost out of the final chunk of a stream", async () => {
+    const chunk = (extra: Record<string, unknown>) =>
+      `data: ${JSON.stringify({
+        id: "gen-2",
+        object: "chat.completion.chunk",
+        model: MODEL,
+        choices: [{ index: 0, delta: { content: "hi" } }],
+        ...extra,
+      })}\n\n`;
+    stubOpenRouter(
+      [
+        chunk({}),
+        chunk({
+          usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12, cost: 0.00042 },
+          openrouter_metadata: {
+            endpoints: { total: 2, available: [
+              { provider: "Vertex", model: MODEL, selected: false },
+              { provider: "Google AI Studio", model: MODEL, selected: true },
+            ] },
+          },
+        }),
+        "data: [DONE]\n\n",
+      ].join(""),
+      "text/event-stream",
+    );
+    await proxy("openrouter-reported", { stream: true });
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      cost_usd: 0.00042,
+      reported_cost_usd: 0.00042,
+      cost_source: "reported",
+      served_provider: "Google AI Studio",
+    });
+  });
+
+  it("records byok when the response says the operator's own key paid upstream", async () => {
+    stubOpenRouter(completion({
+      cost: 0,
+      is_byok: true,
+      cost_details: { upstream_inference_cost: 0.0031 },
+    }));
+    await proxy("openrouter-reported");
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      credential_source: "byok",
+      cost_source: "reported",
+      cost_usd: 0,
+    });
+  });
+
+  /**
+   * The fail-closed half. This route is billable *because* it reports a cost,
+   * so a response without one is an unknown, never a free request.
+   */
+  it("marks a response with no cost report unresolved rather than free", async () => {
+    stubOpenRouter(completion({}));
+    await proxy("openrouter-reported");
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      cost_usd: 0,
+      reported_cost_usd: null,
+      cost_source: "unresolved",
+      // The tokens were readable and are kept; only the cost is missing.
+      served_provider: "Google",
+    });
+  });
+
+  it("falls back to a local price when one exists and no cost was reported", async () => {
+    stubOpenRouter(completion({}));
+    await proxy("openrouter-priced");
+    expect(await lastEvent("openrouter-priced")).toMatchObject({
+      // 100 input at $1/M plus 20 output at $2/M.
+      cost_usd: 0.00014,
+      reported_cost_usd: null,
+      cost_source: "computed",
+    });
+  });
+
+  it("asks for the cost report and the routing metadata on every request", async () => {
+    stubOpenRouter(completion({ cost: 0.5 }));
+    // A client that turned usage accounting off does not get to turn the meter
+    // off with it.
+    await proxy("openrouter-reported", { usage: { include: false, extra: "kept" } });
+    expect(sent[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(sent[0]?.body).toMatchObject({
+      model: MODEL,
+      usage: { include: true, extra: "kept" },
+    });
+    expect(sent[0]?.headers.get("x-openrouter-metadata")).toBe("enabled");
+    expect(sent[0]?.headers.get("authorization")).toBe("Bearer sk-or-attribution");
+  });
+});
+
 describe("billability", () => {
   it("proxies a model with a local price and refuses one without", () => {
     expect(isBillable("openai", "gpt-5.6-sol")).toBe(true);
@@ -218,10 +407,19 @@ describe("billability", () => {
     expect(isBillable("perplexity", "model-with-no-local-price")).toBe(false);
   });
 
-  it("reports no provider type as cost-reporting today", () => {
+  /**
+   * Cost reporting is a claim about one upstream's responses, so it stays an
+   * explicit per-type fact rather than an assumption: every type but the
+   * aggregator that really returns `usage.cost` bills on a local price.
+   */
+  it("reports only OpenRouter as cost-reporting", () => {
     for (const type of Object.keys(PROVIDER_REGISTRY) as Array<keyof typeof PROVIDER_REGISTRY>) {
-      expect([type, reportsCost(type)]).toEqual([type, false]);
+      expect([type, reportsCost(type)]).toEqual([type, type === "openrouter"]);
     }
+    // Which is what makes an unpriced OpenRouter slug proxy at all: nothing in
+    // the shipped catalog prices one.
+    expect(hasModelPrice("openrouter", "google/gemini-3.6-flash")).toBe(false);
+    expect(isBillable("openrouter", "google/gemini-3.6-flash")).toBe(true);
   });
 });
 

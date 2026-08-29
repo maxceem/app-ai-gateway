@@ -14,6 +14,7 @@ export const PROVIDER_TYPES = [
   "huggingface",
   "baseten",
   "bytedance",
+  "openrouter",
 ] as const;
 
 // Flag-free on purpose: this source string is published verbatim as an
@@ -54,6 +55,19 @@ export interface ProviderSpec {
    * and resolve authorship per model instead.
    */
   modelAuthor?: string;
+  /**
+   * Whether this type's model IDs namespace the model's author, so authorship
+   * can be read off the slug itself ({@link MODEL_AUTHOR_NAMESPACES}). Set for
+   * aggregators, whose catalogs span every lab and bypass the price catalog
+   * that carries authorship for everyone else.
+   */
+  authorNamespacedModels?: boolean;
+  /**
+   * Headers the gateway sets on every direct call beyond authentication,
+   * because the provider only volunteers something it is asked for. Injected
+   * server-side and stripped off client requests, exactly like {@link auth}.
+   */
+  requestHeaders?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -158,7 +172,73 @@ export const PROVIDER_REGISTRY = {
     directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
     auth: { header: "authorization", scheme: "Bearer " },
   },
+
+  openrouter: {
+    // An aggregator treated as a provider type: it is the counterparty that
+    // bills the organization, and its slugs (`google/gemini-3.6-flash`) are the
+    // canonical model IDs here — there is no underlying ID to translate to.
+    // `/api/v1` is its documented server URL, so the client path is
+    // `v1/chat/completions` under this origin.
+    directBaseUrl: "https://openrouter.ai/api/",
+    auth: { header: "authorization", scheme: "Bearer " },
+    // Every chat-completions response carries `usage.cost`: what OpenRouter
+    // actually charged for that request, which beats any local estimate of a
+    // catalog this deployment does not track. It is also the only way to bill
+    // the type at all, since no static price list covers 400 models across
+    // every lab.
+    reportsCost: true,
+    // No `modelAuthor`: an aggregator serves everyone's models, and the slug
+    // namespace answers per model instead.
+    authorNamespacedModels: true,
+    // Which host actually served a request is opt-in per request; without this
+    // header the response names no serving provider at all.
+    requestHeaders: { "x-openrouter-metadata": "enabled" },
+  },
 } as const satisfies Record<ProviderType, ProviderSpec>;
+
+/**
+ * Model-slug namespaces to the lab that made the model, for the provider types
+ * whose IDs carry one. Verified against OpenRouter's live model list rather
+ * than guessed: an unlisted namespace resolves to no author, which the console
+ * shows as unknown, and a wrong one would silently mis-attribute spend.
+ *
+ * Alias slugs are published with a leading `~` (`~anthropic/claude-opus-latest`),
+ * which {@link namespaceModelAuthor} strips before looking a namespace up.
+ */
+const MODEL_AUTHOR_NAMESPACES: Readonly<Record<string, string>> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  "meta-llama": "Meta",
+  meta: "Meta",
+  qwen: "Alibaba",
+  deepseek: "DeepSeek",
+  mistralai: "Mistral",
+  "x-ai": "xAI",
+  moonshotai: "Moonshot AI",
+  "z-ai": "Z.ai",
+  minimax: "MiniMax",
+  nvidia: "NVIDIA",
+  tencent: "Tencent",
+  "bytedance-seed": "ByteDance",
+  bytedance: "ByteDance",
+  cohere: "Cohere",
+  amazon: "Amazon",
+  perplexity: "Perplexity",
+  microsoft: "Microsoft",
+  baidu: "Baidu",
+  "ibm-granite": "IBM",
+  upstage: "Upstage",
+  stepfun: "StepFun",
+  xiaomi: "Xiaomi",
+  liquid: "Liquid AI",
+  writer: "Writer",
+  "arcee-ai": "Arcee AI",
+  nousresearch: "Nous Research",
+  thinkingmachines: "Thinking Machines",
+  rekaai: "Reka",
+  sakana: "Sakana AI",
+};
 
 /**
  * The registry entry widened to {@link ProviderSpec}. The registry itself is
@@ -177,6 +257,25 @@ export function reportsCost(type: ProviderType): boolean {
 /** The author every model of this provider type has, when there is one. */
 export function providerModelAuthor(type: ProviderType): string | null {
   return providerSpec(type).modelAuthor ?? null;
+}
+
+/**
+ * Who made a model, read off the namespace in its own ID. Only for the types
+ * whose IDs are declared to carry one: `meta-llama/…` means Meta on OpenRouter,
+ * while another host's leading segment could mean an account, a region, or its
+ * own name. An unknown namespace is no answer, never a guess.
+ */
+export function namespaceModelAuthor(type: ProviderType, model: string): string | null {
+  if (providerSpec(type).authorNamespacedModels !== true) return null;
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  const namespace = model.slice(0, slash).replace(/^~/u, "").toLowerCase();
+  return MODEL_AUTHOR_NAMESPACES[namespace] ?? null;
+}
+
+/** Non-auth headers this provider type needs on every direct call. */
+export function providerRequestHeaders(type: ProviderType): Readonly<Record<string, string>> {
+  return providerSpec(type).requestHeaders ?? {};
 }
 
 /** The credential header value a direct call to this provider carries. */

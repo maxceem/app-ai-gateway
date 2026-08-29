@@ -43,12 +43,33 @@ answers `400 invalid_request` and nothing is written, so a month is never left
 half-repriced. Clear the preview's `unpriced_events` first, either by re-adding
 the missing custom price or by narrowing the month.
 
+Events billed on a cost the upstream reported (`cost_source: "reported"`) are
+never matched: that figure is what you were charged, and a local price would
+replace a fact with an estimate.
+
+## Where a cost comes from
+
+Every event records how its `cost_usd` was arrived at, in `cost_source`:
+
+| `cost_source` | Meaning |
+| --- | --- |
+| `reported` | The upstream said what the request cost, and that figure is the billed one. Only [OpenRouter](/docs/providers#openrouter) reports one today; the same number is kept in `reported_cost_usd`. |
+| `computed` | Priced locally, from the provider instance's custom pricing or the shipped catalog. |
+| `unresolved` | Neither source could answer on a successful response — see below. |
+
+Reported cost wins because it is definitionally what you were charged. Local
+pricing is the default and the fallback: if a cost-reporting route ever answers
+without a cost, a local price for that model is used, and the event is
+`computed` rather than `reported`.
+
 ## Unresolved usage
 
 Usage is read from the provider's own response. When a provider answers
 successfully but reports usage in a shape this gateway does not know, there is
 nothing to price: the request is served, the event is stored with no tokens, and
 its cost is zero because nothing was measurable — not because nothing was spent.
+A cost-reporting route that answers without a cost, and whose model has no local
+price either, lands in the same place.
 
 Those events are marked `cost_source: "unresolved"` instead of `"computed"`, are
 shown as **unresolved** rather than `$0.00` in the console's event list, and can
@@ -78,8 +99,12 @@ authors' models. It is an analytics dimension only: budgets and allowlists stay
 per provider instance and per app.
 
 `served_provider`, `served_model` and `reported_cost_usd` are for upstreams that
-report what actually served a request and what it cost. No route reports them
-yet, so they are null; `cost_usd` remains the billed figure either way.
+report what actually served a request and what it cost. They are populated on
+[OpenRouter](/docs/providers#openrouter) instances, where `served_provider` is
+the host OpenRouter routed to and `credential_source` is `byok` only when the
+response says your own upstream key paid; they are null everywhere else, and a
+null means unknown rather than "no". `cost_usd` remains the billed figure either
+way.
 
 Breakdowns by **model author**, **gateway**, and **credential source** are in the
 console's usage view alongside the existing ones.

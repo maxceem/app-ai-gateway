@@ -393,11 +393,14 @@ export type UsageStatus =
   | "blocked_user";
 
 /**
- * How an event's cost was arrived at. `unresolved` is a successful provider
- * response whose usage the gateway could not read: its `cost_usd` is zero
- * because nothing was measurable, not because nothing was spent.
+ * How an event's cost was arrived at. `reported` is the upstream's own figure
+ * for that request, which is what the operator was actually charged;
+ * `computed` is the deployment's price catalog; `unresolved` is a successful
+ * provider response whose cost neither source could establish, so its
+ * `cost_usd` is zero because nothing was measurable, not because nothing was
+ * spent.
  */
-export type CostSource = "computed" | "unresolved";
+export type CostSource = "computed" | "reported" | "unresolved";
 
 /**
  * Whose credential paid, where the configuration settles it. Never inferred

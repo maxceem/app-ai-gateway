@@ -3,7 +3,7 @@
 A multi-tenant LLM proxy for Cloudflare Workers. It keeps provider keys out of
 client applications and supports OpenAI, Anthropic, xAI, Gemini, Perplexity,
 DeepSeek, Groq, Mistral, Together AI, Fireworks AI, Cerebras, Moonshot AI,
-Hugging Face, Baseten, and ByteDance.
+Hugging Face, Baseten, ByteDance, and OpenRouter.
 
 **[Documentation](https://docs.appaigateway.com/docs/)** ·
 **[API reference](https://docs.appaigateway.com/docs/api/)**

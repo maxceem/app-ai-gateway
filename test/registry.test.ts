@@ -33,6 +33,7 @@ import { probeProviderGateway } from "../src/core/provider-probe";
 import {
   providerAuthValue,
   providerModelAuthor,
+  providerRequestHeaders,
   PROVIDER_REGISTRY,
   PROVIDER_TYPES,
   reportsCost,
@@ -155,7 +156,11 @@ describe("API style classification", () => {
 });
 
 describe("capability matrix", () => {
-  it.each(PROVIDER_TYPES)("forwards every API style to %s on a direct route", (type) => {
+  // OpenRouter is the one narrowed entry and is asserted on its own below: its
+  // other surfaces report no cost, and its models have no local price.
+  const PASS_THROUGH_PROVIDERS = PROVIDER_TYPES.filter((type) => type !== "openrouter");
+
+  it.each(PASS_THROUGH_PROVIDERS)("forwards every API style to %s on a direct route", (type) => {
     for (const style of API_STYLES) {
       expect(supportsApiStyle("direct", type, style)).toBe(true);
     }
@@ -180,6 +185,28 @@ describe("capability matrix", () => {
     expect(() => assertRouteServesProvider("cf_aig", type))
       .toThrow(/do not serve/u);
     expect(() => assertRouteServesProvider("direct", type)).not.toThrow();
+  });
+
+  /**
+   * The narrowing is a billing guarantee, not a claim about OpenRouter's API
+   * surface: it serves `/responses` and `/messages` too, but neither response
+   * reports a cost, and no local price covers its slugs — so those requests
+   * could only ever be recorded as unresolved. Refusing them at the edge is the
+   * fail-closed half of "a request is only proxied if it can be billed".
+   */
+  it("offers OpenRouter the one API style it can be billed on", () => {
+    expect(routeCapability("direct", "openrouter")).toEqual({
+      apiStyles: ["chat_completions"],
+      endpointStyles: [],
+    });
+    expect(supportsApiStyle("direct", "openrouter", "chat_completions")).toBe(true);
+    for (const style of API_STYLES.filter((value) => value !== "chat_completions")) {
+      expect([style, supportsApiStyle("direct", "openrouter", style)]).toEqual([style, false]);
+    }
+    expect(() => assertApiStyleSupported("direct", "openrouter", "responses"))
+      .toThrow(/does not support this API/u);
+    // Aggregator: no gateway maps it, so it is direct-only like the Stage 3 batch.
+    expect(routeCapability("cf_aig", "openrouter")).toBeNull();
   });
 
   it("keeps named-endpoint eligibility where it was", () => {
@@ -268,9 +295,30 @@ describe("provider registry entries", () => {
         "huggingface",
         "baseten",
         "bytedance",
+        // An aggregator serves every lab's models: authorship comes from the
+        // slug namespace per model, never from the type.
+        "openrouter",
       ] as const
     ) {
       expect([type, providerModelAuthor(type)]).toEqual([type, null]);
+    }
+  });
+
+  it("reaches OpenRouter at its own origin and bills on what it reports", () => {
+    // `/api/v1` is OpenRouter's documented server URL, so the client path under
+    // the slug is `v1/chat/completions`.
+    expect(PROVIDER_REGISTRY.openrouter.directBaseUrl).toBe("https://openrouter.ai/api/");
+    expect(PROVIDER_REGISTRY.openrouter.auth).toEqual({
+      header: "authorization",
+      scheme: "Bearer ",
+    });
+    expect(reportsCost("openrouter")).toBe(true);
+    // The header that makes OpenRouter name the host it routed to. Declared on
+    // the spec, so the sanitizer strips a client's version of it everywhere.
+    expect(providerRequestHeaders("openrouter")).toEqual({ "x-openrouter-metadata": "enabled" });
+    expect(RESERVED_UPSTREAM_HEADERS).toContain("x-openrouter-metadata");
+    for (const type of PROVIDER_TYPES.filter((value) => value !== "openrouter")) {
+      expect([type, providerRequestHeaders(type)]).toEqual([type, {}]);
     }
   });
 

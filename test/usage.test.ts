@@ -6,6 +6,7 @@ import {
   extractUsageText,
   hasTokenModelPrice,
   isBillable,
+  observeResponse,
   resolveModelAuthor,
 } from "../src/core/usage";
 import type { ProviderType } from "../src/core/types";
@@ -153,6 +154,104 @@ describe("usage extraction", () => {
 
   it("reports malformed data to the caller so background bookkeeping can contain it", () => {
     expect(() => extractUsageText("not-json", "application/json", "openai")).toThrow();
+  });
+});
+
+/**
+ * What a cost-reporting response says about itself, read alongside the usage
+ * counts from the same body. Bounded to the types the registry says report:
+ * everyone else's responses are parsed exactly as before.
+ */
+describe("provider self-reports", () => {
+  const MODEL = "google/gemini-3.6-flash";
+
+  function completion(usage: Record<string, unknown>, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      id: "gen-1",
+      model: MODEL,
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" } }],
+      usage: { prompt_tokens: 30, completion_tokens: 5, total_tokens: 35, ...usage },
+      ...extra,
+    });
+  }
+
+  it("reads the cost, the serving host, and the served model out of one response", () => {
+    const seen = observeResponse(
+      completion({ cost: 0.00025 }, {
+        openrouter_metadata: {
+          endpoints: {
+            total: 2,
+            available: [
+              { provider: "Vertex", model: MODEL, selected: false },
+              { provider: "Google AI Studio", model: MODEL, selected: true },
+            ],
+          },
+        },
+      }),
+      "application/json",
+      "openrouter",
+    );
+    expect(seen.usage).toEqual({
+      inputTokens: 30,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 5,
+    });
+    expect(seen.report).toEqual({
+      costUsd: 0.00025,
+      servedProvider: "Google AI Studio",
+      servedModel: MODEL,
+      credentialSource: null,
+    });
+  });
+
+  it("takes the report from the final chunk of a stream", () => {
+    const chunk = (extra: Record<string, unknown>) =>
+      `data: ${JSON.stringify({ id: "gen-2", model: MODEL, choices: [{ delta: {} }], ...extra })}\n\n`;
+    const seen = observeResponse(
+      [
+        chunk({}),
+        chunk({ usage: { prompt_tokens: 9, completion_tokens: 3, total_tokens: 12, cost: 0.00009 } }),
+        "data: [DONE]\n\n",
+      ].join(""),
+      "text/event-stream",
+      "openrouter",
+    );
+    expect(seen.report?.costUsd).toBe(0.00009);
+    expect(seen.usage?.outputTokens).toBe(3);
+  });
+
+  it("calls the credential byok only when the response says so", () => {
+    const byok = (usage: Record<string, unknown>) =>
+      observeResponse(completion(usage), "application/json", "openrouter").report?.credentialSource;
+    expect(byok({ cost: 0, is_byok: true })).toBe("byok");
+    // The upstream's own charge is a figure OpenRouter only has when the
+    // operator's key was billed for the inference.
+    expect(byok({ cost: 0, cost_details: { upstream_inference_cost: 0.002 } })).toBe("byok");
+    // Everything else is unknown, which is stored as nothing at all.
+    expect(byok({ cost: 0.5, is_byok: false })).toBeNull();
+    expect(byok({ cost: 0.5, cost_details: { upstream_inference_cost: null } })).toBeNull();
+    expect(byok({ cost: 0.5, cost_details: { upstream_inference_cost: 0 } })).toBeNull();
+  });
+
+  it("reports nothing when the response reports nothing", () => {
+    // A body with no cost, no model and no routing metadata leaves every
+    // observed field unknown rather than defaulting any of them.
+    expect(
+      observeResponse(
+        JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+        "application/json",
+        "openrouter",
+      ).report,
+    ).toBeNull();
+  });
+
+  it("reads no report at all for a provider type that does not report costs", () => {
+    // Same body, non-reporting type: the type is what decides, not the shape,
+    // so nothing can start billing on a field a provider never promised.
+    const seen = observeResponse(completion({ cost: 9.99 }), "application/json", "openai");
+    expect(seen.report).toBeNull();
+    expect(seen.usage?.inputTokens).toBe(30);
   });
 });
 
@@ -543,6 +642,60 @@ describe("the shipped price catalog", () => {
       .toBeCloseTo(100_000 * 0.5e-6 + 1000 * 3.0e-6, 10);
     expect(computeCost("bytedance", "seed-2-0-pro-260328", long))
       .toBeCloseTo(200_000 * 1.0e-6 + 1000 * 6.0e-6, 10);
+  });
+
+  /**
+   * The aggregator link of the chain. OpenRouter slugs bypass the catalog
+   * entirely — they are billed on a reported cost — so without this they would
+   * be the one billable traffic with no author at all.
+   */
+  it("reads an aggregator model's author out of its slug namespace", () => {
+    expect(catalog.openrouter).toBeUndefined();
+    for (
+      const [model, author] of [
+        ["google/gemini-3.6-flash", "Google"],
+        ["openai/gpt-5.6-sol", "OpenAI"],
+        ["anthropic/claude-opus-4-6", "Anthropic"],
+        ["meta-llama/llama-4-maverick", "Meta"],
+        ["qwen/qwen3.8-max", "Alibaba"],
+        ["deepseek/deepseek-v4-pro", "DeepSeek"],
+        ["mistralai/mistral-medium-3-5", "Mistral"],
+        ["x-ai/grok-4.6", "xAI"],
+        ["moonshotai/kimi-k3", "Moonshot AI"],
+        ["bytedance-seed/seed-2-1-turbo", "ByteDance"],
+        // Alias slugs are published with a leading tilde.
+        ["~anthropic/claude-opus-latest", "Anthropic"],
+      ] as const
+    ) {
+      expect([model, resolveModelAuthor("openrouter", model)]).toEqual([model, author]);
+    }
+    // An unlisted namespace is no answer rather than a guess, and so is a slug
+    // with no namespace at all.
+    expect(resolveModelAuthor("openrouter", "some-lab/some-model")).toBeNull();
+    expect(resolveModelAuthor("openrouter", "openrouter/auto")).toBeNull();
+    expect(resolveModelAuthor("openrouter", "unnamespaced-model")).toBeNull();
+  });
+
+  it("reads a slug namespace only where the provider type declares one", () => {
+    // Together's IDs look identical, but a leading segment elsewhere can mean
+    // an account or a region, so authorship there stays curated per entry.
+    expect(resolveModelAuthor("together", "google/never-priced-model")).toBeNull();
+    expect(resolveModelAuthor("fireworks", "accounts/acme/models/llama")).toBeNull();
+  });
+
+  it("prefers a curated catalog author over the slug namespace", () => {
+    const mutable = prices as unknown as Record<
+      string,
+      Record<string, { input: number; output: number; author?: string }>
+    >;
+    mutable.openrouter = { "meta-llama/llama-4-maverick": { input: 1, output: 2, author: "Meta AI" } };
+    try {
+      expect(resolveModelAuthor("openrouter", "meta-llama/llama-4-maverick")).toBe("Meta AI");
+      // Sibling models still fall through to the namespace.
+      expect(resolveModelAuthor("openrouter", "meta-llama/llama-4-scout")).toBe("Meta");
+    } finally {
+      delete mutable.openrouter;
+    }
   });
 
   it("refuses to proxy a model this deployment ships no price for", () => {

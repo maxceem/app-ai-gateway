@@ -1,5 +1,5 @@
 import type { ProviderGatewayType, ProviderPricing } from "../db/schema";
-import { apiStyleFromPath, outputClampStyle } from "./api-styles";
+import { apiStyleFromPath, outputClampStyle, type ApiStyle } from "./api-styles";
 import {
   assertApiStyleSupported,
   routeWireModel,
@@ -8,7 +8,13 @@ import {
 import { GatewayError } from "./errors";
 import { GATEWAY_ADAPTERS, gatewayUpstream } from "./gateways";
 import type { ResolvedProvider } from "./provider-store";
-import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
+import {
+  PROVIDER_REGISTRY,
+  PROVIDER_TYPES,
+  providerAuthValue,
+  providerRequestHeaders,
+  reportsCost,
+} from "./providers";
 import { lookup } from "./records";
 import { isBillable } from "./usage";
 import type {
@@ -202,14 +208,47 @@ export function validateOrInjectOutputCap(
 }
 
 /**
+ * Asks a cost-reporting provider to report what a request cost, by setting the
+ * documented opt-in in its own request shape. A same-protocol mutation of the
+ * kind model rewrites and output caps already are, and it overrides a client's
+ * `false`: the reported figure is what this route is billed on, so a client
+ * must not be able to turn the meter off.
+ *
+ * Scoped to JSON chat-completions bodies, which is the only surface a
+ * cost-reporting type is offered on. OpenRouter (the only such type today)
+ * always includes `usage.cost` now and documents `usage.include` as a
+ * deprecated no-op it still accepts, so this costs one ignored field and keeps
+ * working if that ever stops being true.
+ */
+export function injectCostReport(
+  provider: ProviderType,
+  style: ApiStyle,
+  body: Record<string, unknown>,
+): boolean {
+  if (!reportsCost(provider) || style !== "chat_completions") return false;
+  const current = body.usage;
+  const existing = typeof current === "object" && current !== null && !Array.isArray(current)
+    ? (current as Record<string, unknown>)
+    : null;
+  if (existing?.include === true) return false;
+  // Deep-set: whatever else the client put under `usage` is preserved.
+  body.usage = { ...existing, include: true };
+  return true;
+}
+
+/**
  * Every header the gateway itself owns, derived from both registries so the two
  * can never drift: each provider spec declares the header it authenticates
- * with, each adapter declares the headers its gateway reads. A client value in
- * any of them is dropped before the upstream request is built.
+ * with and any it needs the upstream to read, each adapter declares the headers
+ * its gateway reads. A client value in any of them is dropped before the
+ * upstream request is built.
  */
 export const RESERVED_UPSTREAM_HEADERS: readonly string[] = [
   ...new Set([
-    ...Object.values(PROVIDER_REGISTRY).map((spec) => spec.auth.header),
+    ...PROVIDER_TYPES.flatMap((type) => [
+      PROVIDER_REGISTRY[type].auth.header,
+      ...Object.keys(providerRequestHeaders(type)),
+    ]),
     ...Object.values(GATEWAY_ADAPTERS).flatMap((adapter) => adapter.reservedHeaders),
   ]),
 ];
@@ -365,6 +404,7 @@ export async function prepareProxyRequest(input: {
   bodyChanged =
     validateOrInjectOutputCap(clampStyle, input.provider, parsed, config.max_output_tokens)
     || bodyChanged;
+  bodyChanged = injectCostReport(input.provider, apiStyle, parsed) || bodyChanged;
   headers.set("content-type", "application/json");
   body = bodyChanged ? JSON.stringify(parsed) : new TextDecoder().decode(bytes);
   return {
@@ -430,6 +470,11 @@ export function providerUpstream(input: {
   stripGatewayNamespaces(headers, null);
   const spec = PROVIDER_REGISTRY[prepared.provider];
   headers.set(spec.auth.header, providerAuthValue(prepared.provider, resolved.secret));
+  // Set after sanitization, like the credential itself: these are the gateway's
+  // own asks of the upstream, never a client's.
+  for (const [name, value] of Object.entries(providerRequestHeaders(prepared.provider))) {
+    headers.set(name, value);
+  }
   return {
     url: `${spec.directBaseUrl}${prepared.providerPath}${prepared.query}`,
     headers,

@@ -3,13 +3,15 @@ import { markApiKeyUsed } from "./apikeys";
 import { routeCanonicalModel } from "./capabilities";
 import { credentialSource } from "./gateways";
 import { log } from "./log";
-import { providerModelAuthor, reportsCost } from "./providers";
+import { namespaceModelAuthor, providerModelAuthor, reportsCost } from "./providers";
 import { lookup } from "./records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
 import {
   appUsageEvent,
+  type CostSource,
+  type CredentialSource,
   type ProviderGatewayType,
   type ProviderPricing,
 } from "../db/schema";
@@ -117,15 +119,17 @@ export function isBillable(
 /**
  * Who made a model, resolved once when the event is recorded so console
  * aggregations stay plain SQL. The catalog is consulted first because it is
- * curated per model; the provider type's own author answers for the rest.
- * Aggregator slug namespaces (`google/…` on OpenRouter) join this chain in
- * Stage 4, between the two.
+ * curated per model; an aggregator's slug namespace answers next, because that
+ * is where authorship lives for models no catalog prices; the provider type's
+ * own author answers for the rest.
  *
  * Operator price overrides are deliberately not consulted: they carry prices
  * only, and shadowing a catalog entry must not erase who wrote the model.
  */
 export function resolveModelAuthor(provider: ProviderType, model: string): string | null {
-  return catalogPrice(provider, model)?.author ?? providerModelAuthor(provider);
+  return catalogPrice(provider, model)?.author
+    ?? namespaceModelAuthor(provider, model)
+    ?? providerModelAuthor(provider);
 }
 
 interface UsageEventInput {
@@ -370,28 +374,130 @@ function usageShape(value: unknown): UsageShape | null {
   return "openai";
 }
 
+/** One response body as a list of values: the document, or every SSE event. */
+function responseValues(text: string, contentType: string): unknown[] {
+  if (contentType.toLowerCase().includes("text/event-stream")) return parseSse(text);
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    throw new Error("Provider response was not valid usage JSON or SSE");
+  }
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * What a response said about the request that produced it, on a route that
+ * reports such things. Every field is optional and every absence means unknown:
+ * none of it may ever be inferred from a successful status.
+ */
+export interface ProviderReport {
+  /** USD the upstream says it charged, which is what the event is billed at. */
+  costUsd: number | null;
+  /** The host that actually served the request, as the upstream named it. */
+  servedProvider: string | null;
+  /** The model the upstream says it served, still in the route's own naming. */
+  servedModel: string | null;
+  /**
+   * Whose credential paid for the inference behind a reporting service.
+   * `byok` or nothing: "the operator's own upstream key" is a claim only the
+   * upstream can make, and silence is recorded as silence.
+   */
+  credentialSource: CredentialSource | null;
+}
+
+/**
+ * The serving host named in one value. OpenRouter reports its routing decision
+ * under `openrouter_metadata` (opt-in per request — see the registry's
+ * `requestHeaders`), marking the endpoint it picked with `selected`. A root
+ * `provider` string is read as a fallback, so a response that names the host the
+ * older way still populates the field.
+ */
+function servedProviderOf(root: Record<string, unknown>): string | null {
+  const available = asRecord(asRecord(root.openrouter_metadata)?.endpoints)?.available;
+  if (Array.isArray(available)) {
+    for (const entry of available) {
+      const endpoint = asRecord(entry);
+      if (endpoint?.selected === true) {
+        const named = nonEmptyString(endpoint.provider);
+        if (named) return named;
+      }
+    }
+  }
+  return nonEmptyString(root.provider);
+}
+
+/**
+ * Whether the response states the inference was paid for with the operator's
+ * own upstream key. OpenRouter says so outright, and says it a second way by
+ * reporting what the upstream charged — a figure it only has when the operator's
+ * key was the one billed.
+ */
+function reportedByok(root: Record<string, unknown>, usage: Record<string, unknown> | null): boolean {
+  if (usage?.is_byok === true) return true;
+  if (asRecord(root.openrouter_metadata)?.is_byok === true) return true;
+  const upstream = finiteNumber(asRecord(usage?.cost_details)?.upstream_inference_cost);
+  return upstream !== null && upstream > 0;
+}
+
+/**
+ * Reads the self-report out of a response, merging across SSE events because a
+ * stream carries its cost and its routing metadata only in the final chunk.
+ * `null` when the response said none of it, which is what turns a reporting
+ * route's silence into an unresolved event rather than a free request.
+ */
+function providerReport(values: unknown[]): ProviderReport | null {
+  const report: ProviderReport = {
+    costUsd: null,
+    servedProvider: null,
+    servedModel: null,
+    credentialSource: null,
+  };
+  let reported = false;
+  for (const value of values) {
+    const root = asRecord(value);
+    if (!root) continue;
+    const usage = asRecord(root.usage);
+    const cost = usage ? finiteNumber(usage.cost) : null;
+    // A zero is a real report — free models exist. A negative one is not a
+    // charge, so it is treated as no report at all and surfaces as unresolved
+    // rather than crediting a budget.
+    if (cost !== null && cost >= 0) {
+      report.costUsd = cost;
+      reported = true;
+    }
+    const served = servedProviderOf(root);
+    if (served !== null) {
+      report.servedProvider = served;
+      reported = true;
+    }
+    const model = nonEmptyString(root.model);
+    if (model !== null) {
+      report.servedModel = model;
+      reported = true;
+    }
+    if (reportedByok(root, usage)) {
+      report.credentialSource = "byok";
+      reported = true;
+    }
+  }
+  return reported ? report : null;
+}
+
 /**
  * Reads the usage a provider reported, or `null` when the response carries none
  * this deployment recognises. That distinction is the whole point: a provider
  * that reports zero tokens and a provider whose usage object we cannot read both
  * cost `$0` to compute, and only the second one is a metering failure.
  */
-export function extractUsageText(
-  text: string,
-  contentType: string,
-  _provider: ProviderType,
-): UsageObservation | null {
-  let values: unknown[];
-  if (contentType.toLowerCase().includes("text/event-stream")) {
-    values = parseSse(text);
-  } else {
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      values = Array.isArray(parsed) ? parsed : [parsed];
-    } catch {
-      throw new Error("Provider response was not valid usage JSON or SSE");
-    }
-  }
+function usageFromValues(values: unknown[]): UsageObservation | null {
   const anthropicValues = values.filter((value) => usageShape(value) === "anthropic");
   if (anthropicValues.length > 0) return mergeAnthropicEvents(anthropicValues);
   for (let index = values.length - 1; index >= 0; index -= 1) {
@@ -406,6 +512,32 @@ export function extractUsageText(
     if (parsed) return parsed;
   }
   return null;
+}
+
+export function extractUsageText(
+  text: string,
+  contentType: string,
+  _provider: ProviderType,
+): UsageObservation | null {
+  return usageFromValues(responseValues(text, contentType));
+}
+
+/**
+ * Everything one response body says about itself, parsed once. The report half
+ * is read only for provider types the registry says report their own cost:
+ * usage parsing stays shape-sniffed for everyone, and no other type pays for a
+ * scan of fields it never sends.
+ */
+export function observeResponse(
+  text: string,
+  contentType: string,
+  provider: ProviderType,
+): { usage: UsageObservation | null; report: ProviderReport | null } {
+  const values = responseValues(text, contentType);
+  return {
+    usage: usageFromValues(values),
+    report: reportsCost(provider) ? providerReport(values) : null,
+  };
 }
 
 export function computeCost(
@@ -580,13 +712,16 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // later replay of this same event all settle under one identity.
   const eventId = crypto.randomUUID();
   let observed: UsageObservation | null = null;
+  let report: ProviderReport | null = null;
   if (input.stream) {
     try {
-      observed = extractUsageText(
+      const seen = observeResponse(
         await readObserver(input.stream),
         input.contentType,
         input.provider,
       );
+      observed = seen.usage;
+      report = seen.report;
     } catch (error) {
       log("warn", "usage_extraction_failed", {
         eventId,
@@ -597,11 +732,21 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
+  const reporting = reportsCost(input.provider);
+  const reportedCost = report?.costUsd ?? null;
+  const usage: UsageObservation = observed ?? EMPTY;
+  const price = computeCost(input.provider, input.model, usage, input.pricing);
   // A provider that answered successfully and reported nothing readable would
   // otherwise bill a legitimate-looking $0 and consume no budget — a silent
   // spend-limit bypass. The event is still recorded and the response has already
   // been served: the traffic is marked, not refused.
-  const unresolved = input.status === "ok" && observed === null;
+  //
+  // A cost-reporting route fails the same way one step later: its models are
+  // billable *because* it reports a cost, so a response that reports none is
+  // unresolved too, unless a local price can still answer for it.
+  const unresolved = input.status === "ok"
+    && reportedCost === null
+    && (observed === null || (reporting && price === null));
   if (unresolved) {
     log("error", "usage_unresolved_cost", {
       eventId,
@@ -612,15 +757,17 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       model: input.model,
       route: input.route,
       contentType: input.contentType,
+      reason: observed === null ? "no_usage_reported" : "no_cost_reported",
     });
   }
-  const usage: UsageObservation = observed ?? EMPTY;
-  const price = computeCost(input.provider, input.model, usage, input.pricing);
-  if (price === null) {
+  if (price === null && !reporting) {
     // Unpriced models are refused before they proxy, so reaching here means the
     // catalog and the gate disagree. Recording at zero keeps the event and its
     // tokens; the dedicated code makes the mispricing alertable, where the old
     // throw only vanished inside `waitUntil`.
+    //
+    // Not an error on a reporting route: those bill on the reported figure and
+    // are expected to carry no local price at all.
     log("error", "usage_unpriced_model", {
       eventId,
       appId: input.appId,
@@ -630,9 +777,17 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       model: input.model,
     });
   }
-  const cost = price ?? 0;
+  // The cost-source hierarchy: what the upstream charged, else what the local
+  // catalog computes, else nothing anyone can stand behind.
+  const cost = reportedCost ?? price ?? 0;
+  const costSource: CostSource = reportedCost !== null
+    ? "reported"
+    : unresolved
+      ? "unresolved"
+      : "computed";
   const gateway = input.gateway ?? null;
   const route = gateway?.type ?? "direct";
+  const servedModel = input.servedModel ?? report?.servedModel ?? null;
   await persistUsageEvent(input.env, {
     eventId,
     row: {
@@ -645,12 +800,16 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       providerSlug: input.providerSlug,
       providerGatewayId: gateway?.id ?? null,
       providerGatewayType: gateway?.type ?? null,
-      credentialSource: credentialSource(gateway),
+      // On a reporting route the configuration settles nothing: the
+      // organization's own key always pays *that* service, and the question the
+      // column answers is whose key paid for the inference behind it — which
+      // only the response can say, per request.
+      credentialSource: reporting
+        ? (report?.credentialSource ?? null)
+        : credentialSource(gateway),
       modelAuthor: resolveModelAuthor(input.provider, input.model),
-      servedProvider: input.servedProvider ?? null,
-      servedModel: input.servedModel
-        ? routeCanonicalModel(route, input.provider, input.servedModel)
-        : null,
+      servedProvider: input.servedProvider ?? report?.servedProvider ?? null,
+      servedModel: servedModel ? routeCanonicalModel(route, input.provider, servedModel) : null,
       model: input.model,
       route: input.route,
       endpointSlug: input.endpointSlug ?? null,
@@ -659,7 +818,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       cacheWriteTokens: usage.cacheWriteTokens,
       outputTokens: usage.outputTokens,
       costUsd: cost,
-      costSource: unresolved ? "unresolved" : "computed",
+      costSource,
+      reportedCostUsd: reportedCost,
       appVersion: input.appVersion,
       authMethod: input.authMethod,
       status: input.status,

@@ -104,6 +104,48 @@ describe("admin API", () => {
     expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
   });
 
+  /**
+   * Repricing recomputes a local estimate. An event billed on what the upstream
+   * actually charged has no estimate to go back to, so leaving it out is what
+   * keeps the reported figure meaningful.
+   */
+  it("leaves an event billed on a reported cost out of repricing", async () => {
+    const appId = "admin-reprice-reported";
+    await seedApp(appId);
+    const insert = (costSource: string | null, costUsd: number) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
+         cost_source, reported_cost_usd, status
+       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+                 50, 40, 10, 20, ?, ?, ?, 'ok')`,
+    ).bind(appId, costUsd, costSource, costSource === "reported" ? costUsd : null).run();
+    await insert(null, 0.000184);
+    await insert("reported", 0.5);
+    const month = new Date().toISOString().slice(0, 7);
+    const preview = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply: true }),
+      },
+    );
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({
+      // Only the locally priced event; the reported one was never a candidate.
+      matched_events: 1,
+      previous_cost_usd: 0.000184,
+    });
+    const reported = await env.DB.prepare(
+      "SELECT cost_usd FROM app_usage_event WHERE app_id = ? AND cost_source = 'reported'",
+    ).bind(appId).first<{ cost_usd: number }>();
+    expect(reported?.cost_usd).toBe(0.5);
+  });
+
   it("reprices each event with its serving provider instance override", async () => {
     const appId = "admin-reprice-instances";
     await seedApp(appId);

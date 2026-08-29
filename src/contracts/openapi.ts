@@ -109,13 +109,13 @@ const UsageEventSchema = z.object({
     description: "That gateway's type at request time, for example cf_aig.",
   }),
   credential_source: z.enum(["direct", "byok", "gateway_system", "unknown"]).nullable().openapi({
-    description: "Whose credential paid, where the configuration settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store. Never inferred from a successful response; null when nothing settles it.",
+    description: "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store or when a reporting upstream says the organization's own key paid for the inference. Never inferred from a successful response; null when nothing settles it.",
   }),
   model_author: z.string().nullable().openapi({
     description: "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists.",
   }),
   served_provider: z.string().nullable().openapi({
-    description: "The serving provider the upstream named, when it names one. Null means unknown, never a guarantee.",
+    description: "The serving provider the upstream named, when it names one — the host OpenRouter routed to, for instance. Null means unknown, never a guarantee.",
   }),
   served_model: z.string().nullable().openapi({
     description: "The serving model the upstream named, canonicalized back to the provider's own model ID.",
@@ -131,8 +131,8 @@ const UsageEventSchema = z.object({
   reported_cost_usd: z.number().nullable().openapi({
     description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
   }),
-  cost_source: z.enum(["computed", "unresolved"]).nullable().openapi({
-    description: "How cost_usd was determined. `unresolved` means the provider answered successfully but reported no usage this deployment could read, so the zero cost is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
+  cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().openapi({
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),

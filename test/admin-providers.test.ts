@@ -662,6 +662,9 @@ describe("provider probe coverage", () => {
       "https://api.cerebras.ai/v1/models",
       "https://api.moonshot.ai/v1/models",
       "https://inference.baseten.co/v1/models",
+      // OpenRouter's key-status call: its model list is public, so probing that
+      // would report every key as good.
+      "https://openrouter.ai/api/v1/key",
     ]);
     expect(seen[0]?.headers.get("authorization")).toBe("Bearer openai-secret");
     expect(seen[1]?.headers.get("x-api-key")).toBe("anthropic-secret");

@@ -14,6 +14,7 @@ import {
   PROVIDERS,
   PROVIDER_LABELS,
   renameEndpoint,
+  reportsCost,
   selectedSlugs,
   withIssuer,
   type AuthenticationConfig,
@@ -58,7 +59,17 @@ describe("the provider list the console offers", () => {
       "huggingface",
       "baseten",
       "bytedance",
+      "openrouter",
     ]);
+  });
+
+  it("knows which types bill on a cost the upstream reports", () => {
+    // Mirrors `reportsCost` on the Worker: it decides whether the console tells
+    // an operator a model needs a price before it will proxy.
+    expect(reportsCost("openrouter")).toBe(true);
+    for (const type of PROVIDERS.filter((value) => value !== "openrouter")) {
+      expect([type, reportsCost(type)]).toEqual([type, false]);
+    }
   });
 });
 

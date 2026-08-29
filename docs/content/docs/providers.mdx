@@ -56,6 +56,7 @@ chat-completions path is listed for each.
 | `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | — direct only |
 | `baseten` | Baseten Model APIs | `v1/chat/completions` | — direct only |
 | `bytedance` | BytePlus ModelArk | `chat/completions` | — direct only |
+| `openrouter` | OpenRouter | `v1/chat/completions` | — direct only |
 
 "Direct only" is the default, not a limitation of the type: a provider type is
 offered on a gateway once that pairing has been verified against a live gateway,
@@ -79,6 +80,50 @@ A few types carry caveats worth knowing before you add a key:
   and the same model costs up to ten times more on one upstream than another.
   Pin the upstream in the model ID (`author/model:provider`) and price that ID,
   or the recorded cost is a guess.
+- **OpenRouter** is an aggregator, and the only type that bills on a cost the
+  upstream reports rather than a local price — it has a section of its own
+  [below](#openrouter).
+
+## OpenRouter
+
+OpenRouter is treated as a provider type, not as a gateway: it is the
+counterparty that bills you, and its catalog includes models with no direct
+provider at all. Two things follow from that.
+
+**Its slugs are the model IDs.** `google/gemini-3.6-flash` and
+`meta-llama/llama-4-maverick` are canonical here — they are what you send, what
+`allowed_models` and `fixed_model` match, and what a usage event records. They
+are not translated to anything: an OpenRouter instance and a direct Gemini
+instance name the same model differently, so moving an app between them means
+renaming the model. The leading namespace is also where the model's author comes
+from, so usage groups by **Google** or **Meta** the same way it does on a direct
+route.
+
+**Cost is reported, not computed.** Every OpenRouter chat-completions response
+carries `usage.cost`: what OpenRouter actually charged for that request. The
+gateway records it as `cost_usd` with `cost_source: "reported"`, and keeps it in
+`reported_cost_usd` as well. So OpenRouter models proxy with **no local price**
+— the [pricing gate](#custom-model-pricing) is satisfied by the route reporting
+its own cost, which is why no OpenRouter section ships in the catalog. Streaming
+works the same way: the figure arrives in the final SSE chunk.
+
+If a response ever comes back without a cost, the event is not billed at zero:
+a local price for that model is used if you have entered one (`computed`),
+and otherwise the event is recorded as
+[unresolved](/docs/operations#unresolved-usage) and logged.
+
+OpenRouter instances accept **chat completions only** — `v1/chat/completions`
+under the slug. OpenRouter does serve other APIs, but only its chat-completions
+response reports a cost, and a request this gateway could not bill is refused
+rather than served for free.
+
+Two request-shaping details, both same-protocol and neither visible to your
+client's SDK: the gateway asks for usage accounting on the outbound body, and
+asks OpenRouter to name the endpoint it routed to. That second answer is stored
+as `served_provider` ("Served by" in the console's usage view), along with
+`served_model`, and `credential_source: "byok"` when the response says the
+inference was paid for with your own upstream key. All three are absent when
+OpenRouter does not say — an absence is never read as a guarantee.
 
 ## Slugs and multiple instances
 
@@ -116,6 +161,7 @@ the provider offers:
 | Cerebras | `GET /v1/models` |
 | Moonshot AI | `GET /v1/models` |
 | Baseten | `GET /v1/models` |
+| OpenRouter | `GET /v1/key` — its key-status call; its model list is public and would pass any key |
 | Perplexity | none — accepted unvalidated |
 | Fireworks AI | none — its model list needs an account id the key does not carry |
 | Hugging Face | none — its model list answers `200` to any token, so a probe would pass every key |
@@ -229,6 +275,12 @@ A model priced by neither is refused with `400 pricing_not_configured` and a
 message naming where to fix it. Entering the price *is* the explicit allowance:
 nothing unpriced ever proxies, no usage goes unaccounted, and `cost_usd` on a
 usage event is never null. `$0` is enterable for genuinely free models.
+
+The one exception is a route that reports what it charged — [OpenRouter](#openrouter)
+today. Its models are billable without a local price because the response
+carries the cost, so the gate is "priced locally **or** reported upstream". A
+custom price on such an instance is still honoured as the fallback for a
+response that arrives without one.
 
 <Callout type="warn" title="Deleting a provider deletes its overrides">
   Custom pricing lives on the provider row. Rotating a credential keeps it;

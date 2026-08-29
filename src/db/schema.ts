@@ -63,11 +63,14 @@ export type UsageStatus =
   | "blocked_budget"
   | "blocked_user";
 /**
- * Where a proxied request's `cost_usd` came from. `unresolved` marks a
- * successful provider response whose usage this deployment could not read, so
- * its zero cost is an unknown rather than a measurement.
+ * Where a proxied request's `cost_usd` came from. `reported` is the upstream's
+ * own figure for that request, which outranks a local estimate because it is
+ * definitionally what the operator was charged; `computed` is this deployment's
+ * price catalog; `unresolved` marks a successful provider response whose cost
+ * neither source could establish, so its zero cost is an unknown rather than a
+ * measurement.
  */
-export type CostSource = "computed" | "unresolved";
+export type CostSource = "computed" | "reported" | "unresolved";
 /**
  * Whose credential paid for a request, recorded only where the configuration
  * settles it. `direct` is the organization's own provider key; `byok` is that

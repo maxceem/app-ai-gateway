@@ -56,6 +56,8 @@ const PROVIDER_HINTS: Record<Provider, string> = {
   baseten: "Direct only. Use v1/chat/completions on the Model APIs host.",
   bytedance:
     "Direct only. BytePlus ModelArk's version segment is already in the base URL: the path is chat/completions. Models must be activated in your ModelArk console first.",
+  openrouter:
+    "Direct only, chat completions only. Models are OpenRouter slugs, e.g. google/gemini-3.6-flash, and need no local price: cost is reported by OpenRouter per request.",
 };
 
 /** One card per provider instance; an unknown slug still gets one so it can be removed. */
