@@ -1,12 +1,16 @@
 import type { ProviderGatewayType, ProviderPricing } from "../db/schema";
 import { apiStyleFromPath, outputClampStyle } from "./api-styles";
-import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
+import {
+  assertApiStyleSupported,
+  routeWireModel,
+  type ProviderRoute,
+} from "./capabilities";
 import { GatewayError } from "./errors";
 import { GATEWAY_ADAPTERS, gatewayUpstream } from "./gateways";
 import type { ResolvedProvider } from "./provider-store";
 import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
 import { lookup } from "./records";
-import { hasModelPrice } from "./usage";
+import { isBillable } from "./usage";
 import type {
   AllowedPath,
   AllowedPathConfig,
@@ -25,6 +29,10 @@ const UNRESTRICTED_PROVIDER: ProviderProxyConfig = {
 export interface PreparedProxyRequest {
   provider: ProviderType;
   providerPath: string;
+  /**
+   * The canonical model: what was priced, what the allowlist judged, and what
+   * the usage event records. The route may put a different string on the wire.
+   */
   model: string;
   body: BodyInit | null;
   headers: Headers;
@@ -298,14 +306,15 @@ export async function prepareProxyRequest(input: {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
     }
     const actualModel = lookup(input.app.routing.modelRewrites, requestedModel) ?? requestedModel;
-    if (!hasModelPrice(input.provider, actualModel, input.pricing)) {
+    if (!isBillable(input.provider, actualModel, input.pricing)) {
       throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
     }
-    if (match.modelFromPath && actualModel !== requestedModel) {
-      providerPath = match.entry.path.replace("{model}", encodeURIComponent(actualModel));
+    const wireModel = routeWireModel(input.route, input.provider, actualModel);
+    if (match.modelFromPath && wireModel !== requestedModel) {
+      providerPath = match.entry.path.replace("{model}", encodeURIComponent(wireModel));
       body = Uint8Array.from(bytes).buffer;
-    } else if (!match.modelFromPath && !match.entry.fixed_model && actualModel !== requestedModel) {
-      parsed!.set("model", actualModel);
+    } else if (!match.modelFromPath && !match.entry.fixed_model && wireModel !== requestedModel) {
+      parsed!.set("model", wireModel);
       headers.delete("content-type");
       body = parsed!;
     } else {
@@ -337,16 +346,19 @@ export async function prepareProxyRequest(input: {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
   const actualModel = lookup(input.app.routing.modelRewrites, requestedModel) ?? requestedModel;
-  if (!hasModelPrice(input.provider, actualModel, input.pricing)) {
+  if (!isBillable(input.provider, actualModel, input.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
   }
+  // Everything above judged the canonical model; only the outbound request
+  // speaks the route's own namespace, and only where the adapter declares one.
+  const wireModel = routeWireModel(input.route, input.provider, actualModel);
   if (match.modelFromPath) {
-    providerPath = actualModel === requestedModel
+    providerPath = wireModel === requestedModel
       ? input.providerPath
-      : match.entry.path.replace("{model}", encodeURIComponent(actualModel));
+      : match.entry.path.replace("{model}", encodeURIComponent(wireModel));
   } else if (!match.entry.fixed_model) {
-    if (actualModel !== requestedModel) {
-      parsed.model = actualModel;
+    if (wireModel !== requestedModel) {
+      parsed.model = wireModel;
       bodyChanged = true;
     }
   }

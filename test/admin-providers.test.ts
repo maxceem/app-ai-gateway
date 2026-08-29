@@ -28,6 +28,7 @@ interface ProviderSummary {
   name: string;
   secretHint: string | null;
   providerGatewayId: string | null;
+  gatewayRoute: Record<string, unknown> | null;
   pricing: Record<string, { input: number; output: number }> | null;
   status: string;
   createdAt: string;
@@ -543,6 +544,85 @@ describe("admin provider gateway API", () => {
     });
     expect((await call("GET", "/v1/admin/providers")).body.providers).toHaveLength(0);
     expect((await call("DELETE", "/v1/admin/providers/other-org-openai")).status).toBe(404);
+  });
+});
+
+/**
+ * The stored gateway type is deliberately wider than the adapter registry, so
+ * what a deployment will actually create is decided here rather than by a CHECK
+ * constraint that costs a table rebuild to change.
+ */
+describe("gateway routing configuration", () => {
+  it("refuses to create a gateway type this deployment has no adapter for", async () => {
+    const created = await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Vercel",
+      accountId: "acct-1",
+      gatewayId: "gw-1",
+      token: "vercel-token",
+    });
+    expect(created.status, created.text).toBe(400);
+    expect(created.body.error.message).toContain("cf_aig");
+  });
+
+  it("stores no routing configuration for a Cloudflare-routed instance", async () => {
+    stubProbe();
+    const gateway = await createGateway();
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "OpenAI through CF",
+      providerGatewayId: gateway.id,
+    });
+    expect(routed.status, routed.text).toBe(201);
+    expect(routed.body.provider.gatewayRoute).toBeNull();
+
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.body.providers[0].gatewayRoute).toBeNull();
+  });
+
+  it("refuses a routing configuration Cloudflare AI Gateway cannot honour", async () => {
+    stubProbe();
+    const gateway = await createGateway();
+    const rejected = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "OpenAI through CF",
+      providerGatewayId: gateway.id,
+      gatewayRoute: { modelPrefix: "openai/" },
+    });
+    expect(rejected.status, rejected.text).toBe(400);
+    expect(rejected.body.error.message).toContain("no per-provider routing configuration");
+
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.body.providers).toEqual([]);
+  });
+
+  it("refuses a routing configuration on a direct instance, and on updating one", async () => {
+    stubProbe();
+    const rejected = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Direct OpenAI",
+      secret: "sk-live-super-secret-value",
+      gatewayRoute: { modelPrefix: "openai/" },
+    });
+    expect(rejected.status, rejected.text).toBe(400);
+    expect(rejected.body.error.message).toContain("routed through a gateway");
+
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Direct OpenAI",
+      secret: "sk-live-super-secret-value",
+    });
+    expect(created.status, created.text).toBe(201);
+    const updated = await call("PUT", `/v1/admin/providers/${created.body.provider.id}`, {
+      gatewayRoute: { providerOnly: ["azure"] },
+    });
+    expect(updated.status, updated.text).toBe(400);
+    // Clearing what was never set stays a legal no-op.
+    const cleared = await call("PUT", `/v1/admin/providers/${created.body.provider.id}`, {
+      gatewayRoute: null,
+    });
+    expect(cleared.status, cleared.text).toBe(200);
+    expect(cleared.body.provider.gatewayRoute).toBeNull();
   });
 });
 

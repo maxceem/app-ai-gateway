@@ -71,22 +71,33 @@ export interface CreatedManagementKey extends ManagementKey {
  * Provider credentials are write-only: `secretHint` is the only fragment of a
  * stored secret the API ever returns, so no type here carries a plaintext.
  */
-export type ProviderGatewayType = "cf_aig";
+/**
+ * Gateway types the API can return. Creation is narrower — see
+ * {@link CREATABLE_GATEWAY_TYPES} — because a type is only creatable once the
+ * Worker has an adapter for it.
+ */
+export type ProviderGatewayType = "cf_aig" | "vercel";
 
 export interface CfAigConfig {
   accountId: string;
   gatewayId: string;
 }
 
+/** Vercel's origin is fixed in adapter code, so its config is empty. */
+export type VercelGatewayConfig = Record<string, never>;
+
+/** Discriminated by `type`: each gateway's configuration is its own shape. */
+export type ProviderGatewayConfig =
+  | { type: "cf_aig"; config: CfAigConfig }
+  | { type: "vercel"; config: VercelGatewayConfig };
+
 /**
  * A reusable connection to someone else's gateway. Its token is encrypted once
  * and shared by every provider instance routed through it.
  */
-export interface ProviderGateway {
+export type ProviderGateway = ProviderGatewayConfig & {
   id: string;
-  type: ProviderGatewayType;
   name: string;
-  config: CfAigConfig;
   secretHint: string;
   /** Active provider instances routed through this gateway. */
   providerCount: number;
@@ -100,14 +111,15 @@ export interface ProviderGateway {
   createdAt: string;
   updatedAt: string;
   createdBy: string;
-}
+};
 
 export interface ProviderGatewayListResponse {
   gateways: ProviderGateway[];
 }
 
+/** Only Cloudflare gateways are creatable today; the type is still explicit. */
 export interface ProviderGatewayCreateBody {
-  type: ProviderGatewayType;
+  type: "cf_aig";
   name: string;
   accountId: string;
   gatewayId: string;
@@ -118,6 +130,15 @@ export interface ProviderGatewayResponse {
   gateway: ProviderGateway;
   /** Absent on rename, which never re-probes the connection. */
   validated?: boolean;
+}
+
+/**
+ * How one instance is routed inside its gateway. Null for a direct instance and
+ * for gateways that take no routing configuration, Cloudflare's included.
+ */
+export interface GatewayRouteConfig {
+  modelPrefix?: string;
+  providerOnly?: string[];
 }
 
 /** Per-1M-token overrides, keyed by model name. */
@@ -133,6 +154,7 @@ export interface ProviderCredential {
   secretHint: string | null;
   /** `null` routes straight to the provider's native API. */
   providerGatewayId: string | null;
+  gatewayRoute: GatewayRouteConfig | null;
   pricing: ProviderPricing | null;
   status: "active" | "revoked";
   createdAt: string;
@@ -377,6 +399,13 @@ export type UsageStatus =
  */
 export type CostSource = "computed" | "unresolved";
 
+/**
+ * Whose credential paid, where the configuration settles it. Never inferred
+ * from a successful response: `null` means nothing settled it, which the UI has
+ * to say plainly rather than dressing up as "your key".
+ */
+export type CredentialSource = "direct" | "byok" | "gateway_system" | "unknown";
+
 export interface UsageEvent {
   id: number;
   user_id: string;
@@ -387,6 +416,15 @@ export interface UsageEvent {
    */
   api_key_id: string | null;
   provider: string;
+  /** The gateway that carried the request; null on a direct call. */
+  provider_gateway_id: string | null;
+  provider_gateway_type: ProviderGatewayType | null;
+  credential_source: CredentialSource | null;
+  /** Who made the model. Analytics only — it never affects budgets or limits. */
+  model_author: string | null;
+  /** What the upstream said served the request. Null means unknown, not a guarantee. */
+  served_provider: string | null;
+  served_model: string | null;
   model: string;
   route: string;
   /** Null for passthrough proxy traffic. */
@@ -396,6 +434,8 @@ export interface UsageEvent {
   cache_write_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  /** What the upstream said it cost, on routes that report one. */
+  reported_cost_usd: number | null;
   /** Null on blocked traffic and on events recorded before the field existed. */
   cost_source: CostSource | null;
   app_version: string | null;

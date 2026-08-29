@@ -1,4 +1,10 @@
-import type { CfAigConfig, ProviderGatewayType } from "../db/schema";
+import type {
+  CfAigConfig,
+  CredentialSource,
+  GatewayRouteConfig,
+  ProviderGatewayType,
+  ProviderGatewayTypeName,
+} from "../db/schema";
 import type { ApiStyle } from "./api-styles";
 import { GatewayError } from "./errors";
 import type { ProviderType } from "./types";
@@ -32,6 +38,29 @@ export interface GatewayProviderRoute {
    * gateway is transparent and the provider itself is the only judge.
    */
   apiStyles?: readonly ApiStyle[];
+  /**
+   * The gateway's namespace for this provider's models. Canonical model IDs —
+   * the provider's own, which are what `prices.json`, `allowed_models` and the
+   * recorded usage all use — get it prepended on the way out and stripped on
+   * the way back. Absent means the gateway speaks the provider's IDs verbatim.
+   */
+  modelPrefix?: string;
+}
+
+/** Canonical model ID to what this route puts on the wire. */
+export function wireModel(route: GatewayProviderRoute | undefined, canonical: string): string {
+  return route?.modelPrefix ? `${route.modelPrefix}${canonical}` : canonical;
+}
+
+/**
+ * What this route put on the wire, back to the canonical model ID. Only the
+ * route's *own* prefix comes off: canonical IDs may contain `/` themselves
+ * (`fal-ai/fast-sdxl`, and every OpenRouter slug), so "everything before the
+ * first slash" would silently rename them.
+ */
+export function canonicalModel(route: GatewayProviderRoute | undefined, wire: string): string {
+  const prefix = route?.modelPrefix;
+  return prefix && wire.startsWith(prefix) ? wire.slice(prefix.length) : wire;
 }
 
 /** An upstream call the adapter owns end to end: URL plus its own headers. */
@@ -74,10 +103,22 @@ export interface GatewayAdapter<Type extends ProviderGatewayType> {
    * a request that actually routes through this gateway.
    */
   readonly clientHeaders: readonly string[];
+  /**
+   * Whose credential this gateway pays with, when the configuration settles it
+   * for every request. `null` where it depends on the response, which is then
+   * read per event rather than assumed here.
+   */
+  readonly credentialSource: CredentialSource | null;
   readonly routes: Partial<Record<ProviderType, GatewayProviderRoute>>;
   upstream(input: GatewayUpstreamInput<Type>): GatewayRequest;
   /** `null` when this gateway does not serve the provider type at all. */
   probe(input: GatewayProbeInput<Type>): GatewayRequest | null;
+  /**
+   * Rejects a provider row's `gateway_route_json` this gateway cannot honour.
+   * Called on every create and update, so a stored route is always one its
+   * adapter agreed to.
+   */
+  validateRoute(route: GatewayRouteConfig | null): void;
 }
 
 export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
@@ -120,6 +161,10 @@ const cfAigAdapter: GatewayAdapter<"cf_aig"> = {
     "cf-aig-backoff",
     "cf-aig-retry-delay",
   ],
+  // The organization stores its own provider keys in its own gateway's BYOK
+  // store; there is no Cloudflare-supplied credential to fall back to. That is
+  // configuration, not something read off a response.
+  credentialSource: "byok",
   routes: CF_AIG_ROUTES,
   upstream(input) {
     const route = CF_AIG_ROUTES[input.provider];
@@ -142,6 +187,18 @@ const cfAigAdapter: GatewayAdapter<"cf_aig"> = {
       headers: { "cf-aig-authorization": `Bearer ${input.secret}` },
     };
   },
+  validateRoute(route) {
+    // Cloudflare's URL space is fully determined by the provider slug: there is
+    // no namespace to map and no serving provider to pin. Accepting a route
+    // config here would store one nothing reads.
+    if (route !== null) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        "Cloudflare AI Gateway takes no per-provider routing configuration",
+      );
+    }
+  },
 };
 
 /** Closed registry: every gateway type has exactly one adapter. */
@@ -153,6 +210,43 @@ export function gatewayAdapter<Type extends ProviderGatewayType>(
   type: Type,
 ): GatewayAdapter<Type> {
   return GATEWAY_ADAPTERS[type];
+}
+
+/**
+ * Whether a gateway type stored in D1 has an adapter. The CHECK constraint is
+ * deliberately wider than the adapter registry — widening it is a table rebuild
+ * — so a stored row is not proof that this deployment can serve it.
+ */
+export function isGatewayType(name: ProviderGatewayTypeName): name is ProviderGatewayType {
+  return Object.hasOwn(GATEWAY_ADAPTERS, name);
+}
+
+/**
+ * Whose credential a route pays with. A direct row pays with the organization's
+ * own provider key by construction; a gateway answers for itself.
+ */
+export function credentialSource(
+  gateway: { type: ProviderGatewayType } | null,
+): CredentialSource | null {
+  return gateway === null ? "direct" : gatewayAdapter(gateway.type).credentialSource;
+}
+
+/** Rejects a provider row's route config the owning adapter cannot honour. */
+export function assertGatewayRoute(
+  gatewayType: ProviderGatewayType | null,
+  route: GatewayRouteConfig | null,
+): void {
+  if (gatewayType === null) {
+    if (route !== null) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        "Routing configuration only applies to a provider routed through a gateway",
+      );
+    }
+    return;
+  }
+  gatewayAdapter(gatewayType).validateRoute(route);
 }
 
 function unsupportedProvider(type: ProviderGatewayType, provider: ProviderType): GatewayError {

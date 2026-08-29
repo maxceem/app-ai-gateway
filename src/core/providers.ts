@@ -32,6 +32,18 @@ export interface ProviderAuth {
 export interface ProviderSpec {
   directBaseUrl: string;
   auth: ProviderAuth;
+  /**
+   * Whether this provider reports what a request cost, per request, in its own
+   * response. Absent means it does not, which is the fail-closed default: such
+   * traffic is only billable when the canonical model has a local price.
+   */
+  reportsCost?: boolean;
+  /**
+   * Who makes the models this provider type serves, when one answer is right
+   * for all of them. Absent for aggregators, which serve many authors' models
+   * and resolve authorship per model instead.
+   */
+  modelAuthor?: string;
 }
 
 /**
@@ -43,24 +55,48 @@ export const PROVIDER_REGISTRY = {
   openai: {
     directBaseUrl: "https://api.openai.com/",
     auth: { header: "authorization", scheme: "Bearer " },
+    modelAuthor: "OpenAI",
   },
   anthropic: {
     directBaseUrl: "https://api.anthropic.com/",
     auth: { header: "x-api-key" },
+    modelAuthor: "Anthropic",
   },
   xai: {
     directBaseUrl: "https://api.x.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    modelAuthor: "xAI",
   },
   gemini: {
     directBaseUrl: "https://generativelanguage.googleapis.com/",
     auth: { header: "x-goog-api-key" },
+    modelAuthor: "Google",
   },
   perplexity: {
     directBaseUrl: "https://api.perplexity.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    modelAuthor: "Perplexity",
   },
 } as const satisfies Record<ProviderType, ProviderSpec>;
+
+/**
+ * The registry entry widened to {@link ProviderSpec}. The registry itself is
+ * `as const` so `auth.scheme` narrows per entry; reading an optional flag off
+ * that literal type needs the declared shape back.
+ */
+function providerSpec(type: ProviderType): ProviderSpec {
+  return PROVIDER_REGISTRY[type];
+}
+
+/** Whether this provider type's own responses carry a per-request cost. */
+export function reportsCost(type: ProviderType): boolean {
+  return providerSpec(type).reportsCost === true;
+}
+
+/** The author every model of this provider type has, when there is one. */
+export function providerModelAuthor(type: ProviderType): string | null {
+  return providerSpec(type).modelAuthor ?? null;
+}
 
 /** The credential header value a direct call to this provider carries. */
 export function providerAuthValue(type: ProviderType, secret: string): string {

@@ -8,17 +8,23 @@ import {
   ENDPOINT_PROVIDER_TYPES,
   narrowedCapability,
   providersForEndpointStyle,
+  routeCanonicalModel,
   routeCapability,
+  routeWireModel,
   supportsApiStyle,
   supportsEndpointStyle,
   type ProviderRoute,
 } from "../src/core/capabilities";
 import { clearAppConfigCache } from "../src/core/config";
 import {
+  assertGatewayRoute,
+  canonicalModel,
   CF_AI_GATEWAY_BASE_URL,
+  credentialSource,
   GATEWAY_ADAPTERS,
   gatewayProbe,
   gatewayUpstream,
+  wireModel,
 } from "../src/core/gateways";
 import { clearProviderCaches } from "../src/core/provider-store";
 import { probeProviderGateway } from "../src/core/provider-probe";
@@ -149,6 +155,53 @@ describe("capability matrix", () => {
       { slug: "google", apiStyles: ["responses", "gemini_native"] },
     )!;
     expect(invented.apiStyles).toEqual(["responses"]);
+  });
+});
+
+describe("canonical model identity", () => {
+  it("leaves models untouched on a route with no namespace of its own", () => {
+    for (const type of PROVIDER_TYPES) {
+      for (const route of ["direct", "cf_aig"] as ProviderRoute[]) {
+        expect(routeWireModel(route, type, "gemini-3.6-flash")).toBe("gemini-3.6-flash");
+        expect(routeCanonicalModel(route, type, "gemini-3.6-flash")).toBe("gemini-3.6-flash");
+      }
+    }
+  });
+
+  it("prepends and strips a route's own prefix, and only its own", () => {
+    const route = { slug: "google", modelPrefix: "google/" };
+    expect(wireModel(route, "gemini-3.6-flash")).toBe("google/gemini-3.6-flash");
+    expect(canonicalModel(route, "google/gemini-3.6-flash")).toBe("gemini-3.6-flash");
+    // Another gateway's namespace is data, not a prefix to remove.
+    expect(canonicalModel(route, "vertex/gemini-3.6-flash")).toBe("vertex/gemini-3.6-flash");
+  });
+
+  it("keeps canonical IDs that contain a slash of their own", () => {
+    // "Everything before the first slash" would rename both of these; only the
+    // adapter's configured prefix may ever come off.
+    const route = { slug: "fal", modelPrefix: "fal/" };
+    expect(canonicalModel(route, "fal/fal-ai/fast-sdxl")).toBe("fal-ai/fast-sdxl");
+    expect(canonicalModel(undefined, "google/gemini-3.6-flash")).toBe("google/gemini-3.6-flash");
+    expect(wireModel(undefined, "meta-llama/llama-4")).toBe("meta-llama/llama-4");
+  });
+});
+
+describe("provider gateway routing configuration", () => {
+  it("refuses a routing configuration for a Cloudflare gateway", () => {
+    expect(() => assertGatewayRoute("cf_aig", null)).not.toThrow();
+    expect(() => assertGatewayRoute("cf_aig", { modelPrefix: "google/" }))
+      .toThrow(/takes no per-provider routing configuration/u);
+  });
+
+  it("refuses a routing configuration on a direct instance, which has no gateway", () => {
+    expect(() => assertGatewayRoute(null, null)).not.toThrow();
+    expect(() => assertGatewayRoute(null, { modelPrefix: "google/" }))
+      .toThrow(/routed through a gateway/u);
+  });
+
+  it("names the credential a route pays with, or nothing when it is unknown", () => {
+    expect(credentialSource(null)).toBe("direct");
+    expect(credentialSource({ type: "cf_aig" })).toBe("byok");
   });
 });
 

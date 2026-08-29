@@ -18,7 +18,7 @@ import {
 } from "../core/proxyrules";
 import { supportsEndpointStyle } from "../core/capabilities";
 import { lookup } from "../core/records";
-import { hasModelPrice, recordUsageEvent } from "../core/usage";
+import { isBillable, recordUsageEvent } from "../core/usage";
 import type { GatewayVariables } from "../middleware/auth";
 import type { ProxyVariables } from "./proxy";
 
@@ -100,7 +100,7 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
       }
       continue;
     }
-    if (!hasModelPrice(entry.type, target.model, entry.pricing)) {
+    if (!isBillable(entry.type, target.model, entry.pricing)) {
       if (primary) {
         throw new GatewayError(
           400,
@@ -116,7 +116,12 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
 
   const primary = prepared.targets[0]!;
   const primaryResolved = resolvedProviders.get(primary.provider)!;
-  const attempt = endpointAttempt(prepared, primary, primaryResolved.type);
+  const attempt = endpointAttempt(
+    prepared,
+    primary,
+    primaryResolved.type,
+    primaryResolved.gateway?.type ?? "direct",
+  );
   c.set("preparedEndpointRequest", prepared);
   c.set("resolvedProviders", resolvedProviders);
   c.set("resolvedProvider", primaryResolved);
@@ -159,6 +164,7 @@ endpointRoutes.post("/:slug", async (c) => {
         provider: input.attempt.provider,
         providerId: input.resolved.id,
         providerSlug: input.resolved.slug,
+        gateway: input.resolved.gateway,
         pricing: input.resolved.pricing,
         model: input.attempt.model,
         route: `${input.resolved.slug}/${input.attempt.providerPath}`,
@@ -176,7 +182,7 @@ endpointRoutes.post("/:slug", async (c) => {
     const resolved = resolvedProviders.get(target.provider)!;
     const attempt = index === 0
       ? c.get("preparedProxyRequest")
-      : endpointAttempt(prepared, target, resolved.type);
+      : endpointAttempt(prepared, target, resolved.type, resolved.gateway?.type ?? "direct");
     const upstreamRequest = providerUpstream({
       resolved,
       prepared: attempt,

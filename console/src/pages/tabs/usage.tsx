@@ -55,7 +55,12 @@ const CHART_COLORS = [
 
 const BREAKDOWNS = [
   { value: "model", label: "By model" },
+  { value: "model_author", label: "By model author" },
   { value: "provider", label: "By provider" },
+  // The transport a request took and whose key paid for it are questions the
+  // provider alone cannot answer, so each gets its own dimension.
+  { value: "provider_gateway", label: "By gateway" },
+  { value: "credential_source", label: "By credential source" },
   { value: "user", label: "By user" },
   { value: "status", label: "By status" },
   { value: "cost_source", label: "By cost source" },
@@ -333,6 +338,11 @@ export function UsageTab({ appId }: { appId: string }) {
                     <TableCell className="font-mono text-xs">{event.model}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
+                      {/* The configured route, which is known with certainty;
+                          a direct call has no gateway to name. */}
+                      {event.provider_gateway_type ? (
+                        <span className="block">via {event.provider_gateway_type}</span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {formatCompact(totalTokens(event))}

@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
 
+/**
+ * Registry-driven, and deliberately narrower than the database's own CHECK: the
+ * column admits every provider type on the roadmap so widening it never costs
+ * another table rebuild, while a type is only creatable once `PROVIDER_REGISTRY`
+ * says how to reach, authenticate and price it. The database is permissive; the
+ * runtime registry is authoritative.
+ */
 export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
 export const SlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
 
@@ -139,12 +146,23 @@ export const ProviderPricingSchema = z.record(
 const ProviderNameSchema = z.string().trim().min(1).max(100);
 const ProviderSecretSchema = z.string().min(1).max(4096);
 
+/**
+ * How one provider row is routed inside its gateway. The referenced gateway's
+ * type selects what is meaningful here, and its adapter rejects the rest — a
+ * Cloudflare AI Gateway, for instance, accepts no routing configuration at all.
+ */
+export const GatewayRouteConfigSchema = z.object({
+  modelPrefix: z.string().trim().min(1).max(100).optional(),
+  providerOnly: z.array(z.string().trim().min(1).max(100)).min(1).max(20).optional(),
+}).strict().meta({ id: "GatewayRouteConfig" });
+
 export const ProviderCreateRequestSchema = z.object({
   type: ProviderTypeSchema,
   name: ProviderNameSchema,
   slug: SlugSchema.optional(),
   secret: ProviderSecretSchema.optional(),
   providerGatewayId: z.string().trim().min(1).optional(),
+  gatewayRoute: GatewayRouteConfigSchema.optional(),
   pricing: ProviderPricingSchema.optional(),
 }).strict().superRefine((value, context) => {
   if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
@@ -174,8 +192,15 @@ export const ProviderTestRequestSchema = z.object({
   }
 }).meta({ id: "ProviderTestRequest" });
 
+/**
+ * Creation is Cloudflare-only while it is the only gateway type with an
+ * adapter. The stored `type` column already admits every planned name, so
+ * adding a gateway is an adapter plus a literal here — never a table rebuild.
+ */
 export const ProviderGatewayCreateRequestSchema = z.object({
-  type: z.literal("cf_aig"),
+  type: z.literal("cf_aig", {
+    error: "Only cf_aig provider gateways can be created by this deployment",
+  }),
   name: ProviderNameSchema,
   accountId: z.string().trim().min(1).max(100),
   gatewayId: z.string().trim().min(1).max(100),
@@ -193,11 +218,17 @@ export const ProviderGatewayRotateRequestSchema = z.object({
 export const ProviderUpdateRequestSchema = z.object({
   name: ProviderNameSchema.optional(),
   secret: ProviderSecretSchema.optional(),
+  /** A full replace; `null` clears the row's routing configuration. */
+  gatewayRoute: GatewayRouteConfigSchema.nullable().optional(),
   /** A full replace; `null` clears every override. */
   pricing: ProviderPricingSchema.nullable().optional(),
 }).strict().refine(
-  (value) => value.name !== undefined || value.secret !== undefined || value.pricing !== undefined,
-  { message: "Provide at least one of name, secret, or pricing" },
+  (value) =>
+    value.name !== undefined
+    || value.secret !== undefined
+    || value.gatewayRoute !== undefined
+    || value.pricing !== undefined,
+  { message: "Provide at least one of name, secret, gatewayRoute, or pricing" },
 ).meta({ id: "ProviderUpdateRequest" });
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);

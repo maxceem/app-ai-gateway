@@ -6,6 +6,7 @@ import {
   ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
+import { assertGatewayRoute, isGatewayType } from "../../core/gateways";
 import { probeProviderGateway, probeProviderKey } from "../../core/provider-probe";
 import {
   decryptProviderGatewaySecret,
@@ -18,6 +19,8 @@ import { database } from "../../db";
 import {
   provider,
   providerGateway,
+  type GatewayRouteConfig,
+  type ProviderGatewayType,
   type ProviderPricing,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -41,6 +44,7 @@ function serialize(row: ProviderRow): Record<string, unknown> {
     name: row.name,
     secretHint: row.secretHint,
     providerGatewayId: row.providerGatewayId,
+    gatewayRoute: row.gatewayRoute,
     pricing: row.pricing,
     status: row.status,
     createdAt: row.createdAt,
@@ -76,6 +80,7 @@ async function insertProvider(
     name: string;
     secret?: string;
     providerGatewayId?: string;
+    gatewayRoute: GatewayRouteConfig | null;
     pricing: ProviderPricing | null;
   },
 ): Promise<ProviderRow> {
@@ -96,6 +101,7 @@ async function insertProvider(
     secretBlob,
     secretHint: direct ? secretHint(input.secret!) : null,
     providerGatewayId: input.providerGatewayId ?? null,
+    gatewayRoute: input.gatewayRoute,
     pricing: input.pricing,
     createdBy: input.createdBy,
   }).returning();
@@ -120,7 +126,12 @@ async function gatewayToken(
   c: Context<ProviderEnv>,
   organizationId: string,
   gatewayId: string,
-): Promise<{ accountId: string; gatewayId: string; token: string }> {
+): Promise<{
+  type: ProviderGatewayType;
+  accountId: string;
+  gatewayId: string;
+  token: string;
+}> {
   const gateway = await database(c.env.DB).query.providerGateway.findFirst({
     where: and(
       eq(providerGateway.id, gatewayId),
@@ -129,7 +140,18 @@ async function gatewayToken(
     ),
   });
   if (!gateway) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  // The stored type comes from a CHECK wider than the adapter registry, so a
+  // row this deployment cannot serve is refused here rather than mis-read as
+  // Cloudflare configuration.
+  if (!isGatewayType(gateway.type)) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      `This deployment has no adapter for ${gateway.type} provider gateways`,
+    );
+  }
   return {
+    type: gateway.type,
     accountId: gateway.config.accountId,
     gatewayId: gateway.config.gatewayId,
     token: await decryptProviderGatewaySecret(
@@ -154,7 +176,11 @@ providerRoutes.post("/providers/test", async (c) => {
     return c.json(await probeProviderKey(body.type, body.secret));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
-  const gateway = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
+  const { type: _gatewayType, ...gateway } = await gatewayToken(
+    c,
+    admin.organizationId,
+    body.providerGatewayId!,
+  );
   return c.json(await probeProviderGateway({ type: body.type, ...gateway }));
 });
 
@@ -174,10 +200,12 @@ providerRoutes.post("/providers", async (c) => {
   });
   if (existing) throw slugConflict(slug);
 
+  const gatewayRoute = body.gatewayRoute ?? null;
   let validated: boolean;
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
   if (body.secret !== undefined) {
+    assertGatewayRoute(null, gatewayRoute);
     secret = body.secret;
     validated = (await probeProviderKey(body.type, body.secret)).validated;
   } else {
@@ -186,7 +214,10 @@ providerRoutes.post("/providers", async (c) => {
       throw new GatewayError(400, "invalid_request", "providerGatewayId is required");
     }
     providerGatewayId = gatewayId;
-    const gateway = await gatewayToken(c, admin.organizationId, gatewayId);
+    const { type: gatewayType, ...gateway } = await gatewayToken(c, admin.organizationId, gatewayId);
+    // The adapter that will carry the traffic is the only judge of its own
+    // routing configuration, so a route is never stored unvalidated.
+    assertGatewayRoute(gatewayType, gatewayRoute);
     validated = (await probeProviderGateway({ type: body.type, ...gateway })).validated;
   }
 
@@ -200,6 +231,7 @@ providerRoutes.post("/providers", async (c) => {
       name: body.name,
       ...(secret === undefined ? {} : { secret }),
       ...(providerGatewayId === undefined ? {} : { providerGatewayId }),
+      gatewayRoute,
       pricing: body.pricing ?? null,
     });
   } catch (error) {
@@ -227,6 +259,13 @@ providerRoutes.put("/providers/:id", async (c) => {
   };
   if (body.name !== undefined) updates.name = body.name;
   if (body.pricing !== undefined) updates.pricing = body.pricing;
+  if (body.gatewayRoute !== undefined) {
+    const gatewayType = row.providerGatewayId === null
+      ? null
+      : (await gatewayToken(c, admin.organizationId, row.providerGatewayId)).type;
+    assertGatewayRoute(gatewayType, body.gatewayRoute);
+    updates.gatewayRoute = body.gatewayRoute;
+  }
 
   let validated: boolean | null = null;
   if (body.secret !== undefined) {

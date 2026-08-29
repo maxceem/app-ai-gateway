@@ -3,13 +3,14 @@ import { database } from "../db";
 import {
   provider as providerTable,
   providerGateway as providerGatewayTable,
+  type GatewayRouteConfig,
   type ProviderGatewayConfig,
-  type ProviderGatewayType,
+  type ProviderGatewayTypeName,
   type ProviderPricing,
 } from "../db/schema";
 import { secretVault } from "../vault";
 import { GatewayError } from "./errors";
-import type { ResolvedGateway } from "./gateways";
+import { isGatewayType, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
 import { recordFromEntries } from "./records";
 import type { ProviderType } from "./types";
@@ -20,8 +21,13 @@ export interface ResolvedProvider {
   type: ProviderType;
   /** Provider key for direct rows; gateway token for routed rows. */
   secret: string;
-  /** Null for a direct row; otherwise the gateway that owns the transport. */
-  gateway: ResolvedGateway | null;
+  /**
+   * Null for a direct row; otherwise the gateway that owns the transport, with
+   * the id of the row it came from so usage events can attribute to it.
+   */
+  gateway: (ResolvedGateway & { id: string }) | null;
+  /** The gateway-type-specific routing config, validated when it was stored. */
+  gatewayRoute: GatewayRouteConfig | null;
   pricing: ProviderPricing | null;
 }
 
@@ -31,9 +37,10 @@ interface ProviderRow {
   type: ProviderType;
   secretBlob: string | null;
   providerGatewayId: string | null;
-  gatewayType: ProviderGatewayType | null;
+  gatewayType: ProviderGatewayTypeName | null;
   gatewayConfig: ProviderGatewayConfig | null;
   gatewaySecretBlob: string | null;
+  gatewayRoute: GatewayRouteConfig | null;
   pricing: ProviderPricing | null;
 }
 
@@ -98,6 +105,7 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
       gatewayType: providerGatewayTable.type,
       gatewayConfig: providerGatewayTable.config,
       gatewaySecretBlob: providerGatewayTable.secretBlob,
+      gatewayRoute: providerTable.gatewayRoute,
       pricing: providerTable.pricing,
     })
     .from(providerTable)
@@ -192,10 +200,13 @@ export async function resolveProvider(
 ): Promise<ResolvedProvider | null> {
   const row = (await organizationRows(env, organizationId)).find((entry) => entry.slug === slug);
   if (!row) return null;
+  // A gateway type the CHECK constraint admits but no adapter implements is
+  // unroutable here, exactly like a revoked one: the database is permissive so
+  // the constraint never needs another rebuild, the adapter registry decides.
   const gateway = row.providerGatewayId === null
     ? null
-    : row.gatewayType && row.gatewayConfig
-      ? { type: row.gatewayType, config: row.gatewayConfig }
+    : row.gatewayType && row.gatewayConfig && isGatewayType(row.gatewayType)
+      ? { id: row.providerGatewayId, type: row.gatewayType, config: row.gatewayConfig }
       : null;
   if (row.providerGatewayId !== null && gateway === null) {
     throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");
@@ -206,6 +217,7 @@ export async function resolveProvider(
     type: row.type,
     secret: await plaintextSecret(env, organizationId, row),
     gateway,
+    gatewayRoute: row.gatewayRoute,
     pricing: row.pricing,
   };
 }

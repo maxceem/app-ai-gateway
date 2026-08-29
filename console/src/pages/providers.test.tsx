@@ -15,6 +15,7 @@ const DIRECT: ProviderCredential = {
   name: "Prod OpenAI",
   secretHint: "gain",
   providerGatewayId: null,
+  gatewayRoute: null,
   pricing: { "gpt-brand-new": { input: 1.25, output: 10 } },
   status: "active",
   createdAt: "2026-02-01T00:00:00.000Z",

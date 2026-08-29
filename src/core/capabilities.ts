@@ -1,7 +1,12 @@
 import type { ProviderGatewayType } from "../db/schema";
 import { API_STYLES, type ApiStyle } from "./api-styles";
 import { GatewayError } from "./errors";
-import { GATEWAY_ADAPTERS, type GatewayProviderRoute } from "./gateways";
+import {
+  canonicalModel,
+  GATEWAY_ADAPTERS,
+  wireModel,
+  type GatewayProviderRoute,
+} from "./gateways";
 import { PROVIDER_TYPES, type EndpointApiStyle, type ProviderType } from "./providers";
 
 /**
@@ -70,6 +75,36 @@ export function routeCapability(
   const base = PROVIDER_CAPABILITIES[provider];
   if (route === "direct") return base;
   return narrowedCapability(base, GATEWAY_ADAPTERS[route].routes[provider]);
+}
+
+function gatewayRoute(
+  route: ProviderRoute,
+  provider: ProviderType,
+): GatewayProviderRoute | undefined {
+  return route === "direct" ? undefined : GATEWAY_ADAPTERS[route].routes[provider];
+}
+
+/**
+ * The canonical model ID as this route puts it on the wire. Model identity is
+ * route-independent everywhere else — pricing, `allowed_models`, `fixed_model`
+ * and recorded usage all speak the provider's own IDs — and the adapter owns
+ * the translation, so one price row covers a model on every route.
+ */
+export function routeWireModel(
+  route: ProviderRoute,
+  provider: ProviderType,
+  canonical: string,
+): string {
+  return wireModel(gatewayRoute(route, provider), canonical);
+}
+
+/** A model ID observed on the wire, back to canonical. Strips only this route's own prefix. */
+export function routeCanonicalModel(
+  route: ProviderRoute,
+  provider: ProviderType,
+  observed: string,
+): string {
+  return canonicalModel(gatewayRoute(route, provider), observed);
 }
 
 export function supportsApiStyle(

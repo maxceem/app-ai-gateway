@@ -23,6 +23,7 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
     name: "Prod OpenAI",
     secretHint: "gain",
     providerGatewayId: null,
+    gatewayRoute: null,
     pricing: null,
     status: "active",
     createdAt: "2026-02-01T00:00:00.000Z",

@@ -31,6 +31,16 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
+    // The interaction tests are CPU-bound, not waiting on anything: rendering a
+    // page and driving a modal through jsdom costs ~15ms per simulated
+    // keystroke, so the heaviest of them spend over a second of real work even
+    // with the machine to themselves. Run in parallel across every file that
+    // work contends and the same test takes three to four times as long, which
+    // put the slowest ones within a few hundred milliseconds of the 5s default
+    // and made them fail on load rather than on merit. The timeout is here to
+    // catch a test that has genuinely hung, so it is sized against that: 20s is
+    // far more than the slowest test needs and still far less than forever.
+    testTimeout: 20_000,
   },
   build: {
     outDir: "dist",

@@ -37,7 +37,14 @@ import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
-import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import {
+  CREATABLE_GATEWAY_TYPES,
+  GATEWAY_TYPE_LABELS,
+  PROVIDERS,
+  PROVIDER_LABELS,
+  type CreatableGatewayType,
+  type Provider,
+} from "@/lib/config-types";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
@@ -141,6 +148,17 @@ function errorMessage(error: unknown, fallback: string): string {
 
 /** Anchors the Gateways section's row for a gateway, so a provider can link to it. */
 const gatewayAnchor = (id: string) => `gateway-${id}`;
+
+/**
+ * What identifies a gateway connection, which is per type: Cloudflare's is the
+ * account and gateway pair, and a gateway with no configuration of its own has
+ * only its type to show.
+ */
+function gatewayIdentity(gateway: ProviderGateway): string {
+  return gateway.type === "cf_aig"
+    ? `${gateway.config.accountId} · ${gateway.config.gatewayId}`
+    : GATEWAY_TYPE_LABELS[gateway.type];
+}
 
 /**
  * Why this gateway cannot be deleted, mirroring the API's `gateway_in_use`
@@ -850,7 +868,7 @@ function GatewaysSection({
                 <TableRow key={row.id} id={gatewayAnchor(row.id)}>
                   <TableCell className="font-medium">{row.name}</TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {row.config.accountId} · {row.config.gatewayId}
+                    {gatewayIdentity(row)}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     …{row.secretHint}
@@ -922,7 +940,13 @@ function GatewayDialog({
   onCreated?: (gateway: ProviderGateway) => void;
 }) {
   const createGateway = useCreateProviderGateway();
-  const [name, setName] = useState("Our CF gateway");
+  // The list is what makes a second gateway type a data change: the selector
+  // below appears only once there is something to select, so today's form is
+  // exactly the Cloudflare one it has always been.
+  const [type, setType] = useState<CreatableGatewayType>(CREATABLE_GATEWAY_TYPES[0].value);
+  const gatewayType = CREATABLE_GATEWAY_TYPES.find((entry) => entry.value === type)
+    ?? CREATABLE_GATEWAY_TYPES[0];
+  const [name, setName] = useState<string>(gatewayType.defaultName);
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [token, setToken] = useState("");
@@ -930,7 +954,8 @@ function GatewayDialog({
   const ready = Boolean(name.trim() && accountId.trim() && gatewayId.trim() && token);
 
   const clear = () => {
-    setName("Our CF gateway");
+    setType(CREATABLE_GATEWAY_TYPES[0].value);
+    setName(CREATABLE_GATEWAY_TYPES[0].defaultName);
     setAccountId("");
     setGatewayId("");
     setToken("");
@@ -946,7 +971,7 @@ function GatewayDialog({
     if (!ready) return;
     try {
       const result = await createGateway.mutateAsync({
-        type: "cf_aig",
+        type: gatewayType.value,
         name: name.trim(),
         accountId: accountId.trim(),
         gatewayId: gatewayId.trim(),
@@ -973,6 +998,22 @@ function GatewayDialog({
       onSubmit={() => void submit()}
     >
       <div className="space-y-4">
+        {CREATABLE_GATEWAY_TYPES.length > 1 ? (
+          <Field label="Gateway type" htmlFor="gateway-type">
+            <select
+              id="gateway-type"
+              className="h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+              value={type}
+              onChange={(event) => setType(event.target.value as CreatableGatewayType)}
+            >
+              {CREATABLE_GATEWAY_TYPES.map((entry) => (
+                <option key={entry.value} value={entry.value}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
         <Field label="Name" htmlFor="gateway-name">
           <Input
             id="gateway-name"
@@ -1003,7 +1044,7 @@ function GatewayDialog({
           hint={
             <a
               className="underline underline-offset-4"
-              href="https://developers.cloudflare.com/ai-gateway/configuration/authentication/"
+              href={gatewayType.tokenDocsUrl}
               target="_blank"
               rel="noreferrer"
             >

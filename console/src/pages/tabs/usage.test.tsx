@@ -12,6 +12,12 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
     user_id: "user-1",
     api_key_id: null,
     provider: "openai",
+    provider_gateway_id: null,
+    provider_gateway_type: null,
+    credential_source: "direct",
+    model_author: "OpenAI",
+    served_provider: null,
+    served_model: null,
     model: "gpt-5.6-sol",
     route: "openai/v1/responses",
     endpoint_slug: null,
@@ -20,6 +26,7 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
     cache_write_tokens: 0,
     output_tokens: 0,
     cost_usd: 0,
+    reported_cost_usd: null,
     cost_source: "computed",
     app_version: null,
     auth_method: "api_key",
@@ -65,5 +72,16 @@ describe("UsageTab event costs", () => {
 
     expect(await screen.findByText("$0.25")).toBeTruthy();
     expect(screen.queryByText("unresolved")).toBeNull();
+  });
+
+  it("names the gateway a request was routed through", async () => {
+    renderUsage([event({ provider_gateway_type: "cf_aig", credential_source: "byok" })]);
+    expect(await screen.findByText(/via cf_aig/u)).toBeTruthy();
+  });
+
+  it("names no gateway for a direct request, which had none", async () => {
+    renderUsage([event({ provider_gateway_type: null, credential_source: "direct" })]);
+    expect(await screen.findByText("gpt-5.6-sol")).toBeTruthy();
+    expect(screen.queryByText(/via /u)).toBeNull();
   });
 });

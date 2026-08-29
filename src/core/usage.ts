@@ -1,11 +1,18 @@
 import prices from "./prices.json";
 import { markApiKeyUsed } from "./apikeys";
+import { routeCanonicalModel } from "./capabilities";
+import { credentialSource } from "./gateways";
 import { log } from "./log";
+import { providerModelAuthor, reportsCost } from "./providers";
 import { lookup } from "./records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
-import { appUsageEvent, type ProviderPricing } from "../db/schema";
+import {
+  appUsageEvent,
+  type ProviderGatewayType,
+  type ProviderPricing,
+} from "../db/schema";
 
 interface Price {
   input?: number;
@@ -19,28 +26,39 @@ interface Price {
   long_output?: number;
   long_cached_input?: number;
   long_cache_write?: number;
+  /**
+   * Who made the model, where the catalog knows better than the provider type
+   * does — a Llama model served by Groq is Meta's. Curated per entry alongside
+   * the prices; absent falls back to the provider type's own author.
+   */
+  author?: string;
 }
 
 interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
 }
 
+/** The shipped catalog entry: the only source that carries model authorship. */
+function catalogPrice(provider: ProviderType, model: string): Price | undefined {
+  // The model name comes from the request body, and "constructor" is a legal
+  // one: an unguarded read would answer with a function off Object.prototype
+  // and price a model nobody listed.
+  return lookup((prices as Record<ProviderType, Record<string, Price>>)[provider], model);
+}
+
 /**
  * Model pricing is a two-level lookup: the resolved provider row's own
  * overrides win, then the deployment-global catalog. A model priced by neither
- * never proxies, so `cost_usd` can never end up NULL.
+ * never proxies unless its route reports cost, so `cost_usd` is never NULL.
  */
 function modelPrice(
   provider: ProviderType,
   model: string,
   overrides?: ProviderPricing | null,
 ): Price | undefined {
-  // The model name comes from the request body, and "constructor" is a legal
-  // one: an unguarded read would answer with a function off Object.prototype
-  // and price a model nobody listed.
   const override = lookup(overrides, model);
   if (override) return { input: override.input, output: override.output };
-  return lookup((prices as Record<ProviderType, Record<string, Price>>)[provider], model);
+  return catalogPrice(provider, model);
 }
 
 export function hasModelPrice(
@@ -74,6 +92,34 @@ export function hasTokenModelPrice(
     && price.output >= 0;
 }
 
+/**
+ * Whether a request can be billed at all, which is the only reason it is
+ * allowed to proxy. Two ways to know what it costs: a local price for the
+ * canonical model, or a route that reports its own cost per request. Neither
+ * means the spend would be invisible, and an invisible spend is a limit bypass.
+ */
+export function isBillable(
+  provider: ProviderType,
+  model: string,
+  overrides?: ProviderPricing | null,
+): boolean {
+  return reportsCost(provider) || hasModelPrice(provider, model, overrides);
+}
+
+/**
+ * Who made a model, resolved once when the event is recorded so console
+ * aggregations stay plain SQL. The catalog is consulted first because it is
+ * curated per model; the provider type's own author answers for the rest.
+ * Aggregator slug namespaces (`google/…` on OpenRouter) join this chain in
+ * Stage 4, between the two.
+ *
+ * Operator price overrides are deliberately not consulted: they carry prices
+ * only, and shadowing a catalog entry must not erase who wrote the model.
+ */
+export function resolveModelAuthor(provider: ProviderType, model: string): string | null {
+  return catalogPrice(provider, model)?.author ?? providerModelAuthor(provider);
+}
+
 interface UsageEventInput {
   env: Env;
   stream: ReadableStream<Uint8Array> | null;
@@ -88,9 +134,23 @@ interface UsageEventInput {
   providerId: string;
   /** Caller-visible provider instance slug at the time of the request. */
   providerSlug: string;
+  /**
+   * The gateway that carried the request, or null for a direct call. Known with
+   * certainty at request time, so it is recorded for every routed event —
+   * unlike the observed fields below, which the upstream has to volunteer.
+   */
+  gateway?: { id: string; type: ProviderGatewayType } | null;
   /** That row's per-model pricing overrides, which win over the catalog. */
   pricing?: ProviderPricing | null;
+  /** Canonical model ID: the provider's own, whatever the route called it. */
   model: string;
+  /**
+   * Serving provider and model the upstream named. No route reports either
+   * today — this is where they land when one does, canonicalized by the same
+   * adapter that put the request on the wire.
+   */
+  servedProvider?: string | null;
+  servedModel?: string | null;
   route: string;
   /** Set for named endpoint traffic; null for the passthrough proxy. */
   endpointSlug?: string | null;
@@ -553,6 +613,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     });
   }
   const cost = price ?? 0;
+  const gateway = input.gateway ?? null;
+  const route = gateway?.type ?? "direct";
   await persistUsageEvent(input.env, {
     eventId,
     row: {
@@ -563,6 +625,14 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       providerType: input.provider,
       providerId: input.providerId,
       providerSlug: input.providerSlug,
+      providerGatewayId: gateway?.id ?? null,
+      providerGatewayType: gateway?.type ?? null,
+      credentialSource: credentialSource(gateway),
+      modelAuthor: resolveModelAuthor(input.provider, input.model),
+      servedProvider: input.servedProvider ?? null,
+      servedModel: input.servedModel
+        ? routeCanonicalModel(route, input.provider, input.servedModel)
+        : null,
       model: input.model,
       route: input.route,
       endpointSlug: input.endpointSlug ?? null,

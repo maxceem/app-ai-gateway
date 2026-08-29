@@ -5,6 +5,7 @@ import {
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
   AppWriteSchema,
+  GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -23,6 +24,7 @@ export {
   ApiKeyTokenRequestSchema,
   AppConfigSchema,
   AppWriteSchema,
+  GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -100,6 +102,24 @@ const UsageEventSchema = z.object({
   }),
   provider: z.string(),
   provider_slug: z.string().nullable(),
+  provider_gateway_id: z.string().nullable().openapi({
+    description: "The gateway connection that carried the request, or null for a direct call. Recorded for every routed request; the id is kept even after the gateway row is deleted.",
+  }),
+  provider_gateway_type: z.string().nullable().openapi({
+    description: "That gateway's type at request time, for example cf_aig.",
+  }),
+  credential_source: z.enum(["direct", "byok", "gateway_system", "unknown"]).nullable().openapi({
+    description: "Whose credential paid, where the configuration settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store. Never inferred from a successful response; null when nothing settles it.",
+  }),
+  model_author: z.string().nullable().openapi({
+    description: "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists.",
+  }),
+  served_provider: z.string().nullable().openapi({
+    description: "The serving provider the upstream named, when it names one. Null means unknown, never a guarantee.",
+  }),
+  served_model: z.string().nullable().openapi({
+    description: "The serving model the upstream named, canonicalized back to the provider's own model ID.",
+  }),
   model: z.string(),
   route: z.string(),
   endpoint_slug: z.string().nullable(),
@@ -108,6 +128,9 @@ const UsageEventSchema = z.object({
   cache_write_tokens: z.number().int(),
   output_tokens: z.number().int(),
   cost_usd: z.number(),
+  reported_cost_usd: z.number().nullable().openapi({
+    description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
+  }),
   cost_source: z.enum(["computed", "unresolved"]).nullable().openapi({
     description: "How cost_usd was determined. `unresolved` means the provider answered successfully but reported no usage this deployment could read, so the zero cost is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
   }),
@@ -601,6 +624,9 @@ const ProviderSummarySchema = z.object({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
   }),
   providerGatewayId: z.string().nullable(),
+  gatewayRoute: GatewayRouteConfigSchema.nullable().openapi({
+    description: "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway.",
+  }),
   pricing: ProviderPricingSchema.nullable(),
   status: z.enum(["active", "revoked"]),
   createdAt: z.string(),
@@ -711,11 +737,10 @@ register({
   },
 });
 
-const ProviderGatewaySummarySchema = z.object({
+/** Everything about a gateway that does not depend on which gateway it is. */
+const providerGatewayFields = {
   id: z.string(),
-  type: z.literal("cf_aig"),
   name: z.string(),
-  config: z.object({ accountId: z.string(), gatewayId: z.string() }),
   secretHint: z.string().openapi({
     description: "The last characters of the gateway token. The token itself is never returned.",
   }),
@@ -730,7 +755,27 @@ const ProviderGatewaySummarySchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   createdBy: z.string(),
-}).openapi("ProviderGateway");
+};
+
+/**
+ * Discriminated by `type`, because each gateway's `config` is its own shape.
+ * Only `cf_aig` can be created today — `vercel` rows are readable ahead of the
+ * adapter that serves them, and the create request refuses the type outright.
+ */
+const ProviderGatewaySummarySchema = z.discriminatedUnion("type", [
+  z.object({
+    ...providerGatewayFields,
+    type: z.literal("cf_aig"),
+    config: z.object({ accountId: z.string(), gatewayId: z.string() }),
+  }),
+  z.object({
+    ...providerGatewayFields,
+    type: z.literal("vercel"),
+    config: z.object({}).openapi({
+      description: "Vercel's origin is fixed in adapter code, so it has no configuration of its own.",
+    }),
+  }),
+]).openapi("ProviderGateway");
 
 register({
   method: "get",

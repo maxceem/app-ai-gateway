@@ -718,6 +718,31 @@
               "null"
             ]
           },
+          "gatewayRoute": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "modelPrefix": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "providerOnly": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "minItems": 1,
+                "maxItems": 20
+              }
+            },
+            "additionalProperties": false,
+            "description": "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway."
+          },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           },
@@ -742,6 +767,7 @@
           "name",
           "secretHint",
           "providerGatewayId",
+          "gatewayRoute",
           "pricing",
           "status",
           "createdAt",
@@ -803,6 +829,9 @@
             "type": "string",
             "minLength": 1
           },
+          "gatewayRoute": {
+            "$ref": "#/components/schemas/GatewayRouteConfig"
+          },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           }
@@ -811,6 +840,27 @@
           "type",
           "name"
         ],
+        "additionalProperties": false
+      },
+      "GatewayRouteConfig": {
+        "type": "object",
+        "properties": {
+          "modelPrefix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "providerOnly": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 20
+          }
+        },
         "additionalProperties": false
       },
       "ProviderTestRequest": {
@@ -854,6 +904,19 @@
             "minLength": 1,
             "maxLength": 4096
           },
+          "gatewayRoute": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GatewayRouteConfig"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           }
@@ -861,78 +924,147 @@
         "additionalProperties": false
       },
       "ProviderGateway": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "cf_aig"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "config": {
+        "oneOf": [
+          {
             "type": "object",
             "properties": {
-              "accountId": {
+              "id": {
                 "type": "string"
               },
-              "gatewayId": {
+              "name": {
                 "type": "string"
+              },
+              "secretHint": {
+                "type": "string",
+                "description": "The last characters of the gateway token. The token itself is never returned."
+              },
+              "providerCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Active provider instances routed through this gateway."
+              },
+              "referencedCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "createdBy": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cf_aig"
+                ]
+              },
+              "config": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": "string"
+                  },
+                  "gatewayId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "gatewayId"
+                ]
               }
             },
             "required": [
-              "accountId",
-              "gatewayId"
+              "id",
+              "name",
+              "secretHint",
+              "providerCount",
+              "referencedCount",
+              "status",
+              "createdAt",
+              "updatedAt",
+              "createdBy",
+              "type",
+              "config"
             ]
           },
-          "secretHint": {
-            "type": "string",
-            "description": "The last characters of the gateway token. The token itself is never returned."
-          },
-          "providerCount": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Active provider instances routed through this gateway."
-          },
-          "referencedCount": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero."
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "active",
-              "revoked"
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "secretHint": {
+                "type": "string",
+                "description": "The last characters of the gateway token. The token itself is never returned."
+              },
+              "providerCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Active provider instances routed through this gateway."
+              },
+              "referencedCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "createdBy": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vercel"
+                ]
+              },
+              "config": {
+                "type": "object",
+                "properties": {},
+                "description": "Vercel's origin is fixed in adapter code, so it has no configuration of its own."
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "secretHint",
+              "providerCount",
+              "referencedCount",
+              "status",
+              "createdAt",
+              "updatedAt",
+              "createdBy",
+              "type",
+              "config"
             ]
-          },
-          "createdAt": {
-            "type": "string"
-          },
-          "updatedAt": {
-            "type": "string"
-          },
-          "createdBy": {
-            "type": "string"
           }
-        },
-        "required": [
-          "id",
-          "type",
-          "name",
-          "config",
-          "secretHint",
-          "providerCount",
-          "referencedCount",
-          "status",
-          "createdAt",
-          "updatedAt",
-          "createdBy"
         ]
       },
       "ProviderGatewayCreateRequest": {
@@ -1039,6 +1171,55 @@
               "null"
             ]
           },
+          "provider_gateway_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The gateway connection that carried the request, or null for a direct call. Recorded for every routed request; the id is kept even after the gateway row is deleted."
+          },
+          "provider_gateway_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That gateway's type at request time, for example cf_aig."
+          },
+          "credential_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "direct",
+              "byok",
+              "gateway_system",
+              "unknown",
+              null
+            ],
+            "description": "Whose credential paid, where the configuration settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store. Never inferred from a successful response; null when nothing settles it."
+          },
+          "model_author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists."
+          },
+          "served_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The serving provider the upstream named, when it names one. Null means unknown, never a guarantee."
+          },
+          "served_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The serving model the upstream named, canonicalized back to the provider's own model ID."
+          },
           "model": {
             "type": "string"
           },
@@ -1065,6 +1246,13 @@
           },
           "cost_usd": {
             "type": "number"
+          },
+          "reported_cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way."
           },
           "cost_source": {
             "type": [
@@ -1121,6 +1309,12 @@
           "api_key_id",
           "provider",
           "provider_slug",
+          "provider_gateway_id",
+          "provider_gateway_type",
+          "credential_source",
+          "model_author",
+          "served_provider",
+          "served_model",
           "model",
           "route",
           "endpoint_slug",
@@ -1129,6 +1323,7 @@
           "cache_write_tokens",
           "output_tokens",
           "cost_usd",
+          "reported_cost_usd",
           "cost_source",
           "app_version",
           "auth_method",

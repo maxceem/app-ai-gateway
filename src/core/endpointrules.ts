@@ -1,3 +1,4 @@
+import { routeWireModel, type ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
 import { lookup } from "./records";
 import {
@@ -87,13 +88,18 @@ export function endpointAttempt(
   prepared: PreparedEndpointRequest,
   target: EndpointTarget,
   provider: ProviderType,
+  /** How the resolved row reaches the provider; the adapter owns the wire model. */
+  route: ProviderRoute,
 ): PreparedProxyRequest {
   const providerPath = endpointProviderPath(prepared.endpoint.api_style, provider);
+  // The configured model is canonical, so it is what gets priced and recorded;
+  // only the body the upstream reads carries the route's namespace.
+  const wireModel = routeWireModel(route, provider, target.model);
   let body: BodyInit;
   if (prepared.form) {
-    body = formWithModel(prepared.form, target.model);
+    body = formWithModel(prepared.form, wireModel);
   } else {
-    const json = { ...prepared.json, model: target.model };
+    const json = { ...prepared.json, model: wireModel };
     validateOrInjectOutputCap(
       "responses",
       provider,

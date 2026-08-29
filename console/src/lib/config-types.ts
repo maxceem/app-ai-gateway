@@ -11,6 +11,28 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   perplexity: "Perplexity",
 };
 
+/** Display names for every gateway type the API can return. */
+export const GATEWAY_TYPE_LABELS = {
+  cf_aig: "Cloudflare AI Gateway",
+  vercel: "Vercel AI Gateway",
+} as const;
+
+/**
+ * Gateway types this console offers to create, and the fields each one asks
+ * for. A type appears here only once the Worker has an adapter that can serve
+ * it, so the list is what makes adding one a data change rather than a rewrite.
+ */
+export const CREATABLE_GATEWAY_TYPES = [
+  {
+    value: "cf_aig",
+    label: GATEWAY_TYPE_LABELS.cf_aig,
+    defaultName: "Our CF gateway",
+    tokenDocsUrl: "https://developers.cloudflare.com/ai-gateway/configuration/authentication/",
+  },
+] as const;
+
+export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["value"];
+
 export const CLAMP_STYLES = [
   "responses",
   "chat_completions",
