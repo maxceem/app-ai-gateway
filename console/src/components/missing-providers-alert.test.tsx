@@ -24,6 +24,7 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
     secretHint: "gain",
     providerGatewayId: null,
     gatewayRoute: null,
+    baseUrl: null,
     pricing: null,
     status: "active",
     createdAt: "2026-02-01T00:00:00.000Z",

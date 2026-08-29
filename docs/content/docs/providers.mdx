@@ -21,6 +21,7 @@ tiers — an instance either owns a key of its own or references a shared
 | `name` | Your label, e.g. "Prod OpenAI" |
 | `secretHint` | Last few characters of a direct key — display only; `null` on gateway-routed rows |
 | `providerGatewayId` | The gateway this instance routes through, or `null` for the provider's native API |
+| `baseUrl` | Optional operator-supplied origin replacing the provider type's own (see [custom base URLs](#custom-base-urls)); `null` on gateway-routed rows, which cannot carry one |
 | `pricing` | Optional per-model price overrides (see below) |
 
 Exactly one of `secret` and `providerGatewayId` is supplied on create, and the
@@ -187,6 +188,119 @@ key you know is correct.
 same id, same slug, same custom pricing, re-probed and re-encrypted. Rotation is
 preferable to delete-and-recreate for exactly that reason. Gateway-routed
 instances have no key of their own, so they rotate at the gateway instead.
+
+## Custom base URLs
+
+A direct instance may carry an optional `baseUrl` that replaces the provider
+type's own origin. Nothing else changes: the path after the slug, the query
+string, the credential header, the model rules, and the billing gate are all
+exactly what they would have been.
+
+```json
+POST /v1/admin/providers
+{
+  "type": "openai",
+  "name": "Self-hosted Llama",
+  "slug": "vllm",
+  "secret": "…",
+  "baseUrl": "https://my-vllm.example.com/v1/"
+}
+```
+
+A request to `/proxy/vllm/chat/completions` then reaches
+`https://my-vllm.example.com/v1/chat/completions`.
+
+This is what makes any OpenAI-compatible server usable without a code change:
+
+- **Self-hosted inference** — vLLM, SGLang, Ollama behind TLS, llama.cpp's
+  server: pick `openai` as the type and point it at your `/v1/` base.
+- **A second region or tenant of a supported provider** — BytePlus ModelArk's
+  `eu-west` host, for instance, whose keys and catalogs are region-isolated.
+- **A proxy of your own** in front of a provider, as long as it speaks that
+  provider's API unchanged.
+- **Azure OpenAI**, with the caveats below.
+
+Send `"baseUrl": null` on `PUT /v1/admin/providers/{id}` to return an instance
+to its provider type's own base URL. Changing or clearing it re-probes the
+stored credential at the new origin, so a wrong URL fails while you are looking
+at the form rather than on an app's next request.
+
+### What the origin guard enforces
+
+A base URL is **operator-supplied**, never client-supplied, and it is validated
+and rewritten into a canonical form before it is stored. The rules, each of
+which refuses with a message naming the rule:
+
+| Rule | Rejected examples |
+| --- | --- |
+| `https` only | `http://…`, `ftp://…` |
+| No credentials in the URL | `https://user:pass@host/` |
+| No query string and no fragment | `https://host/?api-version=…`, `https://host/#x` |
+| Default port only (443, explicit or implicit) | `https://host:8443/` |
+| A registrable public DNS name — never an IP literal, in any encoding | `https://127.0.0.1/`, `https://0x7f000001/`, `https://[::1]/` |
+| At least two labels, valid DNS labels, no trailing dot | `https://vllm/`, `https://host./`, `https://a..b.example.com/` |
+| No special-use suffix | `.local`, `.internal`, `.localhost`, `.home.arpa`, `.lan`, `.corp` |
+| At most 200 characters | — |
+
+What is stored is the canonical form: lower-cased host (punycoded if you typed
+Unicode), no redundant `:443`, dot segments resolved, and exactly one trailing
+slash — so `https://My-VLLM.Example.com/v1` is stored as
+`https://my-vllm.example.com/v1/`.
+
+Upstream **redirects are never followed** on any proxied request. A `3xx` from
+your endpoint is passed back to the client as-is, so a redirect cannot move the
+destination after the URL was checked.
+
+<Callout type="warn" title="What the guard does not, and cannot, do">
+  It does not stop a public hostname from resolving to a private address, and it
+  cannot: a Cloudflare Worker does not resolve names itself and cannot see or
+  pin the address `fetch` connects to. DNS rebinding is outside what any
+  in-Worker check can detect. The real control is that this field is
+  operator-only — it is written through the console or a management key by
+  somebody who already administers the organization, and **no gateway client can
+  influence it**. Clients still never supply a URL. Treat pointing an instance
+  at an origin as equivalent to handing that origin the instance's API key,
+  because that is what it does.
+</Callout>
+
+A gateway-routed instance cannot carry a base URL — the gateway owns the
+upstream transport — and the API refuses the combination on both create and
+update.
+
+<Callout type="warn" title="Custom endpoints still need prices">
+  The billability gate is unchanged. A model served from your own endpoint is
+  almost certainly not in the shipped catalog, so it is refused with
+  `400 pricing_not_configured` until you enter a price for it under [custom
+  model pricing](#custom-model-pricing) on that instance. Entering the price is
+  what allows the model; there is no "unmetered because it is mine" path. For a
+  model you host yourself and pay no per-token price for, `$0` is enterable —
+  but enter it deliberately, because it also removes that traffic from every
+  spending limit.
+</Callout>
+
+### Azure OpenAI
+
+Use provider type `openai` with the resource's **v1** base URL:
+
+```text
+https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/
+```
+
+Azure's v1 API accepts the resource key as `Authorization: Bearer`, which is
+exactly what this gateway sends for the `openai` type — it is the same thing
+Microsoft's own documentation does when it runs the stock OpenAI SDK against
+that base URL. Two things to know:
+
+- **The older, dated Azure surface is not supported.** It authenticates with an
+  `api-key` header and needs an `?api-version=` query on the base, neither of
+  which this stage adds; the guard refuses a base URL carrying a query string
+  for that reason. Use the v1 base URL above.
+- **Microsoft Entra ID tokens are not supported.** They are short-lived and need
+  refreshing, and a provider row stores one static secret. Use a resource key.
+
+The `model` field is your **deployment name**, not the upstream model name, and
+deployment names are not in the shipped catalog — so price them per instance as
+above.
 
 ## Provider gateways
 

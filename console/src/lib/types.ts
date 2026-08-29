@@ -155,6 +155,12 @@ export interface ProviderCredential {
   /** `null` routes straight to the provider's native API. */
   providerGatewayId: string | null;
   gatewayRoute: GatewayRouteConfig | null;
+  /**
+   * The operator's own origin for this instance, canonicalized by the server.
+   * `null` means the provider type's own base URL; always `null` on a
+   * gateway-routed row, which cannot carry one.
+   */
+  baseUrl: string | null;
   pricing: ProviderPricing | null;
   status: "active" | "revoked";
   createdAt: string;
@@ -172,6 +178,8 @@ export interface ProviderCreateBody {
   slug?: string;
   secret?: string;
   providerGatewayId?: string;
+  /** Only ever sent with `secret`: a gateway-routed row owns no origin. */
+  baseUrl?: string;
   pricing?: ProviderPricing;
 }
 
@@ -180,6 +188,7 @@ export interface ProviderTestBody {
   type: import("./config-types").Provider;
   secret?: string;
   providerGatewayId?: string;
+  baseUrl?: string;
 }
 
 /**
@@ -195,6 +204,8 @@ export interface ProviderTestResult {
 export interface ProviderUpdateBody {
   name?: string;
   secret?: string;
+  /** `null` returns the instance to its provider type's own base URL. */
+  baseUrl?: string | null;
   pricing?: ProviderPricing | null;
 }
 

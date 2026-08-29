@@ -1,0 +1,12 @@
+-- An operator-supplied origin for a direct provider instance, replacing the
+-- provider type's own base URL so one row can point at Azure OpenAI, a
+-- self-hosted vLLM, or any other endpoint speaking that provider's API.
+--
+-- Additive and unconstrained, for the same reason `cost_source` was in 0015 and
+-- the whole usage wave was in 0016: every existing row keeps a NULL `base_url`,
+-- and no CHECK is added. The two rules that matter — "a gateway-routed row must
+-- not carry one" and "it must be a public https origin" — are enforced in the
+-- admin routes and in `src/core/origin-guard.ts`, where they can say *why* a
+-- value was refused. SQLite could express neither well, and adding a CHECK here
+-- would rebuild a populated tenant table for the privilege.
+ALTER TABLE `provider` ADD `base_url` text;

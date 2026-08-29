@@ -451,13 +451,24 @@ function stripGatewayNamespaces(headers: Headers, routedThrough: ProviderGateway
 
 /**
  * Builds the upstream URL and the final header set from the organization's
- * resolved provider row. Clients never supply a URL, so there is no SSRF
- * surface: both shapes are derived in code from the closed registries.
+ * resolved provider row.
  *
  * - `gateway === null` — the provider's native API, path passed through
- *   verbatim, authenticated with the registry's own header.
+ *   verbatim, authenticated with the registry's own header. The origin is the
+ *   registry's `directBaseUrl` unless the row carries an operator's own
+ *   `baseUrl`, which replaces it and nothing else: the client's path and query
+ *   are appended exactly as they would have been.
  * - otherwise — the gateway adapter owns the URL and its own headers, and the
- *   provider key never travels because the gateway holds it.
+ *   provider key never travels because the gateway holds it. A gateway-routed
+ *   row has no `baseUrl` to consider.
+ *
+ * **Clients still never supply a URL.** `resolved.baseUrl` is an operator-only
+ * column: it is written through the console or a management key, validated and
+ * canonicalized by `src/core/origin-guard.ts` (https, public registrable host,
+ * no port, no credentials), and read here from D1. Nothing a gateway client
+ * sends can reach it. That guard's doc comment states what it does and does not
+ * defend against; requests on such a row also refuse to follow upstream
+ * redirects, so a 3xx cannot move the destination after the fact.
  */
 export function providerUpstream(input: {
   resolved: ResolvedProvider;
@@ -492,7 +503,7 @@ export function providerUpstream(input: {
     headers.set(name, value);
   }
   return {
-    url: `${spec.directBaseUrl}${prepared.providerPath}${prepared.query}`,
+    url: `${resolved.baseUrl ?? spec.directBaseUrl}${prepared.providerPath}${prepared.query}`,
     headers,
   };
 }

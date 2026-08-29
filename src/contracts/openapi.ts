@@ -627,6 +627,10 @@ const ProviderSummarySchema = z.object({
   gatewayRoute: GatewayRouteConfigSchema.nullable().openapi({
     description: "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway.",
   }),
+  baseUrl: z.string().nullable().openapi({
+    description: "Operator-supplied origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
+    example: "https://my-resource.openai.azure.com/openai/v1/",
+  }),
   pricing: ProviderPricingSchema.nullable(),
   status: z.enum(["active", "revoked"]),
   createdAt: z.string(),

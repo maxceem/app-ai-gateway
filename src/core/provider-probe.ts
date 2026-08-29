@@ -108,9 +108,19 @@ async function runProbe(
   return { validated: true };
 }
 
+/**
+ * `baseUrl` is the row's operator-supplied origin, already canonicalized by the
+ * origin guard. Probing the same origin live traffic will use is the point: it
+ * is what turns a mistyped Azure or vLLM URL into a failure at configuration
+ * time rather than on the app's first request. A custom endpoint that does not
+ * implement the provider's list-models call answers 404, which is inconclusive
+ * rather than a refusal, so the operator can still save a URL they know is
+ * right.
+ */
 export async function probeProviderKey(
   type: ProviderType,
   secret: string,
+  baseUrl?: string | null,
 ): Promise<ProbeResult> {
   const path = PROBE_PATHS[type];
   if (!path) return { validated: false, reason: "no_probe" };
@@ -120,7 +130,7 @@ export async function probeProviderKey(
   };
   // Anthropic refuses any request without a version header, probe included.
   if (type === "anthropic") headers["anthropic-version"] = "2023-06-01";
-  return runProbe(type, `${spec.directBaseUrl}${path}`, headers);
+  return runProbe(type, `${baseUrl ?? spec.directBaseUrl}${path}`, headers);
 }
 
 /**

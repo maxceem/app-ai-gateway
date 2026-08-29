@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
 
 /**
@@ -147,6 +148,31 @@ const ProviderNameSchema = z.string().trim().min(1).max(100);
 const ProviderSecretSchema = z.string().min(1).max(4096);
 
 /**
+ * An operator's own origin for a direct provider instance. Only the shape is
+ * checked here; the rules that make it safe — https, a public registrable host,
+ * no port, no credentials, no query — live in `src/core/origin-guard.ts`, which
+ * also returns the canonical form that is stored. Keeping them there means one
+ * implementation for the write paths, the probe, and any future reuse, rather
+ * than a regex in a contract that would inevitably drift from it.
+ */
+const ProviderBaseUrlSchema = z.string().trim().min(1).max(MAX_BASE_URL_LENGTH);
+
+/** Says why the two fields are exclusive, rather than that one is invalid. */
+function assertBaseUrlIsDirect(
+  value: { baseUrl?: string; providerGatewayId?: string },
+  context: z.RefinementCtx,
+): void {
+  if (value.baseUrl !== undefined && value.providerGatewayId !== undefined) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "A gateway-routed instance cannot carry a base URL: the gateway owns the upstream origin",
+      path: ["baseUrl"],
+    });
+  }
+}
+
+/**
  * How one provider row is routed inside its gateway. The referenced gateway's
  * type selects what is meaningful here, and its adapter rejects the rest — a
  * Cloudflare AI Gateway, for instance, accepts no routing configuration at all.
@@ -163,6 +189,7 @@ export const ProviderCreateRequestSchema = z.object({
   secret: ProviderSecretSchema.optional(),
   providerGatewayId: z.string().trim().min(1).optional(),
   gatewayRoute: GatewayRouteConfigSchema.optional(),
+  baseUrl: ProviderBaseUrlSchema.optional(),
   pricing: ProviderPricingSchema.optional(),
 }).strict().superRefine((value, context) => {
   if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
@@ -172,6 +199,7 @@ export const ProviderCreateRequestSchema = z.object({
       path: ["secret"],
     });
   }
+  assertBaseUrlIsDirect(value, context);
 }).meta({ id: "ProviderCreateRequest" });
 
 /**
@@ -182,6 +210,8 @@ export const ProviderTestRequestSchema = z.object({
   type: ProviderTypeSchema,
   secret: ProviderSecretSchema.optional(),
   providerGatewayId: z.string().trim().min(1).optional(),
+  /** Probed at the origin the instance would really use, override included. */
+  baseUrl: ProviderBaseUrlSchema.optional(),
 }).strict().superRefine((value, context) => {
   if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
     context.addIssue({
@@ -190,6 +220,7 @@ export const ProviderTestRequestSchema = z.object({
       path: ["secret"],
     });
   }
+  assertBaseUrlIsDirect(value, context);
 }).meta({ id: "ProviderTestRequest" });
 
 /**
@@ -231,6 +262,8 @@ export const ProviderUpdateRequestSchema = z.object({
   secret: ProviderSecretSchema.optional(),
   /** A full replace; `null` clears the row's routing configuration. */
   gatewayRoute: GatewayRouteConfigSchema.nullable().optional(),
+  /** `null` returns the instance to its provider type's own base URL. */
+  baseUrl: ProviderBaseUrlSchema.nullable().optional(),
   /** A full replace; `null` clears every override. */
   pricing: ProviderPricingSchema.nullable().optional(),
 }).strict().refine(
@@ -238,8 +271,9 @@ export const ProviderUpdateRequestSchema = z.object({
     value.name !== undefined
     || value.secret !== undefined
     || value.gatewayRoute !== undefined
+    || value.baseUrl !== undefined
     || value.pricing !== undefined,
-  { message: "Provide at least one of name, secret, gatewayRoute, or pricing" },
+  { message: "Provide at least one of name, secret, gatewayRoute, baseUrl, or pricing" },
 ).meta({ id: "ProviderUpdateRequest" });
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);

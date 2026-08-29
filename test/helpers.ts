@@ -45,6 +45,8 @@ export async function seedProvider(input: {
   /** The row's gateway-type-specific routing configuration. */
   gatewayRoute?: GatewayRouteConfig;
   providerGatewayId?: string;
+  /** The operator's own origin, canonical as the guard would have stored it. */
+  baseUrl?: string;
   pricing?: ProviderPricing;
   status?: "active" | "revoked";
 }): Promise<string> {
@@ -84,6 +86,7 @@ export async function seedProvider(input: {
     secretHint: providerGatewayId === null ? secret.slice(-4) : null,
     providerGatewayId,
     gatewayRoute: input.gatewayRoute ?? null,
+    baseUrl: input.baseUrl ?? null,
     pricing: input.pricing ?? null,
     status: input.status ?? "active",
     createdBy: TEST_OPERATOR_USER_ID,

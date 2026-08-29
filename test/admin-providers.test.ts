@@ -29,6 +29,7 @@ interface ProviderSummary {
   secretHint: string | null;
   providerGatewayId: string | null;
   gatewayRoute: Record<string, unknown> | null;
+  baseUrl: string | null;
   pricing: Record<string, { input: number; output: number }> | null;
   status: string;
   createdAt: string;
@@ -719,6 +720,189 @@ describe("gateway routing configuration", () => {
     });
     expect(cleared.status, cleared.text).toBe(200);
     expect(cleared.body.provider.gatewayRoute).toBeNull();
+  });
+});
+
+describe("operator-configurable base URL", () => {
+  it("stores the canonical origin, probes it, and proxies through it", async () => {
+    const urls = stubProbe();
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Self-hosted",
+      slug: "vllm",
+      secret: "sk-self-hosted-value",
+      // Deliberately not canonical: mixed case, no trailing slash.
+      baseUrl: "https://My-Vllm.Example.com/v1",
+    });
+
+    expect(created.status, created.text).toBe(201);
+    expect(created.body.provider).toMatchObject({
+      slug: "vllm",
+      baseUrl: "https://my-vllm.example.com/v1/",
+      providerGatewayId: null,
+    });
+    // The probe went to the operator's origin, not to OpenAI's.
+    expect(urls).toEqual(["https://my-vllm.example.com/v1/v1/models"]);
+    expect(created.body.validated).toBe(true);
+
+    // And the resolved row the proxy uses carries it.
+    clearProviderCaches();
+    const resolved = await resolveProvider(env, TEST_ORGANIZATION_ID, "vllm");
+    expect(resolved?.baseUrl).toBe("https://my-vllm.example.com/v1/");
+  });
+
+  it("lists the override and leaves every other instance null", async () => {
+    stubProbe();
+    await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Stock",
+      secret: "sk-stock-value",
+    });
+    await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Custom",
+      slug: "openai-custom",
+      secret: "sk-custom-value",
+      baseUrl: "https://my-resource.openai.azure.com/openai/v1/",
+    });
+
+    const listed = await call("GET", "/v1/admin/providers");
+    const rows = listed.body.providers as ProviderSummary[];
+    expect(rows.find((row) => row.slug === "openai")?.baseUrl).toBeNull();
+    expect(rows.find((row) => row.slug === "openai-custom")?.baseUrl)
+      .toBe("https://my-resource.openai.azure.com/openai/v1/");
+  });
+
+  it("refuses every origin the guard refuses, naming the rule", async () => {
+    stubProbe();
+    const cases: [string, RegExp][] = [
+      ["http://my-vllm.example.com/", /https/u],
+      ["https://127.0.0.1/", /IP address/u],
+      ["https://[::1]/", /IPv6/u],
+      ["https://0x7f000001/", /IP address/u],
+      ["https://vllm.internal/", /reserved local name/u],
+      ["https://localhost/", /domain suffix|reserved/u],
+      ["https://my-vllm.example.com:8443/", /default https port/u],
+      ["https://user:pass@my-vllm.example.com/", /credentials/u],
+      ["https://my-vllm.example.com/?api-version=2024-10-21", /query/u],
+    ];
+    for (const [baseUrl, because] of cases) {
+      const response = await call("POST", "/v1/admin/providers", {
+        type: "openai",
+        name: "Bad",
+        slug: "bad-openai",
+        secret: "sk-value",
+        baseUrl,
+      });
+      expect(response.status, `${baseUrl} was accepted`).toBe(400);
+      expect(response.body.error.message).toMatch(because);
+    }
+    // Nothing was stored by any of them.
+    expect((await call("GET", "/v1/admin/providers")).body.providers).toHaveLength(0);
+  });
+
+  it("refuses a base URL alongside a gateway, on create and on update", async () => {
+    stubProbe();
+    const gateway = await createGateway();
+    const rejected = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Routed",
+      providerGatewayId: gateway.id,
+      baseUrl: "https://my-vllm.example.com/v1/",
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.message).toMatch(/gateway owns the upstream origin/u);
+
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Routed",
+      providerGatewayId: gateway.id,
+    });
+    expect(routed.status).toBe(201);
+    expect(routed.body.provider.baseUrl).toBeNull();
+    const id = (routed.body.provider as ProviderSummary).id;
+
+    const updated = await call("PUT", `/v1/admin/providers/${id}`, {
+      baseUrl: "https://my-vllm.example.com/v1/",
+    });
+    expect(updated.status).toBe(400);
+    expect(updated.body.error.message).toMatch(/gateway owns the upstream origin/u);
+  });
+
+  it("re-probes the stored credential when the origin changes, and clears with null", async () => {
+    const urls = stubProbe();
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Custom",
+      secret: "sk-original-value",
+      baseUrl: "https://first.example.com/v1/",
+    });
+    const id = (created.body.provider as ProviderSummary).id;
+    urls.length = 0;
+
+    const moved = await call("PUT", `/v1/admin/providers/${id}`, {
+      baseUrl: "https://second.example.com/v1/",
+    });
+    expect(moved.status, moved.text).toBe(200);
+    expect(moved.body.provider.baseUrl).toBe("https://second.example.com/v1/");
+    // Proven against the key already stored, at the origin it is moving to.
+    expect(urls).toEqual(["https://second.example.com/v1/v1/models"]);
+    expect(moved.body.validated).toBe(true);
+    urls.length = 0;
+
+    const cleared = await call("PUT", `/v1/admin/providers/${id}`, { baseUrl: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.provider.baseUrl).toBeNull();
+    expect(urls).toEqual(["https://api.openai.com/v1/models"]);
+    clearProviderCaches();
+    expect((await resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))?.baseUrl).toBeNull();
+  });
+
+  it("rotates a key at the row's own origin, and refuses an invalid update outright", async () => {
+    const urls = stubProbe();
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Custom",
+      secret: "sk-original-value",
+      baseUrl: "https://my-vllm.example.com/v1/",
+    });
+    const id = (created.body.provider as ProviderSummary).id;
+    urls.length = 0;
+
+    const rotated = await call("PUT", `/v1/admin/providers/${id}`, { secret: "sk-rotated-value" });
+    expect(rotated.status).toBe(200);
+    expect(urls).toEqual(["https://my-vllm.example.com/v1/v1/models"]);
+
+    const invalid = await call("PUT", `/v1/admin/providers/${id}`, {
+      baseUrl: "http://my-vllm.example.com/v1/",
+    });
+    expect(invalid.status).toBe(400);
+    const listed = await call("GET", "/v1/admin/providers");
+    expect((listed.body.providers as ProviderSummary[])[0]?.baseUrl)
+      .toBe("https://my-vllm.example.com/v1/");
+  });
+
+  it("probes a base URL without storing anything, and guards the dry run too", async () => {
+    const urls = stubProbe();
+    const probed = await call("POST", "/v1/admin/providers/test", {
+      type: "openai",
+      secret: "sk-value",
+      baseUrl: "https://my-vllm.example.com/v1",
+    });
+    expect(probed.status).toBe(200);
+    expect(probed.body.validated).toBe(true);
+    expect(urls).toEqual(["https://my-vllm.example.com/v1/v1/models"]);
+
+    urls.length = 0;
+    const refused = await call("POST", "/v1/admin/providers/test", {
+      type: "openai",
+      secret: "sk-value",
+      baseUrl: "https://169.254.169.254/",
+    });
+    expect(refused.status).toBe(400);
+    // The point of guarding the dry run: nothing was fetched at all.
+    expect(urls).toEqual([]);
+    expect((await call("GET", "/v1/admin/providers")).body.providers).toHaveLength(0);
   });
 });
 

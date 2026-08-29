@@ -754,6 +754,14 @@
             "additionalProperties": false,
             "description": "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway."
           },
+          "baseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-supplied origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
+            "example": "https://my-resource.openai.azure.com/openai/v1/"
+          },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           },
@@ -779,6 +787,7 @@
           "secretHint",
           "providerGatewayId",
           "gatewayRoute",
+          "baseUrl",
           "pricing",
           "status",
           "createdAt",
@@ -854,6 +863,11 @@
           "gatewayRoute": {
             "$ref": "#/components/schemas/GatewayRouteConfig"
           },
+          "baseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           }
@@ -917,6 +931,11 @@
           "providerGatewayId": {
             "type": "string",
             "minLength": 1
+          },
+          "baseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           }
         },
         "required": [
@@ -949,6 +968,14 @@
                 ]
               }
             ]
+          },
+          "baseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
           },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"

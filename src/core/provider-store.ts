@@ -29,6 +29,13 @@ export interface ResolvedProvider {
   gateway: (ResolvedGateway & { id: string }) | null;
   /** The gateway-type-specific routing config, validated when it was stored. */
   gatewayRoute: GatewayRouteConfig | null;
+  /**
+   * The operator's own origin for this instance, replacing the provider type's
+   * `directBaseUrl`. Canonicalized by the origin guard before it was stored, and
+   * always null on a gateway-routed row: the gateway owns that transport, so a
+   * base URL there would be a silently ignored setting rather than a route.
+   */
+  baseUrl: string | null;
   pricing: ProviderPricing | null;
 }
 
@@ -42,6 +49,7 @@ interface ProviderRow {
   gatewayConfig: ProviderGatewayConfig | null;
   gatewaySecretBlob: string | null;
   gatewayRoute: GatewayRouteConfig | null;
+  baseUrl: string | null;
   pricing: ProviderPricing | null;
 }
 
@@ -115,6 +123,7 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
       gatewayConfig: providerGatewayTable.config,
       gatewaySecretBlob: providerGatewayTable.secretBlob,
       gatewayRoute: providerTable.gatewayRoute,
+      baseUrl: providerTable.baseUrl,
       pricing: providerTable.pricing,
     })
     .from(providerTable)
@@ -227,6 +236,10 @@ export async function resolveProvider(
     secret: await plaintextSecret(env, organizationId, row),
     gateway,
     gatewayRoute: row.gatewayRoute,
+    // Read only on a direct row. The admin routes refuse the pairing, but a row
+    // that predates a gateway being attached, or one written by another tool,
+    // must not quietly redirect gateway traffic somewhere else.
+    baseUrl: gateway === null ? row.baseUrl : null,
     pricing: row.pricing,
   };
 }

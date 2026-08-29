@@ -120,6 +120,13 @@
       "when": 1788007135498,
       "tag": "0016_provider-gateway-and-usage-wave",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1788025569079,
+      "tag": "0017_provider-base-url",
+      "breakpoints": true
     }
   ]
 }

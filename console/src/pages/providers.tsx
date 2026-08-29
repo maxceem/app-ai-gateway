@@ -190,7 +190,20 @@ function RoutedVia({
   row: ProviderCredential;
   gateways: ProviderGateway[];
 }) {
-  if (row.providerGatewayId === null) return <>Direct</>;
+  if (row.providerGatewayId === null) {
+    // A custom origin is the single most surprising thing about an instance —
+    // "Direct" alone would hide which service a key is actually being sent to.
+    return row.baseUrl === null ? (
+      <>Direct</>
+    ) : (
+      <div className="space-y-0.5">
+        <div>Direct</div>
+        <div className="font-mono text-[11px] break-all" title={row.baseUrl}>
+          {row.baseUrl}
+        </div>
+      </div>
+    );
+  }
   const gateway = gateways.find((entry) => entry.id === row.providerGatewayId);
   if (!gateway) return <>Gateway</>;
   return (
@@ -544,6 +557,7 @@ function AddProviderDialog({
   const [name, setName] = useState("");
   const [connection, setConnection] = useState<"key" | "gateway">("key");
   const [secret, setSecret] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTaken, setSlugTaken] = useState(false);
@@ -595,6 +609,7 @@ function AddProviderDialog({
     setName("");
     setConnection("key");
     setSecret("");
+    setBaseUrl("");
     setGatewayId("");
     setSlug("");
     setSlugTaken(false);
@@ -613,13 +628,18 @@ function AddProviderDialog({
    * Optional, and deliberately not a gate on adding the provider: a probe that
    * proves nothing must not stand between an operator and a key they trust.
    */
+  /** The origin fields to send, present only on a direct row that set one. */
+  const baseUrlBody = connection === "key" && baseUrl.trim()
+    ? { baseUrl: baseUrl.trim() }
+    : {};
+
   const test = async () => {
     if (!credentialReady) return;
     setTested(null);
     try {
       const result = await testProvider.mutateAsync({
         type,
-        ...(connection === "key" ? { secret } : { providerGatewayId: gatewayId }),
+        ...(connection === "key" ? { secret, ...baseUrlBody } : { providerGatewayId: gatewayId }),
       });
       setTested(testOutcome(result, type, connection === "gateway"));
     } catch (error) {
@@ -640,7 +660,7 @@ function AddProviderDialog({
         type,
         name: name.trim(),
         ...(slug.trim() ? { slug: slug.trim() } : {}),
-        ...(connection === "key" ? { secret } : { providerGatewayId: gatewayId }),
+        ...(connection === "key" ? { secret, ...baseUrlBody } : { providerGatewayId: gatewayId }),
       });
       // The plaintext leaves component state and the mutation cache immediately;
       // the server never returns it again.
@@ -723,6 +743,9 @@ function AddProviderDialog({
               value={connection}
               onValueChange={(next) => {
                 setConnection(next as "key" | "gateway");
+                // A gateway owns its own origin, so a base URL typed for the
+                // direct case must not be carried into the request invisibly.
+                if (next === "gateway") setBaseUrl("");
                 setTested(null);
               }}
             >
@@ -736,18 +759,39 @@ function AddProviderDialog({
             </Select>
           </Field>
           {connection === "key" ? (
-            <Field label="API key" htmlFor="provider-secret">
-              <Input
-                id="provider-secret"
-                {...SECRET_FIELD}
-                value={secret}
-                placeholder="sk-…"
-                onChange={(event) => {
-                  setSecret(event.target.value);
-                  setTested(null);
-                }}
-              />
-            </Field>
+            <>
+              <Field label="API key" htmlFor="provider-secret">
+                <Input
+                  id="provider-secret"
+                  {...SECRET_FIELD}
+                  value={secret}
+                  placeholder="sk-…"
+                  onChange={(event) => {
+                    setSecret(event.target.value);
+                    setTested(null);
+                  }}
+                />
+              </Field>
+              {/* Optional, and only on the direct route: a gateway supplies its
+                  own origin, so the field is not rendered at all in that mode. */}
+              <Field
+                label="Base URL (optional)"
+                htmlFor="provider-base-url"
+                hint="Point this instance at an OpenAI-compatible endpoint you control — Azure OpenAI, vLLM, a proxy. HTTPS, port 443, no path-only tweaks beyond the base. Leave empty to use the provider's own API."
+              >
+                <Input
+                  id="provider-base-url"
+                  {...PLAIN_FIELD}
+                  className="font-mono"
+                  value={baseUrl}
+                  placeholder="https://my-vllm.example.com/v1/"
+                  onChange={(event) => {
+                    setBaseUrl(event.target.value);
+                    setTested(null);
+                  }}
+                />
+              </Field>
+            </>
           ) : (
             <Field
               label="Gateway"

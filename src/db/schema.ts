@@ -167,6 +167,18 @@ export const provider = sqliteTable(
     providerGatewayId: text("provider_gateway_id")
       .references(() => providerGateway.id),
     /**
+     * An operator-supplied origin replacing the provider type's own base URL,
+     * so one instance can point at Azure OpenAI, a self-hosted vLLM, or any
+     * other endpoint speaking that provider's API. Null is the normal case.
+     *
+     * Validated and canonicalized by `src/core/origin-guard.ts` on every write
+     * — never by a CHECK, which would be a rebuild of this table for a rule
+     * SQLite could not express anyway. A gateway-routed row must not carry one
+     * (the gateway owns the transport); that pairing is refused in the admin
+     * routes and ignored at resolution time, for the same reason.
+     */
+    baseUrl: text("base_url"),
+    /**
      * How this row is routed inside its gateway. Null on a direct row and on
      * every gateway whose adapter needs no routing configuration; the adapter
      * named by `provider_gateway.type` validates the shape.

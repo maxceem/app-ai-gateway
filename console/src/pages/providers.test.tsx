@@ -16,6 +16,7 @@ const DIRECT: ProviderCredential = {
   secretHint: "gain",
   providerGatewayId: null,
   gatewayRoute: null,
+  baseUrl: null,
   pricing: { "gpt-brand-new": { input: 1.25, output: 10 } },
   status: "active",
   createdAt: "2026-02-01T00:00:00.000Z",
@@ -296,6 +297,111 @@ describe("ProvidersPage", () => {
     const reopened = await openAddProvider();
     expect((within(reopened).getByLabelText("API key") as HTMLInputElement).value).toBe("");
     expect((within(reopened).getByLabelText("Name") as HTMLInputElement).value).toBe("");
+  });
+
+  it("sends an optional base URL with a direct key, and probes at that origin", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Self-hosted");
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    const baseUrl = within(dialog).getByLabelText("Base URL (optional)");
+    // The helper text has to say what this unlocks and what the guard allows,
+    // because the server's refusal is the only other place it is explained.
+    expect(within(dialog).getByText(/OpenAI-compatible endpoint you control/i)).toBeTruthy();
+    expect(within(dialog).getByText(/HTTPS, port 443/i)).toBeTruthy();
+    await userEvent.type(baseUrl, "https://my-vllm.example.com/v1/");
+
+    // The dry run goes to the same origin the stored row would use.
+    await userEvent.click(within(dialog).getByRole("button", { name: /test provider/i }));
+    await waitFor(() => {
+      const test = calls.find((entry) => entry.url.endsWith("/v1/admin/providers/test"));
+      expect(test?.body).toEqual({
+        type: "openai",
+        secret: SECRET,
+        baseUrl: "https://my-vllm.example.com/v1/",
+      });
+    });
+
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
+    await waitFor(() => {
+      const call = calls.find(
+        (entry) => entry.method === "POST" && !entry.url.endsWith("/test"),
+      );
+      expect(call?.body).toEqual({
+        type: "openai",
+        name: "Self-hosted",
+        secret: SECRET,
+        baseUrl: "https://my-vllm.example.com/v1/",
+      });
+    });
+  });
+
+  it("omits the base URL entirely when it is left empty", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    await userEvent.type(within(dialog).getByLabelText("Base URL (optional)"), "   ");
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
+
+    await waitFor(() => {
+      const call = calls.find((entry) => entry.method === "POST");
+      // No `baseUrl` key at all: an empty field is not an origin.
+      expect(call?.body).toEqual({ type: "openai", name: "Prod OpenAI", secret: SECRET });
+    });
+  });
+
+  it("hides the base URL in gateway mode, where the gateway owns the origin", async () => {
+    const calls = stubProviders({ providers: [], gateways: [GATEWAY] });
+    renderAuthenticated(<ProvidersPage />);
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "OpenAI via CF");
+    await userEvent.type(
+      within(dialog).getByLabelText("Base URL (optional)"),
+      "https://my-vllm.example.com/v1/",
+    );
+    await choose(within(dialog).getByLabelText("Authentication"), /use gateway/i);
+    expect(within(dialog).queryByLabelText("Base URL (optional)")).toBeNull();
+    await choose(within(dialog).getByLabelText("Gateway"), /prod cf gateway/i);
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
+
+    await waitFor(() => {
+      const call = calls.find((entry) => entry.method === "POST");
+      // Typed before the switch, and not smuggled into the routed request.
+      expect(call?.body).toEqual({
+        type: "openai",
+        name: "OpenAI via CF",
+        providerGatewayId: "gw-1",
+      });
+    });
+  });
+
+  it("shows a custom origin on the row instead of a bare Direct", async () => {
+    stubProviders({
+      providers: [
+        DIRECT,
+        {
+          ...DIRECT,
+          id: "provider-custom",
+          slug: "vllm",
+          name: "Self-hosted",
+          baseUrl: "https://my-vllm.example.com/v1/",
+        },
+      ],
+      gateways: [],
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    const custom = (await screen.findByText("Self-hosted")).closest("tr")!;
+    expect(within(custom).getByText("https://my-vllm.example.com/v1/")).toBeTruthy();
+    const stock = screen.getByText("Prod OpenAI").closest("tr")!;
+    expect(within(stock).getByText("Direct")).toBeTruthy();
+    expect(within(stock).queryByText(/my-vllm/)).toBeNull();
   });
 
   it("opts every credential field out of browser and manager autofill", async () => {

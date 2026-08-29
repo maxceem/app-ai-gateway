@@ -7,6 +7,7 @@ import {
 } from "../../contracts/schemas";
 import { assertRouteServesProvider } from "../../core/capabilities";
 import { GatewayError } from "../../core/errors";
+import { checkOperatorBaseUrl } from "../../core/origin-guard";
 import {
   assertGatewayRoute,
   isGatewayType,
@@ -50,11 +51,24 @@ function serialize(row: ProviderRow): Record<string, unknown> {
     secretHint: row.secretHint,
     providerGatewayId: row.providerGatewayId,
     gatewayRoute: row.gatewayRoute,
+    baseUrl: row.baseUrl,
     pricing: row.pricing,
     status: row.status,
     createdAt: row.createdAt,
     createdBy: row.createdBy,
   };
+}
+
+/**
+ * The only door a base URL comes through. The guard's refusal message names the
+ * rule that was broken, so it is passed through verbatim rather than replaced
+ * with "invalid URL" — the operator is looking at the field they just typed.
+ * What is stored is the guard's canonical form, never the raw input.
+ */
+function guardedBaseUrl(raw: string): string {
+  const checked = checkOperatorBaseUrl(raw);
+  if (!checked.ok) throw new GatewayError(400, "invalid_request", checked.message);
+  return checked.baseUrl;
 }
 
 function slugConflict(slug: string): GatewayError {
@@ -86,6 +100,7 @@ async function insertProvider(
     secret?: string;
     providerGatewayId?: string;
     gatewayRoute: GatewayRouteConfig | null;
+    baseUrl: string | null;
     pricing: ProviderPricing | null;
   },
 ): Promise<ProviderRow> {
@@ -107,6 +122,7 @@ async function insertProvider(
     secretHint: direct ? secretHint(input.secret!) : null,
     providerGatewayId: input.providerGatewayId ?? null,
     gatewayRoute: input.gatewayRoute,
+    baseUrl: input.baseUrl,
     pricing: input.pricing,
     createdBy: input.createdBy,
   }).returning();
@@ -166,7 +182,10 @@ providerRoutes.post("/providers/test", async (c) => {
   const admin = c.get("admin");
   const body = providerSchemaBody(ProviderTestRequestSchema, await providerRequestBody(c));
   if (body.secret !== undefined) {
-    return c.json(await probeProviderKey(body.type, body.secret));
+    // Guarded here too: a dry run must not be a way to make this Worker fetch
+    // an origin the create path would have refused.
+    const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
+    return c.json(await probeProviderKey(body.type, body.secret, baseUrl));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
   const resolved = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
@@ -193,13 +212,18 @@ providerRoutes.post("/providers", async (c) => {
   if (existing) throw slugConflict(slug);
 
   const gatewayRoute = body.gatewayRoute ?? null;
+  // The contract already refuses baseUrl alongside providerGatewayId, so a
+  // stored override always belongs to a direct row.
+  const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
   let validated: boolean;
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
   if (body.secret !== undefined) {
     assertGatewayRoute(null, gatewayRoute);
     secret = body.secret;
-    validated = (await probeProviderKey(body.type, body.secret)).validated;
+    // Probed at the origin this row will really call, so a wrong URL fails now
+    // rather than on the first request an app makes.
+    validated = (await probeProviderKey(body.type, body.secret, baseUrl)).validated;
   } else {
     const gatewayId = body.providerGatewayId;
     if (!gatewayId) {
@@ -227,6 +251,7 @@ providerRoutes.post("/providers", async (c) => {
       ...(secret === undefined ? {} : { secret }),
       ...(providerGatewayId === undefined ? {} : { providerGatewayId }),
       gatewayRoute,
+      baseUrl,
       pricing: body.pricing ?? null,
     });
   } catch (error) {
@@ -262,6 +287,25 @@ providerRoutes.put("/providers/:id", async (c) => {
     updates.gatewayRoute = body.gatewayRoute;
   }
 
+  // The effective origin after this write, which is also what any probe below
+  // must use: a new value, an explicit clear back to the provider's own base
+  // URL, or the one already stored.
+  let baseUrl = row.baseUrl;
+  if (body.baseUrl !== undefined) {
+    // Clearing is always allowed, including on a routed row: `null` is how an
+    // operator gets rid of a value, and refusing that would strand a row that
+    // acquired one before it was attached to a gateway.
+    if (body.baseUrl !== null && row.providerGatewayId !== null) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        "A gateway-routed instance cannot carry a base URL: the gateway owns the upstream origin",
+      );
+    }
+    baseUrl = body.baseUrl === null ? null : guardedBaseUrl(body.baseUrl);
+    updates.baseUrl = baseUrl;
+  }
+
   let validated: boolean | null = null;
   if (body.secret !== undefined) {
     if (row.providerGatewayId !== null) {
@@ -271,12 +315,27 @@ providerRoutes.put("/providers/:id", async (c) => {
         `This provider uses a shared gateway token; rotate it at /v1/admin/provider-gateways/${row.providerGatewayId}/rotate`,
       );
     }
-    validated = (await probeProviderKey(row.type, body.secret)).validated;
+    validated = (await probeProviderKey(row.type, body.secret, baseUrl)).validated;
     updates.secretBlob = await secretVault(c.env).encryptSecret(
       body.secret,
       encryptionContext(admin.organizationId, row.id),
     );
     updates.secretHint = secretHint(body.secret);
+  } else if (body.baseUrl !== undefined && row.secretBlob !== null) {
+    // Moving an instance to a new origin is as much a configuration change as
+    // rotating its key, so it is proven the same way, against the credential
+    // already stored. A vault this deployment can no longer read is not a
+    // reason to refuse the edit — it fails loudly on the next request instead.
+    try {
+      const secret = await secretVault(c.env).decryptSecret(
+        row.secretBlob,
+        encryptionContext(admin.organizationId, row.id),
+      );
+      validated = (await probeProviderKey(row.type, secret, baseUrl)).validated;
+    } catch (error) {
+      if (error instanceof GatewayError) throw error;
+      validated = false;
+    }
   }
 
   const [updated] = await database(c.env.DB)
