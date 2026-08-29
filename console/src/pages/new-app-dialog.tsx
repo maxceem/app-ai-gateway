@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { GuardedButton } from "@/components/guarded-button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -228,15 +229,12 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
             New app
           </GuardedButton>
         </DialogTrigger>
-        <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-xl">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle className="text-balance">Create a new application</DialogTitle>
-            <DialogDescription className="text-pretty">
-              Give it a name and choose where it runs. We’ll set up the right authentication.
-            </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-5">
+          <DialogBody className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="app-name">Application name</Label>
               <Input
@@ -427,7 +425,7 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
                 ) : null}
               </div>
             ) : null}
-          </div>
+          </DialogBody>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
@@ -462,52 +460,54 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
               <KeyRound className="size-5" />
             </div>
             <DialogTitle className="text-balance">Your application is ready</DialogTitle>
+          </DialogHeader>
+
+          <DialogBody className="space-y-4">
             <DialogDescription className="text-pretty">
               We generated the first API key for{" "}
               <span className="font-mono text-foreground">{createdAppId}</span>. Copy it now—you
               won’t be able to see it again.
             </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-2">
-            <Label htmlFor="created-api-key">API key</Label>
-            <div className="flex gap-2">
-              <Input
-                id="created-api-key"
-                value={createdKey?.key ?? ""}
-                readOnly
-                className="font-mono text-xs"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                className="min-w-24 active:scale-[0.96]"
-                onClick={() => void copyKey()}
-              >
-                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-                {copied ? "Copied" : "Copy"}
-              </Button>
+            <div className="space-y-2">
+              <Label htmlFor="created-api-key">API key</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="created-api-key"
+                  value={createdKey?.key ?? ""}
+                  readOnly
+                  className="font-mono text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-w-24 active:scale-[0.96]"
+                  onClick={() => void copyKey()}
+                >
+                  {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Store it in your server’s secret manager. Never ship this key in a client app.
+              </p>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Store it in your server’s secret manager. Never ship this key in a client app.
-            </p>
-          </div>
 
-          <div className="rounded-lg bg-muted/50 p-3 shadow-sm ring-1 ring-border/70">
-            <p className="text-sm font-medium">You can create more keys anytime</p>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              This key’s secret is shown only once, but you can create additional keys, review
-              their usage, and revoke them from the application’s Auth policy.
-            </p>
-            <Link
-              to={`/apps/${createdAppId}/auth`}
-              className="mt-2 inline-flex min-h-10 items-center gap-1.5 text-sm font-medium underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
-              onClick={() => setKeyOpen(false)}
-            >
-              Manage API keys
-              <ArrowUpRight className="size-3.5" />
-            </Link>
-          </div>
+            <div className="rounded-lg bg-muted/50 p-3 shadow-sm ring-1 ring-border/70">
+              <p className="text-sm font-medium">You can create more keys anytime</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                This key’s secret is shown only once, but you can create additional keys, review
+                their usage, and revoke them from the application’s Auth policy.
+              </p>
+              <Link
+                to={`/apps/${createdAppId}/auth`}
+                className="mt-2 inline-flex min-h-10 items-center gap-1.5 text-sm font-medium underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
+                onClick={() => setKeyOpen(false)}
+              >
+                Manage API keys
+                <ArrowUpRight className="size-3.5" />
+              </Link>
+            </div>
+          </DialogBody>
 
           <DialogFooter>
             <Button className="active:scale-[0.96]" onClick={finishKeySetup}>

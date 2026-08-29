@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -79,15 +80,15 @@ export function ApplyPresetDialog({
           Apply preset
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Apply an issuer preset</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             Overwrites the JWKS URL and adds the provider&rsquo;s identifying claims. Existing
             requirements on other claim paths are kept.
           </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4">
           <PresetPicker
             label="Identity provider"
             idPrefix="apply-issuer"
@@ -125,7 +126,7 @@ export function ApplyPresetDialog({
               }}
             />
           ) : null}
-        </div>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel

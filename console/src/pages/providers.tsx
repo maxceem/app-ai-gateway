@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -1178,19 +1179,21 @@ function RenameGatewayDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Rename gateway</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             Only the display name changes. Nothing about the connection or the providers routed
             through it moves.
           </DialogDescription>
-        </DialogHeader>
-        <Field label="Name" htmlFor="gateway-rename">
-          <Input
-            id="gateway-rename"
-            {...PLAIN_FIELD}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </Field>
+          <Field label="Name" htmlFor="gateway-rename">
+            <Input
+              id="gateway-rename"
+              {...PLAIN_FIELD}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </Field>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={close}>
             Cancel
@@ -1267,23 +1270,25 @@ function RotateGatewayDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Update the token for {gateway?.name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             One token authenticates every provider routed through this gateway, so all{" "}
             {gateway?.providerCount ?? 0} of them pick the new one up within a minute.
           </DialogDescription>
-        </DialogHeader>
-        <Field label="New gateway token" htmlFor="gateway-rotate-token">
-          <Input
-            id="gateway-rotate-token"
-            {...SECRET_FIELD}
-            value={token}
-            onChange={(event) => {
-              setToken(event.target.value);
-              setTested(null);
-            }}
-          />
-        </Field>
-        {tested ? <TestResult outcome={tested} /> : null}
+          <Field label="New gateway token" htmlFor="gateway-rotate-token">
+            <Input
+              id="gateway-rotate-token"
+              {...SECRET_FIELD}
+              value={token}
+              onChange={(event) => {
+                setToken(event.target.value);
+                setTested(null);
+              }}
+            />
+          </Field>
+          {tested ? <TestResult outcome={tested} /> : null}
+        </DialogBody>
         <DialogFooter>
           <Button
             type="button"
@@ -1343,19 +1348,21 @@ function RotateDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Update the key for {provider?.name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             The new credential replaces the old one in place. Custom pricing is kept, and requests
             pick it up within a minute.
           </DialogDescription>
-        </DialogHeader>
-        <Field label="New API key" htmlFor="rotate-secret">
-          <Input
-            id="rotate-secret"
-            {...SECRET_FIELD}
-            value={secret}
-            onChange={(event) => setSecret(event.target.value)}
-          />
-        </Field>
+          <Field label="New API key" htmlFor="rotate-secret">
+            <Input
+              id="rotate-secret"
+              {...SECRET_FIELD}
+              value={secret}
+              onChange={(event) => setSecret(event.target.value)}
+            />
+          </Field>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={close}>
             Cancel
@@ -1430,13 +1437,13 @@ function PricingDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Custom model pricing</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-3">
           <DialogDescription>
             For models the built-in catalog does not cover, or prices it in a way you disagree with.
             Requests for unpriced models are rejected until a price is set here. Enter $0 for a model
             that is genuinely free.
           </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
           {drafts.length === 0 ? (
             <EmptyState>No custom prices for this provider.</EmptyState>
           ) : (
@@ -1502,7 +1509,7 @@ function PricingDialog({
             <Plus className="size-4" />
             Add model
           </Button>
-        </div>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel

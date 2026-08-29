@@ -158,13 +158,16 @@ export function ManagementKeysPage() {
         open={creating}
         onOpenChange={setCreating}
         title="Create a management key"
-        description="Name it after whatever will use it, so you can tell keys apart when it is time to revoke one."
         submitLabel="Create key"
         pending={createKey.isPending}
         disabled={!name.trim()}
         onSubmit={() => void create()}
       >
-        <Field label="Key name" htmlFor="management-key-name">
+        <Field
+          label="Key name"
+          htmlFor="management-key-name"
+          hint="Name it so you can tell keys apart in the list."
+        >
           <Input
             id="management-key-name"
             value={name}

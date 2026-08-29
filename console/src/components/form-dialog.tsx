@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -60,7 +61,9 @@ export function FormDialog({
         {...(description ? {} : { "aria-describedby": undefined })}
       >
         <form
-          className="space-y-5"
+          // The form, not the content, is the column the regions lay out in:
+          // it is the only child DialogContent has.
+          className="flex min-h-0 flex-1 flex-col"
           // Credential fields sit in these forms, and a text input beside a
           // password reads to a browser as a sign-in it should autofill.
           autoComplete="off"
@@ -72,12 +75,14 @@ export function FormDialog({
         >
           <DialogHeader>
             <DialogTitle className="text-balance">{title}</DialogTitle>
+          </DialogHeader>
+
+          <DialogBody className="space-y-4">
             {description ? (
               <DialogDescription className="text-pretty">{description}</DialogDescription>
             ) : null}
-          </DialogHeader>
-
-          {children}
+            {children}
+          </DialogBody>
 
           <DialogFooter>
             {/* Anything the form offers besides finishing it — a dry run of the
