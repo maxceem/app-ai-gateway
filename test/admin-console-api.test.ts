@@ -1,6 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { clearProviderCaches } from "../src/core/provider-store";
+import { PROVIDER_TYPES } from "../src/core/providers";
 import {
   appleConfig,
   defaultProxyConfig,
@@ -217,9 +218,11 @@ describe("admin console API", () => {
     const defaultAccess = await get(`/v1/admin/apps/${body.app_id}`);
     expect(defaultAccess.body.resolved.routing.providerMode).toBe("all");
     const appList = await get("/v1/admin/apps");
+    // The fixture configures one instance of every provider type, and an
+    // all-providers app reaches all of them.
     expect(
       appList.body.apps.find((app: any) => app.id === body.app_id).providers.sort(),
-    ).toEqual(["anthropic", "gemini", "openai", "perplexity", "xai"]);
+    ).toEqual([...PROVIDER_TYPES].sort());
   });
 
   it("derives an id from the name when the create API receives no preferred id", async () => {

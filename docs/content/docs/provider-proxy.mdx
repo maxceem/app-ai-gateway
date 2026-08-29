@@ -19,9 +19,10 @@ the model.
 
 A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique per organization among active
 instances. It defaults to the provider type, so the first instance of each type
-keeps the familiar URLs — `openai`, `anthropic`, `xai`, `gemini`, `perplexity` —
-verbatim. A second instance of a type must be given a custom slug when it is
-created.
+keeps the familiar URLs — `openai`, `anthropic`, `xai`, `gemini`, `perplexity`,
+`deepseek`, `groq`, and the rest of the
+[supported types](/docs/providers#supported-provider-types) — verbatim. A second
+instance of a type must be given a custom slug when it is created.
 
 | Instance | Slug | Caller URL |
 | --- | --- | --- |
@@ -48,6 +49,17 @@ paths are:
 | xAI | `v1/responses` or `v1/stt` |
 | Gemini | `v1beta/models/{model}:generateContent` |
 | Perplexity | `chat/completions` |
+| DeepSeek | `chat/completions` |
+| Groq | `openai/v1/chat/completions` |
+| Mistral, Cerebras, Moonshot, Together AI, Baseten | `v1/chat/completions` |
+| Fireworks AI | `inference/v1/chat/completions` |
+| Hugging Face | `v1/chat/completions` |
+| ByteDance (ModelArk) | `chat/completions` |
+
+The prefixes genuinely differ — DeepSeek and ByteDance have none of their own,
+Groq namespaces its OpenAI surface under `openai/`, and Fireworks separates its
+inference plane from its control plane. The full table with each provider's
+caveats is on the [Providers](/docs/providers#supported-provider-types) page.
 
 For the OpenAI SDK, set `baseURL` to
 `https://YOUR-GATEWAY/v1/apps/YOUR-APP/proxy/openai/v1`. The SDK then appends

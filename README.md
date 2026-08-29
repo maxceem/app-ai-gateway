@@ -1,7 +1,9 @@
 # App AI Gateway
 
 A multi-tenant LLM proxy for Cloudflare Workers. It keeps provider keys out of
-client applications and supports OpenAI, Anthropic, xAI, Gemini, and Perplexity.
+client applications and supports OpenAI, Anthropic, xAI, Gemini, Perplexity,
+DeepSeek, Groq, Mistral, Together AI, Fireworks AI, Cerebras, Moonshot AI,
+Hugging Face, Baseten, and ByteDance.
 
 **[Documentation](https://docs.appaigateway.com/docs/)** ·
 **[API reference](https://docs.appaigateway.com/docs/api/)**

@@ -4,6 +4,16 @@ export const PROVIDER_TYPES = [
   "xai",
   "gemini",
   "perplexity",
+  "deepseek",
+  "groq",
+  "mistral",
+  "together",
+  "fireworks",
+  "cerebras",
+  "moonshot",
+  "huggingface",
+  "baseten",
+  "bytedance",
 ] as const;
 
 // Flag-free on purpose: this source string is published verbatim as an
@@ -76,6 +86,77 @@ export const PROVIDER_REGISTRY = {
     directBaseUrl: "https://api.perplexity.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     modelAuthor: "Perplexity",
+  },
+
+  // OpenAI-compatible chat-completions services. `modelAuthor` is set only
+  // where one answer is right for every model the type serves; the hosts below
+  // that carry no author serve other labs' open-weight models, and authorship
+  // comes from the catalog entry per model instead.
+
+  deepseek: {
+    // No `v1` segment: DeepSeek documents the bare origin as its OpenAI base
+    // URL, and `https://api.deepseek.com/anthropic` for the Anthropic format.
+    directBaseUrl: "https://api.deepseek.com/",
+    auth: { header: "authorization", scheme: "Bearer " },
+    modelAuthor: "DeepSeek",
+  },
+  groq: {
+    // Groq's OpenAI-compatible surface lives under `openai/v1/`, so the client
+    // path is `openai/v1/chat/completions` rather than `v1/chat/completions`.
+    directBaseUrl: "https://api.groq.com/",
+    auth: { header: "authorization", scheme: "Bearer " },
+  },
+  mistral: {
+    directBaseUrl: "https://api.mistral.ai/",
+    auth: { header: "authorization", scheme: "Bearer " },
+    modelAuthor: "Mistral",
+  },
+  together: {
+    // `api.together.ai`, not the `.xyz` host older SDKs default to: the current
+    // OpenAI-compatibility guide names this one and warns against the other.
+    directBaseUrl: "https://api.together.ai/",
+    auth: { header: "authorization", scheme: "Bearer " },
+  },
+  fireworks: {
+    // The inference plane is `/inference/v1`; `/v1` on the same host is the
+    // control plane, so the client path is `inference/v1/chat/completions`.
+    directBaseUrl: "https://api.fireworks.ai/",
+    auth: { header: "authorization", scheme: "Bearer " },
+  },
+  cerebras: {
+    directBaseUrl: "https://api.cerebras.ai/",
+    auth: { header: "authorization", scheme: "Bearer " },
+  },
+  moonshot: {
+    // The international host. `api.moonshot.cn` is the separate China platform
+    // and is not reachable with a key issued for this one.
+    directBaseUrl: "https://api.moonshot.ai/",
+    auth: { header: "authorization", scheme: "Bearer " },
+    modelAuthor: "Moonshot AI",
+  },
+  huggingface: {
+    // The Inference Providers router: one OpenAI-compatible surface in front of
+    // many upstreams, so it has no author of its own and no stable per-model
+    // price — the router picks the upstream, and the same model ID costs an
+    // order of magnitude more on some of them than others. It ships with no
+    // catalog section for that reason; see `catalogPrice` in usage.ts.
+    directBaseUrl: "https://router.huggingface.co/",
+    auth: { header: "authorization", scheme: "Bearer " },
+  },
+  baseten: {
+    // The Model APIs inference host. `api.baseten.co` is the management plane
+    // for dedicated deployments and answers to different paths entirely.
+    directBaseUrl: "https://inference.baseten.co/",
+    auth: { header: "authorization", scheme: "Bearer " },
+  },
+  bytedance: {
+    // BytePlus ModelArk, the international edition: `/api/v3` is its version
+    // segment, so client paths carry no `v1`. `ark.cn-beijing.volces.com` is
+    // the separate China platform, and `ark.eu-west.bytepluses.com` is a second
+    // region — keys and catalogs are region-isolated, so reaching either needs
+    // the per-row base URL override that Stage 6 introduces.
+    directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
+    auth: { header: "authorization", scheme: "Bearer " },
   },
 } as const satisfies Record<ProviderType, ProviderSpec>;
 

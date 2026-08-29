@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import worker from "../src/index";
 import { apiStyleFromPath, outputClampStyle, API_STYLES } from "../src/core/api-styles";
 import {
+  assertApiStyleSupported,
+  assertRouteServesProvider,
   ENDPOINT_PROVIDER_TYPES,
   narrowedCapability,
   providersForEndpointStyle,
@@ -28,7 +30,13 @@ import {
 } from "../src/core/gateways";
 import { clearProviderCaches } from "../src/core/provider-store";
 import { probeProviderGateway } from "../src/core/provider-probe";
-import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
+import {
+  providerAuthValue,
+  providerModelAuthor,
+  PROVIDER_REGISTRY,
+  PROVIDER_TYPES,
+  reportsCost,
+} from "../src/core/providers";
 import { RESERVED_UPSTREAM_HEADERS } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { database } from "../src/db";
@@ -36,6 +44,27 @@ import { provider } from "../src/db/schema";
 import { gatewayToken, seedApp, seedProvider } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;
+
+/**
+ * The provider types verified against a live Cloudflare AI Gateway. Every other
+ * type is direct-only by the matrix default, which is what makes adding one a
+ * registry change rather than an adapter change.
+ */
+const CF_AIG_PROVIDERS = ["openai", "anthropic", "xai", "gemini", "perplexity"] as const;
+
+/** The Stage 3 batch: OpenAI-compatible, pass-through only, no gateway mapping. */
+const OPENAI_COMPATIBLE_PROVIDERS = [
+  "deepseek",
+  "groq",
+  "mistral",
+  "together",
+  "fireworks",
+  "cerebras",
+  "moonshot",
+  "huggingface",
+  "baseten",
+  "bytedance",
+] as const;
 
 let pending: ExecutionContext[] = [];
 
@@ -101,14 +130,28 @@ describe("API style classification", () => {
     "openai/v1/responses",
   ];
 
+  // Scoped to the types that existed before the OpenAI-compatible batch: those
+  // are the only ones whose behavior a refactor could regress. The new types
+  // clamp their own native shape, asserted separately below.
   it("clamps exactly what the pre-refactor rules clamped", () => {
-    for (const providerType of PROVIDER_TYPES) {
+    for (const providerType of CF_AIG_PROVIDERS) {
       for (const path of PATHS) {
         expect([providerType, path, outputClampStyle(apiStyleFromPath(path), providerType)])
           .toEqual([providerType, path, legacyClampStyle(providerType, path)]);
       }
     }
   });
+
+  it.each(OPENAI_COMPATIBLE_PROVIDERS)(
+    "caps a provider-native %s path on the chat-completions field",
+    (type) => {
+      // These providers' own request shape *is* chat completions, so a path
+      // with no cross-provider style still caps the field they read.
+      expect(outputClampStyle(apiStyleFromPath("v1/embeddings"), type)).toBe("chat_completions");
+      expect(outputClampStyle(apiStyleFromPath("openai/v1/chat/completions"), type))
+        .toBe("chat_completions");
+    },
+  );
 });
 
 describe("capability matrix", () => {
@@ -118,10 +161,25 @@ describe("capability matrix", () => {
     }
   });
 
-  it.each(PROVIDER_TYPES)("forwards every API style to %s through cf_aig", (type) => {
+  it.each(CF_AIG_PROVIDERS)("forwards every API style to %s through cf_aig", (type) => {
     for (const style of API_STYLES) {
       expect(supportsApiStyle("cf_aig", type, style)).toBe(true);
     }
+  });
+
+  it.each(OPENAI_COMPATIBLE_PROVIDERS)("serves %s directly and on no gateway", (type) => {
+    for (const style of API_STYLES) {
+      expect(supportsApiStyle("direct", type, style)).toBe(true);
+      // No mapping means direct-only: the request is refused at the edge rather
+      // than sent to a Cloudflare URL guessed from the provider's name.
+      expect(supportsApiStyle("cf_aig", type, style)).toBe(false);
+    }
+    expect(routeCapability("cf_aig", type)).toBeNull();
+    expect(() => assertApiStyleSupported("cf_aig", type, "chat_completions"))
+      .toThrow(/does not support this API/u);
+    expect(() => assertRouteServesProvider("cf_aig", type))
+      .toThrow(/do not serve/u);
+    expect(() => assertRouteServesProvider("direct", type)).not.toThrow();
   });
 
   it("keeps named-endpoint eligibility where it was", () => {
@@ -155,6 +213,73 @@ describe("capability matrix", () => {
       { slug: "google", apiStyles: ["responses", "gemini_native"] },
     )!;
     expect(invented.apiStyles).toEqual(["responses"]);
+  });
+});
+
+describe("provider registry entries", () => {
+  it.each(PROVIDER_TYPES)("reaches %s over a fixed https origin", (type) => {
+    const { directBaseUrl, auth } = PROVIDER_REGISTRY[type];
+    const url = new URL(directBaseUrl);
+    expect(url.protocol).toBe("https:");
+    // A base URL that does not end in `/` would swallow the first path
+    // character when the provider path is appended to it.
+    expect(directBaseUrl.endsWith("/")).toBe(true);
+    expect(url.search).toBe("");
+    expect(auth.header).toBe(auth.header.toLowerCase());
+    // Whatever the scheme is, the credential is what follows it verbatim.
+    expect(providerAuthValue(type, "SECRET"))
+      .toBe(`${"scheme" in auth ? auth.scheme : ""}SECRET`);
+    // Every declared auth header is stripped off client requests on every route.
+    expect(RESERVED_UPSTREAM_HEADERS).toContain(auth.header);
+  });
+
+  it.each(OPENAI_COMPATIBLE_PROVIDERS)("authenticates %s with a bearer token", (type) => {
+    expect(PROVIDER_REGISTRY[type].auth).toEqual({
+      header: "authorization",
+      scheme: "Bearer ",
+    });
+  });
+
+  /**
+   * Authorship is a curated claim, so it is only made where one answer covers
+   * every model the type serves. A host that resells other labs' open-weight
+   * models has no such answer and must resolve it per catalog entry instead —
+   * saying "a Llama model served by Groq was made by Groq" would be worse than
+   * saying nothing.
+   */
+  it("claims a default author only for a provider that makes its own models", () => {
+    const authored = PROVIDER_TYPES.filter((type) => providerModelAuthor(type) !== null);
+    expect(authored.sort()).toEqual([
+      "anthropic",
+      "deepseek",
+      "gemini",
+      "mistral",
+      "moonshot",
+      "openai",
+      "perplexity",
+      "xai",
+    ]);
+    for (
+      const type of [
+        "groq",
+        "together",
+        "fireworks",
+        "cerebras",
+        "huggingface",
+        "baseten",
+        "bytedance",
+      ] as const
+    ) {
+      expect([type, providerModelAuthor(type)]).toEqual([type, null]);
+    }
+  });
+
+  it("reports no provider type in this batch as cost-reporting", () => {
+    // Fail-closed default: only a route that really returns a per-request cost
+    // may bill without a local price, and none of these do.
+    for (const type of OPENAI_COMPATIBLE_PROVIDERS) {
+      expect([type, reportsCost(type)]).toEqual([type, false]);
+    }
   });
 });
 
@@ -208,10 +333,16 @@ describe("provider gateway routing configuration", () => {
 describe("Cloudflare AI Gateway adapter", () => {
   const adapter = GATEWAY_ADAPTERS.cf_aig;
 
-  it("maps every provider type Cloudflare serves, with the openai v1 strip", () => {
-    expect(Object.keys(adapter.routes).sort()).toEqual([...PROVIDER_TYPES].sort());
+  it("maps only the provider types verified against a live gateway", () => {
+    // Deliberately a subset of PROVIDER_TYPES: a slug read off Cloudflare's docs
+    // is a guess about a URL and about whose key that gateway holds, so a type
+    // stays direct-only until someone has actually run traffic through it.
+    expect(Object.keys(adapter.routes).sort()).toEqual([...CF_AIG_PROVIDERS].sort());
+    for (const type of OPENAI_COMPATIBLE_PROVIDERS) {
+      expect(adapter.routes[type]).toBeUndefined();
+    }
     expect(adapter.routes.openai).toEqual({ slug: "openai", stripPathPrefix: "v1/" });
-    for (const type of PROVIDER_TYPES) {
+    for (const type of CF_AIG_PROVIDERS) {
       if (type === "openai") continue;
       expect(adapter.routes[type]?.stripPathPrefix).toBeUndefined();
     }

@@ -32,12 +32,30 @@ import {
 } from "@/lib/config-types";
 import { usePrices, useProviderInstances } from "@/lib/queries";
 
+/**
+ * What to put after the slug. The path is the provider's own, verbatim, and the
+ * OpenAI-compatible batch disagrees about its prefix more than anything else
+ * does — so each one says exactly where its chat completions live.
+ */
 const PROVIDER_HINTS: Record<Provider, string> = {
   openai: "Forwarded with the leading v1/ stripped, matching Cloudflare's provider-native URL.",
   anthropic: "Forwarded with the v1/ prefix retained.",
   xai: "Routed to Cloudflare's grok slug; the tenant path stays /proxy/xai/...",
   gemini: "Use the OpenAI-compatible path v1beta/openai/chat/completions.",
   perplexity: "Routed to Cloudflare's perplexity-ai slug; use chat/completions for Sonar models.",
+  deepseek: "Direct only. DeepSeek's base URL has no v1/, so the path is chat/completions.",
+  groq: "Direct only. Groq namespaces its OpenAI API: use openai/v1/chat/completions.",
+  mistral: "Direct only. Use v1/chat/completions.",
+  together: "Direct only. Use v1/chat/completions; models are namespaced, e.g. openai/gpt-oss-120b.",
+  fireworks:
+    "Direct only. Use inference/v1/chat/completions. Models are account-scoped (accounts/…/models/…), so price them under custom model pricing.",
+  cerebras: "Direct only. Use v1/chat/completions.",
+  moonshot: "Direct only. Use v1/chat/completions on the international api.moonshot.ai host.",
+  huggingface:
+    "Direct only. Use v1/chat/completions on the Inference Providers router. Pin the upstream in the model ID (author/model:provider) — otherwise the router picks one and the price varies with it.",
+  baseten: "Direct only. Use v1/chat/completions on the Model APIs host.",
+  bytedance:
+    "Direct only. BytePlus ModelArk's version segment is already in the base URL: the path is chat/completions. Models must be activated in your ModelArk console first.",
 };
 
 /** One card per provider instance; an unknown slug still gets one so it can be removed. */

@@ -29,6 +29,7 @@ export type ErrorCode =
   | "provider_not_configured"
   | "provider_unavailable"
   | "slug_taken"
+  | "provider_not_supported_by_gateway"
   | "provider_gateway_managed"
   | "gateway_in_use"
   | "provider_key_invalid"

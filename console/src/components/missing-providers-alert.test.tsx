@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import { MissingProvidersAlert, unconfiguredProviders } from "./missing-providers-alert";
 import { renderAuthenticated, stubApi } from "@/test/render";
-import type { ProxyConfig } from "@/lib/config-types";
+import { PROVIDERS, type ProxyConfig } from "@/lib/config-types";
 import type { ProviderCredential } from "@/lib/types";
 
 const ALL: ProxyConfig = { providers: { mode: "all" }, model_rewrites: {} };
@@ -67,7 +67,7 @@ describe("unconfiguredProviders", () => {
 
   it("treats an all-providers app as needing every provider", () => {
     expect(unconfiguredProviders(ALL, [credential({})]))
-      .toEqual(["anthropic", "xai", "gemini", "perplexity"]);
+      .toEqual(PROVIDERS.filter((provider) => provider !== "openai"));
   });
 });
 

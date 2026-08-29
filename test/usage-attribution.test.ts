@@ -242,9 +242,11 @@ describe("model author resolution", () => {
 
   /**
    * The catalog entry wins because it is curated per model, which is what makes
-   * the dimension worth storing: Stage 3's batch serves other people's models
-   * (Groq and Together serve Meta's), so author stops tracking provider type.
-   * No shipped entry carries an author yet, so the order is proved against one.
+   * the dimension worth storing: the OpenAI-compatible batch serves other
+   * people's models (Together serves Meta's, ByteDance serves DeepSeek's), so
+   * author stops tracking provider type. Proved here against an OpenAI entry,
+   * which carries no author, so precedence is visible rather than incidental;
+   * the shipped curated authors are asserted in `usage.test.ts`.
    */
   it("prefers the catalog's own author when one is curated", () => {
     const entry = prices.openai["gpt-5.6-sol"] as { author?: string };

@@ -52,13 +52,28 @@ const STYLE_CLAMP_STYLE: Partial<Record<ApiStyle, OutputClampStyle>> = {
   gemini_native: "gemini_native",
 };
 
-/** Each provider type's own request shape. */
+/**
+ * Each provider type's own request shape. The Stage 3 batch is
+ * chat-completions-native — `max_tokens` is the cap in every one of their own
+ * bodies — so a provider-native path with no cross-provider style still clamps
+ * the field those providers actually read.
+ */
 const NATIVE_CLAMP_STYLE: Record<ProviderType, OutputClampStyle> = {
   openai: "responses",
   anthropic: "anthropic",
   xai: "responses",
   gemini: "gemini_native",
   perplexity: "responses",
+  deepseek: "chat_completions",
+  groq: "chat_completions",
+  mistral: "chat_completions",
+  together: "chat_completions",
+  fireworks: "chat_completions",
+  cerebras: "chat_completions",
+  moonshot: "chat_completions",
+  huggingface: "chat_completions",
+  baseten: "chat_completions",
+  bytedance: "chat_completions",
 };
 
 export function outputClampStyle(style: ApiStyle, provider: ProviderType): OutputClampStyle {

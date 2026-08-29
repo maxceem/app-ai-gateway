@@ -1,6 +1,23 @@
 /** Mirrors the shapes `src/core/config.ts` parses on the Worker side. */
 
-export const PROVIDERS = ["openai", "anthropic", "xai", "gemini", "perplexity"] as const;
+/** Mirrors `PROVIDER_TYPES` in `src/core/providers.ts`, in the same order. */
+export const PROVIDERS = [
+  "openai",
+  "anthropic",
+  "xai",
+  "gemini",
+  "perplexity",
+  "deepseek",
+  "groq",
+  "mistral",
+  "together",
+  "fireworks",
+  "cerebras",
+  "moonshot",
+  "huggingface",
+  "baseten",
+  "bytedance",
+] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export const PROVIDER_LABELS: Record<Provider, string> = {
@@ -9,6 +26,16 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   xai: "xAI",
   gemini: "Gemini",
   perplexity: "Perplexity",
+  deepseek: "DeepSeek",
+  groq: "Groq",
+  mistral: "Mistral",
+  together: "Together AI",
+  fireworks: "Fireworks AI",
+  cerebras: "Cerebras",
+  moonshot: "Moonshot AI",
+  huggingface: "Hugging Face",
+  baseten: "Baseten",
+  bytedance: "ByteDance Ark",
 };
 
 /** Display names for every gateway type the API can return. */

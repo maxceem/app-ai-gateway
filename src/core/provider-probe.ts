@@ -5,15 +5,40 @@ import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
 import type { ProviderType } from "./types";
 
 /**
- * The cheapest authenticated call each provider offers. Perplexity has no
- * unmetered authenticated endpoint, so its credentials are accepted unvalidated
- * and flagged in the console.
+ * The cheapest authenticated call each provider offers, as a path under its own
+ * {@link PROVIDER_REGISTRY} base URL. A type is absent only when the provider
+ * has no such call, and its credentials are then accepted unvalidated and
+ * flagged in the console — never because a plausible path was untested. An entry
+ * that answers 200 to an invalid key would be worse than no entry at all: it
+ * would report every key as good.
+ *
+ * Absent, and why:
+ * - `perplexity` — no unmetered authenticated endpoint.
+ * - `fireworks` — its list-models call is `v1/accounts/{account}/models`, and
+ *   the account id cannot be derived from the key. Nothing under
+ *   `inference/v1/` is documented as a GET.
+ * - `huggingface` — `router.huggingface.co/v1/models` is public: it answers 200
+ *   to a garbage token, so probing it would validate every key. The endpoint
+ *   that does check a token lives on a different origin (`huggingface.co`),
+ *   which this table cannot express.
+ * - `bytedance` — ModelArk publishes no list-models call, and its own SDK has
+ *   no models resource. It also authenticates before it routes, so every path
+ *   answers the same 401 and a probe would prove nothing about the key.
  */
 const PROBE_PATHS: Partial<Record<ProviderType, string>> = {
   openai: "v1/models",
   xai: "v1/models",
   gemini: "v1beta/models",
   anthropic: "v1/models",
+  // DeepSeek's OpenAI base URL carries no `v1` segment.
+  deepseek: "models",
+  // Groq's OpenAI-compatible surface is namespaced under `openai/`.
+  groq: "openai/v1/models",
+  mistral: "v1/models",
+  together: "v1/models",
+  cerebras: "v1/models",
+  moonshot: "v1/models",
+  baseten: "v1/models",
 };
 
 const PROBE_TIMEOUT_MS = 4_000;

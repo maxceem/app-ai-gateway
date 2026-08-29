@@ -34,6 +34,19 @@ const PROVIDER_CAPABILITIES = {
   xai: { apiStyles: API_STYLES, endpointStyles: ["responses", "transcription"] },
   gemini: { apiStyles: API_STYLES, endpointStyles: [] },
   perplexity: { apiStyles: API_STYLES, endpointStyles: [] },
+  // The OpenAI-compatible batch. Named endpoints stay empty: the gateway would
+  // have to compose those bodies itself, and nothing has been verified against
+  // these providers' own request shapes, so only the pass-through is offered.
+  deepseek: { apiStyles: API_STYLES, endpointStyles: [] },
+  groq: { apiStyles: API_STYLES, endpointStyles: [] },
+  mistral: { apiStyles: API_STYLES, endpointStyles: [] },
+  together: { apiStyles: API_STYLES, endpointStyles: [] },
+  fireworks: { apiStyles: API_STYLES, endpointStyles: [] },
+  cerebras: { apiStyles: API_STYLES, endpointStyles: [] },
+  moonshot: { apiStyles: API_STYLES, endpointStyles: [] },
+  huggingface: { apiStyles: API_STYLES, endpointStyles: [] },
+  baseten: { apiStyles: API_STYLES, endpointStyles: [] },
+  bytedance: { apiStyles: API_STYLES, endpointStyles: [] },
 } as const satisfies Record<ProviderType, RouteCapability>;
 
 export type EndpointProvider = {
@@ -105,6 +118,24 @@ export function routeCanonicalModel(
   observed: string,
 ): string {
   return canonicalModel(gatewayRoute(route, provider), observed);
+}
+
+/**
+ * Refuses a provider instance a gateway cannot carry at all, at the moment it is
+ * configured rather than on its first request. Most provider types have no
+ * mapping in any adapter — that is the direct-only default — so without this an
+ * operator could store a row whose every request answers 403.
+ */
+export function assertRouteServesProvider(
+  route: ProviderRoute,
+  provider: ProviderType,
+): void {
+  if (routeCapability(route, provider) !== null) return;
+  throw new GatewayError(
+    400,
+    "provider_not_supported_by_gateway",
+    `${route} provider gateways do not serve ${provider} providers; connect this one with its own API key instead`,
+  );
 }
 
 export function supportsApiStyle(

@@ -694,7 +694,17 @@
               "anthropic",
               "xai",
               "gemini",
-              "perplexity"
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance"
             ]
           },
           "slug": {
@@ -808,7 +818,17 @@
               "anthropic",
               "xai",
               "gemini",
-              "perplexity"
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance"
             ]
           },
           "name": {
@@ -873,7 +893,17 @@
               "anthropic",
               "xai",
               "gemini",
-              "perplexity"
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance"
             ]
           },
           "secret": {
@@ -1342,7 +1372,17 @@
               "anthropic",
               "xai",
               "gemini",
-              "perplexity"
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance"
             ]
           },
           "model": {

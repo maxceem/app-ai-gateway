@@ -126,6 +126,13 @@ export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
 /**
  * Cloudflare's own provider slugs. `openai` is the only one whose slug already
  * implies the `v1/` prefix, so it is the only one that strips it.
+ *
+ * Only provider types verified against a live Cloudflare AI Gateway appear here.
+ * Cloudflare lists more providers than this, but a slug taken from its docs is a
+ * guess about a URL *and* about whether that gateway's BYOK store holds a key
+ * for the type: getting either wrong turns every request into a 4xx nobody can
+ * diagnose. A type with no entry is direct-only, which is the safe default and
+ * costs nothing but a gateway option the console never offers.
  */
 const CF_AIG_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute>> = {
   openai: { slug: "openai", stripPathPrefix: "v1/" },

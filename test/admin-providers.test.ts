@@ -627,7 +627,7 @@ describe("gateway routing configuration", () => {
 });
 
 describe("provider probe coverage", () => {
-  it("uses every provider's native probe headers", async () => {
+  it("creates every provider type and probes each at its own documented path", async () => {
     const seen: { url: string; headers: Headers }[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       seen.push({
@@ -637,20 +637,84 @@ describe("provider probe coverage", () => {
       return Response.json({ data: [] });
     });
     for (const type of PROVIDER_TYPES) {
-      await call("POST", "/v1/admin/providers", {
+      const created = await call("POST", "/v1/admin/providers", {
         type,
+        // Slug defaults to the type, and the fixture already owns those, so
+        // each row gets one of its own.
+        slug: `probe-${type}`,
         name: type,
         secret: `${type}-secret`,
       });
+      expect([type, created.status]).toEqual([type, 201]);
+      expect(created.body.provider.type).toBe(type);
     }
+    // A provider with no probe of its own contributes no request here: the key
+    // is stored unvalidated rather than checked against a guessed URL.
     expect(seen.map((entry) => entry.url)).toEqual([
       "https://api.openai.com/v1/models",
       "https://api.anthropic.com/v1/models",
       "https://api.x.ai/v1/models",
       "https://generativelanguage.googleapis.com/v1beta/models",
+      "https://api.deepseek.com/models",
+      "https://api.groq.com/openai/v1/models",
+      "https://api.mistral.ai/v1/models",
+      "https://api.together.ai/v1/models",
+      "https://api.cerebras.ai/v1/models",
+      "https://api.moonshot.ai/v1/models",
+      "https://inference.baseten.co/v1/models",
     ]);
     expect(seen[0]?.headers.get("authorization")).toBe("Bearer openai-secret");
     expect(seen[1]?.headers.get("x-api-key")).toBe("anthropic-secret");
     expect(seen[1]?.headers.get("anthropic-version")).toBe("2023-06-01");
+    // The whole OpenAI-compatible batch authenticates the same way.
+    for (const entry of seen.slice(4)) {
+      expect([entry.url, entry.headers.get("authorization")?.startsWith("Bearer ")])
+        .toEqual([entry.url, true]);
+    }
+  });
+
+  it("stores a key unvalidated for a provider with no probe of its own", async () => {
+    // Perplexity has no unmetered authenticated call; Fireworks needs an
+    // account id the key does not carry; Hugging Face's model list answers 200
+    // to any token, so probing it would report every key as good.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ data: [] }));
+    for (const type of ["perplexity", "fireworks", "huggingface"] as const) {
+      const created = await call("POST", "/v1/admin/providers", {
+        type,
+        slug: `unprobed-${type}`,
+        name: type,
+        secret: `${type}-secret`,
+      });
+      expect([type, created.status, created.body.validated]).toEqual([type, 201, false]);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a provider type its gateway cannot serve", async () => {
+    // The gateway create probes too, so the upstream is stubbed for both calls.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ data: [] }));
+    const gateway = await call("POST", "/v1/admin/provider-gateways", {
+      type: "cf_aig",
+      name: "Unsupported types",
+      accountId: "acct-unsupported",
+      gatewayId: "gw-unsupported",
+      token: "cf-aig-unsupported-token",
+    });
+    expect(gateway.status).toBe(201);
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "deepseek",
+      slug: "deepseek-via-gateway",
+      name: "DeepSeek via CF",
+      providerGatewayId: gateway.body.gateway.id,
+    });
+    expect(created.status).toBe(400);
+    expect(created.body.error.code).toBe("provider_not_supported_by_gateway");
+    const tested = await call("POST", "/v1/admin/providers/test", {
+      type: "deepseek",
+      providerGatewayId: gateway.body.gateway.id,
+    });
+    expect(tested.status).toBe(400);
+    expect(tested.body.error.code).toBe("provider_not_supported_by_gateway");
   });
 });

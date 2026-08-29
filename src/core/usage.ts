@@ -38,12 +38,20 @@ interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
 }
 
-/** The shipped catalog entry: the only source that carries model authorship. */
+/**
+ * The shipped catalog entry: the only source that carries model authorship.
+ *
+ * `Partial` because a provider type may ship with no catalog section at all —
+ * Fireworks names models per account and Hugging Face's router re-prices the
+ * same model ID per upstream, so no static list would be right for either.
+ * Their models are priced by the operator, and until one is, nothing proxies.
+ */
 function catalogPrice(provider: ProviderType, model: string): Price | undefined {
   // The model name comes from the request body, and "constructor" is a legal
   // one: an unguarded read would answer with a function off Object.prototype
   // and price a model nobody listed.
-  return lookup((prices as Record<ProviderType, Record<string, Price>>)[provider], model);
+  const catalog = prices as Partial<Record<ProviderType, Record<string, Price>>>;
+  return lookup(catalog[provider], model);
 }
 
 /**
@@ -217,7 +225,17 @@ function openAiUsage(value: unknown): UsageObservation | null {
   }
   const inputTotal = numberAt(usage, "input_tokens") || numberAt(usage, "prompt_tokens");
   const details = asRecord(usage.input_tokens_details) ?? asRecord(usage.prompt_tokens_details);
-  const cached = details ? numberAt(details, "cached_tokens") : 0;
+  // Cache hits are the same fact under four spellings. OpenAI, Mistral,
+  // Fireworks and Cerebras nest it in `*_tokens_details`; Moonshot and
+  // Together's non-reasoning models put `cached_tokens` at the usage root;
+  // DeepSeek names it `prompt_cache_hit_tokens`. Read positionally, not per
+  // provider — the field names are unambiguous, and a provider that reports
+  // none simply has no cache hits to price. Missing it is not free: the cached
+  // bucket falls back to the full input price, so every one of these providers
+  // would over-bill exactly the traffic their cache discount is for.
+  const cached = (details ? numberAt(details, "cached_tokens") : 0)
+    || numberAt(usage, "cached_tokens")
+    || numberAt(usage, "prompt_cache_hit_tokens");
   const cacheWrite = details ? numberAt(details, "cache_write_tokens") : 0;
   return {
     inputTokens: Math.max(0, inputTotal - cached - cacheWrite),

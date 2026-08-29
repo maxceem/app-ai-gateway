@@ -16,7 +16,7 @@ tiers — an instance either owns a key of its own or references a shared
 
 | Field | Meaning |
 | --- | --- |
-| `type` | `openai`, `anthropic`, `xai`, `gemini`, or `perplexity` |
+| `type` | One of the [supported provider types](#supported-provider-types) |
 | `slug` | The URL segment under `/proxy/{slug}/…`; defaults to `type` |
 | `name` | Your label, e.g. "Prod OpenAI" |
 | `secretHint` | Last few characters of a direct key — display only; `null` on gateway-routed rows |
@@ -31,6 +31,54 @@ store.
 Slugs are unique per organization among **active** rows, so resolution stays a
 plain lookup with no precedence rules. A request for a slug the organization has
 not configured fails with `502 provider_not_configured`.
+
+## Supported provider types
+
+Each type fixes an upstream origin, an authentication header, and a pricing
+domain. The path after the slug is always the provider's own — and the batch
+below disagrees about its prefix more than anything else does, so the exact
+chat-completions path is listed for each.
+
+| `type` | Service | Chat completions path | Routable through a gateway |
+| --- | --- | --- | --- |
+| `openai` | OpenAI | `v1/chat/completions` | Cloudflare AI Gateway |
+| `anthropic` | Anthropic | `v1/messages` | Cloudflare AI Gateway |
+| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare AI Gateway |
+| `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare AI Gateway |
+| `perplexity` | Perplexity | `chat/completions` | Cloudflare AI Gateway |
+| `deepseek` | DeepSeek | `chat/completions` | — direct only |
+| `groq` | Groq | `openai/v1/chat/completions` | — direct only |
+| `mistral` | Mistral | `v1/chat/completions` | — direct only |
+| `together` | Together AI | `v1/chat/completions` | — direct only |
+| `fireworks` | Fireworks AI | `inference/v1/chat/completions` | — direct only |
+| `cerebras` | Cerebras | `v1/chat/completions` | — direct only |
+| `moonshot` | Moonshot AI (Kimi) | `v1/chat/completions` | — direct only |
+| `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | — direct only |
+| `baseten` | Baseten Model APIs | `v1/chat/completions` | — direct only |
+| `bytedance` | BytePlus ModelArk | `chat/completions` | — direct only |
+
+"Direct only" is the default, not a limitation of the type: a provider type is
+offered on a gateway once that pairing has been verified against a live gateway,
+because a provider slug guessed from documentation is a guess about a URL *and*
+about which keys that gateway holds. Connect these types with their own API key.
+
+A few types carry caveats worth knowing before you add a key:
+
+- **ByteDance** is the international BytePlus ModelArk endpoint in
+  `ap-southeast-1`, and `/api/v3` is already part of the base URL — so the path
+  is `chat/completions` with no version segment of your own. Keys and model
+  catalogs are region-isolated, and models must be activated in your ModelArk
+  console before they answer. The China Volcengine edition is a separate
+  service and is not reachable here.
+- **Moonshot** is the international `api.moonshot.ai` host; a key issued on the
+  China platform will not work.
+- **Fireworks** names models per account (`accounts/{account}/models/{id}`), so
+  no shipped catalog would be right for your account — price the models you use
+  under [custom model pricing](#custom-model-pricing).
+- **Hugging Face** routes each request to whichever upstream provider it picks,
+  and the same model costs up to ten times more on one upstream than another.
+  Pin the upstream in the model ID (`author/model:provider`) and price that ID,
+  or the recorded cost is a guess.
 
 ## Slugs and multiple instances
 
@@ -61,7 +109,22 @@ the provider offers:
 | xAI | `GET /v1/models` |
 | Anthropic | `GET /v1/models` |
 | Gemini | `GET /v1beta/models` |
+| DeepSeek | `GET /models` |
+| Groq | `GET /openai/v1/models` |
+| Mistral | `GET /v1/models` |
+| Together AI | `GET /v1/models` |
+| Cerebras | `GET /v1/models` |
+| Moonshot AI | `GET /v1/models` |
+| Baseten | `GET /v1/models` |
 | Perplexity | none — accepted unvalidated |
+| Fireworks AI | none — its model list needs an account id the key does not carry |
+| Hugging Face | none — its model list answers `200` to any token, so a probe would pass every key |
+| ByteDance | none — ModelArk publishes no list-models call |
+
+A provider is missing from this table only when it has no call that can prove a
+key. That is deliberate: a probe against a plausible-looking URL that answers
+`200` regardless of the credential is worse than no probe, because it reports
+every key as good.
 
 If the provider answers `401` or `403`, the key is rejected with
 `provider_key_invalid` and nothing is stored. Any other outcome — a timeout, an
@@ -92,7 +155,11 @@ Gateway, stored once and referenced by as many provider instances as you like.
 token }`, proves all three with a single probe, and encrypts the token **once**.
 It creates the gateway only; providers are attached one at a time through the
 normal provider create call with `providerGatewayId` set, each probed through the
-gateway for its own type.
+gateway for its own type. Attaching a provider type the gateway does not serve is
+refused with `400 provider_not_supported_by_gateway` rather than stored as a row
+whose every request would fail — see the
+[supported provider types](#supported-provider-types) table for which pair with
+which.
 
 - `PATCH /v1/admin/provider-gateways/{id}` renames a gateway.
 - `POST /v1/admin/provider-gateways/{id}/rotate` replaces the token: one probe,
@@ -129,6 +196,34 @@ Lookup is a two-level merge:
 
 1. the provider row's own `pricing` entry for the requested model, then
 2. the shipped catalog.
+
+Two provider types ship with no catalog at all, because no static list could be
+right for them: **Fireworks AI** names models per account, and **Hugging Face**
+re-prices the same model ID on every upstream its router might pick. Their
+models proxy once you price them here, and not before.
+
+Where a provider's real price depends on something the catalog cannot see, the
+shipped entry is the **higher** rate, so the recorded cost is never lower than
+what you are billed:
+
+- **DeepSeek** charges half price outside its peak hours. The catalog carries
+  the peak rate, so off-peak traffic records as costing more than it did.
+- Batch and discounted serving tiers — offered by ByteDance, Moonshot and
+  others — are priced per request, not per model, and the catalog carries the
+  standard rate.
+
+<Callout title="Mistral Medium costs more than Mistral Large">
+  This is not a transcription error. Mistral's size names describe model
+  generations, not a price ladder: `mistral-medium-latest` resolves to Mistral
+  Medium 3.5, the current frontier model, at `$1.50` in / `$7.50` out per
+  million tokens, while `mistral-large-latest` resolves to the older Mistral
+  Large 3 at `$0.50` / `$1.50`. `mistral-small-latest` (Small 4) is `$0.15` /
+  `$0.60`. Pick by the model card, not by the name.
+</Callout>
+
+Override the entry if your traffic sits mostly on the cheaper side of either.
+Erring high keeps a spending limit a limit: a cost recorded too low would let
+traffic through that a budget was meant to stop.
 
 A model priced by neither is refused with `400 pricing_not_configured` and a
 message naming where to fix it. Entering the price *is* the explicit allowance:

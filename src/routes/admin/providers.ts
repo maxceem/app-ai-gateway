@@ -5,6 +5,7 @@ import {
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
+import { assertRouteServesProvider } from "../../core/capabilities";
 import { GatewayError } from "../../core/errors";
 import { assertGatewayRoute, isGatewayType } from "../../core/gateways";
 import { probeProviderGateway, probeProviderKey } from "../../core/provider-probe";
@@ -176,11 +177,14 @@ providerRoutes.post("/providers/test", async (c) => {
     return c.json(await probeProviderKey(body.type, body.secret));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
-  const { type: _gatewayType, ...gateway } = await gatewayToken(
+  const { type: gatewayType, ...gateway } = await gatewayToken(
     c,
     admin.organizationId,
     body.providerGatewayId!,
   );
+  // Said here rather than reported as an inconclusive probe: "this gateway does
+  // not serve DeepSeek" and "nothing could be proven" are different answers.
+  assertRouteServesProvider(gatewayType, body.type);
   return c.json(await probeProviderGateway({ type: body.type, ...gateway }));
 });
 
@@ -215,6 +219,9 @@ providerRoutes.post("/providers", async (c) => {
     }
     providerGatewayId = gatewayId;
     const { type: gatewayType, ...gateway } = await gatewayToken(c, admin.organizationId, gatewayId);
+    // A gateway with no mapping for this provider type could never carry one of
+    // its requests, so the row is refused instead of being stored dead.
+    assertRouteServesProvider(gatewayType, body.type);
     // The adapter that will carry the traffic is the only judge of its own
     // routing configuration, so a route is never stored unvalidated.
     assertGatewayRoute(gatewayType, gatewayRoute);
