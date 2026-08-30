@@ -32,6 +32,27 @@ type BreakdownKey = keyof typeof BREAKDOWN_COLUMNS;
 const USAGE_STATUSES = ["ok", "provider_error", "blocked_rate", "blocked_budget", "blocked_user"] as const;
 type UsageStatusFilter = (typeof USAGE_STATUSES)[number];
 
+/**
+ * Whether an event carries usage a price could act on.
+ *
+ * All-zero counts are the shape of a metering failure, not of a free request:
+ * an unreadable response body, or a stream a client abandoned before the chunk
+ * carrying its usage. Repricing such a row computes zero from zero, which is
+ * arithmetic rather than an answer — so this is what separates a row whose cost
+ * is now known from one whose cost is still unknown.
+ *
+ * Time-priced events never reach the caller: their models have no token price,
+ * so {@link hasTokenModelPrice} excludes them before this is asked.
+ */
+function hasReadableCounts(row: {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+}): boolean {
+  return row.inputTokens + row.cachedInputTokens + row.cacheWriteTokens + row.outputTokens > 0;
+}
+
 usageRoutes.get("/apps/:app/usage", async (c) => {
   const appId = c.req.param("app");
   const month = c.req.query("month") ?? currentMonth();
@@ -105,7 +126,12 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   // provider instance was deleted can be unpriceable while its siblings are
   // fine. A dry run reports that instead of refusing to answer; only `apply`
   // insists on repricing every matched event.
-  const repriced: { id: number; previousCostUsd: number; costUsd: number }[] = [];
+  const repriced: {
+    id: number;
+    previousCostUsd: number;
+    costUsd: number;
+    metered: boolean;
+  }[] = [];
   const skipped: { id: number; previousCostUsd: number }[] = [];
   for (const row of rows) {
     const providerType = row.providerType as ProviderType;
@@ -123,7 +149,12 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
       skipped.push({ id: row.id, previousCostUsd: row.costUsd });
       continue;
     }
-    repriced.push({ id: row.id, previousCostUsd: row.costUsd, costUsd });
+    repriced.push({
+      id: row.id,
+      previousCostUsd: row.costUsd,
+      costUsd,
+      metered: hasReadableCounts(row),
+    });
   }
   const previousCostUsd = repriced.reduce((total, row) => total + row.previousCostUsd, 0);
   const recalculatedCostUsd = repriced.reduce((total, row) => total + row.costUsd, 0);
@@ -132,14 +163,27 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   if (apply && repriced.length > 0) {
     for (let offset = 0; offset < repriced.length; offset += 100) {
       const chunk = repriced.slice(offset, offset + 100);
-      // `cost_source` moves with the figure. A repriced row's cost came from
-      // the local catalog, whatever it came from before, and leaving an
-      // `unresolved` marker behind on a row that now has a computed cost would
-      // keep the console hiding it and keep the unresolved-count alert firing
-      // for spend that has since been accounted for. `reported` rows never get
-      // here — they are excluded by the query above.
+      // `cost_source` moves with the figure, but only where there was a figure
+      // to move. A row with readable counts now has a cost the local catalog
+      // stands behind, so leaving an `unresolved` marker on it would keep the
+      // console hiding a cost it has and keep the alert firing for spend that
+      // has since been accounted for.
+      //
+      // A row with *no* readable counts is the opposite case and must not be
+      // touched the same way. Multiplying zero tokens by any price yields zero,
+      // which looks like a computed answer and is not one: nothing was ever
+      // metered, so the cost is still unknown. Claiming `computed` there would
+      // convert "spend escaping the budget" into "this request was free",
+      // silence the By cost source signal operators are told to watch, and hide
+      // the row in the console — while the unbudgeted spend continued. Its
+      // `cost_usd` is still rewritten, so a stale figure is corrected, but the
+      // marker survives.
+      //
+      // `reported` rows never get here — they are excluded by the query above.
       await c.env.DB.batch(chunk.map((row) => c.env.DB
-        .prepare("UPDATE app_usage_event SET cost_usd = ?, cost_source = 'computed' WHERE id = ? AND app_id = ?")
+        .prepare(row.metered
+          ? "UPDATE app_usage_event SET cost_usd = ?, cost_source = 'computed' WHERE id = ? AND app_id = ?"
+          : "UPDATE app_usage_event SET cost_usd = ? WHERE id = ? AND app_id = ?")
         .bind(row.costUsd, row.id, appId)));
     }
 
@@ -179,6 +223,15 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     month,
     applied: apply,
     matched_events: repriced.length,
+    /**
+     * Matched events that carried no readable usage, and so were repriced to
+     * the zero their zero counts imply while keeping whatever `cost_source`
+     * they had. Counted here rather than dropped from `matched_events` because
+     * their `cost_usd` really is rewritten; surfaced separately because a
+     * non-zero number means the month contains spend nothing could meter, which
+     * repricing cannot fix and must not appear to have fixed.
+     */
+    unmetered_events: repriced.filter((row) => !row.metered).length,
     /** Dry-run only: matched events whose serving instance can no longer price them. */
     unpriced_events: skipped.length,
     unpriced_cost_usd: skipped.reduce((total, row) => total + row.previousCostUsd, 0),

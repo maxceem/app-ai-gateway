@@ -47,6 +47,26 @@ Events billed on a cost the upstream reported (`cost_source: "reported"`) are
 never matched: that figure is what you were charged, and a local price would
 replace a fact with an estimate.
 
+A repriced event's `cost_source` becomes `computed`, because the local catalog
+is now where its cost came from — including events that were previously
+[unresolved](#unresolved-usage), whose marker clears once a price can answer for
+them.
+
+**Events with no readable usage keep their `cost_source`.** An event whose token
+counts are all zero was never metered — an unrecognised response shape, or a
+stream a client abandoned before the chunk carrying its usage. Multiplying zero
+tokens by any price yields zero, which is arithmetic rather than an answer, so
+repricing writes that zero to `cost_usd` but leaves the marker alone: an
+`unresolved` event stays `unresolved`. Those events are counted in
+`matched_events` (their `cost_usd` really is rewritten) and reported separately
+as `unmetered_events`.
+
+A non-zero `unmetered_events` means the month contains spend nothing could
+measure. Repricing cannot recover it, and must not appear to have done so —
+were the marker overwritten, the events would read as genuinely free, drop out
+of the **By cost source** breakdown, and stop being shown as unresolved in the
+console, while the unbudgeted spend continued.
+
 ## Where a cost comes from
 
 Every event records how its `cost_usd` was arrived at, in `cost_source`:
