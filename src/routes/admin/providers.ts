@@ -11,6 +11,7 @@ import { checkOperatorBaseUrl } from "../../core/origin-guard";
 import {
   assertGatewayRoute,
   isGatewayType,
+  requireGatewayAdapter,
   resolveGateway,
   type ResolvedGateway,
 } from "../../core/gateways";
@@ -27,6 +28,7 @@ import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
+  type ProviderGatewayType,
   type ProviderPricing,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -159,17 +161,48 @@ async function gatewayToken(
   // The stored type comes from a CHECK wider than the adapter registry, so a
   // row this deployment cannot serve is refused here rather than mis-read as
   // another gateway's configuration.
-  if (!isGatewayType(row.type)) {
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      `This deployment has no adapter for ${row.type} provider gateways`,
-    );
-  }
+  const type = requireGatewayAdapter(row.type);
   return {
-    gateway: resolveGateway(row.type, row.config),
+    gateway: resolveGateway(type, row.config),
     token: await decryptProviderGatewaySecret(c.env, organizationId, row.id, row.secretBlob),
   };
+}
+
+/**
+ * The adapter that owns a stored gateway row's routing configuration, read
+ * without touching the vault.
+ *
+ * Validating a route only ever needs the gateway's *type*, so this reads that
+ * one column instead of going through {@link gatewayToken}, which 404s on a
+ * revoked row and decrypts a token nothing here is going to spend. Both were
+ * wrong for an edit: clearing a route back to `null` is how an operator gets rid
+ * of one, and refusing that on a revoked or adapterless gateway would strand the
+ * row — the same reasoning `baseUrl` clearing already follows below.
+ *
+ * Status is deliberately not checked. A revoked gateway is a credential state,
+ * not a statement about what its adapter can route, and the row is going to be
+ * saved either way; the request it eventually serves is what needs the gateway
+ * back. An adapter, on the other hand, is required for a non-null route: without
+ * one there is nothing that could agree to the configuration being stored.
+ */
+async function gatewayRouteAdapter(
+  c: Context<ProviderEnv>,
+  organizationId: string,
+  gatewayId: string,
+  route: GatewayRouteConfig | null,
+): Promise<ProviderGatewayType | null> {
+  const row = await database(c.env.DB).query.providerGateway.findFirst({
+    columns: { type: true },
+    where: and(
+      eq(providerGateway.id, gatewayId),
+      eq(providerGateway.organizationId, organizationId),
+    ),
+  });
+  // Clearing is unconditional: a row whose gateway was deleted out from under it
+  // must still be able to drop configuration that now applies to nothing.
+  if (route === null) return row && isGatewayType(row.type) ? row.type : null;
+  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  return requireGatewayAdapter(row.type);
 }
 
 /**
@@ -280,9 +313,16 @@ providerRoutes.put("/providers/:id", async (c) => {
   if (body.name !== undefined) updates.name = body.name;
   if (body.pricing !== undefined) updates.pricing = body.pricing;
   if (body.gatewayRoute !== undefined) {
+    // Type only, straight off the gateway row: no vault call, and no dependency
+    // on that gateway still being active.
     const gatewayType = row.providerGatewayId === null
       ? null
-      : (await gatewayToken(c, admin.organizationId, row.providerGatewayId)).gateway.type;
+      : await gatewayRouteAdapter(
+          c,
+          admin.organizationId,
+          row.providerGatewayId,
+          body.gatewayRoute,
+        );
     assertGatewayRoute(gatewayType, body.gatewayRoute);
     updates.gatewayRoute = body.gatewayRoute;
   }

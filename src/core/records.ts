@@ -30,3 +30,25 @@ export function recordFromEntries<T>(entries: Iterable<readonly [string, T]>): R
   for (const [key, value] of entries) result[key] = value;
   return result;
 }
+
+/**
+ * A plain object, or `null` for anything else. The one test every reader of an
+ * untrusted JSON document needs: arrays and primitives are not records, and
+ * reading a named field off one would answer with an index or a character.
+ *
+ * `null` rather than a boolean guard because almost every caller wants the
+ * narrowed value; {@link recordOr} is the same test where an absent object and
+ * an empty one mean the same thing. `plainObject` in `endpointrules.ts` stays a
+ * type *predicate* on purpose — the deep merge narrows two values at once, which
+ * a returned value cannot express.
+ */
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** {@link asRecord} with an empty record standing in for "not one". */
+export function recordOr(value: unknown): Record<string, unknown> {
+  return asRecord(value) ?? {};
+}

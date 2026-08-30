@@ -234,6 +234,29 @@ describe("provider self-reports", () => {
     expect(byok({ cost: 0.5, cost_details: { upstream_inference_cost: 0 } })).toBeNull();
   });
 
+  /**
+   * The report lives in the last event of a stream, so the scan runs backwards
+   * and stops as soon as one is complete — the same shape `usageFromValues`
+   * uses. Order must not change the answer: the last value that names a field
+   * still wins, whichever direction the loop runs.
+   */
+  it("takes each field from the last event that names it", () => {
+    const event = (extra: Record<string, unknown>) =>
+      `data: ${JSON.stringify({ choices: [{ delta: {} }], ...extra })}\n\n`;
+    const seen = observeResponse(
+      [
+        event({ model: "early/model" }),
+        event({ model: "late/model", usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.5 } }),
+        // A trailing event that names nothing must not blank what came before.
+        event({}),
+        "data: [DONE]\n\n",
+      ].join(""),
+      "text/event-stream",
+      "openrouter",
+    );
+    expect(seen.report).toMatchObject({ costUsd: 0.5, servedModel: "late/model" });
+  });
+
   it("reports nothing when the response reports nothing", () => {
     // A body with no cost, no model and no routing metadata leaves every
     // observed field unknown rather than defaulting any of them.

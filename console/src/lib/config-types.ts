@@ -1,25 +1,27 @@
 /** Mirrors the shapes `src/core/config.ts` parses on the Worker side. */
 
-/** Mirrors `PROVIDER_TYPES` in `src/core/providers.ts`, in the same order. */
-export const PROVIDERS = [
-  "openai",
-  "anthropic",
-  "xai",
-  "gemini",
-  "perplexity",
-  "deepseek",
-  "groq",
-  "mistral",
-  "together",
-  "fireworks",
-  "cerebras",
-  "moonshot",
-  "huggingface",
-  "baseten",
-  "bytedance",
-  "openrouter",
-] as const;
-export type Provider = (typeof PROVIDERS)[number];
+import {
+  ENDPOINT_PROVIDER_TYPES,
+  OUTPUT_CLAMP_STYLES,
+  PROVIDER_TYPES,
+  providersForEndpointStyle,
+  type EndpointApiStyle,
+  type EndpointProvider,
+  type OutputClampStyle,
+  type ProviderType,
+} from "@shared/capabilities";
+
+// The capability facts come from `src/shared/capabilities.ts`, which the Worker
+// enforces from the same tables. What stays here is presentation — labels, form
+// copy, draft shapes — and the config structures the console edits.
+export {
+  ENDPOINT_API_STYLES,
+  reportsCost,
+  type EndpointApiStyle,
+} from "@shared/capabilities";
+
+export const PROVIDERS = PROVIDER_TYPES;
+export type Provider = ProviderType;
 
 export const PROVIDER_LABELS: Record<Provider, string> = {
   openai: "OpenAI",
@@ -39,18 +41,6 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   bytedance: "ByteDance Ark",
   openrouter: "OpenRouter",
 };
-
-/**
- * Provider types whose own responses say what a request cost. Mirrors
- * `reportsCost` in `src/core/providers.ts`: their models proxy with no local
- * price at all, and the recorded cost is the upstream's own figure rather than
- * this deployment's catalog.
- */
-const COST_REPORTING_PROVIDERS: readonly string[] = ["openrouter"];
-
-export function reportsCost(type: string): boolean {
-  return COST_REPORTING_PROVIDERS.includes(type);
-}
 
 /** Display names for every gateway type the API can return. */
 export const GATEWAY_TYPE_LABELS = {
@@ -94,14 +84,8 @@ export const CREATABLE_GATEWAY_TYPES = [
 
 export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["value"];
 
-export const CLAMP_STYLES = [
-  "responses",
-  "chat_completions",
-  "gemini_native",
-  "anthropic",
-  "none",
-] as const;
-export type ClampStyle = (typeof CLAMP_STYLES)[number];
+export const CLAMP_STYLES = OUTPUT_CLAMP_STYLES;
+export type ClampStyle = OutputClampStyle;
 
 export interface ClaimRequirement {
   path: string;
@@ -204,22 +188,14 @@ export interface ProxyConfig {
   model_rewrites?: Record<string, string>;
 }
 
-export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;
-export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
-
-/** The Worker only composes OpenAI and xAI request shapes for named endpoints. */
-export const ENDPOINT_PROVIDERS = ["openai", "xai"] as const;
-export type EndpointProvider = (typeof ENDPOINT_PROVIDERS)[number];
-
-/** Mirrors `endpointStyles` in the Worker's `PROVIDER_REGISTRY`. */
-const ENDPOINT_PROVIDER_STYLES: Record<EndpointProvider, readonly EndpointApiStyle[]> = {
-  openai: ["responses", "transcription"],
-  xai: ["responses", "transcription"],
-};
-
-export function endpointProviderTypes(style: EndpointApiStyle): EndpointProvider[] {
-  return ENDPOINT_PROVIDERS.filter((type) => ENDPOINT_PROVIDER_STYLES[type].includes(style));
-}
+/**
+ * The provider types whose native request shapes the Worker composes for named
+ * endpoints, and which styles each one covers — read straight off the shared
+ * capability matrix rather than restated here.
+ */
+export const ENDPOINT_PROVIDERS = ENDPOINT_PROVIDER_TYPES;
+export type { EndpointProvider };
+export const endpointProviderTypes = providersForEndpointStyle;
 
 /**
  * The instances a named endpoint of this style may target. The provider type

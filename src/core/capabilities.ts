@@ -1,103 +1,63 @@
 import type { GatewayRouteConfig, ProviderGatewayType } from "../db/schema";
-import { API_STYLES, type ApiStyle } from "./api-styles";
-import { GatewayError } from "./errors";
 import {
-  canonicalModel,
-  GATEWAY_ADAPTERS,
-  wireModel,
+  narrowedCapability,
+  providerCapability,
   type GatewayProviderRoute,
-} from "./gateways";
+  type ProviderRoute,
+  type RouteCapability,
+} from "../shared/capabilities";
+import type { ApiStyle } from "./api-styles";
+import { GatewayError } from "./errors";
+import { canonicalModel, GATEWAY_ADAPTERS, wireModel } from "./gateways";
 import { PROVIDER_TYPES, type EndpointApiStyle, type ProviderType } from "./providers";
 
-/**
- * Where a provider instance's traffic goes: straight to the provider's own API,
- * or through one of the organization's gateways.
- */
-export type ProviderRoute = "direct" | ProviderGatewayType;
-
-export interface RouteCapability {
-  /** Client API styles this route forwards. */
-  apiStyles: readonly ApiStyle[];
-  /** Named-endpoint styles the gateway composes itself for this provider. */
-  endpointStyles: readonly EndpointApiStyle[];
-}
-
-/**
- * What each provider type can do on its own API. The raw proxy is a
- * pass-through, so every style reaches every provider and the provider itself
- * answers for the paths it does not have; named endpoints are the narrow set,
- * because the gateway composes those request bodies rather than forwarding them.
- */
-const PROVIDER_CAPABILITIES = {
-  openai: { apiStyles: API_STYLES, endpointStyles: ["responses", "transcription"] },
-  anthropic: { apiStyles: API_STYLES, endpointStyles: [] },
-  xai: { apiStyles: API_STYLES, endpointStyles: ["responses", "transcription"] },
-  gemini: { apiStyles: API_STYLES, endpointStyles: [] },
-  perplexity: { apiStyles: API_STYLES, endpointStyles: [] },
-  // The OpenAI-compatible batch. Named endpoints stay empty: the gateway would
-  // have to compose those bodies itself, and nothing has been verified against
-  // these providers' own request shapes, so only the pass-through is offered.
-  deepseek: { apiStyles: API_STYLES, endpointStyles: [] },
-  groq: { apiStyles: API_STYLES, endpointStyles: [] },
-  mistral: { apiStyles: API_STYLES, endpointStyles: [] },
-  together: { apiStyles: API_STYLES, endpointStyles: [] },
-  fireworks: { apiStyles: API_STYLES, endpointStyles: [] },
-  cerebras: { apiStyles: API_STYLES, endpointStyles: [] },
-  moonshot: { apiStyles: API_STYLES, endpointStyles: [] },
-  huggingface: { apiStyles: API_STYLES, endpointStyles: [] },
-  baseten: { apiStyles: API_STYLES, endpointStyles: [] },
-  bytedance: { apiStyles: API_STYLES, endpointStyles: [] },
-  // The one narrowed entry, and it is a metering constraint rather than a
-  // missing surface: OpenRouter also serves `/responses` and `/messages`, but
-  // only its chat-completions response carries `usage.cost`, and its slugs have
-  // no local price. Any other style would proxy traffic nothing could bill —
-  // exactly the silent $0 the fail-closed gate exists to prevent — so it is
-  // refused at the edge instead.
-  openrouter: { apiStyles: ["chat_completions"], endpointStyles: [] },
-} as const satisfies Record<ProviderType, RouteCapability>;
-
-export type EndpointProvider = {
-  [Type in ProviderType]: (typeof PROVIDER_CAPABILITIES)[Type]["endpointStyles"] extends readonly []
-    ? never
-    : Type;
-}[ProviderType];
-
-export const ENDPOINT_PROVIDER_TYPES = PROVIDER_TYPES.filter(
-  (type): type is EndpointProvider => PROVIDER_CAPABILITIES[type].endpointStyles.length > 0,
-) as [EndpointProvider, ...EndpointProvider[]];
+// The matrix's own shapes and the tables derived purely from them live with the
+// data, so the console reads the same definitions the Worker enforces. What
+// stays here is everything that needs an adapter: the route matrix, wire model
+// mapping, and the assertions that refuse a combination.
+export {
+  ENDPOINT_PROVIDER_TYPES,
+  narrowedCapability,
+  providersForEndpointStyle,
+  type EndpointProvider,
+  type ProviderRoute,
+  type RouteCapability,
+} from "../shared/capabilities";
 
 /**
- * A gateway route only ever narrows what the provider already offers: an
- * adapter cannot invent an operation the provider does not have. `undefined`
- * means the adapter has no mapping for the provider type, which makes that
- * type direct-only.
+ * The whole (route × provider type) matrix, resolved once at module load.
  *
- * Exported so a hypothetical route can be checked before an adapter that
- * produces one exists.
+ * It is static: both registries are code, so every cell is knowable before the
+ * first request and none of them can change afterwards. Computing a cell used to
+ * mean filtering two style lists per capability check, and a proxied request
+ * makes several. Maps rather than objects because the key is a provider type
+ * read off a stored row, and a plain object answers for `constructor`.
  */
-export function narrowedCapability(
-  base: RouteCapability,
-  route: GatewayProviderRoute | undefined,
-): RouteCapability | null {
-  if (!route) return null;
-  const allowed = route.apiStyles;
-  const allowedEndpoints = route.endpointStyles;
-  return {
-    apiStyles: allowed ? base.apiStyles.filter((style) => allowed.includes(style)) : base.apiStyles,
-    endpointStyles: allowedEndpoints
-      ? base.endpointStyles.filter((style) => allowedEndpoints.includes(style))
-      : base.endpointStyles,
-  };
-}
+const ROUTE_CAPABILITIES: ReadonlyMap<
+  ProviderRoute,
+  ReadonlyMap<ProviderType, RouteCapability>
+> = new Map(
+  (["direct", ...(Object.keys(GATEWAY_ADAPTERS) as ProviderGatewayType[])] as ProviderRoute[])
+    .map((route) => [
+      route,
+      new Map(PROVIDER_TYPES.flatMap((provider) => {
+        const base = providerCapability(provider);
+        const capability = route === "direct"
+          ? base
+          : narrowedCapability(base, GATEWAY_ADAPTERS[route].routes[provider]);
+        // Absent rather than null: a provider type a gateway has no mapping for
+        // is simply not in that gateway's row.
+        return capability === null ? [] : [[provider, capability] as const];
+      })),
+    ] as const),
+);
 
 /** `null` when the route cannot serve the provider type at all. */
 export function routeCapability(
   route: ProviderRoute,
   provider: ProviderType,
 ): RouteCapability | null {
-  const base = PROVIDER_CAPABILITIES[provider];
-  if (route === "direct") return base;
-  return narrowedCapability(base, GATEWAY_ADAPTERS[route].routes[provider]);
+  return ROUTE_CAPABILITIES.get(route)?.get(provider) ?? null;
 }
 
 function gatewayRoute(
@@ -165,13 +125,6 @@ export function supportsEndpointStyle(
   style: EndpointApiStyle,
 ): boolean {
   return routeCapability(route, provider)?.endpointStyles.includes(style) ?? false;
-}
-
-/** Provider types eligible for a named endpoint style on their own API. */
-export function providersForEndpointStyle(style: EndpointApiStyle): EndpointProvider[] {
-  return ENDPOINT_PROVIDER_TYPES.filter((type) =>
-    PROVIDER_CAPABILITIES[type].endpointStyles.includes(style),
-  );
 }
 
 /**

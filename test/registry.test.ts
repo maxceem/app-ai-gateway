@@ -34,12 +34,15 @@ import { probeProviderGateway } from "../src/core/provider-probe";
 import {
   providerAuthValue,
   providerModelAuthor,
+  providerProbeHeaders,
   providerRequestHeaders,
   PROVIDER_REGISTRY,
   PROVIDER_TYPES,
   reportsCost,
 } from "../src/core/providers";
 import { RESERVED_UPSTREAM_HEADERS } from "../src/core/proxyrules";
+import * as SHARED from "../src/shared/capabilities";
+import type { ProviderGatewayType } from "../src/db/schema";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
@@ -253,6 +256,67 @@ describe("capability matrix", () => {
   });
 });
 
+/**
+ * The console imports `src/shared/capabilities.ts` rather than keeping its own
+ * copy of the provider list, the gateway route tables and the cost-reporting
+ * set. These assertions are what make that safe: the shared tables have to be
+ * the same objects the Worker enforces with, and the one list the shared module
+ * cannot derive — which types report cost, since the parser that proves it lives
+ * in the registry — is pinned to the registry here.
+ */
+describe("the capability matrix the console shares", () => {
+  it("routes gateways from the same tables the adapters do", () => {
+    for (const type of Object.keys(GATEWAY_ADAPTERS) as ProviderGatewayType[]) {
+      expect([type, GATEWAY_ADAPTERS[type].routes]).toEqual([type, SHARED.GATEWAY_ROUTES[type]]);
+    }
+    expect(Object.keys(SHARED.GATEWAY_ROUTES).sort())
+      .toEqual(Object.keys(GATEWAY_ADAPTERS).sort());
+  });
+
+  it("describes each provider type with the capability the direct route enforces", () => {
+    for (const type of PROVIDER_TYPES) {
+      expect([type, SHARED.providerCapability(type)])
+        .toEqual([type, routeCapability("direct", type)]);
+    }
+  });
+
+  it("pins the cost-reporting list to the registry declarations that prove it", () => {
+    // The shared list is what the console reads; the declaration is what
+    // actually bills. A name on the list with no declaration would tell an
+    // operator a model needs no price, and then record every request unresolved.
+    const declared = PROVIDER_TYPES.filter((type) => reportsCost(type));
+    expect([...SHARED.COST_REPORTING_PROVIDER_TYPES].sort()).toEqual([...declared].sort());
+    for (const type of PROVIDER_TYPES) {
+      expect([type, SHARED.reportsCost(type)]).toEqual([type, reportsCost(type)]);
+    }
+  });
+
+  it("publishes a path per API style that classifies back to that style", () => {
+    // The console shows these paths as "how to call this". A path that the
+    // classifier reads as another style would be a copyable snippet the
+    // capability check then refuses.
+    for (const [style, path] of Object.entries(SHARED.API_STYLE_PATHS)) {
+      // `{model}` is a template the console fills in; the classifier reads the
+      // operation, and a real model id sits in the same segment.
+      expect([style, apiStyleFromPath(path.replace("{model}", "some-model"))])
+        .toEqual([style, style]);
+    }
+    // Every style but `other`, which names no contract and so has no path.
+    expect(Object.keys(SHARED.API_STYLE_PATHS).sort())
+      .toEqual(API_STYLES.filter((style) => style !== "other").sort());
+  });
+
+  it("shares the style and provider lists rather than restating them", () => {
+    expect(SHARED.PROVIDER_TYPES).toBe(PROVIDER_TYPES);
+    expect(SHARED.API_STYLES).toBe(API_STYLES);
+    expect([...SHARED.ENDPOINT_PROVIDER_TYPES]).toEqual([...ENDPOINT_PROVIDER_TYPES]);
+    for (const style of ["responses", "transcription"] as const) {
+      expect([style, SHARED.providersForEndpointStyle(style)])
+        .toEqual([style, providersForEndpointStyle(style)]);
+    }
+  });
+});
+
 describe("provider registry entries", () => {
   it.each(PROVIDER_TYPES)("reaches %s over a fixed https origin", (type) => {
     const { directBaseUrl, auth } = PROVIDER_REGISTRY[type];
@@ -330,6 +394,38 @@ describe("provider registry entries", () => {
     for (const type of PROVIDER_TYPES.filter((value) => value !== "openrouter")) {
       expect([type, providerRequestHeaders(type)]).toEqual([type, {}]);
     }
+  });
+
+  /**
+   * The probe reads its extra headers off the spec instead of naming a provider
+   * type, so a probe can never test a request shape the registry does not
+   * describe. Kept apart from `requestHeaders` deliberately: `anthropic-version`
+   * is the *client's* API version on live traffic — every Anthropic SDK sets one
+   * — and injecting it server-side would strip that choice and silently
+   * downgrade every request to the oldest version.
+   */
+  it("declares probe headers on the spec rather than in the probe", () => {
+    expect(providerProbeHeaders("anthropic")).toEqual({ "anthropic-version": "2023-06-01" });
+    // And it stays out of live traffic: not a request header, not reserved, so
+    // a client's own version still reaches the upstream.
+    expect(providerRequestHeaders("anthropic")).toEqual({});
+    expect(RESERVED_UPSTREAM_HEADERS).not.toContain("anthropic-version");
+    for (const type of PROVIDER_TYPES.filter((value) => value !== "anthropic")) {
+      expect([type, providerProbeHeaders(type)]).toEqual([type, {}]);
+    }
+  });
+
+  it("carries a provider's probe headers through a gateway probe too", async () => {
+    // Cloudflare forwards to Anthropic's real API, which refuses a request with
+    // no version header however it arrived.
+    const seen: Headers[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      seen.push(new Headers(init?.headers));
+      return Response.json({ data: [] });
+    });
+    await probeProviderGateway({ type: "anthropic", gateway: CF_AIG, token: "cf-token" });
+    expect(seen[0]?.get("anthropic-version")).toBe("2023-06-01");
+    expect(seen[0]?.get("cf-aig-authorization")).toBe("Bearer cf-token");
   });
 
   it("reports no provider type in this batch as cost-reporting", () => {
@@ -605,6 +701,51 @@ describe("Vercel AI Gateway adapter", () => {
     expect(request.headers.authorization).toBe("Bearer vck_gateway_token");
   });
 
+  /**
+   * User ids come from an issuer's JWT claim, so they are the user's own data:
+   * an email address with an accent in it, or anything carrying a control
+   * character, is not a legal header value and `Headers.set` throws on it.
+   * Unguarded, every request from that user answered 500.
+   */
+  it.each([
+    ["a non-Latin-1 id", "józsef@example.com"],
+    ["a full-width id", "ユーザー-1"],
+    ["a carriage return", "user-1\r\nx-injected: yes"],
+    ["a bare newline", "user\n1"],
+    ["a NUL", "user 1"],
+    ["a delete character", "user1"],
+  ])("drops %s rather than failing the request", (_name, userId) => {
+    const request = gatewayUpstream({
+      gateway: VERCEL,
+      secret: "vck_gateway_token",
+      provider: "openai",
+      providerPath: "v1/responses",
+      query: "",
+      appId: "app-1",
+      userId,
+    });
+    expect(request.headers["ai-reporting-user"]).toBeUndefined();
+    // The request itself is unaffected: only Vercel's own spend report loses a
+    // row, and this deployment records the real user id on the usage event.
+    expect(request.headers.authorization).toBe("Bearer vck_gateway_token");
+    expect(request.headers["ai-reporting-tags"]).toBe("app:app-1");
+    // The whole point: these are values `Headers` accepts without throwing.
+    expect(() => new Headers(request.headers)).not.toThrow();
+  });
+
+  it("keeps a printable-ASCII id, spaces and all", () => {
+    const request = gatewayUpstream({
+      gateway: VERCEL,
+      secret: "vck_gateway_token",
+      provider: "openai",
+      providerPath: "v1/responses",
+      query: "",
+      appId: "app-1",
+      userId: "user 1 | ~tenant",
+    });
+    expect(request.headers["ai-reporting-user"]).toBe("user 1 | ~tenant");
+  });
+
   it("probes the gateway's own credits endpoint, whatever provider it is asked about", () => {
     // Provider-independent because the credential is: one Vercel key per
     // gateway, and the provider keys it may use are in Vercel's dashboard.
@@ -819,6 +960,44 @@ describe("declared headers are never client-controlled", () => {
     await response.text();
     return upstream;
   }
+
+  /**
+   * End to end for the same rule, because the failure it prevents was a 500:
+   * `Headers.set` throws on a non-ByteString, and the id is an issuer claim, so
+   * one user with an accent in their address broke every request they made.
+   */
+  it.each([
+    ["non-Latin-1", "józsef@example.com"],
+    ["control-character", "user\r\n-1"],
+  ])("serves a %s user id on a vercel route with the header dropped", async (_name, userId) => {
+    let upstream = new Headers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      upstream = new Headers(init?.headers);
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+    const executionCtx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`https://example.test/v1/apps/${APP_ID}/proxy/openai-vercel/v1/responses`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await gatewayToken(APP_ID, userId)}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      }),
+      env,
+      executionCtx,
+    );
+    pending.push(executionCtx);
+    // Served, not 500ed.
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(upstream.get("ai-reporting-user")).toBeNull();
+    // Everything else about the route is untouched.
+    expect(upstream.get("authorization")).toBe("Bearer vercel-run-token");
+    expect(upstream.get("ai-reporting-tags")).toBe(`app:${APP_ID}`);
+  });
 
   it.each(RESERVED_UPSTREAM_HEADERS)(
     "drops a client %s on a direct route",

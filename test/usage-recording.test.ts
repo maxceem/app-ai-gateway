@@ -136,7 +136,14 @@ describe("usage recording idempotency", () => {
     expect(errorCodes(errors)).not.toContain("usage_record_failed");
   });
 
-  it("records an unpriced model at zero cost and logs it instead of throwing", async () => {
+  /**
+   * The billability gate refuses unpriced models before they proxy, so reaching
+   * the recorder means a price was deleted inside the configuration cache
+   * window. Nothing computed a cost for the request, so recording it as
+   * `computed` at $0 would make it indistinguishable from a genuinely free one:
+   * the cost is unknown, and unknown is what the column has to say.
+   */
+  it("records an unpriced model as unresolved, not as a computed zero", async () => {
     const appId = "usage-record-unpriced";
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -159,20 +166,42 @@ describe("usage recording idempotency", () => {
     });
 
     const row = await env.DB.prepare(
-      "SELECT event_id, cost_usd, input_tokens, output_tokens FROM app_usage_event WHERE app_id = ?",
+      `SELECT event_id, cost_usd, cost_source, reported_cost_usd, input_tokens, output_tokens
+         FROM app_usage_event WHERE app_id = ?`,
     )
       .bind(appId)
-      .first<{ event_id: string | null; cost_usd: number; input_tokens: number; output_tokens: number }>();
-    expect(row).toMatchObject({ cost_usd: 0, input_tokens: 5, output_tokens: 7 });
+      .first<{
+        event_id: string | null;
+        cost_usd: number;
+        cost_source: string | null;
+        reported_cost_usd: number | null;
+        input_tokens: number;
+        output_tokens: number;
+      }>();
+    // The tokens were readable and are kept; only the cost is missing.
+    expect(row).toMatchObject({
+      cost_usd: 0,
+      cost_source: "unresolved",
+      reported_cost_usd: null,
+      input_tokens: 5,
+      output_tokens: 7,
+    });
     expect(row?.event_id).toEqual(expect.any(String));
-    const unpriced = errors.mock.calls
-      .map((call) => JSON.parse(String(call[0])))
-      .find((entry) => entry.message === "usage_unpriced_model");
-    expect(unpriced).toMatchObject({
+    const logged = errors.mock.calls.map((call) => JSON.parse(String(call[0])));
+    // The mispricing alert stays: it names the model an operator has to fix.
+    expect(logged.find((entry) => entry.message === "usage_unpriced_model")).toMatchObject({
       level: "error",
       appId,
       provider: "openai",
       model: "gpt-model-nobody-priced",
+      eventId: row?.event_id,
+    });
+    // And the event surfaces as unresolved, with the reason it is unresolved.
+    expect(logged.find((entry) => entry.message === "usage_unresolved_cost")).toMatchObject({
+      level: "error",
+      appId,
+      model: "gpt-model-nobody-priced",
+      reason: "no_local_price",
       eventId: row?.event_id,
     });
     expect(errorCodes(errors)).not.toContain("usage_record_failed");

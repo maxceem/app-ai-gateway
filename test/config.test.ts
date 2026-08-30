@@ -83,6 +83,57 @@ describe("canonical app configuration", () => {
     }))).not.toThrow();
   });
 
+  /**
+   * Configuration is judged by the same predicate a request is. An OpenRouter
+   * row's models are billable because the route reports what it charged, so
+   * restricting an app to its slugs must save — the old price-only check
+   * refused every one of them for want of a catalog entry that, by design, will
+   * never exist.
+   */
+  it("accepts model restrictions on a cost-reporting instance", () => {
+    const providers = {
+      router: {
+        id: "provider-openrouter",
+        slug: "router",
+        type: "openrouter" as const,
+        route: "direct" as const,
+        pricing: null,
+      },
+    };
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: {
+        router: {
+          allowed_paths: [{ path: "v1/chat/completions", fixed_model: "qwen/qwen3-max" }],
+          allowed_models: ["google/gemini-3.6-flash", "meta-llama/llama-4-scout"],
+        },
+      },
+    }), {}, providers)).not.toThrow();
+  });
+
+  /** The fail-closed half: a type that bills on a local price still needs one. */
+  it("still refuses an unpriced model on an instance that does not report cost", () => {
+    const providers = {
+      main: {
+        id: "provider-openai",
+        slug: "main",
+        type: "openai" as const,
+        route: "direct" as const,
+        pricing: null,
+      },
+    };
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { main: { allowed_paths: [], allowed_models: ["gpt-not-in-any-catalog"] } },
+    }), {}, providers)).toThrowError("has no configured price");
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: {
+        main: {
+          allowed_paths: [{ path: "v1/responses", fixed_model: "gpt-not-in-any-catalog" }],
+          allowed_models: [],
+        },
+      },
+    }), {}, providers)).toThrowError("has no configured price");
+  });
+
   it("validates selected policies against configured provider instance slugs", () => {
     const providers = {
       "openai-dev": {
@@ -112,9 +163,29 @@ describe("canonical app configuration", () => {
   });
 
   it("rejects rewrite targets that are absent from every price catalog", () => {
+    // Scoped to instances that bill on a local price, which is what makes the
+    // check a check: a cost-reporting instance can bill *any* model name, so an
+    // organization that runs one is answered "yes" for every target — correctly,
+    // and the case below asserts exactly that.
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { alias: "released-today" } },
-    }))).toThrowError("has no configured price");
+    }), {}, {
+      openai: { id: "p1", slug: "openai", type: "openai", route: "direct", pricing: null },
+    })).toThrowError("has no configured price");
+  });
+
+  /**
+   * The other half of the same rule. An OpenRouter row bills on the cost
+   * OpenRouter reports, so its slugs are deliberately absent from the shipped
+   * catalog — refusing to save a rewrite that targets one would be demanding a
+   * price the proxy never asks for.
+   */
+  it("accepts a rewrite target only a cost-reporting instance can bill", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { model_rewrites: { fast: "google/gemini-3.6-flash" } },
+    }), {}, {
+      router: { id: "p2", slug: "router", type: "openrouter", route: "direct", pricing: null },
+    })).not.toThrow();
   });
 
   // A rewrite target names a model, not an instance, so it is priced against the
@@ -329,6 +400,36 @@ describe("named endpoint configuration", () => {
     });
     for (const route of ["direct", "cf_aig", "vercel"] as const) {
       expect(() => validateAppConfigJson(respond, {}, instance(route))).not.toThrow();
+    }
+  });
+
+  /**
+   * A row attached to a gateway with no adapter has no describable capabilities,
+   * so it cannot back an endpoint. Approving it because its route reads as
+   * unknown would be the accept-then-502 the save-time check exists to avoid.
+   */
+  it("rejects an endpoint on an instance whose gateway has no adapter", () => {
+    const unroutable = {
+      "openai-routed": {
+        id: "provider-openai-routed",
+        slug: "openai-routed",
+        type: "openai" as const,
+        route: null,
+        pricing: null,
+      },
+    };
+    for (const style of ["responses", "transcription"] as const) {
+      expect(() => validateAppConfigJson(
+        serverConfig({
+          endpoints: {
+            one: { api_style: style, provider: "openai-routed", model: "gpt-5.6-luna" },
+          },
+        }),
+        {},
+        unroutable,
+      )).toThrowError(
+        `endpoints.one.provider openai-routed is routed through a provider gateway this deployment has no adapter for, so it cannot serve ${style} endpoints`,
+      );
     }
   });
 

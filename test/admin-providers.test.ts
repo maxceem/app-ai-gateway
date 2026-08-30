@@ -1,10 +1,12 @@
 import { env, exports } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { supportsEndpointStyle } from "../src/core/capabilities";
 import {
   clearProviderCaches,
   encryptionContext,
   gatewayEncryptionContext,
+  organizationProviders,
   resolveProvider,
 } from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
@@ -491,6 +493,48 @@ describe("admin provider gateway API", () => {
     expect(providerRow?.secretBlob).toBeNull();
   });
 
+  /**
+   * A row attached to a gateway must never present as `direct`, whatever state
+   * that gateway is in. Reading a revoked one as direct judged its
+   * configuration against the provider's *full* API surface — so a
+   * transcription endpoint on a Vercel-routed OpenAI row saved cleanly while
+   * the gateway was down, and started answering 502 the moment it came back.
+   */
+  it("keeps a revoked gateway's row on its own route, never direct", async () => {
+    stubProbe();
+    const gateway = (await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Team gateway",
+      token: "vck_live_super_secret",
+    })).body.gateway as GatewaySummary;
+    await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug: "openai-vercel",
+      name: "OpenAI via Vercel",
+      providerGatewayId: gateway.id,
+    });
+    clearProviderCaches();
+    expect((await organizationProviders(env, TEST_ORGANIZATION_ID))["openai-vercel"])
+      .toMatchObject({ route: "vercel" });
+
+    await env.DB
+      .prepare("UPDATE provider_gateway SET status = 'revoked' WHERE id = ?")
+      .bind(gateway.id)
+      .run();
+    clearProviderCaches();
+
+    const revoked = (await organizationProviders(env, TEST_ORGANIZATION_ID))["openai-vercel"];
+    // Still narrowed by Vercel's capabilities, so an endpoint style Vercel does
+    // not serve is refused while the gateway is down as well as while it is up.
+    expect(revoked).toMatchObject({ route: "vercel" });
+    expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "transcription")).toBe(false);
+    expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "responses")).toBe(true);
+
+    // And it still cannot serve traffic: a revoked gateway is not a credential.
+    await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai-vercel"))
+      .rejects.toThrow(/missing or revoked/u);
+  });
+
   it("blocks gateway deletion while any provider row references it", async () => {
     stubProbe();
     const gateway = await createGateway();
@@ -721,6 +765,91 @@ describe("gateway routing configuration", () => {
     expect(cleared.status, cleared.text).toBe(200);
     expect(cleared.body.provider.gatewayRoute).toBeNull();
   });
+
+  /**
+   * Validating a route needs the gateway's *type* and nothing else. Reading it
+   * through the token path 404ed on a revoked gateway and decrypted a secret
+   * nothing here spends — so a row could be left holding configuration its
+   * operator was no longer allowed to remove.
+   */
+  it("clears a routing configuration on a revoked gateway, and decrypts nothing", async () => {
+    stubProbe();
+    const gateway = (await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Team gateway",
+      token: "vck_live_super_secret",
+    })).body.gateway as GatewaySummary;
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "gemini",
+      slug: "gemini-vercel",
+      name: "Gemini via Vercel",
+      providerGatewayId: gateway.id,
+      gatewayRoute: { providerOnly: ["google"] },
+    });
+    expect(routed.status, routed.text).toBe(201);
+
+    await env.DB
+      .prepare("UPDATE provider_gateway SET status = 'revoked' WHERE id = ?")
+      .bind(gateway.id)
+      .run();
+    clearProviderCaches();
+
+    // Counted rather than asserted absent by structure: the edit must not go
+    // near the vault, and a spy is the only way to say so about a private path.
+    const decrypt = vi.spyOn(secretVault(env), "decryptSecret");
+    const cleared = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      gatewayRoute: null,
+    });
+    expect(cleared.status, cleared.text).toBe(200);
+    expect(cleared.body.provider.gatewayRoute).toBeNull();
+    expect(decrypt).not.toHaveBeenCalled();
+
+    const stored = await call("GET", "/v1/admin/providers");
+    expect((stored.body.providers as ProviderSummary[])[0]!.gatewayRoute).toBeNull();
+  });
+
+  /**
+   * Setting one is the other half: a route has to be a route some adapter agreed
+   * to, so a non-null value still needs a gateway row with an adapter behind it.
+   * Status is deliberately not part of that — a revoked gateway is a credential
+   * state, and the row is being saved either way.
+   */
+  it("still validates a non-null route, and accepts one on a revoked gateway", async () => {
+    stubProbe();
+    const gateway = (await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Team gateway",
+      token: "vck_live_super_secret",
+    })).body.gateway as GatewaySummary;
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "gemini",
+      slug: "gemini-vercel",
+      name: "Gemini via Vercel",
+      providerGatewayId: gateway.id,
+    });
+    expect(routed.status, routed.text).toBe(201);
+    await env.DB
+      .prepare("UPDATE provider_gateway SET status = 'revoked' WHERE id = ?")
+      .bind(gateway.id)
+      .run();
+    clearProviderCaches();
+
+    const decrypt = vi.spyOn(secretVault(env), "decryptSecret");
+    // The adapter still judges it, so a bad namespace is still refused.
+    const bad = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      gatewayRoute: { modelPrefix: "google" },
+    });
+    expect(bad.status, bad.text).toBe(400);
+    expect(bad.body.error.message).toContain("end with a slash");
+
+    const good = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      gatewayRoute: { modelPrefix: "google/" },
+    });
+    expect(good.status, good.text).toBe(200);
+    expect(good.body.provider.gatewayRoute).toEqual({ modelPrefix: "google/" });
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
 });
 
 describe("operator-configurable base URL", () => {

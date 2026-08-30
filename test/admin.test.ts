@@ -146,6 +146,56 @@ describe("admin API", () => {
     expect(reported?.cost_usd).toBe(0.5);
   });
 
+  /**
+   * A repriced row's cost came from the local catalog, so that is what its
+   * `cost_source` has to say. Leaving `unresolved` behind kept the console
+   * hiding a cost it now has, and kept the unresolved-count alert firing for
+   * spend that had since been accounted for — so the marker could never clear.
+   */
+  it("moves a repriced event's cost source to computed with its new cost", async () => {
+    const appId = "admin-reprice-source";
+    await seedApp(appId);
+    const insert = (costSource: string | null) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
+         cost_source, status
+       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+                 50, 40, 10, 20, 0, ?, 'ok')`,
+    ).bind(appId, costSource).run();
+    // The row the fix is for: metered tokens, no cost anyone could stand behind.
+    await insert("unresolved");
+    // And an untouched-marker row from before the column existed.
+    await insert(null);
+    const month = new Date().toISOString().slice(0, 7);
+    const applied = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply: true }),
+      },
+    );
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toMatchObject({ applied: true, matched_events: 2 });
+    const rows = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ?",
+    ).bind(appId).all<{ cost_usd: number; cost_source: string | null }>();
+    expect(rows.results).toHaveLength(2);
+    for (const row of rows.results) {
+      expect(row.cost_source).toBe("computed");
+      expect(row.cost_usd).toBeCloseTo(0.0000373, 10);
+    }
+    // Nothing unresolved is left to alert on or to hide in the console.
+    const stale = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM app_usage_event WHERE app_id = ? AND cost_source = 'unresolved'",
+    ).bind(appId).first<{ n: number }>();
+    expect(stale?.n).toBe(0);
+  });
+
   it("reprices each event with its serving provider instance override", async () => {
     const appId = "admin-reprice-instances";
     await seedApp(appId);

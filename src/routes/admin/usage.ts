@@ -132,8 +132,14 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   if (apply && repriced.length > 0) {
     for (let offset = 0; offset < repriced.length; offset += 100) {
       const chunk = repriced.slice(offset, offset + 100);
+      // `cost_source` moves with the figure. A repriced row's cost came from
+      // the local catalog, whatever it came from before, and leaving an
+      // `unresolved` marker behind on a row that now has a computed cost would
+      // keep the console hiding it and keep the unresolved-count alert firing
+      // for spend that has since been accounted for. `reported` rows never get
+      // here — they are excluded by the query above.
       await c.env.DB.batch(chunk.map((row) => c.env.DB
-        .prepare("UPDATE app_usage_event SET cost_usd = ? WHERE id = ? AND app_id = ?")
+        .prepare("UPDATE app_usage_event SET cost_usd = ?, cost_source = 'computed' WHERE id = ? AND app_id = ?")
         .bind(row.costUsd, row.id, appId)));
     }
 

@@ -7,7 +7,7 @@ import { clearAppConfigCache } from "../src/core/config";
 import prices from "../src/core/prices.json";
 import { clearProviderCaches } from "../src/core/provider-store";
 import { PROVIDER_REGISTRY, providerModelAuthor, reportsCost } from "../src/core/providers";
-import { isBillable, hasModelPrice, resolveModelAuthor } from "../src/core/usage";
+import { isBillable, hasModelPrice, observeResponse, resolveModelAuthor } from "../src/core/usage";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { gatewayToken, seedApp, seedProvider } from "./helpers";
@@ -509,9 +509,16 @@ describe("OpenRouter reported-cost metering", () => {
     });
   });
 
-  it("records byok when the response says the operator's own key paid upstream", async () => {
+  /**
+   * The BYOK ledger, which is two ledgers. `usage.cost` is only what OpenRouter
+   * charged — its 5% BYOK fee — and the upstream provider bills the operator's
+   * own key separately, reported under `cost_details.upstream_inference_cost`.
+   * Both are the operator's money, so both debit the budget; billing the fee
+   * alone let the inference through unmetered.
+   */
+  it("bills OpenRouter's fee plus the upstream charge on a byok request", async () => {
     stubOpenRouter(completion({
-      cost: 0,
+      cost: 0.000155,
       is_byok: true,
       cost_details: { upstream_inference_cost: 0.0031 },
     }));
@@ -519,8 +526,72 @@ describe("OpenRouter reported-cost metering", () => {
     expect(await lastEvent("openrouter-reported")).toMatchObject({
       credential_source: "byok",
       cost_source: "reported",
-      cost_usd: 0,
+      // 0.000155 + 0.0031, not either one alone.
+      cost_usd: 0.003255,
+      reported_cost_usd: 0.003255,
     });
+  });
+
+  it("sums the same two figures out of the final chunk of a byok stream", async () => {
+    const chunk = (extra: Record<string, unknown>) =>
+      `data: ${JSON.stringify({
+        id: "gen-byok",
+        object: "chat.completion.chunk",
+        model: MODEL,
+        choices: [{ index: 0, delta: { content: "hi" } }],
+        ...extra,
+      })}\n\n`;
+    stubOpenRouter(
+      [
+        chunk({}),
+        chunk({
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 4,
+            cost: 0.0001,
+            is_byok: true,
+            cost_details: { upstream_inference_cost: 0.002 },
+          },
+        }),
+        "data: [DONE]\n\n",
+      ].join(""),
+      "text/event-stream",
+    );
+    await proxy("openrouter-reported", { stream: true });
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      cost_usd: 0.0021,
+      reported_cost_usd: 0.0021,
+      cost_source: "reported",
+      credential_source: "byok",
+    });
+  });
+
+  /**
+   * A client that hangs up before the final chunk takes the cost report with it.
+   * The known limitation this deployment does not yet reconcile: the event is
+   * recorded unresolved rather than billed as free, which is what makes a rising
+   * unresolved count the operator's signal that it is happening.
+   */
+  it("records an aborted stream as unresolved rather than free", async () => {
+    const chunk = (extra: Record<string, unknown>) =>
+      `data: ${JSON.stringify({
+        id: "gen-cut",
+        object: "chat.completion.chunk",
+        model: MODEL,
+        choices: [{ index: 0, delta: { content: "hi" } }],
+        ...extra,
+      })}\n\n`;
+    // Truncated mid-stream: deltas, then nothing. No usage event, no `[DONE]`.
+    stubOpenRouter([chunk({}), chunk({}), "data: {\"id\":\"gen-c"].join(""), "text/event-stream");
+    const logs = vi.spyOn(console, "error").mockImplementation(() => {});
+    await proxy("openrouter-reported", { stream: true });
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      cost_usd: 0,
+      reported_cost_usd: null,
+      cost_source: "unresolved",
+    });
+    // Surfaced, not swallowed: the operator's only signal for this today.
+    expect(logs.mock.calls.flat().join(" ")).toContain("usage_unresolved_cost");
   });
 
   /**
@@ -550,18 +621,32 @@ describe("OpenRouter reported-cost metering", () => {
     });
   });
 
-  it("asks for the cost report and the routing metadata on every request", async () => {
+  /**
+   * The routing metadata is opt-in per request and the cost is not: OpenRouter
+   * documents accounting as always on and `usage.include` as a deprecated
+   * no-op. So the header is asked for and the body is not rewritten — the
+   * injection this used to assert re-serialized every chat body for a field
+   * nothing reads.
+   */
+  it("asks for the routing metadata by header and leaves the body alone", async () => {
     stubOpenRouter(completion({ cost: 0.5 }));
-    // A client that turned usage accounting off does not get to turn the meter
-    // off with it.
-    await proxy("openrouter-reported", { usage: { include: false, extra: "kept" } });
+    const body = { usage: { include: false, extra: "kept" }, temperature: 0.4 };
+    await proxy("openrouter-reported", body);
     expect(sent[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
-    expect(sent[0]?.body).toMatchObject({
+    // Byte-for-byte what the client sent, model included: nothing on this route
+    // has a namespace to add or a field to set.
+    expect(sent[0]?.body).toEqual({
       model: MODEL,
-      usage: { include: true, extra: "kept" },
+      messages: [{ role: "user", content: "hello" }],
+      ...body,
     });
     expect(sent[0]?.headers.get("x-openrouter-metadata")).toBe("enabled");
     expect(sent[0]?.headers.get("authorization")).toBe("Bearer sk-or-attribution");
+    // And the cost still lands, which is the point of not needing the field.
+    expect(await lastEvent("openrouter-reported")).toMatchObject({
+      cost_usd: 0.5,
+      cost_source: "reported",
+    });
   });
 });
 
@@ -581,21 +666,73 @@ describe("billability", () => {
   });
 
   /**
-   * No shipped provider type reports its own cost, so the second half of the
-   * predicate is exercised against the registry entry a reporting type would
-   * have. OpenRouter sets this flag for real in Stage 4.
+   * Billability derives from the cost-report *declaration*, not from a flag
+   * beside one. A type that says how to read its own cost may proxy an unpriced
+   * model; there is no way to claim the first without supplying the second.
    */
-  it("proxies an unpriced model on a route that reports what it cost", () => {
-    const spec = PROVIDER_REGISTRY.perplexity as { reportsCost?: boolean };
+  it("proxies an unpriced model on a route that declares how it reports cost", () => {
+    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
     expect(reportsCost("perplexity")).toBe(false);
     try {
-      spec.reportsCost = true;
+      spec.costReport = { read: () => false };
       expect(reportsCost("perplexity")).toBe(true);
       expect(isBillable("perplexity", "model-with-no-local-price")).toBe(true);
     } finally {
-      delete spec.reportsCost;
+      delete spec.costReport;
     }
     expect(isBillable("perplexity", "model-with-no-local-price")).toBe(false);
+  });
+
+  /**
+   * The refactor's whole point. A hypothetical reporting type gets *its own*
+   * parser called and nothing else: before this, a bare `reportsCost` flag
+   * switched on OpenRouter's field names for whoever set it, so a second
+   * reporting provider would have bypassed the price gate and then recorded
+   * every one of its requests unresolved.
+   */
+  it("never reads one provider's report fields out of another's response", () => {
+    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    // A body in OpenRouter's exact shape, answered by a different type.
+    const openRouterShaped = JSON.stringify({
+      model: "sonar-pro",
+      usage: { prompt_tokens: 10, completion_tokens: 2, cost: 9.99 },
+      openrouter_metadata: {
+        endpoints: { available: [{ provider: "Someone Else", selected: true }] },
+      },
+    });
+    try {
+      const seen: string[] = [];
+      spec.costReport = {
+        // Reads a field only this hypothetical provider sends, and pointedly
+        // not `usage.cost`.
+        read: (value: Record<string, unknown>, report: { costUsd: number | null }) => {
+          seen.push("read");
+          const own = (value as { billing?: { total?: number } }).billing?.total;
+          if (typeof own !== "number") return false;
+          report.costUsd = own;
+          return true;
+        },
+      };
+      const other = observeResponse(openRouterShaped, "application/json", "perplexity");
+      // Its own parser ran; OpenRouter's `usage.cost` and metadata were not read.
+      expect(seen).toEqual(["read"]);
+      expect(other.report).toBeNull();
+      // Usage parsing is shape-sniffed and unaffected, as it always was.
+      expect(other.usage?.inputTokens).toBe(10);
+
+      // The same declaration, given the body it does understand.
+      const own = observeResponse(
+        JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 }, billing: { total: 7 } }),
+        "application/json",
+        "perplexity",
+      );
+      expect(own.report?.costUsd).toBe(7);
+    } finally {
+      delete spec.costReport;
+    }
+    // And OpenRouter's own parser still reads OpenRouter's own body.
+    expect(observeResponse(openRouterShaped, "application/json", "openrouter").report)
+      .toMatchObject({ costUsd: 9.99, servedProvider: "Someone Else" });
   });
 
   /**

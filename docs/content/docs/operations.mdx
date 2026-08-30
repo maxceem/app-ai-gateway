@@ -68,8 +68,35 @@ Usage is read from the provider's own response. When a provider answers
 successfully but reports usage in a shape this gateway does not know, there is
 nothing to price: the request is served, the event is stored with no tokens, and
 its cost is zero because nothing was measurable — not because nothing was spent.
-A cost-reporting route that answers without a cost, and whose model has no local
-price either, lands in the same place.
+
+Three other situations land in the same place:
+
+- A cost-reporting route answers without a cost, and the model has no local
+  price either.
+- A model has no local price on a route that does not report cost. Unpriced
+  models are refused before they proxy, so this means a price was removed while
+  a request was already in flight — within the one-minute configuration cache.
+- **A client aborts a streamed response before the final chunk.** See the
+  known limitation below.
+
+### Known limitation: aborted streams on cost-reporting routes
+
+On a cost-reporting route the cost arrives in the *last* chunk of a stream. A
+client that disconnects before that chunk takes the figure with it, and the
+request is recorded `unresolved` at `$0` — the tokens were generated and
+[OpenRouter](/docs/providers#openrouter) charged for them, but nothing debits
+the budget. Deliberately repeated, that is unbounded unbudgeted spend.
+
+The gateway does not reconcile this today. Doing it properly means looking the
+request up through OpenRouter's generation-lookup API after the fact, which is a
+funded backlog item rather than something to guess at. Until then:
+
+**The operator signal is a sustained unresolved count on cost-reporting
+providers.** Watch the **By cost source** breakdown filtered to those provider
+instances, and alert on `usage_unresolved_cost` log lines whose provider is one
+of them. A background rate is normal; a rising one from a single app or user is
+worth investigating. Per-user request rate limits are the blunt control that
+bounds the damage in the meantime.
 
 Those events are marked `cost_source: "unresolved"` instead of `"computed"`, are
 shown as **unresolved** rather than `$0.00` in the console's event list, and can

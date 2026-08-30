@@ -32,6 +32,7 @@ import {
 } from "@/lib/config-types";
 import { routeServesEndpointStyle } from "@/lib/capabilities";
 import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
+import type { ProviderGatewayType } from "@/lib/types";
 
 /** Only OpenAI- and xAI-typed instances compose these request shapes. */
 const NO_ELIGIBLE_INSTANCE =
@@ -403,18 +404,38 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const instances = useProviderInstances().data ?? [];
-  const gateways = useProviderGateways().data?.gateways ?? [];
+  const gatewaysQuery = useProviderGateways();
+  const gateways = gatewaysQuery.data?.gateways ?? [];
   // Catalog prices belong to the provider type, custom ones to the row, so the
   // model list is only knowable per instance slug.
   const bySlug = new Map(instances.map((instance) => [instance.slug, instance]));
   // A gateway may carry fewer of a provider's operations than the provider has,
   // so eligibility is per instance rather than per provider type.
-  const routeBySlug = new Map(instances.map((instance) => [
-    instance.slug,
-    gateways.find((gateway) => gateway.id === instance.providerGatewayId)?.type ?? null,
-  ]));
-  const serves = (instance: ProviderInstance, style: EndpointApiStyle) =>
-    routeServesEndpointStyle(routeBySlug.get(instance.slug) ?? null, instance.type, style);
+  //
+  // `unknown` is the state that matters: until the gateway list has actually
+  // loaded, a routed row's route is not knowable, and treating it as direct
+  // offered it for endpoint styles its gateway does not serve — options the
+  // server then refuses on save. A direct row needs none of this, so it stays
+  // available while the list loads.
+  const routeBySlug = new Map<string, ProviderGatewayType | null | "unknown">(
+    instances.map((instance) => {
+      if (instance.providerGatewayId === null) return [instance.slug, null];
+      if (!gatewaysQuery.isSuccess) return [instance.slug, "unknown"];
+      const gateway = gateways.find((entry) => entry.id === instance.providerGatewayId);
+      // A routed row whose gateway is not in the list has no describable route
+      // either, so it is withheld rather than guessed at.
+      return [instance.slug, gateway?.type ?? "unknown"];
+    }),
+  );
+  const serves = (instance: ProviderInstance, style: EndpointApiStyle) => {
+    const route = routeBySlug.get(instance.slug);
+    if (route === undefined || route === "unknown") return false;
+    return routeServesEndpointStyle(route, instance.type, style);
+  };
+  // Said out loud rather than left as a shorter list: an operator looking for a
+  // routed instance that is missing needs to know the list is incomplete.
+  const routesUnavailable = !gatewaysQuery.isSuccess
+    && instances.some((instance) => instance.providerGatewayId !== null);
   const modelsFor = (provider: string) => {
     const instance = bySlug.get(provider);
     return instance ? instanceModels(instance, providerPrices) : [];
@@ -466,11 +487,20 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
             }
           />
         </CardHeader>
-        {entries.length === 0 ? (
-          <CardContent>
-            <EmptyState>
-              No named endpoints. Clients of this app use the provider proxy directly.
-            </EmptyState>
+        {routesUnavailable || entries.length === 0 ? (
+          <CardContent className="space-y-3">
+            {routesUnavailable ? (
+              <p className="text-xs text-muted-foreground" role="status">
+                {gatewaysQuery.isError
+                  ? "Provider gateways could not be loaded, so gateway-routed instances are not offered here — a gateway carries fewer of a provider's APIs than the provider does, and this list would otherwise suggest targets the server refuses. Reload to try again."
+                  : "Loading provider gateways. Gateway-routed instances appear once their routes are known."}
+              </p>
+            ) : null}
+            {entries.length === 0 ? (
+              <EmptyState>
+                No named endpoints. Clients of this app use the provider proxy directly.
+              </EmptyState>
+            ) : null}
           </CardContent>
         ) : null}
       </Card>

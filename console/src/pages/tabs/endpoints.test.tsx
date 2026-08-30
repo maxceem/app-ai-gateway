@@ -177,6 +177,49 @@ describe("EndpointsTab", () => {
     ).toBe(true);
   });
 
+  /**
+   * Until the gateway list has loaded, a routed row's route is unknown. Treating
+   * unknown as direct judged it against the provider's full API surface and
+   * offered it for styles its gateway does not serve — targets the Worker then
+   * refuses on save. Direct rows depend on none of this and stay available.
+   */
+  it("withholds gateway-routed instances until their routes are known", async () => {
+    stubApi({
+      [`/v1/admin/apps/${APP_ID}`]: {
+        body: { app: appRow(CHAT), resolved: null, config_error: null },
+      },
+      "/v1/admin/providers": { body: { providers: [...PROVIDERS, OPENAI_VIA_VERCEL] } },
+      // The one query that fails; everything else answers normally.
+      "/v1/admin/provider-gateways": { status: 500, body: { error: { code: "internal_error" } } },
+      "/v1/admin/prices": { body: { prices: PRICES } },
+    });
+    renderAuthenticated(<Harness />);
+
+    // Said out loud, so a missing instance is explained rather than mysterious.
+    expect(await screen.findByText(/gateway-routed instances are not offered/u)).toBeTruthy();
+
+    await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
+    const options = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
+    expect(options.some((label) => label?.includes("openai-vercel"))).toBe(false);
+    // The direct rows are unaffected: their capabilities need no gateway list.
+    expect(options.some((label) => label?.includes("openai-dev"))).toBe(true);
+    expect(options.some((label) => label?.includes("grok"))).toBe(true);
+  });
+
+  /**
+   * The same rule for a routed row whose gateway is simply not in the list —
+   * revoked, or of a type this deployment has no adapter for. There is no route
+   * to describe, so it is withheld rather than guessed at.
+   */
+  it("withholds a routed instance whose gateway is not in the list", async () => {
+    renderTab(CHAT, [...PROVIDERS, OPENAI_VIA_VERCEL], []);
+
+    await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
+    const options = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
+    expect(options.some((label) => label?.includes("openai-vercel"))).toBe(false);
+    expect(options.some((label) => label?.includes("openai-dev"))).toBe(true);
+  });
+
   it("prices the model list through the instance's provider type", async () => {
     renderTab(CHAT);
 

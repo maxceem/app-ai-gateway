@@ -6,7 +6,11 @@ import {
   ProviderGatewayUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
-import { isGatewayType, resolveGateway, type ResolvedGateway } from "../../core/gateways";
+import {
+  requireGatewayAdapter,
+  resolveGateway,
+  type ResolvedGateway,
+} from "../../core/gateways";
 import { probeGatewayPreset } from "../../core/provider-probe";
 import {
   gatewayEncryptionContext,
@@ -150,15 +154,8 @@ providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) => {
   if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   // A stored type the CHECK admits but no adapter implements cannot be probed,
   // and rotating a token onto a route nothing can serve would be a silent no-op.
-  if (!isGatewayType(existing.type)) {
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      `This deployment has no adapter for ${existing.type} provider gateways`,
-    );
-  }
   const probe = await probeGatewayPreset(
-    resolveGateway(existing.type, existing.config),
+    resolveGateway(requireGatewayAdapter(existing.type), existing.config),
     body.token,
   );
   const secretBlob = await secretVault(c.env).encryptSecret(

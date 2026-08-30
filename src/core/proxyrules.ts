@@ -9,11 +9,11 @@ import { GatewayError } from "./errors";
 import { GATEWAY_ADAPTERS, gatewayBodyMutation, gatewayUpstream } from "./gateways";
 import type { ResolvedProvider } from "./provider-store";
 import {
+  costReport,
   PROVIDER_REGISTRY,
   PROVIDER_TYPES,
   providerAuthValue,
   providerRequestHeaders,
-  reportsCost,
 } from "./providers";
 import { lookup } from "./records";
 import { isBillable } from "./usage";
@@ -208,40 +208,26 @@ export function validateOrInjectOutputCap(
 }
 
 /**
- * Asks a cost-reporting provider to report what a request cost, by setting the
- * documented opt-in in its own request shape. A same-protocol mutation of the
- * kind model rewrites and output caps already are, and it overrides a client's
- * `false`: the reported figure is what this route is billed on, so a client
- * must not be able to turn the meter off.
- *
- * Scoped to JSON chat-completions bodies, which is the only surface a
- * cost-reporting type is offered on. OpenRouter (the only such type today)
- * always includes `usage.cost` now and documents `usage.include` as a
- * deprecated no-op it still accepts, so this costs one ignored field and keeps
- * working if that ever stops being true.
+ * A same-protocol request rewrite the provider type's cost-report integration
+ * asks for, if it declares one. Generic on purpose: this asks whether the type
+ * has an integration and hands it the body, and never knows which provider's
+ * fields are being written — the mistake the old `reportsCost`-gated OpenRouter
+ * injection made was letting a shared flag switch on one upstream's shape.
  */
-export function injectCostReport(
+export function costReportBodyMutation(
   provider: ProviderType,
   style: ApiStyle,
   body: Record<string, unknown>,
 ): boolean {
-  if (!reportsCost(provider) || style !== "chat_completions") return false;
-  const current = body.usage;
-  const existing = typeof current === "object" && current !== null && !Array.isArray(current)
-    ? (current as Record<string, unknown>)
-    : null;
-  if (existing?.include === true) return false;
-  // Deep-set: whatever else the client put under `usage` is preserved.
-  body.usage = { ...existing, include: true };
-  return true;
+  return costReport(provider)?.mutateBody?.({ style, body }) ?? false;
 }
 
 /**
  * Every header the gateway itself owns, derived from both registries so the two
  * can never drift: each provider spec declares the header it authenticates
- * with and any it needs the upstream to read, each adapter declares the headers
- * its gateway reads. A client value in any of them is dropped before the
- * upstream request is built.
+ * with and any it (or its cost-report integration) needs the upstream to read,
+ * each adapter declares the headers its gateway reads. A client value in any of
+ * them is dropped before the upstream request is built.
  */
 export const RESERVED_UPSTREAM_HEADERS: readonly string[] = [
   ...new Set([
@@ -254,12 +240,102 @@ export const RESERVED_UPSTREAM_HEADERS: readonly string[] = [
 ];
 
 /**
- * Strips everything the client must not influence. Provider authentication is
- * injected later by {@link providerUpstream}, once the organization's provider
- * row is resolved and the routing decision is known. Control headers inside a
- * gateway's namespace survive only if that adapter names them as client-usable;
- * {@link providerUpstream} drops even those unless the request really is routed
- * through it.
+ * Headers stripped from every request on every route, whatever it turns out to
+ * be. Everything here is either a credential, a routing directive, or a hop
+ * header the runtime recomputes — the request-scoped names (the app's issuer
+ * token header, the gateway's own) are added per call because they are
+ * configuration rather than registry.
+ *
+ * A `Set` built once at module scope: the membership test runs per header of
+ * every proxied request, and rebuilding the list per request spread three
+ * registries into a fresh array on the hot path.
+ */
+const ALWAYS_STRIPPED: ReadonlySet<string> = new Set([
+  ...RESERVED_UPSTREAM_HEADERS,
+  "x-end-user-id",
+  "host",
+  "content-length",
+  "connection",
+]);
+
+/**
+ * Namespaces the gateway adapters own, and the only names a client may set
+ * inside one. Precomputed with the same reasoning as {@link ALWAYS_STRIPPED};
+ * `null` for an adapter that reserves its whole namespace, which skips the
+ * per-name allowlist lookup entirely.
+ */
+const GATEWAY_NAMESPACES: readonly {
+  type: ProviderGatewayType;
+  prefix: string;
+  clientHeaders: ReadonlySet<string> | null;
+}[] = Object.values(GATEWAY_ADAPTERS).map((adapter) => ({
+  type: adapter.type,
+  prefix: adapter.headerPrefix,
+  clientHeaders: adapter.clientHeaders.length === 0
+    ? null
+    : new Set<string>(adapter.clientHeaders),
+}));
+
+/**
+ * Which gateway a request goes through, as the header rules see it: one of the
+ * adapters, `direct` for a provider's own API, or `pending` before the provider
+ * row has been resolved and the answer is not knowable yet.
+ */
+type HeaderRoute = ProviderGatewayType | "direct" | "pending";
+
+/**
+ * The one header-stripping rule, applied wherever a request's headers are
+ * touched. It used to be three passes — a reserved-name list, a namespace
+ * allowlist, and a second namespace sweep — running at two different times and
+ * agreeing only by hand.
+ *
+ * What survives, in one sentence: nothing reserved or authenticating, and inside
+ * a gateway's namespace only the names that adapter declares client-usable, and
+ * only while the request could still be routed through that adapter. `pending`
+ * keeps every adapter's client-usable headers because the routing decision is
+ * still ahead; `direct` and a named gateway keep at most one adapter's, which is
+ * where the narrowing actually happens.
+ */
+function stripClientHeaders(
+  headers: Headers,
+  route: HeaderRoute,
+  requestScoped: readonly (string | undefined)[] = [],
+): void {
+  const names: string[] = [];
+  headers.forEach((_value, name) => names.push(name));
+  for (const name of names) {
+    if (ALWAYS_STRIPPED.has(name)) {
+      headers.delete(name);
+      continue;
+    }
+    // Every matching namespace has to allow the name, not just the first one:
+    // adapter prefixes are disjoint today, but a future one nested inside
+    // another would otherwise let a header through on the strength of the
+    // namespace that permits it.
+    for (const namespace of GATEWAY_NAMESPACES) {
+      if (!name.startsWith(namespace.prefix)) continue;
+      // A gateway's control headers mean something only to that gateway, so on
+      // any other route — a direct call included — they are noise the upstream
+      // might act on.
+      const usable = (route === "pending" || route === namespace.type)
+        && namespace.clientHeaders?.has(name) === true;
+      if (!usable) {
+        headers.delete(name);
+        break;
+      }
+    }
+  }
+  for (const name of requestScoped) {
+    if (name) headers.delete(name);
+  }
+}
+
+/**
+ * Strips everything the client must not influence, before the routing decision
+ * is known. Provider authentication is injected later by
+ * {@link providerUpstream}, once the organization's provider row is resolved;
+ * a gateway's client-usable control headers are kept here and re-judged there
+ * against the route the request really took.
  */
 export function sanitizedHeaders(
   request: Request,
@@ -267,26 +343,10 @@ export function sanitizedHeaders(
   tokenHeader: string,
 ): Headers {
   const headers = new Headers(request.headers);
-  const headerNames: string[] = [];
-  headers.forEach((_value, name) => headerNames.push(name));
-  for (const adapter of Object.values(GATEWAY_ADAPTERS)) {
-    for (const name of headerNames) {
-      if (name.startsWith(adapter.headerPrefix) && !adapter.clientHeaders.includes(name)) {
-        headers.delete(name);
-      }
-    }
-  }
-  for (const name of [
-    ...RESERVED_UPSTREAM_HEADERS,
+  stripClientHeaders(headers, "pending", [
     app.authentication.issuer?.token_header,
     tokenHeader,
-    "x-end-user-id",
-    "host",
-    "content-length",
-    "connection",
-  ]) {
-    if (name) headers.delete(name);
-  }
+  ]);
   return headers;
 }
 
@@ -411,7 +471,10 @@ export async function prepareProxyRequest(input: {
   bodyChanged =
     validateOrInjectOutputCap(clampStyle, input.provider, parsed, config.max_output_tokens)
     || bodyChanged;
-  bodyChanged = injectCostReport(input.provider, apiStyle, parsed) || bodyChanged;
+  // Whatever the provider type's own cost-report integration asks for, if it
+  // declares a body rewrite at all. OpenRouter does not: its accounting is
+  // always on, so nothing is re-serialized for it.
+  bodyChanged = costReportBodyMutation(input.provider, apiStyle, parsed) || bodyChanged;
   // The gateway's own routing directive, applied last so it wins over anything
   // a client put in the same field. Same-protocol: it steers the gateway, and
   // the provider behind it sees the payload it would have seen anyway.
@@ -431,22 +494,6 @@ export async function prepareProxyRequest(input: {
     headers,
     query: sanitizedQuery(input.request),
   };
-}
-
-/**
- * A gateway's control headers mean something only to the gateway that reads
- * them, so every other namespace is dropped — and on a direct route, all of
- * them are: nothing in front of the provider understands any of it.
- */
-function stripGatewayNamespaces(headers: Headers, routedThrough: ProviderGatewayType | null): void {
-  const names: string[] = [];
-  headers.forEach((_value, name) => names.push(name));
-  for (const adapter of Object.values(GATEWAY_ADAPTERS)) {
-    if (adapter.type === routedThrough) continue;
-    for (const name of names) {
-      if (name.startsWith(adapter.headerPrefix)) headers.delete(name);
-    }
-  }
 }
 
 /**
@@ -489,12 +536,12 @@ export function providerUpstream(input: {
       appId: input.appId,
       userId: input.userId,
     });
-    stripGatewayNamespaces(headers, resolved.gateway.type);
+    stripClientHeaders(headers, resolved.gateway.type);
     for (const [name, value] of Object.entries(upstream.headers)) headers.set(name, value);
     return { url: upstream.url, headers };
   }
 
-  stripGatewayNamespaces(headers, null);
+  stripClientHeaders(headers, "direct");
   const spec = PROVIDER_REGISTRY[prepared.provider];
   headers.set(spec.auth.header, providerAuthValue(prepared.provider, resolved.secret));
   // Set after sanitization, like the credential itself: these are the gateway's

@@ -5,6 +5,7 @@ import {
   providerGateway as providerGatewayTable,
   type GatewayRouteConfig,
   type ProviderGatewayConfig,
+  type ProviderGatewayStatus,
   type ProviderGatewayTypeName,
   type ProviderPricing,
 } from "../db/schema";
@@ -45,7 +46,14 @@ interface ProviderRow {
   type: ProviderType;
   secretBlob: string | null;
   providerGatewayId: string | null;
+  /**
+   * The attached gateway's stored type and status, read whatever that status
+   * is. A revoked gateway cannot carry traffic, but it still says what this row
+   * *is*, which is what configuration has to be judged against — see
+   * {@link OrganizationProvider.route}.
+   */
   gatewayType: ProviderGatewayTypeName | null;
+  gatewayStatus: ProviderGatewayStatus | null;
   gatewayConfig: ProviderGatewayConfig | null;
   gatewaySecretBlob: string | null;
   gatewayRoute: GatewayRouteConfig | null;
@@ -69,12 +77,17 @@ export interface OrganizationProvider {
   type: ProviderType;
   /**
    * How this instance reaches its provider, so configuration can be validated
-   * against the same capability matrix requests are. A row whose gateway is
-   * revoked or has no adapter reads as `direct` here: it cannot serve traffic
-   * at all, and refusing to *save* an app that mentions it would be a worse
-   * failure than the `provider_unavailable` its next request already gets.
+   * against the same capability matrix requests are.
+   *
+   * A row attached to a gateway never reads as `direct`, whatever state that
+   * gateway is in. Reading a revoked row as direct judged it against the
+   * provider's *full* API surface, so a configuration the matrix approved —
+   * a transcription endpoint on a Vercel-routed OpenAI row, say — started
+   * answering 502 the moment the gateway came back. `null` where the stored
+   * gateway type has no adapter at all: the row's real capabilities are not
+   * knowable here, so it is treated as unroutable rather than guessed at.
    */
-  route: ProviderRoute;
+  route: ProviderRoute | null;
   pricing: ProviderPricing | null;
 }
 
@@ -120,6 +133,7 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
       secretBlob: providerTable.secretBlob,
       providerGatewayId: providerTable.providerGatewayId,
       gatewayType: providerGatewayTable.type,
+      gatewayStatus: providerGatewayTable.status,
       gatewayConfig: providerGatewayTable.config,
       gatewaySecretBlob: providerGatewayTable.secretBlob,
       gatewayRoute: providerTable.gatewayRoute,
@@ -127,12 +141,14 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
       pricing: providerTable.pricing,
     })
     .from(providerTable)
+    // Joined on the id alone, revoked gateways included: what a row *is* is a
+    // different question from whether it can serve traffic right now, and only
+    // this query can answer the first. Every reader of the joined columns gates
+    // on `gatewayStatus` itself, which keeps the two questions apart instead of
+    // hiding the second one in a join condition.
     .leftJoin(
       providerGatewayTable,
-      and(
-        eq(providerTable.providerGatewayId, providerGatewayTable.id),
-        eq(providerGatewayTable.status, "active"),
-      ),
+      eq(providerTable.providerGatewayId, providerGatewayTable.id),
     )
     .where(and(
       eq(providerTable.organizationId, organizationId),
@@ -148,7 +164,11 @@ async function plaintextSecret(
   row: ProviderRow,
 ): Promise<string> {
   const gatewayRouted = row.providerGatewayId !== null;
-  const blob = gatewayRouted ? row.gatewaySecretBlob : row.secretBlob;
+  // A revoked gateway's token is not a credential this row may still spend
+  // with, so it reads as absent — the join no longer filters it out.
+  const blob = gatewayRouted
+    ? (row.gatewayStatus === "active" ? row.gatewaySecretBlob : null)
+    : row.secretBlob;
   if (!blob) {
     throw new GatewayError(
       502,
@@ -223,7 +243,10 @@ export async function resolveProvider(
   // the constraint never needs another rebuild, the adapter registry decides.
   const gateway = row.providerGatewayId === null
     ? null
-    : row.gatewayType && row.gatewayConfig && isGatewayType(row.gatewayType)
+    : row.gatewayStatus === "active"
+        && row.gatewayType
+        && row.gatewayConfig
+        && isGatewayType(row.gatewayType)
       ? { id: row.providerGatewayId, ...resolveGateway(row.gatewayType, row.gatewayConfig) }
       : null;
   if (row.providerGatewayId !== null && gateway === null) {
@@ -272,7 +295,15 @@ export async function organizationProviders(
       id: row.id,
       slug: row.slug,
       type: row.type,
-      route: row.gatewayType && isGatewayType(row.gatewayType) ? row.gatewayType : "direct",
+      // The stored type, not the resolvable one: a revoked gateway still
+      // narrows what this row will be able to do when it comes back, and
+      // judging it as direct in the meantime approves configuration its next
+      // working request would refuse.
+      route: row.providerGatewayId === null
+        ? "direct"
+        : row.gatewayType && isGatewayType(row.gatewayType)
+          ? row.gatewayType
+          : null,
       pricing: row.pricing,
     },
   ] as const));

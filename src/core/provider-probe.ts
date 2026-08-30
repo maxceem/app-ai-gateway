@@ -1,7 +1,7 @@
 import { GatewayError } from "./errors";
 import { gatewayProbe, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
-import { PROVIDER_REGISTRY, providerAuthValue } from "./providers";
+import { PROVIDER_REGISTRY, providerAuthValue, providerProbeHeaders } from "./providers";
 import type { ProviderType } from "./types";
 
 /**
@@ -127,9 +127,8 @@ export async function probeProviderKey(
   const spec = PROVIDER_REGISTRY[type];
   const headers: Record<string, string> = {
     [spec.auth.header]: providerAuthValue(type, secret),
+    ...providerProbeHeaders(type),
   };
-  // Anthropic refuses any request without a version header, probe included.
-  if (type === "anthropic") headers["anthropic-version"] = "2023-06-01";
   return runProbe(type, `${baseUrl ?? spec.directBaseUrl}${path}`, headers);
 }
 
@@ -155,8 +154,13 @@ export async function probeProviderGateway(input: {
   // Nothing to prove: either this gateway does not serve the provider type, or
   // the only thing it could call is a provider path that does not exist.
   if (!request) return { validated: false, reason: "no_probe" };
-  const headers: Record<string, string> = { ...request.headers };
-  if (input.type === "anthropic") headers["anthropic-version"] = "2023-06-01";
+  // The provider's own probe requirements travel with it through the gateway:
+  // a Cloudflare route forwards to Anthropic's real API, which refuses a
+  // request with no version header however it arrived.
+  const headers: Record<string, string> = {
+    ...providerProbeHeaders(input.type),
+    ...request.headers,
+  };
   return runProbe(`${input.type}_via_${input.gateway.type}`, request.url, headers);
 }
 

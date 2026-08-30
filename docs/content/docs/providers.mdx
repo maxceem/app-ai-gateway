@@ -118,15 +118,34 @@ a local price for that model is used if you have entered one (`computed`),
 and otherwise the event is recorded as
 [unresolved](/docs/operations#unresolved-usage) and logged.
 
+**Bring your own key: two figures, both yours.** When a request runs on your own
+upstream provider key, OpenRouter's `usage.cost` is only *its* charge — the BYOK
+fee, 5% of what the request would have cost on OpenRouter — while the provider
+bills your key directly for the inference and OpenRouter reports that separately
+as `usage.cost_details.upstream_inference_cost`. The two are disjoint, so the
+gateway bills their **sum**: both numbers left your accounts, and charging the
+fee alone would let roughly twenty times as much spend through unmetered.
+`cost_usd` and `reported_cost_usd` both hold the total.
+
+<Callout type="warn">
+  **Aborted streams are not reconciled.** The cost arrives in the final SSE
+  chunk, so a client that disconnects before it leaves the request
+  [unresolved](/docs/operations#known-limitation-aborted-streams-on-cost-reporting-routes)
+  at `$0` against your budgets, even though OpenRouter charged for the tokens.
+  Watch the unresolved count on OpenRouter instances; per-user rate limits bound
+  the damage until generation-lookup reconciliation ships.
+</Callout>
+
 OpenRouter instances accept **chat completions only** — `v1/chat/completions`
 under the slug. OpenRouter does serve other APIs, but only its chat-completions
 response reports a cost, and a request this gateway could not bill is refused
 rather than served for free.
 
-Two request-shaping details, both same-protocol and neither visible to your
-client's SDK: the gateway asks for usage accounting on the outbound body, and
-asks OpenRouter to name the endpoint it routed to. That second answer is stored
-as `served_provider` ("Served by" in the console's usage view), along with
+One request-shaping detail, same-protocol and not visible to your client's SDK:
+the gateway asks OpenRouter to name the endpoint it routed to, with a header.
+Your request body is forwarded byte for byte — cost accounting is always on at
+OpenRouter, so nothing has to be injected to switch it on. That routing answer is
+stored as `served_provider` ("Served by" in the console's usage view), along with
 `served_model`, and `credential_source: "byok"` when the response says the
 inference was paid for with your own upstream key. All three are absent when
 OpenRouter does not say — an absence is never read as a guarantee.
@@ -384,6 +403,23 @@ Vercel** (use a direct or Cloudflare-routed Gemini instance for that), and
 neither is transcription — `v1/audio/transcriptions` does not exist on Vercel's
 origin, so `transcription` [named endpoints](/docs/named-endpoints) cannot use a
 Vercel-routed instance either.
+
+The three paths in that table are the whole surface, and the Responses entry
+means **`POST v1/responses` only**. The Responses API's sub-resource operations
+— `GET v1/responses/{id}`, `DELETE v1/responses/{id}`,
+`POST v1/responses/{id}/cancel` — are refused on a Vercel-routed instance the
+same way, because Vercel's documentation does not state that its gateway serves
+them: it describes the Responses API in terms of the request features it
+supports, and publishes no endpoint list that includes them. Only operations
+verified against a gateway's live surface are opened here, so an unverified one
+is refused at the edge rather than forwarded and 404ed upstream with a message
+nobody can act on.
+
+This is an asymmetry with the direct route, where those operations reach the
+provider's own API and are governed by your instance's `allowed_paths` like any
+other path. If you retrieve, cancel, or delete stored responses, keep that work
+on a direct or Cloudflare-routed instance. If Vercel documents the sub-resources
+later, they become a one-line capability change here.
 
 **Model IDs stay canonical.** Everywhere you can see a model — `allowed_models`,
 `fixed_model`, custom pricing, model rewrites, recorded usage — it is the

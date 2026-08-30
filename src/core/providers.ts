@@ -1,31 +1,22 @@
-export const PROVIDER_TYPES = [
-  "openai",
-  "anthropic",
-  "xai",
-  "gemini",
-  "perplexity",
-  "deepseek",
-  "groq",
-  "mistral",
-  "together",
-  "fireworks",
-  "cerebras",
-  "moonshot",
-  "huggingface",
-  "baseten",
-  "bytedance",
-  "openrouter",
-] as const;
+// Explicit `.ts`, unlike most of `src/core`: the OpenAPI generator runs this
+// module's import graph through Node's type stripping, which resolves specifiers
+// literally rather than bundling them.
+import { type CostReport, OPENROUTER_COST_REPORT } from "./cost-report.ts";
+
+// The provider list and the endpoint styles are shared with the console, which
+// used to keep its own copy of both — see `src/shared/capabilities.ts`.
+export {
+  ENDPOINT_API_STYLES,
+  PROVIDER_TYPES,
+  type EndpointApiStyle,
+  type ProviderType,
+} from "../shared/capabilities.ts";
+
+import type { ProviderType } from "../shared/capabilities.ts";
 
 // Flag-free on purpose: this source string is published verbatim as an
 // OpenAPI `pattern`, where a trailing JS flag would make the regex invalid.
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
-
-export type ProviderType = (typeof PROVIDER_TYPES)[number];
-
-export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;
-
-export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
 
 /**
  * How a provider authenticates a direct call. The header name and the scheme
@@ -44,11 +35,18 @@ export interface ProviderSpec {
   directBaseUrl: string;
   auth: ProviderAuth;
   /**
-   * Whether this provider reports what a request cost, per request, in its own
-   * response. Absent means it does not, which is the fail-closed default: such
-   * traffic is only billable when the canonical model has a local price.
+   * How this provider reports what a request cost, per request, in its own
+   * response — the parsing, the headers that ask for it, and any request rewrite
+   * it needs, all owned by the declaration. Absent means it reports nothing,
+   * which is the fail-closed default: such traffic is only billable when the
+   * canonical model has a local price.
+   *
+   * There is deliberately no boolean here. A flag would have to be paired with
+   * parsing somewhere else, and the day a second reporting provider set it, it
+   * would bypass the local-price gate while the shared parser read fields that
+   * provider never sends — every request billable and every one unresolved.
    */
-  reportsCost?: boolean;
+  costReport?: CostReport;
   /**
    * Who makes the models this provider type serves, when one answer is right
    * for all of them. Absent for aggregators, which serve many authors' models
@@ -68,6 +66,15 @@ export interface ProviderSpec {
    * server-side and stripped off client requests, exactly like {@link auth}.
    */
   requestHeaders?: Readonly<Record<string, string>>;
+  /**
+   * Headers the *credential probe* needs beyond authentication, where the
+   * provider refuses a bare authenticated GET without them. Kept apart from
+   * {@link requestHeaders} because those are injected into live traffic and
+   * stripped off client requests, which is wrong for a header a client is
+   * entitled to choose. Declared so `provider-probe.ts` never has to name a
+   * provider type.
+   */
+  probeHeaders?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -85,6 +92,12 @@ export const PROVIDER_REGISTRY = {
     directBaseUrl: "https://api.anthropic.com/",
     auth: { header: "x-api-key" },
     modelAuthor: "Anthropic",
+    // Anthropic refuses any request without a version header, probe included —
+    // and a probe has no client to send one for it. Deliberately not a
+    // `requestHeaders` entry: on live traffic this is the *client's* API version,
+    // set by every Anthropic SDK, and pinning it server-side would strip that
+    // choice and silently downgrade every request to the oldest version.
+    probeHeaders: { "anthropic-version": "2023-06-01" },
   },
   xai: {
     directBaseUrl: "https://api.x.ai/",
@@ -185,14 +198,12 @@ export const PROVIDER_REGISTRY = {
     // actually charged for that request, which beats any local estimate of a
     // catalog this deployment does not track. It is also the only way to bill
     // the type at all, since no static price list covers 400 models across
-    // every lab.
-    reportsCost: true,
+    // every lab. The declaration owns the parsing and the header that asks for
+    // the routing metadata — see `src/core/cost-report.ts`.
+    costReport: OPENROUTER_COST_REPORT,
     // No `modelAuthor`: an aggregator serves everyone's models, and the slug
     // namespace answers per model instead.
     authorNamespacedModels: true,
-    // Which host actually served a request is opt-in per request; without this
-    // header the response names no serving provider at all.
-    requestHeaders: { "x-openrouter-metadata": "enabled" },
   },
 } as const satisfies Record<ProviderType, ProviderSpec>;
 
@@ -249,9 +260,22 @@ function providerSpec(type: ProviderType): ProviderSpec {
   return PROVIDER_REGISTRY[type];
 }
 
-/** Whether this provider type's own responses carry a per-request cost. */
+/**
+ * How this provider type reports its own cost, or `null` where it does not.
+ * The single question generic code asks: it never learns whose fields the
+ * returned integration reads.
+ */
+export function costReport(type: ProviderType): CostReport | null {
+  return providerSpec(type).costReport ?? null;
+}
+
+/**
+ * Whether this provider type's own responses carry a per-request cost, which is
+ * exactly whether it declared how to read one. Billability derives from the
+ * declaration rather than sitting beside it, so the two cannot disagree.
+ */
 export function reportsCost(type: ProviderType): boolean {
-  return providerSpec(type).reportsCost === true;
+  return providerSpec(type).costReport !== undefined;
 }
 
 /** The author every model of this provider type has, when there is one. */
@@ -273,9 +297,22 @@ export function namespaceModelAuthor(type: ProviderType, model: string): string 
   return MODEL_AUTHOR_NAMESPACES[namespace] ?? null;
 }
 
-/** Non-auth headers this provider type needs on every direct call. */
+/**
+ * Non-auth headers this provider type needs on every direct call, the spec's own
+ * and its cost-report integration's together. One list, so the sanitizer strips
+ * a client's version of every one of them without knowing which declared it.
+ */
 export function providerRequestHeaders(type: ProviderType): Readonly<Record<string, string>> {
-  return providerSpec(type).requestHeaders ?? {};
+  const spec = providerSpec(type);
+  const declared = spec.requestHeaders;
+  const reporting = spec.costReport?.requestHeaders;
+  if (!reporting) return declared ?? {};
+  return declared ? { ...declared, ...reporting } : reporting;
+}
+
+/** Non-auth headers this provider type's credential probe has to carry. */
+export function providerProbeHeaders(type: ProviderType): Readonly<Record<string, string>> {
+  return providerSpec(type).probeHeaders ?? {};
 }
 
 /** The credential header value a direct call to this provider carries. */

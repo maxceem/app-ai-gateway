@@ -1,21 +1,9 @@
 import type { OutputClampStyle, ProviderType } from "./types";
 
-/**
- * The API contract a proxied request speaks. It names the *operation*, not the
- * provider serving it: `chat/completions` is the same request and response
- * shape whether OpenAI, Perplexity, or a gateway in front of them answers it.
- */
-export const API_STYLES = [
-  "responses",
-  "chat_completions",
-  "anthropic_messages",
-  "gemini_native",
-  "audio_transcription",
-  /** A provider-native operation with no cross-provider contract of its own. */
-  "other",
-] as const;
+// Shared with the console, which lists these styles in its capability panels.
+export { API_STYLES, type ApiStyle } from "../shared/capabilities";
 
-export type ApiStyle = (typeof API_STYLES)[number];
+import type { ApiStyle } from "../shared/capabilities";
 
 /**
  * Classifies the requested operation from the provider path alone. Provider

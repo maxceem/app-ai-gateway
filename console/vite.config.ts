@@ -8,7 +8,13 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { "@": path.resolve(import.meta.dirname, "./src") },
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src"),
+      // The shared capability matrix, one directory up and outside this package.
+      // It imports nothing, so bundling it costs the tables themselves and
+      // pulls no server dependency into the browser build.
+      "@shared": path.resolve(import.meta.dirname, "../src/shared"),
+    },
   },
   server: {
     port: 5173,

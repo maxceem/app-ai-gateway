@@ -3,8 +3,8 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import { API_STYLES } from "../src/core/api-styles";
-import { PROVIDER_TYPES } from "../src/core/providers";
-import { injectCostReport } from "../src/core/proxyrules";
+import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
+import { costReportBodyMutation } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
@@ -1282,49 +1282,66 @@ describe("OpenRouter", () => {
 });
 
 /**
- * The one same-protocol mutation a cost-reporting route adds. Unit-level
- * because the interesting cases are the ones it must *not* touch: a body it
- * changes for a provider that never asked would be a protocol change.
+ * A cost-reporting provider's request-side hook. No shipped type declares one:
+ * OpenRouter's accounting is always on, so the `usage: {include: true}` this
+ * used to inject bought nothing and cost a full re-serialization of every chat
+ * body. The hook stays because it is where an opt-in would come back, and these
+ * assert the pass-through it is today.
  */
-describe("cost report injection", () => {
-  it("adds the opt-in to a chat-completions body on a reporting route", () => {
-    const body: Record<string, unknown> = { model: "google/gemini-3.6-flash", messages: [] };
-    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(true);
-    expect(body.usage).toEqual({ include: true });
-  });
-
-  it("overrides a client that asked for the cost to be left out", () => {
-    // The reported cost is what this route is billed on, so switching the meter
-    // off is not the client's to decide. Everything else under `usage` stays.
-    const body: Record<string, unknown> = { usage: { include: false, keep: "me" } };
-    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(true);
-    expect(body.usage).toEqual({ include: true, keep: "me" });
-  });
-
-  it("leaves a body that already asked for it byte-identical", () => {
-    const body: Record<string, unknown> = { usage: { include: true } };
-    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(false);
-  });
-
-  it("replaces a `usage` value that is not an object", () => {
-    const body: Record<string, unknown> = { usage: "nonsense" };
-    expect(injectCostReport("openrouter", "chat_completions", body)).toBe(true);
-    expect(body.usage).toEqual({ include: true });
-  });
-
-  it("never touches a provider that does not report costs", () => {
-    for (const type of PROVIDER_TYPES.filter((value) => value !== "openrouter")) {
-      const body: Record<string, unknown> = { model: "m" };
-      expect([type, injectCostReport(type, "chat_completions", body)]).toEqual([type, false]);
-      expect([type, body]).toEqual([type, { model: "m" }]);
+describe("cost report body mutation", () => {
+  it("leaves every chat-completions body untouched, on every provider type", () => {
+    for (const type of PROVIDER_TYPES) {
+      const body: Record<string, unknown> = { model: "m", messages: [] };
+      expect([type, costReportBodyMutation(type, "chat_completions", body)])
+        .toEqual([type, false]);
+      expect([type, body]).toEqual([type, { model: "m", messages: [] }]);
     }
   });
 
-  it("never touches a body that is not a chat completion", () => {
-    for (const style of API_STYLES.filter((value) => value !== "chat_completions")) {
+  it("leaves a client's own `usage` block alone", () => {
+    // It used to be overwritten to keep a client from switching the meter off.
+    // Nothing reads the field now, and rewriting a request field nobody acts on
+    // is a protocol change for no benefit.
+    const body: Record<string, unknown> = { usage: { include: false, keep: "me" } };
+    expect(costReportBodyMutation("openrouter", "chat_completions", body)).toBe(false);
+    expect(body.usage).toEqual({ include: false, keep: "me" });
+  });
+
+  it("touches no body on any API style", () => {
+    for (const style of API_STYLES) {
       const body: Record<string, unknown> = { model: "m" };
-      expect([style, injectCostReport("openrouter", style, body)]).toEqual([style, false]);
+      expect([style, costReportBodyMutation("openrouter", style, body)]).toEqual([style, false]);
       expect([style, body]).toEqual([style, { model: "m" }]);
     }
+  });
+
+  /**
+   * The hook is generic: a type that declares a mutation gets it called, and the
+   * shared proxy path never learns whose field it wrote. Proved against a
+   * hypothetical declaration rather than a real one, because no shipped type
+   * needs it.
+   */
+  it("calls a declared mutation without the proxy path knowing whose it is", () => {
+    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const calls: string[] = [];
+    try {
+      spec.costReport = {
+        read: () => false,
+        mutateBody: (input: { style: string; body: Record<string, unknown> }) => {
+          calls.push(input.style);
+          input.body.hypothetical = true;
+          return true;
+        },
+      };
+      const body: Record<string, unknown> = { model: "m" };
+      expect(costReportBodyMutation("perplexity", "chat_completions", body)).toBe(true);
+      expect(body).toEqual({ model: "m", hypothetical: true });
+      expect(calls).toEqual(["chat_completions"]);
+    } finally {
+      delete spec.costReport;
+    }
+    const after: Record<string, unknown> = { model: "m" };
+    expect(costReportBodyMutation("perplexity", "chat_completions", after)).toBe(false);
+    expect(after).toEqual({ model: "m" });
   });
 });

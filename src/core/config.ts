@@ -10,7 +10,7 @@ import {
   PROVIDER_TYPES,
   PROVIDER_SLUG_PATTERN,
 } from "./providers";
-import { hasModelPrice } from "./usage";
+import { hasModelPrice, isBillable } from "./usage";
 import type {
   AllowedPath,
   AppConfig,
@@ -248,13 +248,21 @@ function validateRoutingPrices(
 ): void {
   const providers = scope.instances;
   // A rewrite target is a model name, not an instance reference, so it is
-  // priced against the superset the organization could ever reach: the shipped
-  // catalog for every provider type, plus any instance's own overrides. An
-  // organization with no providers yet must still be able to save an app.
+  // judged against the superset the organization could ever reach: the shipped
+  // catalog for every provider type, plus what any of its own instances can
+  // bill. An organization with no providers yet must still be able to save an
+  // app.
+  //
+  // The catalog arm stays a price check on purpose. Billability is per instance,
+  // and asking it of every provider type would answer yes to any string at all
+  // the moment one cost-reporting type exists — turning a typo-catching save
+  // check into no check. The instance arm is where reported cost belongs: an
+  // organization that really runs an OpenRouter row can rewrite to its slugs,
+  // and one that does not still gets its typos caught.
   for (const [source, target] of Object.entries(modelRewrites)) {
     const priced = PROVIDER_TYPES.some((type) => hasModelPrice(type, target, null))
       || Object.values(providers).some((provider) =>
-        hasModelPrice(provider.type, target, provider.pricing)
+        isBillable(provider.type, target, provider.pricing)
       );
     if (!priced) {
       throw new GatewayError(
@@ -283,7 +291,11 @@ function validateRoutingPrices(
     ];
     for (const configured of configuredModels) {
       const resolved = lookup(modelRewrites, configured.model) ?? configured.model;
-      if (!hasModelPrice(provider.type, resolved, provider.pricing)) {
+      // The same gate a request faces, so configuration and runtime cannot
+      // disagree: a local price, or a route that reports what it charged. An
+      // OpenRouter row's slugs have no catalog entry by design, and restricting
+      // an app to them must not be refused for a price the proxy never asks for.
+      if (!isBillable(provider.type, resolved, provider.pricing)) {
         throw new GatewayError(
           500,
           "internal_error",
@@ -352,17 +364,32 @@ function parseEndpointTarget(
   }
   // Route-aware: a gateway may carry fewer of a provider's operations than the
   // provider itself has, so which instance this is matters as much as its type.
-  if (instance && !supportsEndpointStyle(instance.route, instance.type, apiStyle)) {
-    throw new GatewayError(
-      500,
-      "internal_error",
-      instance.route === "direct"
-        ? `${label}.provider ${provider} is a ${instance.type} instance, which does not support ${apiStyle}`
-        : `${label}.provider ${provider} is a ${instance.type} instance routed through a ${instance.route} gateway, which does not support ${apiStyle}`,
-    );
+  //
+  // A `null` route is a row attached to a gateway type this deployment has no
+  // adapter for. Nothing can be said about what it would carry, so it is
+  // refused here rather than accepted and then answered with a 502 on the first
+  // request — an error at save time names the row an operator can go and fix.
+  if (instance) {
+    if (instance.route === null) {
+      throw new GatewayError(
+        500,
+        "internal_error",
+        `${label}.provider ${provider} is routed through a provider gateway this deployment has no adapter for, so it cannot serve ${apiStyle} endpoints`,
+      );
+    }
+    if (!supportsEndpointStyle(instance.route, instance.type, apiStyle)) {
+      throw new GatewayError(
+        500,
+        "internal_error",
+        instance.route === "direct"
+          ? `${label}.provider ${provider} is a ${instance.type} instance, which does not support ${apiStyle}`
+          : `${label}.provider ${provider} is a ${instance.type} instance routed through a ${instance.route} gateway, which does not support ${apiStyle}`,
+      );
+    }
   }
   const model = requiredString(value.model, `${label}.model`);
-  if (instance && !hasModelPrice(instance.type, model, instance.pricing)) {
+  // Billability, not price: the endpoint route runs the same check per request.
+  if (instance && !isBillable(instance.type, model, instance.pricing)) {
     throw new GatewayError(
       500,
       "internal_error",
