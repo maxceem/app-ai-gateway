@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
+import { Route, Routes } from "react-router-dom";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, draftsToPricing } from "./providers";
@@ -170,8 +171,30 @@ async function runRowAction(label: string, action: RegExp) {
 
 /** Providers are added the same way apps and management keys are: in a modal. */
 async function openAddProvider(): Promise<HTMLElement> {
-  await userEvent.click(await screen.findByRole("button", { name: /new provider/i }));
+  await userEvent.click(await screen.findByRole("button", { name: /^add provider$/i }));
   return topDialog();
+}
+
+/**
+ * Providers and gateways are two sections of one destination, reachable only
+ * through their routes, so tests mount those the way the console does.
+ */
+function renderProviders(
+  route = "/providers",
+  options: Parameters<typeof renderAuthenticated>[1] = {},
+) {
+  return renderAuthenticated(
+    <Routes>
+      <Route path="/providers" element={<ProvidersPage />} />
+      <Route path="/providers/:section" element={<ProvidersPage />} />
+    </Routes>,
+    { ...options, route },
+  );
+}
+
+/** The gateways section, which is a menu click away from the providers one. */
+function renderGateways(options: Parameters<typeof renderAuthenticated>[1] = {}) {
+  return renderProviders("/providers/gateways", options);
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -211,9 +234,9 @@ describe("draftsToPricing", () => {
 });
 
 describe("ProvidersPage", () => {
-  it("lists each instance by slug, hint and the gateway it is routed through", async () => {
+  it("lists each instance by slug and how it authenticates", async () => {
     stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const direct = (await screen.findByText("Prod OpenAI")).closest("tr")!;
     const routed = screen.getByText("Anthropic via CF").closest("tr")!;
@@ -221,24 +244,55 @@ describe("ProvidersPage", () => {
     // The slug is the URL segment callers use, so it is shown verbatim.
     expect(within(direct).getByText("openai")).toBeTruthy();
     expect(within(routed).getByText("anthropic-cf")).toBeTruthy();
+    // A key of its own is named by its tail, which is all of it there ever is.
+    expect(within(direct).getByText(/API key:/)).toBeTruthy();
     expect(within(direct).getByText("…gain")).toBeTruthy();
-    expect(within(direct).getByText("Direct")).toBeTruthy();
-    // The gateway's name, not the opaque Cloudflare gateway id.
+    // A routed row names the gateway it borrows from, not the Cloudflare ids.
+    expect(within(routed).getByText(/Gateway:/)).toBeTruthy();
     expect(within(routed).getByText("Prod CF gateway")).toBeTruthy();
     expect(within(routed).queryByText(/cf-gw/)).toBeNull();
+    expect(within(routed).queryByText(/API key:/)).toBeNull();
+  });
+
+  it("gives each section its own page, headed by the list it shows", async () => {
+    stubProviders();
+    const { unmount } = renderProviders();
+
+    // Gateways are a section of their own now, not a second table below this one.
+    expect(await screen.findByRole("heading", { level: 1, name: "Providers" })).toBeTruthy();
+    expect(await screen.findByText("Prod OpenAI")).toBeTruthy();
+    expect(screen.queryByText("acct-1")).toBeNull();
+    unmount();
+
+    renderGateways();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Gateways" })).toBeTruthy();
+    expect(await screen.findByText("acct-1")).toBeTruthy();
+    expect(screen.queryByText("Prod OpenAI")).toBeNull();
+  });
+
+  it("falls back to the providers section for an unknown one", async () => {
+    stubProviders();
+    const { router } = renderProviders("/providers/nonsense");
+
+    expect(router.location.pathname).toBe("/providers");
+    expect(await screen.findByText("Prod OpenAI")).toBeTruthy();
   });
 
   it("offers onboarding copy when nothing is configured", async () => {
     stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    const { unmount } = renderProviders();
 
     expect(await screen.findByText(/add a key per provider/i)).toBeTruthy();
-    expect(screen.getByText(/no gateways yet/i)).toBeTruthy();
+    unmount();
+
+    renderGateways();
+    expect(await screen.findByText(/no gateways yet/i)).toBeTruthy();
   });
 
   it("submits a new key from the modal and leaves nothing behind", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
@@ -266,14 +320,16 @@ describe("ProvidersPage", () => {
 
   it("opts every credential field out of browser and manager autofill", async () => {
     stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    const { unmount } = renderProviders();
 
     const provider = await openAddProvider();
     const secretFields = [within(provider).getByLabelText("API key")];
     const plainFields = [within(provider).getByLabelText("Name")];
     await userEvent.click(within(provider).getByRole("button", { name: /cancel/i }));
+    unmount();
 
-    await userEvent.click(screen.getByRole("button", { name: /add gateway/i }));
+    renderGateways();
+    await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
     const dialog = await topDialog();
     secretFields.push(within(dialog).getByLabelText("Gateway token"));
     plainFields.push(
@@ -299,7 +355,7 @@ describe("ProvidersPage", () => {
 
   it("adds a provider through an existing gateway instead of a key", async () => {
     const calls = stubProviders({ providers: [], gateways: [GATEWAY] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     await userEvent.type(within(dialog).getByLabelText("Name"), "OpenAI via CF");
@@ -322,7 +378,7 @@ describe("ProvidersPage", () => {
 
   it("creates a gateway in a second modal without losing the provider", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const provider = await openAddProvider();
     await userEvent.type(within(provider).getByLabelText("Name"), "OpenAI via CF");
@@ -369,7 +425,7 @@ describe("ProvidersPage", () => {
 
   it("checks a credential on request without storing it", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     const test = within(dialog).getByRole("button", { name: /test provider/i });
@@ -404,7 +460,7 @@ describe("ProvidersPage", () => {
         },
       },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
@@ -438,7 +494,7 @@ describe("ProvidersPage", () => {
         body: { validated: false, reason: "unexpected_status", status: 400 },
       },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     await choose(within(dialog).getByLabelText("Authentication"), /use gateway/i);
@@ -461,7 +517,7 @@ describe("ProvidersPage", () => {
         body: { validated: false, reason: "unexpected_status", status: 503 },
       },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
@@ -479,7 +535,7 @@ describe("ProvidersPage", () => {
       gateways: [],
       testProvider: { status: 200, body: { validated: false, reason: "no_probe" } },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const dialog = await openAddProvider();
     await choose(within(dialog).getByLabelText("Provider"), /perplexity/i);
@@ -491,7 +547,7 @@ describe("ProvidersPage", () => {
 
   it("adds a gateway on its own, with no provider selection", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
     const dialog = await topDialog();
@@ -514,7 +570,7 @@ describe("ProvidersPage", () => {
 
   it("checks a gateway connection on demand, without storing it", async () => {
     const calls = stubProviders({ providers: [], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
     const dialog = await topDialog();
@@ -543,7 +599,7 @@ describe("ProvidersPage", () => {
       gateways: [],
       testGateway: { status: 200, body: { validated: false, reason: "rejected", status: 401 } },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
     const dialog = await topDialog();
@@ -573,7 +629,7 @@ describe("ProvidersPage", () => {
         body: { gateway: CREATED_GATEWAY, validated: false, reason: "rejected", status: 401 },
       },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     await userEvent.click(await screen.findByRole("button", { name: /add gateway/i }));
     const dialog = await topDialog();
@@ -592,19 +648,22 @@ describe("ProvidersPage", () => {
     });
   });
 
-  it("links a routed provider to its gateway's row", async () => {
+  it("links a routed provider to its gateway's row in the other section", async () => {
     stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const link = await screen.findByRole("link", { name: "Prod CF gateway" });
-    expect(link.getAttribute("href")).toBe("#gateway-gw-1");
-    // The anchor exists, so the link lands on the gateway's own row.
-    expect(document.getElementById("gateway-gw-1")).toBeTruthy();
+    expect(link.getAttribute("href")).toBe("/providers/gateways#gateway-gw-1");
+
+    await userEvent.click(link);
+
+    // The anchor exists there, so the link lands on the gateway's own row.
+    await waitFor(() => expect(document.getElementById("gateway-gw-1")).toBeTruthy());
   });
 
   it("refreshes the gateway counts when a routed provider is added", async () => {
     const calls = stubProviders({ providers: [], gateways: [GATEWAY] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
     const gatewayReads = () =>
       calls.filter((entry) => entry.method === "GET" && entry.url.includes("provider-gateways"))
         .length;
@@ -623,7 +682,7 @@ describe("ProvidersPage", () => {
 
   it("refreshes the gateway counts when a provider is deleted", async () => {
     const calls = stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
     const gatewayReads = () =>
       calls.filter((entry) => entry.method === "GET" && entry.url.includes("provider-gateways"))
         .length;
@@ -639,7 +698,7 @@ describe("ProvidersPage", () => {
     // The type is configured, but nothing holds `openai`, so the next instance
     // may still take the default and needs no manual slug.
     stubProviders({ providers: [{ ...DIRECT, slug: "openai-legacy" }], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     await screen.findByText("openai-legacy");
     const dialog = await openAddProvider();
@@ -648,7 +707,7 @@ describe("ProvidersPage", () => {
 
   it("asks for a slug only once the default one is taken", async () => {
     const calls = stubProviders({ providers: [DIRECT], gateways: [] });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     // OpenAI is taken, so the default slug is unavailable and must be replaced.
     const dialog = await openAddProvider();
@@ -680,7 +739,7 @@ describe("ProvidersPage", () => {
         body: { error: { code: "slug_taken", message: "An active provider instance already uses slug openai" } },
       },
     });
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     // The client's list said nothing was configured, so no slug was asked for.
     const dialog = await openAddProvider();
@@ -694,16 +753,19 @@ describe("ProvidersPage", () => {
     await waitFor(() => expect(document.activeElement).toBe(slugField));
   });
 
-  it("lists gateways with their connection, hint and provider count", async () => {
+  it("names every parameter a gateway is reached and admitted by", async () => {
     stubProviders({ gateways: [GATEWAY, SPARE_GATEWAY, RETIRED_GATEWAY] });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     const spare = (await screen.findByText("Spare gateway")).closest("tr")!;
-    expect(within(spare).getByText("acct-1 · cf-gw")).toBeTruthy();
+    expect(within(spare).getByText("Cloudflare AI Gateway")).toBeTruthy();
+    // Each part is labelled, rather than run together into one opaque string.
+    expect(within(spare).getByText(/Account ID:/)).toBeTruthy();
+    expect(within(spare).getByText("acct-1")).toBeTruthy();
+    expect(within(spare).getByText(/Gateway ID:/)).toBeTruthy();
+    expect(within(spare).getByText("cf-gw")).toBeTruthy();
+    expect(within(spare).getByText(/API key:/)).toBeTruthy();
     expect(within(spare).getByText("…9xyz")).toBeTruthy();
-    // The column counts what the gateway serves, not what merely references it.
-    const retired = screen.getByText("Retired gateway").closest("tr")!;
-    expect(within(retired).getByText("0")).toBeTruthy();
     // A gateway still in use cannot be deleted, and says why.
     const inUse = await openRowActions("Prod CF gateway");
     expect(within(inUse).getByRole("menuitem", { name: /delete gateway/i }))
@@ -716,7 +778,7 @@ describe("ProvidersPage", () => {
 
   it("blocks deleting a gateway only revoked rows still reference", async () => {
     stubProviders({ gateways: [RETIRED_GATEWAY] });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     // Nothing routes through it, but the foreign key counts revoked rows too,
     // so "delete the active instances first" would be unactionable advice.
@@ -729,9 +791,9 @@ describe("ProvidersPage", () => {
 
   it("rotates the gateway token once for every provider behind it", async () => {
     const calls = stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
-    await screen.findByText("acct-1 · cf-gw");
+    await screen.findByText("acct-1");
     await runRowAction("Prod CF gateway", /update token/i);
     await userEvent.type(await screen.findByLabelText("New gateway token"), "cf-aig-new-token");
     await userEvent.click(screen.getByRole("button", { name: /update token/i }));
@@ -746,9 +808,9 @@ describe("ProvidersPage", () => {
 
   it("renames a gateway without touching its connection", async () => {
     const calls = stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
-    await screen.findByText("acct-1 · cf-gw");
+    await screen.findByText("acct-1");
     await runRowAction("Prod CF gateway", /rename/i);
     const dialog = await screen.findByRole("dialog");
     await userEvent.clear(within(dialog).getByLabelText("Name"));
@@ -764,7 +826,7 @@ describe("ProvidersPage", () => {
 
   it("deletes a gateway nothing routes through", async () => {
     const calls = stubProviders({ gateways: [SPARE_GATEWAY] });
-    renderAuthenticated(<ProvidersPage />);
+    renderGateways();
 
     await runRowAction("Spare gateway", /delete gateway/i);
     await userEvent.click(await screen.findByRole("button", { name: /^delete gateway$/i }));
@@ -777,7 +839,7 @@ describe("ProvidersPage", () => {
 
   it("rotates a credential in place", async () => {
     const calls = stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     await screen.findByText("Prod OpenAI");
     await runRowAction("Prod OpenAI", /update key/i);
@@ -794,7 +856,7 @@ describe("ProvidersPage", () => {
 
   it("sends a gateway-routed row to the gateway for rotation", async () => {
     stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     const menu = await openRowActions("Anthropic via CF");
     const rotate = within(menu).getByRole("menuitem", { name: /update key/i });
@@ -804,7 +866,7 @@ describe("ProvidersPage", () => {
 
   it("edits custom model pricing without touching the credential", async () => {
     const calls = stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     await runRowAction("Prod OpenAI", /pricing/i);
     const dialog = await screen.findByRole("dialog");
@@ -832,7 +894,7 @@ describe("ProvidersPage", () => {
   it("refuses to save a pricing row with a missing price", async () => {
     const calls = stubProviders();
     const errorToast = vi.spyOn(toast, "error");
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     await runRowAction("Prod OpenAI", /pricing/i);
     const dialog = await screen.findByRole("dialog");
@@ -853,7 +915,7 @@ describe("ProvidersPage", () => {
 
   it("spells out that deleting breaks apps within a minute", async () => {
     const calls = stubProviders();
-    renderAuthenticated(<ProvidersPage />);
+    renderProviders();
 
     await runRowAction("Prod OpenAI", /delete provider/i);
     expect(await screen.findByText(/start failing within a minute/i)).toBeTruthy();
@@ -867,13 +929,13 @@ describe("ProvidersPage", () => {
 
   it("stops a read-only member changing anything", async () => {
     stubProviders();
-    renderAuthenticated(<ProvidersPage />, { session: { role: "member" } });
+    renderProviders("/providers", { session: { role: "member" } });
 
     await screen.findByText("Prod OpenAI");
     // The creation flows live behind these two buttons, so a read-only member
     // never reaches a field at all.
-    expect(screen.getByRole("button", { name: /new provider/i })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: /add gateway/i })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^add provider$/i }))
+      .toHaveProperty("disabled", true);
     // The row menus still open, and each action says why it is unavailable.
     const menu = await openRowActions("Prod OpenAI");
     expect(within(menu).getByRole("menuitem", { name: /update key/i }))
@@ -883,5 +945,13 @@ describe("ProvidersPage", () => {
     // Pricing is only a view until its own save button, which is guarded.
     expect(within(menu).getByRole("menuitem", { name: /pricing/i }))
       .toHaveProperty("ariaDisabled", null);
+  });
+
+  it("stops a read-only member adding a gateway", async () => {
+    stubProviders();
+    renderGateways({ session: { role: "member" } });
+
+    expect(await screen.findByRole("button", { name: /add gateway/i }))
+      .toHaveProperty("disabled", true);
   });
 });

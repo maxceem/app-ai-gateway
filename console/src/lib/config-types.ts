@@ -11,6 +11,15 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   perplexity: "Perplexity",
 };
 
+/**
+ * `cf_aig` is the only gateway the API accepts today — both the request schema
+ * and the D1 check constraint pin it to that one value — so this map has a
+ * single entry until a second kind of gateway exists.
+ */
+export const PROVIDER_GATEWAY_LABELS: Record<"cf_aig", string> = {
+  cf_aig: "Cloudflare AI Gateway",
+};
+
 export const CLAMP_STYLES = [
   "responses",
   "chat_completions",

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, Navigate, useLocation, useParams } from "react-router-dom";
 import {
   AlertCircle,
   CircleCheck,
@@ -50,8 +51,12 @@ import { GuardedButton } from "@/components/guarded-button";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
-import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/config-types";
-import { formatDateTime } from "@/lib/format";
+import {
+  PROVIDERS,
+  PROVIDER_GATEWAY_LABELS,
+  PROVIDER_LABELS,
+  type Provider,
+} from "@/lib/config-types";
 import { cn } from "@/lib/utils";
 import {
   useCreateProvider,
@@ -154,8 +159,11 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-/** Anchors the Gateways section's row for a gateway, so a provider can link to it. */
+/** Anchors the gateways section's row for a gateway, so a provider can link to it. */
 const gatewayAnchor = (id: string) => `gateway-${id}`;
+
+/** The gateways section's own path, which the providers table links into. */
+const GATEWAYS_PATH = "/providers/gateways";
 
 /**
  * Why this gateway cannot be deleted, mirroring the API's `gateway_in_use`
@@ -173,39 +181,93 @@ function deleteBlockedReason(gateway: ProviderGateway): string | undefined {
     : "Delete every active provider instance routed through this gateway first";
 }
 
-/**
- * The gateway's own name, not its Cloudflare IDs: an operator recognises "Prod
- * CF gateway" but not the opaque gateway id it was created with. The name links
- * to that gateway's row, where its connection and actions live.
- */
-function RoutedVia({
-  row,
-  gateways,
-}: {
-  row: ProviderCredential;
-  gateways: ProviderGateway[];
-}) {
-  if (row.providerGatewayId === null) return <>Direct</>;
-  const gateway = gateways.find((entry) => entry.id === row.providerGatewayId);
-  if (!gateway) return <>Gateway</>;
+/** One labelled thing a row authenticates with, beside its siblings. */
+function AuthLine({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <a
-      className="underline underline-offset-4"
-      href={`#${gatewayAnchor(gateway.id)}`}
-      onClick={() => {
-        document
-          .getElementById(gatewayAnchor(gateway.id))
-          ?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }}
-    >
-      {gateway.name}
-    </a>
+    <div>
+      {label}: <span className="font-mono text-xs">{value}</span>
+    </div>
   );
 }
 
+/**
+ * How the instance authenticates, in the one form an operator recognises: the
+ * tail of its own key, or the name of the gateway whose key stands in for it.
+ * Neither the gateway's ids nor the full key are usable here — the name is what
+ * the operator named it, and the hint is all of the key there ever is.
+ */
+function Auth({ row, gateways }: { row: ProviderCredential; gateways: ProviderGateway[] }) {
+  if (row.providerGatewayId === null) {
+    if (row.secretHint === null) return <>API key</>;
+    return <AuthLine label="API key" value={`…${row.secretHint}`} />;
+  }
+  const gateway = gateways.find((entry) => entry.id === row.providerGatewayId);
+  // The list is still loading, or the gateway is gone: the row is routed either
+  // way, and that is more honest than an empty cell.
+  if (!gateway) return <>Gateway</>;
+  return (
+    <>
+      Gateway:{" "}
+      <Link
+        className="underline underline-offset-4"
+        to={`${GATEWAYS_PATH}#${gatewayAnchor(gateway.id)}`}
+      >
+        {gateway.name}
+      </Link>
+    </>
+  );
+}
+
+/**
+ * Everything the gateway is addressed and authenticated by, labelled. A
+ * Cloudflare AI Gateway is found by its account and gateway ids and admitted by
+ * its key; the key is only ever its last four characters.
+ */
+function GatewayAuth({ gateway }: { gateway: ProviderGateway }) {
+  return (
+    <div className="space-y-0.5">
+      <AuthLine label="Account ID" value={gateway.config.accountId} />
+      <AuthLine label="Gateway ID" value={gateway.config.gatewayId} />
+      <AuthLine label="API key" value={`…${gateway.secretHint}`} />
+    </div>
+  );
+}
+
+interface SectionEntry {
+  slug: string;
+  path: string;
+  Component: () => React.ReactElement;
+}
+
+/**
+ * Providers and the gateways they can be routed through are two lists of one
+ * subject. They share a destination and split in the sidebar, so each renders
+ * as a page in its own right and its table gets the full width.
+ */
+const SECTIONS: SectionEntry[] = [
+  { slug: "providers", path: "/providers", Component: ProvidersSection },
+  { slug: "gateways", path: GATEWAYS_PATH, Component: GatewaysSection },
+];
+
+const DEFAULT_SECTION = SECTIONS[0]!;
+
 export function ProvidersPage() {
+  const { section } = useParams();
+  const active = section === undefined
+    ? DEFAULT_SECTION
+    : SECTIONS.find((entry) => entry.slug === section);
+
+  // An unknown section is a stale or hand-typed link, not an error worth a screen.
+  if (!active) return <Navigate to={DEFAULT_SECTION.path} replace />;
+
+  return <active.Component />;
+}
+
+function ProvidersSection() {
   const { readOnly } = useConsoleSession();
   const list = useProviders();
+  // The gateways are read here for the Auth column, which names the gateway a
+  // routed instance borrows its token from.
   const gatewayList = useProviderGateways();
   const deleteProvider = useDeleteProvider();
 
@@ -232,11 +294,11 @@ export function ProvidersPage() {
     <div className="space-y-6">
       <PageHeader
         title="Providers"
-        description="Set up the AI providers your apps use. API keys are encrypted and can never be read again."
+        description="Set up the AI providers your apps use."
         action={
           <GuardedButton size="sm" onClick={() => setAdding(true)}>
             <Plus className="size-4" />
-            New provider
+            Add provider
           </GuardedButton>
         }
       />
@@ -253,13 +315,10 @@ export function ProvidersPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead>Name</TableHead>
               <TableHead>Provider</TableHead>
               <TableHead>Slug</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Key</TableHead>
-              <TableHead>Routed via</TableHead>
-              <TableHead>Custom pricing</TableHead>
-              <TableHead>Created</TableHead>
+              <TableHead>Auth</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -267,37 +326,28 @@ export function ProvidersPage() {
             {list.isPending ? (
               [0, 1, 2].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={8}>
+                  <TableCell colSpan={5}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : providers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
                   No providers yet. Add a key per provider, or route one through a gateway.
                 </TableCell>
               </TableRow>
             ) : (
               providers.map((row) => (
                 <TableRow key={row.id}>
+                  <TableCell className="font-medium">{row.name}</TableCell>
                   <TableCell>
                     <Badge variant="secondary">{PROVIDER_LABELS[row.type]}</Badge>
                   </TableCell>
                   {/* The slug is a URL segment, so it is shown exactly as typed. */}
                   <TableCell className="font-mono text-xs">{row.slug}</TableCell>
-                  <TableCell className="font-medium">{row.name}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {row.secretHint === null ? "—" : `…${row.secretHint}`}
-                  </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    <RoutedVia row={row} gateways={gateways} />
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {Object.keys(row.pricing ?? {}).length || "—"}
-                  </TableCell>
-                  <TableCell className="tabular text-muted-foreground">
-                    {formatDateTime(row.createdAt)}
+                    <Auth row={row} gateways={gateways} />
                   </TableCell>
                   <TableCell className="text-right">
                     <RowActions label={row.name}>
@@ -330,12 +380,6 @@ export function ProvidersPage() {
           </TableBody>
         </Table>
       </Card>
-
-      <GatewaysSection
-        gateways={gateways}
-        pending={gatewayList.isPending}
-        error={gatewayList.isError ? gatewayList.error : null}
-      />
 
       <AddProviderDialog
         open={adding}
@@ -825,20 +869,28 @@ function AddProviderDialog({
   );
 }
 
-function GatewaysSection({
-  gateways,
-  pending,
-  error,
-}: {
-  gateways: ProviderGateway[];
-  pending: boolean;
-  error: unknown;
-}) {
+function GatewaysSection() {
+  const list = useProviderGateways();
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState<ProviderGateway | null>(null);
   const [rotating, setRotating] = useState<ProviderGateway | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProviderGateway | null>(null);
   const deleteGateway = useDeleteProviderGateway();
+
+  const gateways = list.data?.gateways ?? [];
+  const error = list.isError ? list.error : null;
+
+  // A provider's Auth cell links here by anchor, and the rows it points at only
+  // exist once the list has loaded — which is after the browser gave up on the
+  // fragment. `hash` is in the dependencies so a second visit to the same
+  // gateway scrolls again.
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (!hash) return;
+    document
+      .getElementById(hash.slice(1))
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [hash, list.data]);
 
   const remove = async () => {
     if (!pendingDelete) return;
@@ -852,22 +904,17 @@ function GatewaysSection({
   };
 
   return (
-    <div className="space-y-3">
-      {/* The console's other section headers sit inside cards, where a smaller
-          description is right. This one is a section of the page itself, under
-          the page header, so its description is set like the page's own. */}
-      <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-3">
-        <div className="min-w-0 flex-1 basis-80 space-y-1">
-          <h2 className="text-sm font-semibold">Gateways</h2>
-          <p className="text-sm text-muted-foreground">
-            Set up the gateways you use to reach AI providers.
-          </p>
-        </div>
-        <GuardedButton size="sm" onClick={() => setAdding(true)}>
-          <Plus className="size-4" />
-          Add gateway
-        </GuardedButton>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Gateways"
+        description="Set up the gateways you use to reach AI providers."
+        action={
+          <GuardedButton size="sm" onClick={() => setAdding(true)}>
+            <Plus className="size-4" />
+            Add gateway
+          </GuardedButton>
+        }
+      />
 
       {error ? (
         <Alert variant="destructive">
@@ -882,24 +929,23 @@ function GatewaysSection({
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Gateway</TableHead>
-              <TableHead>Token</TableHead>
-              <TableHead>Providers</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Auth</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {pending ? (
+            {list.isPending ? (
               [0, 1].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={5}>
+                  <TableCell colSpan={4}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : gateways.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
                   No gateways yet. Add one to route providers through it.
                 </TableCell>
               </TableRow>
@@ -907,14 +953,11 @@ function GatewaysSection({
               gateways.map((row) => (
                 <TableRow key={row.id} id={gatewayAnchor(row.id)}>
                   <TableCell className="font-medium">{row.name}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {row.config.accountId} · {row.config.gatewayId}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    …{row.secretHint}
+                  <TableCell>
+                    <Badge variant="secondary">{PROVIDER_GATEWAY_LABELS[row.type]}</Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {row.providerCount}
+                    <GatewayAuth gateway={row} />
                   </TableCell>
                   <TableCell className="text-right">
                     <RowActions label={row.name}>

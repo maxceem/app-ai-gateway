@@ -12,22 +12,47 @@ async function openAccountMenu() {
 
 describe("AppShell navigation", () => {
   it("keeps the sidebar to the two primary destinations", () => {
-    renderAuthenticated(<AppShell>content</AppShell>);
+    renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps" });
 
     const nav = screen.getByRole("navigation");
+    // A destination's own sections stay folded away until it is the one open.
     expect(nav.querySelectorAll("a")).toHaveLength(2);
     expect(screen.getByRole("link", { name: /apps/i }).getAttribute("href")).toBe("/apps");
     expect(screen.getByRole("link", { name: /providers/i }).getAttribute("href")).toBe("/providers");
   });
 
   it("marks the destination matching the current route", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps" });
+
+    expect(screen.getByRole("link", { name: /apps/i })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: /providers/i }).getAttribute("aria-current"))
+      .toBeNull();
+  });
+
+  it("opens Gateways under Providers in the rail, not in a menu of its own", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { route: "/providers" });
 
-    expect(screen.getByRole("link", { name: /providers/i })).toHaveProperty(
-      "ariaCurrent",
-      "page",
-    );
-    expect(screen.getByRole("link", { name: /apps/i }).getAttribute("aria-current")).toBeNull();
+    const nav = screen.getByRole("navigation");
+    const links = [...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"));
+    // Providers holds its own list, so only the gateways need a row.
+    expect(links).toEqual(["/apps", "/providers", "/providers/gateways"]);
+    expect(screen.getByRole("link", { name: "Providers" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Gateways" }).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("moves the mark onto Gateways when that is the list open", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, { route: "/providers/gateways" });
+
+    expect(screen.getByRole("link", { name: "Gateways" })).toHaveProperty("ariaCurrent", "page");
+    // Providers is still the destination the operator is inside, but it is no
+    // longer the page they are on.
+    expect(screen.getByRole("link", { name: "Providers" }).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("keeps a destination marked across the pages below it", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps/app-1/overview" });
+
+    expect(screen.getByRole("link", { name: /apps/i })).toHaveProperty("ariaCurrent", "page");
   });
 
   it("names only the operator in the sidebar, never their organization", async () => {
@@ -105,7 +130,7 @@ describe("AppShell navigation", () => {
   it("offers Providers to every role, since credentials are readable by members", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { session: { role: "member" } });
 
-    expect(screen.getByRole("link", { name: /providers/i }).getAttribute("href"))
+    expect(screen.getByRole("link", { name: "Providers" }).getAttribute("href"))
       .toBe("/providers");
   });
 

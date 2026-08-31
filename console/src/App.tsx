@@ -72,6 +72,7 @@ function AuthenticatedConsole() {
           <Route path="/apps/:appId" element={<Navigate to="overview" replace />} />
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
+          <Route path="/providers/:section" element={<ProvidersPage />} />
           <Route path="/keys" element={<ManagementKeysPage />} />
           <Route
             path="/settings"

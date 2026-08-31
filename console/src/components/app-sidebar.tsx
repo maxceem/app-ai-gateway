@@ -30,16 +30,27 @@ interface NavItem {
   to: string;
   label: string;
   icon: typeof LayoutGrid;
+  /** Lists the destination holds besides its own, revealed once inside it. */
+  sections?: { to: string; label: string }[];
 }
 
 /**
  * The console has exactly two places to be. Everything else is account or
  * organization administration, which lives in the user menu at the foot of the
  * sidebar rather than competing with them here.
+ *
+ * Gateways hang under Providers rather than beside it: most deployments never
+ * add one, and it is the providers list they support. The destination keeps its
+ * own list, so only the gateways need a row of their own.
  */
 const NAV_ITEMS: NavItem[] = [
   { to: "/apps", label: "Apps", icon: LayoutGrid },
-  { to: "/providers", label: "Providers", icon: Waypoints },
+  {
+    to: "/providers",
+    label: "Providers",
+    icon: Waypoints,
+    sections: [{ to: "/providers/gateways", label: "Gateways" }],
+  },
 ];
 
 /** Read-only members see why the console looks restricted, once, above their account. */
@@ -160,23 +171,56 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <nav className="flex flex-1 flex-col gap-1 p-3">
         {NAV_ITEMS.map((item) => {
           const active = location.pathname.startsWith(item.to);
+          const sections = active ? item.sections : undefined;
+          // The destination holds its own list, so it is the current page
+          // whenever none of the sections under it is.
+          const current = active && !sections?.some((entry) => entry.to === location.pathname);
           return (
-            <Link
-              key={item.to}
-              to={item.to}
-              onClick={onNavigate}
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors",
-                "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                active
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-              )}
-            >
-              <item.icon className="size-4 shrink-0" />
-              {item.label}
-            </Link>
+            <div key={item.to} className="flex flex-col gap-1">
+              <Link
+                to={item.to}
+                onClick={onNavigate}
+                aria-current={current ? "page" : undefined}
+                className={cn(
+                  "flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors",
+                  "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  current
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+                )}
+              >
+                <item.icon className="size-4 shrink-0" />
+                {item.label}
+              </Link>
+
+              {sections ? (
+                // Nothing draws the nesting: a section's label sits in from its
+                // destination's, which says it belongs to it without a rule
+                // down the side of the rail. The pills stay one column wide.
+                <div className="flex flex-col gap-1">
+                  {sections.map((section) => {
+                    const sectionCurrent = location.pathname === section.to;
+                    return (
+                      <Link
+                        key={section.to}
+                        to={section.to}
+                        onClick={onNavigate}
+                        aria-current={sectionCurrent ? "page" : undefined}
+                        className={cn(
+                          "flex h-9 items-center rounded-lg pr-3 pl-12.5 text-sm font-medium transition-colors",
+                          "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                          sectionCurrent
+                            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                            : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+                        )}
+                      >
+                        {section.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           );
         })}
       </nav>
