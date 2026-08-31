@@ -534,8 +534,7 @@ function ProvidersSection() {
             <p>
               Requests to{" "}
               <span className="font-mono text-foreground">{pendingDisable?.slug ?? ""}</span> start
-              failing within a minute. The key, the custom pricing and the slug are all kept, so
-              enabling puts it straight back.
+              failing within a minute.
             </p>
             {pendingDisable ? (
               <ReferencingApps

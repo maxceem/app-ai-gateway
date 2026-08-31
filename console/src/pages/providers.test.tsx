@@ -1195,15 +1195,13 @@ describe("ProvidersPage", () => {
     expect(successToast).toHaveBeenCalledWith("Enabled Dev OpenAI");
   });
 
-  it("says what a disable keeps, then sends the status", async () => {
+  it("says when a disable bites, then sends the status", async () => {
     const calls = stubProviders();
     renderProviders();
 
     await runRowAction("Prod OpenAI", /disable provider/i);
-    // The slug is kept too, so there is no one-way warning to give: enabling
-    // always puts the instance straight back.
-    expect(await screen.findByText(/the key, the custom pricing and the slug are all kept/i))
-      .toBeTruthy();
+    // How soon traffic stops is the one thing the operator cannot look up.
+    expect(await screen.findByText(/start failing within a minute/i)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /^disable provider$/i }));
 
     await waitFor(() => {
@@ -1244,7 +1242,7 @@ describe("ProvidersPage", () => {
     renderProviders();
 
     await runRowAction("Prod OpenAI", /disable provider/i);
-    await screen.findByText(/the key, the custom pricing and the slug are all kept/i);
+    await screen.findByText(/start failing within a minute/i);
     expect(screen.queryByText(/in its configuration/i)).toBeNull();
   });
 
