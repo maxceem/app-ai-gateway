@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -47,24 +48,26 @@ export function ConfirmDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription asChild>
             <div className="space-y-2 text-sm text-muted-foreground">{description}</div>
           </DialogDescription>
-        </DialogHeader>
-        {confirmWord ? (
-          <div className="space-y-2">
-            <Label htmlFor="confirm-word" className="text-xs">
-              Type <span className="font-mono text-foreground">{confirmWord}</span> to continue
-            </Label>
-            <Input
-              id="confirm-word"
-              value={typed}
-              autoComplete="off"
-              className="font-mono"
-              onChange={(event) => setTyped(event.target.value)}
-            />
-          </div>
-        ) : null}
+          {confirmWord ? (
+            <div className="space-y-2">
+              <Label htmlFor="confirm-word" className="text-xs">
+                Type <span className="font-mono text-foreground">{confirmWord}</span> to continue
+              </Label>
+              <Input
+                id="confirm-word"
+                value={typed}
+                autoComplete="off"
+                className="font-mono"
+                onChange={(event) => setTyped(event.target.value)}
+              />
+            </div>
+          ) : null}
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

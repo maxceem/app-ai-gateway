@@ -47,26 +47,29 @@ const PROBE_PATHS: Partial<Record<ProviderType, string>> = {
 
 const PROBE_TIMEOUT_MS = 4_000;
 
-/** Why a probe proved nothing. Absent when the credential was confirmed. */
+/** Why a probe did not confirm the credential. Absent when it did. */
 export type ProbeReason =
   /** This provider offers no cheap authenticated call to probe with. */
   | "no_probe"
   /** The request never completed: DNS, connection, or the timeout above. */
   | "unreachable"
   /** Something answered, but not with the success that would prove anything. */
-  | "unexpected_status";
+  | "unexpected_status"
+  /** The upstream refused the credential outright — the one negative verdict. */
+  | "rejected";
 
 export interface ProbeResult {
-  /** `false` means "not proven good", never "proven bad" — see below. */
+  /** `false` means "not proven good"; only `rejected` means "proven bad". */
   validated: boolean;
   reason?: ProbeReason;
-  /** The status behind an `unexpected_status`, which is what names the fault. */
+  /** The status behind an `unexpected_status` or `rejected`, which names the fault. */
   status?: number;
 }
 
 /**
  * A probe has exactly two outcomes worth acting on: the upstream said the
- * credential is wrong (reject the write), or it did not (accept it). A provider
+ * credential is wrong, or it did not. Which of those blocks a write is the
+ * caller's decision — see {@link assertNotRejected} — because a provider
  * outage, a network blip, or a provider without a probe must never block an
  * operator from saving a key they know is correct.
  */
@@ -93,11 +96,8 @@ async function runProbe(
   await response.body?.cancel();
   if (response.status === 401 || response.status === 403) {
     // Only the upstream status travels back; the credential never does.
-    throw new GatewayError(
-      400,
-      "provider_key_invalid",
-      `The credential was rejected by the provider (HTTP ${response.status})`,
-    );
+    log("warn", "provider_probe_rejected", { probe: label, status: response.status });
+    return { validated: false, reason: "rejected", status: response.status };
   }
   if (!response.ok) {
     // A gateway that holds no key for this provider answers here, so the status
@@ -106,6 +106,20 @@ async function runProbe(
     return { validated: false, reason: "unexpected_status", status: response.status };
   }
   return { validated: true };
+}
+
+/**
+ * Turns the one negative verdict a probe can reach into the refusal a write
+ * must not swallow. Everything else passes through: an inconclusive probe is
+ * not evidence against a credential the operator has reason to trust.
+ */
+export function assertNotRejected(result: ProbeResult): ProbeResult {
+  if (result.reason !== "rejected") return result;
+  throw new GatewayError(
+    400,
+    "provider_key_invalid",
+    `The credential was rejected by the provider (HTTP ${result.status})`,
+  );
 }
 
 /**

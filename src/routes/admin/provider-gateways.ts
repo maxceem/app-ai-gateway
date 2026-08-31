@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import {
   ProviderGatewayCreateRequestSchema,
   ProviderGatewayRotateRequestSchema,
+  ProviderGatewayTestRequestSchema,
   ProviderGatewayUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
@@ -11,7 +12,7 @@ import {
   resolveGateway,
   type ResolvedGateway,
 } from "../../core/gateways";
-import { probeGatewayPreset } from "../../core/provider-probe";
+import { probeGatewayPreset, type ProbeResult } from "../../core/provider-probe";
 import {
   gatewayEncryptionContext,
   invalidateOrganizationProviders,
@@ -59,7 +60,58 @@ function serialize(row: ProviderGatewayRow, counts: GatewayCounts): Record<strin
 
 const NO_REFERENCES: GatewayCounts = { active: 0, total: 0 };
 
+/**
+ * What the probe found, reported rather than enforced.
+ *
+ * A Cloudflare AI Gateway answers 401 both for a token that is wrong and for a
+ * gateway whose authentication or upstream key is not set up yet, so a refusal
+ * here is not proof of a bad token — and blocking on it would stop an operator
+ * from saving a connection while the rest of it is still being built. The
+ * verdict travels back so the console can say what happened, and `POST
+ * /provider-gateways/test` re-runs it on demand.
+ */
+function probeReport(probe: ProbeResult): Record<string, unknown> {
+  return {
+    validated: probe.validated,
+    ...(probe.reason === undefined ? {} : { reason: probe.reason }),
+    ...(probe.status === undefined ? {} : { status: probe.status }),
+  };
+}
+
+/**
+ * The config union is built here and nowhere else, so a stored row's
+ * `type`/`config_json` pair is always one the adapter registry can resolve —
+ * and a dry run probes the same connection a create would have stored.
+ */
+function requestedGateway(
+  body:
+    | { type: "cf_aig"; accountId: string; gatewayId: string }
+    | { type: "vercel" },
+): ResolvedGateway {
+  return body.type === "cf_aig"
+    ? { type: "cf_aig", config: { accountId: body.accountId, gatewayId: body.gatewayId } }
+    : { type: "vercel", config: {} };
+}
+
 export const providerGatewayRoutes = new Hono<ProviderGatewayEnv>();
+
+/**
+ * Probes a gateway connection that need not exist yet, so an operator can check
+ * one before committing to it. Nothing is stored, and the token never travels
+ * back — only the verdict on it does.
+ *
+ * A refusal is reported like every other outcome rather than raised as an
+ * error, which is where this parts company with `POST /providers/test`: the
+ * same 401 means "wrong token" and "this gateway is not set up yet", and only
+ * the operator can tell those apart.
+ */
+providerGatewayRoutes.post("/provider-gateways/test", async (c) => {
+  const body = providerSchemaBody(
+    ProviderGatewayTestRequestSchema,
+    await providerRequestBody(c),
+  );
+  return c.json(probeReport(await probeGatewayPreset(requestedGateway(body), body.token)));
+});
 
 providerGatewayRoutes.get("/provider-gateways", async (c) => {
   const organizationId = c.get("admin").organizationId;
@@ -91,11 +143,7 @@ providerGatewayRoutes.post("/provider-gateways", async (c) => {
     ProviderGatewayCreateRequestSchema,
     await providerRequestBody(c),
   );
-  // The config union is built here and nowhere else, so a stored row's
-  // `type`/`config_json` pair is always one the adapter registry can resolve.
-  const gateway: ResolvedGateway = body.type === "cf_aig"
-    ? { type: "cf_aig", config: { accountId: body.accountId, gatewayId: body.gatewayId } }
-    : { type: "vercel", config: {} };
+  const gateway = requestedGateway(body);
   const probe = await probeGatewayPreset(gateway, body.token);
   const id = crypto.randomUUID();
   const secretBlob = await secretVault(c.env).encryptSecret(
@@ -113,7 +161,7 @@ providerGatewayRoutes.post("/provider-gateways", async (c) => {
     createdBy: admin.userId,
   }).returning();
   invalidateOrganizationProviders(admin.organizationId);
-  return c.json({ gateway: serialize(row!, NO_REFERENCES), validated: probe.validated }, 201);
+  return c.json({ gateway: serialize(row!, NO_REFERENCES), ...probeReport(probe) }, 201);
 });
 
 providerGatewayRoutes.patch("/provider-gateways/:id", async (c) => {
@@ -175,7 +223,7 @@ providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) => {
   const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
   return c.json({
     gateway: serialize(row, counts),
-    validated: probe.validated,
+    ...probeReport(probe),
   });
 });
 

@@ -351,9 +351,25 @@ whose every request would fail — see the
 [supported provider types](#supported-provider-types) table for which pair with
 which.
 
+Unlike a provider key, a gateway is stored whatever the probe finds. A
+Cloudflare AI Gateway answers `401` both for a wrong token and for a gateway
+whose authentication or upstream key is not set up yet, so refusing the write
+would stop you saving a connection while the rest of it is still being built.
+The response says what happened instead — `validated`, plus a `reason` of
+`rejected`, `unreachable`, or `unexpected_status` and the upstream `status` —
+and the console shows it as a warning on the row you just added.
+
+- `POST /v1/admin/provider-gateways/test` runs that same probe against the same
+  fields minus the name — `{ type: "cf_aig", accountId, gatewayId, token }` or
+  `{ type: "vercel", token }` — without storing anything, which is what **Test
+  gateway** in the console calls. A refused token is reported as
+  `reason: "rejected"` rather than raised as an error, because only you can tell
+  a wrong token from an unfinished gateway.
 - `PATCH /v1/admin/provider-gateways/{id}` renames a gateway.
 - `POST /v1/admin/provider-gateways/{id}/rotate` replaces the token: one probe,
-  one re-encryption, and every instance behind it follows immediately. Rotating
+  one re-encryption, and every instance behind it follows immediately. It
+  reports the probe the same way a create does, rather than failing on it.
+  Rotating
   a gateway-routed provider row directly is refused with
   `409 provider_gateway_managed` and a pointer to this endpoint.
 - `DELETE /v1/admin/provider-gateways/{id}` refuses with `409 gateway_in_use`

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, Plus } from "lucide-react";
+import { AlertCircle, Ban, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
+import { RowAction, RowActions } from "@/components/row-actions";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
 import { formatDateTime } from "@/lib/format";
 import {
@@ -136,14 +137,14 @@ export function ManagementKeysPage() {
                     )}
                   </TableCell>
                   <TableCell className="text-right">
+                    {/* A revoked key has nothing left to act on, so it gets no menu. */}
                     {key.revokedAt ? null : (
-                      <GuardedButton
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setPendingRevoke(key)}
-                      >
-                        Revoke
-                      </GuardedButton>
+                      <RowActions label={key.name}>
+                        <RowAction destructive onSelect={() => setPendingRevoke(key)}>
+                          <Ban />
+                          Revoke key
+                        </RowAction>
+                      </RowActions>
                     )}
                   </TableCell>
                 </TableRow>
@@ -157,13 +158,16 @@ export function ManagementKeysPage() {
         open={creating}
         onOpenChange={setCreating}
         title="Create a management key"
-        description="Name it after whatever will use it, so you can tell keys apart when it is time to revoke one."
         submitLabel="Create key"
         pending={createKey.isPending}
         disabled={!name.trim()}
         onSubmit={() => void create()}
       >
-        <Field label="Key name" htmlFor="management-key-name">
+        <Field
+          label="Key name"
+          htmlFor="management-key-name"
+          hint="Name it so you can tell keys apart in the list."
+        >
           <Input
             id="management-key-name"
             value={name}

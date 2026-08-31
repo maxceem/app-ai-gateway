@@ -249,6 +249,26 @@ export const ProviderGatewayCreateRequestSchema = z.discriminatedUnion("type", [
   error: "Provider gateway type must be one of cf_aig, vercel",
 }).meta({ id: "ProviderGatewayCreateRequest" });
 
+/**
+ * A dry run of {@link ProviderGatewayCreateRequestSchema}: the same members
+ * minus the name, so the connection is probed exactly as a create would probe
+ * it, without a row having to exist.
+ */
+export const ProviderGatewayTestRequestSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("cf_aig"),
+    accountId: z.string().trim().min(1).max(100),
+    gatewayId: z.string().trim().min(1).max(100),
+    token: ProviderSecretSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("vercel"),
+    token: ProviderSecretSchema,
+  }).strict(),
+], {
+  error: "Provider gateway type must be one of cf_aig, vercel",
+}).meta({ id: "ProviderGatewayTestRequest" });
+
 export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,
 }).strict().meta({ id: "ProviderGatewayUpdateRequest" });

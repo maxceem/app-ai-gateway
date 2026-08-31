@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 
 /**
  * Explains why an action is unavailable instead of hiding it.
@@ -14,21 +15,24 @@ import { READ_ONLY_REASON } from "@/lib/permissions";
  *
  * Pass `reasonId` to render the reason as a description the wrapped control can
  * point at with `aria-describedby`, so assistive tech announces the action and
- * then why it is unavailable.
+ * then why it is unavailable. `className` sizes the wrapper for controls that
+ * are not inline, such as a menu item that fills its menu.
  */
 export function DisabledReason({
   reason,
   reasonId,
+  className,
   children,
 }: {
   reason: ReactNode;
   reasonId?: string;
+  className?: string;
   children: ReactNode;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span tabIndex={0} className="inline-flex w-fit cursor-not-allowed">
+        <span tabIndex={0} className={cn("inline-flex w-fit cursor-not-allowed", className)}>
           {children}
           {reasonId ? (
             <span id={reasonId} className="sr-only">

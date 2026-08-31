@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, CircleCheck, Info, Loader2, Plus, Trash2 } from "lucide-react";
+import {
+  AlertCircle,
+  CircleCheck,
+  CircleDollarSign,
+  Info,
+  Loader2,
+  Pencil,
+  Plus,
+  RotateCw,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -7,12 +17,14 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -35,6 +47,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState, Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
+import { RowAction, RowActions } from "@/components/row-actions";
 import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
 import { gatewayApiSurface } from "@/lib/capabilities";
@@ -59,11 +72,13 @@ import {
   useRenameProviderGateway,
   useRotateProviderGateway,
   useTestProvider,
+  useTestProviderGateway,
   useUpdateProvider,
 } from "@/lib/queries";
 import type {
   ProviderCredential,
   ProviderGateway,
+  ProviderGatewayResponse,
   ProviderPricing,
   ProviderTestResult,
 } from "@/lib/types";
@@ -367,30 +382,30 @@ export function ProvidersPage() {
                   <TableCell className="tabular text-muted-foreground">
                     {formatDateTime(row.createdAt)}
                   </TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    <Button variant="outline" size="sm" onClick={() => setEditing(row)}>
-                      Pricing
-                    </Button>
-                    <GuardedButton
-                      variant="outline"
-                      size="sm"
-                      reason={
-                        row.providerGatewayId === null
-                          ? undefined
-                          : "This instance authenticates with the gateway token — rotate the gateway instead"
-                      }
-                      onClick={() => setRotating(row)}
-                    >
-                      Rotate
-                    </GuardedButton>
-                    <GuardedButton
-                      variant="outline"
-                      size="sm"
-                      aria-label={`Delete ${row.name}`}
-                      onClick={() => setPendingDelete(row)}
-                    >
-                      <Trash2 className="size-4" />
-                    </GuardedButton>
+                  <TableCell className="text-right">
+                    <RowActions label={row.name}>
+                      {/* Pricing is readable by anyone; its dialog guards the save. */}
+                      <DropdownMenuItem onSelect={() => setEditing(row)}>
+                        <CircleDollarSign />
+                        Pricing
+                      </DropdownMenuItem>
+                      <RowAction
+                        reason={
+                          row.providerGatewayId === null
+                            ? undefined
+                            : "This instance authenticates with the gateway token — update the gateway's token instead"
+                        }
+                        onSelect={() => setRotating(row)}
+                      >
+                        <RotateCw />
+                        Update key
+                      </RowAction>
+                      <DropdownMenuSeparator />
+                      <RowAction destructive onSelect={() => setPendingDelete(row)}>
+                        <Trash2 />
+                        Delete provider
+                      </RowAction>
+                    </RowActions>
                   </TableCell>
                 </TableRow>
               ))
@@ -430,7 +445,7 @@ export function ProvidersPage() {
               start failing within a minute, and any custom pricing on this provider is deleted with
               it.
             </p>
-            <p>This cannot be undone. Rotate the key instead if you only want to replace it.</p>
+            <p>This cannot be undone. Update the key instead if you only want to replace it.</p>
           </>
         }
         confirmLabel="Delete provider"
@@ -450,10 +465,10 @@ const NEW_GATEWAY = "__new__";
  * a failure: a provider outage, or a provider with no probe of its own, proves
  * nothing about a key the operator may well know is right.
  */
-type TestOutcome =
-  | { status: "works" }
-  | { status: "unconfirmed"; message: string }
-  | { status: "failed"; message: string };
+type TestOutcome = {
+  status: "works" | "unconfirmed" | "failed";
+  message: string;
+};
 
 const TEST_STYLES = {
   works: {
@@ -511,9 +526,54 @@ function testOutcome(
   type: Provider,
   viaGateway: boolean,
 ): TestOutcome {
-  if (result.validated) return { status: "works" };
+  if (result.validated) {
+    return { status: "works", message: "Works. The provider accepted this credential." };
+  }
   const message = testMessage(result, type, viaGateway);
   return isRefusal(result) ? { status: "failed", message } : { status: "unconfirmed", message };
+}
+
+/**
+ * The verdict on a gateway connection, which is nobody's credential but the
+ * gateway's own.
+ *
+ * A refusal names both things it can mean, because the console cannot tell them
+ * apart and the operator can: the token is wrong, or the gateway is not
+ * finished being set up. Neither stops the connection being saved.
+ */
+function gatewayOutcome(result: ProviderTestResult): TestOutcome {
+  if (result.validated) {
+    return { status: "works", message: "Works. The gateway accepted this token." };
+  }
+  if (result.reason === "rejected") {
+    return {
+      status: "failed",
+      message: `The gateway refused this token (HTTP ${result.status}). Check the token itself, that authentication is turned on, and that the gateway holds a key for OpenAI.`,
+    };
+  }
+  if (result.reason === "unreachable") {
+    return {
+      status: "unconfirmed",
+      message: "The gateway did not answer in time, so nothing is proven either way.",
+    };
+  }
+  const message = result.reason === "unexpected_status"
+    ? `The gateway answered with HTTP ${result.status}. Check the account and gateway IDs.`
+    : "Nothing is proven either way. Add it if you know it is right.";
+  return { status: isRefusal(result) ? "failed" : "unconfirmed", message };
+}
+
+/** How a stored-but-unconfirmed connection is announced once it is saved. */
+function gatewaySavedToast(name: string, result: ProviderGatewayResponse, verb: string): void {
+  if (result.validated !== false) {
+    toast.success(`${verb} ${name}`);
+    return;
+  }
+  toast.warning(
+    result.reason === "rejected"
+      ? `${verb} ${name}, but the gateway refused the token`
+      : `${verb} ${name}, but the connection could not be confirmed`,
+  );
 }
 
 function TestResult({ outcome }: { outcome: TestOutcome }) {
@@ -525,9 +585,7 @@ function TestResult({ outcome }: { outcome: TestOutcome }) {
       className={cn("flex items-start gap-2 rounded-md px-3 py-2 text-xs", className)}
     >
       <Icon className="mt-px size-3.5 shrink-0" />
-      {outcome.status === "works"
-        ? "Works. The provider accepted this credential."
-        : outcome.message}
+      {outcome.message}
     </p>
   );
 }
@@ -972,22 +1030,26 @@ function GatewaysSection({
                   <TableCell className="text-sm text-muted-foreground">
                     {row.providerCount}
                   </TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    <GuardedButton variant="outline" size="sm" onClick={() => setRotating(row)}>
-                      Rotate
-                    </GuardedButton>
-                    <GuardedButton variant="outline" size="sm" onClick={() => setRenaming(row)}>
-                      Rename
-                    </GuardedButton>
-                    <GuardedButton
-                      variant="outline"
-                      size="sm"
-                      aria-label={`Delete ${row.name}`}
-                      reason={deleteBlockedReason(row)}
-                      onClick={() => setPendingDelete(row)}
-                    >
-                      <Trash2 className="size-4" />
-                    </GuardedButton>
+                  <TableCell className="text-right">
+                    <RowActions label={row.name}>
+                      <RowAction onSelect={() => setRotating(row)}>
+                        <RotateCw />
+                        Update token
+                      </RowAction>
+                      <RowAction onSelect={() => setRenaming(row)}>
+                        <Pencil />
+                        Rename
+                      </RowAction>
+                      <DropdownMenuSeparator />
+                      <RowAction
+                        destructive
+                        reason={deleteBlockedReason(row)}
+                        onSelect={() => setPendingDelete(row)}
+                      >
+                        <Trash2 />
+                        Delete gateway
+                      </RowAction>
+                    </RowActions>
                   </TableCell>
                 </TableRow>
               ))
@@ -1036,6 +1098,7 @@ function GatewayDialog({
   onCreated?: (gateway: ProviderGateway) => void;
 }) {
   const createGateway = useCreateProviderGateway();
+  const testGateway = useTestProviderGateway();
   // The list is what makes a second gateway type a data change: the selector
   // below appears only once there is something to select, and each entry says
   // which fields its own connection needs.
@@ -1046,12 +1109,14 @@ function GatewayDialog({
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [token, setToken] = useState("");
+  const [tested, setTested] = useState<TestOutcome | null>(null);
 
-  const ready = Boolean(
-    name.trim()
-    && token
-    && (!gatewayType.needsCloudflareIds || (accountId.trim() && gatewayId.trim())),
+  // The name is the operator's label; only the rest reaches the gateway, and
+  // which of those it needs is the chosen type's own answer.
+  const connectionReady = Boolean(
+    token && (!gatewayType.needsCloudflareIds || (accountId.trim() && gatewayId.trim())),
   );
+  const ready = Boolean(name.trim()) && connectionReady;
 
   const clear = () => {
     setType(CREATABLE_GATEWAY_TYPES[0].value);
@@ -1059,7 +1124,40 @@ function GatewayDialog({
     setAccountId("");
     setGatewayId("");
     setToken("");
+    setTested(null);
     createGateway.reset();
+    testGateway.reset();
+  };
+
+  /**
+   * Optional, and never a gate on adding the gateway: a connection can be
+   * stored while the Cloudflare side of it is still being built, and the probe
+   * cannot tell an unfinished gateway from a wrong token.
+   */
+  const test = async () => {
+    if (!connectionReady) return;
+    setTested(null);
+    try {
+      const result = await testGateway.mutateAsync(
+        gatewayType.value === "cf_aig"
+          ? {
+              type: "cf_aig",
+              accountId: accountId.trim(),
+              gatewayId: gatewayId.trim(),
+              token,
+            }
+          : { type: "vercel", token },
+      );
+      setTested(gatewayOutcome(result));
+    } catch (error) {
+      setTested({
+        status: "failed",
+        message: errorMessage(error, "The connection could not be checked"),
+      });
+    } finally {
+      // The submitted token also sits in the mutation's variables; drop it.
+      testGateway.reset();
+    }
   };
 
   /** A type switch carries none of the previous type's fields with it. */
@@ -1071,6 +1169,7 @@ function GatewayDialog({
     setAccountId("");
     setGatewayId("");
     setToken("");
+    setTested(null);
   };
 
   const close = () => {
@@ -1095,7 +1194,7 @@ function GatewayDialog({
           : { type: "vercel", name: name.trim(), token },
       );
       clear();
-      toast.success(`Added ${result.gateway.name}`);
+      gatewaySavedToast(result.gateway.name, result, "Added");
       onCreated?.(result.gateway);
       onOpenChange(false);
     } catch (error) {
@@ -1113,6 +1212,20 @@ function GatewayDialog({
       pending={createGateway.isPending}
       disabled={!ready}
       onSubmit={() => void submit()}
+      secondaryAction={
+        <Button
+          type="button"
+          variant="secondary"
+          // Away from Cancel and Add gateway: a dry run is not a way out of the
+          // form, and it should not read as one.
+          className="sm:mr-auto"
+          disabled={!connectionReady || testGateway.isPending}
+          onClick={() => void test()}
+        >
+          {testGateway.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+          Test gateway
+        </Button>
+      }
     >
       <div className="space-y-4">
         {CREATABLE_GATEWAY_TYPES.length > 1 ? (
@@ -1146,7 +1259,10 @@ function GatewayDialog({
                 id="gateway-account"
                 {...PLAIN_FIELD}
                 value={accountId}
-                onChange={(event) => setAccountId(event.target.value)}
+                onChange={(event) => {
+                  setAccountId(event.target.value);
+                  setTested(null);
+                }}
               />
             </Field>
             <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
@@ -1154,7 +1270,10 @@ function GatewayDialog({
                 id="gateway-gateway"
                 {...PLAIN_FIELD}
                 value={gatewayId}
-                onChange={(event) => setGatewayId(event.target.value)}
+                onChange={(event) => {
+                  setGatewayId(event.target.value);
+                  setTested(null);
+                }}
               />
             </Field>
           </>
@@ -1177,10 +1296,14 @@ function GatewayDialog({
             id="gateway-token"
             {...SECRET_FIELD}
             value={token}
-            onChange={(event) => setToken(event.target.value)}
+            onChange={(event) => {
+              setToken(event.target.value);
+              setTested(null);
+            }}
           />
         </Field>
         <p className="text-xs text-muted-foreground">{gatewayType.credentialNote}</p>
+        {tested ? <TestResult outcome={tested} /> : null}
       </div>
     </FormDialog>
   );
@@ -1223,19 +1346,21 @@ function RenameGatewayDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Rename gateway</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             Only the display name changes. Nothing about the connection or the providers routed
             through it moves.
           </DialogDescription>
-        </DialogHeader>
-        <Field label="Name" htmlFor="gateway-rename">
-          <Input
-            id="gateway-rename"
-            {...PLAIN_FIELD}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </Field>
+          <Field label="Name" htmlFor="gateway-rename">
+            <Input
+              id="gateway-rename"
+              {...PLAIN_FIELD}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </Field>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={close}>
             Cancel
@@ -1258,25 +1383,56 @@ function RotateGatewayDialog({
   onClose: () => void;
 }) {
   const rotateGateway = useRotateProviderGateway();
+  const testGateway = useTestProviderGateway();
   const [token, setToken] = useState("");
+  const [tested, setTested] = useState<TestOutcome | null>(null);
 
   const close = () => {
     setToken("");
+    setTested(null);
     rotateGateway.reset();
+    testGateway.reset();
     onClose();
+  };
+
+  /** The same dry run the add form offers, against the token about to replace. */
+  const test = async () => {
+    if (!gateway || !token) return;
+    setTested(null);
+    try {
+      const result = await testGateway.mutateAsync(
+        gateway.type === "cf_aig"
+          ? {
+              type: "cf_aig",
+              accountId: gateway.config.accountId,
+              gatewayId: gateway.config.gatewayId,
+              token,
+            }
+          : { type: "vercel", token },
+      );
+      setTested(gatewayOutcome(result));
+    } catch (error) {
+      setTested({
+        status: "failed",
+        message: errorMessage(error, "The connection could not be checked"),
+      });
+    } finally {
+      testGateway.reset();
+    }
   };
 
   const submit = async () => {
     if (!gateway || !token) return;
     try {
-      await rotateGateway.mutateAsync({ id: gateway.id, token });
+      const result = await rotateGateway.mutateAsync({ id: gateway.id, token });
       setToken("");
+      setTested(null);
       rotateGateway.reset();
-      toast.success(`Rotated ${gateway.name}`);
+      gatewaySavedToast(gateway.name, result, "Updated the token for");
       onClose();
     } catch (error) {
       setToken("");
-      toast.error(errorMessage(error, "Could not rotate the gateway token"));
+      toast.error(errorMessage(error, "Could not update the gateway token"));
     }
   };
 
@@ -1284,27 +1440,43 @@ function RotateGatewayDialog({
     <Dialog open={gateway !== null} onOpenChange={(open) => (open ? undefined : close())}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Rotate {gateway?.name}</DialogTitle>
+          <DialogTitle>Update the token for {gateway?.name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             One token authenticates every provider routed through this gateway, so all{" "}
             {gateway?.providerCount ?? 0} of them pick the new one up within a minute.
           </DialogDescription>
-        </DialogHeader>
-        <Field label="New gateway token" htmlFor="gateway-rotate-token">
-          <Input
-            id="gateway-rotate-token"
-            {...SECRET_FIELD}
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-          />
-        </Field>
+          <Field label="New gateway token" htmlFor="gateway-rotate-token">
+            <Input
+              id="gateway-rotate-token"
+              {...SECRET_FIELD}
+              value={token}
+              onChange={(event) => {
+                setToken(event.target.value);
+                setTested(null);
+              }}
+            />
+          </Field>
+          {tested ? <TestResult outcome={tested} /> : null}
+        </DialogBody>
         <DialogFooter>
+          <Button
+            type="button"
+            variant="secondary"
+            className="sm:mr-auto"
+            disabled={!token || testGateway.isPending}
+            onClick={() => void test()}
+          >
+            {testGateway.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+            Test token
+          </Button>
           <Button variant="outline" onClick={close}>
             Cancel
           </Button>
           <Button disabled={!token || rotateGateway.isPending} onClick={() => void submit()}>
             {rotateGateway.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-            Rotate token
+            Update token
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1334,11 +1506,11 @@ function RotateDialog({
       await updateProvider.mutateAsync({ id: provider.id, body: { secret } });
       setSecret("");
       updateProvider.reset();
-      toast.success(`Rotated ${provider.name}`);
+      toast.success(`Updated the key for ${provider.name}`);
       onClose();
     } catch (error) {
       setSecret("");
-      toast.error(errorMessage(error, "Could not rotate the credential"));
+      toast.error(errorMessage(error, "Could not update the credential"));
     }
   };
 
@@ -1346,27 +1518,29 @@ function RotateDialog({
     <Dialog open={provider !== null} onOpenChange={(open) => (open ? undefined : close())}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Rotate {provider?.name}</DialogTitle>
+          <DialogTitle>Update the key for {provider?.name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
           <DialogDescription>
             The new credential replaces the old one in place. Custom pricing is kept, and requests
             pick it up within a minute.
           </DialogDescription>
-        </DialogHeader>
-        <Field label="New API key" htmlFor="rotate-secret">
-          <Input
-            id="rotate-secret"
-            {...SECRET_FIELD}
-            value={secret}
-            onChange={(event) => setSecret(event.target.value)}
-          />
-        </Field>
+          <Field label="New API key" htmlFor="rotate-secret">
+            <Input
+              id="rotate-secret"
+              {...SECRET_FIELD}
+              value={secret}
+              onChange={(event) => setSecret(event.target.value)}
+            />
+          </Field>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={close}>
             Cancel
           </Button>
           <Button disabled={!secret || updateProvider.isPending} onClick={() => void submit()}>
             {updateProvider.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-            Rotate key
+            Update key
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1434,6 +1608,8 @@ function PricingDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Custom model pricing</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-3">
           <DialogDescription>
             For models the built-in catalog does not cover, or prices it in a way you disagree with.
             {provider && reportsCost(provider.type)
@@ -1443,8 +1619,6 @@ function PricingDialog({
               : " Requests for unpriced models are rejected until a price is set here."}{" "}
             Enter $0 for a model that is genuinely free.
           </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
           {drafts.length === 0 ? (
             <EmptyState>No custom prices for this provider.</EmptyState>
           ) : (
@@ -1510,7 +1684,7 @@ function PricingDialog({
             <Plus className="size-4" />
             Add model
           </Button>
-        </div>
+        </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel

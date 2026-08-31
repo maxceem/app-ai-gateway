@@ -15,7 +15,11 @@ import {
   resolveGateway,
   type ResolvedGateway,
 } from "../../core/gateways";
-import { probeProviderGateway, probeProviderKey } from "../../core/provider-probe";
+import {
+  assertNotRejected,
+  probeProviderGateway,
+  probeProviderKey,
+} from "../../core/provider-probe";
 import {
   decryptProviderGatewaySecret,
   encryptionContext,
@@ -218,14 +222,14 @@ providerRoutes.post("/providers/test", async (c) => {
     // Guarded here too: a dry run must not be a way to make this Worker fetch
     // an origin the create path would have refused.
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
-    return c.json(await probeProviderKey(body.type, body.secret, baseUrl));
+    return c.json(assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl)));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
   const resolved = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
   // Said here rather than reported as an inconclusive probe: "this gateway does
   // not serve DeepSeek" and "nothing could be proven" are different answers.
   assertRouteServesProvider(resolved.gateway.type, body.type);
-  return c.json(await probeProviderGateway({ type: body.type, ...resolved }));
+  return c.json(assertNotRejected(await probeProviderGateway({ type: body.type, ...resolved })));
 });
 
 providerRoutes.post("/providers", async (c) => {
@@ -256,7 +260,9 @@ providerRoutes.post("/providers", async (c) => {
     secret = body.secret;
     // Probed at the origin this row will really call, so a wrong URL fails now
     // rather than on the first request an app makes.
-    validated = (await probeProviderKey(body.type, body.secret, baseUrl)).validated;
+    validated = assertNotRejected(
+      await probeProviderKey(body.type, body.secret, baseUrl),
+    ).validated;
   } else {
     const gatewayId = body.providerGatewayId;
     if (!gatewayId) {
@@ -270,7 +276,9 @@ providerRoutes.post("/providers", async (c) => {
     // The adapter that will carry the traffic is the only judge of its own
     // routing configuration, so a route is never stored unvalidated.
     assertGatewayRoute(resolved.gateway.type, gatewayRoute);
-    validated = (await probeProviderGateway({ type: body.type, ...resolved })).validated;
+    validated = assertNotRejected(
+      await probeProviderGateway({ type: body.type, ...resolved }),
+    ).validated;
   }
 
   let row: ProviderRow;
@@ -355,7 +363,9 @@ providerRoutes.put("/providers/:id", async (c) => {
         `This provider uses a shared gateway token; rotate it at /v1/admin/provider-gateways/${row.providerGatewayId}/rotate`,
       );
     }
-    validated = (await probeProviderKey(row.type, body.secret, baseUrl)).validated;
+    validated = assertNotRejected(
+      await probeProviderKey(row.type, body.secret, baseUrl),
+    ).validated;
     updates.secretBlob = await secretVault(c.env).encryptSecret(
       body.secret,
       encryptionContext(admin.organizationId, row.id),
