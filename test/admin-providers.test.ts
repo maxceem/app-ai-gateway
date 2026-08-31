@@ -180,12 +180,18 @@ describe("admin provider instances", () => {
     expect(response.body.error.code).toBe("invalid_request");
   });
 
-  it("allows a revoked row's slug to be reused", async () => {
+  /**
+   * A disabled row keeps its slug: pausing an instance must not let something
+   * else quietly take over the URL its apps already call, which is the whole
+   * reason disable is safe to undo. The message says so, because "already uses"
+   * about a row serving no traffic reads as a bug otherwise.
+   */
+  it("refuses a slug a disabled row still holds, and says how to free it", async () => {
     await seedProvider({
       type: "openai",
       slug: "openai-dev",
-      id: "revoked-openai-dev",
-      status: "revoked",
+      id: "disabled-openai-dev",
+      status: "disabled",
     });
     stubProbe();
     const response = await call("POST", "/v1/admin/providers", {
@@ -194,7 +200,22 @@ describe("admin provider instances", () => {
       name: "Replacement",
       secret: "replacement-key",
     });
-    expect(response.status, response.text).toBe(201);
+    expect(response.status, response.text).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: "slug_taken",
+      message:
+        "A disabled provider instance holds slug openai-dev; enable it, delete it, or choose a different slug",
+    });
+
+    // Deleting the holder is one of the ways out the message offers.
+    expect((await call("DELETE", "/v1/admin/providers/disabled-openai-dev")).status).toBe(200);
+    const retried = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug: "openai-dev",
+      name: "Replacement",
+      secret: "replacement-key",
+    });
+    expect(retried.status, retried.text).toBe(201);
   });
 
   it.each([
@@ -357,6 +378,87 @@ describe("admin provider instances", () => {
       pricing: { "custom-model": { input: 1.25, output: 10 } },
     });
     expect(rotated.text).not.toContain("rotated-value");
+  });
+
+  /**
+   * Disabling is the reversible half of removing an instance: the secret and
+   * the pricing stay, the slug stops answering, and enabling puts it back. The
+   * distinction the error carries matters — "paused" is something the operator
+   * undoes in one click, "not configured" is a row they have to rebuild.
+   */
+  it("disables an instance, refuses traffic to its slug, and re-enables it", async () => {
+    stubProbe();
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Prod",
+      secret: "original-value",
+      pricing: { "custom-model": { input: 1.25, output: 10 } },
+    });
+    const id = (created.body.provider as ProviderSummary).id;
+
+    const disabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "disabled" });
+    expect(disabled.status, disabled.text).toBe(200);
+    // The credential and the overrides survive the pause untouched.
+    expect(disabled.body.provider).toMatchObject({
+      id,
+      status: "disabled",
+      secretHint: "alue",
+      pricing: { "custom-model": { input: 1.25, output: 10 } },
+    });
+    const listed = await call("GET", "/v1/admin/providers");
+    expect((listed.body.providers as ProviderSummary[]).map((entry) => entry.status))
+      .toEqual(["disabled"]);
+
+    clearProviderCaches();
+    await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))
+      .rejects.toThrow(/is disabled/u);
+
+    const enabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "active" });
+    expect(enabled.status, enabled.text).toBe(200);
+    expect(enabled.body.provider).toMatchObject({ id, status: "active" });
+    clearProviderCaches();
+    await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))
+      .resolves.toMatchObject({ slug: "openai" });
+  });
+
+  /**
+   * The invariant that makes disable safe to undo: a disabled row keeps its
+   * slug, so nothing can move in behind it and re-enabling can never conflict.
+   * Without this, pausing an instance would be a one-way door the moment
+   * someone else created a row on the same slug.
+   */
+  it("holds a disabled instance's slug against new rows, so re-enabling always works", async () => {
+    stubProbe();
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Prod",
+      secret: "original-value",
+    });
+    const id = (created.body.provider as ProviderSummary).id;
+    expect((await call("PUT", `/v1/admin/providers/${id}`, { status: "disabled" })).status)
+      .toBe(200);
+
+    // The slug is still spoken for while the row is paused.
+    const replacement = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug: "openai",
+      name: "Replacement",
+      secret: "replacement-value",
+    });
+    expect(replacement.status).toBe(409);
+    expect(replacement.body.error).toMatchObject({
+      code: "slug_taken",
+      message:
+        "A disabled provider instance holds slug openai; enable it, delete it, or choose a different slug",
+    });
+
+    // So enabling it again is unconditional, and the slug resolves to the row
+    // that held it all along.
+    const enabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "active" });
+    expect(enabled.status, enabled.text).toBe(200);
+    clearProviderCaches();
+    await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))
+      .resolves.toMatchObject({ id });
   });
 
   it("hard-deletes provider rows while usage attribution survives", async () => {
@@ -628,14 +730,15 @@ describe("admin provider gateway API", () => {
       message: "Delete every active provider instance routed through this gateway first",
     });
 
-    // Revoked rows are retained for audit and still hold the foreign key, so
-    // they must be reported and refused with a message the operator can act on.
+    // Disabled rows are retained for re-enabling and still hold the foreign
+    // key, so they must be reported and refused with a message the operator can
+    // act on.
     await env.DB
-      .prepare("UPDATE provider SET status = 'revoked' WHERE id = ?")
+      .prepare("UPDATE provider SET status = 'disabled' WHERE id = ?")
       .bind(routed.body.provider.id)
       .run();
-    const listedRevoked = await call("GET", "/v1/admin/provider-gateways");
-    expect(listedRevoked.body.gateways[0]).toMatchObject({
+    const listedDisabled = await call("GET", "/v1/admin/provider-gateways");
+    expect(listedDisabled.body.gateways[0]).toMatchObject({
       providerCount: 0,
       referencedCount: 1,
     });
@@ -643,7 +746,7 @@ describe("admin provider gateway API", () => {
     expect(stillBlocked.status).toBe(409);
     expect(stillBlocked.body.error).toMatchObject({
       code: "gateway_in_use",
-      message: "Revoked provider instances still reference this gateway; delete them to release it",
+      message: "Disabled provider instances still reference this gateway; delete them to release it",
     });
 
     await env.DB.prepare("DELETE FROM provider WHERE id = ?").bind(routed.body.provider.id).run();

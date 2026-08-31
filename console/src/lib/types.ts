@@ -102,9 +102,9 @@ export type ProviderGateway = ProviderGatewayConfig & {
   /** Active provider instances routed through this gateway. */
   providerCount: number;
   /**
-   * Every row referencing the gateway, revoked ones included. Those are kept for
-   * audit and still hold the foreign key, so this — not `providerCount` — is
-   * what decides whether the gateway can be deleted.
+   * Every row referencing the gateway, disabled ones included. Those are kept
+   * for re-enabling and still hold the foreign key, so this — not
+   * `providerCount` — is what decides whether the gateway can be deleted.
    */
   referencedCount: number;
   status: "active" | "revoked";
@@ -177,7 +177,12 @@ export interface ProviderCredential {
    */
   baseUrl: string | null;
   pricing: ProviderPricing | null;
-  status: "active" | "revoked";
+  /**
+   * `disabled` is a reversible pause: the row keeps its secret, its pricing and
+   * its slug, and requests to it fail with provider_disabled. Only deleting the
+   * row frees its slug, so enabling it again always works.
+   */
+  status: "active" | "disabled";
   createdAt: string;
   createdBy: string;
 }
@@ -229,6 +234,8 @@ export interface ProviderUpdateBody {
   /** `null` returns the instance to its provider type's own base URL. */
   baseUrl?: string | null;
   pricing?: ProviderPricing | null;
+  /** Pause or resume the instance. The slug is held either way. */
+  status?: "active" | "disabled";
 }
 
 export interface ProviderResponse {
@@ -304,6 +311,13 @@ export interface AppSummary {
   monthly_user_budget_usd: number | null;
   monthly_app_budget_usd: number | null;
   providers: string[];
+  /**
+   * The slugs this app names outright: selected-mode policy keys, endpoint
+   * targets and endpoint fallbacks. Unlike `providers`, an all-mode app is not
+   * expanded here — it reaches every instance without referencing any, which is
+   * what makes this the right answer to "which apps use this provider?".
+   */
+  referenced_providers: string[];
   allowed_model_count: number;
   users: { total: number; blocked: number };
   usage: UsageTotals;

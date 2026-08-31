@@ -27,6 +27,7 @@ export type ErrorCode =
   | "payload_too_large"
   | "provider_error"
   | "provider_not_configured"
+  | "provider_disabled"
   | "provider_unavailable"
   | "slug_taken"
   | "provider_not_supported_by_gateway"

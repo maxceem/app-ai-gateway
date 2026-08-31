@@ -49,7 +49,7 @@ const CONFIG_CACHE_TTL_MS = 60_000;
 const WELL_KNOWN_PROVIDER_INSTANCES: OrganizationProviders = recordFromEntries(
   PROVIDER_TYPES.map((type) => [
     type,
-    { id: type, slug: type, type, route: "direct" as const, pricing: null },
+    { id: type, slug: type, type, route: "direct" as const, pricing: null, status: "active" as const },
   ] as const),
 );
 const NO_GRANDFATHERED_SLUGS: ReadonlySet<string> = new Set();

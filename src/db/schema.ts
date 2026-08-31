@@ -16,7 +16,14 @@ export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
 export type AuthMethod = "attest" | "api_key";
 export type ApiKeyStatus = "active" | "revoked";
-export type ProviderStatus = "active" | "revoked";
+/**
+ * `disabled` is a reversible pause, not a credential event: the row keeps its
+ * secret, its pricing and its slug, and requests to it fail with
+ * provider_disabled. Holding the slug is what makes the pause symmetric — no
+ * other instance can take it meanwhile, so re-enabling can never conflict.
+ * Only deleting the row frees the slug.
+ */
+export type ProviderStatus = "active" | "disabled";
 export type ProviderGatewayStatus = "active" | "revoked";
 /**
  * Gateway types the `provider_gateways_type_check` CHECK admits. The DB is
@@ -192,10 +199,11 @@ export const provider = sqliteTable(
   },
   (table) => [
     index("idx_providers_organization").on(table.organizationId),
-    uniqueIndex("providers_active_slug_unique")
-      .on(table.organizationId, table.slug)
-      .where(sql`${table.status} = 'active'`),
-    check("providers_status_check", sql`${table.status} IN ('active', 'revoked')`),
+    // Unconditional, disabled rows included: a slug is a URL segment an
+    // organization owns until the row holding it is deleted, so pausing one
+    // never lets another instance take its place.
+    uniqueIndex("providers_slug_unique").on(table.organizationId, table.slug),
+    check("providers_status_check", sql`${table.status} IN ('active', 'disabled')`),
     // Deliberately wider than PROVIDER_TYPES in src/core/providers.ts: widening
     // it is a table rebuild, so every type on the roadmap was admitted in one
     // wave. A type with no registry entry is rejected by the contracts long

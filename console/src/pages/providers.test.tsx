@@ -4,7 +4,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, draftsToPricing } from "./providers";
 import { renderAuthenticated } from "@/test/render";
-import type { ProviderCredential, ProviderGateway } from "@/lib/types";
+import type { AppSummary, ProviderCredential, ProviderGateway } from "@/lib/types";
 
 const SECRET = "sk-live-never-shown-again";
 
@@ -59,7 +59,7 @@ const SPARE_GATEWAY: ProviderGateway = {
 };
 
 /**
- * Serves no traffic, but revoked rows still hold its foreign key — the API
+ * Serves no traffic, but disabled rows still hold its foreign key — the API
  * refuses to delete it just the same.
  */
 const RETIRED_GATEWAY: ProviderGateway = {
@@ -96,6 +96,46 @@ const VIA_VERCEL: ProviderCredential = {
   pricing: null,
 };
 
+/** Paused, not deleted: the key and the pricing are still on the row. */
+const DISABLED: ProviderCredential = {
+  ...DIRECT,
+  id: "provider-4",
+  slug: "openai-dev",
+  name: "Dev OpenAI",
+  status: "disabled",
+};
+
+/**
+ * Only the fields the page reads. `referenced_providers` is the list of slugs
+ * an app names outright, which is what makes "these apps use it" answerable.
+ */
+function appSummary(name: string, referenced: string[]): AppSummary {
+  return {
+    id: name.toLowerCase().replaceAll(" ", "-"),
+    name,
+    status: "active",
+    authentication_type: "api_key",
+    apple_bundle_id: null,
+    created_at: "2026-02-01T00:00:00.000Z",
+    monthly_user_budget_usd: null,
+    monthly_app_budget_usd: null,
+    providers: referenced,
+    referenced_providers: referenced,
+    allowed_model_count: 0,
+    users: { total: 0, blocked: 0 },
+    usage: {
+      requests: 0,
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+      errors: 0,
+      blocked: 0,
+    },
+  };
+}
+
 const CREATED_GATEWAY: ProviderGateway = {
   ...GATEWAY,
   id: "gw-new",
@@ -122,14 +162,17 @@ function stubProviders(
   options: {
     providers?: ProviderCredential[];
     gateways?: ProviderGateway[];
+    apps?: AppSummary[];
     createProvider?: { status: number; body: unknown };
     testProvider?: { status: number; body: unknown };
     testGateway?: { status: number; body: unknown };
     createGateway?: { status: number; body: unknown };
+    updateProvider?: { status: number; body: unknown };
   } = {},
 ) {
   const providers = options.providers ?? [DIRECT, VIA_GATEWAY];
   const gateways = options.gateways ?? [GATEWAY];
+  const apps = options.apps ?? [];
   const calls: Call[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -139,6 +182,9 @@ function stubProviders(
       method,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
     });
+    // The page reads the apps list only to name the apps a disable or a delete
+    // will affect; it never blocks on it.
+    if (url.includes("/v1/admin/apps")) return json({ month: "2026-02", apps });
     if (url.includes("/v1/admin/provider-gateways")) {
       if (method === "GET") return json({ gateways });
       if (method === "DELETE") return json({ deleted: true, provider_gateway_id: SPARE_GATEWAY.id });
@@ -160,7 +206,10 @@ function stubProviders(
       const stub = options.createProvider;
       return stub ? json(stub.body, stub.status) : json({ provider: DIRECT, validated: true }, 201);
     }
-    if (method === "PUT") return json({ provider: DIRECT, validated: true });
+    if (method === "PUT") {
+      const stub = options.updateProvider;
+      return stub ? json(stub.body, stub.status) : json({ provider: DIRECT, validated: true });
+    }
     if (method === "DELETE") return json({ deleted: true, provider_id: DIRECT.id });
     return json({ providers });
   });
@@ -911,16 +960,16 @@ describe("ProvidersPage", () => {
       .toHaveProperty("ariaDisabled", null);
   });
 
-  it("blocks deleting a gateway only revoked rows still reference", async () => {
+  it("blocks deleting a gateway only disabled rows still reference", async () => {
     stubProviders({ gateways: [RETIRED_GATEWAY] });
     renderAuthenticated(<ProvidersPage />);
 
-    // Nothing routes through it, but the foreign key counts revoked rows too,
+    // Nothing routes through it, but the foreign key counts disabled rows too,
     // so "delete the active instances first" would be unactionable advice.
     const menu = await openRowActions("Retired gateway");
     const blocked = within(menu).getByRole("menuitem", { name: /delete gateway/i });
     expect(blocked).toHaveProperty("ariaDisabled", "true");
-    expect(screen.getByText(/revoked provider instances still reference this gateway/i))
+    expect(screen.getByText(/disabled provider instances still reference this gateway/i))
       .toBeTruthy();
   });
 
@@ -1059,6 +1108,107 @@ describe("ProvidersPage", () => {
     await waitFor(() => {
       expect(calls.some((call) => call.method === "DELETE" && call.url.includes("/providers/")))
         .toBe(true);
+    });
+  });
+
+  /**
+   * Disabling is the reversible alternative to deleting, so the row says which
+   * one it is and the menu offers the opposite of whatever it currently is.
+   */
+  it("badges a disabled instance and offers to enable it", async () => {
+    const calls = stubProviders({ providers: [DIRECT, DISABLED] });
+    const successToast = vi.spyOn(toast, "success");
+    renderAuthenticated(<ProvidersPage />);
+
+    await screen.findByText("Dev OpenAI");
+    expect(screen.getByText("disabled")).toBeTruthy();
+
+    // An active row is offered the disable; the paused one is offered enable.
+    const active = await openRowActions("Prod OpenAI");
+    expect(within(active).getByRole("menuitem", { name: /disable provider/i })).toBeTruthy();
+    expect(within(active).queryByRole("menuitem", { name: /enable provider/i })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+
+    // Enabling only ever restores traffic, so it needs no confirmation.
+    await runRowAction("Dev OpenAI", /enable provider/i);
+    await waitFor(() => {
+      expect(calls.some((call) => call.method === "PUT" && call.body?.status === "active"))
+        .toBe(true);
+    });
+    expect(successToast).toHaveBeenCalledWith("Enabled Dev OpenAI");
+  });
+
+  it("says what a disable keeps, then sends the status", async () => {
+    const calls = stubProviders();
+    renderAuthenticated(<ProvidersPage />);
+
+    await runRowAction("Prod OpenAI", /disable provider/i);
+    // The slug is kept too, so there is no one-way warning to give: enabling
+    // always puts the instance straight back.
+    expect(await screen.findByText(/the key, the custom pricing and the slug are all kept/i))
+      .toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /^disable provider$/i }));
+
+    await waitFor(() => {
+      expect(calls.some((call) => call.method === "PUT" && call.body?.status === "disabled"))
+        .toBe(true);
+    });
+  });
+
+  /**
+   * Informational, never blocking: the operator is told which apps name the
+   * slug outright and both actions go through regardless. All-mode apps are
+   * absent by construction — they name nothing.
+   */
+  it("names the apps that reference the slug in the disable and delete dialogs", async () => {
+    stubProviders({
+      apps: [
+        appSummary("Calorie Tracker", ["openai"]),
+        appSummary("Recipe Finder", ["openai", "anthropic-cf"]),
+        appSummary("Unrelated App", ["anthropic-cf"]),
+      ],
+    });
+    renderAuthenticated(<ProvidersPage />);
+
+    await runRowAction("Prod OpenAI", /disable provider/i);
+    expect(await screen.findByText(/calorie tracker, recipe finder/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+    await runRowAction("Prod OpenAI", /delete provider/i);
+    expect(await screen.findByText(/calorie tracker, recipe finder/i)).toBeTruthy();
+    // The confirm stays live: the warning describes the blast radius, it does
+    // not veto the action.
+    expect(screen.getByRole("button", { name: /^delete provider$/i }))
+      .toHaveProperty("disabled", false);
+  });
+
+  it("says nothing extra when no app references the slug", async () => {
+    stubProviders({ apps: [appSummary("Unrelated App", ["anthropic-cf"])] });
+    renderAuthenticated(<ProvidersPage />);
+
+    await runRowAction("Prod OpenAI", /disable provider/i);
+    await screen.findByText(/the key, the custom pricing and the slug are all kept/i);
+    expect(screen.queryByText(/in its configuration/i)).toBeNull();
+  });
+
+  // Enabling has no failure of its own — the row kept its slug, so nothing can
+  // be in the way — but the request can still fail, and the server's reason is
+  // what the operator needs rather than a generic one.
+  it("surfaces the server's reason when enabling fails", async () => {
+    stubProviders({
+      providers: [DISABLED],
+      updateProvider: {
+        status: 503,
+        body: { error: { code: "provider_unavailable", message: "The secret vault is unavailable" } },
+      },
+    });
+    const errorToast = vi.spyOn(toast, "error");
+    renderAuthenticated(<ProvidersPage />);
+
+    await runRowAction("Dev OpenAI", /enable provider/i);
+    await waitFor(() => {
+      expect(errorToast)
+        .toHaveBeenCalledWith(expect.stringMatching(/the secret vault is unavailable/iu));
     });
   });
 

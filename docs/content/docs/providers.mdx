@@ -160,8 +160,9 @@ example `openai-dev` for a second key, or `openai-cf` for one routed through a
 Cloudflare AI Gateway.
 
 A slug equal to a provider type name may only be used by an instance of that
-type, so `/proxy/anthropic/…` can never resolve to an OpenAI key. Revoked and
-deleted rows are outside the constraint, so their slugs become available again.
+type, so `/proxy/anthropic/…` can never resolve to an OpenAI key. An instance
+holds its slug for as long as it exists, disabled instances included; only
+deleting one frees its slug for something else.
 
 Per-app routing (`routing.providers.selected`) and named endpoints reference
 instances by slug, which is how one app can be limited to `openai-cf` while
@@ -207,6 +208,19 @@ key you know is correct.
 same id, same slug, same custom pricing, re-probed and re-encrypted. Rotation is
 preferable to delete-and-recreate for exactly that reason. Gateway-routed
 instances have no key of their own, so they rotate at the gateway instead.
+
+### Disable, delete, or rotate
+
+Three different intentions. **Rotate** replaces the key and changes nothing
+else. **Disable** (`PUT` with `status: "disabled"`) is a reversible pause: the
+key, the custom pricing and the slug all stay, requests to the slug answer
+`502 provider_disabled`, and enabling puts the instance straight back. Because
+the slug stays held, nothing else can take it meanwhile and re-enabling always
+succeeds. **Delete** is permanent, takes the encrypted key and the pricing
+overrides with it, and is the only thing that frees a slug; requests fall back
+to `502 provider_not_configured`. App configuration may keep naming a disabled
+instance, and a named endpoint whose primary target is disabled falls through to
+its fallbacks exactly as it would on an upstream failure.
 
 ## Custom base URLs
 
@@ -335,7 +349,7 @@ are supported: **Cloudflare AI Gateway** (`cf_aig`) and **Vercel AI Gateway**
 | `config` | `{ accountId, gatewayId }` for `cf_aig`; `{}` for `vercel` |
 | `secretHint` | Last few characters of the gateway token — display only |
 | `providerCount` | Active provider instances routing through it |
-| `referencedCount` | Every instance referencing it, revoked rows included |
+| `referencedCount` | Every instance referencing it, disabled rows included |
 
 `POST /v1/admin/provider-gateways` takes the fields that gateway needs and
 nothing else — `{ type: "cf_aig", name, accountId, gatewayId, token }` or

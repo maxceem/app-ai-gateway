@@ -33,7 +33,7 @@ type ProviderGatewayRow = typeof providerGateway.$inferSelect;
 
 /**
  * `providerCount` is what the gateway currently serves; `referencedCount` also
- * counts revoked rows, which are retained for audit and keep the foreign key
+ * counts disabled rows, which are retained for re-enabling and keep the foreign key
  * alive. Deletion is governed by the second number, so the console must disable
  * delete on `referencedCount`, not on `providerCount`.
  */
@@ -275,15 +275,15 @@ async function gatewayCounts(
 
 /**
  * The foreign key counts every referencing row, not just the ones still
- * serving traffic, so a gateway whose providers were all revoked is still
+ * serving traffic, so a gateway whose providers were all disabled is still
  * undeletable. Saying "active" there would be a lie the operator cannot act on.
  */
 function gatewayInUse(counts: GatewayCounts = { active: 1, total: 1 }): GatewayError {
-  const revoked = counts.total - counts.active;
+  const disabled = counts.total - counts.active;
   const message = counts.active > 0
-    ? revoked > 0
-      ? "Delete the active and revoked provider instances routed through this gateway first"
+    ? disabled > 0
+      ? "Delete the active and disabled provider instances routed through this gateway first"
       : "Delete every active provider instance routed through this gateway first"
-    : "Revoked provider instances still reference this gateway; delete them to release it";
+    : "Disabled provider instances still reference this gateway; delete them to release it";
   return new GatewayError(409, "gateway_in_use", message);
 }

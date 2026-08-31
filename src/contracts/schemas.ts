@@ -286,14 +286,20 @@ export const ProviderUpdateRequestSchema = z.object({
   baseUrl: ProviderBaseUrlSchema.nullable().optional(),
   /** A full replace; `null` clears every override. */
   pricing: ProviderPricingSchema.nullable().optional(),
+  /**
+   * A reversible pause. Disabling keeps the secret, the pricing and the slug, so
+   * nothing can take the slug meanwhile and re-enabling always succeeds.
+   */
+  status: z.enum(["active", "disabled"]).optional(),
 }).strict().refine(
   (value) =>
     value.name !== undefined
     || value.secret !== undefined
     || value.gatewayRoute !== undefined
     || value.baseUrl !== undefined
-    || value.pricing !== undefined,
-  { message: "Provide at least one of name, secret, gatewayRoute, baseUrl, or pricing" },
+    || value.pricing !== undefined
+    || value.status !== undefined,
+  { message: "Provide at least one of name, secret, gatewayRoute, baseUrl, pricing, or status" },
 ).meta({ id: "ProviderUpdateRequest" });
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);

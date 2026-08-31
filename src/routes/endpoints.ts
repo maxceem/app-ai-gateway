@@ -70,8 +70,13 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
   // fail. Resolution itself can throw — an unreadable secret, or a gateway that
   // was revoked out from under the row — and on a fallback that is still just a
   // reason to skip it.
+  //
+  // A *disabled* primary is the one exception: disabling is a deliberate pause,
+  // so the chain falls through to its fallbacks exactly as an upstream failure
+  // would. Only when no fallback survives does the pause itself get reported.
   const resolvedProviders = new Map<string, ResolvedProvider>();
   const usableTargets: typeof prepared.targets = [];
+  let disabledPrimary: GatewayError | undefined;
   for (const [index, target] of prepared.targets.entries()) {
     const primary = index === 0;
     let entry = resolvedProviders.get(target.provider);
@@ -82,7 +87,13 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
           ? await requireProvider(c.env, app.organizationId, target.provider)
           : await resolveProvider(c.env, app.organizationId, target.provider);
       } catch (error) {
-        if (primary) throw error;
+        if (primary) {
+          if (error instanceof GatewayError && error.code === "provider_disabled") {
+            disabledPrimary = error;
+            continue;
+          }
+          throw error;
+        }
         continue;
       }
       if (!found) continue;
@@ -113,6 +124,11 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
     usableTargets.push(target);
   }
   prepared.targets = usableTargets;
+
+  // A skipped disabled primary is the only way the chain can end up empty: on
+  // every other primary failure the loop threw above. With nothing left to try,
+  // the pause is the answer.
+  if (usableTargets.length === 0 && disabledPrimary) throw disabledPrimary;
 
   const primary = prepared.targets[0]!;
   const primaryResolved = resolvedProviders.get(primary.provider)!;

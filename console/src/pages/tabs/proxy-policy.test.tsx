@@ -125,13 +125,49 @@ describe("ProxyPolicyTab", () => {
   it("keeps a slug the organization no longer has, so it can be turned off", async () => {
     renderTab(selectedRouting({ "openai-gone": { allowed_paths: [], allowed_models: [] } }));
 
-    expect(await screen.findByText(/no longer exists/i)).toBeTruthy();
+    // The card keeps its full configuration UI and only gains a "deleted" mark.
+    expect(await screen.findByText(/no instance answers for this slug/i)).toBeTruthy();
+    expect(screen.getByText("deleted")).toBeTruthy();
     const orphan = screen.getByRole("switch", { name: "Enable openai-gone" });
     expect(orphan).toHaveProperty("ariaChecked", "true");
 
     await userEvent.click(orphan);
     await waitFor(() =>
       expect(screen.getByText("0 of 3 provider instances enabled")).toBeTruthy());
+  });
+
+  /**
+   * A paused instance keeps its whole card: the app is still configured to use
+   * it, the restrictions are still editable, and re-enabling it on the
+   * Providers page brings it straight back. Only the badge changes.
+   */
+  it("badges a disabled instance without taking its configuration away", async () => {
+    const paused = PROVIDERS.map((row) =>
+      row.slug === "openai-dev" ? { ...row, status: "disabled" as const } : row);
+    renderTab(
+      selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: ["gpt-5.6-luna"] } }),
+      paused,
+    );
+
+    expect(await screen.findByText("Dev OpenAI")).toBeTruthy();
+    expect(screen.getByText("disabled")).toBeTruthy();
+    // Still switched on, and still offering the controls that configure it.
+    expect(screen.getByRole("switch", { name: "Enable openai-dev" }))
+      .toHaveProperty("ariaChecked", "true");
+    expect(screen.getAllByRole("button", { name: /add path/i }).length).toBeGreaterThan(0);
+    // The row it belongs to is unaffected: no other card is marked.
+    expect(screen.queryAllByText("disabled")).toHaveLength(1);
+  });
+
+  it("keeps a disabled instance in the all-mode chips, muted", async () => {
+    const paused = PROVIDERS.map((row) =>
+      row.slug === "claude" ? { ...row, status: "disabled" as const } : row);
+    renderTab({ providers: { mode: "all" }, model_rewrites: {} }, paused);
+
+    const chip = await screen.findByText("claude");
+    expect(chip.className).toContain("line-through");
+    expect(chip.getAttribute("title")).toMatch(/disabled and serves no traffic/u);
+    expect((await screen.findByText("openai")).className).not.toContain("line-through");
   });
 
   it("starts individual configuration from an instance the org actually has", async () => {

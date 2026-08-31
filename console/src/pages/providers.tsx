@@ -3,6 +3,8 @@ import {
   AlertCircle,
   CircleCheck,
   CircleDollarSign,
+  CirclePlay,
+  CircleSlash,
   Info,
   Loader2,
   Pencil,
@@ -60,9 +62,10 @@ import {
   type CreatableGatewayType,
   type Provider,
 } from "@/lib/config-types";
-import { formatDateTime } from "@/lib/format";
+import { currentMonth, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
+  useApps,
   useCreateProvider,
   useCreateProviderGateway,
   useDeleteProvider,
@@ -179,17 +182,17 @@ function gatewayIdentity(gateway: ProviderGateway): string {
 
 /**
  * Why this gateway cannot be deleted, mirroring the API's `gateway_in_use`
- * message. Revoked rows are kept for audit and still hold the foreign key, so a
- * gateway serving no traffic can still be undeletable — saying "active" there
- * would be a lie the operator cannot act on.
+ * message. Disabled rows are kept for re-enabling and still hold the foreign
+ * key, so a gateway serving no traffic can still be undeletable — saying
+ * "active" there would be a lie the operator cannot act on.
  */
 function deleteBlockedReason(gateway: ProviderGateway): string | undefined {
   if (gateway.referencedCount === 0) return undefined;
   if (gateway.providerCount === 0) {
-    return "Revoked provider instances still reference this gateway; delete them to release it";
+    return "Disabled provider instances still reference this gateway; delete them to release it";
   }
   return gateway.referencedCount > gateway.providerCount
-    ? "Delete the active and revoked provider instances routed through this gateway first"
+    ? "Delete the active and disabled provider instances routed through this gateway first"
     : "Delete every active provider instance routed through this gateway first";
 }
 
@@ -282,19 +285,55 @@ function ClientApis({
   );
 }
 
+/** The muted marker a paused instance carries everywhere it is listed. */
+export function DisabledBadge() {
+  return (
+    <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground">
+      disabled
+    </Badge>
+  );
+}
+
+/**
+ * The apps that name a slug outright, from the apps list's own
+ * `referenced_providers`. All-mode apps are deliberately absent: they reach
+ * every instance without naming any, so listing them here would name every app
+ * the organization has for every provider and say nothing.
+ */
+function ReferencingApps({ slug, names }: { slug: string; names: string[] }) {
+  if (names.length === 0) return null;
+  return (
+    <p>
+      <span className="font-medium text-foreground">{names.join(", ")}</span>{" "}
+      {names.length === 1 ? "names" : "name"}{" "}
+      <span className="font-mono text-foreground">{slug}</span> in its configuration.
+    </p>
+  );
+}
+
 export function ProvidersPage() {
   const { readOnly } = useConsoleSession();
   const list = useProviders();
   const gatewayList = useProviderGateways();
   const deleteProvider = useDeleteProvider();
+  const updateProvider = useUpdateProvider();
+  // Informational only: the warning names the apps that will notice, and both
+  // the disable and the delete go through regardless of what it finds.
+  const appList = useApps(currentMonth());
 
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<ProviderCredential | null>(null);
   const [rotating, setRotating] = useState<ProviderCredential | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProviderCredential | null>(null);
+  const [pendingDisable, setPendingDisable] = useState<ProviderCredential | null>(null);
 
   const providers = list.data?.providers ?? [];
   const gateways = gatewayList.data?.gateways ?? [];
+
+  const referencingApps = (slug: string): string[] =>
+    (appList.data?.apps ?? [])
+      .filter((row) => row.referenced_providers.includes(slug))
+      .map((row) => row.name);
 
   const remove = async () => {
     if (!pendingDelete) return;
@@ -304,6 +343,31 @@ export function ProvidersPage() {
       setPendingDelete(null);
     } catch (error) {
       toast.error(errorMessage(error, "Could not delete the provider"));
+    }
+  };
+
+  const disable = async () => {
+    if (!pendingDisable) return;
+    try {
+      await updateProvider.mutateAsync({ id: pendingDisable.id, body: { status: "disabled" } });
+      toast.success(`Disabled ${pendingDisable.name}`);
+      setPendingDisable(null);
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not disable the provider"));
+    }
+  };
+
+  /**
+   * Enabling needs no dialog: the row kept its slug, so nothing can be standing
+   * in the way and this only ever restores traffic. A failed request is still
+   * worth reporting in the server's own words.
+   */
+  const enable = async (row: ProviderCredential) => {
+    try {
+      await updateProvider.mutateAsync({ id: row.id, body: { status: "active" } });
+      toast.success(`Enabled ${row.name}`);
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not enable the provider"));
     }
   };
 
@@ -366,7 +430,12 @@ export function ProvidersPage() {
                   </TableCell>
                   {/* The slug is a URL segment, so it is shown exactly as typed. */}
                   <TableCell className="font-mono text-xs">{row.slug}</TableCell>
-                  <TableCell className="font-medium">{row.name}</TableCell>
+                  <TableCell className="font-medium">
+                    <span className="flex items-center gap-2">
+                      {row.name}
+                      {row.status === "disabled" ? <DisabledBadge /> : null}
+                    </span>
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {row.secretHint === null ? "—" : `…${row.secretHint}`}
                   </TableCell>
@@ -401,6 +470,17 @@ export function ProvidersPage() {
                         Update key
                       </RowAction>
                       <DropdownMenuSeparator />
+                      {row.status === "disabled" ? (
+                        <RowAction onSelect={() => void enable(row)}>
+                          <CirclePlay />
+                          Enable provider
+                        </RowAction>
+                      ) : (
+                        <RowAction onSelect={() => setPendingDisable(row)}>
+                          <CircleSlash />
+                          Disable provider
+                        </RowAction>
+                      )}
                       <RowAction destructive onSelect={() => setPendingDelete(row)}>
                         <Trash2 />
                         Delete provider
@@ -445,13 +525,49 @@ export function ProvidersPage() {
               start failing within a minute, and any custom pricing on this provider is deleted with
               it.
             </p>
-            <p>This cannot be undone. Update the key instead if you only want to replace it.</p>
+            {pendingDelete ? (
+              <ReferencingApps
+                slug={pendingDelete.slug}
+                names={referencingApps(pendingDelete.slug)}
+              />
+            ) : null}
+            <p>
+              This cannot be undone. Update the key instead if you only want to replace it, or
+              disable the provider to pause it and keep the key.
+            </p>
           </>
         }
         confirmLabel="Delete provider"
         destructive
         pending={deleteProvider.isPending}
         onConfirm={() => void remove()}
+      />
+
+      <ConfirmDialog
+        open={pendingDisable !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDisable(null);
+        }}
+        title="Disable provider"
+        description={
+          <>
+            <p>
+              Requests to{" "}
+              <span className="font-mono text-foreground">{pendingDisable?.slug ?? ""}</span> start
+              failing within a minute. The key, the custom pricing and the slug are all kept, so
+              enabling puts it straight back.
+            </p>
+            {pendingDisable ? (
+              <ReferencingApps
+                slug={pendingDisable.slug}
+                names={referencingApps(pendingDisable.slug)}
+              />
+            ) : null}
+          </>
+        }
+        confirmLabel="Disable provider"
+        pending={updateProvider.isPending}
+        onConfirm={() => void disable()}
       />
     </div>
   );
@@ -642,8 +758,11 @@ function AddProviderDialog({
   // Only the default slug being taken forces a manual one — an existing
   // instance created under a custom slug leaves `openai` free for the next one.
   // A 409 asks for a slug in every case the client cannot see.
+  //
+  // Status is not part of it: a row holds its slug until it is deleted, so a
+  // disabled instance blocks the default exactly as an active one does.
   const defaultSlugTaken = (candidate: Provider) =>
-    providers.some((row) => row.status === "active" && row.slug === candidate);
+    providers.some((row) => row.slug === candidate);
   const slugRequired = slugTaken || defaultSlugTaken(type);
 
   const chooseType = (next: Provider) => {

@@ -163,6 +163,12 @@ export interface ProviderInstance {
    * through this instance alone, which is why model pickers are per slug.
    */
   pricing?: Record<string, unknown> | null;
+  /**
+   * Optional because most callers describe an instance without caring. A
+   * `disabled` row is still selectable — configuration may name it, and the
+   * server accepts that — so pickers mark it rather than hide it.
+   */
+  status?: "active" | "disabled";
 }
 
 /**

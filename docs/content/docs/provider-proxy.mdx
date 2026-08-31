@@ -17,8 +17,9 @@ the model.
 
 ## Slugs
 
-A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique per organization among active
-instances. It defaults to the provider type, so the first instance of each type
+A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique per organization across every
+instance, disabled ones included; only deleting an instance frees its slug. It
+defaults to the provider type, so the first instance of each type
 keeps the familiar URLs — `openai`, `anthropic`, `xai`, `gemini`, `perplexity`,
 `deepseek`, `groq`, and the rest of the
 [supported types](/docs/providers#supported-provider-types) — verbatim. A second
@@ -119,6 +120,7 @@ headers travel upstream follows how that instance is routed
 
 | Code | Status | Meaning |
 | --- | --- | --- |
-| `provider_not_configured` | 502 | The organization has no active provider instance with this slug. Add one under Providers. |
+| `provider_not_configured` | 502 | The organization has no provider instance with this slug. Add one under Providers. |
+| `provider_disabled` | 502 | An instance with this slug exists but is disabled. Enable it under Providers. |
 | `provider_unavailable` | 502 | The stored credential could not be decrypted, or the gateway the instance references was revoked — usually a misconfigured secret vault. Check `/v1/healthz`. |
 | `pricing_not_configured` | 400 | Neither the shipped catalog nor the provider's custom pricing knows this model. |

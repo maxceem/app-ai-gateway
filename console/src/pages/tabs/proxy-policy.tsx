@@ -32,6 +32,7 @@ import {
 import { gatewayApiSurface } from "@/lib/capabilities";
 import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
 import type { ProviderCredential, ProviderGateway } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 /**
  * What to put after the slug. The path is the provider's own, verbatim, and the
@@ -87,6 +88,24 @@ interface PolicyRow {
   title: string;
   description: ReactNode;
   knownModels: string[];
+  /**
+   * A paused or deleted instance keeps its full configuration UI — the app is
+   * still configured to use it, and hiding that is how a restriction silently
+   * goes missing. The badge says which of the two it is; nothing else changes.
+   */
+  badge?: "disabled" | "deleted";
+}
+
+/** The small muted marker on a card whose instance is paused or gone. */
+function PolicyStateBadge({ state }: { state: "disabled" | "deleted" }) {
+  return (
+    <Badge
+      variant="outline"
+      className="border-muted-foreground/30 text-[11px] font-normal text-muted-foreground"
+    >
+      {state}
+    </Badge>
+  );
 }
 
 function ProviderCard({
@@ -108,7 +127,12 @@ function ProviderCard({
     <Card>
       <CardHeader>
         <SectionHeader
-          title={row.title}
+          title={
+            <span className="flex items-center gap-2">
+              {row.title}
+              {row.badge ? <PolicyStateBadge state={row.badge} /> : null}
+            </span>
+          }
           description={row.description}
           action={
             <Switch
@@ -276,6 +300,7 @@ function policyRows(
     // Includes models only this instance prices: the allowlist is per instance,
     // so suggesting them is exactly as correct as the catalog entries.
     knownModels: instanceModels(instance, prices),
+    ...(instance.status === "disabled" ? { badge: "disabled" as const } : {}),
   }));
   const orphans = selected
     .filter((slug) => !instances.some((instance) => instance.slug === slug))
@@ -283,8 +308,9 @@ function policyRows(
       slug,
       title: slug,
       description:
-        "This app allows an instance that no longer exists. Turn it off, or recreate it on the Providers page.",
+        "No instance answers for this slug. Recreate it on the Providers page, or turn this off.",
       knownModels: [],
+      badge: "deleted" as const,
     }));
   return [...known, ...orphans];
 }
@@ -312,8 +338,12 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
             providers: {
               mode: "selected",
               // Policy names instance slugs, so the first switch-on starts from
-              // an instance this organization actually has.
-              selected: instances[0] ? { [instances[0].slug]: emptyProvider() } : {},
+              // an instance this organization actually has — and preferably one
+              // that can currently serve, rather than a paused row.
+              selected: (() => {
+                const seed = instances.find((entry) => entry.status === "active") ?? instances[0];
+                return seed ? { [seed.slug]: emptyProvider() } : {};
+              })(),
             },
           }
         : { providers: { mode: "all" } },
@@ -361,11 +391,23 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
                         This organization has no provider instances yet.
                       </span>
                     ) : (
+                      // A disabled instance is listed but muted: "every
+                      // instance" is what the mode means, and which of them is
+                      // currently paused is worth seeing without leaving.
                       instances.map((instance) => (
                         <Badge
                           key={instance.slug}
                           variant="secondary"
-                          className="bg-background/75 font-mono text-[11px] font-normal"
+                          className={cn(
+                            "bg-background/75 font-mono text-[11px] font-normal",
+                            instance.status === "disabled"
+                              && "text-muted-foreground line-through decoration-muted-foreground/50",
+                          )}
+                          title={
+                            instance.status === "disabled"
+                              ? `${instance.slug} is disabled and serves no traffic`
+                              : undefined
+                          }
                         >
                           {instance.slug}
                         </Badge>

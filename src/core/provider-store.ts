@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { database } from "../db";
 import {
   provider as providerTable,
@@ -8,6 +8,7 @@ import {
   type ProviderGatewayStatus,
   type ProviderGatewayTypeName,
   type ProviderPricing,
+  type ProviderStatus,
 } from "../db/schema";
 import { secretVault } from "../vault";
 import type { ProviderRoute } from "./capabilities";
@@ -44,6 +45,7 @@ interface ProviderRow {
   id: string;
   slug: string;
   type: ProviderType;
+  status: ProviderStatus;
   secretBlob: string | null;
   providerGatewayId: string | null;
   /**
@@ -89,9 +91,19 @@ export interface OrganizationProvider {
    */
   route: ProviderRoute | null;
   pricing: ProviderPricing | null;
+  /**
+   * `disabled` rows stay in the index so configuration referencing them remains
+   * editable, and so their slug still resolves to something: they hold it until
+   * deleted. Requests to them fail with provider_disabled until re-enabled.
+   */
+  status: ProviderStatus;
 }
 
-/** Active provider instances indexed by their caller-visible slug. */
+/**
+ * Provider instances indexed by their caller-visible slug, disabled rows
+ * included. A slug is held by exactly one row until that row is deleted, so
+ * every entry is unambiguous whatever its status.
+ */
 export type OrganizationProviders = Record<string, OrganizationProvider>;
 
 const CACHE_TTL_MS = 60_000;
@@ -130,6 +142,7 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
       id: providerTable.id,
       slug: providerTable.slug,
       type: providerTable.type,
+      status: providerTable.status,
       secretBlob: providerTable.secretBlob,
       providerGatewayId: providerTable.providerGatewayId,
       gatewayType: providerGatewayTable.type,
@@ -150,10 +163,10 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
       providerGatewayTable,
       eq(providerTable.providerGatewayId, providerGatewayTable.id),
     )
-    .where(and(
-      eq(providerTable.organizationId, organizationId),
-      eq(providerTable.status, "active"),
-    ));
+    // Disabled rows included: "this slug is paused" and "this slug does not
+    // exist" are different answers, and only the full set can tell them apart.
+    // They hold their slug too, so including them costs no ambiguity.
+    .where(eq(providerTable.organizationId, organizationId));
   rowsCache.set(organizationId, { expiresAt: Date.now() + CACHE_TTL_MS, rows });
   return rows;
 }
@@ -236,8 +249,18 @@ export async function resolveProvider(
   organizationId: string,
   slug: string,
 ): Promise<ResolvedProvider | null> {
+  // One row per slug, so this is the row the slug means whatever its status.
+  // A paused slug is not a missing one — that is an error of its own, so
+  // re-enabling under Providers is what the operator gets told.
   const row = (await organizationRows(env, organizationId)).find((entry) => entry.slug === slug);
   if (!row) return null;
+  if (row.status === "disabled") {
+    throw new GatewayError(
+      502,
+      "provider_disabled",
+      `Provider instance ${slug} is disabled; enable it under Providers in the console`,
+    );
+  }
   // A gateway type the CHECK constraint admits but no adapter implements is
   // unroutable here, exactly like a revoked one: the database is permissive so
   // the constraint never needs another rebuild, the adapter registry decides.
@@ -295,6 +318,7 @@ export async function organizationProviders(
       id: row.id,
       slug: row.slug,
       type: row.type,
+      status: row.status,
       // The stored type, not the resolvable one: a revoked gateway still
       // narrows what this row will be able to do when it comes back, and
       // judging it as direct in the meantime approves configuration its next

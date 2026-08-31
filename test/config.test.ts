@@ -98,6 +98,7 @@ describe("canonical app configuration", () => {
         type: "openrouter" as const,
         route: "direct" as const,
         pricing: null,
+        status: "active" as const,
       },
     };
     expect(() => validateAppConfigJson(serverConfig({
@@ -119,6 +120,7 @@ describe("canonical app configuration", () => {
         type: "openai" as const,
         route: "direct" as const,
         pricing: null,
+        status: "active" as const,
       },
     };
     expect(() => validateAppConfigJson(serverConfig({
@@ -142,6 +144,7 @@ describe("canonical app configuration", () => {
         type: "openai" as const,
         route: "direct" as const,
         pricing: null,
+        status: "active" as const,
       },
     };
     expect(() => validateAppConfigJson(serverConfig({
@@ -170,7 +173,14 @@ describe("canonical app configuration", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { alias: "released-today" } },
     }), {}, {
-      openai: { id: "p1", slug: "openai", type: "openai", route: "direct", pricing: null },
+      openai: {
+        id: "p1",
+        slug: "openai",
+        type: "openai",
+        route: "direct",
+        pricing: null,
+        status: "active",
+      },
     })).toThrowError("has no configured price");
   });
 
@@ -184,7 +194,14 @@ describe("canonical app configuration", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { fast: "google/gemini-3.6-flash" } },
     }), {}, {
-      router: { id: "p2", slug: "router", type: "openrouter", route: "direct", pricing: null },
+      router: {
+        id: "p2",
+        slug: "router",
+        type: "openrouter",
+        route: "direct",
+        pricing: null,
+        status: "active",
+      },
     })).not.toThrow();
   });
 
@@ -210,6 +227,7 @@ describe("canonical app configuration", () => {
         type: "openai" as const,
         route: "direct" as const,
         pricing: { "released-today": { input: 1, output: 2 } },
+        status: "active" as const,
       },
     })).not.toThrow();
   });
@@ -237,6 +255,7 @@ describe("canonical app configuration", () => {
         type: "openai" as const,
         route: "direct" as const,
         pricing: null,
+        status: "active" as const,
       },
     })).not.toThrow();
   });
@@ -374,6 +393,7 @@ describe("named endpoint configuration", () => {
         type: "openai" as const,
         route,
         pricing: null,
+        status: "active" as const,
       },
     });
     const transcribe = serverConfig({
@@ -416,6 +436,7 @@ describe("named endpoint configuration", () => {
         type: "openai" as const,
         route: null,
         pricing: null,
+        status: "active" as const,
       },
     };
     for (const style of ["responses", "transcription"] as const) {

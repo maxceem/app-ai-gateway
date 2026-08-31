@@ -82,6 +82,87 @@ describe("admin console API", () => {
     });
   });
 
+  /**
+   * `providers` answers "what can this app reach", so an all-mode app loses a
+   * paused slug from it. `referenced_providers` answers a different question —
+   * "which apps name this slug outright" — which is what the console needs to
+   * warn before a disable or a delete, and which an all-mode app answers with
+   * nothing at all rather than with every instance the organization owns.
+   */
+  it("reports referenced provider slugs and drops disabled ones from all-mode reach", async () => {
+    await seedProvider({ type: "openai", id: "listed-openai-paused", slug: "openai-paused" });
+    await seedProvider({ type: "openai", id: "listed-openai-named", slug: "openai-named" });
+    clearProviderCaches();
+    await seedApp("list-apps-all", { proxy: {} });
+    await seedApp("list-apps-named", {
+      proxy: {
+        "openai-named": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+      },
+      endpoints: {
+        chat: {
+          api_style: "responses",
+          provider: "openai-paused",
+          model: "gpt-5.6-luna",
+          fallback: [{ provider: "openai", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    await env.DB
+      .prepare("UPDATE provider SET status = 'disabled' WHERE id = 'listed-openai-paused'")
+      .run();
+    clearProviderCaches();
+
+    const { body } = await get("/v1/admin/apps");
+    const allMode = body.apps.find((row: any) => row.id === "list-apps-all");
+    const named = body.apps.find((row: any) => row.id === "list-apps-named");
+
+    expect(allMode.providers).not.toContain("openai-paused");
+    expect(allMode.providers).toContain("openai-named");
+    // Reaching everything is not naming anything.
+    expect(allMode.referenced_providers).toEqual([]);
+
+    // Policy keys, endpoint targets, and endpoint fallbacks alike.
+    expect([...named.referenced_providers].sort())
+      .toEqual(["openai", "openai-named", "openai-paused"]);
+
+    await env.DB.prepare(
+      "DELETE FROM provider WHERE id IN ('listed-openai-paused', 'listed-openai-named')",
+    ).run();
+    clearProviderCaches();
+  });
+
+  /**
+   * A disabled instance still exists, so configuration may keep naming it —
+   * otherwise pausing an instance would lock every app that uses it out of
+   * every unrelated edit until it came back.
+   */
+  it("saves an app configuration that references a disabled provider instance", async () => {
+    await seedProvider({
+      type: "openai",
+      id: "app-save-paused",
+      slug: "openai-app-paused",
+      status: "disabled",
+    });
+    clearProviderCaches();
+
+    const config = serverConfig({
+      proxy: {
+        "openai-app-paused": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+      },
+    });
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "app-on-paused", name: "On a paused instance", config }),
+    });
+    expect(created.status, await created.clone().text()).toBe(201);
+
+    await env.DB.prepare("DELETE FROM app_api_key WHERE app_id = 'app-on-paused'").run();
+    await env.DB.prepare("DELETE FROM app WHERE id = 'app-on-paused'").run();
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'app-save-paused'").run();
+    clearProviderCaches();
+  });
+
   it("validates a candidate config without writing it", async () => {
     const valid = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
       method: "POST",

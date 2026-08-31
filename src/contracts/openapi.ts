@@ -634,7 +634,9 @@ const ProviderSummarySchema = z.object({
     example: "https://my-resource.openai.azure.com/openai/v1/",
   }),
   pricing: ProviderPricingSchema.nullable(),
-  status: z.enum(["active", "revoked"]),
+  status: z.enum(["active", "disabled"]).openapi({
+    description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",
+  }),
   createdAt: z.string(),
   createdBy: z.string(),
 }).openapi("Provider");
@@ -673,7 +675,7 @@ register({
   operationId: "createProvider",
   summary: "Store a provider credential for the organization",
   description:
-    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among active instances.",
+    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among the organization's instances, disabled ones included; only deleting an instance frees its slug.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(ProviderCreateRequestSchema) } },
   responses: {
@@ -711,7 +713,9 @@ register({
   path: "/v1/admin/providers/{id}",
   tags: ["Admin providers"],
   operationId: "updateProvider",
-  summary: "Rotate a credential, rename it, or replace its custom pricing",
+  summary: "Rotate a credential, rename it, replace its custom pricing, or disable it",
+  description:
+    "Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling therefore always succeeds.",
   security: operatorSecurity,
   request: {
     params: ProviderIdPath,
@@ -735,7 +739,7 @@ register({
   operationId: "deleteProvider",
   summary: "Delete a provider credential and its custom pricing",
   description:
-    "A hard delete. Applications using this provider start failing with provider_not_configured within a minute.",
+    "A hard delete, secret and pricing included. Applications using this provider start failing with provider_not_configured within a minute. To pause an instance reversibly instead, send status: \"disabled\" to PUT /v1/admin/providers/{id}.",
   security: operatorSecurity,
   request: { params: ProviderIdPath },
   responses: {
@@ -759,7 +763,7 @@ const providerGatewayFields = {
   }),
   referencedCount: z.number().int().nonnegative().openapi({
     description:
-      "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero.",
+      "All provider instances referencing this gateway, including disabled rows retained for re-enabling. Deletion is refused while this is above zero.",
   }),
   status: z.enum(["active", "revoked"]),
   createdAt: z.string(),
@@ -906,7 +910,7 @@ register({
       provider_gateway_id: z.string(),
     })),
     409: response(
-      "Provider instances still reference this gateway. Revoked rows are retained for audit and block deletion too; see referencedCount.",
+      "Provider instances still reference this gateway. Disabled rows are retained for re-enabling and block deletion too; see referencedCount.",
       ErrorResponseSchema,
     ),
     ...errorResponses,

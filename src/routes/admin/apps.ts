@@ -126,12 +126,23 @@ function summary(
   config: ReturnType<typeof validateAppConfigJson>,
   providerIndex: OrganizationProviders,
 ) {
+  // Disabled instances are excluded from the all-mode expansion: the summary
+  // says what the app can reach, and a paused slug is not reachable.
   const providerSlugs = config.routing.providers.mode === "all"
-    ? Object.keys(providerIndex)
+    ? Object.keys(providerIndex).filter((slug) => providerIndex[slug]?.status === "active")
     : Object.keys(config.routing.providers.selected ?? {});
   const models = new Set<string>();
   for (const provider of Object.values(config.routing.providers.selected ?? {})) {
     for (const model of provider?.allowed_models ?? []) models.add(model);
+  }
+  // The slugs this configuration names outright — selected policies and
+  // endpoint targets — as opposed to `providers`, which an all-mode app expands
+  // to everything. This is what "which apps use this provider?" means when a
+  // delete or disable is about to be confirmed.
+  const referenced = new Set<string>(Object.keys(config.routing.providers.selected ?? {}));
+  for (const endpoint of Object.values(config.endpoints ?? {})) {
+    referenced.add(endpoint.provider);
+    for (const fallback of endpoint.fallback ?? []) referenced.add(fallback.provider);
   }
   return {
     authentication_type: config.authentication.type,
@@ -141,6 +152,7 @@ function summary(
     monthly_user_budget_usd: config.limits.per_user.spending.monthly_usd,
     monthly_app_budget_usd: config.limits.per_app.spending.monthly_usd,
     providers: providerSlugs,
+    referenced_providers: [...referenced],
     allowed_model_count: models.size,
   };
 }
@@ -249,6 +261,7 @@ appRoutes.get("/apps", async (c) => {
         monthly_user_budget_usd: null;
         monthly_app_budget_usd: null;
         providers: string[];
+        referenced_providers: string[];
         allowed_model_count: number;
       };
       try {
@@ -260,6 +273,7 @@ appRoutes.get("/apps", async (c) => {
           monthly_user_budget_usd: null,
           monthly_app_budget_usd: null,
           providers: [],
+          referenced_providers: [],
           allowed_model_count: 0,
         };
       }

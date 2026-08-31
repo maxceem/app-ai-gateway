@@ -103,8 +103,12 @@ function ProviderSelect({
   const options = useMemo(() => {
     const known = instances.map((instance) => ({
       slug: instance.slug,
-      label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`,
+      label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`
+        + (instance.status === "disabled" ? " (disabled)" : ""),
     }));
+    // A slug no instance answers for stays selected and stays listed: the
+    // endpoint is configured to use it, and blanking the select would quietly
+    // drop that on the next save.
     return value && !instances.some((instance) => instance.slug === value)
       ? [{ slug: value, label: `${value} — not configured` }, ...known]
       : known;
@@ -443,7 +447,11 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
   // A new endpoint has to name an instance that can serve it; with none, there
   // is nothing to create rather than a target that cannot be saved.
   const eligible = endpointInstances("responses", instances, serves);
-  const newEndpoint = () => emptyEndpoint(eligible[0]?.slug);
+  // A new endpoint starts on an instance that can actually serve it, so a
+  // paused row is only ever the default when there is nothing else.
+  const newEndpoint = () => emptyEndpoint(
+    (eligible.find((entry) => entry.status !== "disabled") ?? eligible[0])?.slug,
+  );
 
   const replace = (slug: string, endpoint: EndpointConfig) =>
     state.updateEndpoints({ ...endpoints, [slug]: endpoint });

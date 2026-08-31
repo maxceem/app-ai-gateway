@@ -36,8 +36,8 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("unconfiguredProviders", () => {
-  it("ignores a revoked row, because the gateway will not resolve it", () => {
-    expect(unconfiguredProviders(SELECTED, [credential({ status: "revoked" })])).toEqual(["openai"]);
+  it("ignores a disabled row, because the gateway will not serve traffic to it", () => {
+    expect(unconfiguredProviders(SELECTED, [credential({ status: "disabled" })])).toEqual(["openai"]);
     expect(unconfiguredProviders(SELECTED, [credential({})])).toEqual([]);
   });
 

@@ -34,6 +34,7 @@ import {
   type GatewayRouteConfig,
   type ProviderGatewayType,
   type ProviderPricing,
+  type ProviderStatus,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { secretVault } from "../../vault";
@@ -77,11 +78,20 @@ function guardedBaseUrl(raw: string): string {
   return checked.baseUrl;
 }
 
-function slugConflict(slug: string): GatewayError {
+/**
+ * A slug is held for as long as the row exists, disabled rows included, so the
+ * remedy depends on which kind of row is in the way. A disabled holder is the
+ * confusing case — it serves no traffic, so "already uses" alone would read as
+ * wrong — and it is the one case where the operator has a choice other than
+ * picking a different slug.
+ */
+function slugConflict(slug: string, holder: ProviderStatus = "active"): GatewayError {
   return new GatewayError(
     409,
     "slug_taken",
-    `An active provider instance already uses slug ${slug}; choose a different slug`,
+    holder === "disabled"
+      ? `A disabled provider instance holds slug ${slug}; enable it, delete it, or choose a different slug`
+      : `An active provider instance already uses slug ${slug}; choose a different slug`,
   );
 }
 
@@ -238,15 +248,16 @@ providerRoutes.post("/providers", async (c) => {
   const slug = body.slug ?? body.type;
   assertReservedSlug(body.type, slug);
 
+  // No status filter: a disabled row keeps its slug, so any row blocks it. Its
+  // status is selected only to say which remedy the operator has.
   const existing = await database(c.env.DB).query.provider.findFirst({
-    columns: { id: true },
+    columns: { id: true, status: true },
     where: and(
       eq(provider.organizationId, admin.organizationId),
       eq(provider.slug, slug),
-      eq(provider.status, "active"),
     ),
   });
-  if (existing) throw slugConflict(slug);
+  if (existing) throw slugConflict(slug, existing.status);
 
   const gatewayRoute = body.gatewayRoute ?? null;
   // The contract already refuses baseUrl alongside providerGatewayId, so a
@@ -320,6 +331,7 @@ providerRoutes.put("/providers/:id", async (c) => {
   };
   if (body.name !== undefined) updates.name = body.name;
   if (body.pricing !== undefined) updates.pricing = body.pricing;
+  if (body.status !== undefined) updates.status = body.status;
   if (body.gatewayRoute !== undefined) {
     // Type only, straight off the gateway row: no vault call, and no dependency
     // on that gateway still being active.
@@ -388,6 +400,9 @@ providerRoutes.put("/providers/:id", async (c) => {
     }
   }
 
+  // No unique-constraint handling here: a row holds its slug for as long as it
+  // exists, disabled included, so nothing can have taken it meanwhile and a
+  // re-enable always succeeds. The slug itself is not updatable either.
   const [updated] = await database(c.env.DB)
     .update(provider)
     .set(updates)

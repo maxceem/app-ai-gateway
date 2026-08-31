@@ -48,7 +48,7 @@ export async function seedProvider(input: {
   /** The operator's own origin, canonical as the guard would have stored it. */
   baseUrl?: string;
   pricing?: ProviderPricing;
-  status?: "active" | "revoked";
+  status?: "active" | "disabled";
 }): Promise<string> {
   const organizationId = input.organizationId ?? TEST_ORGANIZATION_ID;
   const id = input.id ?? `provider_${organizationId}_${input.type}`;

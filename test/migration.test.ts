@@ -99,15 +99,16 @@ describe("initial database migration", () => {
       "secret_blob",
       "secret_hint",
       "provider_gateway_id",
+      // In its schema position again: 0017 appended it, and 0018 rebuilt the
+      // table for the status CHECK and the slug index, rewriting it in
+      // declaration order.
+      "base_url",
       "gateway_route_json",
       "pricing_json",
       "status",
       "created_by",
       "created_at",
       "updated_at",
-      // Last, because 0017 appended it: a plain ADD COLUMN, not another rebuild
-      // of a populated tenant table.
-      "base_url",
     ]);
     expect(providerColumns.results.find((column) => column.name === "gateway_route_json"))
       .toMatchObject({ notnull: 0 });
@@ -179,7 +180,7 @@ describe("initial database migration", () => {
     await expect(insert("migration-event-1")).rejects.toThrow(/UNIQUE constraint failed/u);
   });
 
-  it("allows one active provider row per organization and slug", async () => {
+  it("allows one provider row per organization and slug, whatever its status", async () => {
     await seedProviderOrganization();
     const insert = (id: string, slug: string, status: string) =>
       env.DB.prepare(
@@ -190,8 +191,14 @@ describe("initial database migration", () => {
     await insert("provider-1", "openai", "active");
     await expect(insert("provider-2", "openai", "active")).rejects.toThrow(/UNIQUE constraint failed/u);
     await expect(insert("provider-2", "openai-dev", "active")).resolves.toBeDefined();
-    // A revoked row does not occupy the slot.
-    await insert("provider-3", "openai", "revoked");
+    // A disabled row occupies the slot too — the index is unconditional — which
+    // is what keeps a paused instance's slug from being taken out from under it.
+    await insert("provider-3", "openai-paused", "disabled");
+    await expect(insert("provider-4", "openai-paused", "active"))
+      .rejects.toThrow(/UNIQUE constraint failed/u);
+    // The old `revoked` status is gone from the CHECK entirely.
+    await expect(insert("provider-4", "openai-old", "revoked"))
+      .rejects.toThrow(/CHECK constraint failed/u);
     await expect(insert("provider-4", "sideways", "sideways")).rejects.toThrow(/CHECK constraint failed/u);
   });
 

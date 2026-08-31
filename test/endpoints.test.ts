@@ -264,6 +264,134 @@ describe("named endpoints", () => {
     clearProviderCaches();
   });
 
+  /**
+   * Disabling is a deliberate pause, not a broken row, so the chain treats a
+   * disabled primary the way it treats an upstream failure: it moves on. Hard-
+   * failing here would make disabling one of several instances take an endpoint
+   * down that has a healthy instance configured to carry it.
+   */
+  it("falls through a disabled primary to a healthy fallback", async () => {
+    const appId = "endpoint-disabled-primary";
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-paused",
+      slug: "openai-paused",
+      status: "disabled",
+    });
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-standby",
+      slug: "openai-standby",
+      secret: "openai-standby-key",
+    });
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          provider: "openai-paused",
+          fallback: [{ provider: "openai-standby", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(usageResponse);
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    await response.text();
+    expect(response.status).toBe(200);
+    // The paused instance is never dialled: it is skipped before resolution,
+    // not attempted and failed, so it records no usage event either.
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer openai-standby-key");
+
+    const [row] = await latestUsage(appId);
+    expect([row?.provider_slug, row?.status]).toEqual(["openai-standby", "ok"]);
+    await env.DB.prepare(
+      "DELETE FROM provider WHERE id IN ('endpoint-openai-paused', 'endpoint-openai-standby')",
+    ).run();
+    clearProviderCaches();
+  });
+
+  // With nothing left in the chain the pause is the only answer there is, and
+  // it is the one the operator can act on.
+  it("reports provider_disabled when a disabled primary has no usable fallback", async () => {
+    const appId = "endpoint-disabled-only";
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-only-paused",
+      slug: "openai-only-paused",
+      status: "disabled",
+    });
+    await seedApp(appId, {
+      endpoints: {
+        chat: { ...CHAT_ENDPOINTS.chat, provider: "openai-only-paused" },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(usageResponse);
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "provider_disabled" },
+    });
+    expect(captured).toHaveLength(0);
+
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'endpoint-openai-only-paused'").run();
+    clearProviderCaches();
+  });
+
+  // Same rule from the other side of the chain: a disabled fallback is dropped
+  // exactly like an unresolvable one, and the primary still serves.
+  it("drops a disabled fallback and still serves the primary", async () => {
+    const appId = "endpoint-disabled-fallback";
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-paused-fallback",
+      slug: "openai-paused-fallback",
+      status: "disabled",
+    });
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          fallback: [{ provider: "openai-paused-fallback", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream(usageResponse);
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    await response.text();
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+
+    const [row] = await latestUsage(appId);
+    expect([row?.provider_slug, row?.status]).toEqual(["openai", "ok"]);
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'endpoint-openai-paused-fallback'").run();
+    clearProviderCaches();
+  });
+
   it("leaves the endpoint slug null for passthrough proxy traffic", async () => {
     const appId = "endpoint-passthrough";
     await seedApp(appId, { endpoints: CHAT_ENDPOINTS });

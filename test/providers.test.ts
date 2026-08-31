@@ -427,7 +427,7 @@ describe("provider resolution on the hot path", () => {
     expect(logged).toContain("SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION is not allowed in kms mode");
   });
 
-  it("keeps a revoked credential in rotation only until the cache TTL expires", async () => {
+  it("keeps a disabled credential in rotation only until the cache TTL expires", async () => {
     const appId = "provider-revocation";
     await seedApp(appId, { proxy: UNRESTRICTED, organizationId: OTHER_ORGANIZATION_ID });
     const token = await gatewayToken(appId);
@@ -449,7 +449,7 @@ describe("provider resolution on the hot path", () => {
 
     await database(env.DB)
       .update(provider)
-      .set({ status: "revoked" })
+      .set({ status: "disabled" })
       .where(eq(provider.id, "revocable-openai"));
 
     const stillWarm = await proxy({
@@ -469,7 +469,7 @@ describe("provider resolution on the hot path", () => {
     });
     expect(afterTtl.status).toBe(502);
     await expect(afterTtl.json()).resolves.toMatchObject({
-      error: { code: "provider_not_configured" },
+      error: { code: "provider_disabled" },
     });
 
     await database(env.DB).delete(provider).where(eq(provider.id, "revocable-openai"));
