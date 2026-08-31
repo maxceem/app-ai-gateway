@@ -1,21 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import {
-  AlertCircle,
-  ArrowLeft,
-  BadgeCheck,
-  Braces,
-  ChartNoAxesColumn,
-  Gauge,
-  Loader2,
-  MoreHorizontal,
-  Power,
-  Route,
-  ShieldCheck,
-  Trash2,
-  Users,
-  Waypoints,
-} from "lucide-react";
+import { AlertCircle, Loader2, MoreHorizontal, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -29,7 +14,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MissingProvidersAlert } from "@/components/missing-providers-alert";
 import { AppStatusBadge } from "@/components/status-badge";
@@ -52,17 +36,6 @@ const RawJsonTab = lazy(() =>
 const EndpointsTab = lazy(() =>
   import("@/pages/tabs/endpoints").then((module) => ({ default: module.EndpointsTab })),
 );
-
-const TABS = [
-  { value: "overview", label: "Overview", icon: BadgeCheck },
-  { value: "auth", label: "Auth policy", icon: ShieldCheck },
-  { value: "proxy", label: "Proxy policy", icon: Waypoints },
-  { value: "endpoints", label: "Endpoints", icon: Route },
-  { value: "limits", label: "Limits", icon: Gauge },
-  { value: "users", label: "Users", icon: Users },
-  { value: "usage", label: "Usage", icon: ChartNoAxesColumn },
-  { value: "json", label: "Raw JSON", icon: Braces },
-] as const;
 
 export function AppDetailPage() {
   const { appId = "", tab = "overview" } = useParams();
@@ -108,64 +81,52 @@ export function AppDetailPage() {
 
   return (
     <div className="space-y-6 pb-24">
-      <div className="space-y-3">
-        <Link
-          to="/apps"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="size-3.5" />
-          Apps
-        </Link>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
-            {query.isPending || !draft ? (
-              <Skeleton className="h-7 w-48" />
-            ) : (
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold tracking-tight">{draft.name}</h1>
-                <AppStatusBadge status={draft.status} />
-              </div>
-            )}
-            <p className="font-mono text-xs text-muted-foreground">{appId}</p>
-          </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {query.isPending || !draft ? (
+          <Skeleton className="h-7 w-48" />
+        ) : (
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void state.validate()} disabled={!draft}>
-              {state.validating ? <Loader2 className="size-4 animate-spin" /> : null}
-              Validate
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" aria-label="More actions">
-                  <MoreHorizontal className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                {/* A tooltip cannot follow the pointer into a menu, so the
-                    restriction is stated as a label above the disabled items. */}
-                {readOnly ? (
-                  <>
-                    <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                      {READ_ONLY_REASON}
-                    </DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                  </>
-                ) : null}
-                <DropdownMenuItem onClick={toggleStatus} disabled={!draft || readOnly}>
-                  <Power className="size-4" />
-                  {draft?.status === "active" ? "Disable app" : "Enable app"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  disabled={readOnly}
-                  onClick={() => setConfirmDelete(true)}
-                >
-                  <Trash2 className="size-4" />
-                  Delete app
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <h1 className="text-xl font-semibold tracking-tight">{draft.name}</h1>
+            <AppStatusBadge status={draft.status} />
           </div>
+        )}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => void state.validate()} disabled={!draft}>
+            {state.validating ? <Loader2 className="size-4 animate-spin" /> : null}
+            Validate
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" aria-label="More actions">
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {/* A tooltip cannot follow the pointer into a menu, so the
+                  restriction is stated as a label above the disabled items. */}
+              {readOnly ? (
+                <>
+                  <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                    {READ_ONLY_REASON}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                </>
+              ) : null}
+              <DropdownMenuItem onClick={toggleStatus} disabled={!draft || readOnly}>
+                <Power className="size-4" />
+                {draft?.status === "active" ? "Disable app" : "Enable app"}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={readOnly}
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 className="size-4" />
+                Delete app
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -180,17 +141,6 @@ export function AppDetailPage() {
       ) : null}
 
       {draft ? <MissingProvidersAlert proxy={draft.config.routing} /> : null}
-
-      <Tabs value={tab} onValueChange={(next) => navigate(`/apps/${appId}/${next}`)}>
-        <TabsList className="w-full justify-start overflow-x-auto">
-          {TABS.map((entry) => (
-            <TabsTrigger key={entry.value} value={entry.value} className="gap-1.5">
-              <entry.icon className="size-3.5" />
-              {entry.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
 
       {query.isPending || !draft ? (
         <div className="space-y-3">

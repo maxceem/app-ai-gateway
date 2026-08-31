@@ -1,8 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppShell } from "./app-shell";
-import { membership, renderAuthenticated } from "@/test/render";
+import { membership, renderAuthenticated, stubApi } from "@/test/render";
+
+afterEach(() => vi.unstubAllGlobals());
+
+/** Opens an app so the rail is handed over to it. */
+function renderInsideApp(route = "/apps/app-1/overview") {
+  stubApi({
+    "/v1/admin/apps/app-1": {
+      body: {
+        app: { id: "app-1", name: "My app", status: "active", config: {} },
+        resolved: null,
+        config_error: null,
+      },
+    },
+  });
+  return renderAuthenticated(<AppShell>content</AppShell>, { route });
+}
 
 /** The account block at the foot of the sidebar holds the admin destinations. */
 async function openAccountMenu() {
@@ -49,10 +65,51 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: "Providers" }).getAttribute("aria-current")).toBeNull();
   });
 
-  it("keeps a destination marked across the pages below it", () => {
+  it("hands the rail to an app, replacing the console's own destinations", async () => {
+    renderInsideApp();
+
+    // Providers is not a place to be while an app is open; the rail is the app's.
+    expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
+    expect(await screen.findByText("My app")).toBeTruthy();
+    expect(screen.getByText("app-1")).toBeTruthy();
+
+    const nav = screen.getByRole("navigation");
+    const links = [...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"));
+    expect(links).toEqual([
+      "/apps/app-1/overview",
+      "/apps/app-1/auth",
+      "/apps/app-1/proxy",
+      "/apps/app-1/endpoints",
+      "/apps/app-1/limits",
+      "/apps/app-1/users",
+      "/apps/app-1/usage",
+      "/apps/app-1/json",
+    ]);
+  });
+
+  it("keeps the way back out above the record, where a provider's would also sit", () => {
+    renderInsideApp();
+
+    const back = screen.getByRole("link", { name: /^apps$/i });
+    expect(back.getAttribute("href")).toBe("/apps");
+    // Above the sections rather than among them, so it stays put whatever the
+    // record is and whatever sections it has.
+    expect(back.compareDocumentPosition(screen.getByRole("navigation")))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("marks the section being read", () => {
+    renderInsideApp("/apps/app-1/limits");
+
+    expect(screen.getByRole("link", { name: "Limits" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("names the app by its id until the record loads", () => {
+    // No stub: the rail must still say which app it belongs to.
     renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps/app-1/overview" });
 
-    expect(screen.getByRole("link", { name: /apps/i })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getAllByText("app-1").length).toBeGreaterThan(0);
   });
 
   it("names only the operator in the sidebar, never their organization", async () => {

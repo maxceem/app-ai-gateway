@@ -1,5 +1,6 @@
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useMatch, useNavigate } from "react-router-dom";
 import {
+  ArrowLeft,
   ChevronsUpDown,
   CreditCard,
   Eye,
@@ -21,9 +22,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Brand } from "@/components/brand";
 import { OrganizationMenuItems } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { APP_SECTIONS } from "@/lib/app-sections";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
-import { useSignOut } from "@/lib/queries";
+import { useApp, useSignOut } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -153,13 +155,189 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/** A row of the rail, whether it names a destination or a section of one. */
+function RailLink({
+  to,
+  label,
+  icon: Icon,
+  current,
+  onNavigate,
+  className,
+}: {
+  to: string;
+  label: string;
+  icon?: typeof LayoutGrid;
+  current: boolean;
+  onNavigate?: () => void;
+  className?: string;
+}) {
+  return (
+    <Link
+      to={to}
+      onClick={onNavigate}
+      aria-current={current ? "page" : undefined}
+      className={cn(
+        "flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors",
+        "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        current
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+        className,
+      )}
+    >
+      {Icon ? <Icon className="size-4 shrink-0" /> : null}
+      <span className="truncate">{label}</span>
+    </Link>
+  );
+}
+
+/** The console's own destinations, shown whenever no record has the rail. */
+function RootNav({ onNavigate }: { onNavigate?: () => void }) {
+  const location = useLocation();
+
+  return (
+    <nav className="flex flex-1 flex-col gap-1 p-3">
+      {NAV_ITEMS.map((item) => {
+        const active = location.pathname.startsWith(item.to);
+        const sections = active ? item.sections : undefined;
+        // The destination holds its own list, so it is the current page
+        // whenever none of the sections under it is.
+        const current = active && !sections?.some((entry) => entry.to === location.pathname);
+        return (
+          <div key={item.to} className="flex flex-col gap-1">
+            <RailLink
+              to={item.to}
+              label={item.label}
+              icon={item.icon}
+              current={current}
+              onNavigate={onNavigate}
+            />
+
+            {sections ? (
+              // Nothing draws the nesting: a section's label sits in from its
+              // destination's, which says it belongs to it without a rule
+              // down the side of the rail. The pills stay one column wide.
+              <div className="flex flex-col gap-1">
+                {sections.map((section) => (
+                  <RailLink
+                    key={section.to}
+                    to={section.to}
+                    label={section.label}
+                    current={location.pathname === section.to}
+                    onNavigate={onNavigate}
+                    className="h-9 pr-3 pl-12.5"
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
+/**
+ * The rail one record takes over while it is open: the way back out, the
+ * record it belongs to, then that record's sections.
+ *
+ * The way out is the first row under the brand and never moves, so a second
+ * kind of record — a provider, a gateway — can be given the same treatment
+ * without the operator having to look for it somewhere new. `title` names the
+ * record so the rail always says which one the sections belong to.
+ */
+function DrillInRail({
+  back,
+  title,
+  subtitle,
+  items,
+  onNavigate,
+}: {
+  back: { to: string; label: string };
+  title: string;
+  subtitle?: string;
+  items: { to: string; label: string; icon?: typeof LayoutGrid }[];
+  onNavigate?: () => void;
+}) {
+  const location = useLocation();
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-col gap-2 border-b border-sidebar-border px-3 pb-3">
+        <Link
+          to={back.to}
+          onClick={onNavigate}
+          className={cn(
+            "flex h-8 w-fit items-center gap-1.5 rounded-lg px-2 text-sm text-muted-foreground transition-colors",
+            "hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+            "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          )}
+        >
+          <ArrowLeft className="size-3.5 shrink-0" />
+          {back.label}
+        </Link>
+
+        <div className="min-w-0 px-2">
+          <p className="truncate text-sm font-semibold">{title}</p>
+          {subtitle ? (
+            <p className="truncate font-mono text-xs text-muted-foreground">{subtitle}</p>
+          ) : null}
+        </div>
+      </div>
+
+      <nav
+        aria-label={`${title} sections`}
+        className="flex flex-1 flex-col gap-1 overflow-y-auto p-3"
+      >
+        {items.map((item) => (
+          <RailLink
+            key={item.to}
+            to={item.to}
+            label={item.label}
+            icon={item.icon}
+            current={location.pathname === item.to}
+            onNavigate={onNavigate}
+          />
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+/**
+ * The rail for one app. The name is read from the same query the detail page
+ * uses, so opening an app costs no extra request; until it resolves the id
+ * stands in, which is what the URL already says.
+ */
+function AppRail({ appId, onNavigate }: { appId: string; onNavigate?: () => void }) {
+  const app = useApp(appId);
+
+  return (
+    <DrillInRail
+      back={{ to: "/apps", label: "Apps" }}
+      title={app.data?.app.name ?? appId}
+      subtitle={appId}
+      items={APP_SECTIONS.map((section) => ({
+        to: `/apps/${appId}/${section.slug}`,
+        label: section.label,
+        icon: section.icon,
+      }))}
+      onNavigate={onNavigate}
+    />
+  );
+}
+
 /**
  * Sidebar body, shared by the fixed desktop rail and the mobile drawer.
  * `onNavigate` lets the drawer close itself once a destination is chosen.
+ *
+ * Opening a single app hands the rail to that app rather than nesting its
+ * sections under Apps: they are sections of one record, and a list of every
+ * app with one of them expanded would say less about where the operator is.
  */
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
-  const location = useLocation();
   const { readOnly } = useConsoleSession();
+  const appMatch = useMatch("/apps/:appId/*");
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
@@ -168,62 +346,11 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <ThemeToggle />
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1 p-3">
-        {NAV_ITEMS.map((item) => {
-          const active = location.pathname.startsWith(item.to);
-          const sections = active ? item.sections : undefined;
-          // The destination holds its own list, so it is the current page
-          // whenever none of the sections under it is.
-          const current = active && !sections?.some((entry) => entry.to === location.pathname);
-          return (
-            <div key={item.to} className="flex flex-col gap-1">
-              <Link
-                to={item.to}
-                onClick={onNavigate}
-                aria-current={current ? "page" : undefined}
-                className={cn(
-                  "flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors",
-                  "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                  current
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-                )}
-              >
-                <item.icon className="size-4 shrink-0" />
-                {item.label}
-              </Link>
-
-              {sections ? (
-                // Nothing draws the nesting: a section's label sits in from its
-                // destination's, which says it belongs to it without a rule
-                // down the side of the rail. The pills stay one column wide.
-                <div className="flex flex-col gap-1">
-                  {sections.map((section) => {
-                    const sectionCurrent = location.pathname === section.to;
-                    return (
-                      <Link
-                        key={section.to}
-                        to={section.to}
-                        onClick={onNavigate}
-                        aria-current={sectionCurrent ? "page" : undefined}
-                        className={cn(
-                          "flex h-9 items-center rounded-lg pr-3 pl-12.5 text-sm font-medium transition-colors",
-                          "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                          sectionCurrent
-                            ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                            : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-                        )}
-                      >
-                        {section.label}
-                      </Link>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </nav>
+      {appMatch?.params.appId ? (
+        <AppRail appId={appMatch.params.appId} onNavigate={onNavigate} />
+      ) : (
+        <RootNav onNavigate={onNavigate} />
+      )}
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border p-3">
         {readOnly ? (
