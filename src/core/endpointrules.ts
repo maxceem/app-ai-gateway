@@ -1,4 +1,7 @@
+import type { GatewayRouteConfig } from "../db/schema";
+import { routeWireModel, type ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
+import { gatewayBodyMutation } from "./gateways";
 import { lookup } from "./records";
 import {
   jsonObject,
@@ -87,19 +90,34 @@ export function endpointAttempt(
   prepared: PreparedEndpointRequest,
   target: EndpointTarget,
   provider: ProviderType,
+  /** How the resolved row reaches the provider; the adapter owns the wire model. */
+  route: ProviderRoute,
+  /** The row's stored routing configuration, if its gateway takes one. */
+  gatewayRoute: GatewayRouteConfig | null = null,
 ): PreparedProxyRequest {
   const providerPath = endpointProviderPath(prepared.endpoint.api_style, provider);
+  // The configured model is canonical, so it is what gets priced and recorded;
+  // only the body the upstream reads carries the route's namespace.
+  const wireModel = routeWireModel(route, provider, target.model, gatewayRoute);
   let body: BodyInit;
   if (prepared.form) {
-    body = formWithModel(prepared.form, target.model);
+    body = formWithModel(prepared.form, wireModel);
   } else {
-    const json = { ...prepared.json, model: target.model };
+    const json = { ...prepared.json, model: wireModel };
     validateOrInjectOutputCap(
       "responses",
       provider,
       json,
       prepared.endpoint.max_output_tokens,
     );
+    gatewayBodyMutation({
+      gatewayType: route === "direct" ? null : route,
+      route: gatewayRoute,
+      // A named endpoint of this style composes a Responses body, so the style
+      // is the endpoint's contract rather than something sniffed off a path.
+      style: "responses",
+      body: json,
+    });
     body = JSON.stringify(json);
   }
   return {

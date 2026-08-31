@@ -2,6 +2,9 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
+import { API_STYLES } from "../src/core/api-styles";
+import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
+import { costReportBodyMutation } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
@@ -1044,5 +1047,301 @@ describe("provider-native proxy", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error("Perplexity server-tenant usage was not persisted");
+  });
+});
+
+/**
+ * One end-to-end pass over the OpenAI-compatible batch. The three things that
+ * differ per provider — where the base URL ends, where the cache hit is
+ * reported, and what the catalog charges for it — are exactly the three the
+ * unit tests cannot prove together.
+ */
+describe("OpenAI-compatible providers", () => {
+  it("proxies DeepSeek at its own prefix-free path and bills the cache hit at the cached rate", async () => {
+    const key = await seedServerApp("proxy-deepseek", {
+      proxy: {
+        ...defaultProxyConfig(),
+        deepseek: {
+          allowed_paths: ["chat/completions"],
+          allowed_models: ["deepseek-v4-pro"],
+          max_output_tokens: 256,
+        },
+      },
+    });
+    let upstreamUrl = "";
+    let upstreamHeaders = new Headers();
+    let upstreamBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      upstreamUrl = typeof request === "string"
+        ? request
+        : request instanceof URL
+          ? request.toString()
+          : request.url;
+      upstreamHeaders = new Headers(init?.headers);
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        id: "recorded-deepseek-shape",
+        model: "deepseek-v4-pro",
+        choices: [{ message: { role: "assistant", content: "answer" } }],
+        usage: {
+          prompt_tokens: 1_000_000,
+          prompt_cache_hit_tokens: 1_000_000,
+          prompt_cache_miss_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 1_000_000,
+        },
+      });
+    });
+
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-deepseek/proxy/deepseek/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "deepseek-user-1",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-pro",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    // DeepSeek's OpenAI base URL carries no `v1`, so the joined URL must not
+    // grow one; the provider path is the client's, verbatim.
+    expect(upstreamUrl).toBe("https://api.deepseek.com/chat/completions");
+    expect(upstreamHeaders.get("authorization")).toBe("Bearer test-deepseek-secret");
+    // Chat-completions clamp: `max_tokens`, not OpenAI's max_completion_tokens.
+    expect(upstreamBody).toMatchObject({ model: "deepseek-v4-pro", max_tokens: 256 });
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const row = await env.DB.prepare(
+        `SELECT input_tokens, cached_input_tokens, output_tokens, cost_usd, cost_source, model_author
+           FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
+      )
+        .bind("proxy-deepseek")
+        .first<{
+          input_tokens: number;
+          cached_input_tokens: number;
+          output_tokens: number;
+          cost_usd: number;
+          cost_source: string | null;
+          model_author: string | null;
+        }>();
+      if (row) {
+        expect(row).toEqual({
+          input_tokens: 0,
+          cached_input_tokens: 1_000_000,
+          output_tokens: 0,
+          // $0.044 cached, not the $1.32 fresh rate: a 30x difference on this
+          // request, and the reason the cache field is read at all.
+          cost_usd: 0.044,
+          cost_source: "computed",
+          model_author: "DeepSeek",
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("DeepSeek usage was not persisted");
+  });
+
+  it("records a Groq model under its own author, not under Groq", async () => {
+    const key = await seedServerApp("proxy-groq", {
+      proxy: {
+        ...defaultProxyConfig(),
+        groq: {
+          allowed_paths: ["openai/v1/chat/completions"],
+          allowed_models: ["openai/gpt-oss-120b"],
+        },
+      },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        choices: [{ message: { role: "assistant", content: "answer" } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }));
+
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-groq/proxy/groq/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "groq-user-1",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-oss-120b",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const row = await env.DB.prepare(
+        `SELECT model, model_author, provider_type, cost_usd
+           FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
+      )
+        .bind("proxy-groq")
+        .first<{
+          model: string;
+          model_author: string | null;
+          provider_type: string;
+          cost_usd: number;
+        }>();
+      if (row) {
+        // Counterparty and author are different facts, and this batch is what
+        // makes them differ: Groq served a model OpenAI wrote.
+        expect(row).toEqual({
+          model: "openai/gpt-oss-120b",
+          model_author: "OpenAI",
+          provider_type: "groq",
+          cost_usd: 100 * 0.15e-6 + 20 * 0.6e-6,
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("Groq usage was not persisted");
+  });
+
+  it("refuses a Fireworks model until the operator prices it", async () => {
+    // No shipped catalog for Fireworks: its model IDs are account-scoped, so
+    // the fail-closed gate holds until someone enters a price.
+    const key = await seedServerApp("proxy-fireworks", {
+      proxy: {
+        ...defaultProxyConfig(),
+        fireworks: { allowed_paths: ["inference/v1/chat/completions"], allowed_models: [] },
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-fireworks/proxy/fireworks/inference/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "fireworks-user-1",
+        },
+        body: JSON.stringify({
+          model: "accounts/fireworks/models/kimi-k3",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as any).error.code).toBe("pricing_not_configured");
+    // Nothing unmeterable reaches the provider at all.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenRouter", () => {
+  /**
+   * The narrowing is a billing guarantee: OpenRouter answers `/responses`
+   * perfectly well, but reports no cost there and has no local price to fall
+   * back on, so the request would be served and recorded as unresolved. It is
+   * refused before it leaves instead — the same fail-closed rule that stops an
+   * unpriced model on any other type.
+   */
+  it("refuses a surface it reports no cost on, before the request leaves", async () => {
+    const key = await seedServerApp("proxy-openrouter-style", {
+      proxy: {
+        ...defaultProxyConfig(),
+        openrouter: {
+          allowed_paths: ["v1/chat/completions", "v1/responses"],
+          allowed_models: ["google/gemini-3.6-flash"],
+        },
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.1 } }));
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-openrouter-style/proxy/openrouter/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "openrouter-user-1",
+        },
+        body: JSON.stringify({ model: "google/gemini-3.6-flash", input: "hello" }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as any).error.code).toBe("api_style_not_supported");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A cost-reporting provider's request-side hook. No shipped type declares one:
+ * OpenRouter's accounting is always on, so the `usage: {include: true}` this
+ * used to inject bought nothing and cost a full re-serialization of every chat
+ * body. The hook stays because it is where an opt-in would come back, and these
+ * assert the pass-through it is today.
+ */
+describe("cost report body mutation", () => {
+  it("leaves every chat-completions body untouched, on every provider type", () => {
+    for (const type of PROVIDER_TYPES) {
+      const body: Record<string, unknown> = { model: "m", messages: [] };
+      expect([type, costReportBodyMutation(type, "chat_completions", body)])
+        .toEqual([type, false]);
+      expect([type, body]).toEqual([type, { model: "m", messages: [] }]);
+    }
+  });
+
+  it("leaves a client's own `usage` block alone", () => {
+    // It used to be overwritten to keep a client from switching the meter off.
+    // Nothing reads the field now, and rewriting a request field nobody acts on
+    // is a protocol change for no benefit.
+    const body: Record<string, unknown> = { usage: { include: false, keep: "me" } };
+    expect(costReportBodyMutation("openrouter", "chat_completions", body)).toBe(false);
+    expect(body.usage).toEqual({ include: false, keep: "me" });
+  });
+
+  it("touches no body on any API style", () => {
+    for (const style of API_STYLES) {
+      const body: Record<string, unknown> = { model: "m" };
+      expect([style, costReportBodyMutation("openrouter", style, body)]).toEqual([style, false]);
+      expect([style, body]).toEqual([style, { model: "m" }]);
+    }
+  });
+
+  /**
+   * The hook is generic: a type that declares a mutation gets it called, and the
+   * shared proxy path never learns whose field it wrote. Proved against a
+   * hypothetical declaration rather than a real one, because no shipped type
+   * needs it.
+   */
+  it("calls a declared mutation without the proxy path knowing whose it is", () => {
+    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const calls: string[] = [];
+    try {
+      spec.costReport = {
+        read: () => false,
+        mutateBody: (input: { style: string; body: Record<string, unknown> }) => {
+          calls.push(input.style);
+          input.body.hypothetical = true;
+          return true;
+        },
+      };
+      const body: Record<string, unknown> = { model: "m" };
+      expect(costReportBodyMutation("perplexity", "chat_completions", body)).toBe(true);
+      expect(body).toEqual({ model: "m", hypothetical: true });
+      expect(calls).toEqual(["chat_completions"]);
+    } finally {
+      delete spec.costReport;
+    }
+    const after: Record<string, unknown> = { model: "m" };
+    expect(costReportBodyMutation("perplexity", "chat_completions", after)).toBe(false);
+    expect(after).toEqual({ model: "m" });
   });
 });

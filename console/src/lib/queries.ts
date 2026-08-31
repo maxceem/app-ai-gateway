@@ -179,14 +179,19 @@ export function useProviders() {
 }
 
 /**
- * The same list, narrowed to the rows app policy can name: revoked rows resolve
- * to nothing on the data plane, so offering them would author a broken config.
+ * The same list as an array, disabled rows included. A disabled instance still
+ * exists and the server still accepts configuration naming it, so the editor
+ * shows it with its own badge rather than dropping it and silently rewriting
+ * what the app is configured to do.
+ *
+ * No deduplication needed: a slug is held by exactly one row until that row is
+ * deleted, disabled rows included, so every slug appears at most once.
  */
 export function useProviderInstances() {
   return useQuery({
     queryKey: keys.providers,
     queryFn: () => api.get<ProviderListResponse>("/v1/admin/providers"),
-    select: (data) => data.providers.filter((row) => row.status === "active"),
+    select: (data) => data.providers,
   });
 }
 
@@ -293,8 +298,10 @@ export function useDeleteProviderGateway() {
 }
 
 /**
- * Rotation, rename and pricing edits share one endpoint. None of them can move
- * a row between gateways, so no gateway count changes here.
+ * Rotation, rename, pricing edits and the disable/enable toggle share one
+ * endpoint. None of them move a row between gateways, so no gateway count
+ * changes here — but a status change does move which instances an all-mode app
+ * reaches, which the apps list reports, so that is refreshed with it.
  */
 export function useUpdateProvider() {
   const client = useQueryClient();
@@ -302,7 +309,12 @@ export function useUpdateProvider() {
     mutationFn: ({ id, body }: { id: string; body: ProviderUpdateBody }) =>
       api.put<ProviderResponse>(`/v1/admin/providers/${encodeURIComponent(id)}`, body),
     gcTime: 0,
-    onSuccess: () => void client.invalidateQueries({ queryKey: keys.providers }),
+    onSuccess: (_result, variables) => {
+      void client.invalidateQueries({ queryKey: keys.providers });
+      if (variables.body.status !== undefined) {
+        void client.invalidateQueries({ queryKey: ["apps"] });
+      }
+    },
   });
 }
 

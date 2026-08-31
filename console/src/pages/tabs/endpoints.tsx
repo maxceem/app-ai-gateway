@@ -24,12 +24,15 @@ import {
   instanceModels,
   nextEndpointSlug,
   renameEndpoint,
+  type EndpointApiStyle,
   type EndpointConfig,
   type EndpointsConfig,
   type EndpointTarget,
   type ProviderInstance,
 } from "@/lib/config-types";
-import { usePrices, useProviderInstances } from "@/lib/queries";
+import { routeServesEndpointStyle } from "@/lib/capabilities";
+import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
+import type { ProviderGatewayType } from "@/lib/types";
 
 /** Only OpenAI- and xAI-typed instances compose these request shapes. */
 const NO_ELIGIBLE_INSTANCE =
@@ -100,8 +103,12 @@ function ProviderSelect({
   const options = useMemo(() => {
     const known = instances.map((instance) => ({
       slug: instance.slug,
-      label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`,
+      label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`
+        + (instance.status === "disabled" ? " (disabled)" : ""),
     }));
+    // A slug no instance answers for stays selected and stays listed: the
+    // endpoint is configured to use it, and blanking the select would quietly
+    // drop that on the next save.
     return value && !instances.some((instance) => instance.slug === value)
       ? [{ slug: value, label: `${value} — not configured` }, ...known]
       : known;
@@ -188,6 +195,7 @@ function EndpointCard({
   endpoints,
   appId,
   instances,
+  serves,
   modelsFor,
   onRename,
   onChange,
@@ -198,6 +206,8 @@ function EndpointCard({
   endpoints: EndpointsConfig;
   appId: string;
   instances: ProviderInstance[];
+  /** Whether one instance's own route serves a style, from the capability matrix. */
+  serves: (instance: ProviderInstance, style: EndpointApiStyle) => boolean;
   modelsFor: (provider: string) => string[];
   onRename: (next: string) => void;
   onChange: (next: EndpointConfig) => void;
@@ -205,9 +215,9 @@ function EndpointCard({
 }) {
   const slugError = endpointSlugError(slug, endpoints, slug);
   const fallback = endpoint.fallback ?? [];
-  // Only openai- and xai-typed instances compose these request shapes, and the
-  // eligible set is per style, exactly as the Worker validates it.
-  const eligible = endpointInstances(endpoint.api_style, instances);
+  // Only openai- and xai-typed instances compose these request shapes, and only
+  // on a route that serves them — exactly as the Worker validates it.
+  const eligible = endpointInstances(endpoint.api_style, instances, serves);
 
   const setFallback = (next: EndpointTarget[]) =>
     onChange({ ...endpoint, ...(next.length === 0 ? { fallback: undefined } : { fallback: next }) });
@@ -398,17 +408,50 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const instances = useProviderInstances().data ?? [];
+  const gatewaysQuery = useProviderGateways();
+  const gateways = gatewaysQuery.data?.gateways ?? [];
   // Catalog prices belong to the provider type, custom ones to the row, so the
   // model list is only knowable per instance slug.
   const bySlug = new Map(instances.map((instance) => [instance.slug, instance]));
+  // A gateway may carry fewer of a provider's operations than the provider has,
+  // so eligibility is per instance rather than per provider type.
+  //
+  // `unknown` is the state that matters: until the gateway list has actually
+  // loaded, a routed row's route is not knowable, and treating it as direct
+  // offered it for endpoint styles its gateway does not serve — options the
+  // server then refuses on save. A direct row needs none of this, so it stays
+  // available while the list loads.
+  const routeBySlug = new Map<string, ProviderGatewayType | null | "unknown">(
+    instances.map((instance) => {
+      if (instance.providerGatewayId === null) return [instance.slug, null];
+      if (!gatewaysQuery.isSuccess) return [instance.slug, "unknown"];
+      const gateway = gateways.find((entry) => entry.id === instance.providerGatewayId);
+      // A routed row whose gateway is not in the list has no describable route
+      // either, so it is withheld rather than guessed at.
+      return [instance.slug, gateway?.type ?? "unknown"];
+    }),
+  );
+  const serves = (instance: ProviderInstance, style: EndpointApiStyle) => {
+    const route = routeBySlug.get(instance.slug);
+    if (route === undefined || route === "unknown") return false;
+    return routeServesEndpointStyle(route, instance.type, style);
+  };
+  // Said out loud rather than left as a shorter list: an operator looking for a
+  // routed instance that is missing needs to know the list is incomplete.
+  const routesUnavailable = !gatewaysQuery.isSuccess
+    && instances.some((instance) => instance.providerGatewayId !== null);
   const modelsFor = (provider: string) => {
     const instance = bySlug.get(provider);
     return instance ? instanceModels(instance, providerPrices) : [];
   };
   // A new endpoint has to name an instance that can serve it; with none, there
   // is nothing to create rather than a target that cannot be saved.
-  const eligible = endpointInstances("responses", instances);
-  const newEndpoint = () => emptyEndpoint(eligible[0]?.slug);
+  const eligible = endpointInstances("responses", instances, serves);
+  // A new endpoint starts on an instance that can actually serve it, so a
+  // paused row is only ever the default when there is nothing else.
+  const newEndpoint = () => emptyEndpoint(
+    (eligible.find((entry) => entry.status !== "disabled") ?? eligible[0])?.slug,
+  );
 
   const replace = (slug: string, endpoint: EndpointConfig) =>
     state.updateEndpoints({ ...endpoints, [slug]: endpoint });
@@ -452,11 +495,20 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
             }
           />
         </CardHeader>
-        {entries.length === 0 ? (
-          <CardContent>
-            <EmptyState>
-              No named endpoints. Clients of this app use the provider proxy directly.
-            </EmptyState>
+        {routesUnavailable || entries.length === 0 ? (
+          <CardContent className="space-y-3">
+            {routesUnavailable ? (
+              <p className="text-xs text-muted-foreground" role="status">
+                {gatewaysQuery.isError
+                  ? "Provider gateways could not be loaded, so gateway-routed instances are not offered here — a gateway carries fewer of a provider's APIs than the provider does, and this list would otherwise suggest targets the server refuses. Reload to try again."
+                  : "Loading provider gateways. Gateway-routed instances appear once their routes are known."}
+              </p>
+            ) : null}
+            {entries.length === 0 ? (
+              <EmptyState>
+                No named endpoints. Clients of this app use the provider proxy directly.
+              </EmptyState>
+            ) : null}
           </CardContent>
         ) : null}
       </Card>
@@ -470,6 +522,7 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
           endpoints={endpoints}
           appId={appId}
           instances={instances}
+          serves={serves}
           modelsFor={modelsFor}
           onRename={(next) => state.updateEndpoints(renameEndpoint(endpoints, slug, next))}
           onChange={(next) => replace(slug, next)}

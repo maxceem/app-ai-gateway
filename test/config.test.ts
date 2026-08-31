@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateAppConfigJson } from "../src/core/config";
-import { providersForEndpointStyle } from "../src/core/providers";
+import { providersForEndpointStyle } from "../src/core/capabilities";
 import { serverConfig } from "./helpers";
 
 describe("canonical app configuration", () => {
@@ -83,13 +83,68 @@ describe("canonical app configuration", () => {
     }))).not.toThrow();
   });
 
+  /**
+   * Configuration is judged by the same predicate a request is. An OpenRouter
+   * row's models are billable because the route reports what it charged, so
+   * restricting an app to its slugs must save — the old price-only check
+   * refused every one of them for want of a catalog entry that, by design, will
+   * never exist.
+   */
+  it("accepts model restrictions on a cost-reporting instance", () => {
+    const providers = {
+      router: {
+        id: "provider-openrouter",
+        slug: "router",
+        type: "openrouter" as const,
+        route: "direct" as const,
+        pricing: null,
+        status: "active" as const,
+      },
+    };
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: {
+        router: {
+          allowed_paths: [{ path: "v1/chat/completions", fixed_model: "qwen/qwen3-max" }],
+          allowed_models: ["google/gemini-3.6-flash", "meta-llama/llama-4-scout"],
+        },
+      },
+    }), {}, providers)).not.toThrow();
+  });
+
+  /** The fail-closed half: a type that bills on a local price still needs one. */
+  it("still refuses an unpriced model on an instance that does not report cost", () => {
+    const providers = {
+      main: {
+        id: "provider-openai",
+        slug: "main",
+        type: "openai" as const,
+        route: "direct" as const,
+        pricing: null,
+        status: "active" as const,
+      },
+    };
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { main: { allowed_paths: [], allowed_models: ["gpt-not-in-any-catalog"] } },
+    }), {}, providers)).toThrowError("has no configured price");
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: {
+        main: {
+          allowed_paths: [{ path: "v1/responses", fixed_model: "gpt-not-in-any-catalog" }],
+          allowed_models: [],
+        },
+      },
+    }), {}, providers)).toThrowError("has no configured price");
+  });
+
   it("validates selected policies against configured provider instance slugs", () => {
     const providers = {
       "openai-dev": {
         id: "provider-openai-dev",
         slug: "openai-dev",
         type: "openai" as const,
+        route: "direct" as const,
         pricing: null,
+        status: "active" as const,
       },
     };
     expect(() => validateAppConfigJson(serverConfig({
@@ -111,9 +166,43 @@ describe("canonical app configuration", () => {
   });
 
   it("rejects rewrite targets that are absent from every price catalog", () => {
+    // Scoped to instances that bill on a local price, which is what makes the
+    // check a check: a cost-reporting instance can bill *any* model name, so an
+    // organization that runs one is answered "yes" for every target — correctly,
+    // and the case below asserts exactly that.
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { alias: "released-today" } },
-    }))).toThrowError("has no configured price");
+    }), {}, {
+      openai: {
+        id: "p1",
+        slug: "openai",
+        type: "openai",
+        route: "direct",
+        pricing: null,
+        status: "active",
+      },
+    })).toThrowError("has no configured price");
+  });
+
+  /**
+   * The other half of the same rule. An OpenRouter row bills on the cost
+   * OpenRouter reports, so its slugs are deliberately absent from the shipped
+   * catalog — refusing to save a rewrite that targets one would be demanding a
+   * price the proxy never asks for.
+   */
+  it("accepts a rewrite target only a cost-reporting instance can bill", () => {
+    expect(() => validateAppConfigJson(serverConfig({
+      proxy: { model_rewrites: { fast: "google/gemini-3.6-flash" } },
+    }), {}, {
+      router: {
+        id: "p2",
+        slug: "router",
+        type: "openrouter",
+        route: "direct",
+        pricing: null,
+        status: "active",
+      },
+    })).not.toThrow();
   });
 
   // A rewrite target names a model, not an instance, so it is priced against the
@@ -136,7 +225,9 @@ describe("canonical app configuration", () => {
         id: "provider-openai-dev",
         slug: "openai-dev",
         type: "openai" as const,
+        route: "direct" as const,
         pricing: { "released-today": { input: 1, output: 2 } },
+        status: "active" as const,
       },
     })).not.toThrow();
   });
@@ -162,7 +253,9 @@ describe("canonical app configuration", () => {
         id: "provider-constructor",
         slug: "constructor",
         type: "openai" as const,
+        route: "direct" as const,
         pricing: null,
+        status: "active" as const,
       },
     })).not.toThrow();
   });
@@ -286,6 +379,80 @@ describe("named endpoint configuration", () => {
       }))).toThrowError(`endpoints.chat.fallback[0].provider ${provider} is a ${provider} instance, which does not support responses`);
     },
   );
+
+  /**
+   * The provider type is eligible; its *route* is not. Vercel serves no
+   * transcription API, so an endpoint naming a Vercel-routed instance is
+   * refused on save rather than stored and discovered on its first request.
+   */
+  it("rejects an endpoint style the instance's own route cannot carry", () => {
+    const instance = (route: "direct" | "cf_aig" | "vercel") => ({
+      "openai-routed": {
+        id: "provider-openai-routed",
+        slug: "openai-routed",
+        type: "openai" as const,
+        route,
+        pricing: null,
+        status: "active" as const,
+      },
+    });
+    const transcribe = serverConfig({
+      endpoints: {
+        speech: {
+          api_style: "transcription",
+          provider: "openai-routed",
+          model: "gpt-4o-transcribe",
+        },
+      },
+    });
+    expect(() => validateAppConfigJson(transcribe, {}, instance("vercel"))).toThrowError(
+      "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support transcription",
+    );
+    // The same endpoint is fine on either route that reaches OpenAI's own API.
+    for (const route of ["direct", "cf_aig"] as const) {
+      expect(() => validateAppConfigJson(transcribe, {}, instance(route))).not.toThrow();
+    }
+    // A Responses endpoint works on all three: Vercel serves that one.
+    const respond = serverConfig({
+      endpoints: {
+        chat: { api_style: "responses", provider: "openai-routed", model: "gpt-5.6-luna" },
+      },
+    });
+    for (const route of ["direct", "cf_aig", "vercel"] as const) {
+      expect(() => validateAppConfigJson(respond, {}, instance(route))).not.toThrow();
+    }
+  });
+
+  /**
+   * A row attached to a gateway with no adapter has no describable capabilities,
+   * so it cannot back an endpoint. Approving it because its route reads as
+   * unknown would be the accept-then-502 the save-time check exists to avoid.
+   */
+  it("rejects an endpoint on an instance whose gateway has no adapter", () => {
+    const unroutable = {
+      "openai-routed": {
+        id: "provider-openai-routed",
+        slug: "openai-routed",
+        type: "openai" as const,
+        route: null,
+        pricing: null,
+        status: "active" as const,
+      },
+    };
+    for (const style of ["responses", "transcription"] as const) {
+      expect(() => validateAppConfigJson(
+        serverConfig({
+          endpoints: {
+            one: { api_style: style, provider: "openai-routed", model: "gpt-5.6-luna" },
+          },
+        }),
+        {},
+        unroutable,
+      )).toThrowError(
+        `endpoints.one.provider openai-routed is routed through a provider gateway this deployment has no adapter for, so it cannot serve ${style} endpoints`,
+      );
+    }
+  });
 
   it("rejects an unknown api_style", () => {
     expect(() => validateAppConfigJson(serverConfig({

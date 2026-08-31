@@ -67,7 +67,8 @@ export function SectionHeader({
   description,
   action,
 }: {
-  title: string;
+  /** A node, not a string: a heading may carry a badge beside its own text. */
+  title: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
 }) {

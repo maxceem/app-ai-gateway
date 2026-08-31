@@ -5,7 +5,16 @@ import {
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
+import { assertRouteServesProvider } from "../../core/capabilities";
 import { GatewayError } from "../../core/errors";
+import { checkOperatorBaseUrl } from "../../core/origin-guard";
+import {
+  assertGatewayRoute,
+  isGatewayType,
+  requireGatewayAdapter,
+  resolveGateway,
+  type ResolvedGateway,
+} from "../../core/gateways";
 import {
   assertNotRejected,
   probeProviderGateway,
@@ -22,7 +31,10 @@ import { database } from "../../db";
 import {
   provider,
   providerGateway,
+  type GatewayRouteConfig,
+  type ProviderGatewayType,
   type ProviderPricing,
+  type ProviderStatus,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { secretVault } from "../../vault";
@@ -45,6 +57,8 @@ function serialize(row: ProviderRow): Record<string, unknown> {
     name: row.name,
     secretHint: row.secretHint,
     providerGatewayId: row.providerGatewayId,
+    gatewayRoute: row.gatewayRoute,
+    baseUrl: row.baseUrl,
     pricing: row.pricing,
     status: row.status,
     createdAt: row.createdAt,
@@ -52,11 +66,32 @@ function serialize(row: ProviderRow): Record<string, unknown> {
   };
 }
 
-function slugConflict(slug: string): GatewayError {
+/**
+ * The only door a base URL comes through. The guard's refusal message names the
+ * rule that was broken, so it is passed through verbatim rather than replaced
+ * with "invalid URL" — the operator is looking at the field they just typed.
+ * What is stored is the guard's canonical form, never the raw input.
+ */
+function guardedBaseUrl(raw: string): string {
+  const checked = checkOperatorBaseUrl(raw);
+  if (!checked.ok) throw new GatewayError(400, "invalid_request", checked.message);
+  return checked.baseUrl;
+}
+
+/**
+ * A slug is held for as long as the row exists, disabled rows included, so the
+ * remedy depends on which kind of row is in the way. A disabled holder is the
+ * confusing case — it serves no traffic, so "already uses" alone would read as
+ * wrong — and it is the one case where the operator has a choice other than
+ * picking a different slug.
+ */
+function slugConflict(slug: string, holder: ProviderStatus = "active"): GatewayError {
   return new GatewayError(
     409,
     "slug_taken",
-    `An active provider instance already uses slug ${slug}; choose a different slug`,
+    holder === "disabled"
+      ? `A disabled provider instance holds slug ${slug}; enable it, delete it, or choose a different slug`
+      : `An active provider instance already uses slug ${slug}; choose a different slug`,
   );
 }
 
@@ -80,6 +115,8 @@ async function insertProvider(
     name: string;
     secret?: string;
     providerGatewayId?: string;
+    gatewayRoute: GatewayRouteConfig | null;
+    baseUrl: string | null;
     pricing: ProviderPricing | null;
   },
 ): Promise<ProviderRow> {
@@ -100,6 +137,8 @@ async function insertProvider(
     secretBlob,
     secretHint: direct ? secretHint(input.secret!) : null,
     providerGatewayId: input.providerGatewayId ?? null,
+    gatewayRoute: input.gatewayRoute,
+    baseUrl: input.baseUrl,
     pricing: input.pricing,
     createdBy: input.createdBy,
   }).returning();
@@ -124,25 +163,60 @@ async function gatewayToken(
   c: Context<ProviderEnv>,
   organizationId: string,
   gatewayId: string,
-): Promise<{ accountId: string; gatewayId: string; token: string }> {
-  const gateway = await database(c.env.DB).query.providerGateway.findFirst({
+): Promise<{ gateway: ResolvedGateway; token: string }> {
+  const row = await database(c.env.DB).query.providerGateway.findFirst({
     where: and(
       eq(providerGateway.id, gatewayId),
       eq(providerGateway.organizationId, organizationId),
       eq(providerGateway.status, "active"),
     ),
   });
-  if (!gateway) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  // The stored type comes from a CHECK wider than the adapter registry, so a
+  // row this deployment cannot serve is refused here rather than mis-read as
+  // another gateway's configuration.
+  const type = requireGatewayAdapter(row.type);
   return {
-    accountId: gateway.config.accountId,
-    gatewayId: gateway.config.gatewayId,
-    token: await decryptProviderGatewaySecret(
-      c.env,
-      organizationId,
-      gateway.id,
-      gateway.secretBlob,
-    ),
+    gateway: resolveGateway(type, row.config),
+    token: await decryptProviderGatewaySecret(c.env, organizationId, row.id, row.secretBlob),
   };
+}
+
+/**
+ * The adapter that owns a stored gateway row's routing configuration, read
+ * without touching the vault.
+ *
+ * Validating a route only ever needs the gateway's *type*, so this reads that
+ * one column instead of going through {@link gatewayToken}, which 404s on a
+ * revoked row and decrypts a token nothing here is going to spend. Both were
+ * wrong for an edit: clearing a route back to `null` is how an operator gets rid
+ * of one, and refusing that on a revoked or adapterless gateway would strand the
+ * row — the same reasoning `baseUrl` clearing already follows below.
+ *
+ * Status is deliberately not checked. A revoked gateway is a credential state,
+ * not a statement about what its adapter can route, and the row is going to be
+ * saved either way; the request it eventually serves is what needs the gateway
+ * back. An adapter, on the other hand, is required for a non-null route: without
+ * one there is nothing that could agree to the configuration being stored.
+ */
+async function gatewayRouteAdapter(
+  c: Context<ProviderEnv>,
+  organizationId: string,
+  gatewayId: string,
+  route: GatewayRouteConfig | null,
+): Promise<ProviderGatewayType | null> {
+  const row = await database(c.env.DB).query.providerGateway.findFirst({
+    columns: { type: true },
+    where: and(
+      eq(providerGateway.id, gatewayId),
+      eq(providerGateway.organizationId, organizationId),
+    ),
+  });
+  // Clearing is unconditional: a row whose gateway was deleted out from under it
+  // must still be able to drop configuration that now applies to nothing.
+  if (route === null) return row && isGatewayType(row.type) ? row.type : null;
+  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  return requireGatewayAdapter(row.type);
 }
 
 /**
@@ -155,11 +229,17 @@ providerRoutes.post("/providers/test", async (c) => {
   const admin = c.get("admin");
   const body = providerSchemaBody(ProviderTestRequestSchema, await providerRequestBody(c));
   if (body.secret !== undefined) {
-    return c.json(assertNotRejected(await probeProviderKey(body.type, body.secret)));
+    // Guarded here too: a dry run must not be a way to make this Worker fetch
+    // an origin the create path would have refused.
+    const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
+    return c.json(assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl)));
   }
   // The schema admits exactly one of the two, so this is the gateway case.
-  const gateway = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
-  return c.json(assertNotRejected(await probeProviderGateway({ type: body.type, ...gateway })));
+  const resolved = await gatewayToken(c, admin.organizationId, body.providerGatewayId!);
+  // Said here rather than reported as an inconclusive probe: "this gateway does
+  // not serve DeepSeek" and "nothing could be proven" are different answers.
+  assertRouteServesProvider(resolved.gateway.type, body.type);
+  return c.json(assertNotRejected(await probeProviderGateway({ type: body.type, ...resolved })));
 });
 
 providerRoutes.post("/providers", async (c) => {
@@ -168,31 +248,47 @@ providerRoutes.post("/providers", async (c) => {
   const slug = body.slug ?? body.type;
   assertReservedSlug(body.type, slug);
 
+  // No status filter: a disabled row keeps its slug, so any row blocks it. Its
+  // status is selected only to say which remedy the operator has.
   const existing = await database(c.env.DB).query.provider.findFirst({
-    columns: { id: true },
+    columns: { id: true, status: true },
     where: and(
       eq(provider.organizationId, admin.organizationId),
       eq(provider.slug, slug),
-      eq(provider.status, "active"),
     ),
   });
-  if (existing) throw slugConflict(slug);
+  if (existing) throw slugConflict(slug, existing.status);
 
+  const gatewayRoute = body.gatewayRoute ?? null;
+  // The contract already refuses baseUrl alongside providerGatewayId, so a
+  // stored override always belongs to a direct row.
+  const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
   let validated: boolean;
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
   if (body.secret !== undefined) {
+    assertGatewayRoute(null, gatewayRoute);
     secret = body.secret;
-    validated = assertNotRejected(await probeProviderKey(body.type, body.secret)).validated;
+    // Probed at the origin this row will really call, so a wrong URL fails now
+    // rather than on the first request an app makes.
+    validated = assertNotRejected(
+      await probeProviderKey(body.type, body.secret, baseUrl),
+    ).validated;
   } else {
     const gatewayId = body.providerGatewayId;
     if (!gatewayId) {
       throw new GatewayError(400, "invalid_request", "providerGatewayId is required");
     }
     providerGatewayId = gatewayId;
-    const gateway = await gatewayToken(c, admin.organizationId, gatewayId);
+    const resolved = await gatewayToken(c, admin.organizationId, gatewayId);
+    // A gateway with no mapping for this provider type could never carry one of
+    // its requests, so the row is refused instead of being stored dead.
+    assertRouteServesProvider(resolved.gateway.type, body.type);
+    // The adapter that will carry the traffic is the only judge of its own
+    // routing configuration, so a route is never stored unvalidated.
+    assertGatewayRoute(resolved.gateway.type, gatewayRoute);
     validated = assertNotRejected(
-      await probeProviderGateway({ type: body.type, ...gateway }),
+      await probeProviderGateway({ type: body.type, ...resolved }),
     ).validated;
   }
 
@@ -206,6 +302,8 @@ providerRoutes.post("/providers", async (c) => {
       name: body.name,
       ...(secret === undefined ? {} : { secret }),
       ...(providerGatewayId === undefined ? {} : { providerGatewayId }),
+      gatewayRoute,
+      baseUrl,
       pricing: body.pricing ?? null,
     });
   } catch (error) {
@@ -233,6 +331,40 @@ providerRoutes.put("/providers/:id", async (c) => {
   };
   if (body.name !== undefined) updates.name = body.name;
   if (body.pricing !== undefined) updates.pricing = body.pricing;
+  if (body.status !== undefined) updates.status = body.status;
+  if (body.gatewayRoute !== undefined) {
+    // Type only, straight off the gateway row: no vault call, and no dependency
+    // on that gateway still being active.
+    const gatewayType = row.providerGatewayId === null
+      ? null
+      : await gatewayRouteAdapter(
+          c,
+          admin.organizationId,
+          row.providerGatewayId,
+          body.gatewayRoute,
+        );
+    assertGatewayRoute(gatewayType, body.gatewayRoute);
+    updates.gatewayRoute = body.gatewayRoute;
+  }
+
+  // The effective origin after this write, which is also what any probe below
+  // must use: a new value, an explicit clear back to the provider's own base
+  // URL, or the one already stored.
+  let baseUrl = row.baseUrl;
+  if (body.baseUrl !== undefined) {
+    // Clearing is always allowed, including on a routed row: `null` is how an
+    // operator gets rid of a value, and refusing that would strand a row that
+    // acquired one before it was attached to a gateway.
+    if (body.baseUrl !== null && row.providerGatewayId !== null) {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        "A gateway-routed instance cannot carry a base URL: the gateway owns the upstream origin",
+      );
+    }
+    baseUrl = body.baseUrl === null ? null : guardedBaseUrl(body.baseUrl);
+    updates.baseUrl = baseUrl;
+  }
 
   let validated: boolean | null = null;
   if (body.secret !== undefined) {
@@ -243,14 +375,34 @@ providerRoutes.put("/providers/:id", async (c) => {
         `This provider uses a shared gateway token; rotate it at /v1/admin/provider-gateways/${row.providerGatewayId}/rotate`,
       );
     }
-    validated = assertNotRejected(await probeProviderKey(row.type, body.secret)).validated;
+    validated = assertNotRejected(
+      await probeProviderKey(row.type, body.secret, baseUrl),
+    ).validated;
     updates.secretBlob = await secretVault(c.env).encryptSecret(
       body.secret,
       encryptionContext(admin.organizationId, row.id),
     );
     updates.secretHint = secretHint(body.secret);
+  } else if (body.baseUrl !== undefined && row.secretBlob !== null) {
+    // Moving an instance to a new origin is as much a configuration change as
+    // rotating its key, so it is proven the same way, against the credential
+    // already stored. A vault this deployment can no longer read is not a
+    // reason to refuse the edit — it fails loudly on the next request instead.
+    try {
+      const secret = await secretVault(c.env).decryptSecret(
+        row.secretBlob,
+        encryptionContext(admin.organizationId, row.id),
+      );
+      validated = (await probeProviderKey(row.type, secret, baseUrl)).validated;
+    } catch (error) {
+      if (error instanceof GatewayError) throw error;
+      validated = false;
+    }
   }
 
+  // No unique-constraint handling here: a row holds its slug for as long as it
+  // exists, disabled included, so nothing can have taken it meanwhile and a
+  // re-enable always succeeds. The slug itself is not updatable either.
   const [updated] = await database(c.env.DB)
     .update(provider)
     .set(updates)

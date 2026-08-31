@@ -16,9 +16,9 @@ import {
   unpricedMessage,
   type PreparedProxyRequest,
 } from "../core/proxyrules";
-import { providersForEndpointStyle } from "../core/providers";
+import { supportsEndpointStyle } from "../core/capabilities";
 import { lookup } from "../core/records";
-import { hasModelPrice, recordUsageEvent } from "../core/usage";
+import { isBillable, recordUsageEvent } from "../core/usage";
 import type { GatewayVariables } from "../middleware/auth";
 import type { ProxyVariables } from "./proxy";
 
@@ -70,8 +70,13 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
   // fail. Resolution itself can throw — an unreadable secret, or a gateway that
   // was revoked out from under the row — and on a fallback that is still just a
   // reason to skip it.
+  //
+  // A *disabled* primary is the one exception: disabling is a deliberate pause,
+  // so the chain falls through to its fallbacks exactly as an upstream failure
+  // would. Only when no fallback survives does the pause itself get reported.
   const resolvedProviders = new Map<string, ResolvedProvider>();
   const usableTargets: typeof prepared.targets = [];
+  let disabledPrimary: GatewayError | undefined;
   for (const [index, target] of prepared.targets.entries()) {
     const primary = index === 0;
     let entry = resolvedProviders.get(target.provider);
@@ -82,14 +87,21 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
           ? await requireProvider(c.env, app.organizationId, target.provider)
           : await resolveProvider(c.env, app.organizationId, target.provider);
       } catch (error) {
-        if (primary) throw error;
+        if (primary) {
+          if (error instanceof GatewayError && error.code === "provider_disabled") {
+            disabledPrimary = error;
+            continue;
+          }
+          throw error;
+        }
         continue;
       }
       if (!found) continue;
       entry = found;
       resolvedProviders.set(target.provider, entry);
     }
-    if (!providersForEndpointStyle(endpoint.api_style).some((type) => type === entry.type)) {
+    const route = entry.gateway?.type ?? "direct";
+    if (!supportsEndpointStyle(route, entry.type, endpoint.api_style)) {
       if (primary) {
         throw new GatewayError(
           502,
@@ -99,7 +111,7 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
       }
       continue;
     }
-    if (!hasModelPrice(entry.type, target.model, entry.pricing)) {
+    if (!isBillable(entry.type, target.model, entry.pricing)) {
       if (primary) {
         throw new GatewayError(
           400,
@@ -113,9 +125,20 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
   }
   prepared.targets = usableTargets;
 
+  // A skipped disabled primary is the only way the chain can end up empty: on
+  // every other primary failure the loop threw above. With nothing left to try,
+  // the pause is the answer.
+  if (usableTargets.length === 0 && disabledPrimary) throw disabledPrimary;
+
   const primary = prepared.targets[0]!;
   const primaryResolved = resolvedProviders.get(primary.provider)!;
-  const attempt = endpointAttempt(prepared, primary, primaryResolved.type);
+  const attempt = endpointAttempt(
+    prepared,
+    primary,
+    primaryResolved.type,
+    primaryResolved.gateway?.type ?? "direct",
+    primaryResolved.gatewayRoute,
+  );
   c.set("preparedEndpointRequest", prepared);
   c.set("resolvedProviders", resolvedProviders);
   c.set("resolvedProvider", primaryResolved);
@@ -158,6 +181,8 @@ endpointRoutes.post("/:slug", async (c) => {
         provider: input.attempt.provider,
         providerId: input.resolved.id,
         providerSlug: input.resolved.slug,
+        gateway: input.resolved.gateway,
+        gatewayRoute: input.resolved.gatewayRoute,
         pricing: input.resolved.pricing,
         model: input.attempt.model,
         route: `${input.resolved.slug}/${input.attempt.providerPath}`,
@@ -175,7 +200,13 @@ endpointRoutes.post("/:slug", async (c) => {
     const resolved = resolvedProviders.get(target.provider)!;
     const attempt = index === 0
       ? c.get("preparedProxyRequest")
-      : endpointAttempt(prepared, target, resolved.type);
+      : endpointAttempt(
+        prepared,
+        target,
+        resolved.type,
+        resolved.gateway?.type ?? "direct",
+        resolved.gatewayRoute,
+      );
     const upstreamRequest = providerUpstream({
       resolved,
       prepared: attempt,

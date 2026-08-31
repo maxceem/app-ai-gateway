@@ -55,9 +55,15 @@ const CHART_COLORS = [
 
 const BREAKDOWNS = [
   { value: "model", label: "By model" },
+  { value: "model_author", label: "By model author" },
   { value: "provider", label: "By provider" },
+  // The transport a request took and whose key paid for it are questions the
+  // provider alone cannot answer, so each gets its own dimension.
+  { value: "provider_gateway", label: "By gateway" },
+  { value: "credential_source", label: "By credential source" },
   { value: "user", label: "By user" },
   { value: "status", label: "By status" },
+  { value: "cost_source", label: "By cost source" },
   { value: "route", label: "By route" },
   { value: "endpoint", label: "By endpoint" },
   { value: "app_version", label: "By app version" },
@@ -332,11 +338,46 @@ export function UsageTab({ appId }: { appId: string }) {
                     <TableCell className="font-mono text-xs">{event.model}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
+                      {/* The configured route, which is known with certainty;
+                          a direct call has no gateway to name. */}
+                      {event.provider_gateway_type ? (
+                        <span className="block">via {event.provider_gateway_type}</span>
+                      ) : null}
+                      {/* Observed, not configured: only shown when the upstream
+                          named the host that actually served the request. */}
+                      {event.served_provider ? (
+                        <span className="block">Served by {event.served_provider}</span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {formatCompact(totalTokens(event))}
                     </TableCell>
-                    <TableCell className="tabular text-right text-xs">{formatCost(event.cost_usd)}</TableCell>
+                    <TableCell className="tabular text-right text-xs">
+                      {/* An unresolved event was not billed because its usage
+                          was unreadable, so showing $0.00 would be a claim the
+                          gateway cannot make. */}
+                      {event.cost_source === "unresolved" ? (
+                        <span
+                          className="text-amber-600 dark:text-amber-400"
+                          title="The provider answered successfully but reported no usage this gateway could read, so this request consumed no budget."
+                        >
+                          unresolved
+                        </span>
+                      ) : (
+                        <span
+                          // A reported cost is what the provider charged, not
+                          // what this deployment's catalog estimates — worth
+                          // saying, because the two can differ.
+                          title={
+                            event.cost_source === "reported"
+                              ? "Cost reported by the provider for this request."
+                              : undefined
+                          }
+                        >
+                          {formatCost(event.cost_usd)}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell className="tabular text-right text-xs">
                       {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}
                     </TableCell>

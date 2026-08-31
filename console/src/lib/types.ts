@@ -71,48 +71,60 @@ export interface CreatedManagementKey extends ManagementKey {
  * Provider credentials are write-only: `secretHint` is the only fragment of a
  * stored secret the API ever returns, so no type here carries a plaintext.
  */
-export type ProviderGatewayType = "cf_aig";
+/**
+ * Gateway types the API can return. Creation is narrower — see
+ * {@link CREATABLE_GATEWAY_TYPES} — because a type is only creatable once the
+ * Worker has an adapter for it.
+ */
+export type ProviderGatewayType = "cf_aig" | "vercel";
 
 export interface CfAigConfig {
   accountId: string;
   gatewayId: string;
 }
 
+/** Vercel's origin is fixed in adapter code, so its config is empty. */
+export type VercelGatewayConfig = Record<string, never>;
+
+/** Discriminated by `type`: each gateway's configuration is its own shape. */
+export type ProviderGatewayConfig =
+  | { type: "cf_aig"; config: CfAigConfig }
+  | { type: "vercel"; config: VercelGatewayConfig };
+
 /**
  * A reusable connection to someone else's gateway. Its token is encrypted once
  * and shared by every provider instance routed through it.
  */
-export interface ProviderGateway {
+export type ProviderGateway = ProviderGatewayConfig & {
   id: string;
-  type: ProviderGatewayType;
   name: string;
-  config: CfAigConfig;
   secretHint: string;
   /** Active provider instances routed through this gateway. */
   providerCount: number;
   /**
-   * Every row referencing the gateway, revoked ones included. Those are kept for
-   * audit and still hold the foreign key, so this — not `providerCount` — is
-   * what decides whether the gateway can be deleted.
+   * Every row referencing the gateway, disabled ones included. Those are kept
+   * for re-enabling and still hold the foreign key, so this — not
+   * `providerCount` — is what decides whether the gateway can be deleted.
    */
   referencedCount: number;
   status: "active" | "revoked";
   createdAt: string;
   updatedAt: string;
   createdBy: string;
-}
+};
 
 export interface ProviderGatewayListResponse {
   gateways: ProviderGateway[];
 }
 
-export interface ProviderGatewayCreateBody {
-  type: ProviderGatewayType;
-  name: string;
-  accountId: string;
-  gatewayId: string;
-  token: string;
-}
+/**
+ * Discriminated the same way the API's create schema is: each gateway asks for
+ * exactly the non-secret fields it needs to be reachable, and the API rejects
+ * any it has no use for.
+ */
+export type ProviderGatewayCreateBody =
+  | { type: "cf_aig"; name: string; accountId: string; gatewayId: string; token: string }
+  | { type: "vercel"; name: string; token: string };
 
 export interface ProviderGatewayResponse {
   gateway: ProviderGateway;
@@ -127,12 +139,21 @@ export interface ProviderGatewayResponse {
   status?: number;
 }
 
-/** A gateway connection probed on its own, before any row exists. */
-export interface ProviderGatewayTestBody {
-  type: ProviderGatewayType;
-  accountId: string;
-  gatewayId: string;
-  token: string;
+/**
+ * A gateway connection probed on its own, before any row exists: the create
+ * body minus the operator's label, and discriminated the same way.
+ */
+export type ProviderGatewayTestBody =
+  | { type: "cf_aig"; accountId: string; gatewayId: string; token: string }
+  | { type: "vercel"; token: string };
+
+/**
+ * How one instance is routed inside its gateway. Null for a direct instance and
+ * for gateways that take no routing configuration, Cloudflare's included.
+ */
+export interface GatewayRouteConfig {
+  modelPrefix?: string;
+  providerOnly?: string[];
 }
 
 /** Per-1M-token overrides, keyed by model name. */
@@ -148,8 +169,20 @@ export interface ProviderCredential {
   secretHint: string | null;
   /** `null` routes straight to the provider's native API. */
   providerGatewayId: string | null;
+  gatewayRoute: GatewayRouteConfig | null;
+  /**
+   * The operator's own origin for this instance, canonicalized by the server.
+   * `null` means the provider type's own base URL; always `null` on a
+   * gateway-routed row, which cannot carry one.
+   */
+  baseUrl: string | null;
   pricing: ProviderPricing | null;
-  status: "active" | "revoked";
+  /**
+   * `disabled` is a reversible pause: the row keeps its secret, its pricing and
+   * its slug, and requests to it fail with provider_disabled. Only deleting the
+   * row frees its slug, so enabling it again always works.
+   */
+  status: "active" | "disabled";
   createdAt: string;
   createdBy: string;
 }
@@ -165,6 +198,8 @@ export interface ProviderCreateBody {
   slug?: string;
   secret?: string;
   providerGatewayId?: string;
+  /** Only ever sent with `secret`: a gateway-routed row owns no origin. */
+  baseUrl?: string;
   pricing?: ProviderPricing;
 }
 
@@ -173,6 +208,7 @@ export interface ProviderTestBody {
   type: import("./config-types").Provider;
   secret?: string;
   providerGatewayId?: string;
+  baseUrl?: string;
 }
 
 /**
@@ -195,7 +231,11 @@ export interface ProviderTestResult {
 export interface ProviderUpdateBody {
   name?: string;
   secret?: string;
+  /** `null` returns the instance to its provider type's own base URL. */
+  baseUrl?: string | null;
   pricing?: ProviderPricing | null;
+  /** Pause or resume the instance. The slug is held either way. */
+  status?: "active" | "disabled";
 }
 
 export interface ProviderResponse {
@@ -271,6 +311,13 @@ export interface AppSummary {
   monthly_user_budget_usd: number | null;
   monthly_app_budget_usd: number | null;
   providers: string[];
+  /**
+   * The slugs this app names outright: selected-mode policy keys, endpoint
+   * targets and endpoint fallbacks. Unlike `providers`, an all-mode app is not
+   * expanded here — it reaches every instance without referencing any, which is
+   * what makes this the right answer to "which apps use this provider?".
+   */
+  referenced_providers: string[];
   allowed_model_count: number;
   users: { total: number; blocked: number };
   usage: UsageTotals;
@@ -392,6 +439,23 @@ export type UsageStatus =
   | "blocked_budget"
   | "blocked_user";
 
+/**
+ * How an event's cost was arrived at. `reported` is the upstream's own figure
+ * for that request, which is what the operator was actually charged;
+ * `computed` is the deployment's price catalog; `unresolved` is a successful
+ * provider response whose cost neither source could establish, so its
+ * `cost_usd` is zero because nothing was measurable, not because nothing was
+ * spent.
+ */
+export type CostSource = "computed" | "reported" | "unresolved";
+
+/**
+ * Whose credential paid, where the configuration settles it. Never inferred
+ * from a successful response: `null` means nothing settled it, which the UI has
+ * to say plainly rather than dressing up as "your key".
+ */
+export type CredentialSource = "direct" | "byok" | "gateway_system" | "unknown";
+
 export interface UsageEvent {
   id: number;
   user_id: string;
@@ -402,6 +466,15 @@ export interface UsageEvent {
    */
   api_key_id: string | null;
   provider: string;
+  /** The gateway that carried the request; null on a direct call. */
+  provider_gateway_id: string | null;
+  provider_gateway_type: ProviderGatewayType | null;
+  credential_source: CredentialSource | null;
+  /** Who made the model. Analytics only — it never affects budgets or limits. */
+  model_author: string | null;
+  /** What the upstream said served the request. Null means unknown, not a guarantee. */
+  served_provider: string | null;
+  served_model: string | null;
   model: string;
   route: string;
   /** Null for passthrough proxy traffic. */
@@ -411,6 +484,10 @@ export interface UsageEvent {
   cache_write_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  /** What the upstream said it cost, on routes that report one. */
+  reported_cost_usd: number | null;
+  /** Null on blocked traffic and on events recorded before the field existed. */
+  cost_source: CostSource | null;
   app_version: string | null;
   auth_method: "attest" | "api_key" | null;
   status: UsageStatus;

@@ -5,6 +5,7 @@ import {
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
   AppWriteSchema,
+  GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -24,6 +25,7 @@ export {
   ApiKeyTokenRequestSchema,
   AppConfigSchema,
   AppWriteSchema,
+  GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -102,6 +104,24 @@ const UsageEventSchema = z.object({
   }),
   provider: z.string(),
   provider_slug: z.string().nullable(),
+  provider_gateway_id: z.string().nullable().openapi({
+    description: "The gateway connection that carried the request, or null for a direct call. Recorded for every routed request; the id is kept even after the gateway row is deleted.",
+  }),
+  provider_gateway_type: z.string().nullable().openapi({
+    description: "That gateway's type at request time, for example cf_aig.",
+  }),
+  credential_source: z.enum(["direct", "byok", "gateway_system", "unknown"]).nullable().openapi({
+    description: "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store or when a reporting upstream says the organization's own key paid for the inference. Never inferred from a successful response; null when nothing settles it.",
+  }),
+  model_author: z.string().nullable().openapi({
+    description: "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists.",
+  }),
+  served_provider: z.string().nullable().openapi({
+    description: "The serving provider the upstream named, when it names one — the host OpenRouter routed to, for instance. Null means unknown, never a guarantee.",
+  }),
+  served_model: z.string().nullable().openapi({
+    description: "The serving model the upstream named, canonicalized back to the provider's own model ID.",
+  }),
   model: z.string(),
   route: z.string(),
   endpoint_slug: z.string().nullable(),
@@ -110,6 +130,12 @@ const UsageEventSchema = z.object({
   cache_write_tokens: z.number().int(),
   output_tokens: z.number().int(),
   cost_usd: z.number(),
+  reported_cost_usd: z.number().nullable().openapi({
+    description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
+  }),
+  cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().openapi({
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
+  }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
   status: z.enum(["ok", "provider_error", "blocked_rate", "blocked_budget", "blocked_user"]),
@@ -600,8 +626,17 @@ const ProviderSummarySchema = z.object({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
   }),
   providerGatewayId: z.string().nullable(),
+  gatewayRoute: GatewayRouteConfigSchema.nullable().openapi({
+    description: "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway.",
+  }),
+  baseUrl: z.string().nullable().openapi({
+    description: "Operator-supplied origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
+    example: "https://my-resource.openai.azure.com/openai/v1/",
+  }),
   pricing: ProviderPricingSchema.nullable(),
-  status: z.enum(["active", "revoked"]),
+  status: z.enum(["active", "disabled"]).openapi({
+    description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",
+  }),
   createdAt: z.string(),
   createdBy: z.string(),
 }).openapi("Provider");
@@ -640,7 +675,7 @@ register({
   operationId: "createProvider",
   summary: "Store a provider credential for the organization",
   description:
-    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among active instances.",
+    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among the organization's instances, disabled ones included; only deleting an instance frees its slug.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(ProviderCreateRequestSchema) } },
   responses: {
@@ -678,7 +713,9 @@ register({
   path: "/v1/admin/providers/{id}",
   tags: ["Admin providers"],
   operationId: "updateProvider",
-  summary: "Rotate a credential, rename it, or replace its custom pricing",
+  summary: "Rotate a credential, rename it, replace its custom pricing, or disable it",
+  description:
+    "Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling therefore always succeeds.",
   security: operatorSecurity,
   request: {
     params: ProviderIdPath,
@@ -702,7 +739,7 @@ register({
   operationId: "deleteProvider",
   summary: "Delete a provider credential and its custom pricing",
   description:
-    "A hard delete. Applications using this provider start failing with provider_not_configured within a minute.",
+    "A hard delete, secret and pricing included. Applications using this provider start failing with provider_not_configured within a minute. To pause an instance reversibly instead, send status: \"disabled\" to PUT /v1/admin/providers/{id}.",
   security: operatorSecurity,
   request: { params: ProviderIdPath },
   responses: {
@@ -714,11 +751,10 @@ register({
   },
 });
 
-const ProviderGatewaySummarySchema = z.object({
+/** Everything about a gateway that does not depend on which gateway it is. */
+const providerGatewayFields = {
   id: z.string(),
-  type: z.literal("cf_aig"),
   name: z.string(),
-  config: z.object({ accountId: z.string(), gatewayId: z.string() }),
   secretHint: z.string().openapi({
     description: "The last characters of the gateway token. The token itself is never returned.",
   }),
@@ -727,13 +763,33 @@ const ProviderGatewaySummarySchema = z.object({
   }),
   referencedCount: z.number().int().nonnegative().openapi({
     description:
-      "All provider instances referencing this gateway, including revoked rows retained for audit. Deletion is refused while this is above zero.",
+      "All provider instances referencing this gateway, including disabled rows retained for re-enabling. Deletion is refused while this is above zero.",
   }),
   status: z.enum(["active", "revoked"]),
   createdAt: z.string(),
   updatedAt: z.string(),
   createdBy: z.string(),
-}).openapi("ProviderGateway");
+};
+
+/**
+ * Discriminated by `type`, because each gateway's `config` is its own shape:
+ * Cloudflare's account and gateway pair, and nothing at all for Vercel, whose
+ * origin is fixed in adapter code and whose team is named by the token.
+ */
+const ProviderGatewaySummarySchema = z.discriminatedUnion("type", [
+  z.object({
+    ...providerGatewayFields,
+    type: z.literal("cf_aig"),
+    config: z.object({ accountId: z.string(), gatewayId: z.string() }),
+  }),
+  z.object({
+    ...providerGatewayFields,
+    type: z.literal("vercel"),
+    config: z.object({}).openapi({
+      description: "Vercel's origin is fixed in adapter code, so it has no configuration of its own.",
+    }),
+  }),
+]).openapi("ProviderGateway");
 
 register({
   method: "get",
@@ -765,8 +821,8 @@ register({
   path: "/v1/admin/provider-gateways",
   tags: ["Admin provider gateways"],
   operationId: "createProviderGateway",
-  summary: "Create a reusable Cloudflare AI Gateway connection",
-  description: "Probes and encrypts the gateway token once, and stores the connection whatever the probe found. Provider instances are attached separately through the providers API.",
+  summary: "Create a reusable provider gateway connection",
+  description: "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. Probes and encrypts the gateway token once, and stores the connection whatever the probe found. Provider instances are attached separately through the providers API.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(ProviderGatewayCreateRequestSchema) } },
   responses: {
@@ -854,7 +910,7 @@ register({
       provider_gateway_id: z.string(),
     })),
     409: response(
-      "Provider instances still reference this gateway. Revoked rows are retained for audit and block deletion too; see referencedCount.",
+      "Provider instances still reference this gateway. Disabled rows are retained for re-enabling and block deletion too; see referencedCount.",
       ErrorResponseSchema,
     ),
     ...errorResponses,

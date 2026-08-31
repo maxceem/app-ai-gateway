@@ -16,8 +16,12 @@ const BREAKDOWN_COLUMNS = {
   model: appUsageEvent.model,
   provider: appUsageEvent.providerType,
   provider_slug: appUsageEvent.providerSlug,
+  provider_gateway: appUsageEvent.providerGatewayType,
+  credential_source: appUsageEvent.credentialSource,
+  model_author: appUsageEvent.modelAuthor,
   user: appUsageEvent.userId,
   status: appUsageEvent.status,
+  cost_source: appUsageEvent.costSource,
   route: appUsageEvent.route,
   endpoint: appUsageEvent.endpointSlug,
   app_version: appUsageEvent.appVersion,
@@ -27,6 +31,27 @@ type BreakdownKey = keyof typeof BREAKDOWN_COLUMNS;
 
 const USAGE_STATUSES = ["ok", "provider_error", "blocked_rate", "blocked_budget", "blocked_user"] as const;
 type UsageStatusFilter = (typeof USAGE_STATUSES)[number];
+
+/**
+ * Whether an event carries usage a price could act on.
+ *
+ * All-zero counts are the shape of a metering failure, not of a free request:
+ * an unreadable response body, or a stream a client abandoned before the chunk
+ * carrying its usage. Repricing such a row computes zero from zero, which is
+ * arithmetic rather than an answer — so this is what separates a row whose cost
+ * is now known from one whose cost is still unknown.
+ *
+ * Time-priced events never reach the caller: their models have no token price,
+ * so {@link hasTokenModelPrice} excludes them before this is asked.
+ */
+function hasReadableCounts(row: {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+}): boolean {
+  return row.inputTokens + row.cachedInputTokens + row.cacheWriteTokens + row.outputTokens > 0;
+}
 
 usageRoutes.get("/apps/:app/usage", async (c) => {
   const appId = c.req.param("app");
@@ -86,6 +111,11 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
       eq(appUsageEvent.providerType, provider),
       eq(appUsageEvent.model, model),
       eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
+      // An event billed on what the upstream charged is already the authoritative
+      // figure; recomputing it from a local price would replace a fact with an
+      // estimate. Written out rather than `!=` because SQL's inequality is false
+      // for the NULLs on older rows, which would exclude every one of them.
+      sql`(${appUsageEvent.costSource} IS NULL OR ${appUsageEvent.costSource} != 'reported')`,
     ))
     .limit(10_001);
   if (rows.length > 10_000) {
@@ -96,7 +126,12 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   // provider instance was deleted can be unpriceable while its siblings are
   // fine. A dry run reports that instead of refusing to answer; only `apply`
   // insists on repricing every matched event.
-  const repriced: { id: number; previousCostUsd: number; costUsd: number }[] = [];
+  const repriced: {
+    id: number;
+    previousCostUsd: number;
+    costUsd: number;
+    metered: boolean;
+  }[] = [];
   const skipped: { id: number; previousCostUsd: number }[] = [];
   for (const row of rows) {
     const providerType = row.providerType as ProviderType;
@@ -114,7 +149,12 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
       skipped.push({ id: row.id, previousCostUsd: row.costUsd });
       continue;
     }
-    repriced.push({ id: row.id, previousCostUsd: row.costUsd, costUsd });
+    repriced.push({
+      id: row.id,
+      previousCostUsd: row.costUsd,
+      costUsd,
+      metered: hasReadableCounts(row),
+    });
   }
   const previousCostUsd = repriced.reduce((total, row) => total + row.previousCostUsd, 0);
   const recalculatedCostUsd = repriced.reduce((total, row) => total + row.costUsd, 0);
@@ -123,8 +163,27 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
   if (apply && repriced.length > 0) {
     for (let offset = 0; offset < repriced.length; offset += 100) {
       const chunk = repriced.slice(offset, offset + 100);
+      // `cost_source` moves with the figure, but only where there was a figure
+      // to move. A row with readable counts now has a cost the local catalog
+      // stands behind, so leaving an `unresolved` marker on it would keep the
+      // console hiding a cost it has and keep the alert firing for spend that
+      // has since been accounted for.
+      //
+      // A row with *no* readable counts is the opposite case and must not be
+      // touched the same way. Multiplying zero tokens by any price yields zero,
+      // which looks like a computed answer and is not one: nothing was ever
+      // metered, so the cost is still unknown. Claiming `computed` there would
+      // convert "spend escaping the budget" into "this request was free",
+      // silence the By cost source signal operators are told to watch, and hide
+      // the row in the console — while the unbudgeted spend continued. Its
+      // `cost_usd` is still rewritten, so a stale figure is corrected, but the
+      // marker survives.
+      //
+      // `reported` rows never get here — they are excluded by the query above.
       await c.env.DB.batch(chunk.map((row) => c.env.DB
-        .prepare("UPDATE app_usage_event SET cost_usd = ? WHERE id = ? AND app_id = ?")
+        .prepare(row.metered
+          ? "UPDATE app_usage_event SET cost_usd = ?, cost_source = 'computed' WHERE id = ? AND app_id = ?"
+          : "UPDATE app_usage_event SET cost_usd = ? WHERE id = ? AND app_id = ?")
         .bind(row.costUsd, row.id, appId)));
     }
 
@@ -164,6 +223,15 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     month,
     applied: apply,
     matched_events: repriced.length,
+    /**
+     * Matched events that carried no readable usage, and so were repriced to
+     * the zero their zero counts imply while keeping whatever `cost_source`
+     * they had. Counted here rather than dropped from `matched_events` because
+     * their `cost_usd` really is rewritten; surfaced separately because a
+     * non-zero number means the month contains spend nothing could meter, which
+     * repricing cannot fix and must not appear to have fixed.
+     */
+    unmetered_events: repriced.filter((row) => !row.metered).length,
     /** Dry-run only: matched events whose serving instance can no longer price them. */
     unpriced_events: skipped.length,
     unpriced_cost_usd: skipped.reduce((total, row) => total + row.previousCostUsd, 0),
@@ -255,6 +323,12 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       api_key_id: row.apiKeyId,
       provider: row.providerType,
       provider_slug: row.providerSlug,
+      provider_gateway_id: row.providerGatewayId,
+      provider_gateway_type: row.providerGatewayType,
+      credential_source: row.credentialSource,
+      model_author: row.modelAuthor,
+      served_provider: row.servedProvider,
+      served_model: row.servedModel,
       model: row.model,
       route: row.route,
       endpoint_slug: row.endpointSlug,
@@ -263,6 +337,8 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       cache_write_tokens: row.cacheWriteTokens,
       output_tokens: row.outputTokens,
       cost_usd: row.costUsd,
+      reported_cost_usd: row.reportedCostUsd,
+      cost_source: row.costSource,
       app_version: row.appVersion,
       auth_method: row.authMethod,
       status: row.status,

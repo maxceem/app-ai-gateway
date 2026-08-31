@@ -427,7 +427,7 @@ describe("provider resolution on the hot path", () => {
     expect(logged).toContain("SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION is not allowed in kms mode");
   });
 
-  it("keeps a revoked credential in rotation only until the cache TTL expires", async () => {
+  it("keeps a disabled credential in rotation only until the cache TTL expires", async () => {
     const appId = "provider-revocation";
     await seedApp(appId, { proxy: UNRESTRICTED, organizationId: OTHER_ORGANIZATION_ID });
     const token = await gatewayToken(appId);
@@ -449,7 +449,7 @@ describe("provider resolution on the hot path", () => {
 
     await database(env.DB)
       .update(provider)
-      .set({ status: "revoked" })
+      .set({ status: "disabled" })
       .where(eq(provider.id, "revocable-openai"));
 
     const stillWarm = await proxy({
@@ -469,7 +469,7 @@ describe("provider resolution on the hot path", () => {
     });
     expect(afterTtl.status).toBe(502);
     await expect(afterTtl.json()).resolves.toMatchObject({
-      error: { code: "provider_not_configured" },
+      error: { code: "provider_disabled" },
     });
 
     await database(env.DB).delete(provider).where(eq(provider.id, "revocable-openai"));
@@ -586,6 +586,116 @@ describe("custom model pricing", () => {
     expect(row?.cost_usd).toBe(0);
 
     await database(env.DB).delete(provider).where(eq(provider.id, "restated-openai"));
+  });
+});
+
+/**
+ * Stage 6's routing half. The guard decides what may be stored; these decide
+ * what a stored override actually does to a live request — including the one
+ * thing a URL an operator typed could still do on its own, which is answer with
+ * a redirect somewhere else.
+ */
+describe("operator-configured base URL", () => {
+  const CUSTOM_BASE = "https://my-vllm.example.com/v1/";
+  const BODY = { model: "gpt-5.6-sol", messages: [] };
+
+  afterEach(async () => {
+    await database(env.DB).delete(provider).where(eq(provider.id, "custom-base-direct-row"));
+    await database(env.DB).delete(provider).where(eq(provider.id, "custom-base-gateway-row"));
+    clearProviderCaches();
+  });
+
+  async function seedDirect(appId: string): Promise<string> {
+    await seedApp(appId, { proxy: UNRESTRICTED, organizationId: OTHER_ORGANIZATION_ID });
+    await seedProvider({
+      type: "openai",
+      id: "custom-base-direct-row",
+      slug: "vllm",
+      organizationId: OTHER_ORGANIZATION_ID,
+      secret: "self-hosted-key",
+      baseUrl: CUSTOM_BASE,
+    });
+    return gatewayToken(appId);
+  }
+
+  it("replaces only the origin: path, query, and the provider's own auth header stay", async () => {
+    const appId = "custom-base-direct";
+    const token = await seedDirect(appId);
+    const captured = captureUpstream();
+
+    const response = await proxy({
+      appId,
+      token,
+      path: "vllm/chat/completions?stream=false",
+      body: BODY,
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.url).toBe("https://my-vllm.example.com/v1/chat/completions?stream=false");
+    // The provider type's own credential header, unchanged: a custom origin is
+    // a different address for the same API, not a different way to sign in.
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer self-hosted-key");
+  });
+
+  it("passes an upstream redirect through to the client instead of following it", async () => {
+    const appId = "custom-base-redirect";
+    const token = await seedDirect(appId);
+    const redirects: (RequestRedirect | undefined)[] = [];
+    const targets: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      targets.push(typeof request === "string"
+        ? request
+        : request instanceof URL ? request.toString() : request.url);
+      redirects.push(init?.redirect);
+      return new Response(null, {
+        status: 302,
+        // The whole point: a 302 an operator's endpoint returns must not become
+        // a second, unguarded fetch from this Worker.
+        headers: { location: "https://elsewhere.example.com/v1/chat/completions" },
+      });
+    });
+
+    const response = await proxy({ appId, token, path: "vllm/chat/completions", body: BODY });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location"))
+      .toBe("https://elsewhere.example.com/v1/chat/completions");
+    // One request, made with manual redirect handling, to the stored origin.
+    expect(targets).toEqual(["https://my-vllm.example.com/v1/chat/completions"]);
+    expect(redirects).toEqual(["manual"]);
+  });
+
+  it("ignores a base URL on a gateway-routed row, which keeps the gateway's origin", async () => {
+    const appId = "custom-base-gateway";
+    await seedApp(appId, { proxy: UNRESTRICTED, organizationId: OTHER_ORGANIZATION_ID });
+    await seedProvider({
+      type: "openai",
+      id: "custom-base-gateway-row",
+      slug: "openai-cf",
+      organizationId: OTHER_ORGANIZATION_ID,
+      secret: "gateway-token-value",
+      gateway: "cf_aig",
+      gatewayConfig: { accountId: "acct-1", gatewayId: "gw-1" },
+      // Not reachable through the API — the admin routes refuse the pairing —
+      // so this asserts the resolver ignores it however the row was written.
+      baseUrl: CUSTOM_BASE,
+    });
+    const token = await gatewayToken(appId);
+    const captured = captureUpstream();
+
+    const response = await proxy({
+      appId,
+      token,
+      path: "openai-cf/v1/chat/completions",
+      body: BODY,
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(captured[0]?.url)
+      .toBe("https://gateway.ai.cloudflare.com/v1/acct-1/gw-1/openai/chat/completions");
   });
 });
 

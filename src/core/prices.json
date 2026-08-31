@@ -200,5 +200,86 @@
     "sonar-pro": { "input": 3.0, "output": 15.0 },
     "sonar-reasoning-pro": { "input": 2.0, "output": 8.0 },
     "sonar-deep-research": { "input": 2.0, "output": 8.0 }
+  },
+  "deepseek": {
+    "deepseek-v4-flash": { "input": 0.44, "cached_input": 0.014, "output": 1.32 },
+    "deepseek-v4-pro": { "input": 1.32, "cached_input": 0.044, "output": 3.96 }
+  },
+  "groq": {
+    "openai/gpt-oss-120b": { "input": 0.15, "output": 0.6, "author": "OpenAI" },
+    "openai/gpt-oss-20b": { "input": 0.075, "output": 0.3, "author": "OpenAI" },
+    "qwen/qwen3.6-27b": { "input": 0.6, "output": 3.0, "author": "Alibaba" },
+    "qwen/qwen3.8-27b": { "input": 0.8, "output": 4.0, "author": "Alibaba" }
+  },
+  "mistral": {
+    "mistral-medium-latest": { "input": 1.5, "cached_input": 0.15, "output": 7.5 },
+    "mistral-large-latest": { "input": 0.5, "cached_input": 0.05, "output": 1.5 },
+    "mistral-small-latest": { "input": 0.15, "cached_input": 0.015, "output": 0.6 }
+  },
+  "together": {
+    "moonshotai/Kimi-K3": {
+      "input": 3.0,
+      "cached_input": 0.3,
+      "output": 15.0,
+      "author": "Moonshot AI"
+    },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": { "input": 1.32, "output": 3.96, "author": "DeepSeek" },
+    "openai/gpt-oss-120b": { "input": 0.15, "output": 0.6, "author": "OpenAI" },
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo": { "input": 1.04, "output": 1.04, "author": "Meta" }
+  },
+  "cerebras": {
+    "gpt-oss-120b": { "input": 0.35, "output": 0.75, "author": "OpenAI" },
+    "gemma-4-31b": { "input": 0.99, "output": 1.49, "author": "Google" }
+  },
+  "moonshot": {
+    "kimi-k3": { "input": 3.0, "cached_input": 0.3, "output": 15.0 },
+    "kimi-k2.7-code": { "input": 0.95, "cached_input": 0.19, "output": 4.0 },
+    "kimi-k2.7-code-highspeed": { "input": 1.9, "cached_input": 0.38, "output": 8.0 },
+    "kimi-k2.6": { "input": 0.95, "cached_input": 0.16, "output": 4.0 }
+  },
+  "baseten": {
+    "moonshotai/Kimi-K3": {
+      "input": 3.0,
+      "cached_input": 0.3,
+      "output": 15.0,
+      "author": "Moonshot AI"
+    },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      "input": 1.32,
+      "cached_input": 0.132,
+      "output": 3.96,
+      "author": "DeepSeek"
+    },
+    "zai-org/GLM-5.3": { "input": 1.4, "cached_input": 0.14, "output": 4.4, "author": "Z.ai" },
+    "openai/gpt-oss-120b": { "input": 0.1, "output": 0.5, "author": "OpenAI" }
+  },
+  "bytedance": {
+    "seed-2-0-pro-260328": {
+      "input": 0.5,
+      "cached_input": 0.1,
+      "output": 3.0,
+      "long_context_threshold": 128000,
+      "long_input": 1.0,
+      "long_cached_input": 0.2,
+      "long_output": 6.0,
+      "author": "ByteDance"
+    },
+    "seed-2-0-lite-260428": {
+      "input": 0.25,
+      "cached_input": 0.05,
+      "output": 2.0,
+      "long_context_threshold": 128000,
+      "long_input": 0.5,
+      "long_cached_input": 0.1,
+      "long_output": 4.0,
+      "author": "ByteDance"
+    },
+    "deepseek-v4-pro-ga-260813": {
+      "input": 1.32,
+      "cached_input": 0.044,
+      "output": 3.96,
+      "author": "DeepSeek"
+    },
+    "gpt-oss-120b-250805": { "input": 0.1, "output": 0.5, "author": "OpenAI" }
   }
 }

@@ -1,7 +1,27 @@
 /** Mirrors the shapes `src/core/config.ts` parses on the Worker side. */
 
-export const PROVIDERS = ["openai", "anthropic", "xai", "gemini", "perplexity"] as const;
-export type Provider = (typeof PROVIDERS)[number];
+import {
+  ENDPOINT_PROVIDER_TYPES,
+  OUTPUT_CLAMP_STYLES,
+  PROVIDER_TYPES,
+  providersForEndpointStyle,
+  type EndpointApiStyle,
+  type EndpointProvider,
+  type OutputClampStyle,
+  type ProviderType,
+} from "@shared/capabilities";
+
+// The capability facts come from `src/shared/capabilities.ts`, which the Worker
+// enforces from the same tables. What stays here is presentation — labels, form
+// copy, draft shapes — and the config structures the console edits.
+export {
+  ENDPOINT_API_STYLES,
+  reportsCost,
+  type EndpointApiStyle,
+} from "@shared/capabilities";
+
+export const PROVIDERS = PROVIDER_TYPES;
+export type Provider = ProviderType;
 
 export const PROVIDER_LABELS: Record<Provider, string> = {
   openai: "OpenAI",
@@ -9,25 +29,63 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   xai: "xAI",
   gemini: "Gemini",
   perplexity: "Perplexity",
+  deepseek: "DeepSeek",
+  groq: "Groq",
+  mistral: "Mistral",
+  together: "Together AI",
+  fireworks: "Fireworks AI",
+  cerebras: "Cerebras",
+  moonshot: "Moonshot AI",
+  huggingface: "Hugging Face",
+  baseten: "Baseten",
+  bytedance: "ByteDance Ark",
+  openrouter: "OpenRouter",
 };
+
+/** Display names for every gateway type the API can return. */
+export const GATEWAY_TYPE_LABELS = {
+  cf_aig: "Cloudflare AI Gateway",
+  vercel: "Vercel AI Gateway",
+} as const;
 
 /**
- * `cf_aig` is the only gateway the API accepts today — both the request schema
- * and the D1 check constraint pin it to that one value — so this map has a
- * single entry until a second kind of gateway exists.
+ * Gateway types this console offers to create, and the fields each one asks
+ * for. A type appears here only once the Worker has an adapter that can serve
+ * it, so the list is what makes adding one a data change rather than a rewrite.
  */
-export const PROVIDER_GATEWAY_LABELS: Record<"cf_aig", string> = {
-  cf_aig: "Cloudflare AI Gateway",
-};
-
-export const CLAMP_STYLES = [
-  "responses",
-  "chat_completions",
-  "gemini_native",
-  "anthropic",
-  "none",
+export const CREATABLE_GATEWAY_TYPES = [
+  {
+    value: "cf_aig",
+    label: GATEWAY_TYPE_LABELS.cf_aig,
+    defaultName: "Our CF gateway",
+    tokenDocsUrl: "https://developers.cloudflare.com/ai-gateway/configuration/authentication/",
+    /**
+     * Non-secret connection fields this gateway needs before a token means
+     * anything. Cloudflare's URL is built from the account and gateway pair.
+     */
+    needsCloudflareIds: true,
+    credentialNote:
+      "Requests use the provider keys stored in your Cloudflare AI Gateway's own key store.",
+  },
+  {
+    value: "vercel",
+    label: GATEWAY_TYPE_LABELS.vercel,
+    defaultName: "Our Vercel gateway",
+    tokenDocsUrl: "https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys",
+    // The origin is fixed in adapter code and the token identifies the Vercel
+    // team, so there is nothing else to ask for.
+    needsCloudflareIds: false,
+    // Deliberately not "using your key": Vercel documents BYOK as preferred,
+    // with a fallback to its own system credentials when a stored key fails.
+    credentialNote:
+      "Your provider credential stored in Vercel is preferred. Vercel may fall back to system credentials.",
+  },
 ] as const;
-export type ClampStyle = (typeof CLAMP_STYLES)[number];
+
+export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["value"];
+
+export const CLAMP_STYLES = OUTPUT_CLAMP_STYLES;
+export type ClampStyle = OutputClampStyle;
 
 export interface ClaimRequirement {
   path: string;
@@ -105,6 +163,12 @@ export interface ProviderInstance {
    * through this instance alone, which is why model pickers are per slug.
    */
   pricing?: Record<string, unknown> | null;
+  /**
+   * Optional because most callers describe an instance without caring. A
+   * `disabled` row is still selectable — configuration may name it, and the
+   * server accepts that — so pickers mark it rather than hide it.
+   */
+  status?: "active" | "disabled";
 }
 
 /**
@@ -130,30 +194,31 @@ export interface ProxyConfig {
   model_rewrites?: Record<string, string>;
 }
 
-export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;
-export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
+/**
+ * The provider types whose native request shapes the Worker composes for named
+ * endpoints, and which styles each one covers — read straight off the shared
+ * capability matrix rather than restated here.
+ */
+export const ENDPOINT_PROVIDERS = ENDPOINT_PROVIDER_TYPES;
+export type { EndpointProvider };
+export const endpointProviderTypes = providersForEndpointStyle;
 
-/** The Worker only composes OpenAI and xAI request shapes for named endpoints. */
-export const ENDPOINT_PROVIDERS = ["openai", "xai"] as const;
-export type EndpointProvider = (typeof ENDPOINT_PROVIDERS)[number];
-
-/** Mirrors `endpointStyles` in the Worker's `PROVIDER_REGISTRY`. */
-const ENDPOINT_PROVIDER_STYLES: Record<EndpointProvider, readonly EndpointApiStyle[]> = {
-  openai: ["responses", "transcription"],
-  xai: ["responses", "transcription"],
-};
-
-export function endpointProviderTypes(style: EndpointApiStyle): EndpointProvider[] {
-  return ENDPOINT_PROVIDERS.filter((type) => ENDPOINT_PROVIDER_STYLES[type].includes(style));
-}
-
-/** The instances a named endpoint of this style may target. */
+/**
+ * The instances a named endpoint of this style may target. The provider type
+ * decides which request shapes the gateway composes at all; the instance's
+ * *route* decides whether the upstream serves them — Vercel has no transcription
+ * API, so a Vercel-routed OpenAI row cannot back a transcription endpoint. Pass
+ * `serves` to apply the second half; without it only the type is checked.
+ */
 export function endpointInstances<T extends ProviderInstance>(
   style: EndpointApiStyle,
   instances: T[],
+  serves?: (instance: T, style: EndpointApiStyle) => boolean,
 ): T[] {
   const eligible: readonly Provider[] = endpointProviderTypes(style);
-  return instances.filter((instance) => eligible.includes(instance.type));
+  return instances.filter((instance) =>
+    eligible.includes(instance.type) && (serves?.(instance, style) ?? true)
+  );
 }
 
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;

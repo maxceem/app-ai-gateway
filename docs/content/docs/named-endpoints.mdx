@@ -51,6 +51,11 @@ instance, because those are the request shapes the gateway composes. Every model
 including fallbacks, must have a price in the catalog or in that instance's own
 overrides; a configuration that names an unpriced model is rejected on save.
 
+The instance's route narrows this further: a `transcription` endpoint cannot name
+a Vercel-routed instance, because Vercel serves no transcription API. A
+`responses` endpoint works on any route. Models stay canonical either way — the
+adapter adds a gateway's namespace on the wire and nothing else sees it.
+
 At request time a fallback target that cannot be resolved — no such instance, a
 revoked gateway, an unreadable credential, or a model nothing prices — is dropped
 from the chain instead of failing the request. Only the primary target must

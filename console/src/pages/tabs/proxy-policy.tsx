@@ -28,17 +28,59 @@ import {
   type AllowedPathObject,
   type Provider,
   type ProviderConfig,
-  type ProviderInstance,
 } from "@/lib/config-types";
-import { usePrices, useProviderInstances } from "@/lib/queries";
+import { gatewayApiSurface } from "@/lib/capabilities";
+import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
+import type { ProviderCredential, ProviderGateway } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
+/**
+ * What to put after the slug. The path is the provider's own, verbatim, and the
+ * OpenAI-compatible batch disagrees about its prefix more than anything else
+ * does — so each one says exactly where its chat completions live.
+ */
 const PROVIDER_HINTS: Record<Provider, string> = {
   openai: "Forwarded with the leading v1/ stripped, matching Cloudflare's provider-native URL.",
   anthropic: "Forwarded with the v1/ prefix retained.",
   xai: "Routed to Cloudflare's grok slug; the tenant path stays /proxy/xai/...",
   gemini: "Use the OpenAI-compatible path v1beta/openai/chat/completions.",
   perplexity: "Routed to Cloudflare's perplexity-ai slug; use chat/completions for Sonar models.",
+  deepseek: "Direct only. DeepSeek's base URL has no v1/, so the path is chat/completions.",
+  groq: "Direct only. Groq namespaces its OpenAI API: use openai/v1/chat/completions.",
+  mistral: "Direct only. Use v1/chat/completions.",
+  together: "Direct only. Use v1/chat/completions; models are namespaced, e.g. openai/gpt-oss-120b.",
+  fireworks:
+    "Direct only. Use inference/v1/chat/completions. Models are account-scoped (accounts/…/models/…), so price them under custom model pricing.",
+  cerebras: "Direct only. Use v1/chat/completions.",
+  moonshot: "Direct only. Use v1/chat/completions on the international api.moonshot.ai host.",
+  huggingface:
+    "Direct only. Use v1/chat/completions on the Inference Providers router. Pin the upstream in the model ID (author/model:provider) — otherwise the router picks one and the price varies with it.",
+  baseten: "Direct only. Use v1/chat/completions on the Model APIs host.",
+  bytedance:
+    "Direct only. BytePlus ModelArk's version segment is already in the base URL: the path is chat/completions. Models must be activated in your ModelArk console first.",
+  openrouter:
+    "Direct only, chat completions only. Models are OpenRouter slugs, e.g. google/gemini-3.6-flash, and need no local price: cost is reported by OpenRouter per request.",
 };
+
+/**
+ * What to put after the slug on a gateway-routed instance, which the gateway
+ * decides rather than the provider: one URL space for every provider it serves,
+ * and canonical model IDs whichever route they take. Derived from the capability
+ * matrix, so it cannot drift from what the backend will actually accept.
+ */
+function gatewayHint(instance: ProviderCredential, gateways: ProviderGateway[]): string | null {
+  if (instance.providerGatewayId === null) return null;
+  const gateway = gateways.find((entry) => entry.id === instance.providerGatewayId);
+  const surface = gateway ? gatewayApiSurface(gateway.type, instance.type) : null;
+  // A gateway that forwards to the provider's own API keeps the provider's own
+  // hint; only a gateway with a URL space of its own replaces it.
+  if (!surface?.narrowed) return null;
+  const paths = surface.available.map((entry) => `${entry.label} at ${entry.path}`).join(", ");
+  const missing = surface.unavailable.length > 0
+    ? ` Not available on this route: ${surface.unavailable.map((entry) => entry.label).join(", ")}.`
+    : "";
+  return `Routed through ${gateway!.name}: ${paths}.${missing} Models: ${surface.modelIds}.`;
+}
 
 /** One card per provider instance; an unknown slug still gets one so it can be removed. */
 interface PolicyRow {
@@ -46,6 +88,24 @@ interface PolicyRow {
   title: string;
   description: ReactNode;
   knownModels: string[];
+  /**
+   * A paused or deleted instance keeps its full configuration UI — the app is
+   * still configured to use it, and hiding that is how a restriction silently
+   * goes missing. The badge says which of the two it is; nothing else changes.
+   */
+  badge?: "disabled" | "deleted";
+}
+
+/** The small muted marker on a card whose instance is paused or gone. */
+function PolicyStateBadge({ state }: { state: "disabled" | "deleted" }) {
+  return (
+    <Badge
+      variant="outline"
+      className="border-muted-foreground/30 text-[11px] font-normal text-muted-foreground"
+    >
+      {state}
+    </Badge>
+  );
 }
 
 function ProviderCard({
@@ -67,7 +127,12 @@ function ProviderCard({
     <Card>
       <CardHeader>
         <SectionHeader
-          title={row.title}
+          title={
+            <span className="flex items-center gap-2">
+              {row.title}
+              {row.badge ? <PolicyStateBadge state={row.badge} /> : null}
+            </span>
+          }
           description={row.description}
           action={
             <Switch
@@ -217,7 +282,8 @@ function ProviderCard({
 
 /** Instances first, then any slug the config names that no longer resolves. */
 function policyRows(
-  instances: ProviderInstance[],
+  instances: ProviderCredential[],
+  gateways: ProviderGateway[],
   selected: string[],
   prices: Record<Provider, Record<string, unknown>> | undefined,
 ): PolicyRow[] {
@@ -227,12 +293,14 @@ function policyRows(
     description: (
       <>
         <span className="font-mono">/proxy/{instance.slug}/…</span> ·{" "}
-        {PROVIDER_LABELS[instance.type]} — {PROVIDER_HINTS[instance.type]}
+        {PROVIDER_LABELS[instance.type]} —{" "}
+        {gatewayHint(instance, gateways) ?? PROVIDER_HINTS[instance.type]}
       </>
     ),
     // Includes models only this instance prices: the allowlist is per instance,
     // so suggesting them is exactly as correct as the catalog entries.
     knownModels: instanceModels(instance, prices),
+    ...(instance.status === "disabled" ? { badge: "disabled" as const } : {}),
   }));
   const orphans = selected
     .filter((slug) => !instances.some((instance) => instance.slug === slug))
@@ -240,8 +308,9 @@ function policyRows(
       slug,
       title: slug,
       description:
-        "This app allows an instance that no longer exists. Turn it off, or recreate it on the Providers page.",
+        "No instance answers for this slug. Recreate it on the Providers page, or turn this off.",
       knownModels: [],
+      badge: "deleted" as const,
     }));
   return [...known, ...orphans];
 }
@@ -252,10 +321,12 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const selected = selectedSlugs(proxy);
   const instanceList = useProviderInstances();
   const instances = instanceList.data ?? [];
+  const gatewayList = useProviderGateways();
+  const gateways = gatewayList.data?.gateways ?? [];
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const rewrites = Object.entries(proxy.model_rewrites ?? {});
-  const rows = policyRows(instances, selected, providerPrices);
+  const rows = policyRows(instances, gateways, selected, providerPrices);
 
   const setRewrites = (entries: [string, string][]) =>
     state.updateProxy({ model_rewrites: Object.fromEntries(entries.filter(([key]) => key !== "")) });
@@ -267,8 +338,12 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
             providers: {
               mode: "selected",
               // Policy names instance slugs, so the first switch-on starts from
-              // an instance this organization actually has.
-              selected: instances[0] ? { [instances[0].slug]: emptyProvider() } : {},
+              // an instance this organization actually has — and preferably one
+              // that can currently serve, rather than a paused row.
+              selected: (() => {
+                const seed = instances.find((entry) => entry.status === "active") ?? instances[0];
+                return seed ? { [seed.slug]: emptyProvider() } : {};
+              })(),
             },
           }
         : { providers: { mode: "all" } },
@@ -316,11 +391,23 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
                         This organization has no provider instances yet.
                       </span>
                     ) : (
+                      // A disabled instance is listed but muted: "every
+                      // instance" is what the mode means, and which of them is
+                      // currently paused is worth seeing without leaving.
                       instances.map((instance) => (
                         <Badge
                           key={instance.slug}
                           variant="secondary"
-                          className="bg-background/75 font-mono text-[11px] font-normal"
+                          className={cn(
+                            "bg-background/75 font-mono text-[11px] font-normal",
+                            instance.status === "disabled"
+                              && "text-muted-foreground line-through decoration-muted-foreground/50",
+                          )}
+                          title={
+                            instance.status === "disabled"
+                              ? `${instance.slug} is disabled and serves no traffic`
+                              : undefined
+                          }
                         >
                           {instance.slug}
                         </Badge>

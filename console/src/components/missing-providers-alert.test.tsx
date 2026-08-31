@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import { MissingProvidersAlert, unconfiguredProviders } from "./missing-providers-alert";
 import { renderAuthenticated, stubApi } from "@/test/render";
-import type { ProxyConfig } from "@/lib/config-types";
+import { PROVIDERS, type ProxyConfig } from "@/lib/config-types";
 import type { ProviderCredential } from "@/lib/types";
 
 const ALL: ProxyConfig = { providers: { mode: "all" }, model_rewrites: {} };
@@ -23,6 +23,8 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
     name: "Prod OpenAI",
     secretHint: "gain",
     providerGatewayId: null,
+    gatewayRoute: null,
+    baseUrl: null,
     pricing: null,
     status: "active",
     createdAt: "2026-02-01T00:00:00.000Z",
@@ -34,8 +36,8 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("unconfiguredProviders", () => {
-  it("ignores a revoked row, because the gateway will not resolve it", () => {
-    expect(unconfiguredProviders(SELECTED, [credential({ status: "revoked" })])).toEqual(["openai"]);
+  it("ignores a disabled row, because the gateway will not serve traffic to it", () => {
+    expect(unconfiguredProviders(SELECTED, [credential({ status: "disabled" })])).toEqual(["openai"]);
     expect(unconfiguredProviders(SELECTED, [credential({})])).toEqual([]);
   });
 
@@ -66,7 +68,7 @@ describe("unconfiguredProviders", () => {
 
   it("treats an all-providers app as needing every provider", () => {
     expect(unconfiguredProviders(ALL, [credential({})]))
-      .toEqual(["anthropic", "xai", "gemini", "perplexity"]);
+      .toEqual(PROVIDERS.filter((provider) => provider !== "openai"));
   });
 });
 

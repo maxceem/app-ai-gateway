@@ -5,7 +5,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProvidersPage, draftsToPricing } from "./providers";
 import { renderAuthenticated } from "@/test/render";
-import type { ProviderCredential, ProviderGateway } from "@/lib/types";
+import type { AppSummary, ProviderCredential, ProviderGateway } from "@/lib/types";
 
 const SECRET = "sk-live-never-shown-again";
 
@@ -16,6 +16,8 @@ const DIRECT: ProviderCredential = {
   name: "Prod OpenAI",
   secretHint: "gain",
   providerGatewayId: null,
+  gatewayRoute: null,
+  baseUrl: null,
   pricing: { "gpt-brand-new": { input: 1.25, output: 10 } },
   status: "active",
   createdAt: "2026-02-01T00:00:00.000Z",
@@ -58,7 +60,7 @@ const SPARE_GATEWAY: ProviderGateway = {
 };
 
 /**
- * Serves no traffic, but revoked rows still hold its foreign key — the API
+ * Serves no traffic, but disabled rows still hold its foreign key — the API
  * refuses to delete it just the same.
  */
 const RETIRED_GATEWAY: ProviderGateway = {
@@ -68,6 +70,72 @@ const RETIRED_GATEWAY: ProviderGateway = {
   providerCount: 0,
   referencedCount: 2,
 };
+
+const VERCEL_GATEWAY: ProviderGateway = {
+  id: "gw-vercel",
+  type: "vercel",
+  name: "Team Vercel gateway",
+  // Vercel's origin is fixed in adapter code, so there is nothing to store.
+  config: {},
+  secretHint: "1abc",
+  providerCount: 1,
+  referencedCount: 1,
+  status: "active",
+  createdAt: "2026-02-01T00:00:00.000Z",
+  updatedAt: "2026-02-01T00:00:00.000Z",
+  createdBy: "user-1",
+};
+
+const VIA_VERCEL: ProviderCredential = {
+  ...DIRECT,
+  id: "provider-3",
+  type: "gemini",
+  slug: "gemini-vercel",
+  name: "Gemini via Vercel",
+  secretHint: null,
+  providerGatewayId: "gw-vercel",
+  pricing: null,
+};
+
+/** Paused, not deleted: the key and the pricing are still on the row. */
+const DISABLED: ProviderCredential = {
+  ...DIRECT,
+  id: "provider-4",
+  slug: "openai-dev",
+  name: "Dev OpenAI",
+  status: "disabled",
+};
+
+/**
+ * Only the fields the page reads. `referenced_providers` is the list of slugs
+ * an app names outright, which is what makes "these apps use it" answerable.
+ */
+function appSummary(name: string, referenced: string[]): AppSummary {
+  return {
+    id: name.toLowerCase().replaceAll(" ", "-"),
+    name,
+    status: "active",
+    authentication_type: "api_key",
+    apple_bundle_id: null,
+    created_at: "2026-02-01T00:00:00.000Z",
+    monthly_user_budget_usd: null,
+    monthly_app_budget_usd: null,
+    providers: referenced,
+    referenced_providers: referenced,
+    allowed_model_count: 0,
+    users: { total: 0, blocked: 0 },
+    usage: {
+      requests: 0,
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+      errors: 0,
+      blocked: 0,
+    },
+  };
+}
 
 const CREATED_GATEWAY: ProviderGateway = {
   ...GATEWAY,
@@ -95,14 +163,17 @@ function stubProviders(
   options: {
     providers?: ProviderCredential[];
     gateways?: ProviderGateway[];
+    apps?: AppSummary[];
     createProvider?: { status: number; body: unknown };
     testProvider?: { status: number; body: unknown };
     testGateway?: { status: number; body: unknown };
     createGateway?: { status: number; body: unknown };
+    updateProvider?: { status: number; body: unknown };
   } = {},
 ) {
   const providers = options.providers ?? [DIRECT, VIA_GATEWAY];
   const gateways = options.gateways ?? [GATEWAY];
+  const apps = options.apps ?? [];
   const calls: Call[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -112,6 +183,9 @@ function stubProviders(
       method,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
     });
+    // The page reads the apps list only to name the apps a disable or a delete
+    // will affect; it never blocks on it.
+    if (url.includes("/v1/admin/apps")) return json({ month: "2026-02", apps });
     if (url.includes("/v1/admin/provider-gateways")) {
       if (method === "GET") return json({ gateways });
       if (method === "DELETE") return json({ deleted: true, provider_gateway_id: SPARE_GATEWAY.id });
@@ -133,7 +207,10 @@ function stubProviders(
       const stub = options.createProvider;
       return stub ? json(stub.body, stub.status) : json({ provider: DIRECT, validated: true }, 201);
     }
-    if (method === "PUT") return json({ provider: DIRECT, validated: true });
+    if (method === "PUT") {
+      const stub = options.updateProvider;
+      return stub ? json(stub.body, stub.status) : json({ provider: DIRECT, validated: true });
+    }
     if (method === "DELETE") return json({ deleted: true, provider_id: DIRECT.id });
     return json({ providers });
   });
@@ -235,7 +312,10 @@ describe("draftsToPricing", () => {
 
 describe("ProvidersPage", () => {
   it("lists each instance by slug and how it authenticates", async () => {
-    stubProviders();
+    stubProviders({
+      providers: [DIRECT, VIA_GATEWAY, VIA_VERCEL],
+      gateways: [GATEWAY, VERCEL_GATEWAY],
+    });
     renderProviders();
 
     const direct = (await screen.findByText("Prod OpenAI")).closest("tr")!;
@@ -252,6 +332,9 @@ describe("ProvidersPage", () => {
     expect(within(routed).getByText("Prod CF gateway")).toBeTruthy();
     expect(within(routed).queryByText(/cf-gw/)).toBeNull();
     expect(within(routed).queryByText(/API key:/)).toBeNull();
+    // Whatever kind of gateway it is, the row names it the same way.
+    const vercel = screen.getByText("Gemini via Vercel").closest("tr")!;
+    expect(within(vercel).getByText("Team Vercel gateway")).toBeTruthy();
   });
 
   it("gives each section its own page, headed by the list it shows", async () => {
@@ -318,6 +401,114 @@ describe("ProvidersPage", () => {
     expect((within(reopened).getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 
+  it("sends an optional base URL with a direct key, and probes at that origin", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderProviders();
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Self-hosted");
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    const baseUrl = within(dialog).getByLabelText("Base URL (optional)");
+    // The helper text has to say what this unlocks and what the guard allows,
+    // because the server's refusal is the only other place it is explained.
+    expect(within(dialog).getByText(/OpenAI-compatible endpoint you control/i)).toBeTruthy();
+    expect(within(dialog).getByText(/HTTPS, port 443/i)).toBeTruthy();
+    await userEvent.type(baseUrl, "https://my-vllm.example.com/v1/");
+
+    // The dry run goes to the same origin the stored row would use.
+    await userEvent.click(within(dialog).getByRole("button", { name: /test provider/i }));
+    await waitFor(() => {
+      const test = calls.find((entry) => entry.url.endsWith("/v1/admin/providers/test"));
+      expect(test?.body).toEqual({
+        type: "openai",
+        secret: SECRET,
+        baseUrl: "https://my-vllm.example.com/v1/",
+      });
+    });
+
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
+    await waitFor(() => {
+      const call = calls.find(
+        (entry) => entry.method === "POST" && !entry.url.endsWith("/test"),
+      );
+      expect(call?.body).toEqual({
+        type: "openai",
+        name: "Self-hosted",
+        secret: SECRET,
+        baseUrl: "https://my-vllm.example.com/v1/",
+      });
+    });
+  });
+
+  it("omits the base URL entirely when it is left empty", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderProviders();
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Prod OpenAI");
+    await userEvent.type(within(dialog).getByLabelText("API key"), SECRET);
+    await userEvent.type(within(dialog).getByLabelText("Base URL (optional)"), "   ");
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
+
+    await waitFor(() => {
+      const call = calls.find((entry) => entry.method === "POST");
+      // No `baseUrl` key at all: an empty field is not an origin.
+      expect(call?.body).toEqual({ type: "openai", name: "Prod OpenAI", secret: SECRET });
+    });
+  });
+
+  it("hides the base URL in gateway mode, where the gateway owns the origin", async () => {
+    const calls = stubProviders({ providers: [], gateways: [GATEWAY] });
+    renderProviders();
+
+    const dialog = await openAddProvider();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "OpenAI via CF");
+    await userEvent.type(
+      within(dialog).getByLabelText("Base URL (optional)"),
+      "https://my-vllm.example.com/v1/",
+    );
+    await choose(within(dialog).getByLabelText("Authentication"), /use gateway/i);
+    expect(within(dialog).queryByLabelText("Base URL (optional)")).toBeNull();
+    await choose(within(dialog).getByLabelText("Gateway"), /prod cf gateway/i);
+    await userEvent.click(within(dialog).getByRole("button", { name: /add provider/i }));
+
+    await waitFor(() => {
+      const call = calls.find((entry) => entry.method === "POST");
+      // Typed before the switch, and not smuggled into the routed request.
+      expect(call?.body).toEqual({
+        type: "openai",
+        name: "OpenAI via CF",
+        providerGatewayId: "gw-1",
+      });
+    });
+  });
+
+  it("shows a custom origin beside the key it is sent with", async () => {
+    stubProviders({
+      providers: [
+        DIRECT,
+        {
+          ...DIRECT,
+          id: "provider-custom",
+          slug: "vllm",
+          name: "Self-hosted",
+          baseUrl: "https://my-vllm.example.com/v1/",
+        },
+      ],
+      gateways: [],
+    });
+    renderProviders();
+
+    const custom = (await screen.findByText("Self-hosted")).closest("tr")!;
+    expect(within(custom).getByText(/Base URL:/)).toBeTruthy();
+    expect(within(custom).getByText("https://my-vllm.example.com/v1/")).toBeTruthy();
+    // A stock row has only its key: there is no origin worth naming.
+    const stock = screen.getByText("Prod OpenAI").closest("tr")!;
+    expect(within(stock).getByText(/API key:/)).toBeTruthy();
+    expect(within(stock).queryByText(/Base URL:/)).toBeNull();
+    expect(within(stock).queryByText(/my-vllm/)).toBeNull();
+  });
+
   it("opts every credential field out of browser and manager autofill", async () => {
     stubProviders({ providers: [], gateways: [] });
     const { unmount } = renderProviders();
@@ -351,6 +542,43 @@ describe("ProvidersPage", () => {
       expect(field.getAttribute("data-1p-ignore")).toBe("true");
       expect(field.getAttribute("data-lpignore")).toBe("true");
     }
+  });
+
+  it("asks a Vercel gateway for nothing but a name and a token", async () => {
+    const calls = stubProviders({ providers: [], gateways: [] });
+    renderGateways();
+
+    await userEvent.click(screen.getByRole("button", { name: /add gateway/i }));
+    const dialog = await topDialog();
+    // Cloudflare is still the first entry, so its own fields are what shows.
+    expect(within(dialog).getByLabelText("Cloudflare Account ID")).toBeTruthy();
+
+    await userEvent.selectOptions(
+      within(dialog).getByLabelText("Gateway type"),
+      "vercel",
+    );
+    // Its origin is fixed in adapter code and its token names the team, so
+    // there is nothing else to ask for.
+    expect(within(dialog).queryByLabelText("Cloudflare Account ID")).toBeNull();
+    expect(within(dialog).queryByLabelText("Cloudflare Gateway ID")).toBeNull();
+    // Honest wording: preferred, never "using your key".
+    expect(within(dialog).getByText(/may fall back to system credentials/i)).toBeTruthy();
+
+    await userEvent.clear(within(dialog).getByLabelText("Name"));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Team Vercel gateway");
+    await userEvent.type(within(dialog).getByLabelText("Gateway token"), "vck_live_token");
+    await userEvent.click(within(dialog).getByRole("button", { name: /^add gateway$/i }));
+
+    await waitFor(() => {
+      const call = calls.find(
+        (entry) => entry.method === "POST" && entry.url.endsWith("/provider-gateways"),
+      );
+      expect(call?.body).toEqual({
+        type: "vercel",
+        name: "Team Vercel gateway",
+        token: "vck_live_token",
+      });
+    });
   });
 
   it("adds a provider through an existing gateway instead of a key", async () => {
@@ -753,6 +981,19 @@ describe("ProvidersPage", () => {
     await waitFor(() => expect(document.activeElement).toBe(slugField));
   });
 
+  it("asks a Vercel gateway's row for nothing it has no answer to", async () => {
+    stubProviders({ gateways: [VERCEL_GATEWAY] });
+    renderGateways();
+
+    const row = (await screen.findByText("Team Vercel gateway")).closest("tr")!;
+    expect(within(row).getByText("Vercel AI Gateway")).toBeTruthy();
+    // Its origin is fixed in adapter code, so the key is the whole of its auth.
+    expect(within(row).getByText(/API key:/)).toBeTruthy();
+    expect(within(row).getByText("…1abc")).toBeTruthy();
+    expect(within(row).queryByText(/Account ID:/)).toBeNull();
+    expect(within(row).queryByText(/Gateway ID:/)).toBeNull();
+  });
+
   it("names every parameter a gateway is reached and admitted by", async () => {
     stubProviders({ gateways: [GATEWAY, SPARE_GATEWAY, RETIRED_GATEWAY] });
     renderGateways();
@@ -776,16 +1017,16 @@ describe("ProvidersPage", () => {
       .toHaveProperty("ariaDisabled", null);
   });
 
-  it("blocks deleting a gateway only revoked rows still reference", async () => {
+  it("blocks deleting a gateway only disabled rows still reference", async () => {
     stubProviders({ gateways: [RETIRED_GATEWAY] });
     renderGateways();
 
-    // Nothing routes through it, but the foreign key counts revoked rows too,
+    // Nothing routes through it, but the foreign key counts disabled rows too,
     // so "delete the active instances first" would be unactionable advice.
     const menu = await openRowActions("Retired gateway");
     const blocked = within(menu).getByRole("menuitem", { name: /delete gateway/i });
     expect(blocked).toHaveProperty("ariaDisabled", "true");
-    expect(screen.getByText(/revoked provider instances still reference this gateway/i))
+    expect(screen.getByText(/disabled provider instances still reference this gateway/i))
       .toBeTruthy();
   });
 
@@ -924,6 +1165,107 @@ describe("ProvidersPage", () => {
     await waitFor(() => {
       expect(calls.some((call) => call.method === "DELETE" && call.url.includes("/providers/")))
         .toBe(true);
+    });
+  });
+
+  /**
+   * Disabling is the reversible alternative to deleting, so the row says which
+   * one it is and the menu offers the opposite of whatever it currently is.
+   */
+  it("badges a disabled instance and offers to enable it", async () => {
+    const calls = stubProviders({ providers: [DIRECT, DISABLED] });
+    const successToast = vi.spyOn(toast, "success");
+    renderProviders();
+
+    await screen.findByText("Dev OpenAI");
+    expect(screen.getByText("disabled")).toBeTruthy();
+
+    // An active row is offered the disable; the paused one is offered enable.
+    const active = await openRowActions("Prod OpenAI");
+    expect(within(active).getByRole("menuitem", { name: /disable provider/i })).toBeTruthy();
+    expect(within(active).queryByRole("menuitem", { name: /enable provider/i })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+
+    // Enabling only ever restores traffic, so it needs no confirmation.
+    await runRowAction("Dev OpenAI", /enable provider/i);
+    await waitFor(() => {
+      expect(calls.some((call) => call.method === "PUT" && call.body?.status === "active"))
+        .toBe(true);
+    });
+    expect(successToast).toHaveBeenCalledWith("Enabled Dev OpenAI");
+  });
+
+  it("says what a disable keeps, then sends the status", async () => {
+    const calls = stubProviders();
+    renderProviders();
+
+    await runRowAction("Prod OpenAI", /disable provider/i);
+    // The slug is kept too, so there is no one-way warning to give: enabling
+    // always puts the instance straight back.
+    expect(await screen.findByText(/the key, the custom pricing and the slug are all kept/i))
+      .toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /^disable provider$/i }));
+
+    await waitFor(() => {
+      expect(calls.some((call) => call.method === "PUT" && call.body?.status === "disabled"))
+        .toBe(true);
+    });
+  });
+
+  /**
+   * Informational, never blocking: the operator is told which apps name the
+   * slug outright and both actions go through regardless. All-mode apps are
+   * absent by construction — they name nothing.
+   */
+  it("names the apps that reference the slug in the disable and delete dialogs", async () => {
+    stubProviders({
+      apps: [
+        appSummary("Calorie Tracker", ["openai"]),
+        appSummary("Recipe Finder", ["openai", "anthropic-cf"]),
+        appSummary("Unrelated App", ["anthropic-cf"]),
+      ],
+    });
+    renderProviders();
+
+    await runRowAction("Prod OpenAI", /disable provider/i);
+    expect(await screen.findByText(/calorie tracker, recipe finder/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+    await runRowAction("Prod OpenAI", /delete provider/i);
+    expect(await screen.findByText(/calorie tracker, recipe finder/i)).toBeTruthy();
+    // The confirm stays live: the warning describes the blast radius, it does
+    // not veto the action.
+    expect(screen.getByRole("button", { name: /^delete provider$/i }))
+      .toHaveProperty("disabled", false);
+  });
+
+  it("says nothing extra when no app references the slug", async () => {
+    stubProviders({ apps: [appSummary("Unrelated App", ["anthropic-cf"])] });
+    renderProviders();
+
+    await runRowAction("Prod OpenAI", /disable provider/i);
+    await screen.findByText(/the key, the custom pricing and the slug are all kept/i);
+    expect(screen.queryByText(/in its configuration/i)).toBeNull();
+  });
+
+  // Enabling has no failure of its own — the row kept its slug, so nothing can
+  // be in the way — but the request can still fail, and the server's reason is
+  // what the operator needs rather than a generic one.
+  it("surfaces the server's reason when enabling fails", async () => {
+    stubProviders({
+      providers: [DISABLED],
+      updateProvider: {
+        status: 503,
+        body: { error: { code: "provider_unavailable", message: "The secret vault is unavailable" } },
+      },
+    });
+    const errorToast = vi.spyOn(toast, "error");
+    renderProviders();
+
+    await runRowAction("Dev OpenAI", /enable provider/i);
+    await waitFor(() => {
+      expect(errorToast)
+        .toHaveBeenCalledWith(expect.stringMatching(/the secret vault is unavailable/iu));
     });
   });
 

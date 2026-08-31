@@ -14,6 +14,8 @@ import {
   provider,
   providerGateway,
   type CfAigConfig,
+  type GatewayRouteConfig,
+  type ProviderGatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
 import type { ProviderType, StoredAppConfig } from "../src/core/types";
@@ -38,24 +40,30 @@ export async function seedProvider(input: {
   organizationId?: string;
   secret?: string;
   name?: string;
-  gateway?: "cf_aig";
+  gateway?: ProviderGatewayType;
   gatewayConfig?: CfAigConfig;
+  /** The row's gateway-type-specific routing configuration. */
+  gatewayRoute?: GatewayRouteConfig;
   providerGatewayId?: string;
+  /** The operator's own origin, canonical as the guard would have stored it. */
+  baseUrl?: string;
   pricing?: ProviderPricing;
-  status?: "active" | "revoked";
+  status?: "active" | "disabled";
 }): Promise<string> {
   const organizationId = input.organizationId ?? TEST_ORGANIZATION_ID;
   const id = input.id ?? `provider_${organizationId}_${input.type}`;
   const slug = input.slug ?? input.type;
   const secret = input.secret ?? testProviderSecret(input.type);
   let providerGatewayId = input.providerGatewayId ?? null;
-  if (input.gateway === "cf_aig") {
+  if (input.gateway !== undefined) {
     providerGatewayId = providerGatewayId ?? `gateway_${organizationId}_${slug}`;
-    const config = input.gatewayConfig ?? { accountId: "test-account", gatewayId: "test-gateway" };
+    const config = input.gateway === "cf_aig"
+      ? input.gatewayConfig ?? { accountId: "test-account", gatewayId: "test-gateway" }
+      : {};
     await database(env.DB).insert(providerGateway).values({
       id: providerGatewayId,
       organizationId,
-      type: "cf_aig",
+      type: input.gateway,
       name: `Test gateway for ${slug}`,
       config,
       secretBlob: await secretVault(env).encryptSecret(
@@ -77,6 +85,8 @@ export async function seedProvider(input: {
       : null,
     secretHint: providerGatewayId === null ? secret.slice(-4) : null,
     providerGatewayId,
+    gatewayRoute: input.gatewayRoute ?? null,
+    baseUrl: input.baseUrl ?? null,
     pricing: input.pricing ?? null,
     status: input.status ?? "active",
     createdBy: TEST_OPERATOR_USER_ID,

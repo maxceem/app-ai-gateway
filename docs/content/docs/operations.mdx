@@ -44,6 +44,119 @@ answers `400 invalid_request` and nothing is written, so a month is never left
 half-repriced. Clear the preview's `unpriced_events` first, either by re-adding
 the missing custom price or by narrowing the month.
 
+Events billed on a cost the upstream reported (`cost_source: "reported"`) are
+never matched: that figure is what you were charged, and a local price would
+replace a fact with an estimate.
+
+A repriced event's `cost_source` becomes `computed`, because the local catalog
+is now where its cost came from — including events that were previously
+[unresolved](#unresolved-usage), whose marker clears once a price can answer for
+them.
+
+**Events with no readable usage keep their `cost_source`.** An event whose token
+counts are all zero was never metered — an unrecognised response shape, or a
+stream a client abandoned before the chunk carrying its usage. Multiplying zero
+tokens by any price yields zero, which is arithmetic rather than an answer, so
+repricing writes that zero to `cost_usd` but leaves the marker alone: an
+`unresolved` event stays `unresolved`. Those events are counted in
+`matched_events` (their `cost_usd` really is rewritten) and reported separately
+as `unmetered_events`.
+
+A non-zero `unmetered_events` means the month contains spend nothing could
+measure. Repricing cannot recover it, and must not appear to have done so —
+were the marker overwritten, the events would read as genuinely free, drop out
+of the **By cost source** breakdown, and stop being shown as unresolved in the
+console, while the unbudgeted spend continued.
+
+## Where a cost comes from
+
+Every event records how its `cost_usd` was arrived at, in `cost_source`:
+
+| `cost_source` | Meaning |
+| --- | --- |
+| `reported` | The upstream said what the request cost, and that figure is the billed one. Only [OpenRouter](/docs/providers#openrouter) reports one today; the same number is kept in `reported_cost_usd`. |
+| `computed` | Priced locally, from the provider instance's custom pricing or the shipped catalog. |
+| `unresolved` | Neither source could answer on a successful response — see below. |
+
+Reported cost wins because it is definitionally what you were charged. Local
+pricing is the default and the fallback: if a cost-reporting route ever answers
+without a cost, a local price for that model is used, and the event is
+`computed` rather than `reported`.
+
+## Unresolved usage
+
+Usage is read from the provider's own response. When a provider answers
+successfully but reports usage in a shape this gateway does not know, there is
+nothing to price: the request is served, the event is stored with no tokens, and
+its cost is zero because nothing was measurable — not because nothing was spent.
+
+Three other situations land in the same place:
+
+- A cost-reporting route answers without a cost, and the model has no local
+  price either.
+- A model has no local price on a route that does not report cost. Unpriced
+  models are refused before they proxy, so this means a price was removed while
+  a request was already in flight — within the one-minute configuration cache.
+- **A client aborts a streamed response before the final chunk.** See the
+  known limitation below.
+
+### Known limitation: aborted streams on cost-reporting routes
+
+On a cost-reporting route the cost arrives in the *last* chunk of a stream. A
+client that disconnects before that chunk takes the figure with it, and the
+request is recorded `unresolved` at `$0` — the tokens were generated and
+[OpenRouter](/docs/providers#openrouter) charged for them, but nothing debits
+the budget. Deliberately repeated, that is unbounded unbudgeted spend.
+
+The gateway does not reconcile this today. Doing it properly means looking the
+request up through OpenRouter's generation-lookup API after the fact, which is a
+funded backlog item rather than something to guess at. Until then:
+
+**The operator signal is a sustained unresolved count on cost-reporting
+providers.** Watch the **By cost source** breakdown filtered to those provider
+instances, and alert on `usage_unresolved_cost` log lines whose provider is one
+of them. A background rate is normal; a rising one from a single app or user is
+worth investigating. Per-user request rate limits are the blunt control that
+bounds the damage in the meantime.
+
+Those events are marked `cost_source: "unresolved"` instead of `"computed"`, are
+shown as **unresolved** rather than `$0.00` in the console's event list, and can
+be counted with the **By cost source** breakdown. Each one also emits an
+`error`-level `usage_unresolved_cost` log line naming the app, provider, model,
+and route, so a new provider or a changed response format surfaces as an alert
+rather than as free traffic. Live requests are never rejected for it.
+
+A sustained count above zero means real spend is escaping the budget, and the
+gateway cannot fix that on its own: the response shape has to be added to usage
+extraction. Blocked requests never reached a provider and carry no
+`cost_source`; events recorded before the field existed carry none either.
+
+## Route attribution on usage events
+
+Every event records the route it was actually sent over, which is known before
+the request leaves: `provider_gateway_id` and `provider_gateway_type` name the
+gateway that carried it and are null on a direct call, and `credential_source`
+is `direct` for an instance holding its own key or `byok` when a gateway serves
+it from your own key store. It is never inferred from a successful response, so
+a null means nothing settled it rather than "probably yours".
+
+`model_author` records who made the model, resolved when the event is recorded
+so it can be grouped in SQL. It answers "how much Google-model spend, on any
+route" — a question the provider type cannot, once one provider serves several
+authors' models. It is an analytics dimension only: budgets and allowlists stay
+per provider instance and per app.
+
+`served_provider`, `served_model` and `reported_cost_usd` are for upstreams that
+report what actually served a request and what it cost. They are populated on
+[OpenRouter](/docs/providers#openrouter) instances, where `served_provider` is
+the host OpenRouter routed to and `credential_source` is `byok` only when the
+response says your own upstream key paid; they are null everywhere else, and a
+null means unknown rather than "no". `cost_usd` remains the billed figure either
+way.
+
+Breakdowns by **model author**, **gateway**, and **credential source** are in the
+console's usage view alongside the existing ones.
+
 ## Rotate the vault key
 
 In `local` mode, add `SECRET_VAULT_LOCAL_KEK_V2` as a Worker secret and set

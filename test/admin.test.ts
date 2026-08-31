@@ -104,6 +104,205 @@ describe("admin API", () => {
     expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
   });
 
+  /**
+   * Repricing recomputes a local estimate. An event billed on what the upstream
+   * actually charged has no estimate to go back to, so leaving it out is what
+   * keeps the reported figure meaningful.
+   */
+  it("leaves an event billed on a reported cost out of repricing", async () => {
+    const appId = "admin-reprice-reported";
+    await seedApp(appId);
+    const insert = (costSource: string | null, costUsd: number) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
+         cost_source, reported_cost_usd, status
+       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+                 50, 40, 10, 20, ?, ?, ?, 'ok')`,
+    ).bind(appId, costUsd, costSource, costSource === "reported" ? costUsd : null).run();
+    await insert(null, 0.000184);
+    await insert("reported", 0.5);
+    const month = new Date().toISOString().slice(0, 7);
+    const preview = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply: true }),
+      },
+    );
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({
+      // Only the locally priced event; the reported one was never a candidate.
+      matched_events: 1,
+      previous_cost_usd: 0.000184,
+    });
+    const reported = await env.DB.prepare(
+      "SELECT cost_usd FROM app_usage_event WHERE app_id = ? AND cost_source = 'reported'",
+    ).bind(appId).first<{ cost_usd: number }>();
+    expect(reported?.cost_usd).toBe(0.5);
+  });
+
+  /**
+   * A repriced row's cost came from the local catalog, so that is what its
+   * `cost_source` has to say. Leaving `unresolved` behind kept the console
+   * hiding a cost it now has, and kept the unresolved-count alert firing for
+   * spend that had since been accounted for — so the marker could never clear.
+   */
+  it("moves a repriced event's cost source to computed with its new cost", async () => {
+    const appId = "admin-reprice-source";
+    await seedApp(appId);
+    const insert = (costSource: string | null) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
+         cost_source, status
+       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+                 50, 40, 10, 20, 0, ?, 'ok')`,
+    ).bind(appId, costSource).run();
+    // The row the fix is for: metered tokens, no cost anyone could stand behind.
+    await insert("unresolved");
+    // And an untouched-marker row from before the column existed.
+    await insert(null);
+    const month = new Date().toISOString().slice(0, 7);
+    const applied = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply: true }),
+      },
+    );
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toMatchObject({
+      applied: true,
+      matched_events: 2,
+      unmetered_events: 0,
+    });
+    const rows = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ?",
+    ).bind(appId).all<{ cost_usd: number; cost_source: string | null }>();
+    expect(rows.results).toHaveLength(2);
+    for (const row of rows.results) {
+      expect(row.cost_source).toBe("computed");
+      expect(row.cost_usd).toBeCloseTo(0.0000373, 10);
+    }
+    // Nothing unresolved is left to alert on or to hide in the console.
+    const stale = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM app_usage_event WHERE app_id = ? AND cost_source = 'unresolved'",
+    ).bind(appId).first<{ n: number }>();
+    expect(stale?.n).toBe(0);
+  });
+
+  /**
+   * The other half, and the one that matters more. An unresolved event with
+   * *no* readable counts is spend nothing could measure — an unreadable
+   * response, or a stream a client abandoned before its usage chunk. Repricing
+   * multiplies zero tokens by a price and gets zero, which is arithmetic and
+   * not an answer: calling that `computed` would turn "spend is escaping the
+   * budget" into "this request was free", hide the row in the console, and
+   * silence the By cost source signal operators are told to watch — while the
+   * unbudgeted spend carried on.
+   */
+  it("leaves an unresolved event with no readable usage marked unresolved", async () => {
+    const appId = "admin-reprice-unmetered";
+    await seedApp(appId);
+    const insert = (
+      costSource: string | null,
+      tokens: { input: number; output: number },
+      costUsd = 0,
+    ) => env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
+         cost_source, status
+       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+                 ?, 0, 0, ?, ?, ?, 'ok')`,
+    ).bind(appId, tokens.input, tokens.output, costUsd, costSource).run();
+
+    // Nothing was metered: the marker is the only record that spend happened.
+    await insert("unresolved", { input: 0, output: 0 });
+    // Metered tokens on the same model: this one genuinely reprices.
+    await insert("unresolved", { input: 50, output: 20 });
+
+    const month = new Date().toISOString().slice(0, 7);
+    const applied = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply: true }),
+      },
+    );
+    expect(applied.status).toBe(200);
+    // Both rows had their cost rewritten; one of them could not be metered, and
+    // the response says so rather than letting it disappear into the total.
+    await expect(applied.json()).resolves.toMatchObject({
+      applied: true,
+      matched_events: 2,
+      unmetered_events: 1,
+    });
+
+    const unmetered = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ? AND input_tokens = 0",
+    ).bind(appId).first<{ cost_usd: number; cost_source: string | null }>();
+    // Marker intact, so the console still shows it as unresolved and the
+    // By cost source breakdown still counts it.
+    expect(unmetered).toMatchObject({ cost_source: "unresolved", cost_usd: 0 });
+
+    const metered = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ? AND input_tokens = 50",
+    ).bind(appId).first<{ cost_usd: number; cost_source: string | null }>();
+    expect(metered?.cost_source).toBe("computed");
+    expect(metered?.cost_usd).toBeGreaterThan(0);
+
+    // The alerting signal survives repricing entirely.
+    const stillUnresolved = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM app_usage_event WHERE app_id = ? AND cost_source = 'unresolved'",
+    ).bind(appId).first<{ n: number }>();
+    expect(stillUnresolved?.n).toBe(1);
+  });
+
+  /** A stale figure on an unmeterable row is still corrected; only the marker is kept. */
+  it("corrects a zero-usage row's cost without claiming it was computed", async () => {
+    const appId = "admin-reprice-unmetered-stale";
+    await seedApp(appId);
+    await env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
+         cost_source, status
+       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+                 0, 0, 0, 0, 0.75, 'unresolved', 'ok')`,
+    ).bind(appId).run();
+    const month = new Date().toISOString().slice(0, 7);
+    const applied = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month, apply: true }),
+      },
+    );
+    expect(applied.status).toBe(200);
+    const row = await env.DB.prepare(
+      "SELECT cost_usd, cost_source FROM app_usage_event WHERE app_id = ?",
+    ).bind(appId).first<{ cost_usd: number; cost_source: string | null }>();
+    expect(row).toMatchObject({ cost_usd: 0, cost_source: "unresolved" });
+  });
+
   it("reprices each event with its serving provider instance override", async () => {
     const appId = "admin-reprice-instances";
     await seedApp(appId);

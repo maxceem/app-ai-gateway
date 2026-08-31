@@ -4,6 +4,8 @@ import {
   AlertCircle,
   CircleCheck,
   CircleDollarSign,
+  CirclePlay,
+  CircleSlash,
   Info,
   Loader2,
   Pencil,
@@ -52,13 +54,18 @@ import { RowAction, RowActions } from "@/components/row-actions";
 import { ApiError } from "@/lib/api";
 import { useConsoleSession } from "@/lib/console-session";
 import {
+  CREATABLE_GATEWAY_TYPES,
+  GATEWAY_TYPE_LABELS,
   PROVIDERS,
-  PROVIDER_GATEWAY_LABELS,
   PROVIDER_LABELS,
+  reportsCost,
+  type CreatableGatewayType,
   type Provider,
 } from "@/lib/config-types";
+import { currentMonth } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
+  useApps,
   useCreateProvider,
   useCreateProviderGateway,
   useDeleteProvider,
@@ -167,17 +174,17 @@ const GATEWAYS_PATH = "/providers/gateways";
 
 /**
  * Why this gateway cannot be deleted, mirroring the API's `gateway_in_use`
- * message. Revoked rows are kept for audit and still hold the foreign key, so a
- * gateway serving no traffic can still be undeletable — saying "active" there
- * would be a lie the operator cannot act on.
+ * message. Disabled rows are kept for re-enabling and still hold the foreign
+ * key, so a gateway serving no traffic can still be undeletable — saying
+ * "active" there would be a lie the operator cannot act on.
  */
 function deleteBlockedReason(gateway: ProviderGateway): string | undefined {
   if (gateway.referencedCount === 0) return undefined;
   if (gateway.providerCount === 0) {
-    return "Revoked provider instances still reference this gateway; delete them to release it";
+    return "Disabled provider instances still reference this gateway; delete them to release it";
   }
   return gateway.referencedCount > gateway.providerCount
-    ? "Delete the active and revoked provider instances routed through this gateway first"
+    ? "Delete the active and disabled provider instances routed through this gateway first"
     : "Delete every active provider instance routed through this gateway first";
 }
 
@@ -195,11 +202,21 @@ function AuthLine({ label, value }: { label: string; value: React.ReactNode }) {
  * tail of its own key, or the name of the gateway whose key stands in for it.
  * Neither the gateway's ids nor the full key are usable here — the name is what
  * the operator named it, and the hint is all of the key there ever is.
+ *
+ * A custom origin rides along with the key, because it is the single most
+ * surprising thing about an instance: the key alone would hide which service it
+ * is actually being sent to.
  */
 function Auth({ row, gateways }: { row: ProviderCredential; gateways: ProviderGateway[] }) {
   if (row.providerGatewayId === null) {
-    if (row.secretHint === null) return <>API key</>;
-    return <AuthLine label="API key" value={`…${row.secretHint}`} />;
+    return (
+      <div className="space-y-0.5">
+        {row.secretHint === null
+          ? <div>API key</div>
+          : <AuthLine label="API key" value={`…${row.secretHint}`} />}
+        {row.baseUrl === null ? null : <AuthLine label="Base URL" value={row.baseUrl} />}
+      </div>
+    );
   }
   const gateway = gateways.find((entry) => entry.id === row.providerGatewayId);
   // The list is still loading, or the gateway is gone: the row is routed either
@@ -219,15 +236,20 @@ function Auth({ row, gateways }: { row: ProviderCredential; gateways: ProviderGa
 }
 
 /**
- * Everything the gateway is addressed and authenticated by, labelled. A
- * Cloudflare AI Gateway is found by its account and gateway ids and admitted by
- * its key; the key is only ever its last four characters.
+ * Everything the gateway is addressed and admitted by, labelled. What addresses
+ * it is per type — Cloudflare's account and gateway pair, against a Vercel
+ * gateway whose origin is fixed in adapter code and so has nothing to show —
+ * and the key is only ever its last four characters.
  */
 function GatewayAuth({ gateway }: { gateway: ProviderGateway }) {
   return (
     <div className="space-y-0.5">
-      <AuthLine label="Account ID" value={gateway.config.accountId} />
-      <AuthLine label="Gateway ID" value={gateway.config.gatewayId} />
+      {gateway.type === "cf_aig" ? (
+        <>
+          <AuthLine label="Account ID" value={gateway.config.accountId} />
+          <AuthLine label="Gateway ID" value={gateway.config.gatewayId} />
+        </>
+      ) : null}
       <AuthLine label="API key" value={`…${gateway.secretHint}`} />
     </div>
   );
@@ -251,6 +273,32 @@ const SECTIONS: SectionEntry[] = [
 
 const DEFAULT_SECTION = SECTIONS[0]!;
 
+/** The muted marker a paused instance carries everywhere it is listed. */
+export function DisabledBadge() {
+  return (
+    <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground">
+      disabled
+    </Badge>
+  );
+}
+
+/**
+ * The apps that name a slug outright, from the apps list's own
+ * `referenced_providers`. All-mode apps are deliberately absent: they reach
+ * every instance without naming any, so listing them here would name every app
+ * the organization has for every provider and say nothing.
+ */
+function ReferencingApps({ slug, names }: { slug: string; names: string[] }) {
+  if (names.length === 0) return null;
+  return (
+    <p>
+      <span className="font-medium text-foreground">{names.join(", ")}</span>{" "}
+      {names.length === 1 ? "names" : "name"}{" "}
+      <span className="font-mono text-foreground">{slug}</span> in its configuration.
+    </p>
+  );
+}
+
 export function ProvidersPage() {
   const { section } = useParams();
   const active = section === undefined
@@ -270,14 +318,24 @@ function ProvidersSection() {
   // routed instance borrows its token from.
   const gatewayList = useProviderGateways();
   const deleteProvider = useDeleteProvider();
+  const updateProvider = useUpdateProvider();
+  // Informational only: the warning names the apps that will notice, and both
+  // the disable and the delete go through regardless of what it finds.
+  const appList = useApps(currentMonth());
 
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<ProviderCredential | null>(null);
   const [rotating, setRotating] = useState<ProviderCredential | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProviderCredential | null>(null);
+  const [pendingDisable, setPendingDisable] = useState<ProviderCredential | null>(null);
 
   const providers = list.data?.providers ?? [];
   const gateways = gatewayList.data?.gateways ?? [];
+
+  const referencingApps = (slug: string): string[] =>
+    (appList.data?.apps ?? [])
+      .filter((row) => row.referenced_providers.includes(slug))
+      .map((row) => row.name);
 
   const remove = async () => {
     if (!pendingDelete) return;
@@ -287,6 +345,31 @@ function ProvidersSection() {
       setPendingDelete(null);
     } catch (error) {
       toast.error(errorMessage(error, "Could not delete the provider"));
+    }
+  };
+
+  const disable = async () => {
+    if (!pendingDisable) return;
+    try {
+      await updateProvider.mutateAsync({ id: pendingDisable.id, body: { status: "disabled" } });
+      toast.success(`Disabled ${pendingDisable.name}`);
+      setPendingDisable(null);
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not disable the provider"));
+    }
+  };
+
+  /**
+   * Enabling needs no dialog: the row kept its slug, so nothing can be standing
+   * in the way and this only ever restores traffic. A failed request is still
+   * worth reporting in the server's own words.
+   */
+  const enable = async (row: ProviderCredential) => {
+    try {
+      await updateProvider.mutateAsync({ id: row.id, body: { status: "active" } });
+      toast.success(`Enabled ${row.name}`);
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not enable the provider"));
     }
   };
 
@@ -340,7 +423,12 @@ function ProvidersSection() {
             ) : (
               providers.map((row) => (
                 <TableRow key={row.id}>
-                  <TableCell className="font-medium">{row.name}</TableCell>
+                  <TableCell className="font-medium">
+                    <span className="flex items-center gap-2">
+                      {row.name}
+                      {row.status === "disabled" ? <DisabledBadge /> : null}
+                    </span>
+                  </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{PROVIDER_LABELS[row.type]}</Badge>
                   </TableCell>
@@ -368,6 +456,17 @@ function ProvidersSection() {
                         Update key
                       </RowAction>
                       <DropdownMenuSeparator />
+                      {row.status === "disabled" ? (
+                        <RowAction onSelect={() => void enable(row)}>
+                          <CirclePlay />
+                          Enable provider
+                        </RowAction>
+                      ) : (
+                        <RowAction onSelect={() => setPendingDisable(row)}>
+                          <CircleSlash />
+                          Disable provider
+                        </RowAction>
+                      )}
                       <RowAction destructive onSelect={() => setPendingDelete(row)}>
                         <Trash2 />
                         Delete provider
@@ -406,13 +505,49 @@ function ProvidersSection() {
               start failing within a minute, and any custom pricing on this provider is deleted with
               it.
             </p>
-            <p>This cannot be undone. Update the key instead if you only want to replace it.</p>
+            {pendingDelete ? (
+              <ReferencingApps
+                slug={pendingDelete.slug}
+                names={referencingApps(pendingDelete.slug)}
+              />
+            ) : null}
+            <p>
+              This cannot be undone. Update the key instead if you only want to replace it, or
+              disable the provider to pause it and keep the key.
+            </p>
           </>
         }
         confirmLabel="Delete provider"
         destructive
         pending={deleteProvider.isPending}
         onConfirm={() => void remove()}
+      />
+
+      <ConfirmDialog
+        open={pendingDisable !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDisable(null);
+        }}
+        title="Disable provider"
+        description={
+          <>
+            <p>
+              Requests to{" "}
+              <span className="font-mono text-foreground">{pendingDisable?.slug ?? ""}</span> start
+              failing within a minute. The key, the custom pricing and the slug are all kept, so
+              enabling puts it straight back.
+            </p>
+            {pendingDisable ? (
+              <ReferencingApps
+                slug={pendingDisable.slug}
+                names={referencingApps(pendingDisable.slug)}
+              />
+            ) : null}
+          </>
+        }
+        confirmLabel="Disable provider"
+        pending={updateProvider.isPending}
+        onConfirm={() => void disable()}
       />
     </div>
   );
@@ -576,6 +711,7 @@ function AddProviderDialog({
   const [name, setName] = useState("");
   const [connection, setConnection] = useState<"key" | "gateway">("key");
   const [secret, setSecret] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTaken, setSlugTaken] = useState(false);
@@ -602,8 +738,11 @@ function AddProviderDialog({
   // Only the default slug being taken forces a manual one — an existing
   // instance created under a custom slug leaves `openai` free for the next one.
   // A 409 asks for a slug in every case the client cannot see.
+  //
+  // Status is not part of it: a row holds its slug until it is deleted, so a
+  // disabled instance blocks the default exactly as an active one does.
   const defaultSlugTaken = (candidate: Provider) =>
-    providers.some((row) => row.status === "active" && row.slug === candidate);
+    providers.some((row) => row.slug === candidate);
   const slugRequired = slugTaken || defaultSlugTaken(type);
 
   const chooseType = (next: Provider) => {
@@ -627,6 +766,7 @@ function AddProviderDialog({
     setName("");
     setConnection("key");
     setSecret("");
+    setBaseUrl("");
     setGatewayId("");
     setSlug("");
     setSlugTaken(false);
@@ -645,13 +785,18 @@ function AddProviderDialog({
    * Optional, and deliberately not a gate on adding the provider: a probe that
    * proves nothing must not stand between an operator and a key they trust.
    */
+  /** The origin fields to send, present only on a direct row that set one. */
+  const baseUrlBody = connection === "key" && baseUrl.trim()
+    ? { baseUrl: baseUrl.trim() }
+    : {};
+
   const test = async () => {
     if (!credentialReady) return;
     setTested(null);
     try {
       const result = await testProvider.mutateAsync({
         type,
-        ...(connection === "key" ? { secret } : { providerGatewayId: gatewayId }),
+        ...(connection === "key" ? { secret, ...baseUrlBody } : { providerGatewayId: gatewayId }),
       });
       setTested(testOutcome(result, type, connection === "gateway"));
     } catch (error) {
@@ -672,7 +817,7 @@ function AddProviderDialog({
         type,
         name: name.trim(),
         ...(slug.trim() ? { slug: slug.trim() } : {}),
-        ...(connection === "key" ? { secret } : { providerGatewayId: gatewayId }),
+        ...(connection === "key" ? { secret, ...baseUrlBody } : { providerGatewayId: gatewayId }),
       });
       // The plaintext leaves component state and the mutation cache immediately;
       // the server never returns it again.
@@ -755,6 +900,9 @@ function AddProviderDialog({
               value={connection}
               onValueChange={(next) => {
                 setConnection(next as "key" | "gateway");
+                // A gateway owns its own origin, so a base URL typed for the
+                // direct case must not be carried into the request invisibly.
+                if (next === "gateway") setBaseUrl("");
                 setTested(null);
               }}
             >
@@ -768,18 +916,39 @@ function AddProviderDialog({
             </Select>
           </Field>
           {connection === "key" ? (
-            <Field label="API key" htmlFor="provider-secret">
-              <Input
-                id="provider-secret"
-                {...SECRET_FIELD}
-                value={secret}
-                placeholder="sk-…"
-                onChange={(event) => {
-                  setSecret(event.target.value);
-                  setTested(null);
-                }}
-              />
-            </Field>
+            <>
+              <Field label="API key" htmlFor="provider-secret">
+                <Input
+                  id="provider-secret"
+                  {...SECRET_FIELD}
+                  value={secret}
+                  placeholder="sk-…"
+                  onChange={(event) => {
+                    setSecret(event.target.value);
+                    setTested(null);
+                  }}
+                />
+              </Field>
+              {/* Optional, and only on the direct route: a gateway supplies its
+                  own origin, so the field is not rendered at all in that mode. */}
+              <Field
+                label="Base URL (optional)"
+                htmlFor="provider-base-url"
+                hint="Point this instance at an OpenAI-compatible endpoint you control — Azure OpenAI, vLLM, a proxy. HTTPS, port 443, no path-only tweaks beyond the base. Leave empty to use the provider's own API."
+              >
+                <Input
+                  id="provider-base-url"
+                  {...PLAIN_FIELD}
+                  className="font-mono"
+                  value={baseUrl}
+                  placeholder="https://my-vllm.example.com/v1/"
+                  onChange={(event) => {
+                    setBaseUrl(event.target.value);
+                    setTested(null);
+                  }}
+                />
+              </Field>
+            </>
           ) : (
             <Field
               label="Gateway"
@@ -954,7 +1123,7 @@ function GatewaysSection() {
                 <TableRow key={row.id} id={gatewayAnchor(row.id)}>
                   <TableCell className="font-medium">{row.name}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{PROVIDER_GATEWAY_LABELS[row.type]}</Badge>
+                    <Badge variant="secondary">{GATEWAY_TYPE_LABELS[row.type]}</Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     <GatewayAuth gateway={row} />
@@ -1028,18 +1197,28 @@ function GatewayDialog({
 }) {
   const createGateway = useCreateProviderGateway();
   const testGateway = useTestProviderGateway();
-  const [name, setName] = useState("Our CF gateway");
+  // The list is what makes a second gateway type a data change: the selector
+  // below appears only once there is something to select, and each entry says
+  // which fields its own connection needs.
+  const [type, setType] = useState<CreatableGatewayType>(CREATABLE_GATEWAY_TYPES[0].value);
+  const gatewayType = CREATABLE_GATEWAY_TYPES.find((entry) => entry.value === type)
+    ?? CREATABLE_GATEWAY_TYPES[0];
+  const [name, setName] = useState<string>(gatewayType.defaultName);
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [token, setToken] = useState("");
   const [tested, setTested] = useState<TestOutcome | null>(null);
 
-  // The name is the operator's label; only these three reach Cloudflare.
-  const connectionReady = Boolean(accountId.trim() && gatewayId.trim() && token);
+  // The name is the operator's label; only the rest reaches the gateway, and
+  // which of those it needs is the chosen type's own answer.
+  const connectionReady = Boolean(
+    token && (!gatewayType.needsCloudflareIds || (accountId.trim() && gatewayId.trim())),
+  );
   const ready = Boolean(name.trim()) && connectionReady;
 
   const clear = () => {
-    setName("Our CF gateway");
+    setType(CREATABLE_GATEWAY_TYPES[0].value);
+    setName(CREATABLE_GATEWAY_TYPES[0].defaultName);
     setAccountId("");
     setGatewayId("");
     setToken("");
@@ -1057,12 +1236,16 @@ function GatewayDialog({
     if (!connectionReady) return;
     setTested(null);
     try {
-      const result = await testGateway.mutateAsync({
-        type: "cf_aig",
-        accountId: accountId.trim(),
-        gatewayId: gatewayId.trim(),
-        token,
-      });
+      const result = await testGateway.mutateAsync(
+        gatewayType.value === "cf_aig"
+          ? {
+              type: "cf_aig",
+              accountId: accountId.trim(),
+              gatewayId: gatewayId.trim(),
+              token,
+            }
+          : { type: "vercel", token },
+      );
       setTested(gatewayOutcome(result));
     } catch (error) {
       setTested({
@@ -1075,6 +1258,18 @@ function GatewayDialog({
     }
   };
 
+  /** A type switch carries none of the previous type's fields with it. */
+  const chooseType = (next: CreatableGatewayType) => {
+    const entry = CREATABLE_GATEWAY_TYPES.find((item) => item.value === next);
+    if (!entry) return;
+    setType(next);
+    setName(entry.defaultName);
+    setAccountId("");
+    setGatewayId("");
+    setToken("");
+    setTested(null);
+  };
+
   const close = () => {
     clear();
     onOpenChange(false);
@@ -1083,13 +1278,19 @@ function GatewayDialog({
   const submit = async () => {
     if (!ready) return;
     try {
-      const result = await createGateway.mutateAsync({
-        type: "cf_aig",
-        name: name.trim(),
-        accountId: accountId.trim(),
-        gatewayId: gatewayId.trim(),
-        token,
-      });
+      // Each gateway's request body is exactly its own: the API rejects a field
+      // the chosen type has no use for, so the branch is on the discriminant.
+      const result = await createGateway.mutateAsync(
+        gatewayType.value === "cf_aig"
+          ? {
+              type: "cf_aig",
+              name: name.trim(),
+              accountId: accountId.trim(),
+              gatewayId: gatewayId.trim(),
+              token,
+            }
+          : { type: "vercel", name: name.trim(), token },
+      );
       clear();
       gatewaySavedToast(result.gateway.name, result, "Added");
       onCreated?.(result.gateway);
@@ -1125,6 +1326,22 @@ function GatewayDialog({
       }
     >
       <div className="space-y-4">
+        {CREATABLE_GATEWAY_TYPES.length > 1 ? (
+          <Field label="Gateway type" htmlFor="gateway-type">
+            <select
+              id="gateway-type"
+              className="h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+              value={type}
+              onChange={(event) => chooseType(event.target.value as CreatableGatewayType)}
+            >
+              {CREATABLE_GATEWAY_TYPES.map((entry) => (
+                <option key={entry.value} value={entry.value}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
         <Field label="Name" htmlFor="gateway-name">
           <Input
             id="gateway-name"
@@ -1133,35 +1350,39 @@ function GatewayDialog({
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
-        <Field label="Cloudflare Account ID" htmlFor="gateway-account">
-          <Input
-            id="gateway-account"
-            {...PLAIN_FIELD}
-            value={accountId}
-            onChange={(event) => {
-              setAccountId(event.target.value);
-              setTested(null);
-            }}
-          />
-        </Field>
-        <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
-          <Input
-            id="gateway-gateway"
-            {...PLAIN_FIELD}
-            value={gatewayId}
-            onChange={(event) => {
-              setGatewayId(event.target.value);
-              setTested(null);
-            }}
-          />
-        </Field>
+        {gatewayType.needsCloudflareIds ? (
+          <>
+            <Field label="Cloudflare Account ID" htmlFor="gateway-account">
+              <Input
+                id="gateway-account"
+                {...PLAIN_FIELD}
+                value={accountId}
+                onChange={(event) => {
+                  setAccountId(event.target.value);
+                  setTested(null);
+                }}
+              />
+            </Field>
+            <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
+              <Input
+                id="gateway-gateway"
+                {...PLAIN_FIELD}
+                value={gatewayId}
+                onChange={(event) => {
+                  setGatewayId(event.target.value);
+                  setTested(null);
+                }}
+              />
+            </Field>
+          </>
+        ) : null}
         <Field
           label="Gateway token"
           htmlFor="gateway-token"
           hint={
             <a
               className="underline underline-offset-4"
-              href="https://developers.cloudflare.com/ai-gateway/configuration/authentication/"
+              href={gatewayType.tokenDocsUrl}
               target="_blank"
               rel="noreferrer"
             >
@@ -1179,6 +1400,7 @@ function GatewayDialog({
             }}
           />
         </Field>
+        <p className="text-xs text-muted-foreground">{gatewayType.credentialNote}</p>
         {tested ? <TestResult outcome={tested} /> : null}
       </div>
     </FormDialog>
@@ -1276,12 +1498,16 @@ function RotateGatewayDialog({
     if (!gateway || !token) return;
     setTested(null);
     try {
-      const result = await testGateway.mutateAsync({
-        type: "cf_aig",
-        accountId: gateway.config.accountId,
-        gatewayId: gateway.config.gatewayId,
-        token,
-      });
+      const result = await testGateway.mutateAsync(
+        gateway.type === "cf_aig"
+          ? {
+              type: "cf_aig",
+              accountId: gateway.config.accountId,
+              gatewayId: gateway.config.gatewayId,
+              token,
+            }
+          : { type: "vercel", token },
+      );
       setTested(gatewayOutcome(result));
     } catch (error) {
       setTested({
@@ -1484,8 +1710,12 @@ function PricingDialog({
         <DialogBody className="space-y-3">
           <DialogDescription>
             For models the built-in catalog does not cover, or prices it in a way you disagree with.
-            Requests for unpriced models are rejected until a price is set here. Enter $0 for a model
-            that is genuinely free.
+            {provider && reportsCost(provider.type)
+              ? ` ${PROVIDER_LABELS[provider.type as Provider] ?? provider.type} reports the cost of
+                  every request, so its models proxy with no price here; a price entered here is
+                  only used if a response ever comes back without one.`
+              : " Requests for unpriced models are rejected until a price is set here."}{" "}
+            Enter $0 for a model that is genuinely free.
           </DialogDescription>
           {drafts.length === 0 ? (
             <EmptyState>No custom prices for this provider.</EmptyState>

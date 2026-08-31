@@ -11,7 +11,10 @@ import {
   instanceModels,
   nextEndpointSlug,
   providerMode,
+  PROVIDERS,
+  PROVIDER_LABELS,
   renameEndpoint,
+  reportsCost,
   selectedSlugs,
   withIssuer,
   type AuthenticationConfig,
@@ -26,6 +29,50 @@ const INSTANCES: ProviderInstance[] = [
   { slug: "claude", type: "anthropic", name: "Anthropic" },
 ];
 
+describe("the provider list the console offers", () => {
+  it("labels every provider type it can create", () => {
+    // A type in the list with no label would render as `undefined` in the
+    // picker, the policy cards and the missing-credential alert.
+    for (const provider of PROVIDERS) {
+      expect([provider, typeof PROVIDER_LABELS[provider]]).toEqual([provider, "string"]);
+      expect(PROVIDER_LABELS[provider].length).toBeGreaterThan(0);
+    }
+    expect(new Set(PROVIDERS).size).toBe(PROVIDERS.length);
+  });
+
+  it("offers the OpenAI-compatible batch alongside the original five", () => {
+    // Mirrors PROVIDER_TYPES on the Worker; a drift here means the console
+    // cannot create a type the gateway supports, or offers one it does not.
+    expect([...PROVIDERS]).toEqual([
+      "openai",
+      "anthropic",
+      "xai",
+      "gemini",
+      "perplexity",
+      "deepseek",
+      "groq",
+      "mistral",
+      "together",
+      "fireworks",
+      "cerebras",
+      "moonshot",
+      "huggingface",
+      "baseten",
+      "bytedance",
+      "openrouter",
+    ]);
+  });
+
+  it("knows which types bill on a cost the upstream reports", () => {
+    // Mirrors `reportsCost` on the Worker: it decides whether the console tells
+    // an operator a model needs a price before it will proxy.
+    expect(reportsCost("openrouter")).toBe(true);
+    for (const type of PROVIDERS.filter((value) => value !== "openrouter")) {
+      expect([type, reportsCost(type)]).toEqual([type, false]);
+    }
+  });
+});
+
 describe("provider configuration defaults", () => {
   it("creates an unrestricted provider until an operator enters an output cap", () => {
     expect(emptyProvider()).toEqual({
@@ -38,7 +85,10 @@ describe("provider configuration defaults", () => {
     const proxy = { providers: { mode: "all" as const }, model_rewrites: {} };
     expect(providerMode(proxy)).toBe("all");
     expect(selectedSlugs(proxy)).toEqual([]);
-    expect(enabledProviders(proxy, INSTANCES)).toEqual([
+    // "all" names no provider in particular, so it reaches every type the
+    // gateway supports — including ones this org has no instance of.
+    expect(enabledProviders(proxy, INSTANCES)).toEqual([...PROVIDERS]);
+    expect(enabledProviders(proxy, INSTANCES).slice(0, 5)).toEqual([
       "openai",
       "anthropic",
       "xai",

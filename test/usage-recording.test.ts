@@ -136,7 +136,14 @@ describe("usage recording idempotency", () => {
     expect(errorCodes(errors)).not.toContain("usage_record_failed");
   });
 
-  it("records an unpriced model at zero cost and logs it instead of throwing", async () => {
+  /**
+   * The billability gate refuses unpriced models before they proxy, so reaching
+   * the recorder means a price was deleted inside the configuration cache
+   * window. Nothing computed a cost for the request, so recording it as
+   * `computed` at $0 would make it indistinguishable from a genuinely free one:
+   * the cost is unknown, and unknown is what the column has to say.
+   */
+  it("records an unpriced model as unresolved, not as a computed zero", async () => {
     const appId = "usage-record-unpriced";
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -159,20 +166,42 @@ describe("usage recording idempotency", () => {
     });
 
     const row = await env.DB.prepare(
-      "SELECT event_id, cost_usd, input_tokens, output_tokens FROM app_usage_event WHERE app_id = ?",
+      `SELECT event_id, cost_usd, cost_source, reported_cost_usd, input_tokens, output_tokens
+         FROM app_usage_event WHERE app_id = ?`,
     )
       .bind(appId)
-      .first<{ event_id: string | null; cost_usd: number; input_tokens: number; output_tokens: number }>();
-    expect(row).toMatchObject({ cost_usd: 0, input_tokens: 5, output_tokens: 7 });
+      .first<{
+        event_id: string | null;
+        cost_usd: number;
+        cost_source: string | null;
+        reported_cost_usd: number | null;
+        input_tokens: number;
+        output_tokens: number;
+      }>();
+    // The tokens were readable and are kept; only the cost is missing.
+    expect(row).toMatchObject({
+      cost_usd: 0,
+      cost_source: "unresolved",
+      reported_cost_usd: null,
+      input_tokens: 5,
+      output_tokens: 7,
+    });
     expect(row?.event_id).toEqual(expect.any(String));
-    const unpriced = errors.mock.calls
-      .map((call) => JSON.parse(String(call[0])))
-      .find((entry) => entry.message === "usage_unpriced_model");
-    expect(unpriced).toMatchObject({
+    const logged = errors.mock.calls.map((call) => JSON.parse(String(call[0])));
+    // The mispricing alert stays: it names the model an operator has to fix.
+    expect(logged.find((entry) => entry.message === "usage_unpriced_model")).toMatchObject({
       level: "error",
       appId,
       provider: "openai",
       model: "gpt-model-nobody-priced",
+      eventId: row?.event_id,
+    });
+    // And the event surfaces as unresolved, with the reason it is unresolved.
+    expect(logged.find((entry) => entry.message === "usage_unresolved_cost")).toMatchObject({
+      level: "error",
+      appId,
+      model: "gpt-model-nobody-priced",
+      reason: "no_local_price",
       eventId: row?.event_id,
     });
     expect(errorCodes(errors)).not.toContain("usage_record_failed");
@@ -219,6 +248,143 @@ describe("usage recording idempotency", () => {
       .bind(appId)
       .first<{ cost_usd: number }>();
     expect(row?.cost_usd).toBeCloseTo(0.009, 8);
+  });
+
+  it("marks a successful response with an unreadable usage shape as unresolved", async () => {
+    const appId = "usage-record-unresolved";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await recordUsageEvent({
+      env,
+      // Cohere's shape: the request proxied fine, and nothing here is priceable.
+      stream: new Response(
+        JSON.stringify({ text: "hello", usage: { billed_units: { input_tokens: 120 } } }),
+      ).body,
+      contentType: "application/json",
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      appLevelLimitsEnabled: false,
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "ok",
+      latencyMs: 11,
+    });
+
+    const row = await env.DB.prepare(
+      "SELECT event_id, cost_source, cost_usd, input_tokens, output_tokens, status FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{
+        event_id: string | null;
+        cost_source: string | null;
+        cost_usd: number;
+        input_tokens: number;
+        output_tokens: number;
+        status: string;
+      }>();
+    expect(row).toMatchObject({
+      cost_source: "unresolved",
+      cost_usd: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      // The client got its 200; only the metering is in doubt.
+      status: "ok",
+    });
+    const unresolved = errors.mock.calls
+      .map((call) => JSON.parse(String(call[0])))
+      .find((entry) => entry.message === "usage_unresolved_cost");
+    expect(unresolved).toMatchObject({
+      level: "error",
+      appId,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      eventId: row?.event_id,
+    });
+  });
+
+  it("records a provider-reported zero as a measured cost, not an unresolved one", async () => {
+    const appId = "usage-record-reported-zero";
+
+    await recordUsageEvent({
+      env,
+      stream: new Response(JSON.stringify({ usage: { input_tokens: 0, output_tokens: 0 } })).body,
+      contentType: "application/json",
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      appLevelLimitsEnabled: false,
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "ok",
+      latencyMs: 5,
+    });
+
+    const row = await env.DB.prepare("SELECT cost_source, cost_usd FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_source: string | null; cost_usd: number }>();
+    expect(row).toMatchObject({ cost_source: "computed", cost_usd: 0 });
+  });
+
+  it("leaves a failed provider response computed, since an error owes no usage", async () => {
+    const appId = "usage-record-provider-error";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await recordUsageEvent({
+      env,
+      stream: new Response(JSON.stringify({ error: { message: "rate limited" } })).body,
+      contentType: "application/json",
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      appLevelLimitsEnabled: false,
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "provider_error",
+      latencyMs: 7,
+    });
+
+    const row = await env.DB.prepare("SELECT cost_source, cost_usd FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_source: string | null; cost_usd: number }>();
+    expect(row).toMatchObject({ cost_source: "computed", cost_usd: 0 });
+    expect(errorCodes(errors)).not.toContain("usage_unresolved_cost");
+  });
+
+  it("leaves a blocked event without a cost source, having metered nothing", async () => {
+    const appId = "usage-record-blocked-source";
+    await recordBlockedUsageEvent({
+      env,
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "blocked_rate",
+      latencyMs: 2,
+    });
+
+    const row = await env.DB.prepare("SELECT cost_source FROM app_usage_event WHERE app_id = ?")
+      .bind(appId)
+      .first<{ cost_source: string | null }>();
+    expect(row?.cost_source).toBeNull();
   });
 
   it("gives blocked events an identity that makes a replay a no-op", async () => {

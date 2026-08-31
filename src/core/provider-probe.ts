@@ -1,19 +1,48 @@
 import { GatewayError } from "./errors";
+import { gatewayProbe, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
-import { CF_AI_GATEWAY_BASE_URL } from "./proxyrules";
-import { PROVIDER_REGISTRY } from "./providers";
+import { PROVIDER_REGISTRY, providerAuthValue, providerProbeHeaders } from "./providers";
 import type { ProviderType } from "./types";
 
 /**
- * The cheapest authenticated call each provider offers. Perplexity has no
- * unmetered authenticated endpoint, so its credentials are accepted unvalidated
- * and flagged in the console.
+ * The cheapest authenticated call each provider offers, as a path under its own
+ * {@link PROVIDER_REGISTRY} base URL. A type is absent only when the provider
+ * has no such call, and its credentials are then accepted unvalidated and
+ * flagged in the console — never because a plausible path was untested. An entry
+ * that answers 200 to an invalid key would be worse than no entry at all: it
+ * would report every key as good.
+ *
+ * Absent, and why:
+ * - `perplexity` — no unmetered authenticated endpoint.
+ * - `fireworks` — its list-models call is `v1/accounts/{account}/models`, and
+ *   the account id cannot be derived from the key. Nothing under
+ *   `inference/v1/` is documented as a GET.
+ * - `huggingface` — `router.huggingface.co/v1/models` is public: it answers 200
+ *   to a garbage token, so probing it would validate every key. The endpoint
+ *   that does check a token lives on a different origin (`huggingface.co`),
+ *   which this table cannot express.
+ * - `bytedance` — ModelArk publishes no list-models call, and its own SDK has
+ *   no models resource. It also authenticates before it routes, so every path
+ *   answers the same 401 and a probe would prove nothing about the key.
  */
 const PROBE_PATHS: Partial<Record<ProviderType, string>> = {
   openai: "v1/models",
   xai: "v1/models",
   gemini: "v1beta/models",
   anthropic: "v1/models",
+  // DeepSeek's OpenAI base URL carries no `v1` segment.
+  deepseek: "models",
+  // Groq's OpenAI-compatible surface is namespaced under `openai/`.
+  groq: "openai/v1/models",
+  mistral: "v1/models",
+  together: "v1/models",
+  cerebras: "v1/models",
+  moonshot: "v1/models",
+  baseten: "v1/models",
+  // OpenRouter's key-status call, not its model list: `v1/models` is public and
+  // answers 200 to any token, exactly the trap `huggingface` is absent for.
+  // `v1/key` answers 401 to a key that does not exist.
+  openrouter: "v1/key",
 };
 
 const PROBE_TIMEOUT_MS = 4_000;
@@ -93,62 +122,72 @@ export function assertNotRejected(result: ProbeResult): ProbeResult {
   );
 }
 
+/**
+ * `baseUrl` is the row's operator-supplied origin, already canonicalized by the
+ * origin guard. Probing the same origin live traffic will use is the point: it
+ * is what turns a mistyped Azure or vLLM URL into a failure at configuration
+ * time rather than on the app's first request. A custom endpoint that does not
+ * implement the provider's list-models call answers 404, which is inconclusive
+ * rather than a refusal, so the operator can still save a URL they know is
+ * right.
+ */
 export async function probeProviderKey(
   type: ProviderType,
   secret: string,
+  baseUrl?: string | null,
 ): Promise<ProbeResult> {
   const path = PROBE_PATHS[type];
   if (!path) return { validated: false, reason: "no_probe" };
   const spec = PROVIDER_REGISTRY[type];
   const headers: Record<string, string> = {
-    [spec.auth.header]: `${"scheme" in spec.auth ? spec.auth.scheme : ""}${secret}`,
+    [spec.auth.header]: providerAuthValue(type, secret),
+    ...providerProbeHeaders(type),
   };
-  // Anthropic refuses any request without a version header, probe included.
-  if (type === "anthropic") headers["anthropic-version"] = "2023-06-01";
-  return runProbe(type, `${spec.directBaseUrl}${path}`, headers);
-}
-
-/** Probes one provider through a reusable Cloudflare AI Gateway connection. */
-export async function probeProviderGateway(input: {
-  type: ProviderType;
-  accountId: string;
-  gatewayId: string;
-  token: string;
-}): Promise<ProbeResult> {
-  const probePath = PROBE_PATHS[input.type];
-  if (!probePath) return { validated: false, reason: "no_probe" };
-  const spec = PROVIDER_REGISTRY[input.type];
-  const prefix = "stripPathPrefix" in spec.aig ? spec.aig.stripPathPrefix : undefined;
-  const path = prefix && probePath.startsWith(prefix)
-    ? probePath.slice(prefix.length)
-    : probePath;
-  const url = [
-    CF_AI_GATEWAY_BASE_URL,
-    encodeURIComponent(input.accountId),
-    encodeURIComponent(input.gatewayId),
-    spec.aig.slug,
-    path,
-  ].join("/");
-  const headers: Record<string, string> = {
-    "cf-aig-authorization": `Bearer ${input.token}`,
-  };
-  if (input.type === "anthropic") headers["anthropic-version"] = "2023-06-01";
-  return runProbe(`${input.type}_via_cf_aig`, url, headers);
+  return runProbe(type, `${baseUrl ?? spec.directBaseUrl}${path}`, headers);
 }
 
 /**
- * One call proves the account id, the gateway id, and the token together, which
- * is exactly the set of mistakes the preset form can produce.
+ * Probes one provider through a reusable gateway connection. The URL and the
+ * gateway auth header come from the adapter that serves live traffic, so a
+ * probe can never test a route production does not use — and the adapter
+ * decides whether the provider's own path is even the right thing to call.
  */
-export async function probeCfAigPreset(input: {
-  accountId: string;
-  gatewayId: string;
+export async function probeProviderGateway(input: {
+  type: ProviderType;
+  gateway: ResolvedGateway;
   token: string;
 }): Promise<ProbeResult> {
-  return probeProviderGateway({
-    type: "openai",
-    accountId: input.accountId,
-    gatewayId: input.gatewayId,
-    token: input.token,
+  const request = gatewayProbe({
+    gateway: input.gateway,
+    secret: input.token,
+    provider: input.type,
+    // Null where this provider has no cheap authenticated call of its own. A
+    // gateway that authenticates with its own credential still has one.
+    path: PROBE_PATHS[input.type] ?? null,
   });
+  // Nothing to prove: either this gateway does not serve the provider type, or
+  // the only thing it could call is a provider path that does not exist.
+  if (!request) return { validated: false, reason: "no_probe" };
+  // The provider's own probe requirements travel with it through the gateway:
+  // a Cloudflare route forwards to Anthropic's real API, which refuses a
+  // request with no version header however it arrived.
+  const headers: Record<string, string> = {
+    ...providerProbeHeaders(input.type),
+    ...request.headers,
+  };
+  return runProbe(`${input.type}_via_${input.gateway.type}`, request.url, headers);
+}
+
+/**
+ * Proves a whole gateway connection — every non-secret field plus the token —
+ * in one call, which is exactly the set of mistakes the create form can
+ * produce. `openai` is the stand-in provider: Cloudflare's URL needs *some*
+ * provider slug to be a URL at all, and Vercel's probe is provider-independent
+ * because its credential is, so both adapters answer for the connection itself.
+ */
+export async function probeGatewayPreset(
+  gateway: ResolvedGateway,
+  token: string,
+): Promise<ProbeResult> {
+  return probeProviderGateway({ type: "openai", gateway, token });
 }
