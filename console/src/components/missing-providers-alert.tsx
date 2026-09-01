@@ -1,9 +1,10 @@
+import { Fragment } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { ProviderName } from "@/components/brand-icon";
 import {
   enabledProviders,
-  PROVIDER_LABELS,
   type ProxyConfig,
   type Provider,
 } from "@/lib/config-types";
@@ -38,8 +39,17 @@ export function MissingProvidersAlert({ proxy }: { proxy: ProxyConfig }) {
   return (
     <Alert>
       <AlertCircle />
+      {/* The marks sit inside the sentence rather than beside it: the alert
+          names providers, and the reader is looking for one of them. Inline,
+          not a flex row — the title clamps itself to one line. */}
       <AlertTitle>
-        No credential for {missing.map((provider) => PROVIDER_LABELS[provider]).join(", ")}
+        No credential for{" "}
+        {missing.map((provider, index) => (
+          <Fragment key={provider}>
+            {index > 0 ? ", " : null}
+            <ProviderName type={provider} className="align-middle" />
+          </Fragment>
+        ))}
       </AlertTitle>
       <AlertDescription>
         This app allows{" "}

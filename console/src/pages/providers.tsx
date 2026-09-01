@@ -46,6 +46,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { GatewayIcon, GatewayName, ProviderIcon, ProviderName } from "@/components/brand-icon";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState, Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
@@ -223,15 +224,16 @@ function Auth({ row, gateways }: { row: ProviderCredential; gateways: ProviderGa
   // way, and that is more honest than an empty cell.
   if (!gateway) return <>Gateway</>;
   return (
-    <>
-      Gateway:{" "}
+    <span className="inline-flex items-center gap-1.5">
+      Gateway:
+      <GatewayIcon type={gateway.type} />
       <Link
         className="underline underline-offset-4"
         to={`${GATEWAYS_PATH}#${gatewayAnchor(gateway.id)}`}
       >
         {gateway.name}
       </Link>
-    </>
+    </span>
   );
 }
 
@@ -430,7 +432,10 @@ function ProvidersSection() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{PROVIDER_LABELS[row.type]}</Badge>
+                    <Badge variant="secondary">
+                      <ProviderIcon type={row.type} />
+                      {PROVIDER_LABELS[row.type]}
+                    </Badge>
                   </TableCell>
                   {/* The slug is a URL segment, so it is shown exactly as typed. */}
                   <TableCell className="font-mono text-xs">{row.slug}</TableCell>
@@ -884,7 +889,7 @@ function AddProviderDialog({
               <SelectContent>
                 {PROVIDERS.map((entry) => (
                   <SelectItem key={entry} value={entry}>
-                    {PROVIDER_LABELS[entry]}
+                    <ProviderName type={entry} />
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -977,7 +982,10 @@ function AddProviderDialog({
                 <SelectContent>
                   {active.map((entry) => (
                     <SelectItem key={entry.id} value={entry.id}>
-                      {entry.name}
+                      <span className="inline-flex items-center gap-1.5">
+                        <GatewayIcon type={entry.type} />
+                        {entry.name}
+                      </span>
                     </SelectItem>
                   ))}
                   {/* Last, behind a rule, in the accent colour and led by a
@@ -1122,7 +1130,10 @@ function GatewaysSection() {
                 <TableRow key={row.id} id={gatewayAnchor(row.id)}>
                   <TableCell className="font-medium">{row.name}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{GATEWAY_TYPE_LABELS[row.type]}</Badge>
+                    <Badge variant="secondary">
+                      <GatewayIcon type={row.type} />
+                      {GATEWAY_TYPE_LABELS[row.type]}
+                    </Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     <GatewayAuth gateway={row} />
@@ -1327,18 +1338,24 @@ function GatewayDialog({
       <div className="space-y-4">
         {CREATABLE_GATEWAY_TYPES.length > 1 ? (
           <Field label="Gateway type" htmlFor="gateway-type">
-            <select
-              id="gateway-type"
-              className="h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+            {/* The same listbox the provider picker uses, for the same reason:
+                a native <select> cannot carry the gateway's mark, and the type
+                is exactly the field a brand identifies fastest. */}
+            <Select
               value={type}
-              onChange={(event) => chooseType(event.target.value as CreatableGatewayType)}
+              onValueChange={(next) => chooseType(next as CreatableGatewayType)}
             >
-              {CREATABLE_GATEWAY_TYPES.map((entry) => (
-                <option key={entry.value} value={entry.value}>
-                  {entry.label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="gateway-type" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CREATABLE_GATEWAY_TYPES.map((entry) => (
+                  <SelectItem key={entry.value} value={entry.value}>
+                    <GatewayName type={entry.value} />
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
         ) : null}
         <Field label="Name" htmlFor="gateway-name">

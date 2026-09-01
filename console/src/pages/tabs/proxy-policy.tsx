@@ -13,12 +13,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { ProviderName } from "@/components/brand-icon";
 import { EmptyState, Field, SectionHeader } from "@/components/field";
 import { StringList } from "@/components/string-list";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
   CLAMP_STYLES,
-  PROVIDER_LABELS,
   emptyProvider,
   instanceModels,
   normalizePath,
@@ -293,7 +293,7 @@ function policyRows(
     description: (
       <>
         <span className="font-mono">/proxy/{instance.slug}/…</span> ·{" "}
-        {PROVIDER_LABELS[instance.type]} —{" "}
+        <ProviderName type={instance.type} className="align-middle" /> —{" "}
         {gatewayHint(instance, gateways) ?? PROVIDER_HINTS[instance.type]}
       </>
     ),

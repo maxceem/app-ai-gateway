@@ -101,10 +101,12 @@ describe("ProxyPolicyTab", () => {
   it("switches the organization's instances, not the five provider types", async () => {
     renderTab(selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: [] } }));
 
-    // One card per instance, named by the row an operator recognises.
-    expect(await screen.findByText("Dev OpenAI")).toBeTruthy();
-    expect(screen.getByText("Prod OpenAI")).toBeTruthy();
-    expect(screen.getByText("Anthropic")).toBeTruthy();
+    // One card per instance, named by the row an operator recognises. By
+    // heading, not by text: the card's description names the provider type as
+    // well, so an instance named after its own brand appears twice.
+    expect(await screen.findByRole("heading", { name: "Dev OpenAI" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Prod OpenAI" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Anthropic" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Enable openai-dev" }))
       .toHaveProperty("ariaChecked", "true");
     expect(screen.getByRole("switch", { name: "Enable openai" }))

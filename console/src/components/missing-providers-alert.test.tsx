@@ -84,7 +84,10 @@ describe("MissingProvidersAlert", () => {
     stubApi({ "/v1/admin/providers": { body: { providers: [] } } });
     renderAuthenticated(<MissingProvidersAlert proxy={SELECTED} />);
 
-    expect(await screen.findByText(/No credential for OpenAI/)).toBeTruthy();
+    // Read off the alert as a whole: each provider's name sits in its own
+    // element beside that provider's mark.
+    expect((await screen.findByRole("alert")).textContent)
+      .toMatch(/No credential for OpenAI/);
     expect(screen.getByRole("link", { name: /add a provider key/i }).getAttribute("href"))
       .toBe("/providers");
   });

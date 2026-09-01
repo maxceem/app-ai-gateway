@@ -351,6 +351,14 @@ export function isProviderType(value: string): value is Provider {
 }
 
 /**
+ * Whether a string names a gateway type this console can describe. Read off the
+ * label table, whose key set is what makes a type displayable at all.
+ */
+export function isGatewayType(value: string): value is keyof typeof GATEWAY_TYPE_LABELS {
+  return Object.hasOwn(GATEWAY_TYPE_LABELS, value);
+}
+
+/**
  * The provider *types* an app can reach, resolved through the organization's
  * instances: policy names slugs, but pricing, labels and "is this configured?"
  * are all properties of the type.

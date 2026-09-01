@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ProviderIcon } from "@/components/brand-icon";
 import { EmptyState, Field, SectionHeader } from "@/components/field";
 import { DisabledReason } from "@/components/guarded-button";
 import { JsonEditor, parseJson } from "@/components/json-editor";
@@ -103,14 +104,16 @@ function ProviderSelect({
   const options = useMemo(() => {
     const known = instances.map((instance) => ({
       slug: instance.slug,
+      type: instance.type,
       label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`
         + (instance.status === "disabled" ? " (disabled)" : ""),
     }));
     // A slug no instance answers for stays selected and stays listed: the
     // endpoint is configured to use it, and blanking the select would quietly
-    // drop that on the next save.
+    // drop that on the next save. It carries no mark either — nothing here
+    // knows which provider it named.
     return value && !instances.some((instance) => instance.slug === value)
-      ? [{ slug: value, label: `${value} — not configured` }, ...known]
+      ? [{ slug: value, type: null, label: `${value} — not configured` }, ...known]
       : known;
   }, [instances, value]);
 
@@ -127,7 +130,10 @@ function ProviderSelect({
         ) : (
           options.map((option) => (
             <SelectItem key={option.slug} value={option.slug} className="text-xs">
-              {option.label}
+              <span className="inline-flex items-center gap-1.5">
+                {option.type ? <ProviderIcon type={option.type} /> : null}
+                {option.label}
+              </span>
             </SelectItem>
           ))
         )}

@@ -26,10 +26,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { GatewayIcon, ProviderIcon, ProviderName } from "@/components/brand-icon";
 import { EmptyState, SectionHeader } from "@/components/field";
 import { RangePicker } from "@/components/pickers";
 import { EventStatusBadge } from "@/components/status-badge";
-import { PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import { isGatewayType, isProviderType } from "@/lib/config-types";
 import {
   cachedInputRate,
   daysAgo,
@@ -95,6 +96,18 @@ function pivot(buckets: TimeseriesBucket[], from: string, to: string, metric: Me
   };
 }
 
+/**
+ * The brand a breakdown key names, on the two dimensions whose keys are types
+ * rather than free-form strings. The key itself stays exactly as recorded —
+ * these are the values the API groups by, and an event from before a type
+ * existed simply has no mark.
+ */
+function BreakdownMark({ dimension, value }: { dimension: string; value: string }) {
+  if (dimension === "provider" && isProviderType(value)) return <ProviderIcon type={value} />;
+  if (dimension === "provider_gateway" && isGatewayType(value)) return <GatewayIcon type={value} />;
+  return null;
+}
+
 export function UsageTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<Metric>("cost_usd");
@@ -117,11 +130,15 @@ export function UsageTab({ appId }: { appId: string }) {
     [series.data, from, to, metric],
   );
 
+  // The legend and the tooltip both take a node, so a series is named with the
+  // provider's mark beside its label — the colour swatch is what ties the entry
+  // to its bar, and stays. A series whose key is not a provider type at all is
+  // an older event's, and is named as it was recorded.
   const config: ChartConfig = Object.fromEntries(
     chart.providers.map((provider, index) => [
       provider,
       {
-        label: PROVIDER_LABELS[provider as Provider] ?? provider,
+        label: isProviderType(provider) ? <ProviderName type={provider} /> : provider,
         color: CHART_COLORS[index % CHART_COLORS.length],
       },
     ]),
@@ -247,7 +264,14 @@ export function UsageTab({ appId }: { appId: string }) {
                 breakdown.data?.rows.map((row) => (
                   <TableRow key={row.key ?? "unknown"}>
                     <TableCell className="font-mono text-xs">
-                      {row.key ?? <span className="text-muted-foreground">none</span>}
+                      {row.key === null ? (
+                        <span className="text-muted-foreground">none</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5">
+                          <BreakdownMark dimension={dimension} value={row.key} />
+                          {row.key}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.requests)}</TableCell>
                     <TableCell className="tabular text-right">{formatCompact(inputTokens(row))}</TableCell>
@@ -341,7 +365,10 @@ export function UsageTab({ appId }: { appId: string }) {
                       {/* The configured route, which is known with certainty;
                           a direct call has no gateway to name. */}
                       {event.provider_gateway_type ? (
-                        <span className="block">via {event.provider_gateway_type}</span>
+                        <span className="flex items-center gap-1">
+                          via <GatewayIcon type={event.provider_gateway_type} />
+                          {event.provider_gateway_type}
+                        </span>
                       ) : null}
                       {/* Observed, not configured: only shown when the upstream
                           named the host that actually served the request. */}

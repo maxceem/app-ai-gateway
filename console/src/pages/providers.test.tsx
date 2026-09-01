@@ -553,10 +553,7 @@ describe("ProvidersPage", () => {
     // Cloudflare is still the first entry, so its own fields are what shows.
     expect(within(dialog).getByLabelText("Cloudflare Account ID")).toBeTruthy();
 
-    await userEvent.selectOptions(
-      within(dialog).getByLabelText("Gateway type"),
-      "vercel",
-    );
+    await choose(within(dialog).getByLabelText("Gateway type"), /vercel/i);
     // Its origin is fixed in adapter code and its token names the team, so
     // there is nothing else to ask for.
     expect(within(dialog).queryByLabelText("Cloudflare Account ID")).toBeNull();
