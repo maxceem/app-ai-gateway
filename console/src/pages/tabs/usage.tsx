@@ -47,13 +47,32 @@ import {
 import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
 import type { TimeseriesBucket } from "@/lib/types";
 
+/**
+ * The categorical slots, in the fixed order they were validated in — see the
+ * comment on `--chart-1` in `index.css`. Assigned in sequence and never cycled:
+ * a ninth series does not get a ninth hue, it goes to {@link OTHER}.
+ */
 const CHART_COLORS = [
   "var(--chart-1)",
   "var(--chart-2)",
   "var(--chart-3)",
   "var(--chart-4)",
   "var(--chart-5)",
+  "var(--chart-6)",
+  "var(--chart-7)",
 ];
+
+/**
+ * The band every provider past the seventh is summed into. Eight bands is
+ * already the most a reader can hold against a legend; past that, a colour
+ * stops naming anything and two neighbouring segments of the same hue are two
+ * different providers. Its key cannot collide with a provider type, which is
+ * why it is not simply "other".
+ */
+const OTHER = "__other";
+
+/** Named series before the tail: seven hues, then {@link OTHER}. */
+const MAX_SERIES = CHART_COLORS.length;
 
 const BREAKDOWNS = [
   { value: "model", label: "By model" },
@@ -73,9 +92,39 @@ const BREAKDOWNS = [
 
 type Metric = "cost_usd" | "requests" | "tokens";
 
-/** Turns `(date, provider)` rows into one row per day with a column per provider. */
-function pivot(buckets: TimeseriesBucket[], from: string, to: string, metric: Metric) {
-  const providers = [...new Set(buckets.map((bucket) => bucket.provider))].sort();
+/** One column of the chart: the day, then one total per series key. */
+export interface ChartColumn {
+  date: string;
+  [series: string]: string | number;
+}
+
+const metricOf = (bucket: TimeseriesBucket, metric: Metric): number =>
+  metric === "tokens" ? totalTokens(bucket) : metric === "requests" ? bucket.requests : bucket.cost_usd;
+
+/**
+ * Turns `(date, provider)` rows into one row per day with a column per series.
+ *
+ * The series are the busiest providers over the whole range, largest first, and
+ * everything behind them is summed into one `Other` band — so the stack carries
+ * at most eight, which is as many as its palette has hues. Ranking by the range
+ * total rather than per day keeps a provider in the same band on every column.
+ */
+export function pivot(buckets: TimeseriesBucket[], from: string, to: string, metric: Metric) {
+  const totals = new Map<string, number>();
+  for (const bucket of buckets) {
+    totals.set(bucket.provider, (totals.get(bucket.provider) ?? 0) + metricOf(bucket, metric));
+  }
+  const ranked = [...totals.entries()]
+    // Ties broken by name, so an all-zero range is still ordered the same way
+    // twice running rather than by whatever order the rows arrived in.
+    .sort(([leftName, left], [rightName, right]) =>
+      right - left || (leftName < rightName ? -1 : leftName > rightName ? 1 : 0),
+    )
+    .map(([provider]) => provider);
+  const named = ranked.slice(0, MAX_SERIES);
+  const folded = new Set(ranked.slice(MAX_SERIES));
+  const providers = folded.size > 0 ? [...named, OTHER] : named;
+
   const byDate = new Map<string, Record<string, number>>();
   for (
     let day = new Date(`${from}T00:00:00Z`);
@@ -88,12 +137,14 @@ function pivot(buckets: TimeseriesBucket[], from: string, to: string, metric: Me
   for (const bucket of buckets) {
     const row = byDate.get(bucket.date);
     if (!row) continue;
-    row[bucket.provider] =
-      metric === "tokens" ? totalTokens(bucket) : metric === "requests" ? bucket.requests : bucket.cost_usd;
+    const key = folded.has(bucket.provider) ? OTHER : bucket.provider;
+    row[key] = (row[key] ?? 0) + metricOf(bucket, metric);
   }
   return {
     providers,
-    rows: [...byDate.entries()].map(([date, values]) => ({ date, ...values })),
+    /** How many providers the `Other` band stands for, for the legend to say. */
+    foldedCount: folded.size,
+    rows: [...byDate.entries()].map(([date, values]): ChartColumn => ({ date, ...values })),
   };
 }
 
@@ -138,10 +189,19 @@ export function UsageTab({ appId }: { appId: string }) {
   const config: ChartConfig = Object.fromEntries(
     chart.providers.map((provider, index) => [
       provider,
-      {
-        label: isProviderType(provider) ? <ProviderName type={provider} /> : provider,
-        color: CHART_COLORS[index % CHART_COLORS.length],
-      },
+      provider === OTHER
+        ? {
+            label: `Other (${chart.foldedCount})`,
+            // Neutral on purpose: the band is a remainder, not a brand, and it
+            // must not read as a ninth entry in the categorical order.
+            color: "var(--chart-other)",
+          }
+        : {
+            label: isProviderType(provider) ? <ProviderName type={provider} /> : provider,
+            // Straight indexing, never `% length`: the seventh series is the
+            // last that gets a hue, and `pivot` has already folded the rest.
+            color: CHART_COLORS[index],
+          },
     ]),
   );
 

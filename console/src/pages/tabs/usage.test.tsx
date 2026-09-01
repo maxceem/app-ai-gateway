@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
-import { UsageTab } from "./usage";
+import { UsageTab, pivot } from "./usage";
 import { renderAuthenticated, stubApi } from "@/test/render";
-import type { UsageEvent } from "@/lib/types";
+import type { TimeseriesBucket, UsageEvent } from "@/lib/types";
 
 const APP_ID = "my-app";
 
@@ -53,6 +53,95 @@ function renderUsage(events: UsageEvent[]) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("pivot", () => {
+  const day = (provider: string, cost: number, date = "2026-08-01"): TimeseriesBucket => ({
+    date,
+    provider,
+    requests: 1,
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_write_tokens: 0,
+    output_tokens: 0,
+    cost_usd: cost,
+    errors: 0,
+    blocked: 0,
+  });
+
+  it("folds every provider past the palette's hues into one Other band", () => {
+    // Ten providers: the seven busiest keep a band, the rest are summed.
+    const chart = pivot(
+      [
+        day("openai", 10),
+        day("anthropic", 9),
+        day("gemini", 8),
+        day("xai", 7),
+        day("perplexity", 6),
+        day("groq", 5),
+        day("mistral", 4),
+        day("deepseek", 3),
+        day("together", 2),
+        day("cerebras", 1),
+      ],
+      "2026-08-01",
+      "2026-08-01",
+      "cost_usd",
+    );
+
+    expect(chart.providers).toEqual([
+      "openai",
+      "anthropic",
+      "gemini",
+      "xai",
+      "perplexity",
+      "groq",
+      "mistral",
+      "__other",
+    ]);
+    expect(chart.foldedCount).toBe(3);
+    // Nothing is dropped: the tail is summed rather than discarded.
+    expect(chart.rows[0]!.__other).toBe(6);
+  });
+
+  it("leaves the stack alone when it already fits the palette", () => {
+    const chart = pivot(
+      [day("openai", 2), day("anthropic", 1)],
+      "2026-08-01",
+      "2026-08-01",
+      "cost_usd",
+    );
+
+    expect(chart.providers).toEqual(["openai", "anthropic"]);
+    expect(chart.foldedCount).toBe(0);
+  });
+
+  it("ranks on the metric being plotted, not always on cost", () => {
+    // Cheap but busy outranks costly but rare once the chart counts requests.
+    const buckets = [
+      { ...day("openai", 100), requests: 1 },
+      { ...day("groq", 1), requests: 50 },
+    ];
+
+    expect(pivot(buckets, "2026-08-01", "2026-08-01", "cost_usd").providers)
+      .toEqual(["openai", "groq"]);
+    expect(pivot(buckets, "2026-08-01", "2026-08-01", "requests").providers)
+      .toEqual(["groq", "openai"]);
+  });
+
+  it("keeps a provider in one band across every day of the range", () => {
+    // Ranked on the range total, so a provider that leads one day and trails
+    // the next does not swap bands — and colours — column to column.
+    const chart = pivot(
+      [day("openai", 1), day("anthropic", 9, "2026-08-02"), day("openai", 9, "2026-08-02")],
+      "2026-08-01",
+      "2026-08-02",
+      "cost_usd",
+    );
+
+    expect(chart.providers).toEqual(["openai", "anthropic"]);
+    expect(chart.rows.map((row) => row.date)).toEqual(["2026-08-01", "2026-08-02"]);
+  });
+});
 
 describe("UsageTab event costs", () => {
   it("says an unresolved event was not metered instead of showing it as free", async () => {

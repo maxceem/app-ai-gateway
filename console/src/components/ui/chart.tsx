@@ -84,6 +84,27 @@ function ChartContainer({
   )
 }
 
+/**
+ * Recharts hands the legend and the tooltip their entries ordered by data key,
+ * which is neither the order the series were declared in nor the order they are
+ * stacked in — a chart whose first series is its largest reads alphabetically
+ * instead, and a key like `__other` sorts to the front of both. The config is
+ * insertion-ordered, so it is the series order; entries follow it, and anything
+ * not in it keeps to the back rather than jumping to the front.
+ */
+function inSeriesOrder<Item>(
+  items: Item[],
+  config: ChartConfig,
+  keyOf: (item: Item) => string,
+): Item[] {
+  const order = Object.keys(config)
+  const rank = (item: Item) => {
+    const index = order.indexOf(keyOf(item))
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index
+  }
+  return [...items].sort((left, right) => rank(left) - rank(right))
+}
+
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
   const colorConfig = Object.entries(config).filter(
     ([, config]) => config.theme ?? config.color
@@ -207,8 +228,11 @@ function ChartTooltipContent({
     >
       {!nestLabel ? tooltipLabel : null}
       <div className="grid gap-1.5">
-        {payload
-          .filter((item) => item.type !== "none")
+        {inSeriesOrder(
+          payload.filter((item) => item.type !== "none"),
+          config,
+          (item) => `${nameKey ?? item.name ?? item.dataKey ?? "value"}`,
+        )
           .map((item, index) => {
             const key = `${nameKey ?? item.name ?? item.dataKey ?? "value"}`
             const itemConfig = getPayloadConfigFromPayload(config, item, key)
@@ -313,8 +337,11 @@ function ChartLegendContent({
         className
       )}
     >
-      {payload
-        .filter((item) => item.type !== "none")
+      {inSeriesOrder(
+        payload.filter((item) => item.type !== "none"),
+        config,
+        (item) => `${nameKey ?? item.dataKey ?? "value"}`,
+      )
         .map((item, index) => {
           const key = `${nameKey ?? item.dataKey ?? "value"}`
           const itemConfig = getPayloadConfigFromPayload(config, item, key)
