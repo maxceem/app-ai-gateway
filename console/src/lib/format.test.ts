@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { cachedInputRate, formatPercent, inputTokens, totalTokens } from "./format";
+import {
+  cachedInputRate,
+  formatCost,
+  formatCostToCent,
+  formatPercent,
+  inputTokens,
+  totalTokens,
+} from "./format";
 
 const usage = {
   input_tokens: 3_707,
@@ -7,6 +14,21 @@ const usage = {
   cache_write_tokens: 0,
   output_tokens: 14,
 };
+
+describe("cost formatting", () => {
+  it("keeps four decimals below a cent, where a request's whole cost lives", () => {
+    expect(formatCost(0.0081)).toBe("$0.0081");
+    expect(formatCost(0)).toBe("$0.00");
+    expect(formatCost(1.239)).toBe("$1.24");
+  });
+
+  it("reads a total to the cent, so a column of them is one width", () => {
+    expect(formatCostToCent(0.0081)).toBe("$0.01");
+    expect(formatCostToCent(0.00004)).toBe("$0.00");
+    expect(formatCostToCent(1.239)).toBe("$1.24");
+    expect(formatCostToCent(null)).toBe("—");
+  });
+});
 
 describe("token formatting", () => {
   it("presents provider input as the sum of its exclusive billing buckets", () => {

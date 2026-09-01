@@ -36,6 +36,7 @@ import {
   daysAgo,
   formatCompact,
   formatCost,
+  formatCostToCent,
   formatDateTime,
   formatNumber,
   formatPercent,
@@ -144,8 +145,10 @@ export function UsageTab({ appId }: { appId: string }) {
     ]),
   );
 
+  // The chart plots a day's total for one provider, not one request, so its
+  // costs read to the cent — see `formatCostToCent`.
   const formatMetric = (value: number) =>
-    metric === "cost_usd" ? formatCost(value) : formatCompact(value);
+    metric === "cost_usd" ? formatCostToCent(value) : formatCompact(value);
 
   return (
     <div className="space-y-4">

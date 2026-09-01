@@ -252,7 +252,9 @@ function ChartTooltipContent({
                     )}
                     <div
                       className={cn(
-                        "flex flex-1 justify-between leading-none",
+                        // The gap is what keeps the longest series name off its
+                        // own value; `justify-between` alone lets the two touch.
+                        "flex flex-1 justify-between gap-3 leading-none",
                         nestLabel ? "items-end" : "items-center"
                       )}
                     >
