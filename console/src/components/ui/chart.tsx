@@ -291,7 +291,10 @@ function ChartLegendContent({
   return (
     <div
       className={cn(
-        "flex items-center justify-center gap-4",
+        // Wraps: a chart with a series per provider has more entries than fit
+        // on one line, and an unwrapped legend overflows its card in both
+        // directions rather than growing downwards.
+        "flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5",
         verticalAlign === "top" ? "pb-3" : "pt-3",
         className
       )}
@@ -306,7 +309,9 @@ function ChartLegendContent({
             <div
               key={index}
               className={cn(
-                "flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground"
+                // Each entry stays on one line; wrapping happens between
+                // entries, never inside a brand's name.
+                "flex items-center gap-1.5 whitespace-nowrap [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground"
               )}
             >
               {itemConfig?.icon && !hideIcon ? (
