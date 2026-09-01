@@ -196,7 +196,9 @@ export function UsageTab({ appId }: { appId: string }) {
                 />
                 <ChartTooltip
                   content={
-                    <ChartTooltipContent formatter={(value) => formatMetric(Number(value))} />
+                    <ChartTooltipContent
+                      valueFormatter={(value) => formatMetric(Number(value))}
+                    />
                   }
                 />
                 <ChartLegend content={<ChartLegendContent />} />
