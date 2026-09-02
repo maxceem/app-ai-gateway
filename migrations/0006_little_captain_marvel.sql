@@ -1,0 +1,1 @@
+ALTER TABLE `usage_events` ADD `endpoint_slug` text;

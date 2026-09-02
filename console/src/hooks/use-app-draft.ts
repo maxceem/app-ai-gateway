@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import type {
-  AuthConfig,
-  AuthenticationConfig,
-  LimitsConfig,
-  ProxyConfig,
-  StoredAppConfig,
+import {
+  authIssuer,
+  emptyIssuer,
+  withIssuer,
+  type AuthConfig,
+  type AuthenticationConfig,
+  type EndpointsConfig,
+  type LimitsConfig,
+  type ProxyConfig,
+  type StoredAppConfig,
 } from "@/lib/config-types";
 import { useApp, useSaveApp, useValidateApp } from "@/lib/queries";
 import type { AppRow, AppUpsertBody } from "@/lib/types";
@@ -29,11 +33,18 @@ export function useAppDraft(appId: string) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
   const [draftAppId, setDraftAppId] = useState<string | null>(null);
+  /**
+   * What the issuer held the last time one was configured, so switching the
+   * toggle off and back on restores the JWKS URL and claims instead of handing
+   * the operator a blank form.
+   */
+  const lastIssuer = useRef<AuthConfig | null>(null);
 
   const row = query.data?.app;
   useEffect(() => {
     if (!row) return;
     const next = toDraft(row);
+    lastIssuer.current = authIssuer(next.config.authentication) ?? null;
     setDraft(next);
     setBaseline(JSON.stringify(next));
     setDraftAppId(appId);
@@ -59,16 +70,41 @@ export function useAppDraft(appId: string) {
 
   const updateIssuer = useCallback((partial: Partial<AuthConfig>) => {
     setDraft((current) => {
-      if (!current || current.config.authentication.type !== "apple_app_attest") return current;
+      if (!current) return current;
+      const authentication = current.config.authentication;
+      // An api_key app has no issuer until the operator enables one. An App
+      // Attest app always has one, so a config edited into shape without it
+      // starts from the defaults the form is already showing.
+      const issuer = authIssuer(authentication)
+        ?? (authentication.type === "apple_app_attest" ? emptyIssuer() : undefined);
+      if (!issuer) return current;
       return {
         ...current,
         config: {
           ...current.config,
-          authentication: {
-            ...current.config.authentication,
-            issuer: { ...current.config.authentication.issuer, ...partial },
-          },
+          authentication: withIssuer(authentication, { ...issuer, ...partial }),
         },
+      };
+    });
+  }, []);
+
+  /**
+   * Turns the optional issuer on an api_key app on and off. Disabling drops the
+   * block rather than blanking it, so the saved config matches an app that never
+   * had one, while the dropped values are kept in memory for a re-enable.
+   */
+  const setIssuerEnabled = useCallback((enabled: boolean) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const authentication = current.config.authentication;
+      const configured = authIssuer(authentication);
+      if (configured) lastIssuer.current = configured;
+      const issuer = enabled
+        ? (configured ?? lastIssuer.current ?? emptyIssuer())
+        : undefined;
+      return {
+        ...current,
+        config: { ...current.config, authentication: withIssuer(authentication, issuer) },
       };
     });
   }, []);
@@ -81,8 +117,25 @@ export function useAppDraft(appId: string) {
 
   const updateLimits = useCallback((limits: LimitsConfig) => updateConfig({ limits }), [updateConfig]);
 
+  // Endpoints live inside config_json, so they ride the same draft as the rest.
+  // An empty map is dropped so apps without endpoints keep their config clean.
+  const updateEndpoints = useCallback((endpoints: EndpointsConfig) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const { endpoints: _previous, ...config } = current.config;
+      return {
+        ...current,
+        config: Object.keys(endpoints).length === 0 ? config : { ...config, endpoints },
+      };
+    });
+  }, []);
+
   const reset = useCallback(() => {
-    if (activeBaseline) setDraft(JSON.parse(activeBaseline) as Draft);
+    if (!activeBaseline) return;
+    const restored = JSON.parse(activeBaseline) as Draft;
+    // Discarding also forgets an issuer that only ever existed in the draft.
+    lastIssuer.current = authIssuer(restored.config.authentication) ?? null;
+    setDraft(restored);
   }, [activeBaseline]);
 
   const save = useCallback(async () => {
@@ -119,8 +172,10 @@ export function useAppDraft(appId: string) {
     updateConfig,
     updateAuthentication,
     updateIssuer,
+    setIssuerEnabled,
     updateProxy,
     updateLimits,
+    updateEndpoints,
     reset,
     save,
     saving: saveMutation.isPending,

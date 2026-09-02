@@ -1,36 +1,27 @@
 import { lazy, Suspense, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import {
-  AlertCircle,
-  ArrowLeft,
-  BadgeCheck,
-  Braces,
-  ChartNoAxesColumn,
-  Gauge,
-  Loader2,
-  MoreHorizontal,
-  Power,
-  ShieldCheck,
-  Trash2,
-  Users,
-  Waypoints,
-} from "lucide-react";
+import { AlertCircle, Loader2, MoreHorizontal, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { GuardedButton } from "@/components/guarded-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { MissingProvidersAlert } from "@/components/missing-providers-alert";
 import { AppStatusBadge } from "@/components/status-badge";
 import { useAppDraft } from "@/hooks/use-app-draft";
+import { useConsoleSession } from "@/lib/console-session";
+import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useDeleteApp } from "@/lib/queries";
+import { AuthEventsTab } from "@/pages/tabs/auth-events";
 import { AuthPolicyTab } from "@/pages/tabs/auth-policy";
 import { LimitsTab } from "@/pages/tabs/limits";
 import { OverviewTab } from "@/pages/tabs/overview";
@@ -43,22 +34,16 @@ const UsageTab = lazy(() => import("@/pages/tabs/usage").then((module) => ({ def
 const RawJsonTab = lazy(() =>
   import("@/pages/tabs/raw-json").then((module) => ({ default: module.RawJsonTab })),
 );
-
-const TABS = [
-  { value: "overview", label: "Overview", icon: BadgeCheck },
-  { value: "auth", label: "Auth policy", icon: ShieldCheck },
-  { value: "proxy", label: "Proxy policy", icon: Waypoints },
-  { value: "limits", label: "Limits", icon: Gauge },
-  { value: "users", label: "Users", icon: Users },
-  { value: "usage", label: "Usage", icon: ChartNoAxesColumn },
-  { value: "json", label: "Raw JSON", icon: Braces },
-] as const;
+const EndpointsTab = lazy(() =>
+  import("@/pages/tabs/endpoints").then((module) => ({ default: module.EndpointsTab })),
+);
 
 export function AppDetailPage() {
   const { appId = "", tab = "overview" } = useParams();
   const navigate = useNavigate();
   const state = useAppDraft(appId);
   const deleteApp = useDeleteApp();
+  const { readOnly } = useConsoleSession();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { query, draft, dirty } = state;
@@ -97,50 +82,52 @@ export function AppDetailPage() {
 
   return (
     <div className="space-y-6 pb-24">
-      <div className="space-y-3">
-        <Link
-          to="/apps"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="size-3.5" />
-          Apps
-        </Link>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
-            {query.isPending || !draft ? (
-              <Skeleton className="h-7 w-48" />
-            ) : (
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold tracking-tight">{draft.name}</h1>
-                <AppStatusBadge status={draft.status} />
-              </div>
-            )}
-            <p className="font-mono text-xs text-muted-foreground">{appId}</p>
-          </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {query.isPending || !draft ? (
+          <Skeleton className="h-7 w-48" />
+        ) : (
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void state.validate()} disabled={!draft}>
-              {state.validating ? <Loader2 className="size-4 animate-spin" /> : null}
-              Validate
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" aria-label="More actions">
-                  <MoreHorizontal className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem onClick={toggleStatus} disabled={!draft}>
-                  <Power className="size-4" />
-                  {draft?.status === "active" ? "Disable app" : "Enable app"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
-                  <Trash2 className="size-4" />
-                  Delete app
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <h1 className="text-xl font-semibold tracking-tight">{draft.name}</h1>
+            <AppStatusBadge status={draft.status} />
           </div>
+        )}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => void state.validate()} disabled={!draft}>
+            {state.validating ? <Loader2 className="size-4 animate-spin" /> : null}
+            Validate
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" aria-label="More actions">
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {/* A tooltip cannot follow the pointer into a menu, so the
+                  restriction is stated as a label above the disabled items. */}
+              {readOnly ? (
+                <>
+                  <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                    {READ_ONLY_REASON}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                </>
+              ) : null}
+              <DropdownMenuItem onClick={toggleStatus} disabled={!draft || readOnly}>
+                <Power className="size-4" />
+                {draft?.status === "active" ? "Disable app" : "Enable app"}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={readOnly}
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 className="size-4" />
+                Delete app
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -154,16 +141,7 @@ export function AppDetailPage() {
         </Alert>
       ) : null}
 
-      <Tabs value={tab} onValueChange={(next) => navigate(`/apps/${appId}/${next}`)}>
-        <TabsList className="w-full justify-start overflow-x-auto">
-          {TABS.map((entry) => (
-            <TabsTrigger key={entry.value} value={entry.value} className="gap-1.5">
-              <entry.icon className="size-3.5" />
-              {entry.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+      {draft ? <MissingProvidersAlert proxy={draft.config.routing} /> : null}
 
       {query.isPending || !draft ? (
         <div className="space-y-3">
@@ -180,9 +158,17 @@ export function AppDetailPage() {
         <LimitsTab state={state} />
       ) : tab === "users" ? (
         <UsersTab appId={appId} />
+      ) : tab === "auth-events" ? (
+        <AuthEventsTab appId={appId} />
       ) : (
         <Suspense fallback={<Skeleton className="h-64 w-full" />}>
-          {tab === "usage" ? <UsageTab appId={appId} /> : <RawJsonTab state={state} />}
+          {tab === "usage" ? (
+            <UsageTab appId={appId} />
+          ) : tab === "endpoints" ? (
+            <EndpointsTab appId={appId} state={state} />
+          ) : (
+            <RawJsonTab state={state} />
+          )}
         </Suspense>
       )}
 
@@ -197,10 +183,10 @@ export function AppDetailPage() {
               <Button variant="ghost" size="sm" onClick={state.reset} disabled={state.saving}>
                 Discard
               </Button>
-              <Button size="sm" onClick={() => void state.save()} disabled={state.saving}>
+              <GuardedButton size="sm" onClick={() => void state.save()} disabled={state.saving}>
                 {state.saving ? <Loader2 className="size-4 animate-spin" /> : null}
                 Save changes
-              </Button>
+              </GuardedButton>
             </div>
           </div>
         </div>

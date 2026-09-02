@@ -38,8 +38,14 @@ export class UserLimiter extends DurableObject<Env> {
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           blocked INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS applied_events (
+          event_id TEXT PRIMARY KEY,
+          applied_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_applied_events_applied_at ON applied_events(applied_at);
         INSERT OR IGNORE INTO state(singleton, blocked) VALUES (1, 0);
         INSERT OR IGNORE INTO _sql_schema_migrations(id, applied_at) VALUES (1, unixepoch());
+        INSERT OR IGNORE INTO _sql_schema_migrations(id, applied_at) VALUES (2, unixepoch());
       `);
       if ((await this.ctx.storage.getAlarm()) === null) {
         await this.ctx.storage.setAlarm(Date.now() + 86_400_000);
@@ -114,9 +120,34 @@ export class UserLimiter extends DurableObject<Env> {
     return { allowed: true, requestsToday: dayCount + 1, monthlyCostMicrousd };
   }
 
-  addCost(now: number, microusd: number): number {
-    const safeCost = Math.max(0, Math.trunc(microusd));
+  /**
+   * Settles one usage event against the month's spend. Recording retries the
+   * same event, so the cost is applied only when `eventId` is new to this
+   * instance's ledger; a replay reads the month back unchanged. The ledger is
+   * per instance, which is what makes an event settle exactly once against both
+   * the user limiter and the app limiter.
+   */
+  addCost(eventId: string, now: number, microusd: number): number {
     const month = this.month(now);
+    const applied = this.ctx.storage.sql
+      .exec<{ event_id: string }>(
+        `INSERT OR IGNORE INTO applied_events(event_id, applied_at) VALUES (?, ?)
+         RETURNING event_id`,
+        eventId,
+        // Deliberately not `now`: retention is measured against real time, so a
+        // caller-supplied clock cannot make a row outlive the pruning window.
+        Date.now(),
+      )
+      .toArray().length === 1;
+    if (!applied) {
+      return this.ctx.storage.sql
+        .exec<{ microusd: number }>(
+          "SELECT COALESCE((SELECT microusd FROM monthly_cost WHERE month = ?), 0) AS microusd",
+          month,
+        )
+        .one().microusd;
+    }
+    const safeCost = Math.max(0, Math.trunc(microusd));
     return this.ctx.storage.sql
       .exec<{ microusd: number }>(
         `INSERT INTO monthly_cost(month, microusd) VALUES (?, ?)
@@ -160,6 +191,12 @@ export class UserLimiter extends DurableObject<Env> {
   override async alarm(): Promise<void> {
     const cutoff = Date.now() - 2 * 86_400_000;
     this.ctx.storage.sql.exec("DELETE FROM requests WHERE occurred_at < ?", cutoff);
+    // Dedup only has to outlive a recording retry, which finishes with the
+    // request; a week of history is generous and keeps the ledger small.
+    this.ctx.storage.sql.exec(
+      "DELETE FROM applied_events WHERE applied_at < ?",
+      Date.now() - 7 * 86_400_000,
+    );
     await this.ctx.storage.setAlarm(Date.now() + 86_400_000);
   }
 }

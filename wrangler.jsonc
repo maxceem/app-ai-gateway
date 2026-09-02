@@ -6,6 +6,13 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "vars": {
+    "SECRET_VAULT_MODE": "local",
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
+  },
+  // Nightly retention for `app_auth_event` only. Named environments do not
+  // inherit top-level triggers, so each one below repeats it.
+  "triggers": { "crons": ["17 3 * * *"] },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },
@@ -15,9 +22,6 @@
     "directory": "./console/dist",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/v1/*"]
-  },
-  "ai": {
-    "binding": "AI"
   },
   "d1_databases": [
     {
@@ -33,32 +37,25 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] }
   ],
+  // Hosted environments can opt into billing with a service binding:
+  // "services": [{ "binding": "BILLING", "service": "cf-billing", "entrypoint": "BillingWorker" }],
+  // The OSS default intentionally has no BILLING binding and runs self-hosted.
   "env": {
     "production": {
-      "name": "ai-gateway",
-      "routes": [
-        {
-          "pattern": "ai-gateway.maxceem.com",
-          "custom_domain": true
-        }
-      ],
-      "placement": {
-        "region": "azure:eastus2"
-      },
+      "name": "app-ai-gateway-production",
+      "routes": [],
+      "triggers": { "crons": ["17 3 * * *"] },
       "vars": {
         "ENVIRONMENT": "production",
-        "CF_AIG_GATEWAY_ID": "ai-gateway-dev",
         "GATEWAY_TOKEN_TTL_SECONDS": "3600",
-        "CONFIG_CACHE_TTL_SECONDS": "60"
-      },
-      "ai": {
-        "binding": "AI"
+        "CONFIG_CACHE_TTL_SECONDS": "60",
+        "ALLOW_PUBLIC_REGISTRATION": "true",
+        "SECRET_VAULT_MODE": "kms"
       },
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "ai-gateway-enam",
-          "database_id": "476a8aa9-095b-45fb-9b83-3067e6f063b2",
+          "database_name": "app-ai-gateway-production",
           "migrations_dir": "migrations"
         }
       ],
@@ -71,6 +68,7 @@
     "local": {
       "name": "app-ai-gateway-local",
       "routes": [],
+      "triggers": { "crons": ["17 3 * * *"] },
       "assets": {
         "directory": "./console/dist",
         "not_found_handling": "single-page-application",
@@ -78,11 +76,9 @@
       },
       "vars": {
         "ENVIRONMENT": "local",
-        "CF_AIG_GATEWAY_ID": "ai-gateway-dev"
-      },
-      "ai": {
-        "binding": "AI",
-        "remote": true
+        "ALLOW_PUBLIC_REGISTRATION": "true",
+        "SECRET_VAULT_MODE": "local",
+        "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
       },
       "d1_databases": [
         {

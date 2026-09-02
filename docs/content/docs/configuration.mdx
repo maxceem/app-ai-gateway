@@ -6,6 +6,27 @@ description: Define authentication, provider routing, and limits for one tenant.
 An application row is the only tenant-specific input. Do not add tenant branches
 to Worker code.
 
+## Application IDs
+
+The ID is the `{app}` segment of every URL the app uses, it is unique across the
+whole deployment, and it cannot be changed once the app exists — clients compile
+it into their base URL.
+
+Omit `id` when creating an application and the gateway assigns one: the name,
+slugified, plus a six-character random suffix (`Calorie Tracker` becomes
+`calorie-tracker-k3f9x1`). Every generated ID is suffixed, including the first
+one on an empty deployment, so no organization can claim a bare name that others
+then have to work around. The response's `app_id` is the assigned ID, and the
+console shows it before you create the app.
+
+Send an `id` and it is used exactly as given, or the request is refused —
+`409 app_id_taken` if another application already holds it, `400` if it is on
+the small reserved list (`admin`, `console`, `new`, `v1`, and similar). A
+requested ID is never silently replaced with a different one.
+
+The ID is not a secret: it travels in every client URL. It is also not a
+credential — App Attest or an API key still has to pass.
+
 ## Server application
 
 Use API-key authentication for a trusted backend:
@@ -51,6 +72,43 @@ Use API-key authentication for a trusted backend:
 
 Creating an API-key application returns its initial plaintext key once. Store it
 immediately in the calling application's secret manager.
+
+The keys of `routing.providers.selected` are **provider instance slugs**, not
+provider types, so `"openai"` above means the instance reachable at
+`/proxy/openai/…`. Naming `"openai-dev"` instead restricts the app to that
+second key. `mode: "all"` keeps its meaning: any instance the organization has
+configured. See [Providers](/docs/providers).
+
+Slugs are checked when a configuration is written, and the rule differs between
+creating and updating an application:
+
+- **Create** — every slug named by `routing.providers.selected` and by any
+  endpoint target must belong to an active instance of the organization.
+- **Update** — only slugs the request *introduces* must exist. A slug the
+  stored configuration already names stays writable even after its provider is
+  deleted, so removing a credential never blocks unrelated edits to the apps
+  that mention it.
+
+A dangling slug is not silently repaired: requests routed to it keep failing
+with `502 provider_not_configured` until you re-create the instance or drop the
+reference. `POST /v1/admin/apps/{app}/validate` applies the same rule as the
+write it previews.
+
+`model_rewrites` targets are model names rather than instance references, so
+they are priced against the shipped catalog for any provider type plus any
+instance's own overrides — an organization with no providers configured yet can
+still save an application that rewrites models.
+
+Add an `issuer` block beside `end_user` when the trusted client acts for real
+users. In that mode the key is client proof only: exchange it with an issuer JWT
+at `/v1/apps/{app}/auth/token`, then use the returned gateway token on data-plane
+requests. See [Authentication](/docs/authentication).
+
+## Named endpoints
+
+An optional top-level `endpoints` block moves the provider, model, and fixed
+parameters out of the client and behind a slug. See
+[Named endpoints](/docs/named-endpoints).
 
 ## Validation workflow
 

@@ -3,10 +3,15 @@
   "pages": [
     "index",
     "quickstart",
+    "agent-quickstart",
     "deployment",
+    "auth-migration",
+    "cloud-billing",
+    "providers",
     "configuration",
     "authentication",
     "provider-proxy",
+    "named-endpoints",
     "operations",
     "agents",
     "api"

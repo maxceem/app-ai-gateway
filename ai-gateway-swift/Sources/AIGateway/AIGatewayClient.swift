@@ -4,18 +4,54 @@ import Foundation
 import UIKit
 #endif
 
-public enum GatewayAuthMode: Sendable {
-    case production
-    case development(secret: String)
-}
-
 public typealias IssuerTokenProvider = @Sendable (_ forceRefresh: Bool) async throws -> String
 public typealias IssuerRejectionRecovery = @Sendable () async throws -> Void
+
+/// The second path segment of a proxy URL: `/v1/apps/{app}/proxy/{slug}/…`.
+///
+/// A slug names one *provider instance* configured by the organization, not a
+/// provider type. The first instance of each type takes its type name as the
+/// default slug, which is what the well-known constants below spell; extra
+/// instances carry a slug of their own, e.g. `.custom("openai-dev")`.
+public struct ProviderSlug: RawRepresentable, Hashable, Sendable,
+    ExpressibleByStringLiteral, CustomStringConvertible {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(stringLiteral value: StringLiteralType) {
+        self.rawValue = value
+    }
+
+    /// Any slug the organization configured, including extra instances of a type.
+    public static func custom(_ slug: String) -> ProviderSlug {
+        ProviderSlug(rawValue: slug)
+    }
+
+    public static let openai: ProviderSlug = "openai"
+    public static let anthropic: ProviderSlug = "anthropic"
+    public static let xai: ProviderSlug = "xai"
+    public static let gemini: ProviderSlug = "gemini"
+    public static let perplexity: ProviderSlug = "perplexity"
+
+    public var description: String { rawValue }
+}
+
+public enum GatewayAuthMode: Sendable {
+    /// App Attest proves the client installation and the issuer token proves the user.
+    case appAttest(issuerTokenProvider: IssuerTokenProvider)
+
+    /// With an issuer provider, the API key is exchanged for a per-user gateway token.
+    /// Without one, the key is sent directly and is valid only for issuer-less apps.
+    case apiKey(key: String, issuerTokenProvider: IssuerTokenProvider? = nil)
+}
 
 public actor AIGatewayClient {
     private struct AccessToken: Sendable {
         let value: String
-        let expiresAt: Date
+        let refreshAt: Date
     }
 
     private struct TokenResponse: Decodable {
@@ -30,19 +66,20 @@ public actor AIGatewayClient {
     private let appID: String
     private let baseURL: URL
     private let authMode: GatewayAuthMode
-    private let issuerTokenProvider: IssuerTokenProvider
+    private let endUserId: String?
     private let issuerRejectionRecovery: IssuerRejectionRecovery?
     private let attestProvider: any AppAttestProviding
     private let credentialStore: any GatewayCredentialStoring
     private let session: URLSession
     private var accessToken: AccessToken?
+    private var tokenExchangeTask: Task<String, Error>?
     private var refreshTask: Task<Void, Never>?
 
     public init(
         appID: String,
         baseURL: URL,
-        authMode: GatewayAuthMode = .production,
-        issuerTokenProvider: @escaping IssuerTokenProvider,
+        authMode: GatewayAuthMode,
+        endUserId: String? = nil,
         issuerRejectionRecovery: IssuerRejectionRecovery? = nil,
         attestProvider: any AppAttestProviding = SystemAppAttestProvider(),
         credentialStore: any GatewayCredentialStoring = KeychainGatewayCredentialStore(),
@@ -51,26 +88,45 @@ public actor AIGatewayClient {
         self.appID = appID
         self.baseURL = baseURL
         self.authMode = authMode
-        self.issuerTokenProvider = issuerTokenProvider
+        self.endUserId = endUserId
         self.issuerRejectionRecovery = issuerRejectionRecovery
         self.attestProvider = attestProvider
         self.credentialStore = credentialStore
         self.session = session
     }
 
-    deinit { refreshTask?.cancel() }
-
-    public func gatewayAccessToken() async throws -> String {
-        if let accessToken, accessToken.expiresAt.timeIntervalSinceNow > 300 {
-            return accessToken.value
-        }
-        return try await exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+    deinit {
+        tokenExchangeTask?.cancel()
+        refreshTask?.cancel()
     }
 
+    public func gatewayAccessToken() async throws -> String {
+        if case .apiKey(let key, nil) = authMode { return key }
+        if let accessToken, accessToken.refreshAt.timeIntervalSinceNow > 0 {
+            return accessToken.value
+        }
+        return try await refreshGatewayAccessToken()
+    }
+
+    private func refreshGatewayAccessToken() async throws -> String {
+        if let tokenExchangeTask { return try await tokenExchangeTask.value }
+        let task = Task {
+            try await self.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+        }
+        tokenExchangeTask = task
+        defer { tokenExchangeTask = nil }
+        return try await task.value
+    }
+
+    /// `provider` is a provider instance slug, not a provider type. See ``ProviderSlug``.
     public func proxyURL(provider: String, providerPath: String) -> URL {
         baseURL
             .appending(path: "v1/apps/\(appID)/proxy/\(provider)")
             .appending(path: providerPath)
+    }
+
+    public func proxyURL(provider: ProviderSlug, providerPath: String) -> URL {
+        proxyURL(provider: provider.rawValue, providerPath: providerPath)
     }
 
     public func authorizedRequest(
@@ -78,9 +134,45 @@ public actor AIGatewayClient {
         providerPath: String,
         method: String = "POST"
     ) async throws -> URLRequest {
-        var request = URLRequest(url: proxyURL(provider: provider, providerPath: providerPath))
+        try await authorizedRequest(
+            url: proxyURL(provider: provider, providerPath: providerPath),
+            method: method
+        )
+    }
+
+    public func authorizedRequest(
+        provider: ProviderSlug,
+        providerPath: String,
+        method: String = "POST"
+    ) async throws -> URLRequest {
+        try await authorizedRequest(
+            provider: provider.rawValue,
+            providerPath: providerPath,
+            method: method
+        )
+    }
+
+    /// A server-configured endpoint. The provider, model, and any baked
+    /// parameters live in the gateway's endpoint row, so the caller sends only
+    /// the request body its slug expects.
+    public func endpointURL(slug: String) -> URL {
+        baseURL.appending(path: "v1/apps/\(appID)/endpoints/\(slug)")
+    }
+
+    public func authorizedRequest(
+        endpointSlug: String,
+        method: String = "POST"
+    ) async throws -> URLRequest {
+        try await authorizedRequest(url: endpointURL(slug: endpointSlug), method: method)
+    }
+
+    private func authorizedRequest(url: URL, method: String) async throws -> URLRequest {
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(try await gatewayAccessToken())", forHTTPHeaderField: "Authorization")
+        if case .apiKey(_, nil) = authMode, let endUserId {
+            request.setValue(endUserId, forHTTPHeaderField: "X-End-User-ID")
+        }
         request.setValue(Self.appVersion, forHTTPHeaderField: "X-App-Version")
         return request
     }
@@ -89,24 +181,46 @@ public actor AIGatewayClient {
         do {
             let response: TokenResponse
             switch authMode {
-            case .development(let secret):
+            case .apiKey(let key, .some(let issuerTokenProvider)):
                 let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
                 response = try await postJSON(
                     path: "auth/token",
-                    body: Self.developmentTokenBody(issuerToken: issuerToken, secret: secret)
+                    body: Self.apiKeyTokenBody(issuerToken: issuerToken, apiKey: key)
                 )
-            case .production:
+            case .apiKey(let key, nil):
+                return key
+            case .appAttest:
                 response = try await productionExchange(forceIssuerRefresh: forceIssuerRefresh)
             }
-            let token = AccessToken(value: response.access_token, expiresAt: Date().addingTimeInterval(response.expires_in))
+            let now = Date()
+            let token = AccessToken(
+                value: response.access_token,
+                refreshAt: now.addingTimeInterval(Self.refreshDelay(for: response.expires_in))
+            )
             accessToken = token
             scheduleRefresh(for: token)
             return token.value
         } catch let error as GatewayError
-            where error.code == .issuerTokenRejected && retryIssuerOnce {
+            where error.code == .issuerClaimsMissing && retryIssuerOnce {
+            // The token verified; an entitlement claim has not landed on it yet.
+            // This is the case `issuerRejectionRecovery` exists for — it is where
+            // an app re-syncs a purchase — and a refreshed token is what carries
+            // the claim once the sync completes.
             try await issuerRejectionRecovery?()
             return try await exchangeToken(forceIssuerRefresh: true, retryIssuerOnce: false)
+        } catch let error as GatewayError
+            where error.code == .issuerTokenRejected && retryIssuerOnce {
+            // A token that did not verify at all. Worth one forced refresh, in
+            // case the cached one had simply expired — but deliberately *not*
+            // worth running the app's purchase-sync machinery, which has nothing
+            // to do with an invalid credential and can cost the user a
+            // store round trip for a stale token.
+            return try await exchangeToken(forceIssuerRefresh: true, retryIssuerOnce: false)
         }
+        // `.issuerVerificationUnavailable` is caught by neither: the gateway
+        // never reached a verdict, so there is nothing to recover from and
+        // nothing a fresh token would change. It surfaces to the caller as a
+        // retryable error — see `GatewayError.isRetryable`.
     }
 
     private func productionExchange(forceIssuerRefresh: Bool) async throws -> TokenResponse {
@@ -121,7 +235,7 @@ public actor AIGatewayClient {
             throw GatewayError(code: .attestFailed, message: "App Attest key registration failed", statusCode: 0)
         }
         let signed = try await signedAssertion(for: keyID, forceIssuerRefresh: forceIssuerRefresh)
-        let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
+        let issuerToken = try await issuerToken(forceRefresh: forceIssuerRefresh)
         do {
             return try await postJSON(path: "auth/token", body: tokenBody(issuerToken, signed))
         } catch let error as GatewayError where error.code == .attestFailed {
@@ -194,7 +308,7 @@ public actor AIGatewayClient {
         let challenge = try await challenge()
         let challengeData = try Self.base64URLData(challenge)
         let attestation = try await attestProvider.attestKey(keyID, clientDataHash: challengeData.sha256)
-        let issuerToken = try await issuerTokenProvider(forceIssuerRefresh)
+        let issuerToken = try await issuerToken(forceRefresh: forceIssuerRefresh)
         struct RegisterResponse: Decodable { let user_id: String }
         let _: RegisterResponse = try await postJSON(
             path: "auth/register",
@@ -212,6 +326,21 @@ public actor AIGatewayClient {
     private func challenge() async throws -> String {
         let response: ChallengeResponse = try await postJSON(path: "auth/challenge", body: [:])
         return response.challenge
+    }
+
+    private func issuerToken(forceRefresh: Bool) async throws -> String {
+        switch authMode {
+        case .appAttest(let issuerTokenProvider):
+            return try await issuerTokenProvider(forceRefresh)
+        case .apiKey(_, .some(let issuerTokenProvider)):
+            return try await issuerTokenProvider(forceRefresh)
+        case .apiKey(_, nil):
+            throw GatewayError(
+                code: .unknown,
+                message: "This API-key mode has no issuer token provider",
+                statusCode: 0
+            )
+        }
     }
 
     private func postJSON<Response: Decodable>(path: String, body: [String: String]) async throws -> Response {
@@ -235,20 +364,25 @@ public actor AIGatewayClient {
 
     private func scheduleRefresh(for token: AccessToken) {
         refreshTask?.cancel()
-        let delay = max(1, token.expiresAt.timeIntervalSinceNow - 300)
+        let delay = max(1, token.refreshAt.timeIntervalSinceNow)
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            _ = try? await self?.exchangeToken(forceIssuerRefresh: false, retryIssuerOnce: true)
+            _ = try? await self?.refreshGatewayAccessToken()
         }
+    }
+
+    static func refreshDelay(for lifetime: TimeInterval) -> TimeInterval {
+        let leeway = min(300, max(15, lifetime * 0.2))
+        return max(1, lifetime - leeway)
     }
 
     static func assertionClientData(app: String, challenge: String, keyID: String) -> Data {
         Data("{\"app\":\"\(app)\",\"challenge\":\"\(challenge)\",\"key_id\":\"\(keyID)\"}".utf8)
     }
 
-    static func developmentTokenBody(issuerToken: String, secret: String) -> [String: String] {
-        ["issuer_token": issuerToken, "dev_secret": secret]
+    static func apiKeyTokenBody(issuerToken: String, apiKey: String) -> [String: String] {
+        ["issuer_token": issuerToken, "api_key": apiKey]
     }
 
     static func base64URLData(_ value: String) throws -> Data {

@@ -17,10 +17,15 @@ export async function issueGatewayToken(
   userId: string,
   authMethod: GatewayAuthMethod,
   ttlSeconds: number,
+  options: { apiKeyId?: string } = {},
 ): Promise<{ token: string; expiresIn: number }> {
   const expiresIn = Math.min(3600, Math.max(60, ttlSeconds));
   const now = Math.floor(Date.now() / 1000);
-  const token = await new SignJWT({ app: appId, auth_method: authMethod })
+  const token = await new SignJWT({
+    app: appId,
+    auth_method: authMethod,
+    ...(options.apiKeyId === undefined ? {} : { api_key_id: options.apiKeyId }),
+  })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(userId)
     .setIssuedAt(now)
@@ -47,9 +52,11 @@ export async function verifyGatewayToken(
       payload.sub.length === 0 ||
       typeof payload.jti !== "string" ||
       typeof payload.exp !== "number" ||
+      (payload.api_key_id !== undefined &&
+        (typeof payload.api_key_id !== "string" || payload.api_key_id.length === 0)) ||
       (payload.auth_method !== undefined &&
-        payload.auth_method !== "dev" &&
-        payload.auth_method !== "attest")
+        payload.auth_method !== "attest" &&
+        payload.auth_method !== "api_key")
     ) {
       throw new Error("Required gateway token claims are missing");
     }
@@ -59,6 +66,8 @@ export async function verifyGatewayToken(
       jti: payload.jti,
       expiresAt: payload.exp,
       authMethod: (payload.auth_method as GatewayAuthMethod | undefined) ?? "attest",
+      credentialType: "gateway_token",
+      ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
   } catch {
     throw new GatewayError(401, "auth_required", "A valid gateway access token is required");

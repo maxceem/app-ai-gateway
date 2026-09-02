@@ -1,0 +1,58 @@
+---
+title: Cloud billing setup
+description: Connect the optional billing worker and enforce plan entitlements.
+---
+
+The open-source default has no `BILLING` binding. In that mode the gateway marks
+access as self-hosted and does not impose subscription entitlements.
+
+## Add the service binding
+
+Hosted operators can bind the `BillingWorker` entrypoint from a deployed
+`cf-billing` service in the environment that needs billing:
+
+```jsonc
+{
+  "services": [
+    {
+      "binding": "BILLING",
+      "service": "YOUR-BILLING-WORKER",
+      "entrypoint": "BillingWorker"
+    }
+  ]
+}
+```
+
+Do not add this binding to an OSS/self-hosted environment unless it has a
+corresponding billing service. The console discovers availability from
+`GET /v1/console/capabilities`.
+
+The gateway always calls billing with service ID `ai-gateway` and the current
+operator organization ID as the tenant ID. Create matching service and plan data
+in the billing worker before enabling the binding.
+
+## Plan ceilings
+
+Plan `limits_json` can define:
+
+```json
+{
+  "maxApps": 25,
+  "maxRpm": 500,
+  "maxRpd": 10000,
+  "maxMonthlyUsd": 250
+}
+```
+
+All values are non-negative numbers; app, per-minute, and per-day limits must be
+integers. Finite plan ceilings reject an unlimited (`null`) app setting. The
+gateway enforces these ceilings when an app is created, validated, or updated.
+
+Inactive organizations receive `402 payment_required` on their apps' data-plane
+routes. Billing RPC failures fail closed in hosted mode. Neither condition
+deletes or disables application records, so access resumes when billing becomes
+active again.
+
+Owners and admins use `/v1/admin/billing/*` for plan listing, checkout, plan
+changes, cancellation, resume, trials, and status. Members retain read-only
+access to status and plan information.

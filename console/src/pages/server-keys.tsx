@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { GuardedButton } from "@/components/guarded-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -18,7 +19,11 @@ import { formatRelative } from "@/lib/format";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/lib/queries";
 import type { CreatedApiKey } from "@/lib/types";
 
-export function ServerKeys({ appId }: { appId: string }) {
+/**
+ * `exchanged` mirrors the app's issuer setting: with one configured the key is
+ * only ever presented to the token exchange, never to the proxy.
+ */
+export function ServerKeys({ appId, exchanged = false }: { appId: string; exchanged?: boolean }) {
   const keys = useApiKeys(appId);
   const create = useCreateApiKey(appId);
   const revoke = useRevokeApiKey(appId);
@@ -87,8 +92,11 @@ export function ServerKeys({ appId }: { appId: string }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Tenant backends send one of these keys as an Authorization bearer credential. Store it
-            as a secret and rotate it by creating a replacement before revoking the old key.
+            {exchanged
+              ? "Tenant backends send one of these keys with an issuer token to the auth exchange and use the gateway token it returns; the key itself is rejected on proxy requests, and Last used follows the traffic those tokens make. Revoking stops the next exchange at once, though tokens already minted stay valid for up to an hour."
+              : "Tenant backends send one of these keys as an Authorization bearer credential. Revoking takes effect within a minute."}{" "}
+            Store it as a secret and rotate it by creating a replacement before revoking the old
+            key.
           </p>
           <div className="flex max-w-lg gap-2">
             <Input
@@ -97,14 +105,14 @@ export function ServerKeys({ appId }: { appId: string }) {
               placeholder="Production Worker"
               onChange={(event) => setName(event.target.value)}
             />
-            <Button disabled={!name.trim() || create.isPending} onClick={() => void createKey()}>
+            <GuardedButton disabled={!name.trim() || create.isPending} onClick={() => void createKey()}>
               {create.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
               Create key
-            </Button>
+            </GuardedButton>
           </div>
 
           <div className="overflow-hidden rounded-md border">
-            <Table>
+            <Table className="[--table-inset:1rem]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
@@ -129,7 +137,7 @@ export function ServerKeys({ appId }: { appId: string }) {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button
+                        <GuardedButton
                           variant="ghost"
                           size="sm"
                           className="text-destructive"
@@ -138,7 +146,7 @@ export function ServerKeys({ appId }: { appId: string }) {
                         >
                           <ShieldX className="size-3.5" />
                           Revoke
-                        </Button>
+                        </GuardedButton>
                       </TableCell>
                     </TableRow>
                   ))

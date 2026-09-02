@@ -27,17 +27,15 @@ if (!hasUsableValue("JWT_SECRET")) {
   setValue("JWT_SECRET", randomBytes(48).toString("base64url"));
   generated.push("JWT_SECRET");
 }
-if (!hasUsableValue("ADMIN_TOKEN")) {
-  const token = `agw_admin_${randomBytes(32).toString("base64url")}`;
-  setValue("ADMIN_TOKEN", token);
-  generated.push("ADMIN_TOKEN");
-  console.log(`ADMIN_TOKEN=${token}`);
+if (!hasUsableValue("BETTER_AUTH_SECRET")) {
+  setValue("BETTER_AUTH_SECRET", randomBytes(48).toString("base64url"));
+  generated.push("BETTER_AUTH_SECRET");
 }
 
 writeFileSync(path, contents, { mode: 0o600 });
 
 if (generated.length === 0) {
-  console.log(".dev.vars already contains JWT_SECRET and ADMIN_TOKEN; nothing changed.");
+  console.log(".dev.vars already contains JWT_SECRET and BETTER_AUTH_SECRET; nothing changed.");
 } else {
   console.log(`Generated ${generated.join(" and ")} in .dev.vars.`);
 }

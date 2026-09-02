@@ -20,6 +20,18 @@ export function formatCost(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   if (value === 0) return "$0.00";
   if (value < 0.01) return `$${value.toFixed(4)}`;
+  return formatCostToCent(value);
+}
+
+/**
+ * The same to the nearest cent, with no sub-cent case. For totals — a day's
+ * spend on one provider — where a hundredth of a cent is noise, and a column
+ * of amounts that change length row by row is harder to read than that
+ * precision is worth. A single request's cost keeps {@link formatCost}, where
+ * the fraction of a cent is the whole answer.
+ */
+export function formatCostToCent(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
   if (value < 100) return `$${value.toFixed(2)}`;
   return `$${plain.format(Math.round(value))}`;
 }

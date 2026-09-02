@@ -1,30 +1,98 @@
 export type ErrorCode =
   | "auth_required"
+  | "forbidden"
+  | "session_required"
+  | "registration_disabled"
+  | "validation_error"
+  | "conflict"
+  | "not_found"
+  | "not_a_member"
+  | "last_owner"
+  | "payment_required"
+  | "plan_limit_exceeded"
+  | "billing_unavailable"
+  | "billing_not_found"
+  | "billing_action_forbidden"
+  | "billing_conflict"
   | "attest_failed"
   | "issuer_token_rejected"
+  /**
+   * The issuer token verified, but the app's `required_claims` are not all
+   * present yet — the entitlement is still propagating from whatever writes it.
+   * Its own code because the client's correct action differs: wait and retry,
+   * rather than re-authenticate.
+   */
+  | "issuer_claims_missing"
+  /**
+   * The gateway could not reach or read the issuer's JWKS, so no verdict on the
+   * token was ever reached. Not the caller's fault, hence 5xx and a retry.
+   */
+  | "issuer_verification_unavailable"
   | "auth_method_not_supported"
   | "rate_limited"
   | "budget_exhausted"
   | "pricing_not_configured"
   | "model_not_allowed"
   | "path_not_allowed"
+  | "api_style_not_supported"
   | "max_output_tokens_exceeded"
   | "payload_too_large"
   | "provider_error"
+  | "provider_not_configured"
+  | "provider_disabled"
+  | "provider_unavailable"
+  | "slug_taken"
+  /**
+   * A caller asked for an app id another app already holds. Its own code, and
+   * never a rename: the id is a URL a shipped client compiles in, so the only
+   * safe answer to "give me this one" is yes or no.
+   */
+  | "app_id_taken"
+  | "provider_not_supported_by_gateway"
+  | "provider_gateway_managed"
+  | "gateway_in_use"
+  | "provider_key_invalid"
   | "invalid_request"
   | "app_not_found"
   | "app_disabled"
+  | "endpoint_not_found"
   | "internal_error";
 
+/**
+ * What a rejection knows about itself beyond the wire contract. None of it is
+ * ever serialized: the code is the client's signal, and these two are for the
+ * operator's logs and the auth event log.
+ */
+export interface GatewayErrorDetails {
+  /**
+   * The granular cause behind a behaviour-class code — `claims_missing`,
+   * `bad_signature`, `jwks_unreachable`, and so on. Deliberately a free string:
+   * the vocabulary grows without any client having to learn a new code.
+   */
+  reason?: string;
+  /**
+   * The end-user identity the verification had already established when it
+   * failed. Only set where the signature was checked first, so it is a verified
+   * claim rather than an assertion the caller made about itself.
+   */
+  userId?: string;
+}
+
 export class GatewayError extends Error {
+  readonly reason?: string;
+  readonly userId?: string;
+
   constructor(
     readonly status: number,
     readonly code: ErrorCode,
     message: string,
     readonly headers?: HeadersInit,
+    details: GatewayErrorDetails = {},
   ) {
     super(message);
     this.name = "GatewayError";
+    this.reason = details.reason;
+    this.userId = details.userId;
   }
 }
 

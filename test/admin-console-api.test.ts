@@ -1,14 +1,17 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { clearProviderCaches } from "../src/core/provider-store";
+import { PROVIDER_TYPES } from "../src/core/providers";
 import {
   appleConfig,
   defaultProxyConfig,
   seedApp,
+  seedProvider,
   serverConfig,
 } from "./helpers";
 
 const ORIGIN = "https://example.test";
-const AUTH = { authorization: "Bearer test-admin-secret" };
+const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
 const JSON_AUTH = { ...AUTH, "content-type": "application/json" };
 
 async function get(path: string) {
@@ -21,37 +24,42 @@ async function recordUsage(
   overrides: Partial<{
     user: string;
     provider: string;
+    providerSlug: string;
     model: string;
     cost: number;
     status: string;
     createdAt: string;
+    apiKeyId: string | null;
   }> = {},
 ) {
   const {
     user = "user-1",
     provider = "openai",
+    providerSlug = provider,
     model = "gpt-5.6-terra",
     cost = 0.02,
     status = "ok",
     createdAt = new Date().toISOString().slice(0, 19).replace("T", " "),
+    apiKeyId = null,
   } = overrides;
   await env.DB.prepare(
-    `INSERT INTO usage_events(
-       app_id, user_id, provider, model, route, input_tokens,
-       cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?)`,
+    `INSERT INTO app_usage_event(
+       app_id, user_id, provider_type, provider_slug, model, route, input_tokens,
+       cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at,
+       api_key_id
+     ) VALUES (?, ?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
   )
-    .bind(appId, user, provider, model, `${provider}/v1/responses`, cost, status, createdAt)
+    .bind(appId, user, provider, providerSlug, model, `${providerSlug}/v1/responses`, cost, status, createdAt, apiKeyId)
     .run();
 }
 
 describe("admin console API", () => {
   it("lists apps with month-to-date usage and user counts", async () => {
     await seedApp("list-apps");
-    await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("list-apps", "user-1", "active")
       .run();
-    await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("list-apps", "user-2", "blocked")
       .run();
     await recordUsage("list-apps");
@@ -63,7 +71,6 @@ describe("admin console API", () => {
     expect(app).toMatchObject({
       name: "Test list-apps",
       status: "active",
-      dev_access_enabled: true,
       users: { total: 2, blocked: 1 },
     });
     expect(app.providers.sort()).toEqual(["anthropic", "gemini", "openai", "xai"]);
@@ -75,62 +82,85 @@ describe("admin console API", () => {
     });
   });
 
-  it("creates, rotates, and revokes a one-time development credential", async () => {
-    await seedApp("development-credential", {
-      auth: {
-        jwks_url: "https://issuer.test/jwks",
-        dev_access: undefined,
+  /**
+   * `providers` answers "what can this app reach", so an all-mode app loses a
+   * paused slug from it. `referenced_providers` answers a different question —
+   * "which apps name this slug outright" — which is what the console needs to
+   * warn before a disable or a delete, and which an all-mode app answers with
+   * nothing at all rather than with every instance the organization owns.
+   */
+  it("reports referenced provider slugs and drops disabled ones from all-mode reach", async () => {
+    await seedProvider({ type: "openai", id: "listed-openai-paused", slug: "openai-paused" });
+    await seedProvider({ type: "openai", id: "listed-openai-named", slug: "openai-named" });
+    clearProviderCaches();
+    await seedApp("list-apps-all", { proxy: {} });
+    await seedApp("list-apps-named", {
+      proxy: {
+        "openai-named": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+      },
+      endpoints: {
+        chat: {
+          api_style: "responses",
+          provider: "openai-paused",
+          model: "gpt-5.6-luna",
+          fallback: [{ provider: "openai", model: "gpt-5.6-luna" }],
+        },
       },
     });
+    await env.DB
+      .prepare("UPDATE provider SET status = 'disabled' WHERE id = 'listed-openai-paused'")
+      .run();
+    clearProviderCaches();
 
-    const disabled = await get("/v1/admin/apps/development-credential/development-credential");
-    expect(disabled.body).toMatchObject({ enabled: false, secret_prefix: null });
+    const { body } = await get("/v1/admin/apps");
+    const allMode = body.apps.find((row: any) => row.id === "list-apps-all");
+    const named = body.apps.find((row: any) => row.id === "list-apps-named");
 
-    const createdResponse = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/development-credential/development-credential`,
-      { method: "POST", headers: JSON_AUTH },
-    );
-    expect(createdResponse.status).toBe(201);
-    const created = await createdResponse.json<any>();
-    expect(created.secret).toMatch(/^dev_[A-Za-z0-9]{48}$/u);
-    expect(created.secret_prefix).toBe(created.secret.slice(0, 12));
+    expect(allMode.providers).not.toContain("openai-paused");
+    expect(allMode.providers).toContain("openai-named");
+    // Reaching everything is not naming anything.
+    expect(allMode.referenced_providers).toEqual([]);
 
-    const metadata = await get("/v1/admin/apps/development-credential/development-credential");
-    expect(metadata.body).toMatchObject({ enabled: true, secret_prefix: created.secret_prefix });
-    expect(metadata.body).not.toHaveProperty("secret");
-    const app = await get("/v1/admin/apps/development-credential");
-    expect(app.body.app.config.authentication.development_access).toBe(true);
+    // Policy keys, endpoint targets, and endpoint fallbacks alike.
+    expect([...named.referenced_providers].sort())
+      .toEqual(["openai", "openai-named", "openai-paused"]);
 
-    const rotatedResponse = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/development-credential/development-credential/rotate`,
-      { method: "POST", headers: JSON_AUTH },
-    );
-    expect(rotatedResponse.status).toBe(200);
-    const rotated = await rotatedResponse.json<any>();
-    expect(rotated.secret).not.toBe(created.secret);
-
-    const revoked = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/development-credential/development-credential`,
-      { method: "DELETE", headers: AUTH },
-    );
-    expect(revoked.status).toBe(200);
-    expect((await get("/v1/admin/apps/development-credential")).body.app.config.authentication.development_access)
-      .toBe(false);
+    await env.DB.prepare(
+      "DELETE FROM provider WHERE id IN ('listed-openai-paused', 'listed-openai-named')",
+    ).run();
+    clearProviderCaches();
   });
 
-  it("rejects enabling development access through config without a credential", async () => {
-    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/no-development-credential`, {
+  /**
+   * A disabled instance still exists, so configuration may keep naming it —
+   * otherwise pausing an instance would lock every app that uses it out of
+   * every unrelated edit until it came back.
+   */
+  it("saves an app configuration that references a disabled provider instance", async () => {
+    await seedProvider({
+      type: "openai",
+      id: "app-save-paused",
+      slug: "openai-app-paused",
+      status: "disabled",
+    });
+    clearProviderCaches();
+
+    const config = serverConfig({
+      proxy: {
+        "openai-app-paused": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+      },
+    });
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
-      body: JSON.stringify({
-        name: "No development credential",
-        config: appleConfig(
-          { jwks_url: "https://issuer.test/jwks" },
-          { developmentAccess: true },
-        ),
-      }),
+      body: JSON.stringify({ id: "app-on-paused", name: "On a paused instance", config }),
     });
-    expect(response.status).toBe(400);
+    expect(created.status, await created.clone().text()).toBe(201);
+
+    await env.DB.prepare("DELETE FROM app_api_key WHERE app_id = 'app-on-paused'").run();
+    await env.DB.prepare("DELETE FROM app WHERE id = 'app-on-paused'").run();
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'app-save-paused'").run();
+    clearProviderCaches();
   });
 
   it("validates a candidate config without writing it", async () => {
@@ -158,17 +188,144 @@ describe("admin console API", () => {
     });
     expect(invalid.status).toBe(400);
 
+    const unknownProvider = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/validate-only/validate`,
+      {
+        method: "POST",
+        headers: JSON_AUTH,
+        body: JSON.stringify({
+          name: "Validate only",
+          config: appleConfig(
+            { jwks_url: "https://issuer.test/jwks" },
+            {
+              proxy: {
+                "missing-instance": {
+                  allowed_paths: ["v1/responses"],
+                  allowed_models: ["gpt-5.6-sol"],
+                },
+              },
+            },
+          ),
+        }),
+      },
+    );
+    expect(unknownProvider.status).toBe(400);
+    await expect(unknownProvider.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "Unknown provider instance missing-instance" },
+    });
+
     expect((await get("/v1/admin/apps/validate-only")).status).toBe(404);
   });
 
-  it("creates apps without overwriting id collisions and returns a server key once", async () => {
+  // Deleting a provider must not brick every later edit of an app that still
+  // names its slug; only newly introduced slugs have to exist.
+  it("keeps editing an app whose stored provider instance was deleted", async () => {
+    const appId = "grandfathered-slug";
+    await seedProvider({ type: "openai", id: "grandfathered-openai-dev", slug: "openai-dev" });
+    clearProviderCaches();
+    const config = (extra: Record<string, unknown> = {}) => serverConfig({
+      proxy: {
+        "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+        ...extra,
+      },
+    });
+    const put = (name: string, body: Record<string, unknown>) => exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/${appId}`,
+      { method: "PUT", headers: JSON_AUTH, body: JSON.stringify({ name, config: body }) },
+    );
+
+    expect((await put("Grandfathered", config())).status).toBe(200);
+    await env.DB.prepare("DELETE FROM provider WHERE id = 'grandfathered-openai-dev'").run();
+    clearProviderCaches();
+
+    // An unrelated edit still saves, and validate agrees with the write.
+    const renamed = await put("Grandfathered renamed", config());
+    expect(renamed.status).toBe(200);
+    const validated = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}/validate`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Grandfathered renamed", config: config() }),
+    });
+    expect(validated.status).toBe(200);
+
+    // A slug the stored configuration never named is still refused.
+    const introduced = await put("Grandfathered renamed", config({
+      "openai-staging": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
+    }));
+    expect(introduced.status).toBe(400);
+    await expect(introduced.json()).resolves.toMatchObject({
+      error: { message: "Unknown provider instance openai-staging" },
+    });
+
+    // Creating a brand-new app on a dangling slug stays strict.
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "grandfathered-new", name: "New", config: config() }),
+    });
+    expect(created.status).toBe(400);
+  });
+
+  it("suffixes a generated id even when the stem is free", async () => {
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Unclaimed Name", config: serverConfig() }),
+    });
+    expect(created.status).toBe(201);
+    const { app_id: appId } = await created.json<{ app_id: string }>();
+    // Nothing held `unclaimed-name`, and it is still not what was created: the
+    // suffix is the format, not a collision repair.
+    expect(appId).toMatch(/^unclaimed-name-[a-z0-9]{6}$/u);
+    expect((await get(`/v1/admin/apps/${appId}`)).status).toBe(200);
+    expect((await get("/v1/admin/apps/unclaimed-name")).status).toBe(404);
+  });
+
+  it("refuses a requested id that is taken rather than renaming it", async () => {
+    await seedApp("taken-id");
+
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "taken-id", name: "Taken Id", config: serverConfig() }),
+    });
+    expect(created.status).toBe(409);
+    expect((await created.json<{ error: { code: string } }>()).error.code).toBe("app_id_taken");
+
+    // The refusal wrote nothing: the app that held the id is as it was, and no
+    // second app was created under any other id.
+    const original = await get("/v1/admin/apps/taken-id");
+    expect(original.body.app.name).toBe("Test taken-id");
+    const listed = (await get("/v1/admin/apps")).body.apps as Array<{ id: string }>;
+    expect(listed.filter((row) => row.id.startsWith("taken-id"))).toHaveLength(1);
+  });
+
+  it("refuses a reserved id, and only when it would create one", async () => {
+    const reserved = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "admin", name: "Admin", config: serverConfig() }),
+    });
+    expect(reserved.status).toBe(400);
+    await expect(reserved.json()).resolves.toMatchObject({
+      error: { message: "App id admin is reserved" },
+    });
+
+    const upserted = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/console`, {
+      method: "PUT",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Console", config: serverConfig() }),
+    });
+    expect(upserted.status).toBe(400);
+  });
+
+  it("assigns a suffixed id when the caller names none, and returns a server key once", async () => {
     await seedApp("calorie-tracker");
 
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
       body: JSON.stringify({
-        id: "calorie-tracker",
         name: "Calorie Tracker",
         config: serverConfig(),
       }),
@@ -178,7 +335,7 @@ describe("admin console API", () => {
       app_id: string;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
-    expect(body.app_id).toMatch(/^calorie-tracker-[a-z0-9]{4}$/u);
+    expect(body.app_id).toMatch(/^calorie-tracker-[a-z0-9]{6}$/u);
     expect(body.api_key.key).toMatch(/^agw_[0-9A-Za-z]{40,}$/u);
     expect(body.api_key.key_prefix).toBe(body.api_key.key.slice(0, 12));
 
@@ -194,12 +351,14 @@ describe("admin console API", () => {
     const defaultAccess = await get(`/v1/admin/apps/${body.app_id}`);
     expect(defaultAccess.body.resolved.routing.providerMode).toBe("all");
     const appList = await get("/v1/admin/apps");
+    // The fixture configures one instance of every provider type, and an
+    // all-providers app reaches all of them.
     expect(
       appList.body.apps.find((app: any) => app.id === body.app_id).providers.sort(),
-    ).toEqual(["anthropic", "gemini", "openai", "perplexity", "xai"]);
+    ).toEqual([...PROVIDER_TYPES].sort());
   });
 
-  it("derives an id from the name when the create API receives no preferred id", async () => {
+  it("derives the readable stem of an assigned id from the name", async () => {
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
@@ -209,16 +368,15 @@ describe("admin console API", () => {
       }),
     });
     expect(created.status).toBe(201);
-    await expect(created.json()).resolves.toMatchObject({
-      app_id: "cafe-companion-ios",
-      api_key: null,
-    });
+    const body = await created.json<{ app_id: string; api_key: null }>();
+    expect(body.app_id).toMatch(/^cafe-companion-ios-[a-z0-9]{6}$/u);
+    expect(body.api_key).toBeNull();
   });
 
   it("returns a readable row plus the error when a stored config is invalid", async () => {
     await env.DB.prepare(
-      `INSERT INTO apps(id, name, config_json, status)
-       VALUES (?, ?, ?, 'active')`,
+      `INSERT INTO app(id, organization_id, name, config_json, status)
+       VALUES (?, 'operator-test-organization', ?, ?, 'active')`,
     )
       .bind("broken-config", "Broken", JSON.stringify({ authentication: {}, routing: {}, limits: {} }))
       .run();
@@ -231,7 +389,7 @@ describe("admin console API", () => {
 
   it("deletes an app only with confirmation and keeps its usage history", async () => {
     await seedApp("delete-me");
-    await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("delete-me", "user-1", "active")
       .run();
     await recordUsage("delete-me");
@@ -251,7 +409,7 @@ describe("admin console API", () => {
     expect((await get("/v1/admin/apps/delete-me")).status).toBe(404);
 
     const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM usage_events WHERE app_id = ?",
+      "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ?",
     )
       .bind("delete-me")
       .first<{ count: number }>();
@@ -261,7 +419,7 @@ describe("admin console API", () => {
   it("lists users with month-to-date usage and supports search", async () => {
     await seedApp("user-list");
     for (const id of ["alpha-user", "beta-user"]) {
-      await env.DB.prepare("INSERT INTO users(app_id, id, status) VALUES (?, ?, 'active')")
+      await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, 'active')")
         .bind("user-list", id)
         .run();
     }
@@ -287,9 +445,18 @@ describe("admin console API", () => {
   it("groups usage by day and by dimension, and pages the event feed", async () => {
     await seedApp("usage-shapes");
     const today = new Date().toISOString().slice(0, 10);
-    await recordUsage("usage-shapes", { provider: "openai", createdAt: `${today} 01:00:00` });
+    await recordUsage("usage-shapes", {
+      provider: "openai",
+      createdAt: `${today} 01:00:00`,
+      apiKeyId: "key_usage-shapes",
+    });
     await recordUsage("usage-shapes", { provider: "anthropic", model: "claude-sonnet-5", createdAt: `${today} 02:00:00` });
-    await recordUsage("usage-shapes", { provider: "openai", status: "provider_error", createdAt: `${today} 03:00:00` });
+    await recordUsage("usage-shapes", {
+      provider: "openai",
+      providerSlug: "openai-dev",
+      status: "provider_error",
+      createdAt: `${today} 03:00:00`,
+    });
 
     const series = await get(`/v1/admin/apps/usage-shapes/usage/timeseries?from=${today}&to=${today}`);
     expect(series.status).toBe(200);
@@ -299,6 +466,12 @@ describe("admin console API", () => {
     const byProvider = await get(`/v1/admin/apps/usage-shapes/usage/breakdown?by=provider&from=${today}&to=${today}`);
     const openai = byProvider.body.rows.find((row: any) => row.key === "openai");
     expect(openai).toMatchObject({ requests: 2, errors: 1 });
+
+    const bySlug = await get(`/v1/admin/apps/usage-shapes/usage/breakdown?by=provider_slug&from=${today}&to=${today}`);
+    expect(bySlug.body.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "openai", requests: 1 }),
+      expect.objectContaining({ key: "openai-dev", requests: 1, errors: 1 }),
+    ]));
 
     const rejected = await get("/v1/admin/apps/usage-shapes/usage/breakdown?by=nonsense");
     expect(rejected.status).toBe(400);
@@ -314,6 +487,10 @@ describe("admin console API", () => {
 
     const errors = await get("/v1/admin/apps/usage-shapes/events?status=provider_error");
     expect(errors.body.events).toHaveLength(1);
+    const attributed = [...firstPage.body.events, ...secondPage.body.events]
+      .find((event: any) => event.api_key_id !== null);
+    expect(attributed?.api_key_id).toBe("key_usage-shapes");
+    expect(firstPage.body.events.some((event: any) => event.provider_slug === "openai-dev")).toBe(true);
   });
 
   // The console's issuer presets generate exactly these shapes. If the config

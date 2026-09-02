@@ -43,6 +43,104 @@
       "when": 1785815157773,
       "tag": "0005_cheerful_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786421560645,
+      "tag": "0006_little_captain_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787543408406,
+      "tag": "0007_nostalgic_sandman",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787638653872,
+      "tag": "0008_tiny_vin_gonzales",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787727507295,
+      "tag": "0009_illegal_jean_grey",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1787732689826,
+      "tag": "0010_short_annihilus",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1787817295040,
+      "tag": "0011_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1787899363041,
+      "tag": "0012_provider-gateways-and-instances",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1787978465472,
+      "tag": "0013_usage-event-id",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1787987938322,
+      "tag": "0014_abandoned_lifeguard",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1788003938554,
+      "tag": "0015_usage-cost-source",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1788007135498,
+      "tag": "0016_provider-gateway-and-usage-wave",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1788025569079,
+      "tag": "0017_provider-base-url",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1788165111117,
+      "tag": "0018_serious_expediter",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1788313840501,
+      "tag": "0019_auth-events-and-claim-pending",
+      "breakpoints": true
     }
   ]
 }

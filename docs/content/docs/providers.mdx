@@ -1,0 +1,606 @@
+---
+title: Providers
+description: Bring your own provider credentials, route them directly or through your Cloudflare AI Gateway, and price the models the catalog does not know.
+---
+
+Every organization brings its own provider credentials. You add them once in the
+console, the gateway encrypts them before storage, and no API ever returns them
+again — only the last few characters, so you can tell two keys apart.
+
+## The model: named provider instances
+
+A provider row is one *instance*: this provider type, with this credential, as
+configured by this organization. There are no credential "kinds" and no fallback
+tiers — an instance either owns a key of its own or references a shared
+[provider gateway](#provider-gateways).
+
+| Field | Meaning |
+| --- | --- |
+| `type` | One of the [supported provider types](#supported-provider-types) |
+| `slug` | The URL segment under `/proxy/{slug}/…`; defaults to `type` |
+| `name` | Your label, e.g. "Prod OpenAI" |
+| `secretHint` | Last few characters of a direct key — display only; `null` on gateway-routed rows |
+| `providerGatewayId` | The gateway this instance routes through, or `null` for the provider's native API |
+| `baseUrl` | Optional operator-supplied origin replacing the provider type's own (see [custom base URLs](#custom-base-urls)); `null` on gateway-routed rows, which cannot carry one |
+| `pricing` | Optional per-model price overrides (see below) |
+
+Exactly one of `secret` and `providerGatewayId` is supplied on create, and the
+database enforces it: a direct instance owns a key, a gateway-routed instance
+carries no secret at all because the provider keys live in the gateway's own BYOK
+store.
+
+Slugs are unique per organization among **active** rows, so resolution stays a
+plain lookup with no precedence rules. A request for a slug the organization has
+not configured fails with `502 provider_not_configured`.
+
+## Supported provider types
+
+Each type fixes an upstream origin, an authentication header, and a pricing
+domain. The path after the slug is always the provider's own — and the batch
+below disagrees about its prefix more than anything else does, so the exact
+chat-completions path is listed for each.
+
+| `type` | Service | Chat completions path | Routable through a gateway |
+| --- | --- | --- | --- |
+| `openai` | OpenAI | `v1/chat/completions` | Cloudflare, Vercel |
+| `anthropic` | Anthropic | `v1/messages` | Cloudflare, Vercel |
+| `xai` | xAI (Grok) | `v1/chat/completions` | Cloudflare, Vercel |
+| `gemini` | Google AI Studio | `v1beta/openai/chat/completions` | Cloudflare, Vercel |
+| `perplexity` | Perplexity | `chat/completions` | Cloudflare, Vercel |
+| `deepseek` | DeepSeek | `chat/completions` | Vercel |
+| `moonshot` | Moonshot AI (Kimi) | `v1/chat/completions` | Vercel |
+| `groq` | Groq | `openai/v1/chat/completions` | — direct only |
+| `mistral` | Mistral | `v1/chat/completions` | — direct only |
+| `together` | Together AI | `v1/chat/completions` | — direct only |
+| `fireworks` | Fireworks AI | `inference/v1/chat/completions` | — direct only |
+| `cerebras` | Cerebras | `v1/chat/completions` | — direct only |
+| `huggingface` | Hugging Face Inference Providers | `v1/chat/completions` | — direct only |
+| `baseten` | Baseten Model APIs | `v1/chat/completions` | — direct only |
+| `bytedance` | BytePlus ModelArk | `chat/completions` | — direct only |
+| `openrouter` | OpenRouter | `v1/chat/completions` | — direct only |
+
+"Direct only" is the default, not a limitation of the type: a provider type is
+offered on a gateway once that pairing has been verified against that gateway's
+live catalog, because a provider slug or model namespace guessed from
+documentation is a guess about a URL *and* about which keys that gateway holds.
+Connect these types with their own API key.
+
+The paths in that table are for **direct** instances, where the path is the
+provider's own. A gateway-routed instance uses the gateway's paths instead — see
+[provider gateways](#provider-gateways).
+
+A few types carry caveats worth knowing before you add a key:
+
+- **ByteDance** is the international BytePlus ModelArk endpoint in
+  `ap-southeast-1`, and `/api/v3` is already part of the base URL — so the path
+  is `chat/completions` with no version segment of your own. Keys and model
+  catalogs are region-isolated, and models must be activated in your ModelArk
+  console before they answer. The China Volcengine edition is a separate
+  service and is not reachable here.
+- **Moonshot** is the international `api.moonshot.ai` host; a key issued on the
+  China platform will not work.
+- **Fireworks** names models per account (`accounts/{account}/models/{id}`), so
+  no shipped catalog would be right for your account — price the models you use
+  under [custom model pricing](#custom-model-pricing).
+- **Hugging Face** routes each request to whichever upstream provider it picks,
+  and the same model costs up to ten times more on one upstream than another.
+  Pin the upstream in the model ID (`author/model:provider`) and price that ID,
+  or the recorded cost is a guess.
+- **OpenRouter** is an aggregator, and the only type that bills on a cost the
+  upstream reports rather than a local price — it has a section of its own
+  [below](#openrouter).
+
+## OpenRouter
+
+OpenRouter is treated as a provider type, not as a gateway: it is the
+counterparty that bills you, and its catalog includes models with no direct
+provider at all. Two things follow from that.
+
+**Its slugs are the model IDs.** `google/gemini-3.6-flash` and
+`meta-llama/llama-4-maverick` are canonical here — they are what you send, what
+`allowed_models` and `fixed_model` match, and what a usage event records. They
+are not translated to anything: an OpenRouter instance and a direct Gemini
+instance name the same model differently, so moving an app between them means
+renaming the model. The leading namespace is also where the model's author comes
+from, so usage groups by **Google** or **Meta** the same way it does on a direct
+route.
+
+**Cost is reported, not computed.** Every OpenRouter chat-completions response
+carries `usage.cost`: what OpenRouter actually charged for that request. The
+gateway records it as `cost_usd` with `cost_source: "reported"`, and keeps it in
+`reported_cost_usd` as well. So OpenRouter models proxy with **no local price**
+— the [pricing gate](#custom-model-pricing) is satisfied by the route reporting
+its own cost, which is why no OpenRouter section ships in the catalog. Streaming
+works the same way: the figure arrives in the final SSE chunk.
+
+If a response ever comes back without a cost, the event is not billed at zero:
+a local price for that model is used if you have entered one (`computed`),
+and otherwise the event is recorded as
+[unresolved](/docs/operations#unresolved-usage) and logged.
+
+**Bring your own key: two figures, both yours.** When a request runs on your own
+upstream provider key, OpenRouter's `usage.cost` is only *its* charge — the BYOK
+fee, 5% of what the request would have cost on OpenRouter — while the provider
+bills your key directly for the inference and OpenRouter reports that separately
+as `usage.cost_details.upstream_inference_cost`. The two are disjoint, so the
+gateway bills their **sum**: both numbers left your accounts, and charging the
+fee alone would let roughly twenty times as much spend through unmetered.
+`cost_usd` and `reported_cost_usd` both hold the total.
+
+<Callout type="warn">
+  **Aborted streams are not reconciled.** The cost arrives in the final SSE
+  chunk, so a client that disconnects before it leaves the request
+  [unresolved](/docs/operations#known-limitation-aborted-streams-on-cost-reporting-routes)
+  at `$0` against your budgets, even though OpenRouter charged for the tokens.
+  Watch the unresolved count on OpenRouter instances; per-user rate limits bound
+  the damage until generation-lookup reconciliation ships.
+</Callout>
+
+OpenRouter instances accept **chat completions only** — `v1/chat/completions`
+under the slug. OpenRouter does serve other APIs, but only its chat-completions
+response reports a cost, and a request this gateway could not bill is refused
+rather than served for free.
+
+One request-shaping detail, same-protocol and not visible to your client's SDK:
+the gateway asks OpenRouter to name the endpoint it routed to, with a header.
+Your request body is forwarded byte for byte — cost accounting is always on at
+OpenRouter, so nothing has to be injected to switch it on. That routing answer is
+stored as `served_provider` ("Served by" in the console's usage view), along with
+`served_model`, and `credential_source: "byok"` when the response says the
+inference was paid for with your own upstream key. All three are absent when
+OpenRouter does not say — an absence is never read as a guarantee.
+
+## Slugs and multiple instances
+
+A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and defaults to the row's `type`, so the
+first OpenAI instance is reachable at `/proxy/openai/…` with nothing to
+configure. Adding a second instance of the same type therefore collides on the
+default and returns `409 slug_taken` until you supply a slug of your own — for
+example `openai-dev` for a second key, or `openai-cf` for one routed through a
+Cloudflare AI Gateway.
+
+A slug equal to a provider type name may only be used by an instance of that
+type, so `/proxy/anthropic/…` can never resolve to an OpenAI key. An instance
+holds its slug for as long as it exists, disabled instances included; only
+deleting one frees its slug for something else.
+
+Per-app routing (`routing.providers.selected`) and named endpoints reference
+instances by slug, which is how one app can be limited to `openai-cf` while
+another uses `openai`.
+
+## Adding a key
+
+Open **Providers** in the console, pick the provider, name the credential, and
+paste the key. Before storing it the gateway runs the cheapest authenticated call
+the provider offers:
+
+| Provider | Probe |
+| --- | --- |
+| OpenAI | `GET /v1/models` |
+| xAI | `GET /v1/models` |
+| Anthropic | `GET /v1/models` |
+| Gemini | `GET /v1beta/models` |
+| DeepSeek | `GET /models` |
+| Groq | `GET /openai/v1/models` |
+| Mistral | `GET /v1/models` |
+| Together AI | `GET /v1/models` |
+| Cerebras | `GET /v1/models` |
+| Moonshot AI | `GET /v1/models` |
+| Baseten | `GET /v1/models` |
+| OpenRouter | `GET /v1/key` — its key-status call; its model list is public and would pass any key |
+| Perplexity | none — accepted unvalidated |
+| Fireworks AI | none — its model list needs an account id the key does not carry |
+| Hugging Face | none — its model list answers `200` to any token, so a probe would pass every key |
+| ByteDance | none — ModelArk publishes no list-models call |
+
+A provider is missing from this table only when it has no call that can prove a
+key. That is deliberate: a probe against a plausible-looking URL that answers
+`200` regardless of the credential is worse than no probe, because it reports
+every key as good.
+
+If the provider answers `401` or `403`, the key is rejected with
+`provider_key_invalid` and nothing is stored. Any other outcome — a timeout, an
+outage, a provider with no probe — stores the key and reports
+`validated: false`. A provider being down is not a reason to stop you saving a
+key you know is correct.
+
+`PUT /v1/admin/providers/{id}` rotates a direct credential in place: same row,
+same id, same slug, same custom pricing, re-probed and re-encrypted. Rotation is
+preferable to delete-and-recreate for exactly that reason. Gateway-routed
+instances have no key of their own, so they rotate at the gateway instead.
+
+### Disable, delete, or rotate
+
+Three different intentions. **Rotate** replaces the key and changes nothing
+else. **Disable** (`PUT` with `status: "disabled"`) is a reversible pause: the
+key, the custom pricing and the slug all stay, requests to the slug answer
+`502 provider_disabled`, and enabling puts the instance straight back. Because
+the slug stays held, nothing else can take it meanwhile and re-enabling always
+succeeds. **Delete** is permanent, takes the encrypted key and the pricing
+overrides with it, and is the only thing that frees a slug; requests fall back
+to `502 provider_not_configured`. App configuration may keep naming a disabled
+instance, and a named endpoint whose primary target is disabled falls through to
+its fallbacks exactly as it would on an upstream failure.
+
+## Custom base URLs
+
+A direct instance may carry an optional `baseUrl` that replaces the provider
+type's own origin. Nothing else changes: the path after the slug, the query
+string, the credential header, the model rules, and the billing gate are all
+exactly what they would have been.
+
+```json
+POST /v1/admin/providers
+{
+  "type": "openai",
+  "name": "Self-hosted Llama",
+  "slug": "vllm",
+  "secret": "…",
+  "baseUrl": "https://my-vllm.example.com/v1/"
+}
+```
+
+A request to `/proxy/vllm/chat/completions` then reaches
+`https://my-vllm.example.com/v1/chat/completions`.
+
+This is what makes any OpenAI-compatible server usable without a code change:
+
+- **Self-hosted inference** — vLLM, SGLang, Ollama behind TLS, llama.cpp's
+  server: pick `openai` as the type and point it at your `/v1/` base.
+- **A second region or tenant of a supported provider** — BytePlus ModelArk's
+  `eu-west` host, for instance, whose keys and catalogs are region-isolated.
+- **A proxy of your own** in front of a provider, as long as it speaks that
+  provider's API unchanged.
+- **Azure OpenAI**, with the caveats below.
+
+Send `"baseUrl": null` on `PUT /v1/admin/providers/{id}` to return an instance
+to its provider type's own base URL. Changing or clearing it re-probes the
+stored credential at the new origin, so a wrong URL fails while you are looking
+at the form rather than on an app's next request.
+
+### What the origin guard enforces
+
+A base URL is **operator-supplied**, never client-supplied, and it is validated
+and rewritten into a canonical form before it is stored. The rules, each of
+which refuses with a message naming the rule:
+
+| Rule | Rejected examples |
+| --- | --- |
+| `https` only | `http://…`, `ftp://…` |
+| No credentials in the URL | `https://user:pass@host/` |
+| No query string and no fragment | `https://host/?api-version=…`, `https://host/#x` |
+| Default port only (443, explicit or implicit) | `https://host:8443/` |
+| A registrable public DNS name — never an IP literal, in any encoding | `https://127.0.0.1/`, `https://0x7f000001/`, `https://[::1]/` |
+| At least two labels, valid DNS labels, no trailing dot | `https://vllm/`, `https://host./`, `https://a..b.example.com/` |
+| No special-use suffix | `.local`, `.internal`, `.localhost`, `.home.arpa`, `.lan`, `.corp` |
+| At most 200 characters | — |
+
+What is stored is the canonical form: lower-cased host (punycoded if you typed
+Unicode), no redundant `:443`, dot segments resolved, and exactly one trailing
+slash — so `https://My-VLLM.Example.com/v1` is stored as
+`https://my-vllm.example.com/v1/`.
+
+Upstream **redirects are never followed** on any proxied request. A `3xx` from
+your endpoint is passed back to the client as-is, so a redirect cannot move the
+destination after the URL was checked.
+
+<Callout type="warn" title="What the guard does not, and cannot, do">
+  It does not stop a public hostname from resolving to a private address, and it
+  cannot: a Cloudflare Worker does not resolve names itself and cannot see or
+  pin the address `fetch` connects to. DNS rebinding is outside what any
+  in-Worker check can detect. The real control is that this field is
+  operator-only — it is written through the console or a management key by
+  somebody who already administers the organization, and **no gateway client can
+  influence it**. Clients still never supply a URL. Treat pointing an instance
+  at an origin as equivalent to handing that origin the instance's API key,
+  because that is what it does.
+</Callout>
+
+A gateway-routed instance cannot carry a base URL — the gateway owns the
+upstream transport — and the API refuses the combination on both create and
+update.
+
+<Callout type="warn" title="Custom endpoints still need prices">
+  The billability gate is unchanged. A model served from your own endpoint is
+  almost certainly not in the shipped catalog, so it is refused with
+  `400 pricing_not_configured` until you enter a price for it under [custom
+  model pricing](#custom-model-pricing) on that instance. Entering the price is
+  what allows the model; there is no "unmetered because it is mine" path. For a
+  model you host yourself and pay no per-token price for, `$0` is enterable —
+  but enter it deliberately, because it also removes that traffic from every
+  spending limit.
+</Callout>
+
+### Azure OpenAI
+
+Use provider type `openai` with the resource's **v1** base URL:
+
+```text
+https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/
+```
+
+Azure's v1 API accepts the resource key as `Authorization: Bearer`, which is
+exactly what this gateway sends for the `openai` type — it is the same thing
+Microsoft's own documentation does when it runs the stock OpenAI SDK against
+that base URL. Two things to know:
+
+- **The older, dated Azure surface is not supported.** It authenticates with an
+  `api-key` header and needs an `?api-version=` query on the base, neither of
+  which this stage adds; the guard refuses a base URL carrying a query string
+  for that reason. Use the v1 base URL above.
+- **Microsoft Entra ID tokens are not supported.** They are short-lived and need
+  refreshing, and a provider row stores one static secret. Use a resource key.
+
+The `model` field is your **deployment name**, not the upstream model name, and
+deployment names are not in the shipped catalog — so price them per instance as
+above.
+
+## Provider gateways
+
+A **provider gateway** is a reusable connection to somebody else's gateway,
+stored once and referenced by as many provider instances as you like. Two types
+are supported: **Cloudflare AI Gateway** (`cf_aig`) and **Vercel AI Gateway**
+(`vercel`).
+
+| Field | Meaning |
+| --- | --- |
+| `type` | `cf_aig` or `vercel` |
+| `name` | Your label, e.g. "Prod CF gateway" |
+| `config` | `{ accountId, gatewayId }` for `cf_aig`; `{}` for `vercel` |
+| `secretHint` | Last few characters of the gateway token — display only |
+| `providerCount` | Active provider instances routing through it |
+| `referencedCount` | Every instance referencing it, disabled rows included |
+
+`POST /v1/admin/provider-gateways` takes the fields that gateway needs and
+nothing else — `{ type: "cf_aig", name, accountId, gatewayId, token }` or
+`{ type: "vercel", name, token }` — proves them with a single probe, and
+encrypts the token **once**. A field the chosen type has no use for is rejected
+rather than ignored.
+
+It creates the gateway only; providers are attached one at a time through the
+normal provider create call with `providerGatewayId` set, each probed through the
+gateway for its own type. Attaching a provider type the gateway does not serve is
+refused with `400 provider_not_supported_by_gateway` rather than stored as a row
+whose every request would fail — see the
+[supported provider types](#supported-provider-types) table for which pair with
+which.
+
+Unlike a provider key, a gateway is stored whatever the probe finds. A
+Cloudflare AI Gateway answers `401` both for a wrong token and for a gateway
+whose authentication or upstream key is not set up yet, so refusing the write
+would stop you saving a connection while the rest of it is still being built.
+The response says what happened instead — `validated`, plus a `reason` of
+`rejected`, `unreachable`, or `unexpected_status` and the upstream `status` —
+and the console shows it as a warning on the row you just added.
+
+- `POST /v1/admin/provider-gateways/test` runs that same probe against the same
+  fields minus the name — `{ type: "cf_aig", accountId, gatewayId, token }` or
+  `{ type: "vercel", token }` — without storing anything, which is what **Test
+  gateway** in the console calls. A refused token is reported as
+  `reason: "rejected"` rather than raised as an error, because only you can tell
+  a wrong token from an unfinished gateway.
+- `PATCH /v1/admin/provider-gateways/{id}` renames a gateway.
+- `POST /v1/admin/provider-gateways/{id}/rotate` replaces the token: one probe,
+  one re-encryption, and every instance behind it follows immediately. It
+  reports the probe the same way a create does, rather than failing on it.
+  Rotating
+  a gateway-routed provider row directly is refused with
+  `409 provider_gateway_managed` and a pointer to this endpoint.
+- `DELETE /v1/admin/provider-gateways/{id}` refuses with `409 gateway_in_use`
+  while **any** instance references it. Revoked instances are retained for audit
+  and keep that reference, so a gateway showing `providerCount: 0` is still
+  undeletable until `referencedCount` reaches zero; the error message names
+  which of the two is holding it.
+
+### Cloudflare AI Gateway
+
+Requests for a Cloudflare-routed instance are sent to
+`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<provider>/…` with only
+`cf-aig-authorization` and `cf-aig-metadata`. **The provider keys themselves must
+live in that gateway's own stored-keys (BYOK) store** — this gateway sends no
+provider-auth header on that path, because your gateway supplies it.
+
+Cloudflare forwards to each provider's own API, so every API that provider has
+survives the trip, native ones included: Gemini `generateContent` works on a
+Cloudflare-routed Gemini instance. Model IDs are the provider's own, unchanged.
+
+Cloudflare AI Gateway takes no per-provider routing configuration; sending a
+`gatewayRoute` on one of its instances is refused.
+
+### Vercel AI Gateway
+
+Create one with a name and an [AI Gateway API
+key](https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys). There
+is no account or gateway id: the origin is fixed in code and the key identifies
+your Vercel team. The token is proved against Vercel's authenticated
+`GET /v1/credits` endpoint, which rejects a key that is not real.
+
+Requests are sent to `https://ai-gateway.vercel.sh/` with the client's path
+appended verbatim, authenticated with `Authorization: Bearer <your gateway
+token>`. Vercel names the provider in the model ID rather than in the URL, so one
+URL space serves every provider:
+
+| Client API | Path after your instance slug |
+| --- | --- |
+| OpenAI Responses | `v1/responses` |
+| OpenAI Chat Completions | `v1/chat/completions` |
+| Anthropic Messages | `v1/messages` |
+
+Anything else on a Vercel-routed instance is refused with
+`403 api_style_not_supported` before a request leaves this gateway. In
+particular **Gemini's native `generateContent` API is not available through
+Vercel** (use a direct or Cloudflare-routed Gemini instance for that), and
+neither is transcription — `v1/audio/transcriptions` does not exist on Vercel's
+origin, so `transcription` [named endpoints](/docs/named-endpoints) cannot use a
+Vercel-routed instance either.
+
+The three paths in that table are the whole surface, and the Responses entry
+means **`POST v1/responses` only**. The Responses API's sub-resource operations
+— `GET v1/responses/{id}`, `DELETE v1/responses/{id}`,
+`POST v1/responses/{id}/cancel` — are refused on a Vercel-routed instance the
+same way, because Vercel's documentation does not state that its gateway serves
+them: it describes the Responses API in terms of the request features it
+supports, and publishes no endpoint list that includes them. Only operations
+verified against a gateway's live surface are opened here, so an unverified one
+is refused at the edge rather than forwarded and 404ed upstream with a message
+nobody can act on.
+
+This is an asymmetry with the direct route, where those operations reach the
+provider's own API and are governed by your instance's `allowed_paths` like any
+other path. If you retrieve, cancel, or delete stored responses, keep that work
+on a direct or Cloudflare-routed instance. If Vercel documents the sub-resources
+later, they become a one-line capability change here.
+
+**Model IDs stay canonical.** Everywhere you can see a model — `allowed_models`,
+`fixed_model`, custom pricing, model rewrites, recorded usage — it is the
+provider's own ID (`gemini-2.5-flash`), exactly as on a direct instance. The
+adapter adds Vercel's namespace on the way out and strips it from anything
+Vercel echoes back, so one price row covers a model on every route and moving an
+app between routes changes no configuration:
+
+| Provider type | Vercel namespace | Example wire model |
+| --- | --- | --- |
+| `openai` | `openai/` | `openai/gpt-5.6-sol` |
+| `anthropic` | `anthropic/` | `anthropic/claude-opus-5` |
+| `gemini` | `google/` | `google/gemini-2.5-flash` |
+| `xai` | `spacexai/` | `spacexai/grok-4.5` |
+| `perplexity` | `perplexity/` | `perplexity/sonar-pro` |
+| `deepseek` | `deepseek/` | `deepseek/deepseek-v4-pro` |
+| `moonshot` | `moonshotai/` | `moonshotai/kimi-k3` |
+
+Vercel's catalog does not publish the other provider types' own model IDs, so
+those types stay direct-only there. If Vercel names one of your models
+differently from the provider, set `gatewayRoute.modelPrefix` on that instance
+to override the namespace — it must end with `/`.
+
+**Credential policy: your key is preferred, not guaranteed.** Vercel documents
+BYOK provider credentials configured in its dashboard as preferred, *and*
+documents falling back to its own system credentials when yours fail. Nothing at
+configuration time settles which one paid for a given request, so usage events
+routed through Vercel record `credential_source` as unknown (`null`) rather than
+claiming `byok`. Local pricing still applies: Vercel charges provider list price
+with no token markup, so the shipped catalog stays accurate.
+
+**Pinning the serving provider.** Vercel may serve one model from several
+upstreams (Claude from Anthropic, Bedrock, or Vertex). Set
+`gatewayRoute.providerOnly` on an instance to restrict it — the values are
+Vercel's own provider slugs, and the gateway sends them as
+`providerOptions.gateway.only` in the outbound body. That is a routing
+directive, not a translation: the payload the serving provider eventually sees
+is the one your client sent.
+
+```json
+{ "providerOnly": ["vertex", "anthropic"] }
+```
+
+### Both gateways
+
+Instances routed natively are the opposite of either: the provider's own auth
+header, and none of a gateway's control headers at all.
+
+A gateway's own headers are reserved on every route. A client value in
+`cf-aig-*`, `authorization`, `x-api-key`, or Vercel's `ai-reporting-*` never
+reaches an upstream — the strip list is derived from the adapter declarations
+themselves, so it cannot drift.
+
+Upstream URLs are always derived in code from the stored, non-secret gateway
+configuration. Clients never supply a URL, so there is no server-side request
+forgery surface to validate.
+
+**No protocol translation, ever.** This gateway forwards the API your client
+called, in that API's own format. Calling OpenAI Chat Completions on a
+Gemini-via-Vercel instance sends an OpenAI body to Vercel, and Vercel translates
+it once. The only changes made to a body are same-protocol ones: the model
+namespace rewrite, configured parameter merges on named endpoints, the output
+cap, `providerOnly`, and cost-report opt-ins.
+
+## Custom model pricing
+
+Model pricing ships with the deployment as a code-level catalog, because prices
+are market data about models rather than per-organization state. A model the
+catalog does not know — or knows at a stale price — is unblocked by adding it
+under **custom model pricing** on the provider.
+
+Lookup is a two-level merge:
+
+1. the provider row's own `pricing` entry for the requested model, then
+2. the shipped catalog.
+
+Two provider types ship with no catalog at all, because no static list could be
+right for them: **Fireworks AI** names models per account, and **Hugging Face**
+re-prices the same model ID on every upstream its router might pick. Their
+models proxy once you price them here, and not before.
+
+Where a provider's real price depends on something the catalog cannot see, the
+shipped entry is the **higher** rate, so the recorded cost is never lower than
+what you are billed:
+
+- **DeepSeek** charges half price outside its peak hours. The catalog carries
+  the peak rate, so off-peak traffic records as costing more than it did.
+- Batch and discounted serving tiers — offered by ByteDance, Moonshot and
+  others — are priced per request, not per model, and the catalog carries the
+  standard rate.
+
+<Callout title="Mistral Medium costs more than Mistral Large">
+  This is not a transcription error. Mistral's size names describe model
+  generations, not a price ladder: `mistral-medium-latest` resolves to Mistral
+  Medium 3.5, the current frontier model, at `$1.50` in / `$7.50` out per
+  million tokens, while `mistral-large-latest` resolves to the older Mistral
+  Large 3 at `$0.50` / `$1.50`. `mistral-small-latest` (Small 4) is `$0.15` /
+  `$0.60`. Pick by the model card, not by the name.
+</Callout>
+
+Override the entry if your traffic sits mostly on the cheaper side of either.
+Erring high keeps a spending limit a limit: a cost recorded too low would let
+traffic through that a budget was meant to stop.
+
+A model priced by neither is refused with `400 pricing_not_configured` and a
+message naming where to fix it. Entering the price *is* the explicit allowance:
+nothing unpriced ever proxies, no usage goes unaccounted, and `cost_usd` on a
+usage event is never null. `$0` is enterable for genuinely free models.
+
+The one exception is a route that reports what it charged — [OpenRouter](#openrouter)
+today. Its models are billable without a local price because the response
+carries the cost, so the gate is "priced locally **or** reported upstream". A
+custom price on such an instance is still honoured as the fallback for a
+response that arrives without one.
+
+<Callout type="warn" title="Deleting a provider deletes its overrides">
+  Custom pricing lives on the provider row. Rotating a credential keeps it;
+  deleting the provider discards it along with the credential. Usage events
+  outlive the row, so past traffic priced only by that override can no longer be
+  [repriced](/docs/operations) until the price is re-entered somewhere.
+</Callout>
+
+## Security model
+
+- **Encryption at rest.** Every credential is stored as a vault blob, bound to
+  its own row by an encryption context: `{ service, organizationId, providerId }`
+  for a direct provider key, `{ service, organizationId, providerGatewayId }` for
+  a gateway token. A blob lifted from one row cannot be replayed in another, and
+  a D1 dump on its own is worthless.
+  - *Self-hosted (`SECRET_VAULT_MODE=local`)*: AES-256-GCM in the Worker under a
+    key encryption key you hold as a Worker secret. Honest limitation: anyone
+    with secret-read access to your own Cloudflare account can read that key.
+  - *Hosted (`SECRET_VAULT_MODE=kms`)*: envelope encryption through a
+    [cf-kms](https://github.com/maxceem/cf-kms) deployment in a dedicated
+    security account. The root key never enters the gateway's account, and every
+    decrypt is an audited call that can be revoked.
+- **Write-only API.** No response body from any endpoint contains a submitted
+  secret. The console clears its form state and its query cache the moment a
+  create or rotate call settles.
+- **Revocation tail.** Resolved credentials are cached per isolate for up to 60
+  seconds, so a rotation or deletion takes effect within a minute on a warm
+  isolate — the same propagation window as an application configuration change.
+- **In memory while proxying.** Stated plainly: a credential is decrypted into
+  isolate memory to sign the upstream request. The gateway holds plaintext for
+  the life of that request. What the vault protects is the data at rest and, in
+  `kms` mode, the root key itself.
+
+## When a provider is missing
+
+An app that allows a slug the organization has not configured keeps working for
+every other instance; only that slug's requests fail. The console shows a
+non-blocking banner on the app's pages naming the missing providers and linking
+to the Providers page — a provider type counts as configured when any instance of
+it exists.

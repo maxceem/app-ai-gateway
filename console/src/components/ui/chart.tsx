@@ -65,7 +65,10 @@ function ChartContainer({
         data-slot="chart"
         data-chart={chartId}
         className={cn(
-          "flex aspect-video justify-center text-xs [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
+          // Recharts renders the tooltip and the legend as absolutely
+          // positioned siblings, and the legend wins on DOM order alone — so a
+          // tooltip opened over a wrapped legend is drawn underneath its text.
+          "flex aspect-video justify-center text-xs [&_.recharts-tooltip-wrapper]:z-10 [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
           className
         )}
         {...props}
@@ -79,6 +82,27 @@ function ChartContainer({
       </div>
     </ChartContext.Provider>
   )
+}
+
+/**
+ * Recharts hands the legend and the tooltip their entries ordered by data key,
+ * which is neither the order the series were declared in nor the order they are
+ * stacked in — a chart whose first series is its largest reads alphabetically
+ * instead, and a key like `__other` sorts to the front of both. The config is
+ * insertion-ordered, so it is the series order; entries follow it, and anything
+ * not in it keeps to the back rather than jumping to the front.
+ */
+function inSeriesOrder<Item>(
+  items: Item[],
+  config: ChartConfig,
+  keyOf: (item: Item) => string,
+): Item[] {
+  const order = Object.keys(config)
+  const rank = (item: Item) => {
+    const index = order.indexOf(keyOf(item))
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index
+  }
+  return [...items].sort((left, right) => rank(left) - rank(right))
 }
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
@@ -127,6 +151,7 @@ function ChartTooltipContent({
   labelFormatter,
   labelClassName,
   formatter,
+  valueFormatter,
   color,
   nameKey,
   labelKey,
@@ -137,6 +162,12 @@ function ChartTooltipContent({
     indicator?: "line" | "dot" | "dashed"
     nameKey?: string
     labelKey?: string
+    /**
+     * Formats the value alone. Unlike Recharts' `formatter`, which replaces the
+     * whole row — swatch, series name and value together — and so leaves a
+     * column of bare numbers naming nothing.
+     */
+    valueFormatter?: (value: TooltipValueType) => React.ReactNode
   } & Omit<
     RechartsPrimitive.DefaultTooltipContentProps<
       TooltipValueType,
@@ -197,8 +228,11 @@ function ChartTooltipContent({
     >
       {!nestLabel ? tooltipLabel : null}
       <div className="grid gap-1.5">
-        {payload
-          .filter((item) => item.type !== "none")
+        {inSeriesOrder(
+          payload.filter((item) => item.type !== "none"),
+          config,
+          (item) => `${nameKey ?? item.name ?? item.dataKey ?? "value"}`,
+        )
           .map((item, index) => {
             const key = `${nameKey ?? item.name ?? item.dataKey ?? "value"}`
             const itemConfig = getPayloadConfigFromPayload(config, item, key)
@@ -242,7 +276,9 @@ function ChartTooltipContent({
                     )}
                     <div
                       className={cn(
-                        "flex flex-1 justify-between leading-none",
+                        // The gap is what keeps the longest series name off its
+                        // own value; `justify-between` alone lets the two touch.
+                        "flex flex-1 justify-between gap-3 leading-none",
                         nestLabel ? "items-end" : "items-center"
                       )}
                     >
@@ -254,9 +290,11 @@ function ChartTooltipContent({
                       </div>
                       {item.value != null && (
                         <span className="font-mono font-medium text-foreground tabular-nums">
-                          {typeof item.value === "number"
-                            ? item.value.toLocaleString()
-                            : String(item.value)}
+                          {valueFormatter
+                            ? valueFormatter(item.value)
+                            : typeof item.value === "number"
+                              ? item.value.toLocaleString()
+                              : String(item.value)}
                         </span>
                       )}
                     </div>
@@ -291,13 +329,19 @@ function ChartLegendContent({
   return (
     <div
       className={cn(
-        "flex items-center justify-center gap-4",
+        // Wraps: a chart with a series per provider has more entries than fit
+        // on one line, and an unwrapped legend overflows its card in both
+        // directions rather than growing downwards.
+        "flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5",
         verticalAlign === "top" ? "pb-3" : "pt-3",
         className
       )}
     >
-      {payload
-        .filter((item) => item.type !== "none")
+      {inSeriesOrder(
+        payload.filter((item) => item.type !== "none"),
+        config,
+        (item) => `${nameKey ?? item.dataKey ?? "value"}`,
+      )
         .map((item, index) => {
           const key = `${nameKey ?? item.dataKey ?? "value"}`
           const itemConfig = getPayloadConfigFromPayload(config, item, key)
@@ -306,7 +350,9 @@ function ChartLegendContent({
             <div
               key={index}
               className={cn(
-                "flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground"
+                // Each entry stays on one line; wrapping happens between
+                // entries, never inside a brand's name.
+                "flex items-center gap-1.5 whitespace-nowrap [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground"
               )}
             >
               {itemConfig?.icon && !hideIcon ? (

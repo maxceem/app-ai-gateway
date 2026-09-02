@@ -1,8 +1,13 @@
-# Required values requested by the Deploy to Cloudflare flow.
-# Create the AI Gateway before deployment. Never commit real values.
-CF_AIG_GATEWAY_ID=
-CF_AIG_TOKEN=
-ADMIN_TOKEN=
+# Required value requested by the Deploy to Cloudflare flow. Never commit real
+# values. Provider credentials themselves are added per organization in the
+# console and encrypted with the key below.
+# Generate with `openssl rand -base64 32`.
+SECRET_VAULT_MODE=local
+SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=1
+SECRET_VAULT_LOCAL_KEK_V1=
 
-# JWT_SECRET is generated during the first deployment.
+# JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
 # For local development, run `pnpm run secrets:setup-local` to generate it.
+ALLOW_PUBLIC_REGISTRATION=true
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=

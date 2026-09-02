@@ -6,12 +6,81 @@ description: Send provider-native requests while the gateway enforces policy and
 The proxy route is:
 
 ```text
-/v1/apps/{app}/proxy/{provider}/{provider-path}
+/v1/apps/{app}/proxy/{slug}/{provider-path}
 ```
 
-Supported provider slugs are `openai`, `anthropic`, `xai`, `gemini`, and
-`perplexity`. The application configuration must allow both the provider path and
-model.
+`{slug}` names one of the organization's **provider instances**, not a provider
+type. Each instance is a credential (or a gateway reference) with a URL segment
+of its own, so an organization can run several keys for the same provider type
+side by side. The application configuration must allow both the provider path and
+the model.
+
+## Slugs
+
+A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique per organization across every
+instance, disabled ones included; only deleting an instance frees its slug. It
+defaults to the provider type, so the first instance of each type
+keeps the familiar URLs — `openai`, `anthropic`, `xai`, `gemini`, `perplexity`,
+`deepseek`, `groq`, and the rest of the
+[supported types](/docs/providers#supported-provider-types) — verbatim. A second
+instance of a type must be given a custom slug when it is created.
+
+| Instance | Slug | Caller URL |
+| --- | --- | --- |
+| OpenAI, first instance | `openai` | `POST /v1/apps/my-app/proxy/openai/v1/responses` |
+| OpenAI, second key for dev | `openai-dev` | `POST /v1/apps/my-app/proxy/openai-dev/v1/responses` |
+| OpenAI routed via a Cloudflare AI Gateway | `openai-cf` | `POST /v1/apps/my-app/proxy/openai-cf/v1/chat/completions` |
+| Anthropic, only instance | `anthropic` | `POST /v1/apps/my-app/proxy/anthropic/v1/messages` |
+
+A slug equal to a provider type name is reserved for instances of that type:
+`/proxy/openai/…` can never resolve to an Anthropic credential. Deleting or
+revoking an instance frees its slug for reuse.
+
+The provider *type* — and therefore the upstream URL, the auth header, and the
+pricing catalog — comes from the resolved instance, never from the URL.
+
+`{provider-path}` is the provider's native API path verbatim, without a leading
+slash. Do not rewrite it to match Cloudflare AI Gateway provider slugs. Typical
+paths are:
+
+| Provider | Native path example |
+| --- | --- |
+| OpenAI | `v1/responses` or `v1/chat/completions` |
+| Anthropic | `v1/messages` |
+| xAI | `v1/responses` or `v1/stt` |
+| Gemini | `v1beta/models/{model}:generateContent` |
+| Perplexity | `chat/completions` |
+| DeepSeek | `chat/completions` |
+| Groq | `openai/v1/chat/completions` |
+| Mistral, Cerebras, Moonshot, Together AI, Baseten | `v1/chat/completions` |
+| Fireworks AI | `inference/v1/chat/completions` |
+| Hugging Face | `v1/chat/completions` |
+| ByteDance (ModelArk) | `chat/completions` |
+| OpenRouter | `v1/chat/completions` (the only path it accepts) |
+
+The prefixes genuinely differ — DeepSeek and ByteDance have none of their own,
+Groq namespaces its OpenAI surface under `openai/`, and Fireworks separates its
+inference plane from its control plane. The full table with each provider's
+caveats is on the [Providers](/docs/providers#supported-provider-types) page.
+
+Those are the paths for **direct** instances. A gateway-routed instance uses its
+gateway's paths instead of the provider's:
+
+| Route | Paths |
+| --- | --- |
+| Cloudflare AI Gateway | the provider's own, unchanged — Cloudflare forwards to the provider's API |
+| Vercel AI Gateway | `v1/responses`, `v1/chat/completions`, `v1/messages`, whatever the provider type is |
+
+Anything else on a Vercel-routed instance is refused with
+`403 api_style_not_supported`; Gemini's native `generateContent` is the one that
+catches people out. **Model IDs are the provider's own on every route** —
+`gemini-2.5-flash`, never `google/gemini-2.5-flash`; the gateway adds the
+namespace Vercel needs on the way out. The console shows the available APIs and
+the model-ID rule per instance on the Providers page.
+
+For the OpenAI SDK, set `baseURL` to
+`https://YOUR-GATEWAY/v1/apps/YOUR-APP/proxy/openai/v1`. The SDK then appends
+standard paths such as `responses` or `chat/completions`.
 
 ## Provider-native contract
 
@@ -25,8 +94,33 @@ the provider documentation remains authoritative for its exact fields.
 Upstream response bodies are streamed to the client. The gateway tees the stream
 for usage accounting without buffering the complete provider response.
 
-## Forwarded controls
+## Credentials and forwarded controls
 
-Only the documented Cloudflare AI Gateway control headers are forwarded. The
-Worker strips other `cf-aig-*` headers and supplies its own encrypted authenticated
-gateway token.
+The credential of the resolved provider instance is injected server-side; a
+client never sends a provider key, and any it does send is stripped. Which
+headers travel upstream follows how that instance is routed
+(see [Providers](/docs/providers)):
+
+- **Direct to the provider** — the provider's own auth header
+  (`authorization`, `x-api-key`, or `x-goog-api-key`) and **no** `cf-aig-*`
+  header of any kind.
+- **Through your Cloudflare AI Gateway** — `cf-aig-authorization`,
+  `cf-aig-metadata`, and the documented `cf-aig-cache-ttl`,
+  `cf-aig-skip-cache`, `cf-aig-max-attempts`, `cf-aig-backoff` and
+  `cf-aig-retry-delay` controls a client may set. Everything else `cf-aig-*` is
+  stripped.
+- **Through your Vercel AI Gateway** — `Authorization: Bearer <your gateway
+  token>` plus Vercel's `ai-reporting-user` and `ai-reporting-tags`, set from
+  the authenticated end user and the application. A client value in any
+  `ai-reporting-*` header is stripped: it would rewrite your Vercel-side spend
+  attribution. `x-api-key` is stripped too, because Vercel accepts a key there
+  and would let it out-rank the gateway's own token.
+
+## Failures worth knowing
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `provider_not_configured` | 502 | The organization has no provider instance with this slug. Add one under Providers. |
+| `provider_disabled` | 502 | An instance with this slug exists but is disabled. Enable it under Providers. |
+| `provider_unavailable` | 502 | The stored credential could not be decrypted, or the gateway the instance references was revoked — usually a misconfigured secret vault. Check `/v1/healthz`. |
+| `pricing_not_configured` | 400 | Neither the shipped catalog nor the provider's custom pricing knows this model. |

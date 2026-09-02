@@ -4,7 +4,7 @@ import { generateApiKey } from "../../core/apikeys";
 import { loadAppConfig } from "../../core/config";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
-import { apiKeys } from "../../db/schema";
+import { appApiKey } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 
 function keyName(value: unknown): string {
@@ -25,7 +25,7 @@ async function assertApiKeyApp(env: Env, appId: string): Promise<void> {
   }
 }
 
-function serialized(row: typeof apiKeys.$inferSelect) {
+function serialized(row: typeof appApiKey.$inferSelect) {
   return {
     id: row.id,
     name: row.name,
@@ -44,7 +44,7 @@ keyRoutes.post("/apps/:app/keys", async (c) => {
   const name = keyName(await c.req.json());
   const generated = await generateApiKey();
   const [row] = await database(c.env.DB)
-    .insert(apiKeys)
+    .insert(appApiKey)
     .values({
       id: generated.id,
       appId,
@@ -67,9 +67,9 @@ keyRoutes.get("/apps/:app/keys", async (c) => {
   await assertApiKeyApp(c.env, appId);
   const rows = await database(c.env.DB)
     .select()
-    .from(apiKeys)
-    .where(eq(apiKeys.appId, appId))
-    .orderBy(desc(apiKeys.createdAt));
+    .from(appApiKey)
+    .where(eq(appApiKey.appId, appId))
+    .orderBy(desc(appApiKey.createdAt));
   return c.json({ app_id: appId, keys: rows.map(serialized) });
 });
 
@@ -77,9 +77,9 @@ keyRoutes.post("/apps/:app/keys/:id/revoke", async (c) => {
   const appId = c.req.param("app");
   await assertApiKeyApp(c.env, appId);
   const [row] = await database(c.env.DB)
-    .update(apiKeys)
+    .update(appApiKey)
     .set({ status: "revoked" })
-    .where(and(eq(apiKeys.appId, appId), eq(apiKeys.id, c.req.param("id"))))
+    .where(and(eq(appApiKey.appId, appId), eq(appApiKey.id, c.req.param("id"))))
     .returning();
   if (!row) throw new GatewayError(404, "invalid_request", "API key was not found");
   return c.json({ app_id: appId, key: serialized(row) });

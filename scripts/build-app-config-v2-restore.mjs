@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 
@@ -9,6 +8,8 @@ if (!backupPath || !outputPath) {
 }
 
 const database = new DatabaseSync(resolve(backupPath), { readOnly: true });
+// This converter intentionally reads a pre-0003 backup, whose source tables
+// predate both the config-v2 rebuild and the current plane-prefixed names.
 const apps = database.prepare("SELECT * FROM apps ORDER BY id").all();
 const apiKeys = database.prepare("SELECT * FROM api_keys ORDER BY app_id, id").all();
 
@@ -72,9 +73,7 @@ function genericConfig(row, oldAuth, oldProxy, oldLimits) {
         app_attest: {
           team_id: row.apple_team_id,
           bundle_id: row.apple_bundle_id,
-          environments: oldAuth.appattest_environments ?? ["production"],
         },
-        development_access: oldAuth.dev_access?.secret != null,
       };
   return {
     authentication,
@@ -83,22 +82,12 @@ function genericConfig(row, oldAuth, oldProxy, oldLimits) {
   };
 }
 
-const calorieConfigs = new Map([
-  ["calorie-tracker", "config/calorie-tracker.production.json"],
-  ["calorie-tracker-dev", "config/calorie-tracker.development.json"],
-]);
 const statements = ["PRAGMA foreign_keys = ON;"];
 for (const row of apps) {
   const oldAuth = json(row.auth_config_json);
-  const configPath = calorieConfigs.get(row.id);
-  const config = configPath
-    ? JSON.parse(readFileSync(resolve(configPath), "utf8")).config
-    : genericConfig(row, oldAuth, json(row.proxy_config_json), json(row.limits_json));
-  if (oldAuth.dev_access?.secret != null && config.authentication.type === "apple_app_attest") {
-    config.authentication.development_access = true;
-  }
+  const config = genericConfig(row, oldAuth, json(row.proxy_config_json), json(row.limits_json));
   statements.push(
-    `INSERT INTO apps(id, name, config_json, status, created_at, updated_at) VALUES (${[
+    `INSERT INTO app(id, name, config_json, status, created_at, updated_at) VALUES (${[
       row.id,
       row.name,
       JSON.stringify(config),
@@ -107,22 +96,11 @@ for (const row of apps) {
       row.created_at,
     ].map(sql).join(", ")});`,
   );
-  const secret = oldAuth.dev_access?.secret;
-  if (typeof secret === "string") {
-    statements.push(
-      `INSERT INTO development_credentials(app_id, secret_hash, secret_prefix, created_at) VALUES (${[
-        row.id,
-        createHash("sha256").update(secret).digest("hex"),
-        secret.slice(0, 12),
-        row.created_at,
-      ].map(sql).join(", ")});`,
-    );
-  }
 }
 
 for (const key of apiKeys) {
   statements.push(
-    `INSERT INTO api_keys(id, app_id, name, key_hash, key_prefix, status, created_at, last_used_at) VALUES (${[
+    `INSERT INTO app_api_key(id, app_id, name, key_hash, key_prefix, status, created_at, last_used_at) VALUES (${[
       key.id,
       key.app_id,
       key.name,

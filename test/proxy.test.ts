@@ -2,8 +2,11 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import type { OutputClampStyle, Provider } from "../src/core/types";
-import { defaultProxyConfig, devToken, seedApp, seedServerApp } from "./helpers";
+import { API_STYLES } from "../src/core/api-styles";
+import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
+import { costReportBodyMutation } from "../src/core/proxyrules";
+import type { OutputClampStyle, ProviderType } from "../src/core/types";
+import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -13,7 +16,7 @@ interface CapturedRequest {
 
 interface OutputCapCase {
   name: string;
-  provider: Provider;
+  provider: ProviderType;
   allowedPath: string | { path: string; clamp: OutputClampStyle };
   path: string;
   model: string;
@@ -239,7 +242,7 @@ describe("provider-native proxy", () => {
   ])("allows every provider and path with a priced model in %s", async (_label, proxy) => {
     const appId = `proxy-all-${crypto.randomUUID()}`;
     await seedApp(appId, { proxy });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -258,9 +261,7 @@ describe("provider-native proxy", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/perplexity-ai/chat/completions",
-    );
+    expect(captured[0]?.url).toBe("https://api.perplexity.ai/chat/completions");
   });
 
   it("allows individual mode to disable every provider", async () => {
@@ -268,7 +269,7 @@ describe("provider-native proxy", () => {
     await seedApp(appId, {
       proxy: { provider_mode: "selected", model_rewrites: {} },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const response = await proxyRequest({
@@ -320,7 +321,7 @@ describe("provider-native proxy", () => {
       max_output_tokens: 128,
     };
     await seedApp(appId, { proxy });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       Response.json(
         { error: { message: "Provider rate limit exceeded" } },
@@ -341,7 +342,7 @@ describe("provider-native proxy", () => {
 
   it("streams the upstream response byte-for-byte without waiting for completion", async () => {
     await seedApp("proxy-stream");
-    const token = await devToken("proxy-stream");
+    const token = await gatewayToken("proxy-stream");
     const first = "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n";
     const second = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n";
     let secondSent = false;
@@ -380,21 +381,16 @@ describe("provider-native proxy", () => {
     const secondChunk = await reader.read();
     expect(new TextDecoder().decode(secondChunk.value)).toBe(second);
     expect((await reader.read()).done).toBe(true);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/openai/responses",
-    );
-    expect(captured[0]?.headers.get("authorization")).toBeNull();
-    expect(captured[0]?.headers.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
-    expect(JSON.parse(captured[0]?.headers.get("cf-aig-metadata") ?? "null")).toEqual({
-      app_id: "proxy-stream",
-      user_id: "user-1",
-    });
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/responses");
+    expect(captured[0]?.headers.get("authorization")).toBe("Bearer test-openai-secret");
+    expect(captured[0]?.headers.get("cf-aig-authorization")).toBeNull();
+    expect(captured[0]?.headers.get("cf-aig-metadata")).toBeNull();
     expect(JSON.parse(captured[0]!.body)).toMatchObject({ model: "gpt-5.6-sol", max_output_tokens: 128 });
   });
 
   it("rejects paths and models outside the tenant allowlists", async () => {
     await seedApp("proxy-deny");
-    const token = await devToken("proxy-deny");
+    const token = await gatewayToken("proxy-deny");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const deniedPath = await proxyRequest({
       appId: "proxy-deny",
@@ -416,6 +412,23 @@ describe("provider-native proxy", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("requires the native OpenAI v1 path instead of a gateway-adapted path", async () => {
+    await seedApp("proxy-native-path");
+    const token = await gatewayToken("proxy-native-path");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({
+      appId: "proxy-native-path",
+      token,
+      path: "openai/responses",
+      body: { model: "gpt-5.6-sol", input: "hello" },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["omitted", undefined],
     ["empty", []],
@@ -427,7 +440,7 @@ describe("provider-native proxy", () => {
     };
     if (allowedModels !== undefined) openai.allowed_models = allowedModels;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -463,7 +476,7 @@ describe("provider-native proxy", () => {
     };
     if (allowedPaths !== undefined) openai.allowed_paths = allowedPaths;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -482,9 +495,7 @@ describe("provider-native proxy", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/openai/chat/completions",
-    );
+    expect(captured[0]?.url).toBe("https://api.openai.com/v1/chat/completions");
   });
 
   it.each([
@@ -503,7 +514,7 @@ describe("provider-native proxy", () => {
         model_rewrites: { "gemini-3.5-flash": "gemini-3.6-flash" },
       },
     });
-    const token = await devToken(appId);
+    const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -523,7 +534,7 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
     );
     expect(JSON.parse(captured[0]!.body)).toMatchObject({
       generationConfig: { maxOutputTokens: 128 },
@@ -536,7 +547,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-unset-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const bodies = captureProviderBodies();
         const rawBody = `${JSON.stringify(testCase.highBody, null, 2)}\n`;
 
@@ -553,7 +564,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-allowed-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase, 128) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const bodies = captureProviderBodies();
         const rawBody = `${JSON.stringify(testCase.allowedBody, null, 2)}\n`;
 
@@ -570,7 +581,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-reject-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase, 128) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const fetchSpy = vi.spyOn(globalThis, "fetch");
 
         const response = await proxyRequest({
@@ -589,7 +600,7 @@ describe("provider-native proxy", () => {
         });
         expect(fetchSpy).not.toHaveBeenCalled();
         const usage = await env.DB.prepare(
-          "SELECT COUNT(*) AS count FROM usage_events WHERE app_id = ?",
+          "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ?",
         )
           .bind(appId)
           .first<{ count: number }>();
@@ -602,7 +613,7 @@ describe("provider-native proxy", () => {
       async (testCase) => {
         const appId = `cap-inject-${testCase.name.replaceAll(" ", "-").toLowerCase()}`;
         await seedApp(appId, { proxy: outputCapProxyConfig(testCase, 128) });
-        const token = await devToken(appId);
+        const token = await gatewayToken(appId);
         const bodies = captureProviderBodies();
 
         const response = await proxyRequest({
@@ -626,7 +637,7 @@ describe("provider-native proxy", () => {
 
   it("rewrites body and Gemini URL models only after allowlist validation", async () => {
     await seedApp("proxy-rewrite");
-    const token = await devToken("proxy-rewrite");
+    const token = await gatewayToken("proxy-rewrite");
     const captured: CapturedRequest[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
       captured.push({
@@ -653,7 +664,7 @@ describe("provider-native proxy", () => {
     });
     await gemini.text();
     expect(captured[1]?.url).toContain(
-      "/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
     );
     expect(captured[1]?.url).toContain("alt=sse");
     expect(captured[1]?.url).not.toContain("must-not-leak");
@@ -663,14 +674,14 @@ describe("provider-native proxy", () => {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM usage_events WHERE app_id = ? AND model = ?",
+        "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ? AND model = ?",
       )
         .bind("proxy-rewrite", "gemini-3.6-flash")
         .first<{ count: number }>();
       if ((row?.count ?? 0) > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    throw new Error("Rewritten model was not persisted to usage_events");
+    throw new Error("Rewritten model was not persisted to app_usage_event");
   });
 
   it("rebuilds a rewritten Gemini path", async () => {
@@ -682,7 +693,7 @@ describe("provider-native proxy", () => {
     };
     proxy.model_rewrites = { "gemini-3.5-flash": "gemini-3.6-flash" };
     await seedApp("proxy-gemini-encoding", { proxy });
-    const token = await devToken("proxy-gemini-encoding");
+    const token = await gatewayToken("proxy-gemini-encoding");
     let upstreamUrl = "";
     vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
       upstreamUrl = typeof request === "string"
@@ -703,13 +714,13 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(upstreamUrl).toContain(
-      "/google-ai-studio/v1beta/models/gemini-3.6-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
     );
   });
 
   it("uses the body model and chat-completions cap policy for Gemini OpenAI-compatible requests", async () => {
     await seedApp("proxy-gemini-openai");
-    const token = await devToken("proxy-gemini-openai");
+    const token = await gatewayToken("proxy-gemini-openai");
     let upstreamUrl = "";
     let upstreamBody: Record<string, unknown> = {};
     const fixture = [
@@ -742,7 +753,9 @@ describe("provider-native proxy", () => {
     });
 
     await expect(response.text()).resolves.toBe(fixture);
-    expect(upstreamUrl).toContain("/google-ai-studio/v1beta/openai/chat/completions");
+    expect(upstreamUrl).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    );
     expect(upstreamBody).toMatchObject({
       model: "gemini-3.6-flash",
       max_tokens: 100,
@@ -754,7 +767,7 @@ describe("provider-native proxy", () => {
 
   it("accepts an Anthropic SDK token in x-api-key and strips it upstream", async () => {
     await seedApp("proxy-native-header");
-    const token = await devToken("proxy-native-header");
+    const token = await gatewayToken("proxy-native-header");
     let upstreamHeaders = new Headers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
       upstreamHeaders = new Headers(init?.headers);
@@ -769,8 +782,10 @@ describe("provider-native proxy", () => {
     });
     await response.text();
     expect(response.status).toBe(200);
-    expect(upstreamHeaders.get("x-api-key")).toBeNull();
-    expect(upstreamHeaders.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
+    // The client's own key is stripped and replaced with the organization's.
+    expect(upstreamHeaders.get("x-api-key")).toBe("test-anthropic-secret");
+    expect(upstreamHeaders.get("authorization")).toBeNull();
+    expect(upstreamHeaders.get("cf-aig-authorization")).toBeNull();
   });
 
   it("accepts a tenant-configured token header and strips it upstream", async () => {
@@ -780,7 +795,7 @@ describe("provider-native proxy", () => {
         token_header: "x-tenant-token",
       },
     });
-    const token = await devToken("proxy-custom-header");
+    const token = await gatewayToken("proxy-custom-header");
     let upstreamHeaders = new Headers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
       upstreamHeaders = new Headers(init?.headers);
@@ -805,7 +820,7 @@ describe("provider-native proxy", () => {
         model_rewrites: { "gpt-4o-mini-transcribe": "gpt-4o-transcribe" },
       },
     });
-    const token = await devToken("proxy-multipart");
+    const token = await gatewayToken("proxy-multipart");
     let upstreamBody: FormData | null = null;
     let upstreamHeaders = new Headers();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
@@ -836,7 +851,7 @@ describe("provider-native proxy", () => {
 
   it("forwards fixed-model xAI STT multipart bytes unchanged and records the policy model", async () => {
     await seedApp("proxy-xai-stt");
-    const token = await devToken("proxy-xai-stt");
+    const token = await gatewayToken("proxy-xai-stt");
     const boundary = "calorie-tracker-test-boundary";
     const requestBytes = new TextEncoder().encode(
       `--${boundary}\r\n`
@@ -869,24 +884,24 @@ describe("provider-native proxy", () => {
     expect(upstreamBytes).toEqual(requestBytes);
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        "SELECT model, cost_usd, auth_method FROM usage_events WHERE app_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT model, cost_usd, auth_method FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1",
       )
         .bind("proxy-xai-stt")
         .first<{ model: string; cost_usd: number; auth_method: string | null }>();
       if (row) {
         expect(row.model).toBe("grok-transcribe");
         expect(row.cost_usd).toBeCloseTo((1.25 / 3600) * 0.1, 8);
-        expect(row.auth_method).toBe("dev");
+        expect(row.auth_method).toBe("attest");
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    throw new Error("Fixed xAI STT model was not persisted to usage_events");
+    throw new Error("Fixed xAI STT model was not persisted to app_usage_event");
   });
 
   it("rejects bodies larger than 20 MB before contacting the provider", async () => {
     await seedApp("proxy-size");
-    const token = await devToken("proxy-size");
+    const token = await gatewayToken("proxy-size");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await workerFetch(
       "https://example.test/v1/apps/proxy-size/proxy/openai/v1/responses",
@@ -908,7 +923,7 @@ describe("provider-native proxy", () => {
 
   it("returns a malformed provider body unchanged when background usage extraction fails", async () => {
     await seedApp("proxy-malformed-usage");
-    const token = await devToken("proxy-malformed-usage");
+    const token = await gatewayToken("proxy-malformed-usage");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response("not-usage-json", {
@@ -987,40 +1002,40 @@ describe("provider-native proxy", () => {
     );
     expect(response.status).toBe(200);
     await response.text();
-    expect(upstreamUrl).toBe(
-      "https://gateway.ai.cloudflare.com/v1/local-account/ai-gateway-dev/perplexity-ai/chat/completions",
-    );
-    expect(upstreamHeaders.get("authorization")).toBeNull();
+    expect(upstreamUrl).toBe("https://api.perplexity.ai/chat/completions");
+    expect(upstreamHeaders.get("authorization")).toBe("Bearer test-perplexity-secret");
     expect(upstreamHeaders.get("x-end-user-id")).toBeNull();
-    expect(upstreamHeaders.get("cf-aig-authorization")).toBe("Bearer test-cf-aig-token");
-    expect(JSON.parse(upstreamHeaders.get("cf-aig-metadata") ?? "null")).toEqual({
-      app_id: "proxy-perplexity",
-      user_id: "grower-user-7",
-    });
-    expect(upstreamHeaders.get("cf-aig-cache-ttl")).toBe("600");
+    // Nothing in front of a natively routed provider speaks cf-aig-*, so none
+    // of it is forwarded — including the headers a client may legitimately send
+    // when the same provider is routed through a Cloudflare AI Gateway.
+    expect(upstreamHeaders.get("cf-aig-authorization")).toBeNull();
+    expect(upstreamHeaders.get("cf-aig-metadata")).toBeNull();
+    expect(upstreamHeaders.get("cf-aig-cache-ttl")).toBeNull();
     expect(upstreamHeaders.get("cf-aig-unknown-control")).toBeNull();
     expect(upstreamBody).toMatchObject({ model: "sonar-pro", max_tokens: 256 });
 
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const row = await env.DB.prepare(
-        `SELECT user_id, input_tokens, output_tokens, cost_usd, app_version, auth_method
-           FROM usage_events WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
+        `SELECT user_id, api_key_id, input_tokens, output_tokens, cost_usd, app_version, auth_method
+           FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
       )
         .bind("proxy-perplexity")
         .first<{
           user_id: string;
+          api_key_id: string | null;
           input_tokens: number;
           output_tokens: number;
           cost_usd: number;
           app_version: string | null;
           auth_method: string | null;
         }>();
-      const keyRow = await env.DB.prepare("SELECT last_used_at FROM api_keys WHERE app_id = ?")
+      const keyRow = await env.DB.prepare("SELECT last_used_at FROM app_api_key WHERE app_id = ?")
         .bind("proxy-perplexity")
         .first<{ last_used_at: string | null }>();
       if (row && keyRow?.last_used_at) {
         expect(row).toEqual({
           user_id: "grower-user-7",
+          api_key_id: "key_proxy-perplexity",
           input_tokens: 100,
           output_tokens: 20,
           cost_usd: 0.0006,
@@ -1032,5 +1047,301 @@ describe("provider-native proxy", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error("Perplexity server-tenant usage was not persisted");
+  });
+});
+
+/**
+ * One end-to-end pass over the OpenAI-compatible batch. The three things that
+ * differ per provider — where the base URL ends, where the cache hit is
+ * reported, and what the catalog charges for it — are exactly the three the
+ * unit tests cannot prove together.
+ */
+describe("OpenAI-compatible providers", () => {
+  it("proxies DeepSeek at its own prefix-free path and bills the cache hit at the cached rate", async () => {
+    const key = await seedServerApp("proxy-deepseek", {
+      proxy: {
+        ...defaultProxyConfig(),
+        deepseek: {
+          allowed_paths: ["chat/completions"],
+          allowed_models: ["deepseek-v4-pro"],
+          max_output_tokens: 256,
+        },
+      },
+    });
+    let upstreamUrl = "";
+    let upstreamHeaders = new Headers();
+    let upstreamBody: Record<string, unknown> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      upstreamUrl = typeof request === "string"
+        ? request
+        : request instanceof URL
+          ? request.toString()
+          : request.url;
+      upstreamHeaders = new Headers(init?.headers);
+      upstreamBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        id: "recorded-deepseek-shape",
+        model: "deepseek-v4-pro",
+        choices: [{ message: { role: "assistant", content: "answer" } }],
+        usage: {
+          prompt_tokens: 1_000_000,
+          prompt_cache_hit_tokens: 1_000_000,
+          prompt_cache_miss_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 1_000_000,
+        },
+      });
+    });
+
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-deepseek/proxy/deepseek/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "deepseek-user-1",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-pro",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    // DeepSeek's OpenAI base URL carries no `v1`, so the joined URL must not
+    // grow one; the provider path is the client's, verbatim.
+    expect(upstreamUrl).toBe("https://api.deepseek.com/chat/completions");
+    expect(upstreamHeaders.get("authorization")).toBe("Bearer test-deepseek-secret");
+    // Chat-completions clamp: `max_tokens`, not OpenAI's max_completion_tokens.
+    expect(upstreamBody).toMatchObject({ model: "deepseek-v4-pro", max_tokens: 256 });
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const row = await env.DB.prepare(
+        `SELECT input_tokens, cached_input_tokens, output_tokens, cost_usd, cost_source, model_author
+           FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
+      )
+        .bind("proxy-deepseek")
+        .first<{
+          input_tokens: number;
+          cached_input_tokens: number;
+          output_tokens: number;
+          cost_usd: number;
+          cost_source: string | null;
+          model_author: string | null;
+        }>();
+      if (row) {
+        expect(row).toEqual({
+          input_tokens: 0,
+          cached_input_tokens: 1_000_000,
+          output_tokens: 0,
+          // $0.044 cached, not the $1.32 fresh rate: a 30x difference on this
+          // request, and the reason the cache field is read at all.
+          cost_usd: 0.044,
+          cost_source: "computed",
+          model_author: "DeepSeek",
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("DeepSeek usage was not persisted");
+  });
+
+  it("records a Groq model under its own author, not under Groq", async () => {
+    const key = await seedServerApp("proxy-groq", {
+      proxy: {
+        ...defaultProxyConfig(),
+        groq: {
+          allowed_paths: ["openai/v1/chat/completions"],
+          allowed_models: ["openai/gpt-oss-120b"],
+        },
+      },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        choices: [{ message: { role: "assistant", content: "answer" } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }));
+
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-groq/proxy/groq/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "groq-user-1",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-oss-120b",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const row = await env.DB.prepare(
+        `SELECT model, model_author, provider_type, cost_usd
+           FROM app_usage_event WHERE app_id = ? ORDER BY id DESC LIMIT 1`,
+      )
+        .bind("proxy-groq")
+        .first<{
+          model: string;
+          model_author: string | null;
+          provider_type: string;
+          cost_usd: number;
+        }>();
+      if (row) {
+        // Counterparty and author are different facts, and this batch is what
+        // makes them differ: Groq served a model OpenAI wrote.
+        expect(row).toEqual({
+          model: "openai/gpt-oss-120b",
+          model_author: "OpenAI",
+          provider_type: "groq",
+          cost_usd: 100 * 0.15e-6 + 20 * 0.6e-6,
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("Groq usage was not persisted");
+  });
+
+  it("refuses a Fireworks model until the operator prices it", async () => {
+    // No shipped catalog for Fireworks: its model IDs are account-scoped, so
+    // the fail-closed gate holds until someone enters a price.
+    const key = await seedServerApp("proxy-fireworks", {
+      proxy: {
+        ...defaultProxyConfig(),
+        fireworks: { allowed_paths: ["inference/v1/chat/completions"], allowed_models: [] },
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-fireworks/proxy/fireworks/inference/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "fireworks-user-1",
+        },
+        body: JSON.stringify({
+          model: "accounts/fireworks/models/kimi-k3",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as any).error.code).toBe("pricing_not_configured");
+    // Nothing unmeterable reaches the provider at all.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenRouter", () => {
+  /**
+   * The narrowing is a billing guarantee: OpenRouter answers `/responses`
+   * perfectly well, but reports no cost there and has no local price to fall
+   * back on, so the request would be served and recorded as unresolved. It is
+   * refused before it leaves instead — the same fail-closed rule that stops an
+   * unpriced model on any other type.
+   */
+  it("refuses a surface it reports no cost on, before the request leaves", async () => {
+    const key = await seedServerApp("proxy-openrouter-style", {
+      proxy: {
+        ...defaultProxyConfig(),
+        openrouter: {
+          allowed_paths: ["v1/chat/completions", "v1/responses"],
+          allowed_models: ["google/gemini-3.6-flash"],
+        },
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.1 } }));
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-openrouter-style/proxy/openrouter/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          "x-end-user-id": "openrouter-user-1",
+        },
+        body: JSON.stringify({ model: "google/gemini-3.6-flash", input: "hello" }),
+      },
+    );
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as any).error.code).toBe("api_style_not_supported");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A cost-reporting provider's request-side hook. No shipped type declares one:
+ * OpenRouter's accounting is always on, so the `usage: {include: true}` this
+ * used to inject bought nothing and cost a full re-serialization of every chat
+ * body. The hook stays because it is where an opt-in would come back, and these
+ * assert the pass-through it is today.
+ */
+describe("cost report body mutation", () => {
+  it("leaves every chat-completions body untouched, on every provider type", () => {
+    for (const type of PROVIDER_TYPES) {
+      const body: Record<string, unknown> = { model: "m", messages: [] };
+      expect([type, costReportBodyMutation(type, "chat_completions", body)])
+        .toEqual([type, false]);
+      expect([type, body]).toEqual([type, { model: "m", messages: [] }]);
+    }
+  });
+
+  it("leaves a client's own `usage` block alone", () => {
+    // It used to be overwritten to keep a client from switching the meter off.
+    // Nothing reads the field now, and rewriting a request field nobody acts on
+    // is a protocol change for no benefit.
+    const body: Record<string, unknown> = { usage: { include: false, keep: "me" } };
+    expect(costReportBodyMutation("openrouter", "chat_completions", body)).toBe(false);
+    expect(body.usage).toEqual({ include: false, keep: "me" });
+  });
+
+  it("touches no body on any API style", () => {
+    for (const style of API_STYLES) {
+      const body: Record<string, unknown> = { model: "m" };
+      expect([style, costReportBodyMutation("openrouter", style, body)]).toEqual([style, false]);
+      expect([style, body]).toEqual([style, { model: "m" }]);
+    }
+  });
+
+  /**
+   * The hook is generic: a type that declares a mutation gets it called, and the
+   * shared proxy path never learns whose field it wrote. Proved against a
+   * hypothetical declaration rather than a real one, because no shipped type
+   * needs it.
+   */
+  it("calls a declared mutation without the proxy path knowing whose it is", () => {
+    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const calls: string[] = [];
+    try {
+      spec.costReport = {
+        read: () => false,
+        mutateBody: (input: { style: string; body: Record<string, unknown> }) => {
+          calls.push(input.style);
+          input.body.hypothetical = true;
+          return true;
+        },
+      };
+      const body: Record<string, unknown> = { model: "m" };
+      expect(costReportBodyMutation("perplexity", "chat_completions", body)).toBe(true);
+      expect(body).toEqual({ model: "m", hypothetical: true });
+      expect(calls).toEqual(["chat_completions"]);
+    } finally {
+      delete spec.costReport;
+    }
+    const after: Record<string, unknown> = { model: "m" };
+    expect(costReportBodyMutation("perplexity", "chat_completions", after)).toBe(false);
+    expect(after).toEqual({ model: "m" });
   });
 });

@@ -3,6 +3,7 @@ import { Ban, CircleCheck, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { GuardedButton } from "@/components/guarded-button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -140,7 +141,7 @@ export function UsersTab({ appId }: { appId: string }) {
                     {user.attest_registered ? (
                       <div className="flex items-center gap-1.5">
                         <Badge variant="secondary" className="text-[11px] font-normal">
-                          {user.attest_env ?? "production"}
+                          registered
                         </Badge>
                         <span className="tabular text-[11px] text-muted-foreground">
                           counter {user.attest_counter}
@@ -148,7 +149,7 @@ export function UsersTab({ appId }: { appId: string }) {
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">
-                        {user.is_virtual ? "server attributed" : "dev access"}
+                        {user.is_virtual ? "server attributed" : "issuer token"}
                       </span>
                     )}
                   </TableCell>
@@ -163,7 +164,7 @@ export function UsersTab({ appId }: { appId: string }) {
                   </TableCell>
                   <TableCell className="tabular text-right">{formatCost(user.usage.cost_usd)}</TableCell>
                   <TableCell className="text-right">
-                    <Button
+                    <GuardedButton
                       variant="ghost"
                       size="sm"
                       disabled={user.is_virtual}
@@ -181,7 +182,7 @@ export function UsersTab({ appId }: { appId: string }) {
                           Unblock
                         </>
                       )}
-                    </Button>
+                    </GuardedButton>
                   </TableCell>
                 </TableRow>
               ))

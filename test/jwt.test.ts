@@ -18,6 +18,7 @@ describe("gateway JWT auth method", () => {
     await expect(verifyGatewayToken(token, secret, "legacy-app")).resolves.toMatchObject({
       userId: "legacy-user",
       authMethod: "attest",
+      credentialType: "gateway_token",
     });
   });
 });

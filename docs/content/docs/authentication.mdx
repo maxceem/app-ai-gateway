@@ -1,11 +1,21 @@
 ---
 title: Authentication
-description: Choose server API keys or issuer identity protected by Apple App Attest.
+description: Separate client proof from user identity for mobile apps and trusted backends.
 ---
 
-## Trusted server backends
+## Identity model
 
-Server applications authenticate with an application API key:
+Authentication answers two independent questions:
+
+1. Client proof authenticates the software with Apple App Attest or an application API key.
+2. An issuer JWT, when configured, authenticates the end user from its verified `user_id_claim`.
+
+The resulting gateway token is a one-hour receipt for both proofs. A client cannot
+self-assert the user represented by that token.
+
+## Issuer-less API-key applications
+
+Pure machine consumers send their application API key directly to data-plane requests:
 
 ```http
 Authorization: Bearer agw_...
@@ -13,28 +23,59 @@ X-End-User-ID: customer-123
 ```
 
 The optional end-user header selects the per-user limit identity. When absent,
-the API key itself is the identity. Only the key hash and display prefix are
+the API key itself is the principal. This direct-key flow is valid only when the
+application has no `issuer` configured. Only the key hash and display prefix are
 stored in D1.
+
+## Issuer-backed API-key applications
+
+Trusted clients that front real users exchange both proofs at the token endpoint:
+
+```http
+POST /v1/apps/my-app/auth/token
+Content-Type: application/json
+
+{"api_key":"agw_...","issuer_token":"eyJ..."}
+```
+
+The API key must be active and belong to that application. The gateway verifies
+the issuer token and its required claims, uses its `user_id_claim` as identity,
+and returns a gateway token. Once an API-key app has an issuer, bare `agw_` keys
+are rejected on data-plane requests.
 
 ## iOS applications
 
-Mobile authentication combines two proofs:
+Mobile authentication combines the same two proofs:
 
 1. An issuer token proves the signed-in user identity.
 2. Apple App Attest proves the request originates from an accepted application installation.
 
 The client first requests a challenge and registers its App Attest key. Subsequent
-token exchanges submit a fresh challenge and assertion. The gateway returns a
-short-lived bearer token for proxy and `/me` requests.
+token exchanges submit a fresh challenge and assertion. App Attest accepts only
+Apple's production environment. The gateway verifies the issuer identity and
+returns a short-lived bearer token for proxy and `/me` requests.
 
-## Simulator development
+## Why a token exchange was refused
 
-A separately generated per-application development credential can replace App
-Attest in Simulator workflows, but never replaces the issuer token. Development
-access must be explicitly enabled in that application's authentication policy.
+A refused exchange answers with one of three codes, chosen by what the client
+should do about it rather than by the internal cause. The granular cause is
+recorded server-side as a `reason`, and is never sent to the client.
 
-<Callout type="warn" title="Do not ship development credentials">
-  Store the development credential outside source control and only inject it into
-  local development builds. Physical-device and distribution builds should use
-  App Attest.
+| Status and code | What happened | What the client should do |
+| --- | --- | --- |
+| `403 issuer_token_rejected` | The token did not verify: bad signature, unknown key, disallowed algorithm, expired, over the configured lifetime, or no `user_id_claim`. | Fetch a fresh issuer token, retry once, then fail. |
+| `403 issuer_claims_missing` | The token verified, but the application's `required_claims` are not all present yet. | Do **not** re-authenticate. Wait and retry — the entitlement is still propagating. |
+| `503 issuer_verification_unavailable` | The gateway could not reach or read the issuer's JWKS, so the token was never judged. | Retry with backoff. Nothing about the credential is known to be wrong. |
+
+The separation matters most for `required_claims` backed by an asynchronous
+writer — a purchase that a store webhook turns into an entitlement claim, for
+instance. During that gap the user holds a perfectly valid token, and treating
+the refusal as an authentication failure sends the client re-authenticating in a
+loop it cannot escape. The gateway measures the gap: see
+[claim propagation](/docs/operations#authentication-observability).
+
+<Callout>
+Clients built before these codes existed decode an unrecognised code as unknown
+and display the server's message, so they degrade to showing the reason rather
+than acting on it.
 </Callout>

@@ -2,7 +2,7 @@
   "name": "@calories-tracker/ai-gateway",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@11.24.0",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --env local",
@@ -26,11 +26,10 @@
     "db:migrate:local": "wrangler d1 migrations apply DB --local --env local",
     "db:migrate": "wrangler d1 migrations apply DB --remote",
     "db:migrate:production": "wrangler d1 migrations apply DB --remote --env production",
-    "db:seed:local": "wrangler d1 execute DB --local --env local --file seeds/dev-app.sql",
     "secrets:upload": "wrangler secret bulk .dev.vars --env=\"\"",
     "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
-    "admin-token:rotate": "wrangler secret put ADMIN_TOKEN",
-    "tenants:register": "./scripts/register-calorie-tracker-tenants.sh",
+    "recover-access": "node scripts/recover-access.mjs",
+    "migrate-to-orgs": "node scripts/migrate-to-orgs.mjs",
     "deploy:dry-run": "pnpm run console:build && wrangler deploy --dry-run --env=\"\"",
     "startup:check": "wrangler check startup --env=\"\"",
     "console:test": "pnpm --filter @ai-gateway/console test",
@@ -39,14 +38,19 @@
     "pretest": "pnpm run console:ensure"
   },
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.9",
     "@hono/zod-openapi": "^1.5.1",
+    "@maxceem/cf-auth": "file:../../maxceem/packages/cf-auth",
+    "@maxceem/cf-kms": "file:../../maxceem/services/cf-kms",
     "asn1js": "^3.0.7",
+    "better-auth": "1.6.9",
     "cbor-x": "^1.6.0",
+    "cf-billing": "file:../../maxceem/services/cf-billing",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.9.0",
     "jose": "^6.0.0",
-    "zod": "^4.0.0",
-    "pkijs": "^3.3.3"
+    "pkijs": "^3.3.3",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.7",
@@ -62,14 +66,8 @@
   },
   "cloudflare": {
     "bindings": {
-      "CF_AIG_GATEWAY_ID": {
-        "description": "Required. [Create a Cloudflare AI Gateway](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fai-gateway) first, then enter its exact Gateway ID (slug). This deployment does not create a gateway."
-      },
-      "CF_AIG_TOKEN": {
-        "description": "After creating the gateway, open its Settings and select **Create authentication token**. Save the one-time token and paste it here; it includes the required AI Gateway Run permission."
-      },
-      "ADMIN_TOKEN": {
-        "description": "Create a strong random token for the console admin access. Generate one with a password manager or run `openssl rand -base64 32`, save it, then paste it here."
+      "SECRET_VAULT_LOCAL_KEK_V1": {
+        "description": "Generate a unique local vault key with `openssl rand -base64 32`. It encrypts provider credentials at rest and must be backed up securely."
       }
     }
   }

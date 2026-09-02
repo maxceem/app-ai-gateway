@@ -6,9 +6,9 @@ import { Field } from "@/components/field";
 import { StatCard } from "@/components/stat-card";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
-  PROVIDER_LABELS,
-  enabledProviders,
+  authIssuer,
   providerMode,
+  selectedSlugs,
 } from "@/lib/config-types";
 import { currentMonth, formatCompact, formatCost, formatNumber } from "@/lib/format";
 import { useMonthlyUsage, useUsers } from "@/lib/queries";
@@ -40,11 +40,12 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
   const budgetShare = appBudget
     ? (usage.data?.cost_usd ?? 0) / appBudget
     : null;
+  // api_key apps only have an issuer when verified user identity is required.
+  const issuer = authIssuer(authentication);
   const issuerHost = (() => {
+    if (!issuer) return authentication.type === "api_key" ? "API key only" : "not set";
     try {
-      return authentication.type === "apple_app_attest"
-        ? new URL(authentication.issuer.jwks_url ?? "").host
-        : "API key";
+      return new URL(issuer.jwks_url ?? "").host;
     } catch {
       return "not set";
     }
@@ -155,7 +156,7 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
               <Fact label="Issuer" value={issuerHost} />
               <Fact
                 label="User id claim"
-                value={authentication.type === "apple_app_attest" ? authentication.issuer.user_id_claim : "x-end-user-id"}
+                value={issuer ? (issuer.user_id_claim ?? "sub") : "x-end-user-id"}
               />
               <Fact
                 label="Rate limits"
@@ -163,30 +164,18 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
               />
               <Fact
                 label="Issuer token lifetime cap"
-                value={authentication.type === "apple_app_attest"
-                  ? `${formatNumber(authentication.issuer.max_token_lifetime_seconds ?? 86400)} s`
+                value={issuer
+                  ? `${formatNumber(issuer.max_token_lifetime_seconds ?? 86400)} s`
                   : "not applicable"}
-              />
-              <Fact
-                label="App Attest environments"
-                value={authentication.type === "apple_app_attest"
-                  ? authentication.app_attest.environments.join(", ")
-                  : "not applicable"}
-              />
-              <Fact
-                label="Simulator dev access"
-                value={authentication.type === "apple_app_attest" && authentication.development_access
-                  ? "enabled"
-                  : "disabled"}
               />
               <Fact
                 label="Providers"
                 value={
                   providerMode(draft.config.routing) === "all"
-                    ? "All supported providers"
-                    : enabledProviders(draft.config.routing)
-                        .map((provider) => PROVIDER_LABELS[provider])
-                        .join(", ") || "none"
+                    ? "Every configured instance"
+                    // Instance slugs, because that is what the policy names and
+                    // what a client puts in the URL.
+                    : selectedSlugs(draft.config.routing).join(", ") || "none"
                 }
               />
               <Fact label="Registered users" value={formatNumber(users.data?.total ?? 0)} />
@@ -204,7 +193,18 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
             {window.location.origin}/v1/apps/{appId}/proxy/&#123;provider&#125;/&#123;provider_path&#125;
           </code>
           <p className="mt-2 text-xs text-muted-foreground">
-            Auth exchange lives at <span className="font-mono">/v1/apps/{appId}/auth/token</span>.
+            {issuer ? (
+              <>
+                Auth exchange lives at{" "}
+                <span className="font-mono">/v1/apps/{appId}/auth/token</span>.
+              </>
+            ) : (
+              <>
+                Clients send their API key as the{" "}
+                <span className="font-mono">Authorization</span> bearer credential; this app has no
+                token exchange.
+              </>
+            )}
           </p>
         </CardContent>
       </Card>

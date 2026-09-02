@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultProxyConfig, devToken, seedApp, seedServerApp } from "./helpers";
+import { defaultProxyConfig, gatewayToken, seedApp, seedServerApp } from "./helpers";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -23,7 +23,7 @@ describe("UserLimiter", () => {
   it("enforces monthly budget and the instant blocked flag", async () => {
     const limiter = env.USER_LIMITER.getByName("limiter:budget");
     const now = Date.UTC(2026, 6, 23);
-    await limiter.addCost(now, 100);
+    await limiter.addCost(crypto.randomUUID(), now, 100);
     expect(await limiter.checkAndIncrement({ now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: 100 })).toEqual({
       allowed: false,
       reason: "budget",
@@ -39,8 +39,37 @@ describe("UserLimiter", () => {
     const limiter = env.USER_LIMITER.getByName("limiter:status");
     const now = Date.UTC(2026, 6, 23, 12);
     await limiter.checkAndIncrement({ now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: null });
-    await limiter.addCost(now, 42);
+    await limiter.addCost(crypto.randomUUID(), now, 42);
     expect(await limiter.getStatus(now)).toEqual({ blocked: false, requestsToday: 1, monthlyCostMicrousd: 42 });
+  });
+
+  it("applies a settled event once and prunes the ledger after the retry horizon", async () => {
+    const limiter = env.USER_LIMITER.getByName("limiter:ledger");
+    const now = Date.now();
+    const eventId = crypto.randomUUID();
+
+    expect(await limiter.addCost(eventId, now, 70)).toBe(70);
+    expect(await limiter.addCost(eventId, now, 70)).toBe(70);
+    expect(await limiter.addCost(crypto.randomUUID(), now, 5)).toBe(75);
+
+    // Once the entry ages out, the ledger no longer claims to have seen it; that
+    // is the retention trade-off, and it only matters far past any retry.
+    await runInDurableObject(limiter, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE applied_events SET applied_at = ? WHERE event_id = ?",
+        Date.now() - 8 * 86_400_000,
+        eventId,
+      );
+      await state.storage.setAlarm(Date.now() + 60_000);
+    });
+    expect(await runDurableObjectAlarm(limiter)).toBe(true);
+    await runInDurableObject(limiter, (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM applied_events")
+          .one().count,
+      ).toBe(1);
+    });
   });
 
   it("reschedules cleanup even when no request rows remain", async () => {
@@ -60,7 +89,7 @@ describe("UserLimiter", () => {
 
   it("records a zero-token usage event when the limiter rejects a request", async () => {
     await seedApp("limiter-usage-event", { budgetUsd: 0 });
-    const token = await devToken("limiter-usage-event");
+    const token = await gatewayToken("limiter-usage-event");
     const path = "/v1/apps/limiter-usage-event/proxy/openai/v1/responses";
     const response = await exports.default.fetch(`https://example.test${path}`, {
       method: "POST",
@@ -76,9 +105,9 @@ describe("UserLimiter", () => {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        `SELECT provider, model, route, input_tokens, cached_input_tokens,
+        `SELECT provider_type AS provider, model, route, input_tokens, cached_input_tokens,
                 cache_write_tokens, output_tokens, cost_usd, app_version, status, latency_ms
-           FROM usage_events WHERE app_id = ? AND user_id = ?`,
+           FROM app_usage_event WHERE app_id = ? AND user_id = ?`,
       )
         .bind("limiter-usage-event", "user-1")
         .first<{
@@ -145,7 +174,7 @@ describe("UserLimiter", () => {
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const row = await env.DB.prepare(
-        `SELECT model, route FROM usage_events
+        `SELECT model, route FROM app_usage_event
           WHERE app_id = ? AND user_id = ? AND status = 'blocked_rate'`,
       )
         .bind("app-rate-limit", "user-b")

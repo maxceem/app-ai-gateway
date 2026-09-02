@@ -3,9 +3,13 @@ import { assertAppActive, loadAppConfig } from "../core/config";
 import { verifyApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "../core/jwt";
-import type { AppConfig, GatewayIdentity, Provider } from "../core/types";
+import { organizationProviders } from "../core/provider-store";
+import { PROVIDER_REGISTRY, PROVIDER_SLUG_PATTERN } from "../core/providers";
+import { lookup } from "../core/records";
+import type { AppConfig, GatewayIdentity, ProviderType } from "../core/types";
+import type { BillingVariables } from "../billing/gateway";
 
-export interface GatewayVariables {
+export interface GatewayVariables extends BillingVariables {
   appConfig: AppConfig;
   identity: GatewayIdentity;
   authHeaderName: string;
@@ -20,12 +24,11 @@ function tokenFromHeader(value: string | undefined): string | null {
 
 export function extractGatewayToken(
   headers: Headers,
-  provider: Provider | undefined,
+  provider: ProviderType | undefined,
   customHeader: string | undefined,
 ): { token: string; headerName: string } {
   const candidates: string[] = ["authorization"];
-  if (provider === "anthropic") candidates.push("x-api-key");
-  if (provider === "gemini") candidates.push("x-goog-api-key");
+  if (provider) candidates.push(PROVIDER_REGISTRY[provider].auth.header);
   if (customHeader && !candidates.includes(customHeader.toLowerCase())) candidates.push(customHeader.toLowerCase());
   for (const name of candidates) {
     const token = tokenFromHeader(headers.get(name) ?? undefined);
@@ -41,18 +44,16 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   const app = await loadAppConfig(c.env, appId);
   assertAppActive(app);
   const rawProvider = c.req.param("provider");
-  const provider = typeof rawProvider === "string" && ["openai", "anthropic", "xai", "gemini", "perplexity"].includes(rawProvider)
-    ? (rawProvider as Provider)
+  const provider = typeof rawProvider === "string" && PROVIDER_SLUG_PATTERN.test(rawProvider)
+    ? lookup(await organizationProviders(c.env, app.organizationId), rawProvider)?.type
     : undefined;
   const credential = extractGatewayToken(
     c.req.raw.headers,
     provider,
-    app.authentication.type === "apple_app_attest"
-      ? app.authentication.issuer.token_header
-      : undefined,
+    app.authentication.issuer?.token_header,
   );
   let identity: GatewayIdentity;
-  if (app.authentication.type === "api_key") {
+  if (app.authentication.type === "api_key" && !app.authentication.issuer) {
     const hasEndUserId = c.req.raw.headers.has("x-end-user-id");
     const endUserId = c.req.header("x-end-user-id") ?? null;
     if (hasEndUserId && (endUserId === null || !/^[\x21-\x7e]{1,128}$/u.test(endUserId))) {

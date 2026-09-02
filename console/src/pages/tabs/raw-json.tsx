@@ -63,7 +63,7 @@ export function RawJsonTab({ state }: { state: AppDraft }) {
         ) : null}
         <JsonEditor value={text} onChange={onChange} minHeight="420px" />
         <p className="text-xs text-muted-foreground">
-          Development credentials are managed separately and never appear in this JSON.
+          API keys are managed separately and never appear in this JSON.
         </p>
       </CardContent>
     </Card>

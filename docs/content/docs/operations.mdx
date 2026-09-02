@@ -14,14 +14,159 @@ pnpm run deploy:dry-run
 pnpm run startup:check
 ```
 
-## Rotate the administrator token
+## Rotate a provider credential
 
-```sh
-pnpm run admin-token:rotate
-```
+Rotate in place from the console's **Providers** page — **Update key** in the
+row's actions menu — or with `PUT /v1/admin/providers/{id}`. The row keeps its
+id, slug, encryption context, and custom pricing; the new credential is
+re-probed and re-encrypted. Warm isolates pick it up within about a minute,
+which is also the tail on a deletion.
 
-Wrangler prompts without putting the new secret value in command history. Rotation
-invalidates the previous administrator token.
+A gateway-routed instance owns no key of its own, so that call answers
+`409 provider_gateway_managed`. Rotate the shared token once with **Update
+token** on the gateway's row, or `POST /v1/admin/provider-gateways/{id}/rotate`,
+and every instance behind that gateway follows. See [Providers](/docs/providers).
+
+## Reprice stored usage
+
+`POST /v1/admin/apps/{app}/usage/reprice` recomputes stored `cost_usd` for one
+provider type, model, and month. Each event is priced through the provider
+instance that served it, falling back to the shipped catalog, so two instances of
+one type can reprice the same model differently.
+
+Run it as a dry run first (`apply: false`). The preview is tolerant: events whose
+serving instance was deleted, and which no catalog price covers, are reported as
+`unpriced_events` (with their current spend as `unpriced_cost_usd`) rather than
+failing the call. `matched_events` counts only what would actually be rewritten.
+
+`apply: true` is strict — if any matched event cannot be priced the whole call
+answers `400 invalid_request` and nothing is written, so a month is never left
+half-repriced. Clear the preview's `unpriced_events` first, either by re-adding
+the missing custom price or by narrowing the month.
+
+Events billed on a cost the upstream reported (`cost_source: "reported"`) are
+never matched: that figure is what you were charged, and a local price would
+replace a fact with an estimate.
+
+A repriced event's `cost_source` becomes `computed`, because the local catalog
+is now where its cost came from — including events that were previously
+[unresolved](#unresolved-usage), whose marker clears once a price can answer for
+them.
+
+**Events with no readable usage keep their `cost_source`.** An event whose token
+counts are all zero was never metered — an unrecognised response shape, or a
+stream a client abandoned before the chunk carrying its usage. Multiplying zero
+tokens by any price yields zero, which is arithmetic rather than an answer, so
+repricing writes that zero to `cost_usd` but leaves the marker alone: an
+`unresolved` event stays `unresolved`. Those events are counted in
+`matched_events` (their `cost_usd` really is rewritten) and reported separately
+as `unmetered_events`.
+
+A non-zero `unmetered_events` means the month contains spend nothing could
+measure. Repricing cannot recover it, and must not appear to have done so —
+were the marker overwritten, the events would read as genuinely free, drop out
+of the **By cost source** breakdown, and stop being shown as unresolved in the
+console, while the unbudgeted spend continued.
+
+## Where a cost comes from
+
+Every event records how its `cost_usd` was arrived at, in `cost_source`:
+
+| `cost_source` | Meaning |
+| --- | --- |
+| `reported` | The upstream said what the request cost, and that figure is the billed one. Only [OpenRouter](/docs/providers#openrouter) reports one today; the same number is kept in `reported_cost_usd`. |
+| `computed` | Priced locally, from the provider instance's custom pricing or the shipped catalog. |
+| `unresolved` | Neither source could answer on a successful response — see below. |
+
+Reported cost wins because it is definitionally what you were charged. Local
+pricing is the default and the fallback: if a cost-reporting route ever answers
+without a cost, a local price for that model is used, and the event is
+`computed` rather than `reported`.
+
+## Unresolved usage
+
+Usage is read from the provider's own response. When a provider answers
+successfully but reports usage in a shape this gateway does not know, there is
+nothing to price: the request is served, the event is stored with no tokens, and
+its cost is zero because nothing was measurable — not because nothing was spent.
+
+Three other situations land in the same place:
+
+- A cost-reporting route answers without a cost, and the model has no local
+  price either.
+- A model has no local price on a route that does not report cost. Unpriced
+  models are refused before they proxy, so this means a price was removed while
+  a request was already in flight — within the one-minute configuration cache.
+- **A client aborts a streamed response before the final chunk.** See the
+  known limitation below.
+
+### Known limitation: aborted streams on cost-reporting routes
+
+On a cost-reporting route the cost arrives in the *last* chunk of a stream. A
+client that disconnects before that chunk takes the figure with it, and the
+request is recorded `unresolved` at `$0` — the tokens were generated and
+[OpenRouter](/docs/providers#openrouter) charged for them, but nothing debits
+the budget. Deliberately repeated, that is unbounded unbudgeted spend.
+
+The gateway does not reconcile this today. Doing it properly means looking the
+request up through OpenRouter's generation-lookup API after the fact, which is a
+funded backlog item rather than something to guess at. Until then:
+
+**The operator signal is a sustained unresolved count on cost-reporting
+providers.** Watch the **By cost source** breakdown filtered to those provider
+instances, and alert on `usage_unresolved_cost` log lines whose provider is one
+of them. A background rate is normal; a rising one from a single app or user is
+worth investigating. Per-user request rate limits are the blunt control that
+bounds the damage in the meantime.
+
+Those events are marked `cost_source: "unresolved"` instead of `"computed"`, are
+shown as **unresolved** rather than `$0.00` in the console's event list, and can
+be counted with the **By cost source** breakdown. Each one also emits an
+`error`-level `usage_unresolved_cost` log line naming the app, provider, model,
+and route, so a new provider or a changed response format surfaces as an alert
+rather than as free traffic. Live requests are never rejected for it.
+
+A sustained count above zero means real spend is escaping the budget, and the
+gateway cannot fix that on its own: the response shape has to be added to usage
+extraction. Blocked requests never reached a provider and carry no
+`cost_source`; events recorded before the field existed carry none either.
+
+## Route attribution on usage events
+
+Every event records the route it was actually sent over, which is known before
+the request leaves: `provider_gateway_id` and `provider_gateway_type` name the
+gateway that carried it and are null on a direct call, and `credential_source`
+is `direct` for an instance holding its own key or `byok` when a gateway serves
+it from your own key store. It is never inferred from a successful response, so
+a null means nothing settled it rather than "probably yours".
+
+`model_author` records who made the model, resolved when the event is recorded
+so it can be grouped in SQL. It answers "how much Google-model spend, on any
+route" — a question the provider type cannot, once one provider serves several
+authors' models. It is an analytics dimension only: budgets and allowlists stay
+per provider instance and per app.
+
+`served_provider`, `served_model` and `reported_cost_usd` are for upstreams that
+report what actually served a request and what it cost. They are populated on
+[OpenRouter](/docs/providers#openrouter) instances, where `served_provider` is
+the host OpenRouter routed to and `credential_source` is `byok` only when the
+response says your own upstream key paid; they are null everywhere else, and a
+null means unknown rather than "no". `cost_usd` remains the billed figure either
+way.
+
+Breakdowns by **model author**, **gateway**, and **credential source** are in the
+console's usage view alongside the existing ones.
+
+## Rotate the vault key
+
+In `local` mode, add `SECRET_VAULT_LOCAL_KEK_V2` as a Worker secret and set
+`SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=2`. Older versions stay accepted for
+decryption, so existing blobs keep working and new writes use the new key; there
+is no bulk re-encryption script yet, so keep the old version until every
+credential has been rotated through the console. In `kms` mode, key rotation is a
+cf-kms operation and does not touch this Worker.
+
+Use Wrangler secret commands or stdin so no secret value enters shell history.
 
 ## Database migrations
 
@@ -34,3 +179,47 @@ schema and generated migration artifacts. Apply remote migrations through the
 The Worker enables Cloudflare logs and sampled traces. Proxy responses also return
 `Server-Timing` measurements for authentication, limit evaluation, and provider
 time-to-first-byte.
+
+## Health
+
+`GET /v1/healthz` reports a non-secret `vault` field. `"misconfigured"` means the
+`SECRET_VAULT_*` configuration is incomplete, contradictory, or invalid, and every
+credential-touching request will answer `provider_unavailable`. The structured
+`secret_vault_misconfigured` log line names the offending binding without
+printing its value. Monitor this field after any secret change.
+
+## Authentication observability
+
+Every rejected request emits one structured `gateway_error` line carrying the
+error `code`, its granular `reason`, the status, the path and method, the
+application, and the `X-App-Version` the client sent. Nothing else: no request
+body, no token, and no other header, because these lines are emitted for
+failures whose payload is a credential. Statuses below 500 log at `warn`, 500
+and above at `error`.
+
+Every `POST /v1/apps/{app}/auth/token` and `/auth/register` request — successful
+or not — also writes one row to `app_auth_event`, with its outcome, reason,
+client version and handler latency. Recording happens after the response and can
+never fail the request. Challenge issuance is not recorded: it decides nothing.
+
+### Claim propagation
+
+When an issuer token verifies but a required entitlement claim has not arrived
+yet, the gateway opens a window on that user: `app_user.claim_pending_since` is
+set on the *first* such refusal and left alone by every retry. The exchange that
+finally succeeds computes the wait, stores it as `claim_delay_ms` on its own auth
+event, logs `claim_propagation_recovered`, and closes the window.
+
+Two questions follow directly from that:
+
+- Who is stuck activating right now — `app_user.claim_pending_since IS NOT NULL`.
+- How long activation normally takes — the p50 and p95 of `claim_delay_ms`.
+
+Both, along with the token-exchange success rate and a by-cause breakdown of
+failures, are on the **Auth & Errors** tab of each application in the console,
+backed by `GET /v1/admin/apps/{app}/auth-events/summary`.
+
+### Retention
+
+A daily cron trigger deletes `app_auth_event` rows older than 90 days. It touches
+nothing else — `app_usage_event` is accounting history and is never pruned.

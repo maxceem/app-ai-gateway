@@ -19,7 +19,10 @@
     "exactOptionalPropertyTypes": false,
     "types": ["vite/client"],
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] }
+    // `@shared` is the capability matrix the Worker enforces, imported rather
+    // than mirrored. Everything under it is dependency-free by contract — see
+    // the module's own header — so nothing server-side reaches this bundle.
+    "paths": { "@/*": ["./src/*"], "@shared/*": ["../src/shared/*"] }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts", "../src/shared"]
 }

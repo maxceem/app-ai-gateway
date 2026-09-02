@@ -17,8 +17,12 @@
       "description": "Unauthenticated service health."
     },
     {
+      "name": "Operator authentication",
+      "description": "Better Auth signup and session lifecycle."
+    },
+    {
       "name": "Application authentication",
-      "description": "Issuer and Apple App Attest token exchange."
+      "description": "Issuer identity plus App Attest or API-key client proof."
     },
     {
       "name": "Application",
@@ -29,12 +33,36 @@
       "description": "Provider-native streaming proxy endpoints."
     },
     {
+      "name": "Named endpoints",
+      "description": "Server-configured provider and model behind a stable slug."
+    },
+    {
       "name": "Admin applications",
       "description": "Application configuration lifecycle."
     },
     {
       "name": "Admin operations",
-      "description": "Keys, users, credentials, and usage."
+      "description": "Keys, users, and usage."
+    },
+    {
+      "name": "Admin management keys",
+      "description": "Organization-scoped agw_mgmt_ credentials."
+    },
+    {
+      "name": "Admin providers",
+      "description": "Named provider instances and their credentials."
+    },
+    {
+      "name": "Admin provider gateways",
+      "description": "Reusable Cloudflare AI Gateway connections shared by provider instances."
+    },
+    {
+      "name": "Admin organizations",
+      "description": "Operator identity and organization switching."
+    },
+    {
+      "name": "Admin billing",
+      "description": "Optional cf-billing service-binding operations."
     },
     {
       "name": "Admin models",
@@ -43,15 +71,22 @@
   ],
   "components": {
     "securitySchemes": {
-      "AdminBearer": {
+      "ManagementBearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The deployment's ADMIN_TOKEN."
+        "bearerFormat": "agw_mgmt_…",
+        "description": "An organization-scoped management API key created by an owner or admin."
+      },
+      "OperatorSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "agw_operator_auth.session_token",
+        "description": "The Better Auth operator session cookie. Admin requests also send x-console-request: 1."
       },
       "GatewayBearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A gateway access token or server application API key."
+        "description": "A gateway access token, or an application API key for an issuer-less API-key app."
       }
     },
     "schemas": {
@@ -132,21 +167,21 @@
           "challenge"
         ]
       },
-      "DevelopmentTokenRequest": {
+      "ApiKeyTokenRequest": {
         "type": "object",
         "properties": {
           "issuer_token": {
             "type": "string",
             "minLength": 1
           },
-          "dev_secret": {
+          "api_key": {
             "type": "string",
             "minLength": 1
           }
         },
         "required": [
           "issuer_token",
-          "dev_secret"
+          "api_key"
         ],
         "additionalProperties": false
       },
@@ -214,7 +249,18 @@
                               "type": "string"
                             },
                             "contains": {
-                              "type": "string"
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "minItems": 1
+                                }
+                              ]
                             },
                             "equals": {
                               "anyOf": [
@@ -245,7 +291,8 @@
                       "user_id_claim",
                       "required_claims",
                       "max_token_lifetime_seconds"
-                    ]
+                    ],
+                    "additionalProperties": false
                   },
                   "app_attest": {
                     "type": "object",
@@ -255,35 +302,21 @@
                       },
                       "bundle_id": {
                         "type": "string"
-                      },
-                      "environments": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "enum": [
-                            "production",
-                            "development"
-                          ]
-                        },
-                        "minItems": 1
                       }
                     },
                     "required": [
                       "team_id",
-                      "bundle_id",
-                      "environments"
-                    ]
-                  },
-                  "development_access": {
-                    "type": "boolean"
+                      "bundle_id"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
                   "type",
                   "issuer",
-                  "app_attest",
-                  "development_access"
-                ]
+                  "app_attest"
+                ],
+                "additionalProperties": false
               },
               {
                 "type": "object",
@@ -293,6 +326,73 @@
                     "enum": [
                       "api_key"
                     ]
+                  },
+                  "issuer": {
+                    "type": "object",
+                    "properties": {
+                      "jwks_url": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "user_id_claim": {
+                        "type": "string"
+                      },
+                      "token_header": {
+                        "type": "string"
+                      },
+                      "required_claims": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string"
+                            },
+                            "contains": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "minItems": 1
+                                }
+                              ]
+                            },
+                            "equals": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "path"
+                          ]
+                        }
+                      },
+                      "max_token_lifetime_seconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "required": [
+                      "jwks_url",
+                      "user_id_claim",
+                      "required_claims",
+                      "max_token_lifetime_seconds"
+                    ],
+                    "additionalProperties": false
                   },
                   "end_user": {
                     "type": "object",
@@ -317,13 +417,15 @@
                       "header",
                       "required",
                       "fallback"
-                    ]
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
                   "type",
                   "end_user"
-                ]
+                ],
+                "additionalProperties": false
               }
             ]
           },
@@ -342,272 +444,58 @@
                   },
                   "selected": {
                     "type": "object",
-                    "properties": {
-                      "openai": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "allowed_paths": {
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string"
                                   },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
+                                  "fixed_model": {
+                                    "type": "string"
+                                  },
+                                  "clamp": {
+                                    "type": "string",
+                                    "enum": [
+                                      "responses",
+                                      "chat_completions",
+                                      "gemini_native",
+                                      "anthropic",
+                                      "none"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "path"
+                                ]
+                              }
+                            ]
                           }
                         },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
+                        "allowed_models": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "max_output_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        }
                       },
-                      "anthropic": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      },
-                      "xai": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      },
-                      "gemini": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      },
-                      "perplexity": {
-                        "type": "object",
-                        "properties": {
-                          "allowed_paths": {
-                            "type": "array",
-                            "items": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "fixed_model": {
-                                      "type": "string"
-                                    },
-                                    "clamp": {
-                                      "type": "string",
-                                      "enum": [
-                                        "responses",
-                                        "chat_completions",
-                                        "gemini_native",
-                                        "anthropic",
-                                        "none"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "path"
-                                  ]
-                                }
-                              ]
-                            }
-                          },
-                          "allowed_models": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
-                          },
-                          "max_output_tokens": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "allowed_paths",
-                          "allowed_models"
-                        ]
-                      }
+                      "required": [
+                        "allowed_paths",
+                        "allowed_models"
+                      ]
                     }
                   }
                 },
@@ -729,12 +617,1104 @@
               "per_user",
               "per_app"
             ]
+          },
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "api_style": {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "transcription"
+                  ]
+                },
+                "params": {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                "max_output_tokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "fallback": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "model"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "provider",
+                "model",
+                "api_style"
+              ]
+            }
           }
         },
         "required": [
           "authentication",
           "routing",
           "limits"
+        ]
+      },
+      "Provider": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance",
+              "openrouter"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "description": "Organization-unique URL segment used under /proxy/{slug}/."
+          },
+          "name": {
+            "type": "string"
+          },
+          "secretHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last characters of a direct provider key; null when a shared provider gateway owns the token."
+          },
+          "providerGatewayId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gatewayRoute": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "modelPrefix": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "providerOnly": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "minItems": 1,
+                "maxItems": 20
+              }
+            },
+            "additionalProperties": false,
+            "description": "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway."
+          },
+          "baseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-supplied origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
+            "example": "https://my-resource.openai.azure.com/openai/v1/"
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ProviderPricing"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ],
+            "description": "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again."
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "slug",
+          "name",
+          "secretHint",
+          "providerGatewayId",
+          "gatewayRoute",
+          "baseUrl",
+          "pricing",
+          "status",
+          "createdAt",
+          "createdBy"
+        ]
+      },
+      "ProviderPricing": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number",
+              "minimum": 0
+            },
+            "output": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "input",
+            "output"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ProviderCreateRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance",
+              "openrouter"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "providerGatewayId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "gatewayRoute": {
+            "$ref": "#/components/schemas/GatewayRouteConfig"
+          },
+          "baseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ProviderPricing"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "GatewayRouteConfig": {
+        "type": "object",
+        "properties": {
+          "modelPrefix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "providerOnly": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "minItems": 1,
+            "maxItems": 20
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderTestRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "anthropic",
+              "xai",
+              "gemini",
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance",
+              "openrouter"
+            ]
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "providerGatewayId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "gatewayRoute": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GatewayRouteConfig"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "baseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/ProviderPricing"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderGateway": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "secretHint": {
+                "type": "string",
+                "description": "The last characters of the gateway token. The token itself is never returned."
+              },
+              "providerCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Active provider instances routed through this gateway."
+              },
+              "referencedCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "All provider instances referencing this gateway, including disabled rows retained for re-enabling. Deletion is refused while this is above zero."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "createdBy": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cf_aig"
+                ]
+              },
+              "config": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": "string"
+                  },
+                  "gatewayId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "gatewayId"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "secretHint",
+              "providerCount",
+              "referencedCount",
+              "status",
+              "createdAt",
+              "updatedAt",
+              "createdBy",
+              "type",
+              "config"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "secretHint": {
+                "type": "string",
+                "description": "The last characters of the gateway token. The token itself is never returned."
+              },
+              "providerCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Active provider instances routed through this gateway."
+              },
+              "referencedCount": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "All provider instances referencing this gateway, including disabled rows retained for re-enabling. Deletion is refused while this is above zero."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "createdBy": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vercel"
+                ]
+              },
+              "config": {
+                "type": "object",
+                "properties": {},
+                "description": "Vercel's origin is fixed in adapter code, so it has no configuration of its own."
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "secretHint",
+              "providerCount",
+              "referencedCount",
+              "status",
+              "createdAt",
+              "updatedAt",
+              "createdBy",
+              "type",
+              "config"
+            ]
+          }
+        ]
+      },
+      "ProviderGatewayCreateRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cf_aig"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vercel"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "token"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ProviderGatewayTestRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cf_aig"
+                ]
+              },
+              "accountId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "gatewayId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "type",
+              "accountId",
+              "gatewayId",
+              "token"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vercel"
+                ]
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "type",
+              "token"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ProviderGatewayUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderGatewayRotateRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "OrganizationSelectRequest": {
+        "type": "object",
+        "properties": {
+          "organizationId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "organizationId"
+        ]
+      },
+      "UsageEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "api_key_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Non-secret ID of the application API key that authenticated the request, including the client-proof key carried by an exchanged gateway token."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_gateway_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The gateway connection that carried the request, or null for a direct call. Recorded for every routed request; the id is kept even after the gateway row is deleted."
+          },
+          "provider_gateway_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That gateway's type at request time, for example cf_aig."
+          },
+          "credential_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "direct",
+              "byok",
+              "gateway_system",
+              "unknown",
+              null
+            ],
+            "description": "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store or when a reporting upstream says the organization's own key paid for the inference. Never inferred from a successful response; null when nothing settles it."
+          },
+          "model_author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists."
+          },
+          "served_provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The serving provider the upstream named, when it names one — the host OpenRouter routed to, for instance. Null means unknown, never a guarantee."
+          },
+          "served_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The serving model the upstream named, canonicalized back to the provider's own model ID."
+          },
+          "model": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string"
+          },
+          "endpoint_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "cached_input_tokens": {
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "reported_cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way."
+          },
+          "cost_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "computed",
+              "reported",
+              "unresolved",
+              null
+            ],
+            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed."
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "attest",
+              "api_key",
+              null
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "provider_error",
+              "blocked_rate",
+              "blocked_budget",
+              "blocked_user"
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "api_key_id",
+          "provider",
+          "provider_slug",
+          "provider_gateway_id",
+          "provider_gateway_type",
+          "credential_source",
+          "model_author",
+          "served_provider",
+          "served_model",
+          "model",
+          "route",
+          "endpoint_slug",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "cost_usd",
+          "reported_cost_usd",
+          "cost_source",
+          "app_version",
+          "auth_method",
+          "status",
+          "latency_ms",
+          "created_at"
+        ]
+      },
+      "AuthEventSummary": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "daily": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "event": {
+                  "type": "string",
+                  "enum": [
+                    "token_exchange",
+                    "register"
+                  ]
+                },
+                "outcome": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "event",
+                "outcome",
+                "reason",
+                "count"
+              ]
+            },
+            "description": "Authentication attempts per day, grouped by outcome and granular reason."
+          },
+          "usage_failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "status",
+                "count"
+              ]
+            },
+            "description": "Non-ok proxied requests per day, so proxy-path failures appear in the same view."
+          },
+          "token_exchange": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "ok": {
+                "type": "integer"
+              },
+              "success_rate": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Null when the window contains no exchanges at all, which is not the same as a perfect score."
+              }
+            },
+            "required": [
+              "total",
+              "ok",
+              "success_rate"
+            ]
+          },
+          "claim_delay": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "avg_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p50_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p95_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "count",
+              "avg_ms",
+              "p50_ms",
+              "p95_ms"
+            ],
+            "description": "How long users waited for a required entitlement claim to propagate, over the window."
+          },
+          "pending_users": {
+            "type": "integer",
+            "description": "Users currently inside an unclosed claim-propagation window — stuck mid-activation right now."
+          }
+        },
+        "required": [
+          "app_id",
+          "days",
+          "from",
+          "to",
+          "daily",
+          "usage_failures",
+          "token_exchange",
+          "claim_delay",
+          "pending_users"
+        ]
+      },
+      "AuthEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The verified issuer identity, where the attempt got far enough to establish one. Null for attempts refused before any identity was trusted."
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "token_exchange",
+              "register"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "attest",
+              "api_key",
+              null
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it."
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "claim_delay_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Set only on the exchange that ended a claim-propagation window: how long the user waited from their first issuer_claims_missing rejection."
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "event",
+          "auth_method",
+          "outcome",
+          "reason",
+          "app_version",
+          "latency_ms",
+          "claim_delay_ms",
+          "created_at"
         ]
       },
       "UsageRepriceRequest": {
@@ -747,7 +1727,18 @@
               "anthropic",
               "xai",
               "gemini",
-              "perplexity"
+              "perplexity",
+              "deepseek",
+              "groq",
+              "mistral",
+              "together",
+              "fireworks",
+              "cerebras",
+              "moonshot",
+              "huggingface",
+              "baseten",
+              "bytedance",
+              "openrouter"
             ]
           },
           "model": {
@@ -756,7 +1747,7 @@
           },
           "month": {
             "type": "string",
-            "pattern": "^\\d{4}-\\d{2}$/u"
+            "pattern": "^\\d{4}-\\d{2}$"
           },
           "apply": {
             "type": "boolean",
@@ -800,12 +1791,422 @@
                       "enum": [
                         "ai-gateway"
                       ]
+                    },
+                    "vault": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "misconfigured"
+                      ]
                     }
                   },
                   "required": [
                     "ok",
-                    "service"
+                    "service",
+                    "vault"
                   ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/console/capabilities": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "operationId": "getConsoleCapabilities",
+        "summary": "Discover optional deployment capabilities",
+        "responses": {
+          "200": {
+            "description": "Capabilities used by operator clients.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "billing": {
+                      "type": "boolean"
+                    },
+                    "registrationOpen": {
+                      "type": "boolean"
+                    },
+                    "googleAuth": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "billing",
+                    "registrationOpen",
+                    "googleAuth"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-up/email": {
+      "post": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signUpOperator",
+        "summary": "Create an operator account and its initial organization",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8
+                  }
+                },
+                "required": [
+                  "name",
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated operator session.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-in/email": {
+      "post": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signInOperator",
+        "summary": "Sign in an operator with email and password",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated operator session.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/get-session": {
+      "get": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "getOperatorSession",
+        "summary": "Get the current operator session",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current session or null.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-out": {
+      "post": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signOutOperator",
+        "summary": "End the current operator session",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session ended.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-in/social": {
+      "get": {
+        "tags": [
+          "Operator authentication"
+        ],
+        "operationId": "signInOperatorWithGoogle",
+        "summary": "Start optional Google sign-in",
+        "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "google"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Google."
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -866,6 +2267,16 @@
           },
           "401": {
             "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "The organization requires an active subscription or trial.",
             "content": {
               "application/json": {
                 "schema": {
@@ -964,8 +2375,18 @@
               }
             }
           },
+          "402": {
+            "description": "The organization requires an active subscription or trial.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "`issuer_token_rejected` — the token did not verify; get a fresh one, retry once, then fail. `issuer_claims_missing` — the token is valid but a required entitlement claim has not propagated yet; do not re-authenticate, wait and retry. `auth_required` — the key was refused or the user is blocked. `attest_failed` — the App Attest proof did not hold.",
             "content": {
               "application/json": {
                 "schema": {
@@ -983,6 +2404,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -993,8 +2424,8 @@
           "Application authentication"
         ],
         "operationId": "exchangeGatewayToken",
-        "summary": "Exchange issuer and device proof for a gateway token",
-        "description": "App Attest clients send key_id, assertion, and challenge. Development clients send dev_secret instead.",
+        "summary": "Exchange issuer identity and client proof for a gateway token",
+        "description": "App Attest clients send key_id, assertion, and challenge. Issuer-backed API-key clients send api_key and issuer_token. The verified issuer claim is always the resulting user identity.",
         "parameters": [
           {
             "schema": {
@@ -1016,7 +2447,7 @@
                     "$ref": "#/components/schemas/AppAttestTokenRequest"
                   },
                   {
-                    "$ref": "#/components/schemas/DevelopmentTokenRequest"
+                    "$ref": "#/components/schemas/ApiKeyTokenRequest"
                   }
                 ]
               }
@@ -1066,8 +2497,18 @@
               }
             }
           },
+          "402": {
+            "description": "The organization requires an active subscription or trial.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "`issuer_token_rejected` — the token did not verify; get a fresh one, retry once, then fail. `issuer_claims_missing` — the token is valid but a required entitlement claim has not propagated yet; do not re-authenticate, wait and retry. `auth_required` — the key was refused or the user is blocked. `attest_failed` — the App Attest proof did not hold.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1078,6 +2519,16 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1185,6 +2636,16 @@
               }
             }
           },
+          "402": {
+            "description": "The organization requires an active subscription or trial.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
             "description": "The authenticated identity is not allowed to perform this operation.",
             "content": {
@@ -1215,7 +2676,7 @@
         ],
         "operationId": "proxyProviderRequest",
         "summary": "Proxy a provider-native model request",
-        "description": "The body and successful response retain the selected provider's native format. The gateway validates the configured path and model, injects provider credentials through Cloudflare AI Gateway, applies limits, and streams the upstream response without buffering.",
+        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
         "security": [
           {
             "GatewayBearer": []
@@ -1234,13 +2695,8 @@
           {
             "schema": {
               "type": "string",
-              "enum": [
-                "openai",
-                "anthropic",
-                "xai",
-                "gemini",
-                "perplexity"
-              ]
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "example": "openai-dev"
             },
             "required": true,
             "name": "provider",
@@ -1249,29 +2705,31 @@
           {
             "schema": {
               "type": "string",
+              "description": "The provider's native API path verbatim, without a leading slash.",
               "example": "v1/responses"
             },
             "required": true,
+            "description": "The provider's native API path verbatim, without a leading slash.",
             "name": "path",
             "in": "path"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Required for issuer/App Attest clients; optional for server API keys."
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
             },
             "required": false,
-            "description": "Required for issuer/App Attest clients; optional for server API keys.",
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
             "name": "x-app-version",
             "in": "header"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Optional configured end-user identity for server applications."
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
             },
             "required": false,
-            "description": "Optional configured end-user identity for server applications.",
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
             "name": "x-end-user-id",
             "in": "header"
           }
@@ -1309,6 +2767,16 @@
           },
           "401": {
             "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "The organization requires an active subscription or trial.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1360,6 +2828,182 @@
         }
       }
     },
+    "/v1/apps/{app}/endpoints/{slug}": {
+      "post": {
+        "tags": [
+          "Named endpoints"
+        ],
+        "operationId": "callNamedEndpoint",
+        "summary": "Call a server-configured named endpoint",
+        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so an operator can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+        "security": [
+          {
+            "GatewayBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,64}$",
+              "example": "chat"
+            },
+            "required": true,
+            "name": "slug",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Required for gateway-token clients; optional for issuer-less API-key clients."
+            },
+            "required": false,
+            "description": "Required for gateway-token clients; optional for issuer-less API-key clients.",
+            "name": "x-app-version",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Optional configured end-user identity for issuer-less API-key applications."
+            },
+            "required": false,
+            "description": "Optional configured end-user identity for issuer-less API-key applications.",
+            "name": "x-end-user-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "OpenAI Responses API body for endpoints whose api_style is responses. The gateway overwrites model and deep-merges the configured params."
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Ignored; the gateway sets the configured model."
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "language": {
+                    "type": "string"
+                  },
+                  "response_format": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "description": "Body for endpoints whose api_style is transcription."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Provider-native response. Streaming responses remain streamed.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "The organization requires an active subscription or trial.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A request or spending limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Every configured target failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/apps": {
       "get": {
         "tags": [
@@ -1369,7 +3013,10 @@
         "summary": "List applications",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "responses": {
@@ -1444,10 +3091,13 @@
         ],
         "operationId": "createApp",
         "summary": "Create an application",
-        "description": "API-key applications receive a one-time plaintext initial key in the response.",
+        "description": "Omit `id` and the gateway assigns one from the name, suffixed to keep it unique across the deployment, and returns it as `app_id`. Send `id` and that exact id is used or the request is refused — a requested id is never silently replaced. API-key applications receive a one-time plaintext initial key in the response.",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "requestBody": {
@@ -1462,7 +3112,7 @@
         },
         "responses": {
           "201": {
-            "description": "Application created.",
+            "description": "Application created. `app_id` is the assigned id and the segment every gateway URL for this app uses.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1521,7 +3171,674 @@
             }
           },
           "409": {
-            "description": "A unique application ID could not be allocated.",
+            "description": "`app_id_taken` — the requested `id` already belongs to an application. `invalid_request` — no unique generated id could be allocated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/plans": {
+      "get": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "listBillingPlans",
+        "summary": "List billing plans",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Billing service response.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/status": {
+      "get": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "getBillingStatus",
+        "summary": "Get organization billing access",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Billing service response.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/portal/status": {
+      "get": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "getBillingPortalStatus",
+        "summary": "Poll billing portal/access status",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Billing service response.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/checkout": {
+      "post": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "createBillingCheckout",
+        "summary": "Create a hosted checkout",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "planKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "billingPeriod": {
+                    "type": "string",
+                    "enum": [
+                      "month",
+                      "year"
+                    ]
+                  },
+                  "successUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "cancelUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "required": [
+                  "planKey",
+                  "billingPeriod"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Hosted checkout URL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/change": {
+      "post": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "changeBillingPlan",
+        "summary": "Change the subscription plan",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "planKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "billingPeriod": {
+                    "type": "string",
+                    "enum": [
+                      "month",
+                      "year"
+                    ]
+                  }
+                },
+                "required": [
+                  "planKey",
+                  "billingPeriod"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Billing service response.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/resume": {
+      "post": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "resumeBillingSubscription",
+        "summary": "Resume a canceled subscription",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "planKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "billingPeriod": {
+                    "type": "string",
+                    "enum": [
+                      "month",
+                      "year"
+                    ]
+                  }
+                },
+                "required": [
+                  "planKey",
+                  "billingPeriod"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Billing service response.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/cancel": {
+      "post": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "cancelBillingSubscription",
+        "summary": "Cancel the subscription at period end",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancellation accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/billing/trial": {
+      "post": {
+        "tags": [
+          "Admin billing"
+        ],
+        "operationId": "startBillingTrial",
+        "summary": "Start a no-card trial",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "planKey": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "planKey"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Trial access state.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1542,7 +3859,10 @@
         "summary": "Get an application",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1615,7 +3935,10 @@
         "summary": "Update an application",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1698,7 +4021,10 @@
         "summary": "Delete an application and its associated operational data",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1798,7 +4124,10 @@
         "summary": "Validate an application configuration without saving it",
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1874,6 +4203,2326 @@
         }
       }
     },
+    "/v1/admin/keys": {
+      "get": {
+        "tags": [
+          "Admin management keys"
+        ],
+        "operationId": "listManagementKeys",
+        "summary": "List management keys for the current organization",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Management key metadata without plaintext tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "organizationId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "tokenHint": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
+                            "example": "x9Qb"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "revokedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "organizationId",
+                          "name",
+                          "tokenHint",
+                          "createdAt",
+                          "revokedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "keys"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin management keys"
+        ],
+        "operationId": "createManagementKey",
+        "summary": "Create a management key for the current organization",
+        "description": "Requires an owner/admin user session. The plaintext agw_mgmt_ token is returned once.",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "One-time plaintext management key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "organizationId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tokenHint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
+                          "example": "x9Qb"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "plaintext": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "organizationId",
+                        "name",
+                        "tokenHint",
+                        "createdAt",
+                        "revokedAt",
+                        "plaintext"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "key"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/keys/{id}/revoke": {
+      "post": {
+        "tags": [
+          "Admin management keys"
+        ],
+        "operationId": "revokeManagementKey",
+        "summary": "Revoke a management key",
+        "description": "Requires an owner/admin user session.",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "key_123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked management key metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "organizationId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tokenHint": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
+                          "example": "x9Qb"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "organizationId",
+                        "name",
+                        "tokenHint",
+                        "createdAt",
+                        "revokedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "key"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/providers": {
+      "get": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "listProviders",
+        "summary": "List the organization's provider credentials",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider metadata without credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Provider"
+                      }
+                    }
+                  },
+                  "required": [
+                    "providers"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "createProvider",
+        "summary": "Store a provider credential for the organization",
+        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The slug defaults to the provider type and is unique among the organization's instances, disabled ones included; only deleting an instance frees its slug.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stored provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "$ref": "#/components/schemas/Provider"
+                    },
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The requested active provider slug is already in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/providers/test": {
+      "post": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "testProviderCredential",
+        "summary": "Probe a provider credential without storing it",
+        "description": "Runs the same live probe a create runs, against a credential that does not exist yet. Nothing is stored. Supply exactly one direct provider secret or an existing providerGatewayId.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Probe outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a rejected credential fails the request with provider_key_invalid."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status"
+                      ],
+                      "description": "Why an unvalidated probe proved nothing. Absent when validated is true."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
+                    }
+                  },
+                  "required": [
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/providers/{id}": {
+      "put": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "updateProvider",
+        "summary": "Rotate a credential, rename it, replace its custom pricing, or disable it",
+        "description": "Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling therefore always succeeds.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "$ref": "#/components/schemas/Provider"
+                    },
+                    "validated": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "null when the request did not rotate the credential."
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin providers"
+        ],
+        "operationId": "deleteProvider",
+        "summary": "Delete a provider credential and its custom pricing",
+        "description": "A hard delete, secret and pricing included. Applications using this provider start failing with provider_not_configured within a minute. To pause an instance reversibly instead, send status: \"disabled\" to PUT /v1/admin/providers/{id}.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "provider_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deleted",
+                    "provider_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways": {
+      "get": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "listProviderGateways",
+        "summary": "List reusable provider gateways",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider gateway metadata without tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateways": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ProviderGateway"
+                      }
+                    }
+                  },
+                  "required": [
+                    "gateways"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "createProviderGateway",
+        "summary": "Create a reusable provider gateway connection",
+        "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. Probes and encrypts the gateway token once, and stores the connection whatever the probe found. Provider instances are attached separately through the providers API.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created provider gateway.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateway": {
+                      "$ref": "#/components/schemas/ProviderGateway"
+                    },
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status",
+                        "rejected"
+                      ],
+                      "description": "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
+                    }
+                  },
+                  "required": [
+                    "gateway",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways/test": {
+      "post": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "testProviderGateway",
+        "summary": "Probe a gateway connection without storing it",
+        "description": "Runs the same live probe a create runs, against a connection that does not exist yet. Nothing is stored. Unlike the providers API, a refused token is reported as reason: rejected rather than raised as provider_key_invalid, because the same 401 means both a wrong token and a gateway that is not finished being set up.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Probe outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status",
+                        "rejected"
+                      ],
+                      "description": "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
+                    }
+                  },
+                  "required": [
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways/{id}": {
+      "patch": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "updateProviderGateway",
+        "summary": "Rename a provider gateway",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated provider gateway.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateway": {
+                      "$ref": "#/components/schemas/ProviderGateway"
+                    }
+                  },
+                  "required": [
+                    "gateway"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "deleteProviderGateway",
+        "summary": "Delete an unused provider gateway",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provider gateway deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "provider_gateway_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deleted",
+                    "provider_gateway_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provider instances still reference this gateway. Disabled rows are retained for re-enabling and block deletion too; see referencedCount.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/provider-gateways/{id}/rotate": {
+      "post": {
+        "tags": [
+          "Admin provider gateways"
+        ],
+        "operationId": "rotateProviderGateway",
+        "summary": "Rotate a shared provider gateway token",
+        "description": "Re-probes and re-encrypts the token once for every provider instance referencing this gateway, and stores it whatever the probe found.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "b0a1…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderGatewayRotateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotated provider gateway.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "gateway": {
+                      "$ref": "#/components/schemas/ProviderGateway"
+                    },
+                    "validated": {
+                      "type": "boolean",
+                      "description": "Whether a live probe confirmed the connection. Unlike the providers API, a gateway write never fails on a refused token: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported and the write goes ahead. Probe the same connection on demand with POST /v1/admin/provider-gateways/test."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "no_probe",
+                        "unreachable",
+                        "unexpected_status",
+                        "rejected"
+                      ],
+                      "description": "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "The upstream status behind an unexpected_status or rejected reason."
+                    }
+                  },
+                  "required": [
+                    "gateway",
+                    "validated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/session": {
+      "get": {
+        "tags": [
+          "Admin organizations"
+        ],
+        "operationId": "getOperatorContext",
+        "summary": "Get the caller's identity, current organization and role",
+        "description": "Operator clients need the caller's role and active organization to gate their UI; the Better Auth session endpoint reports neither.",
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resolved operator session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "email": {
+                              "type": "string"
+                            },
+                            "emailVerified": {
+                              "type": "boolean"
+                            },
+                            "image": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "email",
+                            "emailVerified",
+                            "image",
+                            "createdAt"
+                          ]
+                        },
+                        "organization": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "createdAt"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner",
+                            "admin",
+                            "member"
+                          ]
+                        },
+                        "memberships": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "organization": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "createdAt": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "name",
+                                  "createdAt"
+                                ]
+                              },
+                              "role": {
+                                "type": "string",
+                                "enum": [
+                                  "owner",
+                                  "admin",
+                                  "member"
+                                ]
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "active"
+                                ]
+                              },
+                              "joinedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "organization",
+                              "role",
+                              "status",
+                              "joinedAt"
+                            ]
+                          }
+                        },
+                        "credentialType": {
+                          "type": "string",
+                          "enum": [
+                            "session",
+                            "apiKey"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "user",
+                        "organization",
+                        "role",
+                        "memberships",
+                        "credentialType"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "session"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations": {
+      "get": {
+        "tags": [
+          "Admin organizations"
+        ],
+        "operationId": "listOperatorOrganizations",
+        "summary": "List the organizations the caller belongs to",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Memberships ordered by organization creation time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organizations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "organization": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "createdAt"
+                            ]
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "owner",
+                              "admin",
+                              "member"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "active"
+                            ]
+                          },
+                          "joinedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "organization",
+                          "role",
+                          "status",
+                          "joinedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "organizations"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/organizations/select": {
+      "post": {
+        "tags": [
+          "Admin organizations"
+        ],
+        "operationId": "selectOperatorOrganization",
+        "summary": "Switch the caller's active organization",
+        "description": "Available to every member, including read-only members, of the target organization.",
+        "security": [
+          {
+            "OperatorSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationSelectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session rescoped to the selected organization.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "email": {
+                              "type": "string"
+                            },
+                            "emailVerified": {
+                              "type": "boolean"
+                            },
+                            "image": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "email",
+                            "emailVerified",
+                            "image",
+                            "createdAt"
+                          ]
+                        },
+                        "organization": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "createdAt"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner",
+                            "admin",
+                            "member"
+                          ]
+                        },
+                        "memberships": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "organization": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "createdAt": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "name",
+                                  "createdAt"
+                                ]
+                              },
+                              "role": {
+                                "type": "string",
+                                "enum": [
+                                  "owner",
+                                  "admin",
+                                  "member"
+                                ]
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "active"
+                                ]
+                              },
+                              "joinedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "organization",
+                              "role",
+                              "status",
+                              "joinedAt"
+                            ]
+                          }
+                        },
+                        "credentialType": {
+                          "type": "string",
+                          "enum": [
+                            "session",
+                            "apiKey"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "user",
+                        "organization",
+                        "role",
+                        "memberships",
+                        "credentialType"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "session"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/events": {
+      "get": {
+        "operationId": "listAppEvents",
+        "summary": "List application usage events",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated application usage events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "next_before_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UsageEvent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "app_id",
+                    "limit",
+                    "next_before_id",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/auth-events/summary": {
+      "get": {
+        "operationId": "getAppAuthEventSummary",
+        "summary": "Summarize application authentication outcomes",
+        "description": "Daily authentication outcomes and reasons, non-ok proxied requests, token-exchange success rate, entitlement-claim propagation delays, and how many users are waiting on a claim right now.",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "description": "Trailing window in days, ending today. Defaults to 30."
+            },
+            "required": false,
+            "description": "Trailing window in days, ending today. Defaults to 30.",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authentication activity for the window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthEventSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/auth-events": {
+      "get": {
+        "operationId": "listAppAuthEvents",
+        "summary": "List application authentication events",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated authentication attempts, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "next_before_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuthEvent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "app_id",
+                    "limit",
+                    "next_before_id",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/apps/{app}/keys": {
       "get": {
         "operationId": "listAppKeys",
@@ -1883,7 +6532,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -1956,7 +6608,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2046,7 +6701,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2121,302 +6779,6 @@
         }
       }
     },
-    "/v1/admin/apps/{app}/development-credential": {
-      "get": {
-        "operationId": "getDevelopmentCredential",
-        "summary": "Get development credential metadata",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "AdminBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createDevelopmentCredential",
-        "summary": "Create a development credential",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "AdminBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteDevelopmentCredential",
-        "summary": "Delete a development credential",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "AdminBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/admin/apps/{app}/development-credential/rotate": {
-      "post": {
-        "operationId": "rotateDevelopmentCredential",
-        "summary": "Rotate a development credential",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "AdminBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/admin/apps/{app}/users": {
       "get": {
         "operationId": "listAppUsers",
@@ -2426,7 +6788,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2501,7 +6866,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2585,7 +6953,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2669,7 +7040,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2753,7 +7127,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2828,7 +7205,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2913,7 +7293,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -2988,82 +7371,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
-          }
-        ],
-        "parameters": [
+            "OperatorSession": []
+          },
           {
-            "schema": {
-              "type": "string",
-              "example": "my-app"
-            },
-            "required": true,
-            "name": "app",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/admin/apps/{app}/events": {
-      "get": {
-        "operationId": "listAppEvents",
-        "summary": "List application usage events",
-        "tags": [
-          "Admin operations"
-        ],
-        "security": [
-          {
-            "AdminBearer": []
+            "ManagementBearer": []
           }
         ],
         "parameters": [
@@ -3138,7 +7449,10 @@
         ],
         "security": [
           {
-            "AdminBearer": []
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "responses": {

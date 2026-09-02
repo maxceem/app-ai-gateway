@@ -1,0 +1,1 @@
+ALTER TABLE `console_api_key` ADD `token_hint` text;
