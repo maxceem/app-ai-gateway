@@ -54,3 +54,28 @@ The client first requests a challenge and registers its App Attest key. Subseque
 token exchanges submit a fresh challenge and assertion. App Attest accepts only
 Apple's production environment. The gateway verifies the issuer identity and
 returns a short-lived bearer token for proxy and `/me` requests.
+
+## Why a token exchange was refused
+
+A refused exchange answers with one of three codes, chosen by what the client
+should do about it rather than by the internal cause. The granular cause is
+recorded server-side as a `reason`, and is never sent to the client.
+
+| Status and code | What happened | What the client should do |
+| --- | --- | --- |
+| `403 issuer_token_rejected` | The token did not verify: bad signature, unknown key, disallowed algorithm, expired, over the configured lifetime, or no `user_id_claim`. | Fetch a fresh issuer token, retry once, then fail. |
+| `403 issuer_claims_missing` | The token verified, but the application's `required_claims` are not all present yet. | Do **not** re-authenticate. Wait and retry — the entitlement is still propagating. |
+| `503 issuer_verification_unavailable` | The gateway could not reach or read the issuer's JWKS, so the token was never judged. | Retry with backoff. Nothing about the credential is known to be wrong. |
+
+The separation matters most for `required_claims` backed by an asynchronous
+writer — a purchase that a store webhook turns into an entitlement claim, for
+instance. During that gap the user holds a perfectly valid token, and treating
+the refusal as an authentication failure sends the client re-authenticating in a
+loop it cannot escape. The gateway measures the gap: see
+[claim propagation](/docs/operations#authentication-observability).
+
+<Callout>
+Clients built before these codes existed decode an unrecognised code as unknown
+and display the server's message, so they degrade to showing the reason rather
+than acting on it.
+</Callout>

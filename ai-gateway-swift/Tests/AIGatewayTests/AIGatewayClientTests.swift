@@ -195,8 +195,10 @@ struct AIGatewayClientTests {
         #expect(GatewayErrorCode(rawValue: "endpoint_not_found") == .endpointNotFound)
     }
 
+    /// The entitlement-sync case: the claim is missing, so the app's recovery
+    /// closure runs and a refreshed token is what finally carries the claim.
     @Test
-    func issuerRejectionForcesOneFreshIssuerTokenAndRetries() async throws {
+    func claimsMissingRunsRecoveryThenRetriesWithAFreshIssuerToken() async throws {
         let tokenCalls = LockedCounter()
         let refreshRecorder = RefreshRecorder()
         let recoveryRecorder = RecoveryRecorder()
@@ -208,7 +210,7 @@ struct AIGatewayClientTests {
                 return response(
                     request,
                     status: 403,
-                    body: #"{"error":{"code":"issuer_token_rejected","message":"refresh"}}"#
+                    body: #"{"error":{"code":"issuer_claims_missing","message":"still syncing"}}"#
                 )
             }
             return response(request, status: 200, body: #"{"access_token":"fresh-token","expires_in":3600}"#)
@@ -234,7 +236,46 @@ struct AIGatewayClientTests {
     }
 
     @Test
-    func issuerBackedAPIKeyRejectionForcesOneFreshIssuerTokenAndRetries() async throws {
+    func claimsMissingOnAnIssuerBackedAPIKeyRecoversTheSameWay() async throws {
+        let tokenCalls = LockedCounter()
+        let refreshRecorder = RefreshRecorder()
+        let recoveryRecorder = RecoveryRecorder()
+        MockURLProtocol.handler = { request in
+            if tokenCalls.increment() == 1 {
+                return response(
+                    request,
+                    status: 403,
+                    body: #"{"error":{"code":"issuer_claims_missing","message":"still syncing"}}"#
+                )
+            }
+            return response(request, status: 200, body: #"{"access_token":"fresh-token","expires_in":3600}"#)
+        }
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { forceRefresh in
+                    await refreshRecorder.record(forceRefresh)
+                    return forceRefresh ? "issuer-fresh" : "issuer-old"
+                }
+            ),
+            issuerRejectionRecovery: {
+                await recoveryRecorder.record()
+            },
+            session: session()
+        )
+        #expect(try await client.gatewayAccessToken() == "fresh-token")
+        #expect(tokenCalls.snapshot() == 2)
+        #expect(await refreshRecorder.snapshot() == [false, true])
+        #expect(await recoveryRecorder.snapshot() == 1)
+    }
+
+    /// A token that did not verify is refreshed once, but must not drag the
+    /// app's purchase-sync machinery in: nothing about a bad credential is an
+    /// entitlement problem.
+    @Test
+    func rejectedIssuerTokenRetriesOnceWithoutRunningRecovery() async throws {
         let tokenCalls = LockedCounter()
         let refreshRecorder = RefreshRecorder()
         let recoveryRecorder = RecoveryRecorder()
@@ -266,7 +307,62 @@ struct AIGatewayClientTests {
         #expect(try await client.gatewayAccessToken() == "fresh-token")
         #expect(tokenCalls.snapshot() == 2)
         #expect(await refreshRecorder.snapshot() == [false, true])
-        #expect(await recoveryRecorder.snapshot() == 1)
+        #expect(await recoveryRecorder.snapshot() == 0)
+    }
+
+    /// The gateway could not verify anything, so there is nothing to recover
+    /// from and nothing a fresh token would change: one call, one error, and the
+    /// caller is told it is worth trying again later.
+    @Test
+    func verificationUnavailableNeitherRecoversNorRefreshes() async throws {
+        let tokenCalls = LockedCounter()
+        let refreshRecorder = RefreshRecorder()
+        let recoveryRecorder = RecoveryRecorder()
+        MockURLProtocol.handler = { request in
+            tokenCalls.increment()
+            return response(
+                request,
+                status: 503,
+                body: #"{"error":{"code":"issuer_verification_unavailable","message":"Issuer keys are temporarily unavailable"}}"#
+            )
+        }
+        let client = AIGatewayClient(
+            appID: "test-app",
+            baseURL: URL(string: "https://gateway.test")!,
+            authMode: .apiKey(
+                key: "agw_test-key",
+                issuerTokenProvider: { forceRefresh in
+                    await refreshRecorder.record(forceRefresh)
+                    return forceRefresh ? "issuer-fresh" : "issuer-old"
+                }
+            ),
+            issuerRejectionRecovery: {
+                await recoveryRecorder.record()
+            },
+            session: session()
+        )
+
+        var surfaced: GatewayError?
+        do {
+            _ = try await client.gatewayAccessToken()
+        } catch let error as GatewayError {
+            surfaced = error
+        }
+        #expect(surfaced?.code == .issuerVerificationUnavailable)
+        #expect(surfaced?.isRetryable == true)
+        #expect(tokenCalls.snapshot() == 1)
+        #expect(await refreshRecorder.snapshot() == [false])
+        #expect(await recoveryRecorder.snapshot() == 0)
+    }
+
+    @Test
+    func newIssuerCodesDecodeFromTheGatewayEnvelope() {
+        #expect(GatewayErrorCode(rawValue: "issuer_claims_missing") == .issuerClaimsMissing)
+        #expect(GatewayErrorCode(rawValue: "issuer_verification_unavailable") == .issuerVerificationUnavailable)
+        // A rejected token is not something waiting fixes.
+        #expect(
+            GatewayError(code: .issuerTokenRejected, message: "", statusCode: 403).isRetryable == false
+        )
     }
 
     /// A key the Secure Enclave has forgotten is registered afresh rather than

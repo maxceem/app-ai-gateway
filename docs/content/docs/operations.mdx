@@ -187,3 +187,39 @@ time-to-first-byte.
 credential-touching request will answer `provider_unavailable`. The structured
 `secret_vault_misconfigured` log line names the offending binding without
 printing its value. Monitor this field after any secret change.
+
+## Authentication observability
+
+Every rejected request emits one structured `gateway_error` line carrying the
+error `code`, its granular `reason`, the status, the path and method, the
+application, and the `X-App-Version` the client sent. Nothing else: no request
+body, no token, and no other header, because these lines are emitted for
+failures whose payload is a credential. Statuses below 500 log at `warn`, 500
+and above at `error`.
+
+Every `POST /v1/apps/{app}/auth/token` and `/auth/register` request — successful
+or not — also writes one row to `app_auth_event`, with its outcome, reason,
+client version and handler latency. Recording happens after the response and can
+never fail the request. Challenge issuance is not recorded: it decides nothing.
+
+### Claim propagation
+
+When an issuer token verifies but a required entitlement claim has not arrived
+yet, the gateway opens a window on that user: `app_user.claim_pending_since` is
+set on the *first* such refusal and left alone by every retry. The exchange that
+finally succeeds computes the wait, stores it as `claim_delay_ms` on its own auth
+event, logs `claim_propagation_recovered`, and closes the window.
+
+Two questions follow directly from that:
+
+- Who is stuck activating right now — `app_user.claim_pending_since IS NOT NULL`.
+- How long activation normally takes — the p50 and p95 of `claim_delay_ms`.
+
+Both, along with the token-exchange success rate and a by-cause breakdown of
+failures, are on the **Auth & Errors** tab of each application in the console,
+backed by `GET /v1/admin/apps/{app}/auth-events/summary`.
+
+### Retention
+
+A daily cron trigger deletes `app_auth_event` rows older than 90 days. It touches
+nothing else — `app_usage_event` is accounting history and is never pruned.

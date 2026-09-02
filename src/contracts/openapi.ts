@@ -96,6 +96,22 @@ const errorResponses = {
   404: response("The requested resource does not exist.", ErrorResponseSchema),
 };
 
+/**
+ * What an issuer-token exchange can refuse with, split by what the client
+ * should do about it. Three codes and no more: a finer split would publish
+ * causes no client can act on differently.
+ */
+const issuerErrorResponses = {
+  403: response(
+    "`issuer_token_rejected` — the token did not verify; get a fresh one, retry once, then fail. `issuer_claims_missing` — the token is valid but a required entitlement claim has not propagated yet; do not re-authenticate, wait and retry. `auth_required` — the key was refused or the user is blocked. `attest_failed` — the App Attest proof did not hold.",
+    ErrorResponseSchema,
+  ),
+  503: response(
+    "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
+    ErrorResponseSchema,
+  ),
+};
+
 const UsageEventSchema = z.object({
   id: z.number().int(),
   user_id: z.string(),
@@ -149,6 +165,69 @@ const UsageEventListSchema = z.object({
   next_before_id: z.number().int().nullable(),
   events: z.array(UsageEventSchema),
 });
+
+const AuthEventSchema = z.object({
+  id: z.number().int(),
+  user_id: z.string().nullable().openapi({
+    description: "The verified issuer identity, where the attempt got far enough to establish one. Null for attempts refused before any identity was trusted.",
+  }),
+  event: z.enum(["token_exchange", "register"]),
+  auth_method: z.enum(["attest", "api_key"]).nullable(),
+  outcome: z.string().openapi({
+    description: "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed.",
+  }),
+  reason: z.string().nullable().openapi({
+    description: "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it.",
+  }),
+  app_version: z.string().nullable(),
+  latency_ms: z.number().int().nullable(),
+  claim_delay_ms: z.number().int().nullable().openapi({
+    description: "Set only on the exchange that ended a claim-propagation window: how long the user waited from their first issuer_claims_missing rejection.",
+  }),
+  created_at: z.string(),
+}).openapi("AuthEvent");
+
+const AuthEventListSchema = z.object({
+  app_id: z.string(),
+  limit: z.number().int(),
+  next_before_id: z.number().int().nullable(),
+  events: z.array(AuthEventSchema),
+});
+
+const AuthEventSummarySchema = z.object({
+  app_id: z.string(),
+  days: z.number().int(),
+  from: z.string(),
+  to: z.string(),
+  daily: z.array(z.object({
+    date: z.string(),
+    event: z.enum(["token_exchange", "register"]),
+    outcome: z.string(),
+    reason: z.string().nullable(),
+    count: z.number().int(),
+  })).openapi({ description: "Authentication attempts per day, grouped by outcome and granular reason." }),
+  usage_failures: z.array(z.object({
+    date: z.string(),
+    status: z.string(),
+    count: z.number().int(),
+  })).openapi({ description: "Non-ok proxied requests per day, so proxy-path failures appear in the same view." }),
+  token_exchange: z.object({
+    total: z.number().int(),
+    ok: z.number().int(),
+    success_rate: z.number().nullable().openapi({
+      description: "Null when the window contains no exchanges at all, which is not the same as a perfect score.",
+    }),
+  }),
+  claim_delay: z.object({
+    count: z.number().int(),
+    avg_ms: z.number().nullable(),
+    p50_ms: z.number().nullable(),
+    p95_ms: z.number().nullable(),
+  }).openapi({ description: "How long users waited for a required entitlement claim to propagate, over the window." }),
+  pending_users: z.number().int().openapi({
+    description: "Users currently inside an unclosed claim-propagation window — stuck mid-activation right now.",
+  }),
+}).openapi("AuthEventSummary");
 
 const registry = new OpenAPIHono();
 registry.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
@@ -296,6 +375,7 @@ register({
   responses: {
     200: response("The key was registered for the verified issuer identity.", z.object({ user_id: z.string() })),
     ...errorResponses,
+    ...issuerErrorResponses,
     402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
   },
 });
@@ -317,6 +397,7 @@ register({
   responses: {
     200: response("A short-lived gateway access token.", z.object({ access_token: z.string(), expires_in: z.number() })),
     ...errorResponses,
+    ...issuerErrorResponses,
     402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
   },
 });
@@ -1010,6 +1091,35 @@ register({
   security: operatorSecurity,
   request: { params: AppPath },
   responses: { 200: response("Paginated application usage events.", UsageEventListSchema), ...errorResponses },
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/apps/{app}/auth-events/summary",
+  operationId: "getAppAuthEventSummary",
+  summary: "Summarize application authentication outcomes",
+  description: "Daily authentication outcomes and reasons, non-ok proxied requests, token-exchange success rate, entitlement-claim propagation delays, and how many users are waiting on a claim right now.",
+  tags: ["Admin operations"],
+  security: operatorSecurity,
+  request: {
+    params: AppPath,
+    query: z.object({
+      days: z.coerce.number().int().min(1).max(365).optional()
+        .openapi({ description: "Trailing window in days, ending today. Defaults to 30." }),
+    }),
+  },
+  responses: { 200: response("Authentication activity for the window.", AuthEventSummarySchema), ...errorResponses },
+});
+
+register({
+  method: "get",
+  path: "/v1/admin/apps/{app}/auth-events",
+  operationId: "listAppAuthEvents",
+  summary: "List application authentication events",
+  tags: ["Admin operations"],
+  security: operatorSecurity,
+  request: { params: AppPath },
+  responses: { 200: response("Paginated authentication attempts, newest first.", AuthEventListSchema), ...errorResponses },
 });
 
 for (const route of adminRoutes) {

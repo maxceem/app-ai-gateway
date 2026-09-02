@@ -502,6 +502,70 @@ export interface EventsResponse {
   events: UsageEvent[];
 }
 
+/** Which authentication call an attempt was: a token exchange or a key registration. */
+export type AuthEventName = "token_exchange" | "register";
+
+export interface AuthEvent {
+  id: number;
+  /** Null where the attempt was refused before any identity was established. */
+  user_id: string | null;
+  event: AuthEventName;
+  auth_method: "attest" | "api_key" | null;
+  /** `ok`, or the error code the client was handed. Free-form: new codes appear here first. */
+  outcome: string;
+  /** The granular cause behind the outcome. Diagnostic only — clients never see it. */
+  reason: string | null;
+  app_version: string | null;
+  latency_ms: number | null;
+  /** Set only on the exchange that ended a claim-propagation window. */
+  claim_delay_ms: number | null;
+  created_at: string;
+}
+
+export interface AuthEventsResponse {
+  app_id: string;
+  limit: number;
+  next_before_id: number | null;
+  events: AuthEvent[];
+}
+
+export interface AuthOutcomeBucket {
+  date: string;
+  event: AuthEventName;
+  outcome: string;
+  reason: string | null;
+  count: number;
+}
+
+export interface UsageFailureBucket {
+  date: string;
+  status: string;
+  count: number;
+}
+
+export interface AuthEventSummary {
+  app_id: string;
+  days: number;
+  from: string;
+  to: string;
+  daily: AuthOutcomeBucket[];
+  usage_failures: UsageFailureBucket[];
+  token_exchange: {
+    total: number;
+    ok: number;
+    /** Null when the window holds no exchanges, which is not a perfect score. */
+    success_rate: number | null;
+  };
+  claim_delay: {
+    count: number;
+    avg_ms: number | null;
+    p50_ms: number | null;
+    p95_ms: number | null;
+  };
+  /** Users inside an unclosed claim-propagation window right now. */
+  pending_users: number;
+}
+
 export interface ModelPrice {
   input?: number;
   output?: number;

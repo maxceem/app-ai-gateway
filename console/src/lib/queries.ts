@@ -20,6 +20,8 @@ import type {
   CreatedApiKey,
   CreatedApp,
   CreatedManagementKey,
+  AuthEventsResponse,
+  AuthEventSummary,
   BreakdownResponse,
   EventsResponse,
   ManagementKeyListResponse,
@@ -59,6 +61,8 @@ export const keys = {
   breakdown: (appId: string, by: string, from: string, to: string) =>
     ["breakdown", appId, by, from, to] as const,
   events: (appId: string, params: unknown) => ["events", appId, params] as const,
+  authEventSummary: (appId: string, days: number) => ["auth-event-summary", appId, days] as const,
+  authEvents: (appId: string, params: unknown) => ["auth-events", appId, params] as const,
   prices: ["prices"] as const,
 };
 
@@ -544,6 +548,41 @@ export function useEvents(appId: string, params: EventQuery) {
     queryKey: keys.events(appId, params),
     queryFn: () =>
       api.get<EventsResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}/events${query({ ...params })}`),
+    placeholderData: (previous) => previous,
+  });
+}
+
+/**
+ * Authentication outcomes for a trailing window. Kept short-lived on purpose:
+ * an operator opens this view while something is going wrong, and a stale
+ * pending-activations count is exactly the number they came to watch.
+ */
+export function useAuthEventSummary(appId: string, days: number) {
+  return useQuery({
+    queryKey: keys.authEventSummary(appId, days),
+    queryFn: () =>
+      api.get<AuthEventSummary>(
+        `/v1/admin/apps/${encodeURIComponent(appId)}/auth-events/summary${query({ days })}`,
+      ),
+    staleTime: 30_000,
+  });
+}
+
+export interface AuthEventQuery {
+  limit?: number;
+  outcome?: string;
+  event?: string;
+  user?: string;
+  before_id?: number;
+}
+
+export function useAuthEvents(appId: string, params: AuthEventQuery) {
+  return useQuery({
+    queryKey: keys.authEvents(appId, params),
+    queryFn: () =>
+      api.get<AuthEventsResponse>(
+        `/v1/admin/apps/${encodeURIComponent(appId)}/auth-events${query({ ...params })}`,
+      ),
     placeholderData: (previous) => previous,
   });
 }

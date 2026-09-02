@@ -40,6 +40,35 @@ export function EventStatusBadge({ status }: { status: UsageStatus }) {
   );
 }
 
+/**
+ * Tones for authentication outcomes, keyed by what the operator should do.
+ *
+ * `issuer_claims_missing` is amber, not red: the token was valid and the user
+ * is simply waiting for an entitlement to propagate. Colouring it as a failure
+ * would restage the confusion the separate code exists to end. Unlisted codes —
+ * and every future one — fall back to red, because an unrecognised refusal is
+ * still a refusal.
+ */
+const OUTCOME_TONES: Record<string, string> = {
+  ok: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  issuer_claims_missing: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+  issuer_verification_unavailable: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+};
+
+export function AuthOutcomeBadge({ outcome }: { outcome: string }) {
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "font-mono text-[11px] font-normal",
+        OUTCOME_TONES[outcome] ?? "border-destructive/40 text-destructive",
+      )}
+    >
+      {outcome}
+    </Badge>
+  );
+}
+
 export function UserStatusBadge({ status }: { status: "active" | "blocked" }) {
   return (
     <Badge

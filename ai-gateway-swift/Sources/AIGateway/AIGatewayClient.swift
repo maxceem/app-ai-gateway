@@ -201,10 +201,26 @@ public actor AIGatewayClient {
             scheduleRefresh(for: token)
             return token.value
         } catch let error as GatewayError
-            where error.code == .issuerTokenRejected && retryIssuerOnce {
+            where error.code == .issuerClaimsMissing && retryIssuerOnce {
+            // The token verified; an entitlement claim has not landed on it yet.
+            // This is the case `issuerRejectionRecovery` exists for — it is where
+            // an app re-syncs a purchase — and a refreshed token is what carries
+            // the claim once the sync completes.
             try await issuerRejectionRecovery?()
             return try await exchangeToken(forceIssuerRefresh: true, retryIssuerOnce: false)
+        } catch let error as GatewayError
+            where error.code == .issuerTokenRejected && retryIssuerOnce {
+            // A token that did not verify at all. Worth one forced refresh, in
+            // case the cached one had simply expired — but deliberately *not*
+            // worth running the app's purchase-sync machinery, which has nothing
+            // to do with an invalid credential and can cost the user a
+            // store round trip for a stale token.
+            return try await exchangeToken(forceIssuerRefresh: true, retryIssuerOnce: false)
         }
+        // `.issuerVerificationUnavailable` is caught by neither: the gateway
+        // never reached a verdict, so there is nothing to recover from and
+        // nothing a fresh token would change. It surfaces to the caller as a
+        // retryable error — see `GatewayError.isRetryable`.
     }
 
     private func productionExchange(forceIssuerRefresh: Bool) async throws -> TokenResponse {

@@ -82,9 +82,38 @@ describe("initial database migration", () => {
       "app",
       "app_api_key",
       "app_auth_challenge",
+      "app_auth_event",
       "app_usage_event",
       "app_user",
     ]);
+    // The auth event log mirrors usage's conventions, with the two differences
+    // that made it a sibling table rather than more columns on that one: a
+    // nullable user (most refusals establish no identity) and its own retention.
+    const authEventColumns = await env.DB.prepare("PRAGMA table_info(app_auth_event)").all<{
+      name: string;
+      notnull: number;
+    }>();
+    expect(authEventColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "event_id",
+      "app_id",
+      "user_id",
+      "event",
+      "auth_method",
+      "outcome",
+      "reason",
+      "app_version",
+      "latency_ms",
+      "claim_delay_ms",
+      "created_at",
+    ]);
+    expect(authEventColumns.results.find((column) => column.name === "user_id")?.notnull).toBe(0);
+    expect(authEventColumns.results.find((column) => column.name === "outcome")?.notnull).toBe(1);
+    // Additive and nullable: measuring claim propagation must not have rebuilt
+    // the user table, which every app's identities live in.
+    expect(userColumns.results.find((column) => column.name === "claim_pending_since")).toMatchObject({
+      notnull: 0,
+    });
     const providerColumns = await env.DB.prepare("PRAGMA table_info(provider)").all<{
       name: string;
       notnull: number;

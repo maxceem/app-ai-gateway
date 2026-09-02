@@ -174,7 +174,7 @@ describe("issuer-backed API key exchange", () => {
     });
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({
-      error: { code: "issuer_token_rejected" },
+      error: { code: "issuer_claims_missing" },
     });
   });
 

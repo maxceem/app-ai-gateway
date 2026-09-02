@@ -83,6 +83,7 @@ describe("AppShell navigation", () => {
       "/apps/app-1/limits",
       "/apps/app-1/users",
       "/apps/app-1/usage",
+      "/apps/app-1/auth-events",
       "/apps/app-1/json",
     ]);
   });

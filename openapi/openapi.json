@@ -1490,6 +1490,233 @@
           "created_at"
         ]
       },
+      "AuthEventSummary": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "daily": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "event": {
+                  "type": "string",
+                  "enum": [
+                    "token_exchange",
+                    "register"
+                  ]
+                },
+                "outcome": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "event",
+                "outcome",
+                "reason",
+                "count"
+              ]
+            },
+            "description": "Authentication attempts per day, grouped by outcome and granular reason."
+          },
+          "usage_failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "status",
+                "count"
+              ]
+            },
+            "description": "Non-ok proxied requests per day, so proxy-path failures appear in the same view."
+          },
+          "token_exchange": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "ok": {
+                "type": "integer"
+              },
+              "success_rate": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Null when the window contains no exchanges at all, which is not the same as a perfect score."
+              }
+            },
+            "required": [
+              "total",
+              "ok",
+              "success_rate"
+            ]
+          },
+          "claim_delay": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "avg_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p50_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p95_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "count",
+              "avg_ms",
+              "p50_ms",
+              "p95_ms"
+            ],
+            "description": "How long users waited for a required entitlement claim to propagate, over the window."
+          },
+          "pending_users": {
+            "type": "integer",
+            "description": "Users currently inside an unclosed claim-propagation window — stuck mid-activation right now."
+          }
+        },
+        "required": [
+          "app_id",
+          "days",
+          "from",
+          "to",
+          "daily",
+          "usage_failures",
+          "token_exchange",
+          "claim_delay",
+          "pending_users"
+        ]
+      },
+      "AuthEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The verified issuer identity, where the attempt got far enough to establish one. Null for attempts refused before any identity was trusted."
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "token_exchange",
+              "register"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "attest",
+              "api_key",
+              null
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it."
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "claim_delay_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Set only on the exchange that ended a claim-propagation window: how long the user waited from their first issuer_claims_missing rejection."
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "event",
+          "auth_method",
+          "outcome",
+          "reason",
+          "app_version",
+          "latency_ms",
+          "claim_delay_ms",
+          "created_at"
+        ]
+      },
       "UsageRepriceRequest": {
         "type": "object",
         "properties": {
@@ -2159,7 +2386,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "`issuer_token_rejected` — the token did not verify; get a fresh one, retry once, then fail. `issuer_claims_missing` — the token is valid but a required entitlement claim has not propagated yet; do not re-authenticate, wait and retry. `auth_required` — the key was refused or the user is blocked. `attest_failed` — the App Attest proof did not hold.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2170,6 +2397,16 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2271,7 +2508,7 @@
             }
           },
           "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
+            "description": "`issuer_token_rejected` — the token did not verify; get a fresh one, retry once, then fail. `issuer_claims_missing` — the token is valid but a required entitlement claim has not propagated yet; do not re-authenticate, wait and retry. `auth_required` — the key was refused or the user is blocked. `attest_failed` — the App Attest proof did not hold.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2282,6 +2519,16 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`issuer_verification_unavailable` — the gateway could not reach or read the issuer's keys, so the token was never judged. Retry with backoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6021,6 +6268,205 @@
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/UsageEvent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "app_id",
+                    "limit",
+                    "next_before_id",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/auth-events/summary": {
+      "get": {
+        "operationId": "getAppAuthEventSummary",
+        "summary": "Summarize application authentication outcomes",
+        "description": "Daily authentication outcomes and reasons, non-ok proxied requests, token-exchange success rate, entitlement-claim propagation delays, and how many users are waiting on a claim right now.",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "description": "Trailing window in days, ending today. Defaults to 30."
+            },
+            "required": false,
+            "description": "Trailing window in days, ending today. Defaults to 30.",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authentication activity for the window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthEventSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/auth-events": {
+      "get": {
+        "operationId": "listAppAuthEvents",
+        "summary": "List application authentication events",
+        "tags": [
+          "Admin operations"
+        ],
+        "security": [
+          {
+            "OperatorSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated authentication attempts, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "next_before_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuthEvent"
                       }
                     }
                   },

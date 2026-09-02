@@ -64,8 +64,13 @@ describe("issuer JWT verification", () => {
       scope: "openid ai.invoke profile",
       claims: { entitlements: ["pro"] },
     });
+    // A valid token missing a required claim is its own behaviour class: the
+    // caller has to wait for the claim, not fetch another token.
     await expect(verifyIssuerToken(missingAudience, config)).rejects.toMatchObject({
-      code: "issuer_token_rejected",
+      status: 403,
+      code: "issuer_claims_missing",
+      reason: "claims_missing",
+      userId: "issuer-user",
     });
   });
 
@@ -81,7 +86,7 @@ describe("issuer JWT verification", () => {
     const prodEntitlement = await fixture.token({ revenueCatEntitlements: ["pro"] });
     await expect(verifyIssuerToken(prodEntitlement, config)).resolves.toMatchObject({ userId: "issuer-user" });
     const neither = await fixture.token({ revenueCatEntitlements: ["basic"] });
-    await expect(verifyIssuerToken(neither, config)).rejects.toMatchObject({ code: "issuer_token_rejected" });
+    await expect(verifyIssuerToken(neither, config)).rejects.toMatchObject({ code: "issuer_claims_missing" });
   });
 
   it("accepts only Firebase-shaped tokens from the configured project with the pro entitlement", async () => {
@@ -115,7 +120,8 @@ describe("issuer JWT verification", () => {
       revenueCatEntitlements: ["pro"],
     });
     await expect(verifyIssuerToken(otherProject, firebaseConfig)).rejects.toMatchObject({
-      code: "issuer_token_rejected",
+      code: "issuer_claims_missing",
+      reason: "claims_missing",
     });
   });
 
@@ -129,9 +135,14 @@ describe("issuer JWT verification", () => {
 
   it("refetches JWKS exactly once when kid is unknown", async () => {
     const fixture = await signingFixture("unknown-key");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [] }));
+    // A fresh Response per call: a body can only be read once, and reusing one
+    // would make the refetch fail to parse rather than come back keyless —
+    // which is a different rejection entirely.
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockImplementation(() => Promise.resolve(Response.json({ keys: [] })));
     await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
       code: "issuer_token_rejected",
+      reason: "unknown_kid",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
@@ -165,6 +176,141 @@ describe("issuer JWT verification", () => {
 
     await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
       code: "issuer_token_rejected",
+      reason: "alg_mismatch",
     });
+  });
+});
+
+/**
+ * The mapping itself, cause by cause. Nine distinct failures once shared one
+ * opaque code, which is what made a subscription still syncing indistinguishable
+ * from a forged token — for the operator and for the client.
+ */
+describe("issuer rejection reasons", () => {
+  /** A fresh `Response` per call: a JWKS body can only be read once. */
+  const serveJwks = (keys: unknown) =>
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.resolve(Response.json({ keys })));
+
+  it("names the cause behind every token-invalid rejection", async () => {
+    const fixture = await signingFixture("reason-key");
+    const jwks = () => serveJwks([fixture.publicJwk]);
+
+    // Not a JWT at all: `jose` throws before any check of ours runs.
+    jwks();
+    await expect(verifyIssuerToken("not-a-jwt", baseConfig)).rejects.toMatchObject({
+      status: 403,
+      code: "issuer_token_rejected",
+      reason: "bad_signature",
+    });
+
+    // A header with no kid never reaches the key lookup.
+    clearJwksCache();
+    jwks();
+    const noKid = await new SignJWT({ sub: "issuer-user" })
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign((await generateKeyPair("RS256", { extractable: true })).privateKey);
+    await expect(verifyIssuerToken(noKid, baseConfig)).rejects.toMatchObject({
+      code: "issuer_token_rejected",
+      reason: "header_invalid",
+    });
+
+    clearJwksCache();
+    serveJwks([]);
+    await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
+      code: "issuer_token_rejected",
+      reason: "unknown_kid",
+    });
+
+    clearJwksCache();
+    jwks();
+    await expect(verifyIssuerToken(await fixture.token({}, -60), baseConfig)).rejects.toMatchObject({
+      code: "issuer_token_rejected",
+      reason: "expired",
+    });
+
+    clearJwksCache();
+    jwks();
+    await expect(verifyIssuerToken(await fixture.token({}, 3601), baseConfig)).rejects.toMatchObject({
+      code: "issuer_token_rejected",
+      reason: "lifetime_exceeded",
+    });
+
+    clearJwksCache();
+    jwks();
+    await expect(
+      verifyIssuerToken(await fixture.token(), { ...baseConfig, user_id_claim: "absent" }),
+    ).rejects.toMatchObject({ code: "issuer_token_rejected", reason: "user_id_missing" });
+  });
+
+  it("answers 503 when the gateway itself could not verify anything", async () => {
+    const fixture = await signingFixture("jwks-down");
+
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+    await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
+      status: 503,
+      code: "issuer_verification_unavailable",
+      reason: "jwks_unreachable",
+    });
+
+    clearJwksCache();
+    vi.spyOn(globalThis, "fetch")
+      .mockImplementation(() => Promise.resolve(new Response("nope", { status: 500 })));
+    await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
+      status: 503,
+      reason: "jwks_unreachable",
+    });
+
+    clearJwksCache();
+    serveJwks("not-an-array");
+    await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
+      status: 503,
+      code: "issuer_verification_unavailable",
+      reason: "jwks_invalid",
+    });
+
+    // A 200 carrying an HTML error page — a captive portal, a CDN's own error
+    // document — is the same failure. Left unguarded the parse error falls into
+    // the catch-all and blames the caller's token for an outage upstream of it.
+    clearJwksCache();
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(new Response("<html>502 Bad Gateway</html>", {
+        headers: { "content-type": "text/html" },
+      })),
+    );
+    await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
+      status: 503,
+      code: "issuer_verification_unavailable",
+      reason: "jwks_invalid",
+    });
+  });
+
+  it("carries the verified user id on a claims-missing rejection", async () => {
+    // The signature is checked before the claims are, so this identity is
+    // trustworthy — which is what lets the route open a propagation window for
+    // the right user instead of guessing from an unverified body.
+    const fixture = await signingFixture("claims-user");
+    serveJwks([fixture.publicJwk]);
+    const config: IssuerAuthConfig = {
+      ...baseConfig,
+      required_claims: [{ path: "entitlements", contains: "pro" }],
+    };
+
+    await expect(
+      verifyIssuerToken(await fixture.token({ sub: "waiting-user" }), config),
+    ).rejects.toMatchObject({
+      status: 403,
+      code: "issuer_claims_missing",
+      reason: "claims_missing",
+      userId: "waiting-user",
+    });
+
+    // Callers that skip the requirement cannot reach that rejection at all.
+    await expect(
+      verifyIssuerToken(await fixture.token({ sub: "waiting-user" }), config, {
+        skipRequiredClaims: true,
+      }),
+    ).resolves.toMatchObject({ userId: "waiting-user" });
   });
 });

@@ -258,6 +258,14 @@ export const appUser = sqliteTable(
     status: text("status").$type<UserStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     lastSeenAt: text("last_seen_at"),
+    /**
+     * When this user was *first* refused for a required claim that had not
+     * propagated yet, and still is. Set once per window and never overwritten,
+     * so the measured delay is the whole wait rather than the last retry's;
+     * cleared by the exchange that finally succeeds, which is also what makes
+     * `IS NOT NULL` the list of users stuck mid-activation right now.
+     */
+    claimPendingSince: text("claim_pending_since"),
   },
   (table) => [
     primaryKey({ columns: [table.appId, table.id] }),
@@ -348,6 +356,61 @@ export const appUsageEvent = sqliteTable(
       "usage_events_status_check",
       sql`${table.status} IN ('ok', 'provider_error', 'blocked_rate', 'blocked_budget', 'blocked_user')`,
     ),
+  ],
+);
+
+/** What a `/auth/token` or `/auth/register` attempt was, and how it ended. */
+export type AuthEventName = "token_exchange" | "register";
+
+/**
+ * One row per authentication attempt, successful or not.
+ *
+ * A sibling of `app_usage_event` rather than part of it: that table is a
+ * financial fact table whose `model`, `route`, `provider_type` and `user_id` are
+ * NOT NULL and none of which an auth attempt has, and whose rows are billing
+ * history that is never deleted. These rows are diagnostics and are pruned at
+ * 90 days. The conventions are copied deliberately, though — the idempotent
+ * nullable-unique `event_id`, the two `(app_id, …, created_at)` indexes, and
+ * unconstrained text wherever the value set is expected to grow.
+ */
+export const appAuthEvent = sqliteTable(
+  "app_auth_event",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    /** Recording identity, so a retried insert converges instead of duplicating. */
+    eventId: text("event_id"),
+    /**
+     * No foreign key, for the same reason usage has none: deleting an app is a
+     * hard delete and its authentication history has to survive it.
+     */
+    appId: text("app_id").notNull(),
+    /**
+     * Nullable, unlike usage's: most failures happen before any identity is
+     * established, and inventing one would attribute an attack to a user.
+     */
+    userId: text("user_id"),
+    event: text("event").$type<AuthEventName>().notNull(),
+    authMethod: text("auth_method").$type<AuthMethod>(),
+    /**
+     * `ok`, or the error code the client was handed. Unconstrained text: every
+     * new error code would otherwise rebuild this table.
+     */
+    outcome: text("outcome").notNull(),
+    /** The granular cause behind the outcome — see `IssuerRejectionReason`. */
+    reason: text("reason"),
+    appVersion: text("app_version"),
+    latencyMs: integer("latency_ms"),
+    /**
+     * Set only on the exchange that ends a claim-propagation window: how long
+     * the user waited from their first `issuer_claims_missing` rejection.
+     */
+    claimDelayMs: integer("claim_delay_ms"),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("idx_auth_events_app_created").on(table.appId, table.createdAt),
+    index("idx_auth_events_app_user_created").on(table.appId, table.userId, table.createdAt),
+    uniqueIndex("auth_events_event_id_unique").on(table.eventId),
   ],
 );
 

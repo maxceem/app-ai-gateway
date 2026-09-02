@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { BillingVariables } from "./billing/gateway";
+import { AUTH_EVENT_RETENTION_DAYS, pruneAuthEvents } from "./core/auth-events";
 import { GatewayError } from "./core/errors";
 import { log } from "./core/log";
 import { UserLimiter } from "./do/UserLimiter";
@@ -71,6 +72,24 @@ app.onError((error, c) => {
   }
   if (error instanceof GatewayError) {
     new Headers(error.headers).forEach((value, name) => headers.set(name, value));
+    // Every business rejection, exactly once, in one shape. Without this a user
+    // refused on every attempt produced no server-side trace at all — the
+    // response was returned and the reason went nowhere.
+    //
+    // Deliberately nothing else: no body, no token, no header but the client
+    // version, because this line is emitted for authentication failures whose
+    // request payload is a credential.
+    log(error.status >= 500 ? "error" : "warn", "gateway_error", {
+      code: error.code,
+      // Undefined fields are dropped by JSON.stringify, so a rejection with no
+      // granular cause simply has no `reason` key.
+      reason: error.reason,
+      status: error.status,
+      path: c.req.path,
+      method: c.req.method,
+      app: c.req.param("app"),
+      appVersion: c.req.header("x-app-version"),
+    });
     return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), {
       status: error.status,
       headers,
@@ -87,4 +106,31 @@ app.onError((error, c) => {
   });
 });
 
-export default app;
+/**
+ * Retention for the authentication event log, and nothing else.
+ *
+ * Deliberately the only scheduled write this Worker performs: usage events are
+ * accounting history, and no cron is ever allowed near them.
+ */
+async function prune(env: Env): Promise<void> {
+  try {
+    const deleted = await pruneAuthEvents(env);
+    log("info", "auth_events_pruned", { deleted, retentionDays: AUTH_EVENT_RETENTION_DAYS });
+  } catch (error) {
+    log("error", "auth_events_prune_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * The Hono app itself is the handler — `fetch` is one of its own properties, so
+ * the cron entry point is attached beside it rather than wrapped around it. That
+ * keeps `app.request()` available to the test suite, which is how every route
+ * here is exercised.
+ */
+export default Object.assign(app, {
+  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(prune(env));
+  },
+});

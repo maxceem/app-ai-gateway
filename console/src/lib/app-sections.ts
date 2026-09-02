@@ -4,6 +4,7 @@ import {
   ChartNoAxesColumn,
   Gauge,
   Route,
+  ShieldAlert,
   ShieldCheck,
   Users,
   Waypoints,
@@ -31,6 +32,9 @@ export const APP_SECTIONS: AppSection[] = [
   { slug: "limits", label: "Limits", icon: Gauge },
   { slug: "users", label: "Users", icon: Users },
   { slug: "usage", label: "Usage", icon: ChartNoAxesColumn },
+  // Next to Usage because it answers the other half of "what happened": one
+  // counts the requests that got through, the other the ones that did not.
+  { slug: "auth-events", label: "Auth & Errors", icon: ShieldAlert },
   { slug: "json", label: "Raw JSON", icon: Braces },
 ];
 

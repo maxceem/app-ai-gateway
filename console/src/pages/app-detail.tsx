@@ -21,6 +21,7 @@ import { useAppDraft } from "@/hooks/use-app-draft";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useDeleteApp } from "@/lib/queries";
+import { AuthEventsTab } from "@/pages/tabs/auth-events";
 import { AuthPolicyTab } from "@/pages/tabs/auth-policy";
 import { LimitsTab } from "@/pages/tabs/limits";
 import { OverviewTab } from "@/pages/tabs/overview";
@@ -157,6 +158,8 @@ export function AppDetailPage() {
         <LimitsTab state={state} />
       ) : tab === "users" ? (
         <UsersTab appId={appId} />
+      ) : tab === "auth-events" ? (
+        <AuthEventsTab appId={appId} />
       ) : (
         <Suspense fallback={<Skeleton className="h-64 w-full" />}>
           {tab === "usage" ? (
