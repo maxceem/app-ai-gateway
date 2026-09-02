@@ -266,14 +266,66 @@ describe("admin console API", () => {
     expect(created.status).toBe(400);
   });
 
-  it("creates apps without overwriting id collisions and returns a server key once", async () => {
+  it("suffixes a generated id even when the stem is free", async () => {
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Unclaimed Name", config: serverConfig() }),
+    });
+    expect(created.status).toBe(201);
+    const { app_id: appId } = await created.json<{ app_id: string }>();
+    // Nothing held `unclaimed-name`, and it is still not what was created: the
+    // suffix is the format, not a collision repair.
+    expect(appId).toMatch(/^unclaimed-name-[a-z0-9]{6}$/u);
+    expect((await get(`/v1/admin/apps/${appId}`)).status).toBe(200);
+    expect((await get("/v1/admin/apps/unclaimed-name")).status).toBe(404);
+  });
+
+  it("refuses a requested id that is taken rather than renaming it", async () => {
+    await seedApp("taken-id");
+
+    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "taken-id", name: "Taken Id", config: serverConfig() }),
+    });
+    expect(created.status).toBe(409);
+    expect((await created.json<{ error: { code: string } }>()).error.code).toBe("app_id_taken");
+
+    // The refusal wrote nothing: the app that held the id is as it was, and no
+    // second app was created under any other id.
+    const original = await get("/v1/admin/apps/taken-id");
+    expect(original.body.app.name).toBe("Test taken-id");
+    const listed = (await get("/v1/admin/apps")).body.apps as Array<{ id: string }>;
+    expect(listed.filter((row) => row.id.startsWith("taken-id"))).toHaveLength(1);
+  });
+
+  it("refuses a reserved id, and only when it would create one", async () => {
+    const reserved = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ id: "admin", name: "Admin", config: serverConfig() }),
+    });
+    expect(reserved.status).toBe(400);
+    await expect(reserved.json()).resolves.toMatchObject({
+      error: { message: "App id admin is reserved" },
+    });
+
+    const upserted = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/console`, {
+      method: "PUT",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Console", config: serverConfig() }),
+    });
+    expect(upserted.status).toBe(400);
+  });
+
+  it("assigns a suffixed id when the caller names none, and returns a server key once", async () => {
     await seedApp("calorie-tracker");
 
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
       body: JSON.stringify({
-        id: "calorie-tracker",
         name: "Calorie Tracker",
         config: serverConfig(),
       }),
@@ -283,7 +335,7 @@ describe("admin console API", () => {
       app_id: string;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
-    expect(body.app_id).toMatch(/^calorie-tracker-[a-z0-9]{4}$/u);
+    expect(body.app_id).toMatch(/^calorie-tracker-[a-z0-9]{6}$/u);
     expect(body.api_key.key).toMatch(/^agw_[0-9A-Za-z]{40,}$/u);
     expect(body.api_key.key_prefix).toBe(body.api_key.key.slice(0, 12));
 
@@ -306,7 +358,7 @@ describe("admin console API", () => {
     ).toEqual([...PROVIDER_TYPES].sort());
   });
 
-  it("derives an id from the name when the create API receives no preferred id", async () => {
+  it("derives the readable stem of an assigned id from the name", async () => {
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
@@ -316,10 +368,9 @@ describe("admin console API", () => {
       }),
     });
     expect(created.status).toBe(201);
-    await expect(created.json()).resolves.toMatchObject({
-      app_id: "cafe-companion-ios",
-      api_key: null,
-    });
+    const body = await created.json<{ app_id: string; api_key: null }>();
+    expect(body.app_id).toMatch(/^cafe-companion-ios-[a-z0-9]{6}$/u);
+    expect(body.api_key).toBeNull();
   });
 
   it("returns a readable row plus the error when a stored config is invalid", async () => {

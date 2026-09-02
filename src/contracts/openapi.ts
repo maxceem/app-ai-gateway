@@ -512,13 +512,13 @@ register({
   tags: ["Admin applications"],
   operationId: "createApp",
   summary: "Create an application",
-  description: "API-key applications receive a one-time plaintext initial key in the response.",
+  description: "Omit `id` and the gateway assigns one from the name, suffixed to keep it unique across the deployment, and returns it as `app_id`. Send `id` and that exact id is used or the request is refused — a requested id is never silently replaced. API-key applications receive a one-time plaintext initial key in the response.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(AppWriteSchema) } },
   responses: {
-    201: response("Application created.", z.object({ app_id: z.string(), api_key: z.unknown().nullable() })),
+    201: response("Application created. `app_id` is the assigned id and the segment every gateway URL for this app uses.", z.object({ app_id: z.string(), api_key: z.unknown().nullable() })),
     ...errorResponses,
-    409: response("A unique application ID could not be allocated.", ErrorResponseSchema),
+    409: response("`app_id_taken` — the requested `id` already belongs to an application. `invalid_request` — no unique generated id could be allocated.", ErrorResponseSchema),
   },
 });
 

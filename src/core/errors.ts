@@ -42,6 +42,12 @@ export type ErrorCode =
   | "provider_disabled"
   | "provider_unavailable"
   | "slug_taken"
+  /**
+   * A caller asked for an app id another app already holds. Its own code, and
+   * never a rename: the id is a URL a shipped client compiles in, so the only
+   * safe answer to "give me this one" is yes or no.
+   */
+  | "app_id_taken"
   | "provider_not_supported_by_gateway"
   | "provider_gateway_managed"
   | "gateway_in_use"

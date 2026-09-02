@@ -30,9 +30,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { PresetPicker, PresetPreview } from "@/components/preset-picker";
-import { isValidAppId, slugifyAppName, uniqueAppId } from "@/lib/app-id";
+import { appIdSuffix, generatedAppId, isReservedAppId, isValidAppId } from "@/lib/app-id";
 import { cn } from "@/lib/utils";
 import { useCreateApp } from "@/lib/queries";
+import { ApiError } from "@/lib/api";
 import type { CreatedApiKey } from "@/lib/types";
 import {
   ENTITLEMENT_PRESETS,
@@ -73,6 +74,11 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
   const [name, setName] = useState("");
   const [customId, setCustomId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState(false);
+  // Drawn once per dialog, not per render: the generated id has to hold still
+  // while the name is typed, because it is the id that will be created.
+  const [suffix, setSuffix] = useState(appIdSuffix);
+  /** An id the server refused as taken, kept so the field can say which one. */
+  const [rejectedId, setRejectedId] = useState<string | null>(null);
   const [applicationType, setApplicationType] = useState<ApplicationType | null>(null);
   const [appleTeamId, setAppleTeamId] = useState("");
   const [appleBundleId, setAppleBundleId] = useState("");
@@ -87,14 +93,7 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
   const navigate = useNavigate();
   const createApp = useCreateApp();
 
-  const existingIdKey = existingIds.join("\u0000");
-  const generatedId = useMemo(
-    () => (name.trim() ? uniqueAppId(name, existingIds) : ""),
-    // The joined key keeps a freshly allocated prop array from regenerating a
-    // random collision suffix on unrelated renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [name, existingIdKey],
-  );
+  const generatedId = name.trim() ? generatedAppId(name, suffix) : "";
   const id = customId ?? generatedId;
 
   const authConfig = useMemo(() => {
@@ -106,19 +105,22 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
     return { ...fragment, required_claims: claims };
   }, [issuer, issuerValues, entitlement, entitlementValues]);
 
-  const idIsTaken = existingIds.includes(id);
+  const idIsTaken = existingIds.includes(id) || rejectedId === id;
   const idError =
     id && !isValidAppId(id)
       ? "Use lowercase letters, numbers, and hyphens (63 characters max)."
-      : idIsTaken
-        ? "This application ID is already in use."
-        : null;
+      : id && isReservedAppId(id)
+        ? "This ID is reserved. Pick another one."
+        : idIsTaken
+          ? "This ID is already taken. Pick another one."
+          : null;
   const presetsComplete =
     presetInputsComplete(issuer, issuerValues) &&
     presetInputsComplete(entitlement, entitlementValues);
   const ready =
     name.trim().length > 0 &&
     isValidAppId(id) &&
+    !isReservedAppId(id) &&
     !idIsTaken &&
     applicationType !== null &&
     (applicationType === "server" ||
@@ -131,6 +133,8 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
     setName("");
     setCustomId(null);
     setEditingId(false);
+    setSuffix(appIdSuffix());
+    setRejectedId(null);
     setApplicationType(null);
     setAppleTeamId("");
     setAppleBundleId("");
@@ -199,6 +203,19 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
       toast.success(`Created ${result.app_id}`);
       navigate(`/apps/${result.app_id}/proxy`);
     } catch (error) {
+      // The only rejection the form can act on. A generated id is replaced here,
+      // in the open dialog, where the field shows the replacement before
+      // anything is created — the server never substitutes one on its own.
+      if (error instanceof ApiError && error.code === "app_id_taken") {
+        setRejectedId(id);
+        if (customId === null) setSuffix(appIdSuffix());
+        toast.error(
+          customId === null
+            ? `${id} was just taken. A new ID is ready — check it and create again.`
+            : `${id} is already taken. Pick another ID.`,
+        );
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "Could not create the app");
     }
   };
@@ -284,6 +301,12 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
                   {editingId ? <Check className="size-4" /> : <Pencil className="size-4" />}
                 </Button>
               </div>
+              {id && !idError ? (
+                <code className="block rounded-md bg-muted px-3 py-2 font-mono text-xs break-all text-muted-foreground">
+                  {window.location.origin}/v1/apps/<span className="text-foreground">{id}</span>
+                  /proxy/&#123;provider&#125;/&#123;provider_path&#125;
+                </code>
+              ) : null}
               <p
                 className={cn(
                   "text-xs text-muted-foreground",
@@ -293,10 +316,10 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
               >
                 {idError ??
                   (!name.trim()
-                    ? "Generated automatically when you enter a name."
-                    : slugifyAppName(name) !== id && customId === null
-                    ? "A short suffix keeps this generated ID unique."
-                    : "Generated from the name. Used in gateway URLs and cannot be changed later.")}
+                    ? "Generated from the name, and shown here before the app is created."
+                    : customId === null
+                    ? "This exact ID will be created. Every ID ends in a short random suffix, and none of it can be changed later."
+                    : "This exact ID will be created, and it cannot be changed later.")}
               </p>
             </div>
 
@@ -490,6 +513,15 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
               <p className="text-xs text-muted-foreground">
                 Store it in your server’s secret manager. Never ship this key in a client app.
               </p>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Base URL</p>
+              <code className="block rounded-md bg-muted px-3 py-2 font-mono text-xs break-all text-muted-foreground">
+                {window.location.origin}/v1/apps/
+                <span className="text-foreground">{createdAppId}</span>
+                /proxy/&#123;provider&#125;/&#123;provider_path&#125;
+              </code>
             </div>
 
             <div className="rounded-lg bg-muted/50 p-3 shadow-sm ring-1 ring-border/70">

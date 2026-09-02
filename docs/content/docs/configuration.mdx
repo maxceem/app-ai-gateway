@@ -6,6 +6,27 @@ description: Define authentication, provider routing, and limits for one tenant.
 An application row is the only tenant-specific input. Do not add tenant branches
 to Worker code.
 
+## Application IDs
+
+The ID is the `{app}` segment of every URL the app uses, it is unique across the
+whole deployment, and it cannot be changed once the app exists — clients compile
+it into their base URL.
+
+Omit `id` when creating an application and the gateway assigns one: the name,
+slugified, plus a six-character random suffix (`Calorie Tracker` becomes
+`calorie-tracker-k3f9x1`). Every generated ID is suffixed, including the first
+one on an empty deployment, so no organization can claim a bare name that others
+then have to work around. The response's `app_id` is the assigned ID, and the
+console shows it before you create the app.
+
+Send an `id` and it is used exactly as given, or the request is refused —
+`409 app_id_taken` if another application already holds it, `400` if it is on
+the small reserved list (`admin`, `console`, `new`, `v1`, and similar). A
+requested ID is never silently replaced with a different one.
+
+The ID is not a secret: it travels in every client URL. It is also not a
+credential — App Attest or an API key still has to pass.
+
 ## Server application
 
 Use API-key authentication for a trusted backend:

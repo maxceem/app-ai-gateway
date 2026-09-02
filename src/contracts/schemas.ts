@@ -100,6 +100,12 @@ export const AppConfigSchema = z.object({
 }).meta({ id: "AppConfig" });
 
 export const AppWriteSchema = z.object({
+  /**
+   * The URL segment for this app, and immutable once created. Optional on
+   * create: leave it out and the gateway assigns `<name-slug>-<suffix>` and
+   * answers with it. Supplied, it is honoured exactly or refused with
+   * `app_id_taken` — never renamed, because clients ship it in their base URL.
+   */
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(),
   name: z.string().min(1).max(100),
   config: AppConfigSchema,
