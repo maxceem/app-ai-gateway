@@ -79,6 +79,12 @@ JSON
 The response includes the initial `agw_` application key once. Store it in the
 calling service's secret manager.
 
+`id` asks for that exact ID: you get it, or `409 app_id_taken` if it is already
+in use anywhere on this deployment. Leave `id` out and the gateway assigns
+`example-agent-<suffix>` and returns it as `app_id`. Either way, `app_id` in the
+response is the segment every URL below uses, and it cannot be changed later.
+See [Application IDs](/docs/configuration#application-ids).
+
 ## 4. Add a provider credential
 
 The application above allows OpenAI, so the organization needs an OpenAI key.

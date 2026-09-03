@@ -30,6 +30,25 @@ import { currentMonth, eventDay, monthBounds, usageTotals } from "./shared";
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const APP_ID_MAX_LENGTH = 63;
 const APP_ID_SUFFIX_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+/**
+ * Every generated id carries one, so the readable stem is never the whole
+ * identifier. Six characters is 36^6 — enough that a deployment can hold every
+ * app any organization will ever create without a retry, and enough that the
+ * unauthenticated `/v1/apps/{app}/auth/challenge` route cannot be found by
+ * guessing an app's name.
+ */
+const APP_ID_SUFFIX_LENGTH = 6;
+/**
+ * Ids no new app may take. Nothing in the gateway's own routing can collide —
+ * every app lives under `/v1/apps/` — so this exists for the console's paths
+ * and for any future segment beside them. Only creation consults it: an id
+ * already stored stays readable, writable and deletable whatever it says.
+ */
+const RESERVED_APP_IDS = new Set([
+  "admin", "api", "app", "apps", "assets", "auth", "billing", "console",
+  "docs", "endpoints", "healthz", "keys", "login", "me", "new", "providers",
+  "proxy", "settings", "signup", "static", "usage", "v1",
+]);
 
 interface AppUpsertBody {
   name: string;
@@ -60,6 +79,15 @@ function assertAppId(appId: string): string {
   return appId;
 }
 
+/** {@link assertAppId} plus the reserved list, which only a new id must clear. */
+function assertCreatableAppId(appId: string): string {
+  assertAppId(appId);
+  if (RESERVED_APP_IDS.has(appId)) {
+    throw new GatewayError(400, "invalid_request", `App id ${appId} is reserved`);
+  }
+  return appId;
+}
+
 function slugifyAppName(name: string): string {
   const slug = name
     .normalize("NFKD")
@@ -73,13 +101,25 @@ function slugifyAppName(name: string): string {
 }
 
 function randomAppIdSuffix(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  const bytes = crypto.getRandomValues(new Uint8Array(APP_ID_SUFFIX_LENGTH));
   return Array.from(bytes, (byte) => APP_ID_SUFFIX_ALPHABET[byte % APP_ID_SUFFIX_ALPHABET.length]).join("");
 }
 
-function suffixedAppId(base: string): string {
+/**
+ * The id a caller gets when it names an app but does not name its id.
+ *
+ * Suffixed unconditionally, for the first app of the first organization as much
+ * as for the thousandth: an id is claimed against the whole deployment, and a
+ * bare stem would mean whoever arrived first owns `chat` and everyone after is
+ * quietly given something else. A suffix nobody escapes is the fair form of
+ * that, and it is the only form under which a caller can be told its id up
+ * front — which the console does, before the app exists.
+ */
+function generatedAppId(name: string): string {
   const suffix = randomAppIdSuffix();
-  const stem = base.slice(0, APP_ID_MAX_LENGTH - suffix.length - 1).replace(/-+$/u, "");
+  const stem = slugifyAppName(name)
+    .slice(0, APP_ID_MAX_LENGTH - suffix.length - 1)
+    .replace(/-+$/u, "");
   return `${stem}-${suffix}`;
 }
 
@@ -273,14 +313,18 @@ appRoutes.post("/apps", async (c) => {
   const name = body.name.trim();
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
   if (raw.id !== undefined && typeof raw.id !== "string") throw new GatewayError(400, "invalid_request", "id must be a lowercase slug");
-  const requestedId = raw.id === undefined ? slugifyAppName(name) : assertAppId(raw.id);
+  // Two different asks, and the difference is the whole contract: a caller that
+  // named an id gets that id or an error, never a substitute, because an app id
+  // is a URL compiled into a shipped client. A caller that named none is
+  // assigned one, and only that one may be re-rolled.
+  const requestedId = raw.id === undefined ? null : assertCreatableAppId(raw.id);
   const organizationId = c.get("admin").organizationId;
   const config = validatedConfig(
     body.config,
     await organizationProviders(c.env, organizationId),
   );
   const db = database(c.env.DB);
-  let appId = requestedId;
+  let appId = requestedId ?? generatedAppId(name);
   let created = false;
   for (let attempt = 0; attempt < 16; attempt += 1) {
     created = await insertApp(c.env.DB, {
@@ -291,7 +335,10 @@ appRoutes.post("/apps", async (c) => {
       status: body.status ?? "active",
     });
     if (created) break;
-    appId = suffixedAppId(requestedId);
+    if (requestedId !== null) {
+      throw new GatewayError(409, "app_id_taken", `App id ${requestedId} is already taken`);
+    }
+    appId = generatedAppId(name);
   }
   if (!created) throw new GatewayError(409, "invalid_request", "Could not allocate a unique app id");
 
@@ -372,6 +419,10 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     columns: { config: true },
     where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
+  // An upsert that creates is a creation, so it clears the reserved list too.
+  // An upsert that updates does not: the row already holds the id, and refusing
+  // to write it would strand an app nobody can edit.
+  if (!existing) assertCreatableAppId(appId);
   const config = validatedConfig(
     body.config,
     await organizationProviders(c.env, organizationId),
