@@ -3,7 +3,6 @@ import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { appUsageEvent, appUser } from "../../db/schema";
-import type { UserLimiter } from "../../do/UserLimiter";
 import type { AdminVariables } from "../../middleware/admin";
 import { currentMonth, eventDay, monthBounds, parseLimit, parseOffset, usageTotals } from "./shared";
 
@@ -198,7 +197,6 @@ userRoutes.post("/apps/:app/users/:user/:action", async (c) => {
     .where(and(eq(appUser.appId, appId), eq(appUser.id, userId)))
     .returning({ id: appUser.id });
   if (updated.length !== 1) throw new GatewayError(404, "invalid_request", "User was not found");
-  const limiter = c.env.USER_LIMITER.getByName(`${appId}:${userId}`) as DurableObjectStub<UserLimiter>;
-  await limiter.setBlocked(blocked);
+  await c.env.USER_LIMITER.getByName(`${appId}:${userId}`).setBlocked(blocked);
   return c.json({ app_id: appId, user_id: userId, blocked });
 });

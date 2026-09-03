@@ -6759,6 +6759,7 @@ snapshots:
 
   cf-billing@file:../../maxceem/services/cf-billing(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17):
     dependencies:
+      '@maxceem/cf-kms': file:../../maxceem/services/cf-kms
       drizzle-orm: 0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)
       zod: 4.4.3
     transitivePeerDependencies:

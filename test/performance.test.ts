@@ -10,7 +10,7 @@ afterEach(() => {
 
 describe("proxy hot-path latency", () => {
   it("keeps 100-request stub-provider p50 below 50 ms and p95 below 150 ms", async () => {
-    await seedApp("proxy-benchmark", { limits: { rpm: 200, rpd: 1000 } });
+    await seedApp("proxy-benchmark");
     const token = await gatewayToken("proxy-benchmark");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>

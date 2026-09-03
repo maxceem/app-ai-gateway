@@ -2,7 +2,6 @@ import {
   BadgeCheck,
   Braces,
   ChartNoAxesColumn,
-  Gauge,
   Route,
   ShieldAlert,
   ShieldCheck,
@@ -29,7 +28,6 @@ export const APP_SECTIONS: AppSection[] = [
   { slug: "auth", label: "Auth policy", icon: ShieldCheck },
   { slug: "proxy", label: "Proxy policy", icon: Waypoints },
   { slug: "endpoints", label: "Endpoints", icon: Route },
-  { slug: "limits", label: "Limits", icon: Gauge },
   { slug: "users", label: "Users", icon: Users },
   { slug: "usage", label: "Usage", icon: ChartNoAxesColumn },
   // Next to Usage because it answers the other half of "what happened": one

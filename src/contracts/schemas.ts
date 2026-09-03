@@ -12,8 +12,6 @@ import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
 export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
 export const SlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
 
-const NullableLimit = z.number().nonnegative().nullable();
-
 const ClaimRequirementSchema = z.object({
   path: z.string(),
   contains: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
@@ -72,14 +70,6 @@ const EndpointSchema = EndpointTargetSchema.extend({
   fallback: z.array(EndpointTargetSchema).optional(),
 });
 
-const LimitScopeSchema = z.object({
-  requests: z.object({
-    per_minute: NullableLimit,
-    per_day: NullableLimit,
-  }),
-  spending: z.object({ monthly_usd: NullableLimit }),
-});
-
 export const AppConfigSchema = z.object({
   authentication: z.discriminatedUnion("type", [
     AppleAppAttestAuthenticationSchema,
@@ -91,10 +81,6 @@ export const AppConfigSchema = z.object({
       selected: z.record(SlugSchema, ProviderPolicySchema).optional(),
     }),
     model_rewrites: z.record(z.string(), z.string()),
-  }),
-  limits: z.object({
-    per_user: LimitScopeSchema,
-    per_app: LimitScopeSchema,
   }),
   endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), EndpointSchema).optional(),
 }).meta({ id: "AppConfig" });

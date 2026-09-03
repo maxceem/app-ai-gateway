@@ -118,8 +118,6 @@ function appSummary(name: string, referenced: string[]): AppSummary {
     authentication_type: "api_key",
     apple_bundle_id: null,
     created_at: "2026-02-01T00:00:00.000Z",
-    monthly_user_budget_usd: null,
-    monthly_app_budget_usd: null,
     providers: referenced,
     referenced_providers: referenced,
     allowed_model_count: 0,

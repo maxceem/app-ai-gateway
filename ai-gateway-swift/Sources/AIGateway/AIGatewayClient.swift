@@ -356,7 +356,8 @@ public actor AIGatewayClient {
             throw GatewayError(
                 code: GatewayErrorCode(rawValue: rawCode) ?? .unknown,
                 message: envelope?.error.message ?? "Gateway request failed",
-                statusCode: http.statusCode
+                statusCode: http.statusCode,
+                data: envelope?.error.data ?? [:]
             )
         }
         return try JSONDecoder().decode(Response.self, from: data)

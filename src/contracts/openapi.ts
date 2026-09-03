@@ -44,6 +44,9 @@ export const ErrorResponseSchema = z.object({
   error: z.object({
     code: z.string(),
     message: z.string(),
+    data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().openapi({
+      description: "Machine-readable facts about this rejection, present only where the code alone is not actionable. A monthly_request_quota_exceeded rejection carries limit, used, and resetAt.",
+    }),
   }),
 }).openapi("ErrorResponse");
 
@@ -407,19 +410,16 @@ register({
   path: "/v1/apps/{app}/me",
   tags: ["Application"],
   operationId: "getCurrentUser",
-  summary: "Get the current user's limits and usage",
+  summary: "Get the current user's spend and block state",
   security: [{ GatewayBearer: [] }],
   request: { params: AppPath },
   responses: {
     200: response("Current user state.", z.object({
       user_id: z.string(),
-      limits: z.object({
-        requests_today: z.number(),
-        requests_remaining: z.number().nullable(),
-        monthly_cost_usd: z.number(),
-        monthly_budget_usd: z.number().nullable(),
-        blocked: z.boolean(),
+      monthly_cost_usd: z.number().openapi({
+        description: "What this user's traffic has cost so far in the current UTC calendar month. Reporting only; spend is not a quota.",
       }),
+      blocked: z.boolean(),
     })),
     ...errorResponses,
     402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
@@ -432,7 +432,7 @@ register({
   tags: ["Provider proxy"],
   operationId: "proxyProviderRequest",
   summary: "Proxy a provider-native model request",
-  description: "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
+  description: "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, spends one request from the organization's monthly allowance, and streams the upstream response without buffering.",
   security: [{ GatewayBearer: [] }],
   request: {
     params: ProviderPath,
@@ -448,7 +448,7 @@ register({
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
     402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
-    429: response("A request or spending limit was reached.", ErrorResponseSchema),
+    429: response("The organization's monthly request allowance is exhausted. The body carries code monthly_request_quota_exceeded with limit, used, and the UTC resetAt, and the response carries a Retry-After header.", ErrorResponseSchema),
     502: response("The upstream provider request failed.", ErrorResponseSchema),
   },
 });
@@ -491,7 +491,7 @@ register({
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
     402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
-    429: response("A request or spending limit was reached.", ErrorResponseSchema),
+    429: response("The organization's monthly request allowance is exhausted. The body carries code monthly_request_quota_exceeded with limit, used, and the UTC resetAt, and the response carries a Retry-After header.", ErrorResponseSchema),
     502: response("Every configured target failed.", ErrorResponseSchema),
   },
 });
@@ -527,8 +527,29 @@ const BillingPlanSelectionSchema = z.object({
   billingPeriod: z.enum(["month", "year"]),
 });
 
+register({
+  method: "get",
+  path: "/v1/admin/billing/plans",
+  tags: ["Admin billing"],
+  operationId: "listBillingPlans",
+  summary: "List billing plans",
+  security: operatorSecurity,
+  responses: { 200: response("Billing service response.", z.unknown()), ...errorResponses },
+});
+
+/**
+ * The organization's calendar month against the one allowance a plan grants.
+ * Only the dispatch path writes this count, so a status read is the only place
+ * an operator can see it before the allowance runs out.
+ */
+const BillingQuotaSchema = z.object({
+  month: z.string().describe("The UTC month being reported, YYYY-MM."),
+  used: z.number().int().describe("Requests dispatched to a provider this month, organization-wide."),
+  limit: z.number().int().optional().describe("The plan's maxRequestsPerMonth. Absent means unlimited."),
+  resetAt: z.string().describe("The first instant of the next UTC month."),
+});
+
 for (const route of [
-  { path: "/v1/admin/billing/plans", operationId: "listBillingPlans", summary: "List billing plans" },
   { path: "/v1/admin/billing/status", operationId: "getBillingStatus", summary: "Get organization billing access" },
   { path: "/v1/admin/billing/portal/status", operationId: "getBillingPortalStatus", summary: "Poll billing portal/access status" },
 ] as const) {
@@ -539,7 +560,13 @@ for (const route of [
     operationId: route.operationId,
     summary: route.summary,
     security: operatorSecurity,
-    responses: { 200: response("Billing service response.", z.unknown()), ...errorResponses },
+    responses: {
+      200: response(
+        "Billing access, and the month against the plan's request allowance.",
+        z.object({ access: z.unknown(), quota: BillingQuotaSchema }),
+      ),
+      ...errorResponses,
+    },
   });
 }
 

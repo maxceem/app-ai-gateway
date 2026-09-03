@@ -267,8 +267,21 @@ export interface BillingAccess {
   billingErrorCode?: string;
 }
 
+/**
+ * The organization's month so far against the allowance its plan grants.
+ * `limit` is absent on a plan that sets no ceiling. Only ever read from a
+ * deployment with billing enabled; self-hosted consoles never fetch it.
+ */
+export interface OrganizationQuota {
+  month: string;
+  used: number;
+  limit?: number;
+  resetAt: string;
+}
+
 export interface BillingStatusResponse {
   access: BillingAccess;
+  quota?: OrganizationQuota;
 }
 
 export interface BillingPrice {
@@ -308,8 +321,6 @@ export interface AppSummary {
   authentication_type: "apple_app_attest" | "api_key" | "invalid";
   apple_bundle_id: string | null;
   created_at: string;
-  monthly_user_budget_usd: number | null;
-  monthly_app_budget_usd: number | null;
   providers: string[];
   /**
    * The slugs this app names outright: selected-mode policy keys, endpoint
@@ -347,10 +358,7 @@ export interface ResolvedConfig {
     providers: StoredAppConfig["routing"]["providers"]["selected"];
     modelRewrites: Record<string, string>;
   };
-  limits: {
-    perUser: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
-    perApp: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
-  };
+  endpoints: import("./config-types").EndpointsConfig;
   status: "active" | "disabled";
 }
 
@@ -470,7 +478,7 @@ export interface UsageEvent {
   provider_gateway_id: string | null;
   provider_gateway_type: ProviderGatewayType | null;
   credential_source: CredentialSource | null;
-  /** Who made the model. Analytics only — it never affects budgets or limits. */
+  /** Who made the model. Analytics only — it never affects allowlists or quota. */
   model_author: string | null;
   /** What the upstream said served the request. Null means unknown, not a guarantee. */
   served_provider: string | null;

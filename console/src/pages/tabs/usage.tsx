@@ -376,8 +376,16 @@ export function UsageTab({ appId }: { appId: string }) {
                   <SelectItem value="all">All statuses</SelectItem>
                   <SelectItem value="ok">ok</SelectItem>
                   <SelectItem value="provider_error">provider_error</SelectItem>
-                  <SelectItem value="blocked_rate">blocked_rate</SelectItem>
-                  <SelectItem value="blocked_budget">blocked_budget</SelectItem>
+                  {/*
+                    Labelled rather than raw, because the name predates the
+                    gateway having one organization-wide allowance and no longer
+                    says what it filters for on its own. `blocked_budget` has no
+                    entry at all: nothing writes it any more, so offering it
+                    would be a filter that can only ever come back empty on a
+                    deployment that never had spending budgets. Historical rows
+                    still render in the table.
+                  */}
+                  <SelectItem value="blocked_rate">blocked_rate — monthly quota</SelectItem>
                   <SelectItem value="blocked_user">blocked_user</SelectItem>
                 </SelectContent>
               </Select>

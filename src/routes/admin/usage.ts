@@ -6,7 +6,6 @@ import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { database } from "../../db";
 import { appUsageEvent, provider as providerTable } from "../../db/schema";
-import type { UserLimiter } from "../../do/UserLimiter";
 import type { AdminVariables } from "../../middleware/admin";
 import { currentMonth, eventDay, inRange, parseLimit, parseRange, usageTotals } from "./shared";
 
@@ -200,20 +199,11 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
       .where(monthFilter)
       .groupBy(appUsageEvent.userId);
     for (const total of userTotals) {
-      const limiter = c.env.USER_LIMITER.getByName(`${appId}:${total.userId}`) as DurableObjectStub<UserLimiter>;
-      await limiter.reconcileMonth(month, total.microusd);
+      await c.env.USER_LIMITER
+        .getByName(`${appId}:${total.userId}`)
+        .reconcileMonth(month, total.microusd);
     }
     reconciledUsers = userTotals.length;
-
-    const appTotal = await database(c.env.DB)
-      .select({
-        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
-      })
-      .from(appUsageEvent)
-      .where(monthFilter)
-      .get();
-    const appLimiter = c.env.USER_LIMITER.getByName(appId) as DurableObjectStub<UserLimiter>;
-    await appLimiter.reconcileMonth(month, appTotal?.microusd ?? 0);
   }
 
   return c.json({

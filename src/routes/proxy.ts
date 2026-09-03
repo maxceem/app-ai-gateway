@@ -1,5 +1,4 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { hasAppLevelLimits } from "../core/config";
 import { GatewayError } from "../core/errors";
 import { requireProvider, type ResolvedProvider } from "../core/provider-store";
 import { PROVIDER_SLUG_PATTERN } from "../core/providers";
@@ -98,7 +97,6 @@ proxyRoutes.all("/:provider/*", async (c) => {
         userId: identity.userId,
         authMethod: identity.authMethod,
         apiKeyId: identity.apiKeyId,
-        appLevelLimitsEnabled: hasAppLevelLimits(app),
         provider,
         providerId: resolved.id,
         providerSlug: resolved.slug,
@@ -138,7 +136,6 @@ proxyRoutes.all("/:provider/*", async (c) => {
       userId: identity.userId,
       authMethod: identity.authMethod,
       apiKeyId: identity.apiKeyId,
-      appLevelLimitsEnabled: hasAppLevelLimits(app),
       provider,
       providerId: resolved.id,
       providerSlug: resolved.slug,

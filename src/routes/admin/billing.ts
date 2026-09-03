@@ -3,9 +3,11 @@ import { Hono, type Context } from "hono";
 import {
   BILLING_SERVICE_ID,
   billingBinding,
+  billingPlanLimits,
   billingRpcError,
   getBillingAccess,
   invalidateBillingAccess,
+  type GatewayBillingAccess,
 } from "../../billing/gateway";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
@@ -56,13 +58,52 @@ billingRoutes.get("/plans", async (c) => c.json(await rpc(() => binding(c.env).l
   serviceId: BILLING_SERVICE_ID,
 }))));
 
+/** What the organization has spent of the allowance it pays for. */
+export interface OrganizationQuotaStatus {
+  /** The UTC calendar month being reported, `YYYY-MM`. */
+  month: string;
+  /** Requests dispatched to a provider this month, organization-wide. */
+  used: number;
+  /** The plan's `maxRequestsPerMonth`. Absent means the plan sets no ceiling. */
+  limit?: number;
+  /** The instant a fresh allowance begins, ISO-8601 in UTC. */
+  resetAt: string;
+}
+
+/**
+ * Reads the live count out of the organization's quota object.
+ *
+ * The console has no other source for it. The count lives in a Durable Object
+ * that only the dispatch path writes, and the usage tables record what was
+ * spent rather than what is left — so until an organization is actually refused,
+ * nothing tells an operator how close it is. Reporting it beside the
+ * subscription is what turns a runaway client into something noticed on day
+ * three instead of on the first `429`.
+ *
+ * A self-hosted deployment never gets here — the whole `/billing` subtree is
+ * refused without a billing binding — so there is no allowance-less case to
+ * report. A malformed plan limit is deliberately left to throw: the data plane
+ * is already refusing every request for that reason, and the operator reading
+ * this page is exactly who needs to see why.
+ */
+async function organizationQuota(
+  env: Env,
+  organizationId: string,
+  access: GatewayBillingAccess,
+): Promise<OrganizationQuotaStatus> {
+  const limit = billingPlanLimits(access).maxRequestsPerMonth;
+  const usage = await env.ORG_QUOTA.getByName(organizationId).usage(Date.now());
+  return { ...usage, ...(limit === undefined ? {} : { limit }) };
+}
+
 async function status(c: Context<BillingRouteEnv>) {
+  const organizationId = c.get("admin").organizationId;
   const access = await getBillingAccess(
     c.env,
-    c.get("admin").organizationId,
+    organizationId,
     c.get("billingRequestCache"),
   );
-  return c.json({ access });
+  return c.json({ access, quota: await organizationQuota(c.env, organizationId, access) });
 }
 
 billingRoutes.get("/status", status);

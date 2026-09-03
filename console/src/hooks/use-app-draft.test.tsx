@@ -34,10 +34,6 @@ function appRow(authentication: AuthenticationConfig) {
     config: {
       authentication,
       routing: { providers: { mode: "all" }, model_rewrites: {} },
-      limits: {
-        per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-        per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-      },
     },
   };
 }

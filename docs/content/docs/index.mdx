@@ -8,9 +8,9 @@ description: One secure edge between your applications and every model provider.
   <h1>Ship AI features without shipping provider keys.</h1>
   <p>
     App AI Gateway is a multi-tenant, provider-native proxy for iOS applications
-    and trusted server backends. It authenticates users, enforces request and
-    spending limits, and streams model responses straight from the providers your
-    organization brings its own keys for.
+    and trusted server backends. It authenticates users, holds the organization
+    to its monthly request allowance, and streams model responses straight from
+    the providers your organization brings its own keys for.
   </p>
 </div>
 
@@ -28,13 +28,12 @@ description: One secure edge between your applications and every model provider.
 
 - Provider credentials are per organization, encrypted at rest, and write-only.
 - D1 stores tenant configuration, users, credentials, and usage events.
-- A Durable Object serializes per-user and optional per-application limits.
+- One Durable Object per organization holds its monthly request allowance.
 - Provider-native bodies and streaming response formats remain intact.
 - The administration console and API configure the deployed instance.
 
 ## What your application owns
 
-Your application supplies its identity policy, allowed provider paths and models,
-and request or spending limits. An issuer such as Firebase decides who may obtain
-a mobile gateway token. Trusted servers can use a long-lived per-application API
-key instead.
+Your application supplies its identity policy and its allowed provider paths and
+models. An issuer such as Firebase decides who may obtain a mobile gateway token.
+Trusted servers can use a long-lived per-application API key instead.

@@ -1,5 +1,5 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { ENDPOINT_SLUG, hasAppLevelLimits } from "../core/config";
+import { ENDPOINT_SLUG } from "../core/config";
 import {
   endpointAttempt,
   prepareEndpointRequest,
@@ -38,7 +38,7 @@ function isRetryableStatus(status: number): boolean {
 
 export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) => {
   // Named endpoints are POST-only. Rejecting here keeps other methods from
-  // reading a body or spending a rate-limit token before the router gives up.
+  // reading a body or reaching the dispatch boundary before the router gives up.
   if (c.req.method !== "POST") {
     throw new GatewayError(404, "invalid_request", "Route not found");
   }
@@ -177,7 +177,6 @@ endpointRoutes.post("/:slug", async (c) => {
         userId: identity.userId,
         authMethod: identity.authMethod,
         apiKeyId: identity.apiKeyId,
-        appLevelLimitsEnabled: hasAppLevelLimits(app),
         provider: input.attempt.provider,
         providerId: input.resolved.id,
         providerSlug: input.resolved.slug,
@@ -195,8 +194,9 @@ endpointRoutes.post("/:slug", async (c) => {
 
   for (const [index, target] of prepared.targets.entries()) {
     const last = index === prepared.targets.length - 1;
-    // The first attempt was prepared by the middleware so the limiter could see
-    // its model; later attempts only differ by provider, model, and URL.
+    // The first attempt was prepared by the middleware, which is also where the
+    // organization's monthly allowance was spent — once, for this incoming
+    // request. Falling through the chain below never spends another.
     const resolved = resolvedProviders.get(target.provider)!;
     const attempt = index === 0
       ? c.get("preparedProxyRequest")

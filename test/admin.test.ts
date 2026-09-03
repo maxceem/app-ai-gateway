@@ -40,10 +40,10 @@ describe("admin API", () => {
     });
   });
 
-  it("previews and applies usage repricing while reconciling budget limiters", async () => {
+  it("previews and applies usage repricing while reconciling the per-user spend ledger", async () => {
     const appId = "admin-reprice";
     const userId = "user-1";
-    await seedApp(appId, { appBudgetUsd: 100 });
+    await seedApp(appId);
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
          app_id, user_id, provider_type, model, route, input_tokens,
@@ -63,9 +63,7 @@ describe("admin API", () => {
       "ok",
     ).run();
     const userLimiter = env.USER_LIMITER.getByName(`${appId}:${userId}`);
-    const appLimiter = env.USER_LIMITER.getByName(appId);
     await userLimiter.addCost(crypto.randomUUID(), Date.now(), 184);
-    await appLimiter.addCost(crypto.randomUUID(), Date.now(), 184);
     const month = new Date().toISOString().slice(0, 7);
     const url = `https://example.test/v1/admin/apps/${appId}/usage/reprice`;
     const request = (apply: boolean) => exports.default.fetch(url, {
@@ -101,7 +99,6 @@ describe("admin API", () => {
       .first<{ cost_usd: number }>();
     expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);
     expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
-    expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
   });
 
   /**
@@ -502,10 +499,7 @@ describe("admin API", () => {
         },
         body: JSON.stringify({
           name: "Admin server keys",
-          config: serverConfig({
-            limits: { rpm: 100, rpd: 1000, app_rpm: 500 },
-            appBudgetUsd: 10,
-          }),
+          config: serverConfig(),
         }),
       },
     );
@@ -571,19 +565,17 @@ describe("admin API", () => {
     expect(issuerCreate.status).toBe(400);
   });
 
-  it("rejects unknown auth modes and invalid app-level limits", async () => {
+  it("rejects unknown auth modes and malformed routing", async () => {
     for (const body of [
       {
         name: "Unknown mode",
         config: serverConfig({ authentication: { type: "unknown" } }),
       },
       {
-        name: "Invalid app rate",
-        config: serverConfig({ limits: { app_rpm: 0 } }),
-      },
-      {
-        name: "Invalid app budget",
-        config: serverConfig({ appBudgetUsd: -1 }),
+        name: "Unknown provider slug",
+        config: serverConfig({
+          proxy: { "not-a-configured-slug": { allowed_paths: [], allowed_models: [] } },
+        }),
       },
     ]) {
       const response = await exports.default.fetch(

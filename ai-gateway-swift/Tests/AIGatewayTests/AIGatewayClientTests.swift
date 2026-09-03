@@ -365,6 +365,126 @@ struct AIGatewayClientTests {
         )
     }
 
+    /// An outage of the gateway's billing service must not read as an unpaid
+    /// customer. Both refuse the request, but only one is the customer's to fix,
+    /// and an app that confuses them shows a subscriber an upsell mid-outage.
+    @Test
+    func billingOutageIsRetryableWhileAnUnpaidSubscriptionIsNot() throws {
+        let unpaid = try #require(GatewayError(
+            response: HTTPURLResponse(
+                url: URL(string: "https://gateway.example.test/v1/apps/a/proxy/openai/v1/responses")!,
+                statusCode: 402,
+                httpVersion: nil,
+                headerFields: nil
+            )!,
+            body: Data(#"{"error":{"code":"payment_required","message":"subscribe"}}"#.utf8)
+        ))
+        #expect(unpaid.code == .paymentRequired)
+        #expect(unpaid.isRetryable == false)
+
+        let outage = try #require(GatewayError(
+            response: HTTPURLResponse(
+                url: URL(string: "https://gateway.example.test/v1/apps/a/proxy/openai/v1/responses")!,
+                statusCode: 503,
+                httpVersion: nil,
+                headerFields: ["Retry-After": "5"]
+            )!,
+            body: Data(#"{"error":{"code":"billing_unavailable","message":"unreachable"}}"#.utf8)
+        ))
+        #expect(outage.code == .billingUnavailable)
+        #expect(outage.isRetryable)
+        #expect(outage.monthlyRequestQuota == nil)
+    }
+
+    /// The gateway's only quota. Before it was listed, an exhausted month
+    /// reached the app as `.unknown`, which says nothing an app could act on.
+    @Test
+    func monthlyRequestQuotaCodeIsRecognisedRatherThanUnknown() {
+        #expect(
+            GatewayErrorCode(rawValue: "monthly_request_quota_exceeded")
+                == .monthlyRequestQuotaExceeded
+        )
+        let error = GatewayError(
+            code: .monthlyRequestQuotaExceeded,
+            message: "exhausted",
+            statusCode: 429
+        )
+        // Waiting is what fixes it, so it reads as retryable like any other 429.
+        #expect(error.isRetryable)
+    }
+
+    /// The retired quota codes still decode, so an app that switches on them
+    /// keeps compiling and an old log line still reads back.
+    @Test
+    func retiredQuotaCodesStillDecodeForSourceCompatibility() {
+        #expect(GatewayErrorCode(rawValue: "rate_limited")?.rawValue == "rate_limited")
+        #expect(GatewayErrorCode(rawValue: "budget_exhausted")?.rawValue == "budget_exhausted")
+    }
+
+    @Test
+    func aQuotaRejectionCarriesTheAllowanceTheCountAndTheResetInstant() throws {
+        let body = Data(#"""
+        {"error":{"code":"monthly_request_quota_exceeded",
+                  "message":"exhausted until 2026-10-01T00:00:00.000Z",
+                  "data":{"limit":10000,"used":10000,"resetAt":"2026-10-01T00:00:00.000Z"}}}
+        """#.utf8)
+        let http = HTTPURLResponse(
+            url: URL(string: "https://gateway.test/v1/apps/a/proxy/openai/v1/responses")!,
+            statusCode: 429,
+            httpVersion: nil,
+            headerFields: ["Retry-After": "2419200"]
+        )!
+
+        let error = try #require(GatewayError(response: http, body: body))
+        #expect(error.code == .monthlyRequestQuotaExceeded)
+        #expect(error.statusCode == 429)
+        let quota = try #require(error.monthlyRequestQuota)
+        #expect(quota.limit == 10_000)
+        #expect(quota.used == 10_000)
+        #expect(quota.resetAt == Date(timeIntervalSince1970: 1_790_812_800))
+    }
+
+    /// A successful response is not a rejection, and a rejection that carries no
+    /// `data` still reads — the accessor simply has nothing to answer with.
+    @Test
+    func rejectionParsingIgnoresSuccessAndToleratesAMissingDataObject() throws {
+        let url = URL(string: "https://gateway.test/v1/apps/a/proxy/openai/v1/responses")!
+        let success = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        #expect(GatewayError(response: success, body: Data("{}".utf8)) == nil)
+
+        let refusal = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: nil)!
+        let error = try #require(GatewayError(
+            response: refusal,
+            body: Data(#"{"error":{"code":"model_not_allowed","message":"nope"}}"#.utf8)
+        ))
+        #expect(error.code == .modelNotAllowed)
+        #expect(error.data.isEmpty)
+        #expect(error.monthlyRequestQuota == nil)
+
+        // An unparseable body still yields a rejection, just an unnamed one.
+        let garbled = try #require(GatewayError(response: refusal, body: Data("not json".utf8)))
+        #expect(garbled.code == .unknown)
+        #expect(garbled.statusCode == 403)
+    }
+
+    /// JSON has one number type, so a count may arrive written either way.
+    @Test
+    func quotaCountsReadBackWhicheverWayJSONWroteThem() throws {
+        let url = URL(string: "https://gateway.test/v1/apps/a/endpoints/chat")!
+        let http = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: nil)!
+        let error = try #require(GatewayError(
+            response: http,
+            body: Data(#"""
+            {"error":{"code":"monthly_request_quota_exceeded","message":"exhausted",
+                      "data":{"limit":10000.0,"used":10000,"resetAt":"2026-10-01T00:00:00Z"}}}
+            """#.utf8)
+        ))
+        let quota = try #require(error.monthlyRequestQuota)
+        #expect(quota.limit == 10_000)
+        // Seconds-precision instants parse too; the gateway sends milliseconds.
+        #expect(quota.resetAt == Date(timeIntervalSince1970: 1_790_812_800))
+    }
+
     /// A key the Secure Enclave has forgotten is registered afresh rather than
     /// ending the session. Signing fails on the device, before any request is
     /// made, so the gateway never gets the chance to reject it — which is why

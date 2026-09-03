@@ -101,6 +101,23 @@
               },
               "message": {
                 "type": "string"
+              },
+              "data": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "description": "Machine-readable facts about this rejection, present only where the code alone is not actionable. A monthly_request_quota_exceeded rejection carries limit, used, and resetAt."
               }
             },
             "required": [
@@ -515,109 +532,6 @@
               "model_rewrites"
             ]
           },
-          "limits": {
-            "type": "object",
-            "properties": {
-              "per_user": {
-                "type": "object",
-                "properties": {
-                  "requests": {
-                    "type": "object",
-                    "properties": {
-                      "per_minute": {
-                        "type": [
-                          "number",
-                          "null"
-                        ],
-                        "minimum": 0
-                      },
-                      "per_day": {
-                        "type": [
-                          "number",
-                          "null"
-                        ],
-                        "minimum": 0
-                      }
-                    },
-                    "required": [
-                      "per_minute",
-                      "per_day"
-                    ]
-                  },
-                  "spending": {
-                    "type": "object",
-                    "properties": {
-                      "monthly_usd": {
-                        "type": [
-                          "number",
-                          "null"
-                        ],
-                        "minimum": 0
-                      }
-                    },
-                    "required": [
-                      "monthly_usd"
-                    ]
-                  }
-                },
-                "required": [
-                  "requests",
-                  "spending"
-                ]
-              },
-              "per_app": {
-                "type": "object",
-                "properties": {
-                  "requests": {
-                    "type": "object",
-                    "properties": {
-                      "per_minute": {
-                        "type": [
-                          "number",
-                          "null"
-                        ],
-                        "minimum": 0
-                      },
-                      "per_day": {
-                        "type": [
-                          "number",
-                          "null"
-                        ],
-                        "minimum": 0
-                      }
-                    },
-                    "required": [
-                      "per_minute",
-                      "per_day"
-                    ]
-                  },
-                  "spending": {
-                    "type": "object",
-                    "properties": {
-                      "monthly_usd": {
-                        "type": [
-                          "number",
-                          "null"
-                        ],
-                        "minimum": 0
-                      }
-                    },
-                    "required": [
-                      "monthly_usd"
-                    ]
-                  }
-                },
-                "required": [
-                  "requests",
-                  "spending"
-                ]
-              }
-            },
-            "required": [
-              "per_user",
-              "per_app"
-            ]
-          },
           "endpoints": {
             "type": "object",
             "additionalProperties": {
@@ -677,8 +591,7 @@
         },
         "required": [
           "authentication",
-          "routing",
-          "limits"
+          "routing"
         ]
       },
       "Provider": {
@@ -2546,7 +2459,7 @@
           "Application"
         ],
         "operationId": "getCurrentUser",
-        "summary": "Get the current user's limits and usage",
+        "summary": "Get the current user's spend and block state",
         "security": [
           {
             "GatewayBearer": []
@@ -2574,43 +2487,18 @@
                     "user_id": {
                       "type": "string"
                     },
-                    "limits": {
-                      "type": "object",
-                      "properties": {
-                        "requests_today": {
-                          "type": "number"
-                        },
-                        "requests_remaining": {
-                          "type": [
-                            "number",
-                            "null"
-                          ]
-                        },
-                        "monthly_cost_usd": {
-                          "type": "number"
-                        },
-                        "monthly_budget_usd": {
-                          "type": [
-                            "number",
-                            "null"
-                          ]
-                        },
-                        "blocked": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "requests_today",
-                        "requests_remaining",
-                        "monthly_cost_usd",
-                        "monthly_budget_usd",
-                        "blocked"
-                      ]
+                    "monthly_cost_usd": {
+                      "type": "number",
+                      "description": "What this user's traffic has cost so far in the current UTC calendar month. Reporting only; spend is not a quota."
+                    },
+                    "blocked": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "user_id",
-                    "limits"
+                    "monthly_cost_usd",
+                    "blocked"
                   ]
                 }
               }
@@ -2676,7 +2564,7 @@
         ],
         "operationId": "proxyProviderRequest",
         "summary": "Proxy a provider-native model request",
-        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, applies limits, and streams the upstream response without buffering.",
+        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, spends one request from the organization's monthly allowance, and streams the upstream response without buffering.",
         "security": [
           {
             "GatewayBearer": []
@@ -2806,7 +2694,7 @@
             }
           },
           "429": {
-            "description": "A request or spending limit was reached.",
+            "description": "The organization's monthly request allowance is exhausted. The body carries code monthly_request_quota_exceeded with limit, used, and the UTC resetAt, and the response carries a Retry-After header.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2982,7 +2870,7 @@
             }
           },
           "429": {
-            "description": "A request or spending limit was reached.",
+            "description": "The organization's monthly request allowance is exhausted. The body carries code monthly_request_quota_exceeded with limit, used, and the UTC resetAt, and the response carries a Retry-After header.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3267,10 +3155,44 @@
         ],
         "responses": {
           "200": {
-            "description": "Billing service response.",
+            "description": "Billing access, and the month against the plan's request allowance.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "access": {},
+                    "quota": {
+                      "type": "object",
+                      "properties": {
+                        "month": {
+                          "type": "string",
+                          "description": "The UTC month being reported, YYYY-MM."
+                        },
+                        "used": {
+                          "type": "integer",
+                          "description": "Requests dispatched to a provider this month, organization-wide."
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "description": "The plan's maxRequestsPerMonth. Absent means unlimited."
+                        },
+                        "resetAt": {
+                          "type": "string",
+                          "description": "The first instant of the next UTC month."
+                        }
+                      },
+                      "required": [
+                        "month",
+                        "used",
+                        "resetAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "quota"
+                  ]
+                }
               }
             }
           },
@@ -3334,10 +3256,44 @@
         ],
         "responses": {
           "200": {
-            "description": "Billing service response.",
+            "description": "Billing access, and the month against the plan's request allowance.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "access": {},
+                    "quota": {
+                      "type": "object",
+                      "properties": {
+                        "month": {
+                          "type": "string",
+                          "description": "The UTC month being reported, YYYY-MM."
+                        },
+                        "used": {
+                          "type": "integer",
+                          "description": "Requests dispatched to a provider this month, organization-wide."
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "description": "The plan's maxRequestsPerMonth. Absent means unlimited."
+                        },
+                        "resetAt": {
+                          "type": "string",
+                          "description": "The first instant of the next UTC month."
+                        }
+                      },
+                      "required": [
+                        "month",
+                        "used",
+                        "resetAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "quota"
+                  ]
+                }
               }
             }
           },

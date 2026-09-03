@@ -31,19 +31,32 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "USER_LIMITER", "class_name": "UserLimiter" }
+      { "name": "USER_LIMITER", "class_name": "UserLimiter" },
+      { "name": "ORG_QUOTA", "class_name": "OrgQuota" }
     ]
   },
+  // Append-only: every tag below has already been applied to deployed
+  // installations, so entries are added and never edited or removed.
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] }
+    { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] },
+    { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] }
   ],
   // Hosted environments can opt into billing with a service binding:
   // "services": [{ "binding": "BILLING", "service": "cf-billing", "entrypoint": "BillingWorker" }],
   // The OSS default intentionally has no BILLING binding and runs self-hosted.
   "env": {
     "production": {
-      "name": "app-ai-gateway-production",
-      "routes": [],
+      "name": "app-ai-gateway",
+      "compatibility_date": "2026-09-02",
+      "workers_dev": false,
+      "preview_urls": false,
+      "placement": { "region": "azure:eastus2" },
+      "routes": [
+        {
+          "pattern": "console.appaigateway.com",
+          "custom_domain": true
+        }
+      ],
       "triggers": { "crons": ["17 3 * * *"] },
       "vars": {
         "ENVIRONMENT": "production",
@@ -52,18 +65,35 @@
         "ALLOW_PUBLIC_REGISTRATION": "true",
         "SECRET_VAULT_MODE": "kms"
       },
+      "secrets": {
+        "required": [
+          "JWT_SECRET",
+          "BETTER_AUTH_SECRET",
+          "SECRET_VAULT_KMS_URL",
+          "SECRET_VAULT_KMS_TOKEN"
+        ]
+      },
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "app-ai-gateway-production",
+          "database_name": "app-ai-gateway-production-enam",
+          "database_id": "ed20ff52-1cc7-43b8-8c59-2c18d147d20f",
           "migrations_dir": "migrations"
         }
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "USER_LIMITER", "class_name": "UserLimiter" }
+          { "name": "USER_LIMITER", "class_name": "UserLimiter" },
+          { "name": "ORG_QUOTA", "class_name": "OrgQuota" }
         ]
-      }
+      },
+      "services": [
+        {
+          "binding": "BILLING",
+          "service": "cf-billing",
+          "entrypoint": "BillingWorker"
+        }
+      ]
     },
     "local": {
       "name": "app-ai-gateway-local",
@@ -89,7 +119,8 @@
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "USER_LIMITER", "class_name": "UserLimiter" }
+          { "name": "USER_LIMITER", "class_name": "UserLimiter" },
+          { "name": "ORG_QUOTA", "class_name": "OrgQuota" }
         ]
       }
     }

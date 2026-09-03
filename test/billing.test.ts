@@ -3,6 +3,7 @@ import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BILLING_ACCESS_CACHE_TTL_MS,
+  billingPlanLimits,
   clearBillingAccessCache,
   getBillingAccess,
   type BillingRequestCache,
@@ -65,7 +66,7 @@ describe("billing gateway", () => {
     const access: BillingAccess = {
       status: "active",
       planKey: "pro",
-      limits: { maxApps: 3 },
+      limits: { maxRequestsPerMonth: 10_000 },
     };
     const binding = stub({
       getTenantAccess: async () => {
@@ -152,18 +153,78 @@ describe("billing gateway", () => {
     expect(calls).toBe(2);
   });
 
-  it("validates configured rate, daily, and spending ceilings at the config choke point", () => {
-    for (const [limits, ceilings] of [
-      [{ rpm: 11 }, { maxRpm: 10 }],
-      [{ rpd: 101 }, { maxRpd: 100 }],
-      [{}, { maxMonthlyUsd: 5 }],
-    ] as const) {
-      const config = serverConfig({
-        limits,
-        ...(ceilings.maxMonthlyUsd === undefined ? {} : { appBudgetUsd: 6 }),
-      });
-      expect(() => validateAppConfigJson(config, ceilings)).toThrowError(/plan ceiling/u);
-    }
+  /**
+   * The plan carries one limit, spent on the data plane. Nothing about a stored
+   * application configuration is a quota any more, so no plan value can refuse a
+   * write — including the shapes that used to be ceilings.
+   */
+  it("imposes no plan ceiling on a stored application configuration", () => {
+    expect(() => validateAppConfigJson(serverConfig())).not.toThrow();
+    const withLegacyLimits = {
+      ...serverConfig(),
+      limits: {
+        per_user: { requests: { per_minute: 10_000 }, spending: { monthly_usd: 10_000 } },
+        per_app: { requests: { per_minute: 10_000 }, spending: { monthly_usd: 10_000 } },
+      },
+    };
+    // A configuration written before the change still parses; the block is read
+    // by nothing and does not survive the round trip.
+    expect(validateAppConfigJson(withLegacyLimits)).not.toHaveProperty("limits");
+  });
+
+  it.each([
+    ["a plain number", 10_000, 10_000],
+    ["a whole float", 100_000.0, 100_000],
+    ["a JSON string", "1000000", 1_000_000],
+    ["zero", 0, 0],
+  ])("reads maxRequestsPerMonth given as %s", (_label, value, expected) => {
+    expect(billingPlanLimits({
+      status: "active",
+      planKey: "growth",
+      limits: { maxRequestsPerMonth: value },
+    } as never)).toEqual({ maxRequestsPerMonth: expected });
+  });
+
+  it("recognises no other plan limit", () => {
+    expect(billingPlanLimits({
+      status: "active",
+      planKey: "legacy",
+      limits: { maxApps: 25, maxRpm: 500, maxRpd: 10_000, maxMonthlyUsd: 250 },
+    } as never)).toEqual({});
+  });
+
+  it.each([
+    ["a fraction", 10.5],
+    ["a negative", -1],
+    ["a non-numeric string", "lots"],
+    ["a boolean", true],
+    ["null", null],
+    ["an object", { value: 10 }],
+    ["beyond safe integers", 1e21],
+  ])("fails closed on a malformed maxRequestsPerMonth given as %s", (_label, value) => {
+    expect(() => billingPlanLimits({
+      status: "active",
+      planKey: "broken",
+      limits: { maxRequestsPerMonth: value },
+    } as never)).toThrowError(/maxRequestsPerMonth is invalid/u);
+  });
+
+  it("fails closed when the whole limits block is malformed", () => {
+    expect(() => billingPlanLimits({
+      status: "active",
+      planKey: "broken",
+      limits: "10000",
+    } as never)).toThrowError(/Billing plan limits are invalid/u);
+  });
+
+  it("treats a self-hosted deployment and a limit-less plan as unlimited", () => {
+    expect(billingPlanLimits({ status: "active", selfHosted: true })).toEqual({});
+    expect(billingPlanLimits({ status: "active", planKey: "starter" } as never)).toEqual({});
+    expect(billingPlanLimits({
+      status: "active",
+      planKey: "starter",
+      limits: {},
+    } as never)).toEqual({});
   });
 
   it("conditionally exposes organization-scoped billing routes", async () => {
@@ -196,7 +257,97 @@ describe("billing gateway", () => {
     expect(tenantId).toBe(TEST_ORGANIZATION_ID);
   });
 
-  it("enforces app-count and config ceilings for billed organizations", async () => {
+  /**
+   * The allowance is the thing customers pay for, and nothing else reports it:
+   * the count lives in a Durable Object only the dispatch path writes, and the
+   * usage tables record spend rather than headroom. Without this an operator
+   * first learns the month is gone from their users.
+   */
+  it("reports the month against the plan's allowance beside the subscription", async () => {
+    const billingEnv = withBilling(stub({
+      getTenantAccess: async () => ({
+        status: "active",
+        planKey: "growth",
+        limits: { maxRequestsPerMonth: 50 },
+      }),
+    }));
+    const quota = env.ORG_QUOTA.getByName(TEST_ORGANIZATION_ID);
+    const now = Date.now();
+    expect((await quota.admit({ now, limit: 50 })).allowed).toBe(true);
+    expect((await quota.admit({ now, limit: 50 })).allowed).toBe(true);
+
+    const response = await worker.request(
+      `${ORIGIN}/v1/admin/billing/status`,
+      { headers: MANAGEMENT_HEADERS },
+      billingEnv,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      access: { status: "active", planKey: "growth" },
+      quota: {
+        month: new Date(now).toISOString().slice(0, 7),
+        used: 2,
+        limit: 50,
+        resetAt: expect.stringMatching(/^\d{4}-\d{2}-01T00:00:00\.000Z$/) as unknown as string,
+      },
+    });
+  });
+
+  /** A plan with no ceiling still reports the count; it just has nothing to be measured against. */
+  it("reports a plan without a ceiling as an uncapped count", async () => {
+    const billingEnv = withBilling(stub({
+      getTenantAccess: async () => ({ status: "active", planKey: "unlimited" }),
+    }));
+    const response = await worker.request(
+      `${ORIGIN}/v1/admin/billing/status`,
+      { headers: MANAGEMENT_HEADERS },
+      billingEnv,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { quota: Record<string, unknown> };
+    expect(body.quota).toMatchObject({ used: expect.any(Number) as unknown as number });
+    expect(body.quota).not.toHaveProperty("limit");
+  });
+
+  /**
+   * A self-hosted deployment has no allowance and must never be told it has one.
+   * The whole subtree is refused rather than answering with an empty reading.
+   */
+  it("reports no allowance where there is no billing service", async () => {
+    const response = await worker.request(
+      `${ORIGIN}/v1/admin/billing/status`,
+      { headers: MANAGEMENT_HEADERS },
+      env,
+    );
+    expect(response.status).toBe(404);
+  });
+
+  /**
+   * `402` says the customer must pay; a billing service that cannot be reached
+   * has not said anything about the customer. Answering the outage as `503`
+   * is what keeps a client from showing a paying customer an upsell.
+   */
+  it("separates an unreachable billing service from an unpaid one", async () => {
+    const appId = "billing-service-down";
+    await seedServerApp(appId);
+    const down = withBilling(stub({
+      getTenantAccess: async () => {
+        throw new Error("billing service unreachable");
+      },
+    }));
+    const response = await worker.request(
+      `${ORIGIN}/v1/apps/${appId}/proxy/openai/v1/responses`,
+      { method: "POST", body: JSON.stringify({ model: "gpt-5.6-terra" }) },
+      down,
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "billing_unavailable" },
+    });
+  });
+
+  it("refuses control-plane writes without an entitlement, and caps nothing else", async () => {
     const inactiveCreate = await worker.request(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
@@ -208,51 +359,31 @@ describe("billing gateway", () => {
     });
     clearBillingAccessCache();
 
-    const zeroAppEnv = withBilling(stub({
-      getTenantAccess: async () => ({ status: "active", limits: { maxApps: 0 } }),
-    }));
-    const appLimit = await worker.request(`${ORIGIN}/v1/admin/apps`, {
-      method: "POST",
-      headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
-      body: JSON.stringify({ id: "billing-app-limit", name: "Limit", config: serverConfig() }),
-    }, zeroAppEnv);
-    expect(appLimit.status).toBe(403);
-    await expect(appLimit.json()).resolves.toMatchObject({
-      error: { code: "plan_limit_exceeded" },
-    });
-    clearBillingAccessCache();
-
-    const rateLimitEnv = withBilling(stub({
-      getTenantAccess: async () => ({ status: "active", limits: { maxRpm: 5 } }),
-    }));
-    const configLimit = await worker.request(`${ORIGIN}/v1/admin/apps`, {
-      method: "POST",
-      headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
-      body: JSON.stringify({
-        id: "billing-config-limit",
-        name: "Limit",
-        config: serverConfig({ limits: { rpm: 6 } }),
+    // A plan that used to cap applications at zero, and a request rate a plan
+    // used to refuse: both are simply not quotas any more.
+    const legacyCeilingEnv = withBilling(stub({
+      getTenantAccess: async () => ({
+        status: "active",
+        limits: { maxApps: 0, maxRpm: 5, maxRpd: 10, maxMonthlyUsd: 1 },
       }),
-    }, rateLimitEnv);
-    expect(configLimit.status).toBe(403);
-    await expect(configLimit.json()).resolves.toMatchObject({
-      error: { code: "plan_limit_exceeded" },
-    });
+    }));
+    for (const id of ["billing-uncapped-a", "billing-uncapped-b"]) {
+      const created = await worker.request(`${ORIGIN}/v1/admin/apps`, {
+        method: "POST",
+        headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({ id, name: id, config: serverConfig() }),
+      }, legacyCeilingEnv);
+      expect(created.status).toBe(201);
+    }
 
-    const updateId = "billing-update-limit";
+    const updateId = "billing-update-uncapped";
     await seedServerApp(updateId);
-    const updateLimit = await worker.request(`${ORIGIN}/v1/admin/apps/${updateId}`, {
+    const updated = await worker.request(`${ORIGIN}/v1/admin/apps/${updateId}`, {
       method: "POST",
       headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
-      body: JSON.stringify({
-        name: "Updated limit",
-        config: serverConfig({ limits: { rpm: 6 } }),
-      }),
-    }, rateLimitEnv);
-    expect(updateLimit.status).toBe(403);
-    await expect(updateLimit.json()).resolves.toMatchObject({
-      error: { code: "plan_limit_exceeded" },
-    });
+      body: JSON.stringify({ name: "Updated", config: serverConfig() }),
+    }, legacyCeilingEnv);
+    expect(updated.status).toBe(200);
   });
 
   it("rejects the data plane with stable 402 without disabling the app", async () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { UsageTab, pivot } from "./usage";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { TimeseriesBucket, UsageEvent } from "@/lib/types";
@@ -199,5 +200,51 @@ describe("UsageTab event costs", () => {
     renderUsage([event({ provider_gateway_type: null, credential_source: "direct" })]);
     expect(await screen.findByText("gpt-5.6-sol")).toBeTruthy();
     expect(screen.queryByText(/via /u)).toBeNull();
+  });
+});
+
+describe("UsageTab event statuses", () => {
+  /**
+   * The stored value is the API's filter argument and what a log line says, so
+   * the badge keeps showing it. What it means is the hover — and `blocked_rate`
+   * is the one that needs it, its name predating the single organization-wide
+   * allowance it now reports.
+   */
+  it("explains a monthly-quota rejection behind its stored status value", async () => {
+    renderUsage([event({ status: "blocked_rate" })]);
+
+    const badge = await screen.findByText("blocked_rate");
+    expect(badge.getAttribute("title"))
+      .toBe("Refused: the organization's monthly request allowance was exhausted");
+  });
+
+  /**
+   * Spending budgets are gone, but rows recorded while they existed are not:
+   * they still have to render, and to say why that status cannot recur.
+   */
+  it("still renders a historical spending-budget rejection", async () => {
+    renderUsage([event({ status: "blocked_budget" })]);
+
+    const badge = await screen.findByText("blocked_budget");
+    expect(badge.getAttribute("title"))
+      .toBe("Refused by a spending budget, a quota the gateway no longer has");
+  });
+
+  it("offers no filter for a status nothing can write any more", async () => {
+    renderUsage([event({})]);
+    await screen.findByText("gpt-5.6-sol");
+
+    // Several pickers share the toolbar; this is the one showing the status.
+    const trigger = screen.getAllByRole("combobox")
+      .find((option) => option.textContent === "All statuses")!;
+    await userEvent.click(trigger);
+    const options = (await screen.findAllByRole("option")).map((option) => option.textContent);
+    expect(options).toEqual([
+      "All statuses",
+      "ok",
+      "provider_error",
+      "blocked_rate — monthly quota",
+      "blocked_user",
+    ]);
   });
 });

@@ -47,16 +47,6 @@ export APP_KEY="$(curl --fail-with-body -sS \
         }
       },
       "model_rewrites": { "gpt-5.6-terra": "gpt-5.6" }
-    },
-    "limits": {
-      "per_user": {
-        "requests": { "per_minute": 30, "per_day": 1000 },
-        "spending": { "monthly_usd": 10 }
-      },
-      "per_app": {
-        "requests": { "per_minute": 300, "per_day": 10000 },
-        "spending": { "monthly_usd": 100 }
-      }
     }
   }
 }

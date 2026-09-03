@@ -15,7 +15,7 @@ import { ServerKeys } from "@/pages/server-keys";
 const ISSUER_TOGGLE_LABEL = "Require verified user identity (issuer JWT)";
 
 const ISSUER_HELP =
-  "With an issuer configured, clients exchange their API key plus an issuer JWT for a short-lived gateway token. The claims below are checked at every exchange, and the token carries a verified user id that per-user limits and blocks apply to. Without one, the API key is used directly and user ids are self-reported.";
+  "With an issuer configured, clients exchange their API key plus an issuer JWT for a short-lived gateway token. The claims below are checked at every exchange, and the token carries a verified user id that per-user blocks and usage reporting apply to. Without one, the API key is used directly and user ids are self-reported.";
 
 export function AuthPolicyTab({ appId, state }: { appId: string; state: AppDraft }) {
   const authentication = state.draft!.config.authentication;

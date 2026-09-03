@@ -23,7 +23,6 @@ import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useDeleteApp } from "@/lib/queries";
 import { AuthEventsTab } from "@/pages/tabs/auth-events";
 import { AuthPolicyTab } from "@/pages/tabs/auth-policy";
-import { LimitsTab } from "@/pages/tabs/limits";
 import { OverviewTab } from "@/pages/tabs/overview";
 import { ProxyPolicyTab } from "@/pages/tabs/proxy-policy";
 import { UsersTab } from "@/pages/tabs/users";
@@ -154,8 +153,6 @@ export function AppDetailPage() {
         <AuthPolicyTab appId={appId} state={state} />
       ) : tab === "proxy" ? (
         <ProxyPolicyTab state={state} />
-      ) : tab === "limits" ? (
-        <LimitsTab state={state} />
       ) : tab === "users" ? (
         <UsersTab appId={appId} />
       ) : tab === "auth-events" ? (

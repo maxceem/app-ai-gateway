@@ -1,11 +1,6 @@
 import { Hono, type Context } from "hono";
 import { and, eq, gte, lte } from "drizzle-orm";
-import {
-  billingPlanLimits,
-  getBillingAccess,
-  requireActiveBilling,
-  type BillingPlanLimits,
-} from "../../billing/gateway";
+import { getBillingAccess, requireActiveBilling } from "../../billing/gateway";
 import {
   invalidateAppConfig,
   loadAppConfig,
@@ -19,10 +14,7 @@ import {
   organizationProviders,
   type OrganizationProviders,
 } from "../../core/provider-store";
-import {
-  insertAppWithinCapacity,
-  upsertAppWithinCapacity,
-} from "../../core/app-writes";
+import { insertApp, upsertApp } from "../../core/app-writes";
 import { database } from "../../db";
 import {
   appApiKey,
@@ -92,12 +84,6 @@ function suffixedAppId(base: string): string {
 }
 
 function asBadRequest(error: unknown): never {
-  if (
-    error instanceof GatewayError
-    && (error.code === "plan_limit_exceeded" || error.code === "billing_unavailable")
-  ) {
-    throw error;
-  }
   if (error instanceof GatewayError) throw new GatewayError(400, "invalid_request", error.message);
   throw error;
 }
@@ -111,12 +97,11 @@ function asBadRequest(error: unknown): never {
  */
 function validatedConfig(
   next: Record<string, unknown>,
-  ceilings: BillingPlanLimits,
   providers: OrganizationProviders,
   grandfathered?: ReadonlySet<string>,
 ): ReturnType<typeof validateAppConfigJson> {
   try {
-    return validateAppConfigJson(next, ceilings, providers, grandfathered);
+    return validateAppConfigJson(next, providers, grandfathered);
   } catch (error) {
     asBadRequest(error);
   }
@@ -149,8 +134,6 @@ function summary(
     apple_bundle_id: config.authentication.type === "apple_app_attest"
       ? config.authentication.app_attest.bundle_id
       : null,
-    monthly_user_budget_usd: config.limits.per_user.spending.monthly_usd,
-    monthly_app_budget_usd: config.limits.per_app.spending.monthly_usd,
     providers: providerSlugs,
     referenced_providers: [...referenced],
     allowed_model_count: models.size,
@@ -172,33 +155,17 @@ type AppRouteEnv = { Bindings: Env; Variables: AdminVariables };
 
 export const appRoutes = new Hono<AppRouteEnv>();
 
-async function activePlanLimits(c: Context<AppRouteEnv>): Promise<BillingPlanLimits> {
-  const access = requireActiveBilling(await getBillingAccess(
+/**
+ * Refuses the write unless the organization may currently use the product. The
+ * plan carries no configuration ceilings: its only limit is the gateway-wide
+ * monthly request allowance, which is spent on the data plane, never here.
+ */
+async function requireEntitlement(c: Context<AppRouteEnv>): Promise<void> {
+  requireActiveBilling(await getBillingAccess(
     c.env,
     c.get("admin").organizationId,
     c.get("billingRequestCache"),
   ));
-  return billingPlanLimits(access);
-}
-
-function appCapacityError(maxApps: number): GatewayError {
-  return new GatewayError(
-    403,
-    "plan_limit_exceeded",
-    `The plan allows at most ${maxApps} application${maxApps === 1 ? "" : "s"}`,
-  );
-}
-
-async function organizationAtCapacity(
-  d1: D1Database,
-  organizationId: string,
-  maxApps: number | undefined,
-): Promise<boolean> {
-  if (maxApps === undefined) return false;
-  const row = await d1.prepare(
-    "SELECT COUNT(*) AS count FROM app WHERE organization_id = ?",
-  ).bind(organizationId).first<{ count: number }>();
-  return (row?.count ?? 0) >= maxApps;
 }
 
 appRoutes.get("/apps", async (c) => {
@@ -258,8 +225,6 @@ appRoutes.get("/apps", async (c) => {
       let configSummary: ReturnType<typeof summary> | {
         authentication_type: "invalid";
         apple_bundle_id: null;
-        monthly_user_budget_usd: null;
-        monthly_app_budget_usd: null;
         providers: string[];
         referenced_providers: string[];
         allowed_model_count: number;
@@ -270,8 +235,6 @@ appRoutes.get("/apps", async (c) => {
         configSummary = {
           authentication_type: "invalid",
           apple_bundle_id: null,
-          monthly_user_budget_usd: null,
-          monthly_app_budget_usd: null,
           providers: [],
           referenced_providers: [],
           allowed_model_count: 0,
@@ -300,7 +263,7 @@ appRoutes.get("/apps", async (c) => {
 });
 
 appRoutes.post("/apps", async (c) => {
-  const planLimits = await activePlanLimits(c);
+  await requireEntitlement(c);
   const value = await c.req.json();
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
@@ -314,24 +277,20 @@ appRoutes.post("/apps", async (c) => {
   const organizationId = c.get("admin").organizationId;
   const config = validatedConfig(
     body.config,
-    planLimits,
     await organizationProviders(c.env, organizationId),
   );
   const db = database(c.env.DB);
   let appId = requestedId;
   let created = false;
   for (let attempt = 0; attempt < 16; attempt += 1) {
-    created = await insertAppWithinCapacity(c.env.DB, {
+    created = await insertApp(c.env.DB, {
       id: appId,
       organizationId,
       name,
       config,
       status: body.status ?? "active",
-    }, planLimits.maxApps);
+    });
     if (created) break;
-    if (await organizationAtCapacity(c.env.DB, organizationId, planLimits.maxApps)) {
-      throw appCapacityError(planLimits.maxApps!);
-    }
     appId = suffixedAppId(requestedId);
   }
   if (!created) throw new GatewayError(409, "invalid_request", "Could not allocate a unique app id");
@@ -384,7 +343,7 @@ appRoutes.get("/apps/:app", async (c) => {
 });
 
 appRoutes.post("/apps/:app/validate", async (c) => {
-  const planLimits = await activePlanLimits(c);
+  await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const existing = await database(c.env.DB).query.app.findFirst({
@@ -395,7 +354,6 @@ appRoutes.post("/apps/:app/validate", async (c) => {
   });
   validatedConfig(
     body.config,
-    planLimits,
     await organizationProviders(c.env, c.get("admin").organizationId),
     existing ? referencedProviderSlugs(existing.config) : undefined,
   );
@@ -403,7 +361,7 @@ appRoutes.post("/apps/:app/validate", async (c) => {
 });
 
 appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
-  const planLimits = await activePlanLimits(c);
+  await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
@@ -416,7 +374,6 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   });
   const config = validatedConfig(
     body.config,
-    planLimits,
     await organizationProviders(c.env, organizationId),
     existing ? referencedProviderSlugs(existing.config) : undefined,
   );
@@ -428,7 +385,7 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     status: body.status ?? "active",
     updatedAt: new Date().toISOString(),
   };
-  const written = await upsertAppWithinCapacity(c.env.DB, values, planLimits.maxApps);
+  const written = await upsertApp(c.env.DB, values);
   if (!written) {
     const occupied = await db.query.app.findFirst({
       columns: { organizationId: true },
@@ -436,9 +393,6 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     });
     if (occupied && occupied.organizationId !== organizationId) {
       throw new GatewayError(404, "app_not_found", "App is not registered");
-    }
-    if (await organizationAtCapacity(c.env.DB, organizationId, planLimits.maxApps)) {
-      throw appCapacityError(planLimits.maxApps!);
     }
     throw new GatewayError(409, "invalid_request", "The application changed concurrently; retry the request");
   }

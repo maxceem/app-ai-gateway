@@ -21,8 +21,11 @@ import {
   canResume,
   formatPrice,
   priceFor,
+  quotaMeter,
   subscriptionTimeline,
+  type QuotaMeter,
 } from "@/lib/billing";
+import { cn } from "@/lib/utils";
 import {
   useBillingPlans,
   useBillingStatus,
@@ -30,7 +33,7 @@ import {
   useResumeSubscription,
   useStartCheckout,
 } from "@/lib/queries";
-import type { BillingAccess, BillingPlan } from "@/lib/types";
+import type { BillingAccess, BillingPlan, OrganizationQuota } from "@/lib/types";
 
 type Period = "month" | "year";
 
@@ -46,6 +49,7 @@ export function BillingPage() {
   const resume = useResumeSubscription();
 
   const access = status.data?.access;
+  const quota = status.data?.quota;
 
   const subscribe = async (plan: BillingPlan) => {
     try {
@@ -83,6 +87,8 @@ export function BillingPage() {
     }
   };
 
+  // The page already renders the allowance in full below, so a banner repeating
+  // it would be noise; only a subscription problem is worth restating here.
   const notice = billingNotice(access);
 
   return (
@@ -109,6 +115,7 @@ export function BillingPage() {
 
       <SubscriptionCard
         access={access}
+        quota={quota}
         pending={status.isPending}
         cancelPending={cancel.isPending}
         resumePending={resume.isPending}
@@ -168,6 +175,7 @@ export function BillingPage() {
 
 function SubscriptionCard({
   access,
+  quota,
   pending,
   cancelPending,
   resumePending,
@@ -175,6 +183,7 @@ function SubscriptionCard({
   onResume,
 }: {
   access: BillingAccess | undefined;
+  quota: OrganizationQuota | null | undefined;
   pending: boolean;
   cancelPending: boolean;
   resumePending: boolean;
@@ -183,6 +192,7 @@ function SubscriptionCard({
 }) {
   const timeline = access ? subscriptionTimeline(access) : null;
   const resumable = access ? canResume(access) : false;
+  const meter = quotaMeter(quota);
 
   return (
     <Card>
@@ -205,6 +215,8 @@ function SubscriptionCard({
             ) : null}
           </div>
         )}
+
+        {meter && !pending ? <AllowanceMeter meter={meter} /> : null}
 
         {access && !pending ? (
           <div className="flex flex-wrap gap-2">
@@ -232,6 +244,52 @@ function SubscriptionCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+const METER_FILL: Record<QuotaMeter["tone"], string> = {
+  normal: "bg-primary",
+  warning: "bg-amber-500",
+  destructive: "bg-destructive",
+};
+
+/**
+ * The month's requests against the plan's allowance.
+ *
+ * The only place either number is visible: the count lives in the gateway's
+ * quota object, not in the usage tables, so without this an operator learns the
+ * allowance is gone from their users rather than from here.
+ */
+function AllowanceMeter({ meter }: { meter: QuotaMeter }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-sm text-muted-foreground">Requests this month</span>
+        <span className="tabular text-sm font-medium">{meter.label}</span>
+      </div>
+      {meter.ratio === null ? null : (
+        <div
+          className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+          role="progressbar"
+          aria-label="Monthly request allowance used"
+          aria-valuemin={0}
+          aria-valuemax={meter.limit ?? undefined}
+          aria-valuenow={meter.used}
+          aria-valuetext={meter.label}
+        >
+          {/*
+            A sliver of a percent would round away to nothing, leaving a spent
+            allowance indistinguishable from an untouched one, so any non-zero
+            count keeps a visible bar.
+          */}
+          <div
+            className={cn("h-full rounded-full", METER_FILL[meter.tone])}
+            style={{ width: `${meter.used > 0 ? Math.max(meter.ratio * 100, 2) : 0}%` }}
+          />
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">{meter.caption}</p>
+    </div>
   );
 }
 

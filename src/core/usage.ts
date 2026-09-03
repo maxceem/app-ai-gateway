@@ -7,7 +7,6 @@ import { log } from "./log";
 import { costReport, namespaceModelAuthor, providerModelAuthor, reportsCost } from "./providers";
 import { asRecord, lookup } from "./records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
-import type { UserLimiter } from "../do/UserLimiter";
 import { database } from "../db";
 import {
   appUsageEvent,
@@ -143,7 +142,6 @@ interface UsageEventInput {
   userId: string;
   authMethod: GatewayAuthMethod;
   apiKeyId?: string;
-  appLevelLimitsEnabled: boolean;
   provider: ProviderType;
   /** The provider row that served the traffic. */
   providerId: string;
@@ -187,7 +185,12 @@ interface BlockedUsageEventInput {
   route: string;
   endpointSlug?: string | null;
   appVersion: string | null;
-  status: "blocked_rate" | "blocked_budget" | "blocked_user";
+  /**
+   * `blocked_rate` is the monthly request allowance; `blocked_user` is an
+   * operator block. `blocked_budget` remains in the column's history from when
+   * the gateway had per-scope spending budgets, and is never written now.
+   */
+  status: "blocked_rate" | "blocked_user";
   latencyMs: number;
 }
 
@@ -479,10 +482,8 @@ export interface UsageEvent {
   eventId: string;
   /** The `app_usage_event` row exactly as it will be inserted. */
   row: typeof appUsageEvent.$inferInsert;
-  /** Cost to settle against the limiters; zero when there is nothing to spend. */
+  /** Cost to settle against the per-user ledger; zero when there is nothing to spend. */
   costMicrousd: number;
-  /** Whether the app-wide limiter settles this event alongside the per-user one. */
-  appLevelLimitsEnabled: boolean;
   /**
    * Billed duration for per-minute and per-hour models, which price on time
    * rather than tokens. Log-only: the row has no column for it, and the logged
@@ -549,8 +550,8 @@ function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
 }
 
 /**
- * Writes one event everywhere it belongs. Limiter settlement runs first so a
- * monthly budget starts blocking as soon as the spend is known; the D1 row and
+ * Writes one event everywhere it belongs. The per-user spend ledger is settled
+ * first because it is read back live by the caller's own `/me`; the D1 row and
  * the API key timestamp are reporting and can lag. Steps are retried
  * independently, and all of them are idempotent, so re-persisting the same
  * event after a partial failure converges instead of double-counting.
@@ -558,24 +559,9 @@ function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
 export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<void> {
   const outcomes: boolean[] = [];
   if (event.costMicrousd > 0) {
-    const now = Date.now();
-    const limiter = env.USER_LIMITER.getByName(
-      `${event.row.appId}:${event.row.userId}`,
-    ) as DurableObjectStub<UserLimiter>;
-    const settlements = [
-      recordStep("limiter_user", event, () =>
-        limiter.addCost(event.eventId, now, event.costMicrousd)),
-    ];
-    if (event.appLevelLimitsEnabled) {
-      const appLimiter = env.USER_LIMITER.getByName(
-        event.row.appId,
-      ) as DurableObjectStub<UserLimiter>;
-      settlements.push(
-        recordStep("limiter_app", event, () =>
-          appLimiter.addCost(event.eventId, now, event.costMicrousd)),
-      );
-    }
-    outcomes.push(...(await Promise.all(settlements)));
+    const limiter = env.USER_LIMITER.getByName(`${event.row.appId}:${event.row.userId}`);
+    outcomes.push(await recordStep("limiter_user", event, () =>
+      limiter.addCost(event.eventId, Date.now(), event.costMicrousd)));
   }
   outcomes.push(await recordStep("usage_insert", event, () => insertUsageEvent(env, event)));
   const apiKeyId = event.row.apiKeyId;
@@ -749,15 +735,14 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       latencyMs: input.latencyMs,
     },
     costMicrousd: Math.max(0, Math.round(cost * 1_000_000)),
-    appLevelLimitsEnabled: input.appLevelLimitsEnabled,
     audioSeconds: usage.audioSeconds,
   });
 }
 
 export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Promise<void> {
   const eventId = crypto.randomUUID();
-  // A blocked request spent nothing, so there is no limiter settlement: only
-  // the row and the key timestamp, both idempotent under the same identity.
+  // A blocked request spent nothing, so there is no ledger settlement: only the
+  // row and the key timestamp, both idempotent under the same identity.
   await persistUsageEvent(input.env, {
     eventId,
     row: {
@@ -785,6 +770,5 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
       latencyMs: input.latencyMs,
     },
     costMicrousd: 0,
-    appLevelLimitsEnabled: false,
   });
 }

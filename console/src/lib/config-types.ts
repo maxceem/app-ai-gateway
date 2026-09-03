@@ -238,20 +238,9 @@ export interface EndpointConfig extends EndpointTarget {
 
 export type EndpointsConfig = Record<string, EndpointConfig>;
 
-export interface LimitScopeConfig {
-  requests: { per_minute: number | null; per_day: number | null };
-  spending: { monthly_usd: number | null };
-}
-
-export interface LimitsConfig {
-  per_user: LimitScopeConfig;
-  per_app: LimitScopeConfig;
-}
-
 export interface StoredAppConfig {
   authentication: AuthenticationConfig;
   routing: ProxyConfig;
-  limits: LimitsConfig;
   endpoints?: EndpointsConfig;
 }
 

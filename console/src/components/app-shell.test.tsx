@@ -80,7 +80,6 @@ describe("AppShell navigation", () => {
       "/apps/app-1/auth",
       "/apps/app-1/proxy",
       "/apps/app-1/endpoints",
-      "/apps/app-1/limits",
       "/apps/app-1/users",
       "/apps/app-1/usage",
       "/apps/app-1/auth-events",
@@ -100,9 +99,9 @@ describe("AppShell navigation", () => {
   });
 
   it("marks the section being read", () => {
-    renderInsideApp("/apps/app-1/limits");
+    renderInsideApp("/apps/app-1/users");
 
-    expect(screen.getByRole("link", { name: "Limits" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Users" })).toHaveProperty("ariaCurrent", "page");
     expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
   });
 

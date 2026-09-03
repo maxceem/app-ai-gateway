@@ -7,7 +7,6 @@ import {
   type AuthConfig,
   type AuthenticationConfig,
   type EndpointsConfig,
-  type LimitsConfig,
   type ProxyConfig,
   type StoredAppConfig,
 } from "@/lib/config-types";
@@ -115,7 +114,6 @@ export function useAppDraft(appId: string) {
       : current);
   }, []);
 
-  const updateLimits = useCallback((limits: LimitsConfig) => updateConfig({ limits }), [updateConfig]);
 
   // Endpoints live inside config_json, so they ride the same draft as the rest.
   // An empty map is dropped so apps without endpoints keep their config clean.
@@ -174,7 +172,6 @@ export function useAppDraft(appId: string) {
     updateIssuer,
     setIssuerEnabled,
     updateProxy,
-    updateLimits,
     updateEndpoints,
     reset,
     save,

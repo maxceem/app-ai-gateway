@@ -81,7 +81,7 @@ Responses keep the serving provider's native format, streamed unbuffered.
 
 ## Fallback
 
-When a provider call throws, rate limits, or returns a server error, and nothing
+When a provider call throws, is rate limited upstream, or returns a server error, and nothing
 has been streamed to the client yet, the gateway retries the next `{provider,
 model}` pair with the same prepared body. Usage is recorded against the target
 that actually served the request, and every attempt is recorded with the endpoint

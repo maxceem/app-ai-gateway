@@ -20,47 +20,32 @@ function bindings(values: AtomicAppWrite) {
   ] as const;
 }
 
-/** Atomically inserts one app only while the organization remains below its plan limit. */
-export async function insertAppWithinCapacity(
+/** Inserts one app, or reports that the id was already taken. */
+export async function insertApp(
   d1: D1Database,
   values: AtomicAppWrite,
-  maxApps: number | undefined,
 ): Promise<boolean> {
   const result = await d1.prepare(
     `INSERT INTO app(id, organization_id, name, config_json, status, updated_at)
-     SELECT ?, ?, ?, ?, ?, ?
-      WHERE ? IS NULL
-         OR (SELECT COUNT(*) FROM app WHERE organization_id = ?) < ?
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO NOTHING
      RETURNING id`,
-  ).bind(
-    ...bindings(values),
-    maxApps ?? null,
-    values.organizationId,
-    maxApps ?? null,
-  ).all<{ id: string }>();
+  ).bind(...bindings(values)).all<{ id: string }>();
   return result.results.length === 1;
 }
 
 /**
- * Atomically creates or updates an app. Conflict updates are allowed only when
- * the stored row belongs to the same organization; creation is conditional on
- * the plan capacity at statement execution time.
+ * Atomically creates or updates an app. Conflict updates are allowed only while
+ * the stored row belongs to the same organization, so an id taken by another
+ * tenant is never silently overwritten.
  */
-export async function upsertAppWithinCapacity(
+export async function upsertApp(
   d1: D1Database,
   values: AtomicAppWrite,
-  maxApps: number | undefined,
 ): Promise<boolean> {
   const result = await d1.prepare(
     `INSERT INTO app(id, organization_id, name, config_json, status, updated_at)
-     SELECT ?, ?, ?, ?, ?, ?
-      WHERE EXISTS (
-              SELECT 1 FROM app
-               WHERE id = ? AND organization_id = ?
-            )
-         OR ? IS NULL
-         OR (SELECT COUNT(*) FROM app WHERE organization_id = ?) < ?
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        config_json = excluded.config_json,
@@ -68,13 +53,6 @@ export async function upsertAppWithinCapacity(
        updated_at = excluded.updated_at
      WHERE app.organization_id = excluded.organization_id
      RETURNING id`,
-  ).bind(
-    ...bindings(values),
-    values.id,
-    values.organizationId,
-    maxApps ?? null,
-    values.organizationId,
-    maxApps ?? null,
-  ).all<{ id: string }>();
+  ).bind(...bindings(values)).all<{ id: string }>();
   return result.results.length === 1;
 }

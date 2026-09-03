@@ -5,14 +5,24 @@ import {
 } from "cf-billing";
 import { GatewayError } from "../core/errors";
 
-export const BILLING_SERVICE_ID = "ai-gateway";
+/**
+ * This product's billing service id in cf-billing.
+ *
+ * Also the last path segment of its LemonSqueezy delivery URL
+ * (`/webhooks/lemon-squeezy/app-ai-gateway`) and part of the encryption context
+ * of its stored signing secret, so it is not a free-form label.
+ */
+export const BILLING_SERVICE_ID = "app-ai-gateway";
 export const BILLING_ACCESS_CACHE_TTL_MS = 30_000;
 
+/**
+ * The gateway has exactly one enforceable quota, so a plan carries exactly one
+ * limit. Absent means unlimited, which is what every self-hosted deployment and
+ * every plan that does not mention the key gets.
+ */
 export interface BillingPlanLimits {
-  maxApps?: number;
-  maxRpm?: number;
-  maxRpd?: number;
-  maxMonthlyUsd?: number;
+  /** Requests admitted for provider dispatch per calendar month, per organization. */
+  maxRequestsPerMonth?: number;
 }
 
 export type GatewayBillingAccess =
@@ -118,8 +128,36 @@ export function getBillingAccess(
   return pending;
 }
 
+/**
+ * How long a client should wait before asking again after billing could not be
+ * read. Shorter than {@link BILLING_ACCESS_CACHE_TTL_MS} on purpose: a failed
+ * lookup is evicted from the cache rather than held for the TTL, so a retry
+ * after this long reaches the billing service again rather than replaying the
+ * same failure.
+ */
+export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
+
 export function requireActiveBilling(access: GatewayBillingAccess): GatewayBillingAccess {
   if (access.status === "inactive") {
+    /*
+     * Not being able to reach billing is not a statement about this
+     * organization's subscription. Refusing is still correct — the allowance is
+     * unknown, and admitting traffic on an unknown allowance is how a plan gets
+     * overspent — but it has to be refused as our fault and as temporary.
+     *
+     * The distinction is the whole point: `402` tells a client its customer has
+     * to go and pay, which a mobile app surfaces as an upsell and does not
+     * retry. During an outage that would tell every paying customer they are
+     * unsubscribed. `503` says the same request is worth sending again.
+     */
+    if (access.reason === "billing_unavailable") {
+      throw new GatewayError(
+        503,
+        "billing_unavailable",
+        "Billing could not be reached, so the request was not attempted",
+        { "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS) },
+      );
+    }
     throw new GatewayError(
       402,
       "payment_required",
@@ -129,21 +167,35 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
   return access;
 }
 
-function optionalLimit(
-  value: unknown,
-  key: keyof BillingPlanLimits,
-  integer: boolean,
-): number | undefined {
+/**
+ * Reads one plan limit out of a hosted plan's `limits_json`.
+ *
+ * The value is authored by whoever configured the plan, and JSON has no integer
+ * type, so a count may arrive as `10000`, `10000.0`, or `"10000"` and all three
+ * mean the same allowance. Anything that is not one of those — a fraction, a
+ * negative, a boolean, `null`, an object — is a misconfiguration this gateway
+ * cannot resolve into an allowance, and it refuses the request rather than
+ * guessing an allowance in either direction.
+ */
+function requestAllowance(value: unknown): number | undefined {
   if (value === undefined) return undefined;
+  const numeric = typeof value === "string" && value.trim().length > 0
+    ? Number(value)
+    : value;
   if (
-    typeof value !== "number"
-    || !Number.isFinite(value)
-    || value < 0
-    || (integer && !Number.isInteger(value))
+    typeof numeric !== "number"
+    || !Number.isFinite(numeric)
+    || !Number.isInteger(numeric)
+    || numeric < 0
+    || !Number.isSafeInteger(numeric)
   ) {
-    throw new GatewayError(502, "billing_unavailable", `Billing plan limit ${key} is invalid`);
+    throw new GatewayError(
+      502,
+      "billing_unavailable",
+      "Billing plan limit maxRequestsPerMonth is invalid",
+    );
   }
-  return value;
+  return numeric;
 }
 
 export function billingPlanLimits(access: GatewayBillingAccess): BillingPlanLimits {
@@ -152,16 +204,8 @@ export function billingPlanLimits(access: GatewayBillingAccess): BillingPlanLimi
     throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
   }
   const limits = access.limits as Record<string, unknown>;
-  const maxApps = optionalLimit(limits.maxApps, "maxApps", true);
-  const maxRpm = optionalLimit(limits.maxRpm, "maxRpm", true);
-  const maxRpd = optionalLimit(limits.maxRpd, "maxRpd", true);
-  const maxMonthlyUsd = optionalLimit(limits.maxMonthlyUsd, "maxMonthlyUsd", false);
-  return {
-    ...(maxApps === undefined ? {} : { maxApps }),
-    ...(maxRpm === undefined ? {} : { maxRpm }),
-    ...(maxRpd === undefined ? {} : { maxRpd }),
-    ...(maxMonthlyUsd === undefined ? {} : { maxMonthlyUsd }),
-  };
+  const maxRequestsPerMonth = requestAllowance(limits.maxRequestsPerMonth);
+  return maxRequestsPerMonth === undefined ? {} : { maxRequestsPerMonth };
 }
 
 export function billingRpcError(error: unknown): GatewayError {

@@ -21,3 +21,5 @@ ai-gateway-swift/.build/
 worker-startup.cpuprofile
 *.tgz
 *.tsbuildinfo
+.t3-devup
+.t3-devdown

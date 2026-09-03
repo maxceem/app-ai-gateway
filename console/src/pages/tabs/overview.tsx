@@ -29,17 +29,13 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
   const draft = state.draft!;
   const resolved = state.query.data?.resolved;
   const authentication = draft.config.authentication;
-  const userBudget = draft.config.limits.per_user.spending.monthly_usd;
-  const appBudget = draft.config.limits.per_app.spending.monthly_usd;
 
+  const requests = usage.data?.requests ?? 0;
   const tokens =
     (usage.data?.input_tokens ?? 0) +
     (usage.data?.cached_input_tokens ?? 0) +
     (usage.data?.cache_write_tokens ?? 0) +
     (usage.data?.output_tokens ?? 0);
-  const budgetShare = appBudget
-    ? (usage.data?.cost_usd ?? 0) / appBudget
-    : null;
   // api_key apps only have an issuer when verified user identity is required.
   const issuer = authIssuer(authentication);
   const issuerHost = (() => {
@@ -56,7 +52,7 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Requests"
-          value={formatNumber(usage.data?.requests ?? 0)}
+          value={formatNumber(requests)}
           detail="month to date"
         />
         <StatCard label="Tokens" value={formatCompact(tokens)} detail="all buckets" />
@@ -66,21 +62,9 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
           detail="priced from prices.json"
         />
         <StatCard
-          label={appBudget ? "App budget used" : "User budget"}
-          value={
-            budgetShare !== null
-              ? `${Math.round(budgetShare * 100)}%`
-              : userBudget
-                ? formatCost(userBudget)
-                : "—"
-          }
-          detail={
-            appBudget
-              ? `${formatCost(appBudget)} app budget`
-              : userBudget
-                ? "per user per month"
-              : "no monthly budget"
-          }
+          label="Cost per request"
+          value={requests > 0 ? formatCost((usage.data?.cost_usd ?? 0) / requests) : "—"}
+          detail="month to date, all providers"
         />
       </div>
 
@@ -159,8 +143,8 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
                 value={issuer ? (issuer.user_id_claim ?? "sub") : "x-end-user-id"}
               />
               <Fact
-                label="Rate limits"
-                value={`${resolved?.limits.perUser.requestsPerMinute ?? "∞"} rpm · ${resolved?.limits.perUser.requestsPerDay ?? "∞"} rpd`}
+                label="Named endpoints"
+                value={formatNumber(Object.keys(resolved?.endpoints ?? {}).length)}
               />
               <Fact
                 label="Issuer token lifetime cap"

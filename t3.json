@@ -1,0 +1,21 @@
+{
+  "$schema": "https://t3.codes/schema/t3.json",
+  "scripts": [
+    {
+      "name": "Setup Worktree",
+      "command": "pnpm install --frozen-lockfile && dev-up",
+      "icon": "configure",
+      "runOnWorktreeCreate": true
+    },
+    {
+      "name": "Deploy",
+      "command": "dev-up",
+      "icon": "play"
+    },
+    {
+      "name": "Teardown",
+      "command": "dev-down",
+      "icon": "debug"
+    }
+  ]
+}

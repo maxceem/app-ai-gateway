@@ -27,31 +27,50 @@ Do not add this binding to an OSS/self-hosted environment unless it has a
 corresponding billing service. The console discovers availability from
 `GET /v1/console/capabilities`.
 
-The gateway always calls billing with service ID `ai-gateway` and the current
+The gateway always calls billing with service ID `app-ai-gateway` and the current
 operator organization ID as the tenant ID. Create matching service and plan data
 in the billing worker before enabling the binding.
 
-## Plan ceilings
+## The plan's request allowance
 
-Plan `limits_json` can define:
+A plan carries exactly one limit, and it is the gateway's only quota:
 
 ```json
-{
-  "maxApps": 25,
-  "maxRpm": 500,
-  "maxRpd": 10000,
-  "maxMonthlyUsd": 250
-}
+{ "maxRequestsPerMonth": 100000 }
 ```
 
-All values are non-negative numbers; app, per-minute, and per-day limits must be
-integers. Finite plan ceilings reject an unlimited (`null`) app setting. The
-gateway enforces these ceilings when an app is created, validated, or updated.
+It is a whole, non-negative count of requests the organization may have
+dispatched to a provider within one UTC calendar month, shared by every
+application, credential and end user it owns. A plan that omits the key leaves
+the organization unlimited. The value may be written as a number or as a JSON
+string; anything else — a fraction, a negative, `null` — is a plan
+misconfiguration, and the gateway answers `502 billing_unavailable` rather than
+guess an allowance.
+
+Nothing about a stored application configuration is capped by a plan. Creating,
+validating, and updating apps are entitlement checks only.
+
+See [Operations](/docs/operations) for what a client sees when the allowance runs
+out.
 
 Inactive organizations receive `402 payment_required` on their apps' data-plane
-routes. Billing RPC failures fail closed in hosted mode. Neither condition
-deletes or disables application records, so access resumes when billing becomes
-active again.
+routes. Billing RPC failures also fail closed, but under a different code: an
+unreachable billing service says nothing about the subscription, so the gateway
+answers `503 billing_unavailable` with a short `Retry-After` instead. Clients
+should treat the first as something the customer has to act on and the second as
+worth retrying. Neither condition deletes or disables application records, so
+access resumes when billing becomes active again.
+
+`GET /v1/admin/billing/status` reports the month against the allowance beside
+the subscription, as `quota`:
+
+```json
+{ "month": "2026-09", "used": 41288, "limit": 100000, "resetAt": "2026-10-01T00:00:00.000Z" }
+```
+
+`limit` is absent on a plan that sets no ceiling, and `quota` is `null` on a
+self-hosted deployment. The console renders it on the billing page and warns
+above every page once four fifths of the allowance is spent.
 
 Owners and admins use `/v1/admin/billing/*` for plan listing, checkout, plan
 changes, cancellation, resume, trials, and status. Members retain read-only

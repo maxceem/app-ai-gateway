@@ -104,9 +104,6 @@ export interface SeedOptions {
   organizationId?: string;
   proxy?: Record<string, unknown>;
   auth?: Record<string, unknown>;
-  limits?: { rpm: number; rpd: number; app_rpm?: number; app_rpd?: number };
-  budgetUsd?: number | null;
-  appBudgetUsd?: number | null;
   endpoints?: Record<string, unknown>;
 }
 
@@ -124,9 +121,6 @@ export function routingConfig(proxy: Record<string, unknown>): Record<string, un
 
 export function serverConfig(input: {
   proxy?: Record<string, unknown>;
-  limits?: { rpm?: number | null; rpd?: number | null; app_rpm?: number | null; app_rpd?: number | null };
-  budgetUsd?: number | null;
-  appBudgetUsd?: number | null;
   authentication?: Record<string, unknown>;
   endpoints?: Record<string, unknown>;
 } = {}): Record<string, unknown> {
@@ -137,16 +131,6 @@ export function serverConfig(input: {
       end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
     },
     routing: routingConfig(input.proxy ?? {}),
-    limits: {
-      per_user: {
-        requests: { per_minute: input.limits?.rpm ?? null, per_day: input.limits?.rpd ?? null },
-        spending: { monthly_usd: input.budgetUsd ?? null },
-      },
-      per_app: {
-        requests: { per_minute: input.limits?.app_rpm ?? null, per_day: input.limits?.app_rpd ?? null },
-        spending: { monthly_usd: input.appBudgetUsd ?? null },
-      },
-    },
   };
 }
 
@@ -169,24 +153,6 @@ export function appleConfig(
       },
     },
     routing: routingConfig(input.proxy ?? {}),
-    limits: {
-      per_user: { requests: { per_minute: 10, per_day: 300 }, spending: { monthly_usd: null } },
-      per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-    },
-  };
-}
-
-function limitsConfig(options: SeedOptions): Record<string, unknown> {
-  const limits = options.limits ?? { rpm: 100, rpd: 1000 };
-  return {
-    per_user: {
-      requests: { per_minute: limits.rpm, per_day: limits.rpd },
-      spending: { monthly_usd: options.budgetUsd === undefined ? 100 : options.budgetUsd },
-    },
-    per_app: {
-      requests: { per_minute: limits.app_rpm ?? null, per_day: limits.app_rpd ?? null },
-      spending: { monthly_usd: options.appBudgetUsd ?? null },
-    },
   };
 }
 
@@ -244,7 +210,6 @@ export async function seedApp(appId: string, options: SeedOptions = {}): Promise
         },
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
-      limits: limitsConfig(options),
       ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
     } as unknown as StoredAppConfig,
     status: "active",
@@ -278,7 +243,6 @@ export async function seedServerApp(
         end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
-      limits: limitsConfig(options),
       ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
     } as unknown as StoredAppConfig,
     status: "active",

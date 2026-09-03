@@ -20,17 +20,13 @@ import type {
   EndpointConfig,
   EndpointsConfig,
   EndpointTarget,
-  LimitsConfig,
-  LimitScopeConfig,
   IssuerAuthConfig,
   OutputClampStyle,
   ProviderProxyConfig,
-  ResolvedLimitScope,
   ResolvedRoutingConfig,
   RoutingConfig,
   StoredAppConfig,
 } from "./types";
-import type { BillingPlanLimits } from "../billing/gateway";
 
 interface CacheEntry {
   expiresAt: number;
@@ -85,18 +81,6 @@ function nullablePositiveInteger(value: unknown, label: string): number | null {
   if (value === null) return null;
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new GatewayError(500, "internal_error", `${label} must be a positive integer or null`);
-  }
-  return value;
-}
-
-function monthlyUsd(value: unknown, label: string): number | null {
-  if (value === null) return null;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new GatewayError(500, "internal_error", `${label} must be a non-negative number or null`);
-  }
-  const microusd = Math.round(value * 1_000_000);
-  if (!Number.isSafeInteger(microusd)) {
-    throw new GatewayError(500, "internal_error", `${label} is too large`);
   }
   return value;
 }
@@ -455,26 +439,6 @@ function parseEndpoints(raw: unknown, scope: ProviderScope | null): EndpointsCon
   return endpoints;
 }
 
-function parseLimitScope(raw: unknown, label: string): { stored: LimitScopeConfig; resolved: ResolvedLimitScope } {
-  const value = record(raw, label);
-  const requests = record(value.requests, `${label}.requests`);
-  const spending = record(value.spending, `${label}.spending`);
-  const perMinute = nullablePositiveInteger(requests.per_minute, `${label}.requests.per_minute`);
-  const perDay = nullablePositiveInteger(requests.per_day, `${label}.requests.per_day`);
-  const usd = monthlyUsd(spending.monthly_usd, `${label}.spending.monthly_usd`);
-  return {
-    stored: {
-      requests: { per_minute: perMinute, per_day: perDay },
-      spending: { monthly_usd: usd },
-    },
-    resolved: {
-      requestsPerMinute: perMinute,
-      requestsPerDay: perDay,
-      monthlyBudgetMicrousd: usd === null ? null : Math.round(usd * 1_000_000),
-    },
-  };
-}
-
 /**
  * Provider references and model pricing are validated when a configuration is
  * written. Reading stored configuration skips organization lookups so deleting
@@ -495,22 +459,19 @@ export function parseStoredAppConfig(
   const value = record(raw, "app");
   const authentication = parseAuthentication(value.authentication);
   const routing = parseRouting(value.routing, scope);
-  const limitsValue = record(value.limits, "limits");
-  const perUser = parseLimitScope(limitsValue.per_user, "limits.per_user");
-  const perApp = parseLimitScope(limitsValue.per_app, "limits.per_app");
-  const limits: LimitsConfig = { per_user: perUser.stored, per_app: perApp.stored };
   const endpoints = parseEndpoints(value.endpoints, scope);
+  // A `limits` key from a configuration written before the gateway had a single
+  // organization-wide allowance is simply not read; it is dropped on the next
+  // write rather than migrated, because nothing enforces it any more.
   return {
     stored: {
       authentication,
       routing: routing.stored,
-      limits,
       ...(value.endpoints === undefined ? {} : { endpoints }),
     },
     resolved: {
       authentication,
       routing: routing.resolved,
-      limits: { perUser: perUser.resolved, perApp: perApp.resolved },
       endpoints,
     },
   };
@@ -525,13 +486,6 @@ function fromRow(row: typeof app.$inferSelect): AppConfig {
     status: row.status,
     ...parsed.resolved,
   };
-}
-
-export function hasAppLevelLimits(app: AppConfig): boolean {
-  const limits = app.limits.perApp;
-  return limits.requestsPerMinute !== null
-    || limits.requestsPerDay !== null
-    || limits.monthlyBudgetMicrousd !== null;
 }
 
 export async function loadAppConfig(env: Env, appId: string): Promise<AppConfig> {
@@ -552,39 +506,12 @@ export function clearAppConfigCache(): void {
   appCache.clear();
 }
 
-function assertBillingCeilings(config: StoredAppConfig, ceilings: BillingPlanLimits): void {
-  const scopes = [config.limits.per_user, config.limits.per_app];
-  for (const scope of scopes) {
-    if (
-      ceilings.maxRpm !== undefined
-      && (scope.requests.per_minute === null || scope.requests.per_minute > ceilings.maxRpm)
-    ) {
-      throw new GatewayError(403, "plan_limit_exceeded", `requests.per_minute exceeds the plan ceiling of ${ceilings.maxRpm}`);
-    }
-    if (
-      ceilings.maxRpd !== undefined
-      && (scope.requests.per_day === null || scope.requests.per_day > ceilings.maxRpd)
-    ) {
-      throw new GatewayError(403, "plan_limit_exceeded", `requests.per_day exceeds the plan ceiling of ${ceilings.maxRpd}`);
-    }
-    if (
-      ceilings.maxMonthlyUsd !== undefined
-      && (scope.spending.monthly_usd === null || scope.spending.monthly_usd > ceilings.maxMonthlyUsd)
-    ) {
-      throw new GatewayError(403, "plan_limit_exceeded", `spending.monthly_usd exceeds the plan ceiling of ${ceilings.maxMonthlyUsd}`);
-    }
-  }
-}
-
 export function validateAppConfigJson(
   config: unknown,
-  ceilings: BillingPlanLimits = {},
   organizationProviders: OrganizationProviders | null = WELL_KNOWN_PROVIDER_INSTANCES,
   grandfatheredSlugs: ReadonlySet<string> = NO_GRANDFATHERED_SLUGS,
 ): StoredAppConfig {
-  const stored = parseStoredAppConfig(config, organizationProviders, grandfatheredSlugs).stored;
-  assertBillingCeilings(stored, ceilings);
-  return stored;
+  return parseStoredAppConfig(config, organizationProviders, grandfatheredSlugs).stored;
 }
 
 /**

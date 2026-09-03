@@ -172,16 +172,6 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
                   },
                 },
           routing: { providers: { mode: "all" }, model_rewrites: {} },
-          limits: {
-            per_user: {
-              requests: { per_minute: 10, per_day: 300 },
-              spending: { monthly_usd: null },
-            },
-            per_app: {
-              requests: { per_minute: null, per_day: null },
-              spending: { monthly_usd: null },
-            },
-          },
         },
         status: "active",
       });

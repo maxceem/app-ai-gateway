@@ -131,9 +131,11 @@ fee alone would let roughly twenty times as much spend through unmetered.
   **Aborted streams are not reconciled.** The cost arrives in the final SSE
   chunk, so a client that disconnects before it leaves the request
   [unresolved](/docs/operations#known-limitation-aborted-streams-on-cost-reporting-routes)
-  at `$0` against your budgets, even though OpenRouter charged for the tokens.
-  Watch the unresolved count on OpenRouter instances; per-user rate limits bound
-  the damage until generation-lookup reconciliation ships.
+  at `$0` in your usage reporting, even though OpenRouter charged for the tokens.
+  Watch the unresolved count on OpenRouter instances. On a hosted plan the
+  organization's monthly request allowance caps how many such requests a month
+  can contain; a self-hosted deployment has no such cap, so rely on OpenRouter's
+  own spend limits until generation-lookup reconciliation ships.
 </Callout>
 
 OpenRouter instances accept **chat completions only** — `v1/chat/completions`
@@ -552,7 +554,7 @@ what you are billed:
 
 Override the entry if your traffic sits mostly on the cheaper side of either.
 Erring high keeps a spending limit a limit: a cost recorded too low would let
-traffic through that a budget was meant to stop.
+traffic through that a pause was meant to stop.
 
 A model priced by neither is refused with `400 pricing_not_configured` and a
 message naming where to fix it. Entering the price *is* the explicit allowance:

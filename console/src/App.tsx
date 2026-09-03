@@ -64,6 +64,7 @@ function AuthenticatedConsole() {
       session={session.data}
       capabilities={capabilities.data}
       billing={billing.data?.access}
+      quota={billing.data?.quota}
     >
       <AppShell>
         <Routes>

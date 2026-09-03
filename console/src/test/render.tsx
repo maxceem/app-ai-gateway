@@ -9,6 +9,7 @@ import type {
   BillingAccess,
   Capabilities,
   OrganizationMembership,
+  OrganizationQuota,
   OrganizationRole,
   Session,
 } from "@/lib/types";
@@ -123,6 +124,7 @@ export function renderAuthenticated(
     session?: Partial<Session>;
     capabilities?: Partial<Capabilities>;
     billing?: BillingAccess;
+    quota?: OrganizationQuota | null;
     route?: string;
   } = {},
 ) {
@@ -140,6 +142,7 @@ export function renderAuthenticated(
               session={testSession(options.session)}
               capabilities={{ ...CAPABILITIES, ...options.capabilities }}
               billing={options.billing}
+              quota={options.quota}
             >
               {ui}
             </ConsoleSessionProvider>

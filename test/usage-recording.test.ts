@@ -32,7 +32,6 @@ function usageEvent(input: {
   appId: string;
   userId?: string;
   costUsd: number;
-  appLevelLimitsEnabled?: boolean;
   eventId?: string;
   model?: string;
 }): UsageEvent {
@@ -62,7 +61,6 @@ function usageEvent(input: {
       latencyMs: 12,
     },
     costMicrousd: Math.round(input.costUsd * 1_000_000),
-    appLevelLimitsEnabled: input.appLevelLimitsEnabled ?? false,
   };
 }
 
@@ -86,23 +84,22 @@ function errorCodes(spy: { mock: { calls: unknown[][] } }): string[] {
 describe("usage recording idempotency", () => {
   it("stores one row and charges once when the same event is recorded twice", async () => {
     const appId = "usage-record-twice";
-    const event = usageEvent({ appId, costUsd: 0.000123, appLevelLimitsEnabled: true });
+    const event = usageEvent({ appId, costUsd: 0.000123 });
 
     await persistUsageEvent(env, event);
     await persistUsageEvent(env, event);
 
     expect(await rowCount(appId)).toBe(1);
     expect(await monthlyCost(`${appId}:user-1`)).toBe(123);
-    expect(await monthlyCost(appId)).toBe(123);
   });
 
   it("converges without double charging when a re-run follows a failed insert", async () => {
     const appId = "usage-record-partial";
-    const event = usageEvent({ appId, costUsd: 0.00005, appLevelLimitsEnabled: true });
+    const event = usageEvent({ appId, costUsd: 0.00005 });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    // The limiters settle, then D1 stays down for every retry: the event is
-    // half-recorded, exactly the state a re-run has to repair.
+    // The spend ledger settles, then D1 stays down for every retry: the event
+    // is half-recorded, exactly the state a re-run has to repair.
     await persistUsageEvent(withDatabase(flakyDatabase(Number.MAX_SAFE_INTEGER).database), event);
     expect(await rowCount(appId)).toBe(0);
     expect(await monthlyCost(`${appId}:user-1`)).toBe(50);
@@ -120,7 +117,6 @@ describe("usage recording idempotency", () => {
 
     expect(await rowCount(appId)).toBe(1);
     expect(await monthlyCost(`${appId}:user-1`)).toBe(50);
-    expect(await monthlyCost(appId)).toBe(50);
   });
 
   it("retries a transient insert failure instead of losing the event", async () => {
@@ -154,7 +150,6 @@ describe("usage recording idempotency", () => {
       appId,
       userId: "user-1",
       authMethod: "api_key",
-      appLevelLimitsEnabled: false,
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
@@ -218,7 +213,6 @@ describe("usage recording idempotency", () => {
       appId,
       userId: "user-1",
       authMethod: "api_key",
-      appLevelLimitsEnabled: false,
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
@@ -264,7 +258,6 @@ describe("usage recording idempotency", () => {
       appId,
       userId: "user-1",
       authMethod: "api_key",
-      appLevelLimitsEnabled: false,
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
@@ -318,7 +311,6 @@ describe("usage recording idempotency", () => {
       appId,
       userId: "user-1",
       authMethod: "api_key",
-      appLevelLimitsEnabled: false,
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
@@ -346,7 +338,6 @@ describe("usage recording idempotency", () => {
       appId,
       userId: "user-1",
       authMethod: "api_key",
-      appLevelLimitsEnabled: false,
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
@@ -400,7 +391,7 @@ describe("usage recording idempotency", () => {
       model: "gpt-5.6-sol",
       route: "openai/v1/responses",
       appVersion: null,
-      status: "blocked_budget",
+      status: "blocked_user",
       latencyMs: 3,
     });
 
@@ -410,7 +401,7 @@ describe("usage recording idempotency", () => {
       .bind(appId)
       .first<{ event_id: string | null; model: string; status: string }>();
     expect(stored?.event_id).toEqual(expect.any(String));
-    expect(stored).toMatchObject({ model: "gpt-5.6-sol", status: "blocked_budget" });
+    expect(stored).toMatchObject({ model: "gpt-5.6-sol", status: "blocked_user" });
 
     // Replaying the stored identity must not add a second row or rewrite the first.
     await persistUsageEvent(

@@ -132,17 +132,27 @@ The OSS configuration has no `BILLING` service binding and therefore grants
 self-hosted access without subscription checks. A hosted environment can bind
 the `BillingWorker` entrypoint from `cf-billing`; the commented example in
 `wrangler.jsonc` shows the binding shape. The gateway scopes every RPC to
-service `ai-gateway` and the authenticated organization ID.
+service `app-ai-gateway` and the authenticated organization ID as the tenant.
+LemonSqueezy delivers webhooks to cf-billing directly, at
+`/webhooks/lemon-squeezy/app-ai-gateway`; the gateway never forwards them.
 
-Billing plan `limits_json` may define these ceilings:
+Billing plan `limits_json` may define the gateway's single quota:
 
 ```json
-{ "maxApps": 25, "maxRpm": 500, "maxRpd": 10000, "maxMonthlyUsd": 250 }
+{ "maxRequestsPerMonth": 100000 }
 ```
 
+It is the number of requests the whole organization may have dispatched to a
+provider in one UTC calendar month. Omit it and the organization is unlimited,
+which is also what every self-hosted deployment gets. Exhausting it returns
+`429 monthly_request_quota_exceeded` with `limit`, `used`, and the UTC `resetAt`
+in the error body, plus a `Retry-After` header.
+
 With the binding present, inactive organizations receive stable
-`402 payment_required` responses on the app data plane. RPC failures fail
-closed without modifying or disabling application rows.
+`402 payment_required` responses on the app data plane. RPC failures also fail
+closed, as `503 billing_unavailable` with a `Retry-After` — the subscription was
+never read, so it is a wait rather than a bill to pay. Neither modifies or
+disables application rows.
 
 ## OSS release checklist
 

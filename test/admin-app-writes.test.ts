@@ -1,10 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import {
-  insertAppWithinCapacity,
-  upsertAppWithinCapacity,
-  type AtomicAppWrite,
-} from "../src/core/app-writes";
+import { insertApp, upsertApp, type AtomicAppWrite } from "../src/core/app-writes";
 import type { StoredAppConfig } from "../src/core/types";
 import { serverConfig } from "./helpers";
 
@@ -41,16 +37,14 @@ describe("atomic organization app writes", () => {
   it("does not update an app owned by another organization on conflict", async () => {
     await seedOrganization("write-guard-owner");
     await seedOrganization("write-guard-attacker");
-    expect(await insertAppWithinCapacity(
+    expect(await insertApp(
       env.DB,
       appWrite("write-guard-app", "write-guard-owner", "Original"),
-      undefined,
     )).toBe(true);
 
-    expect(await upsertAppWithinCapacity(
+    expect(await upsertApp(
       env.DB,
       appWrite("write-guard-app", "write-guard-attacker", "Clobbered"),
-      undefined,
     )).toBe(false);
     const row = await env.DB.prepare(
       "SELECT organization_id, name FROM app WHERE id = ?",
@@ -58,31 +52,28 @@ describe("atomic organization app writes", () => {
     expect(row).toEqual({ organization_id: "write-guard-owner", name: "Original" });
   });
 
-  it("atomically enforces maxApps across concurrent app inserts", async () => {
-    await seedOrganization("atomic-insert-limit");
+  it("lets one of two concurrent creates of the same id win", async () => {
+    await seedOrganization("atomic-insert-org");
     const results = await Promise.all([
-      insertAppWithinCapacity(env.DB, appWrite("atomic-insert-a", "atomic-insert-limit"), 1),
-      insertAppWithinCapacity(env.DB, appWrite("atomic-insert-b", "atomic-insert-limit"), 1),
+      insertApp(env.DB, appWrite("atomic-insert-app", "atomic-insert-org", "A")),
+      insertApp(env.DB, appWrite("atomic-insert-app", "atomic-insert-org", "B")),
     ]);
 
     expect(results.filter(Boolean)).toHaveLength(1);
     const count = await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM app WHERE organization_id = ?",
-    ).bind("atomic-insert-limit").first<{ count: number }>();
+    ).bind("atomic-insert-org").first<{ count: number }>();
     expect(count?.count).toBe(1);
   });
 
-  it("atomically enforces maxApps across concurrent upsert creation", async () => {
-    await seedOrganization("atomic-upsert-limit");
-    const results = await Promise.all([
-      upsertAppWithinCapacity(env.DB, appWrite("atomic-upsert-a", "atomic-upsert-limit"), 1),
-      upsertAppWithinCapacity(env.DB, appWrite("atomic-upsert-b", "atomic-upsert-limit"), 1),
-    ]);
-
-    expect(results.filter(Boolean)).toHaveLength(1);
+  it("no longer caps how many apps an organization may hold", async () => {
+    await seedOrganization("uncapped-org");
+    for (const id of ["uncapped-a", "uncapped-b", "uncapped-c"]) {
+      expect(await insertApp(env.DB, appWrite(id, "uncapped-org"))).toBe(true);
+    }
     const count = await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM app WHERE organization_id = ?",
-    ).bind("atomic-upsert-limit").first<{ count: number }>();
-    expect(count?.count).toBe(1);
+    ).bind("uncapped-org").first<{ count: number }>();
+    expect(count?.count).toBe(3);
   });
 });

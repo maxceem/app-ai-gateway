@@ -3,10 +3,11 @@ import type { BillingVariables } from "./billing/gateway";
 import { AUTH_EVENT_RETENTION_DAYS, pruneAuthEvents } from "./core/auth-events";
 import { GatewayError } from "./core/errors";
 import { log } from "./core/log";
+import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { adminAuth, type AdminVariables } from "./middleware/admin";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
-import { limiterGate } from "./middleware/gate";
+import { quotaGate } from "./middleware/gate";
 import { billingEntitlementGate } from "./middleware/billing";
 import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
@@ -21,7 +22,7 @@ import { meRoutes } from "./routes/me";
 import { proxyPrepare, proxyRoutes, type ProxyVariables } from "./routes/proxy";
 import { vaultStatus } from "./vault";
 
-export { UserLimiter };
+export { OrgQuota, UserLimiter };
 
 const app = new Hono<{
   Bindings: Env;
@@ -45,10 +46,10 @@ app.route("/v1/console", consoleRoutes);
 app.use("/v1/apps/:app/*", billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
-app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, limiterGate);
+app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, quotaGate);
 app.route("/v1/apps/:app/proxy", proxyRoutes);
 
-app.use("/v1/apps/:app/endpoints/:slug", gatewayAuth, endpointPrepare, limiterGate);
+app.use("/v1/apps/:app/endpoints/:slug", gatewayAuth, endpointPrepare, quotaGate);
 app.route("/v1/apps/:app/endpoints", endpointRoutes);
 
 app.use("/v1/apps/:app/me", gatewayAuth);
@@ -90,10 +91,18 @@ app.onError((error, c) => {
       app: c.req.param("app"),
       appVersion: c.req.header("x-app-version"),
     });
-    return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), {
-      status: error.status,
-      headers,
-    });
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: error.code,
+          message: error.message,
+          // Present only where a code alone is not actionable, so clients that
+          // ignore it keep reading exactly the body they read before.
+          ...(error.data === undefined ? {} : { data: error.data }),
+        },
+      }),
+      { status: error.status, headers },
+    );
   }
   log("error", "unhandled_error", {
     path: c.req.path,

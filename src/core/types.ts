@@ -74,21 +74,6 @@ export interface ResolvedRoutingConfig {
   modelRewrites: Record<string, string>;
 }
 
-export interface LimitScopeConfig {
-  requests: {
-    per_minute: number | null;
-    per_day: number | null;
-  };
-  spending: {
-    monthly_usd: number | null;
-  };
-}
-
-export interface LimitsConfig {
-  per_user: LimitScopeConfig;
-  per_app: LimitScopeConfig;
-}
-
 /**
  * Named endpoints resolve provider and model on the server so an operator can
  * swap models without shipping a new client. Only providers whose native
@@ -112,19 +97,7 @@ export type EndpointsConfig = Record<string, EndpointConfig>;
 export interface StoredAppConfig {
   authentication: AuthenticationConfig;
   routing: RoutingConfig;
-  limits: LimitsConfig;
   endpoints?: EndpointsConfig;
-}
-
-export interface ResolvedLimitScope {
-  requestsPerMinute: number | null;
-  requestsPerDay: number | null;
-  monthlyBudgetMicrousd: number | null;
-}
-
-export interface ResolvedLimitsConfig {
-  perUser: ResolvedLimitScope;
-  perApp: ResolvedLimitScope;
 }
 
 export interface AppConfig {
@@ -133,7 +106,6 @@ export interface AppConfig {
   name: string;
   authentication: AuthenticationConfig;
   routing: ResolvedRoutingConfig;
-  limits: ResolvedLimitsConfig;
   endpoints: EndpointsConfig;
   status: "active" | "disabled";
 }

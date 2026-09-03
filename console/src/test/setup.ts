@@ -1,5 +1,14 @@
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
+
+// `testTimeout` in the Vitest config sizes the whole test; this sizes one
+// `findBy*`/`waitFor` inside it, and Testing Library defaults it to one second
+// independently. That second is what the render-heavy suites actually run out
+// of when files contend for the CPU — the test is nowhere near its own 20s
+// budget, but a query waiting on two stubbed fetches and a react-query render
+// gives up first. Same reasoning as the config comment, same generous sizing:
+// long enough that only a genuinely stuck query reaches it.
+configure({ asyncUtilTimeout: 5_000 });
 
 // Radix primitives probe these; jsdom implements neither.
 if (!window.matchMedia) {

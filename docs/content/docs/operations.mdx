@@ -14,6 +14,78 @@ pnpm run deploy:dry-run
 pnpm run startup:check
 ```
 
+## The monthly request allowance
+
+The gateway enforces exactly one quota: `maxRequestsPerMonth`, a UTC calendar
+month's worth of requests shared by an entire organization. It comes from the
+billing plan (see [Cloud billing](/docs/cloud-billing)); a self-hosted
+deployment, and any organization whose plan does not state one, is unlimited.
+
+**One request is counted at the moment it is admitted for dispatch to a
+provider**, and never before. Everything the gateway can refuse on its own —
+a rejected credential, a disallowed model or path, a malformed body, an
+unconfigured or disabled provider, an unpriced model, a blocked user, an
+inactive subscription — is settled before that point and costs nothing.
+
+Two consequences follow from the boundary being dispatch rather than success:
+
+- A named endpoint that falls through its whole fallback chain still spends one
+  request. Retries belong to the incoming request, not to the allowance.
+- A request the provider then fails stays counted. It was dispatched; what the
+  upstream did with it afterwards is not something the allowance can take back.
+
+Exhaustion answers `429` with code `monthly_request_quota_exceeded`, a
+`Retry-After` header, and a machine-readable body:
+
+```json
+{
+  "error": {
+    "code": "monthly_request_quota_exceeded",
+    "message": "The organization's monthly request allowance of 10000 is exhausted until 2026-10-01T00:00:00.000Z",
+    "data": { "limit": 10000, "used": 10000, "resetAt": "2026-10-01T00:00:00.000Z" }
+  }
+}
+```
+
+`resetAt` is the first instant of the next UTC month, which is when a whole
+allowance becomes available again. Refused requests are stored in the usage log
+with status `blocked_rate`, so an exhausted month is visible in the console
+rather than only in client logs.
+
+The count lives in one `OrgQuota` Durable Object per organization, and the claim
+is a single conditional SQL upsert, so concurrent requests can never push the
+month past its allowance.
+
+You do not have to wait for the first `429` to see where the month stands.
+`GET /v1/admin/billing/status` returns `quota` — the month, the count, the plan's
+`limit`, and `resetAt` — and the console renders it on the billing page and
+raises a banner above every page once four fifths of the allowance is spent.
+
+### When billing cannot be read
+
+The allowance comes from the billing service on every request, so a request that
+cannot be checked against it is refused. That refusal is `503
+billing_unavailable` with a short `Retry-After`, deliberately not the
+`402 payment_required` an organization without a subscription receives: an
+unreachable billing service is not a verdict on anyone's subscription, and a
+client that treats it as one shows a paying customer an upsell during your
+outage. Treat `402` as something the customer must act on and `503` as a wait.
+
+### What an unlimited deployment is trading away
+
+This allowance is the gateway's only volume control, so an organization without
+one has no gateway-side ceiling on how much a compromised credential, a looping
+client, or a runaway agent can spend at your providers. That is the deliberate
+trade for a single, comprehensible quota, and it applies to every self-hosted
+deployment by default.
+
+The gateway still bounds *what* those requests may do — an app reaches only the
+providers, paths and models it is configured for, only priced models proxy at
+all, and an operator can block a user or disable an app or provider instance at
+any time — but not *how many* of them there are. Where volume matters, put the
+ceiling where the money is: set spend limits and billing alerts in each provider
+account, and watch the request and cost trends on the console's **Usage** tab.
+
 ## Rotate a provider credential
 
 Rotate in place from the console's **Providers** page — **Update key** in the
@@ -66,7 +138,7 @@ A non-zero `unmetered_events` means the month contains spend nothing could
 measure. Repricing cannot recover it, and must not appear to have done so —
 were the marker overwritten, the events would read as genuinely free, drop out
 of the **By cost source** breakdown, and stop being shown as unresolved in the
-console, while the unbudgeted spend continued.
+console, while the unmeasured spend continued.
 
 ## Where a cost comes from
 
@@ -106,7 +178,7 @@ On a cost-reporting route the cost arrives in the *last* chunk of a stream. A
 client that disconnects before that chunk takes the figure with it, and the
 request is recorded `unresolved` at `$0` — the tokens were generated and
 [OpenRouter](/docs/providers#openrouter) charged for them, but nothing debits
-the budget. Deliberately repeated, that is unbounded unbudgeted spend.
+your cost reporting. Deliberately repeated, that is unbounded unmeasured spend.
 
 The gateway does not reconcile this today. Doing it properly means looking the
 request up through OpenRouter's generation-lookup API after the fact, which is a
@@ -116,8 +188,18 @@ funded backlog item rather than something to guess at. Until then:
 providers.** Watch the **By cost source** breakdown filtered to those provider
 instances, and alert on `usage_unresolved_cost` log lines whose provider is one
 of them. A background rate is normal; a rising one from a single app or user is
-worth investigating. Per-user request rate limits are the blunt control that
-bounds the damage in the meantime.
+worth investigating.
+
+What bounds the damage in the meantime depends on the deployment, and it is worth
+being exact about it. A hosted organization on a plan with a
+[`maxRequestsPerMonth`](#the-monthly-request-allowance) has a real ceiling: the
+month cannot cost more than that many dispatched requests, whatever any of them
+turned out to cost. **A self-hosted deployment, and any organization whose plan
+states no allowance, has no such ceiling** — that is deliberate, and it is the
+trade for having no other quota. There, the bound has to come from outside the
+gateway: your own provider-side spend caps and billing alerts at the provider,
+and disabling the offending application or provider instance from the console
+while you investigate.
 
 Those events are marked `cost_source: "unresolved"` instead of `"computed"`, are
 shown as **unresolved** rather than `$0.00` in the console's event list, and can
@@ -126,7 +208,7 @@ be counted with the **By cost source** breakdown. Each one also emits an
 and route, so a new provider or a changed response format surfaces as an alert
 rather than as free traffic. Live requests are never rejected for it.
 
-A sustained count above zero means real spend is escaping the budget, and the
+A sustained count above zero means real spend is escaping cost reporting, and the
 gateway cannot fix that on its own: the response shape has to be added to usage
 extraction. Blocked requests never reached a provider and carry no
 `cost_source`; events recorded before the field existed carry none either.
@@ -143,8 +225,8 @@ a null means nothing settled it rather than "probably yours".
 `model_author` records who made the model, resolved when the event is recorded
 so it can be grouped in SQL. It answers "how much Google-model spend, on any
 route" — a question the provider type cannot, once one provider serves several
-authors' models. It is an analytics dimension only: budgets and allowlists stay
-per provider instance and per app.
+authors' models. It is an analytics dimension only: allowlists stay per provider
+instance and per app, and the request allowance is organization-wide.
 
 `served_provider`, `served_model` and `reported_cost_usd` are for upstreams that
 report what actually served a request and what it cost. They are populated on

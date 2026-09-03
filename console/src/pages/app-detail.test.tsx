@@ -15,21 +15,15 @@ const APP = {
       end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
     },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
-    limits: {
-      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-      per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-    },
   },
 };
-
-const LIMIT = { requestsPerMinute: null, requestsPerDay: null, monthlyBudgetMicrousd: null };
 
 const RESOLVED = {
   id: APP.id,
   name: APP.name,
   authentication: APP.config.authentication,
   routing: { providerMode: "all", providers: undefined, modelRewrites: {} },
-  limits: { perUser: LIMIT, perApp: LIMIT },
+  endpoints: {},
   status: APP.status,
 };
 

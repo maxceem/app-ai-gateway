@@ -32,9 +32,33 @@ const EVENT_TONES: Record<UsageStatus, string> = {
   blocked_user: "border-amber-500/40 text-amber-600 dark:text-amber-400",
 };
 
+/**
+ * What each stored status means, in words.
+ *
+ * The badge keeps showing the raw value, because that is what the API filters
+ * on and what a log line says; the sentence is the hover. `blocked_rate` is the
+ * one worth spelling out — the name predates the gateway having a single
+ * organization-wide allowance, and it is that allowance it now reports.
+ *
+ * `blocked_budget` is only ever read, never written: it belongs to events
+ * recorded while the gateway still had per-scope spending budgets. Old rows
+ * keep rendering, and its label says why it cannot recur.
+ */
+export const USAGE_STATUS_LABELS: Record<UsageStatus, string> = {
+  ok: "Served by the provider",
+  provider_error: "The provider refused or failed the request",
+  blocked_rate: "Refused: the organization's monthly request allowance was exhausted",
+  blocked_budget: "Refused by a spending budget, a quota the gateway no longer has",
+  blocked_user: "Refused: this user is blocked",
+};
+
 export function EventStatusBadge({ status }: { status: UsageStatus }) {
   return (
-    <Badge variant="outline" className={cn("font-mono text-[11px] font-normal", EVENT_TONES[status])}>
+    <Badge
+      variant="outline"
+      className={cn("font-mono text-[11px] font-normal", EVENT_TONES[status])}
+      title={USAGE_STATUS_LABELS[status]}
+    >
       {status}
     </Badge>
   );

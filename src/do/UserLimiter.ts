@@ -1,19 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 
-export interface LimiterCheckInput {
-  now: number;
-  rpm: number | null;
-  rpd: number | null;
-  monthlyBudgetMicrousd: number | null;
-}
-
-export type LimiterCheckResult =
-  | { allowed: true; requestsToday: number; monthlyCostMicrousd: number }
-  | { allowed: false; reason: "blocked" | "rate" | "budget"; retryAfterSeconds?: number };
+/**
+ * Per-user state that has to be instantly consistent: the block flag an
+ * operator sets, and the month's settled spend.
+ *
+ * It enforces no quota. The gateway's only allowance is the organization-wide
+ * monthly request count in {@link import("./OrgQuota").OrgQuota}; what lives
+ * here is a moderation switch and cost observability, both of which are read
+ * back per user and so cannot be answered from D1 within a request.
+ */
 
 export interface LimiterStatus {
   blocked: boolean;
-  requestsToday: number;
   monthlyCostMicrousd: number;
 }
 
@@ -26,10 +24,6 @@ export class UserLimiter extends DurableObject<Env> {
           id INTEGER PRIMARY KEY,
           applied_at INTEGER NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS requests (
-          occurred_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_requests_occurred_at ON requests(occurred_at);
         CREATE TABLE IF NOT EXISTS monthly_cost (
           month TEXT PRIMARY KEY,
           microusd INTEGER NOT NULL
@@ -43,9 +37,17 @@ export class UserLimiter extends DurableObject<Env> {
           applied_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_applied_events_applied_at ON applied_events(applied_at);
+        -- Per-request timestamps existed only to enforce per-minute and per-day
+        -- rate limits, which the gateway no longer has. Already-deployed
+        -- instances carry the table and its rows; nothing reads either, and the
+        -- alarm that used to prune them is gone, so they are dropped here rather
+        -- than left to accumulate forever.
+        DROP INDEX IF EXISTS idx_requests_occurred_at;
+        DROP TABLE IF EXISTS requests;
         INSERT OR IGNORE INTO state(singleton, blocked) VALUES (1, 0);
         INSERT OR IGNORE INTO _sql_schema_migrations(id, applied_at) VALUES (1, unixepoch());
         INSERT OR IGNORE INTO _sql_schema_migrations(id, applied_at) VALUES (2, unixepoch());
+        INSERT OR IGNORE INTO _sql_schema_migrations(id, applied_at) VALUES (3, unixepoch());
       `);
       if ((await this.ctx.storage.getAlarm()) === null) {
         await this.ctx.storage.setAlarm(Date.now() + 86_400_000);
@@ -57,75 +59,17 @@ export class UserLimiter extends DurableObject<Env> {
     return new Date(now).toISOString().slice(0, 7);
   }
 
-  private startOfUtcDay(now: number): number {
-    const date = new Date(now);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
-  }
-
-  checkAndIncrement(input: LimiterCheckInput): LimiterCheckResult {
-    const blocked = this.ctx.storage.sql
+  /** The moderation switch, read on the request path before any dispatch. */
+  isBlocked(): boolean {
+    return this.ctx.storage.sql
       .exec<{ blocked: number }>("SELECT blocked FROM state WHERE singleton = 1")
       .one().blocked === 1;
-    if (blocked) return { allowed: false, reason: "blocked" };
-
-    const month = this.month(input.now);
-    const monthlyCostMicrousd = this.ctx.storage.sql
-      .exec<{ microusd: number }>(
-        "SELECT COALESCE((SELECT microusd FROM monthly_cost WHERE month = ?), 0) AS microusd",
-        month,
-      )
-      .one().microusd;
-    if (input.monthlyBudgetMicrousd !== null && monthlyCostMicrousd >= input.monthlyBudgetMicrousd) {
-      return { allowed: false, reason: "budget" };
-    }
-
-    const minuteStart = input.now - 60_000;
-    const dayStart = this.startOfUtcDay(input.now);
-    const counts = this.ctx.storage.sql
-      .exec<{ minute_count: number; day_count: number }>(
-        `SELECT
-           SUM(CASE WHEN occurred_at > ? THEN 1 ELSE 0 END) AS minute_count,
-           SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS day_count
-         FROM requests WHERE occurred_at >= ?`,
-        minuteStart,
-        dayStart,
-        dayStart,
-      )
-      .one();
-    const minuteCount = counts.minute_count ?? 0;
-    const dayCount = counts.day_count ?? 0;
-    if (input.rpm !== null && minuteCount >= input.rpm) {
-      const oldest = this.ctx.storage.sql
-        .exec<{ occurred_at: number }>(
-          "SELECT occurred_at FROM requests WHERE occurred_at > ? ORDER BY occurred_at LIMIT 1",
-          minuteStart,
-        )
-        .one().occurred_at;
-      return {
-        allowed: false,
-        reason: "rate",
-        retryAfterSeconds: Math.max(1, Math.ceil((oldest + 60_000 - input.now) / 1000)),
-      };
-    }
-    if (input.rpd !== null && dayCount >= input.rpd) {
-      const nextDay = dayStart + 86_400_000;
-      return {
-        allowed: false,
-        reason: "rate",
-        retryAfterSeconds: Math.max(1, Math.ceil((nextDay - input.now) / 1000)),
-      };
-    }
-
-    this.ctx.storage.sql.exec("INSERT INTO requests(occurred_at) VALUES (?)", input.now);
-    return { allowed: true, requestsToday: dayCount + 1, monthlyCostMicrousd };
   }
 
   /**
    * Settles one usage event against the month's spend. Recording retries the
    * same event, so the cost is applied only when `eventId` is new to this
-   * instance's ledger; a replay reads the month back unchanged. The ledger is
-   * per instance, which is what makes an event settle exactly once against both
-   * the user limiter and the app limiter.
+   * instance's ledger; a replay reads the month back unchanged.
    */
   addCost(eventId: string, now: number, microusd: number): number {
     const month = this.month(now);
@@ -160,19 +104,13 @@ export class UserLimiter extends DurableObject<Env> {
   }
 
   getStatus(now: number): LimiterStatus {
-    const blocked = this.ctx.storage.sql
-      .exec<{ blocked: number }>("SELECT blocked FROM state WHERE singleton = 1")
-      .one().blocked === 1;
-    const requestsToday = this.ctx.storage.sql
-      .exec<{ count: number }>("SELECT COUNT(*) AS count FROM requests WHERE occurred_at >= ?", this.startOfUtcDay(now))
-      .one().count;
     const monthlyCostMicrousd = this.ctx.storage.sql
       .exec<{ microusd: number }>(
         "SELECT COALESCE((SELECT microusd FROM monthly_cost WHERE month = ?), 0) AS microusd",
         this.month(now),
       )
       .one().microusd;
-    return { blocked, requestsToday, monthlyCostMicrousd };
+    return { blocked: this.isBlocked(), monthlyCostMicrousd };
   }
 
   setBlocked(blocked: boolean): void {
@@ -189,8 +127,6 @@ export class UserLimiter extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
-    const cutoff = Date.now() - 2 * 86_400_000;
-    this.ctx.storage.sql.exec("DELETE FROM requests WHERE occurred_at < ?", cutoff);
     // Dedup only has to outlive a recording retry, which finishes with the
     // request; a week of history is generous and keeps the ledger small.
     this.ctx.storage.sql.exec(

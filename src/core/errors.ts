@@ -9,7 +9,6 @@ export type ErrorCode =
   | "not_a_member"
   | "last_owner"
   | "payment_required"
-  | "plan_limit_exceeded"
   | "billing_unavailable"
   | "billing_not_found"
   | "billing_action_forbidden"
@@ -29,8 +28,12 @@ export type ErrorCode =
    */
   | "issuer_verification_unavailable"
   | "auth_method_not_supported"
-  | "rate_limited"
-  | "budget_exhausted"
+  /**
+   * The organization used up its plan's calendar-month request allowance. The
+   * gateway's only quota, and the only 429 it raises; the accompanying `data`
+   * carries the allowance, the count, and when a fresh month begins.
+   */
+  | "monthly_request_quota_exceeded"
   | "pricing_not_configured"
   | "model_not_allowed"
   | "path_not_allowed"
@@ -53,9 +56,17 @@ export type ErrorCode =
   | "internal_error";
 
 /**
- * What a rejection knows about itself beyond the wire contract. None of it is
- * ever serialized: the code is the client's signal, and these two are for the
- * operator's logs and the auth event log.
+ * Machine-readable facts a client can act on, serialized beside the code as
+ * `error.data`. Used where the code alone leaves a client with no way to decide
+ * what to do next — a quota rejection, which is worth retrying only after a
+ * stated instant.
+ */
+export type GatewayErrorData = Record<string, string | number | boolean>;
+
+/**
+ * What a rejection knows about itself beyond the wire contract. `reason` and
+ * `userId` are never serialized: they are for the operator's logs and the auth
+ * event log. `data` is, and is part of the public contract.
  */
 export interface GatewayErrorDetails {
   /**
@@ -70,11 +81,14 @@ export interface GatewayErrorDetails {
    * claim rather than an assertion the caller made about itself.
    */
   userId?: string;
+  /** Serialized into the response body as `error.data`. */
+  data?: GatewayErrorData;
 }
 
 export class GatewayError extends Error {
   readonly reason?: string;
   readonly userId?: string;
+  readonly data?: GatewayErrorData;
 
   constructor(
     readonly status: number,
@@ -87,6 +101,7 @@ export class GatewayError extends Error {
     this.name = "GatewayError";
     this.reason = details.reason;
     this.userId = details.userId;
+    this.data = details.data;
   }
 }
 

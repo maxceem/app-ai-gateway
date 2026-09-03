@@ -73,10 +73,6 @@ function appRow(endpoints: EndpointsConfig) {
         end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
       },
       routing: { providers: { mode: "all" }, model_rewrites: {} },
-      limits: {
-        per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-        per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-      },
       endpoints,
     },
   };

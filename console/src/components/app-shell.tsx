@@ -8,16 +8,20 @@ import { SidebarContent } from "@/components/app-sidebar";
 import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConsoleSession } from "@/lib/console-session";
-import { billingNotice } from "@/lib/billing";
+import { billingNotice, quotaNotice } from "@/lib/billing";
 
 /**
- * Warns about billing state above every page so an inactive subscription is
- * visible wherever the operator happens to be. Never rendered when billing is
- * off, keeping self-hosted deployments free of billing traces.
+ * Warns about billing state above every page so an inactive subscription — or a
+ * monthly request allowance about to run out — is visible wherever the operator
+ * happens to be. Never rendered when billing is off, keeping self-hosted
+ * deployments free of billing traces.
+ *
+ * A subscription problem outranks an allowance one: an organization that may
+ * not serve traffic at all has no allowance worth discussing.
  */
 function BillingBanner() {
-  const { capabilities, billing } = useConsoleSession();
-  const notice = capabilities.billing ? billingNotice(billing) : null;
+  const { capabilities, billing, quota } = useConsoleSession();
+  const notice = capabilities.billing ? billingNotice(billing) ?? quotaNotice(quota) : null;
   if (!notice) return null;
 
   return (

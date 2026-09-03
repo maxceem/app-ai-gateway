@@ -28,7 +28,7 @@ describe("canonical app configuration", () => {
   });
 
   it("rejects missing discriminators instead of inferring legacy defaults", () => {
-    expect(() => validateAppConfigJson({ authentication: {}, routing: {}, limits: {} }))
+    expect(() => validateAppConfigJson({ authentication: {}, routing: {} }))
       .toThrowError("authentication.type");
   });
 
@@ -108,7 +108,7 @@ describe("canonical app configuration", () => {
           allowed_models: ["google/gemini-3.6-flash", "meta-llama/llama-4-scout"],
         },
       },
-    }), {}, providers)).not.toThrow();
+    }), providers)).not.toThrow();
   });
 
   /** The fail-closed half: a type that bills on a local price still needs one. */
@@ -125,7 +125,7 @@ describe("canonical app configuration", () => {
     };
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { main: { allowed_paths: [], allowed_models: ["gpt-not-in-any-catalog"] } },
-    }), {}, providers)).toThrowError("has no configured price");
+    }), providers)).toThrowError("has no configured price");
     expect(() => validateAppConfigJson(serverConfig({
       proxy: {
         main: {
@@ -133,7 +133,7 @@ describe("canonical app configuration", () => {
           allowed_models: [],
         },
       },
-    }), {}, providers)).toThrowError("has no configured price");
+    }), providers)).toThrowError("has no configured price");
   });
 
   it("validates selected policies against configured provider instance slugs", () => {
@@ -154,7 +154,7 @@ describe("canonical app configuration", () => {
           allowed_models: ["gpt-5.6-sol"],
         },
       },
-    }), {}, providers)).not.toThrow();
+    }), providers)).not.toThrow();
     expect(() => validateAppConfigJson(serverConfig({
       proxy: {
         openai: {
@@ -162,7 +162,7 @@ describe("canonical app configuration", () => {
           allowed_models: ["gpt-5.6-sol"],
         },
       },
-    }), {}, providers)).toThrowError("Unknown provider instance openai");
+    }), providers)).toThrowError("Unknown provider instance openai");
   });
 
   it("rejects rewrite targets that are absent from every price catalog", () => {
@@ -172,7 +172,7 @@ describe("canonical app configuration", () => {
     // and the case below asserts exactly that.
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { alias: "released-today" } },
-    }), {}, {
+    }), {
       openai: {
         id: "p1",
         slug: "openai",
@@ -193,7 +193,7 @@ describe("canonical app configuration", () => {
   it("accepts a rewrite target only a cost-reporting instance can bill", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { fast: "google/gemini-3.6-flash" } },
-    }), {}, {
+    }), {
       router: {
         id: "p2",
         slug: "router",
@@ -211,16 +211,16 @@ describe("canonical app configuration", () => {
   it("prices rewrite targets from the catalog even with no configured providers", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { "client-alias": "gpt-5.6-sol" } },
-    }), {}, {})).not.toThrow();
+    }), {})).not.toThrow();
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { "client-alias": "released-today" } },
-    }), {}, {})).toThrowError("has no configured price");
+    }), {})).toThrowError("has no configured price");
   });
 
   it("prices a rewrite target from an instance override the catalog does not know", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: { model_rewrites: { "client-alias": "released-today" } },
-    }), {}, {
+    }), {
       "openai-dev": {
         id: "provider-openai-dev",
         slug: "openai-dev",
@@ -239,16 +239,16 @@ describe("canonical app configuration", () => {
     const selected = (slug: string) => serverConfig({
       proxy: { [slug]: { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] } },
     });
-    expect(() => validateAppConfigJson(selected("constructor"), {}, {}))
+    expect(() => validateAppConfigJson(selected("constructor"), {}))
       .toThrowError("Unknown provider instance constructor");
-    expect(() => validateAppConfigJson(selected("__proto__"), {}, {}))
+    expect(() => validateAppConfigJson(selected("__proto__"), {}))
       .toThrowError("Invalid provider instance slug __proto__");
     expect(() => validateAppConfigJson(serverConfig({
       endpoints: { chat: { api_style: "responses", provider: "constructor", model: "gpt-5.6-luna" } },
-    }), {}, {})).toThrowError("endpoints.chat.provider constructor is not configured");
+    }), {})).toThrowError("endpoints.chat.provider constructor is not configured");
 
     // A real instance named "constructor" is still perfectly usable.
-    expect(() => validateAppConfigJson(selected("constructor"), {}, {
+    expect(() => validateAppConfigJson(selected("constructor"), {
       constructor: {
         id: "provider-constructor",
         slug: "constructor",
@@ -269,7 +269,7 @@ describe("canonical app configuration", () => {
           '{"__proto__": "gpt-5.6-sol", "constructor": "gpt-5.6-sol"}',
         ) as Record<string, string>,
       },
-    }), {}, {});
+    }), {});
     const rewrites = stored.routing.model_rewrites;
     // Written as own keys rather than swallowed by the prototype, and the map
     // itself answers for nothing else.
@@ -286,22 +286,22 @@ describe("canonical app configuration", () => {
     const config = serverConfig({
       proxy: { "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] } },
     });
-    expect(() => validateAppConfigJson(config, {}, {})).toThrowError(
+    expect(() => validateAppConfigJson(config, {})).toThrowError(
       "Unknown provider instance openai-dev",
     );
-    expect(() => validateAppConfigJson(config, {}, {}, new Set(["openai-dev"])))
+    expect(() => validateAppConfigJson(config, {}, new Set(["openai-dev"])))
       .not.toThrow();
-    expect(() => validateAppConfigJson(config, {}, {}, new Set(["openai-prod"])))
+    expect(() => validateAppConfigJson(config, {}, new Set(["openai-prod"])))
       .toThrowError("Unknown provider instance openai-dev");
     const endpointConfig = serverConfig({
       endpoints: {
         chat: { api_style: "responses", provider: "openai-dev", model: "gpt-5.6-luna" },
       },
     });
-    expect(() => validateAppConfigJson(endpointConfig, {}, {})).toThrowError(
+    expect(() => validateAppConfigJson(endpointConfig, {})).toThrowError(
       "endpoints.chat.provider openai-dev is not configured",
     );
-    expect(() => validateAppConfigJson(endpointConfig, {}, {}, new Set(["openai-dev"])))
+    expect(() => validateAppConfigJson(endpointConfig, {}, new Set(["openai-dev"])))
       .not.toThrow();
   });
 });
@@ -405,12 +405,12 @@ describe("named endpoint configuration", () => {
         },
       },
     });
-    expect(() => validateAppConfigJson(transcribe, {}, instance("vercel"))).toThrowError(
+    expect(() => validateAppConfigJson(transcribe, instance("vercel"))).toThrowError(
       "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support transcription",
     );
     // The same endpoint is fine on either route that reaches OpenAI's own API.
     for (const route of ["direct", "cf_aig"] as const) {
-      expect(() => validateAppConfigJson(transcribe, {}, instance(route))).not.toThrow();
+      expect(() => validateAppConfigJson(transcribe, instance(route))).not.toThrow();
     }
     // A Responses endpoint works on all three: Vercel serves that one.
     const respond = serverConfig({
@@ -419,7 +419,7 @@ describe("named endpoint configuration", () => {
       },
     });
     for (const route of ["direct", "cf_aig", "vercel"] as const) {
-      expect(() => validateAppConfigJson(respond, {}, instance(route))).not.toThrow();
+      expect(() => validateAppConfigJson(respond, instance(route))).not.toThrow();
     }
   });
 
@@ -446,7 +446,6 @@ describe("named endpoint configuration", () => {
             one: { api_style: style, provider: "openai-routed", model: "gpt-5.6-luna" },
           },
         }),
-        {},
         unroutable,
       )).toThrowError(
         `endpoints.one.provider openai-routed is routed through a provider gateway this deployment has no adapter for, so it cannot serve ${style} endpoints`,

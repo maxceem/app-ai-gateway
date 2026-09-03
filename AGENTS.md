@@ -1,6 +1,6 @@
 # App AI Gateway
 
-This is a minimal AI gateway (proxy) for applications. Its main purpose is to quickly and securely give applications access to AI providers, with rate limits and budgets per application and per user and provide observability of AI usage inside all the applications from one place. 
+This is a minimal AI gateway (proxy) for applications. Its main purpose is to quickly and securely give applications access to AI providers, with one monthly request allowance per organization, and provide observability of AI usage inside all the applications from one place.
 
 The primary target is iOS applications, with secure measures for calling AI APIs directly from an iOS app: App Attest, user auth verification, and paid entitlement verification. Support for server applications via API keys is complementary — it makes it possible to observe multiple applications from one place. Android applications are not supported yet, but are planned for the future.
 
@@ -49,3 +49,39 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 Run `pnpm run check` before handing off a change. For Worker configuration changes,
 also run `pnpm run deploy:dry-run` and regenerate binding types when applicable.
+
+<!-- t3dev:begin -->
+## Local preview deployment
+
+This repository is served locally while you work. Each T3 Code worktree gets its
+own dev server on its own port, reverse-proxied by Caddy under `*.localhost`.
+
+- `dev-up` starts (or refreshes) the preview for the current worktree and
+  prints its URLs. It is safe to run repeatedly.
+- `dev-up --print-url` prints just the URLs, newest-name first.
+- `dev-down` stops the preview for the current worktree.
+- If a command is blocked by a sandbox, run `dev-up --marker` instead: it only
+  writes a `.t3-devup` file, and the background reconciler performs the deploy.
+
+Two URLs point at the same server:
+
+- a **stable** one derived from the worktree directory, valid from the moment
+  the worktree exists;
+- a **branch** one derived from the branch name, which appears once T3 Code has
+  renamed the temporary `t3code/<hex>` branch to a descriptive one.
+
+Guidelines:
+
+- After changing anything a reviewer should see, make sure the preview is up and
+  mention the branch URL so it can be opened directly.
+- Before creating a pull request, rebase onto the latest base branch:
+  `git fetch origin && git rebase origin/main` (use the repository's actual
+  default branch). Resolve conflicts before opening the PR.
+- **Include the preview URL in the pull request body**, on its own line, for
+  example: `Preview: http://my-branch.my-app.localhost:8080`.
+- Do not call the Caddy admin API directly; always go through `dev-up` /
+  `dev-down`.
+
+The preview is torn down automatically once the pull request is merged (or the
+thread is deleted), so there is nothing to clean up by hand.
+<!-- t3dev:end -->

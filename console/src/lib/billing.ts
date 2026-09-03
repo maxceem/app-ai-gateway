@@ -1,4 +1,10 @@
-import type { BillingAccess, BillingPlan, BillingPrice } from "./types";
+import { formatNumber } from "./format";
+import type {
+  BillingAccess,
+  BillingPlan,
+  BillingPrice,
+  OrganizationQuota,
+} from "./types";
 
 /**
  * Billing presentation rules. Kept free of React so the console can test the
@@ -67,6 +73,79 @@ export function billingNotice(access: BillingAccess | undefined | null): Billing
     // A service-level outage or deactivation is not something a plan change fixes.
     actionable: access.reason !== "billing_unavailable" && access.reason !== "service_inactive",
   };
+}
+
+/** The share of the allowance at which the operator is warned it is running out. */
+export const QUOTA_WARNING_RATIO = 0.8;
+
+/** Where the month stands against the plan's allowance, ready to render. */
+export interface QuotaMeter {
+  used: number;
+  /** `null` when the plan sets no ceiling. */
+  limit: number | null;
+  /** Share of the allowance spent, capped at 1. `null` when unlimited. */
+  ratio: number | null;
+  tone: "normal" | "warning" | "destructive";
+  /** "8,420 of 10,000 requests", or the bare count when unlimited. */
+  label: string;
+  caption: string;
+}
+
+/**
+ * Reads the month's request count into something displayable, or `null` when
+ * there is no allowance to report — a self-hosted deployment, or a status
+ * response from before this field existed.
+ */
+export function quotaMeter(quota: OrganizationQuota | undefined | null): QuotaMeter | null {
+  if (!quota) return null;
+  const resets = formatBillingDate(quota.resetAt);
+  const caption = resets ? `Resets ${resets}` : "Resets at the start of next month";
+  if (quota.limit === undefined || quota.limit === null) {
+    return {
+      used: quota.used,
+      limit: null,
+      ratio: null,
+      tone: "normal",
+      label: `${formatNumber(quota.used)} requests this month`,
+      caption,
+    };
+  }
+  // An allowance of zero admits nothing, and dividing by it would leave the
+  // meter with no reading at all, so it reads as fully spent — which it is.
+  const ratio = quota.limit > 0 ? Math.min(quota.used / quota.limit, 1) : 1;
+  return {
+    used: quota.used,
+    limit: quota.limit,
+    ratio,
+    tone: ratio >= 1 ? "destructive" : ratio >= QUOTA_WARNING_RATIO ? "warning" : "normal",
+    label: `${formatNumber(quota.used)} of ${formatNumber(quota.limit)} requests`,
+    caption,
+  };
+}
+
+/**
+ * The banner for an allowance that is nearly or entirely spent.
+ *
+ * Worth interrupting the operator for wherever they are: unlike a lapsed card,
+ * a spent allowance is usually a client behaving unexpectedly, and the whole
+ * value of saying so is saying it before every request starts being refused.
+ */
+export function quotaNotice(quota: OrganizationQuota | undefined | null): BillingNotice | null {
+  const meter = quotaMeter(quota);
+  if (!meter || meter.ratio === null || meter.tone === "normal") return null;
+  return meter.ratio >= 1
+    ? {
+        tone: "destructive",
+        title: "Monthly request allowance spent",
+        description: `Gateway requests are being refused until the allowance resets. ${meter.caption}.`,
+        actionable: true,
+      }
+    : {
+        tone: "warning",
+        title: "Monthly request allowance almost spent",
+        description: `${meter.label} used this month. ${meter.caption}.`,
+        actionable: true,
+      };
 }
 
 /** True when the organization may not currently serve gateway traffic. */

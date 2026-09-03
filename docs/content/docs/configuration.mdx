@@ -1,10 +1,14 @@
 ---
 title: Application configuration
-description: Define authentication, provider routing, and limits for one tenant.
+description: Define authentication and provider routing for one tenant.
 ---
 
 An application row is the only tenant-specific input. Do not add tenant branches
 to Worker code.
+
+An application carries no quota of its own. The gateway has exactly one, a
+calendar-month request allowance shared by the whole organization and supplied by
+the billing plan; see [Operations](/docs/operations).
 
 ## Server application
 
@@ -34,16 +38,6 @@ Use API-key authentication for a trusted backend:
         }
       },
       "model_rewrites": {}
-    },
-    "limits": {
-      "per_user": {
-        "requests": { "per_minute": 30, "per_day": 1000 },
-        "spending": { "monthly_usd": 10 }
-      },
-      "per_app": {
-        "requests": { "per_minute": 300, "per_day": 10000 },
-        "spending": { "monthly_usd": 100 }
-      }
     }
   }
 }

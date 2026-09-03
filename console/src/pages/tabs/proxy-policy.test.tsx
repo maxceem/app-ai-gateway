@@ -68,10 +68,6 @@ function appRow(routing: ProxyConfig) {
         end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
       },
       routing,
-      limits: {
-        per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-        per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
-      },
     },
   };
 }
