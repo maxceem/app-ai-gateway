@@ -50,6 +50,10 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 Run `pnpm run check` before handing off a change. For Worker configuration changes,
 also run `pnpm run deploy:dry-run` and regenerate binding types when applicable.
 
+The `packageManager` pin stays at `pnpm@11.0.4`: it is the last release whose
+`@pnpm/exe` ships a macOS x64 binary, and pnpm refuses to run a version it
+cannot download. Raising it breaks every command on an Intel Mac.
+
 <!-- t3dev:begin -->
 ## Local preview deployment
 
