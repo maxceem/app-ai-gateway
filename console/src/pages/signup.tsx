@@ -120,6 +120,32 @@ export function SignupPage() {
 
           {capabilities.data?.googleAuth ? <GoogleButton label="Sign up with Google" /> : null}
 
+          {/* The linked documents govern the hosted service only, so a
+              self-hosted deployment (no billing) must not show them. */}
+          {capabilities.data?.billing ? (
+            <p className="text-center text-xs text-muted-foreground">
+              By creating an account you agree to the{" "}
+              <a
+                href="https://appaigateway.com/terms/"
+                target="_blank"
+                rel="noopener"
+                className="text-foreground underline underline-offset-4"
+              >
+                Terms of Service
+              </a>{" "}
+              and{" "}
+              <a
+                href="https://appaigateway.com/privacy/"
+                target="_blank"
+                rel="noopener"
+                className="text-foreground underline underline-offset-4"
+              >
+                Privacy Policy
+              </a>
+              .
+            </p>
+          ) : null}
+
           <p className="text-center text-sm text-muted-foreground">
             Already have an account?{" "}
             <Link to="/login" className="text-foreground underline underline-offset-4">
