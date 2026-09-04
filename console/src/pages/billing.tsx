@@ -125,12 +125,16 @@ export function BillingPage() {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Plans</h2>
-        <Tabs value={period} onValueChange={(value) => setPeriod(value as Period)}>
-          <TabsList>
-            <TabsTrigger value="month">Monthly</TabsTrigger>
-            <TabsTrigger value="year">Yearly</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        {/* The catalog is monthly-only today; a period toggle whose Yearly tab
+            prices every plan as "—" reads as a broken purchase path. */}
+        {(plans.data?.plans ?? []).some((plan) => priceFor(plan, "year")) ? (
+          <Tabs value={period} onValueChange={(value) => setPeriod(value as Period)}>
+            <TabsList>
+              <TabsTrigger value="month">Monthly</TabsTrigger>
+              <TabsTrigger value="year">Yearly</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        ) : null}
       </div>
 
       {plans.isPending ? (
