@@ -44,11 +44,6 @@ export function GoogleButton({
 
   return (
     <>
-      <div className="flex items-center gap-3">
-        <span className="h-px flex-1 bg-border" />
-        <span className="text-xs text-muted-foreground">or</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
       <Button
         type="button"
         variant="outline"
@@ -59,6 +54,11 @@ export function GoogleButton({
         {pending ? <Loader2 className="size-4 animate-spin" /> : <GoogleMark />}
         {label}
       </Button>
+      <div className="flex items-center gap-3">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-xs text-muted-foreground">or</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
     </>
   );
 }

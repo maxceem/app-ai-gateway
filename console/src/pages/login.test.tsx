@@ -68,7 +68,12 @@ describe("LoginPage", () => {
 
     renderPublic(<LoginPage />, { route: "/login" });
 
-    expect(await screen.findByRole("button", { name: /continue with google/i })).toBeTruthy();
+    const google = await screen.findByRole("button", { name: /continue with google/i });
+    const email = screen.getByLabelText(/email/i);
+
+    expect(
+      Boolean(google.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
   });
 
   it("hides the sign-up link when registration is closed", async () => {

@@ -7,9 +7,8 @@
 #
 # The command runs through a login shell (bash -lc) inside the worktree.
 
-# wrangler ignores PORT and binds its own default, so the allocated port has
-# to be passed explicitly or Caddy proxies to nothing. The console is built
-# first because the Worker serves it from console/dist as static assets —
-# `predev` only creates that directory, it does not fill it.
-DEV_CMD="pnpm run console:build && pnpm dev --port {{port}}"
+# The Cloudflare Vite plugin runs the console and Worker together on T3's
+# allocated port. Vite provides frontend HMR while the plugin watches and
+# reloads Worker code, with both sides sharing the same local origin.
+DEV_CMD="CLOUDFLARE_ENV=local pnpm --filter @ai-gateway/console dev --host 127.0.0.1 --port {{port}}"
 DEV_READY_PATH="/"

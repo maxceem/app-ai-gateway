@@ -45,6 +45,20 @@ describe("SignupPage", () => {
     });
   });
 
+  it("puts Google sign-up before the email and password form", async () => {
+    stubApi({
+      [CAPABILITIES_URL]: capabilities({ googleAuth: true }),
+    });
+
+    renderPublic(<SignupPage />, { route: "/signup" });
+
+    const google = await screen.findByRole("button", { name: /sign up with google/i });
+    const name = screen.getByLabelText(/^name$/i);
+    expect(
+      Boolean(google.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+  });
+
   it("keeps submission disabled until the password is long enough", async () => {
     stubApi({
       [CAPABILITIES_URL]: capabilities(),

@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
@@ -37,9 +37,8 @@ export function LoginPage() {
   return (
     <AuthLayout>
       <Card className="w-full max-w-sm">
-        <CardHeader>
+        <CardHeader className="grid-rows-[auto] gap-0">
           <CardTitle>Sign in</CardTitle>
-          <CardDescription>Use your operator account for this gateway.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {oauthError ? (
@@ -48,6 +47,8 @@ export function LoginPage() {
               <AlertDescription>{oauthError.description}</AlertDescription>
             </Alert>
           ) : null}
+
+          {capabilities.data?.googleAuth ? <GoogleButton returnPath={returnPath} /> : null}
 
           <form onSubmit={(event) => void submit(event)} className="space-y-4">
             <div className="space-y-2">
@@ -89,8 +90,6 @@ export function LoginPage() {
               Sign in
             </Button>
           </form>
-
-          {capabilities.data?.googleAuth ? <GoogleButton returnPath={returnPath} /> : null}
 
           {capabilities.data?.registrationOpen ? (
             <p className="text-center text-sm text-muted-foreground">

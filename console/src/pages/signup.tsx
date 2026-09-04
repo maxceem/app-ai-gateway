@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Loader2, Lock } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
@@ -55,13 +55,12 @@ export function SignupPage() {
   return (
     <AuthLayout>
       <Card className="w-full max-w-sm">
-        <CardHeader>
+        <CardHeader className="grid-rows-[auto] gap-0">
           <CardTitle>Create an account</CardTitle>
-          <CardDescription>
-            You will get your own organization to manage applications in.
-          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {capabilities.data?.googleAuth ? <GoogleButton label="Sign up with Google" /> : null}
+
           <form onSubmit={(event) => void submit(event)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
@@ -117,8 +116,6 @@ export function SignupPage() {
               Create account
             </Button>
           </form>
-
-          {capabilities.data?.googleAuth ? <GoogleButton label="Sign up with Google" /> : null}
 
           {/* The linked documents govern the hosted service only, so a
               self-hosted deployment (no billing) must not show them. */}
