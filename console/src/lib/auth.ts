@@ -27,8 +27,13 @@ export function signUpWithPassword(input: SignUpInput): Promise<unknown> {
   return api.post(`${AUTH_BASE}/sign-up/email`, input);
 }
 
+/**
+ * Better Auth rejects a bodyless POST: better-call answers 415 when the request
+ * carries no `content-type`, and 500 when it declares JSON but sends nothing to
+ * parse. Sign-out takes no input, so it is sent as an empty JSON object.
+ */
 export function signOut(): Promise<unknown> {
-  return api.post(`${AUTH_BASE}/sign-out`);
+  return api.post(`${AUTH_BASE}/sign-out`, {});
 }
 
 export function changePassword(input: {
