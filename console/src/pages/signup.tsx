@@ -117,32 +117,6 @@ export function SignupPage() {
             </Button>
           </form>
 
-          {/* The linked documents govern the hosted service only, so a
-              self-hosted deployment (no billing) must not show them. */}
-          {capabilities.data?.billing ? (
-            <p className="text-center text-xs text-muted-foreground">
-              By creating an account you agree to the{" "}
-              <a
-                href="https://appaigateway.com/terms/"
-                target="_blank"
-                rel="noopener"
-                className="text-foreground underline underline-offset-4"
-              >
-                Terms of Service
-              </a>{" "}
-              and{" "}
-              <a
-                href="https://appaigateway.com/privacy/"
-                target="_blank"
-                rel="noopener"
-                className="text-foreground underline underline-offset-4"
-              >
-                Privacy Policy
-              </a>
-              .
-            </p>
-          ) : null}
-
           <p className="text-center text-sm text-muted-foreground">
             Already have an account?{" "}
             <Link to="/login" className="text-foreground underline underline-offset-4">
@@ -151,6 +125,34 @@ export function SignupPage() {
           </p>
         </CardContent>
       </Card>
+
+      {/* The linked documents govern the hosted service only, so a
+          self-hosted deployment (no billing) must not show them. Sitting
+          outside the card, opposite the wordmark, keeps the fine print clear
+          of the sign-in line without needing a rule to separate it. */}
+      {capabilities.data?.billing ? (
+        <p className="max-w-sm text-center text-xs text-balance text-muted-foreground">
+          By creating an account you agree to the{" "}
+          <a
+            href="https://appaigateway.com/terms/"
+            target="_blank"
+            rel="noopener"
+            className="underline underline-offset-4 hover:text-foreground"
+          >
+            Terms of Service
+          </a>{" "}
+          and{" "}
+          <a
+            href="https://appaigateway.com/privacy/"
+            target="_blank"
+            rel="noopener"
+            className="underline underline-offset-4 hover:text-foreground"
+          >
+            Privacy Policy
+          </a>
+          .
+        </p>
+      ) : null}
     </AuthLayout>
   );
 }
