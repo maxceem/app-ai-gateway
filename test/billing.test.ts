@@ -6,7 +6,9 @@ import {
   billingPlanLimits,
   clearBillingAccessCache,
   getBillingAccess,
+  requireActiveBilling,
   type BillingRequestCache,
+  type GatewayBillingAccess,
 } from "../src/billing/gateway";
 import { validateAppConfigJson } from "../src/core/config";
 import worker from "../src/index";
@@ -22,17 +24,47 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-function stub(overrides: Partial<BillingRuntime> = {}): BillingRuntime {
-  const inactive: BillingAccess = { status: "inactive", reason: "missing_subscription" };
+/** No plan resolves at all: the one condition that still answers 402. */
+const NO_PLAN: BillingAccess = { plan: null, subscription: null };
+
+/** An entitled organization, on a subscription or on the service default. */
+function onPlan(input: {
+  planKey?: string;
+  limits?: unknown;
+  isDefault?: boolean;
+} = {}): BillingAccess {
+  const planKey = input.planKey ?? "pro";
   return {
-    getTenantAccess: async () => inactive,
-    getAccess: async () => inactive,
+    plan: {
+      planKey,
+      planName: planKey,
+      limits: input.limits,
+      isDefault: input.isDefault ?? false,
+    },
+    subscription: input.isDefault
+      ? null
+      : {
+          status: "active",
+          planKey,
+          planName: planKey,
+          billingPeriod: "month",
+          renewsAt: null,
+          endsAt: null,
+          trialEndsAt: null,
+          source: "lemon_squeezy",
+        },
+  };
+}
+
+function stub(overrides: Partial<BillingRuntime> = {}): BillingRuntime {
+  return {
+    getTenantAccess: async () => NO_PLAN,
     listPlans: async () => ({ plans: [] }),
     createCheckout: async () => ({ url: "https://checkout.example.test" }),
     changePlan: async () => ({ ok: true }),
     resumeSubscription: async () => ({ ok: true }),
     cancelSubscription: async () => ({ ok: true }),
-    startTrial: async () => inactive,
+    startTrial: async () => NO_PLAN,
     handleLemonWebhook: async () => ({ ok: true, duplicate: false, stale: false }),
     ...overrides,
   };
@@ -48,10 +80,9 @@ function withBilling(binding: BillingRuntime): Env {
 }
 
 describe("billing gateway", () => {
-  it("defaults to active self-hosted access without a binding", async () => {
+  it("defaults to unlimited self-hosted access without a binding", async () => {
     await expect(getBillingAccess({}, "org-self-hosted")).resolves.toEqual({
-      status: "active",
-      selfHosted: true,
+      state: "self_hosted",
     });
     const capabilities = await exports.default.fetch(`${ORIGIN}/v1/console/capabilities`);
     await expect(capabilities.json()).resolves.toEqual({
@@ -63,11 +94,8 @@ describe("billing gateway", () => {
 
   it("caches access across requests until the isolate TTL expires", async () => {
     let calls = 0;
-    const access: BillingAccess = {
-      status: "active",
-      planKey: "pro",
-      limits: { maxRequestsPerMonth: 10_000 },
-    };
+    const access = onPlan({ limits: { maxRequestsPerMonth: 10_000 } });
+    const cached = { state: "billed", ...access };
     const binding = stub({
       getTenantAccess: async () => {
         calls += 1;
@@ -79,12 +107,12 @@ describe("billing gateway", () => {
       { BILLING: binding },
       "org-active",
       new Map() as BillingRequestCache,
-    )).resolves.toEqual(access);
+    )).resolves.toEqual(cached);
     await expect(getBillingAccess(
       { BILLING: binding },
       "org-active",
       new Map() as BillingRequestCache,
-    )).resolves.toEqual(access);
+    )).resolves.toEqual(cached);
     expect(calls).toBe(1);
 
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
@@ -92,12 +120,13 @@ describe("billing gateway", () => {
       { BILLING: binding },
       "org-active",
       new Map() as BillingRequestCache,
-    )).resolves.toEqual(access);
+    )).resolves.toEqual(cached);
     expect(calls).toBe(2);
 
-    await expect(getBillingAccess({ BILLING: stub() }, "org-inactive")).resolves.toMatchObject({
-      status: "inactive",
-      reason: "missing_subscription",
+    await expect(getBillingAccess({ BILLING: stub() }, "org-unentitled")).resolves.toEqual({
+      state: "billed",
+      plan: null,
+      subscription: null,
     });
   });
 
@@ -106,7 +135,7 @@ describe("billing gateway", () => {
     const billingEnv = withBilling(stub({
       getTenantAccess: async () => {
         accessCalls += 1;
-        return { status: "active", planKey: "pro" };
+        return onPlan();
       },
     }));
 
@@ -137,18 +166,16 @@ describe("billing gateway", () => {
       getTenantAccess: async () => {
         calls += 1;
         if (calls === 1) throw error;
-        return { status: "active", planKey: "pro" };
+        return onPlan();
       },
     });
     await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
-      status: "inactive",
-      reason: "billing_unavailable",
-      selfHosted: false,
+      state: "unavailable",
       billingErrorCode: "service_not_found",
     });
     await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
-      status: "active",
-      planKey: "pro",
+      state: "billed",
+      ...onPlan(),
     });
     expect(calls).toBe(2);
   });
@@ -172,25 +199,23 @@ describe("billing gateway", () => {
     expect(validateAppConfigJson(withLegacyLimits)).not.toHaveProperty("limits");
   });
 
+  const billed = (limits?: unknown) =>
+    ({ state: "billed", ...onPlan({ planKey: "growth", limits }) }) as GatewayBillingAccess;
+
   it.each([
     ["a plain number", 10_000, 10_000],
     ["a whole float", 100_000.0, 100_000],
     ["a JSON string", "1000000", 1_000_000],
     ["zero", 0, 0],
   ])("reads maxRequestsPerMonth given as %s", (_label, value, expected) => {
-    expect(billingPlanLimits({
-      status: "active",
-      planKey: "growth",
-      limits: { maxRequestsPerMonth: value },
-    } as never)).toEqual({ maxRequestsPerMonth: expected });
+    expect(billingPlanLimits(billed({ maxRequestsPerMonth: value })))
+      .toEqual({ maxRequestsPerMonth: expected });
   });
 
   it("recognises no other plan limit", () => {
-    expect(billingPlanLimits({
-      status: "active",
-      planKey: "legacy",
-      limits: { maxApps: 25, maxRpm: 500, maxRpd: 10_000, maxMonthlyUsd: 250 },
-    } as never)).toEqual({});
+    expect(billingPlanLimits(
+      billed({ maxApps: 25, maxRpm: 500, maxRpd: 10_000, maxMonthlyUsd: 250 }),
+    )).toEqual({});
   });
 
   it.each([
@@ -202,29 +227,34 @@ describe("billing gateway", () => {
     ["an object", { value: 10 }],
     ["beyond safe integers", 1e21],
   ])("fails closed on a malformed maxRequestsPerMonth given as %s", (_label, value) => {
-    expect(() => billingPlanLimits({
-      status: "active",
-      planKey: "broken",
-      limits: { maxRequestsPerMonth: value },
-    } as never)).toThrowError(/maxRequestsPerMonth is invalid/u);
+    expect(() => billingPlanLimits(billed({ maxRequestsPerMonth: value })))
+      .toThrowError(/maxRequestsPerMonth is invalid/u);
   });
 
   it("fails closed when the whole limits block is malformed", () => {
-    expect(() => billingPlanLimits({
-      status: "active",
-      planKey: "broken",
-      limits: "10000",
-    } as never)).toThrowError(/Billing plan limits are invalid/u);
+    expect(() => billingPlanLimits(billed("10000")))
+      .toThrowError(/Billing plan limits are invalid/u);
   });
 
-  it("treats a self-hosted deployment and a limit-less plan as unlimited", () => {
-    expect(billingPlanLimits({ status: "active", selfHosted: true })).toEqual({});
-    expect(billingPlanLimits({ status: "active", planKey: "starter" } as never)).toEqual({});
-    expect(billingPlanLimits({
-      status: "active",
-      planKey: "starter",
-      limits: {},
-    } as never)).toEqual({});
+  it("treats self-hosted, unentitled and limit-less plans as unlimited", () => {
+    expect(billingPlanLimits({ state: "self_hosted" })).toEqual({});
+    expect(billingPlanLimits({ state: "billed", plan: null, subscription: null })).toEqual({});
+    expect(billingPlanLimits(billed())).toEqual({});
+    expect(billingPlanLimits(billed({}))).toEqual({});
+  });
+
+  /**
+   * The free default plan is a plan like any other: it entitles traffic and it
+   * carries the allowance the gateway enforces. Nothing here may treat
+   * "resolved from the service default" as "not really subscribed".
+   */
+  it("reads the allowance of a default plan exactly like a paid one", () => {
+    const free = {
+      state: "billed",
+      ...onPlan({ planKey: "free", limits: { maxRequestsPerMonth: 1_000 }, isDefault: true }),
+    } as GatewayBillingAccess;
+    expect(billingPlanLimits(free)).toEqual({ maxRequestsPerMonth: 1_000 });
+    expect(() => requireActiveBilling(free)).not.toThrow();
   });
 
   it("conditionally exposes organization-scoped billing routes", async () => {
@@ -237,7 +267,7 @@ describe("billing gateway", () => {
     const billingEnv = withBilling(stub({
       getTenantAccess: async (input) => {
         tenantId = input.tenantId;
-        return { status: "active", planKey: "pro" };
+        return onPlan();
       },
       listPlans: async () => ({ plans: [] }),
     }));
@@ -265,8 +295,7 @@ describe("billing gateway", () => {
    */
   it("reports the month against the plan's allowance beside the subscription", async () => {
     const billingEnv = withBilling(stub({
-      getTenantAccess: async () => ({
-        status: "active",
+      getTenantAccess: async () => onPlan({
         planKey: "growth",
         limits: { maxRequestsPerMonth: 50 },
       }),
@@ -283,7 +312,7 @@ describe("billing gateway", () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      access: { status: "active", planKey: "growth" },
+      access: { state: "billed", plan: { planKey: "growth", isDefault: false } },
       quota: {
         month: new Date(now).toISOString().slice(0, 7),
         used: 2,
@@ -296,7 +325,7 @@ describe("billing gateway", () => {
   /** A plan with no ceiling still reports the count; it just has nothing to be measured against. */
   it("reports a plan without a ceiling as an uncapped count", async () => {
     const billingEnv = withBilling(stub({
-      getTenantAccess: async () => ({ status: "active", planKey: "unlimited" }),
+      getTenantAccess: async () => onPlan({ planKey: "unlimited" }),
     }));
     const response = await worker.request(
       `${ORIGIN}/v1/admin/billing/status`,
@@ -362,8 +391,7 @@ describe("billing gateway", () => {
     // A plan that used to cap applications at zero, and a request rate a plan
     // used to refuse: both are simply not quotas any more.
     const legacyCeilingEnv = withBilling(stub({
-      getTenantAccess: async () => ({
-        status: "active",
+      getTenantAccess: async () => onPlan({
         limits: { maxApps: 0, maxRpm: 5, maxRpd: 10, maxMonthlyUsd: 1 },
       }),
     }));

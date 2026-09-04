@@ -2189,7 +2189,7 @@
             }
           },
           "402": {
-            "description": "The organization requires an active subscription or trial.",
+            "description": "No billing plan resolves for the organization.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2289,7 +2289,7 @@
             }
           },
           "402": {
-            "description": "The organization requires an active subscription or trial.",
+            "description": "No billing plan resolves for the organization.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2411,7 +2411,7 @@
             }
           },
           "402": {
-            "description": "The organization requires an active subscription or trial.",
+            "description": "No billing plan resolves for the organization.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2525,7 +2525,7 @@
             }
           },
           "402": {
-            "description": "The organization requires an active subscription or trial.",
+            "description": "No billing plan resolves for the organization.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2664,7 +2664,7 @@
             }
           },
           "402": {
-            "description": "The organization requires an active subscription or trial.",
+            "description": "No billing plan resolves for the organization.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2840,7 +2840,7 @@
             }
           },
           "402": {
-            "description": "The organization requires an active subscription or trial.",
+            "description": "No billing plan resolves for the organization.",
             "content": {
               "application/json": {
                 "schema": {

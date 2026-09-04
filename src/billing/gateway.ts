@@ -1,7 +1,8 @@
 import {
   billingErrorCodeOf,
-  type BillingAccess,
   type BillingRuntime,
+  type EntitledPlan,
+  type SubscriptionState,
 } from "cf-billing";
 import { GatewayError } from "../core/errors";
 
@@ -25,14 +26,24 @@ export interface BillingPlanLimits {
   maxRequestsPerMonth?: number;
 }
 
+/**
+ * cf-billing's answer, plus the two states only the gateway can be in.
+ *
+ * `state` is the discriminant the whole gateway and console read: cf-billing
+ * itself has no notion of a deployment without billing, nor of its own
+ * unreachability, and both have to be distinguishable from "this organization
+ * has no plan" — one is unlimited, one is temporary, one is a paywall.
+ */
 export type GatewayBillingAccess =
-  | (BillingAccess & { selfHosted?: false })
-  | { status: "active"; selfHosted: true }
+  /** No `BILLING` binding: self-hosted, unlimited, never refused. */
+  | { state: "self_hosted" }
+  /** The billing RPC failed. The allowance is unknown, so traffic waits. */
+  | { state: "unavailable"; billingErrorCode?: string }
+  /** cf-billing answered. `plan === null` means no entitlement at all. */
   | {
-      status: "inactive";
-      reason: "billing_unavailable";
-      selfHosted: false;
-      billingErrorCode?: string;
+      state: "billed";
+      plan: EntitledPlan | null;
+      subscription: SubscriptionState | null;
     };
 
 export type BillingRequestCache = Map<string, Promise<GatewayBillingAccess>>;
@@ -68,13 +79,14 @@ export function billingBinding(env: BillingEnv): BillingBinding | undefined {
 
 async function loadBillingAccess(env: BillingEnv, organizationId: string): Promise<GatewayBillingAccess> {
   const binding = billingBinding(env);
-  if (!binding) return { status: "active", selfHosted: true };
+  if (!binding) return { state: "self_hosted" };
 
   try {
-    return await binding.getTenantAccess({
+    const access = await binding.getTenantAccess({
       serviceId: BILLING_SERVICE_ID,
       tenantId: organizationId,
     });
+    return { state: "billed", plan: access.plan, subscription: access.subscription };
   } catch (error) {
     const code = billingErrorCodeOf(error);
     console.error(JSON.stringify({
@@ -84,9 +96,7 @@ async function loadBillingAccess(env: BillingEnv, organizationId: string): Promi
       billingErrorCode: code,
     }));
     return {
-      status: "inactive",
-      reason: "billing_unavailable",
-      selfHosted: false,
+      state: "unavailable",
       ...(code ? { billingErrorCode: code } : {}),
     };
   }
@@ -101,7 +111,7 @@ export function getBillingAccess(
   organizationId: string,
   cache?: BillingRequestCache,
 ): Promise<GatewayBillingAccess> {
-  if (!billingBinding(env)) return Promise.resolve({ status: "active", selfHosted: true });
+  if (!billingBinding(env)) return Promise.resolve({ state: "self_hosted" });
 
   const requestValue = cache?.get(organizationId);
   if (requestValue) return requestValue;
@@ -120,7 +130,7 @@ export function getBillingAccess(
     value: pending,
   });
   void pending.then((access) => {
-    if (access.status !== "inactive" || access.reason !== "billing_unavailable") return;
+    if (access.state !== "unavailable") return;
     const current = billingAccessCache.get(organizationId);
     if (current?.value === pending) billingAccessCache.delete(organizationId);
   });
@@ -137,31 +147,39 @@ export function getBillingAccess(
  */
 export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
+/**
+ * Refuses the request unless the organization holds a plan.
+ *
+ * With a default plan configured in cf-billing, holding no plan at all is rare:
+ * an organization that never subscribed, or whose subscription lapsed, is on the
+ * free tier rather than locked out. `402` is left for the cases where nothing
+ * resolves — the service has no default plan, or it has been deactivated.
+ */
 export function requireActiveBilling(access: GatewayBillingAccess): GatewayBillingAccess {
-  if (access.status === "inactive") {
-    /*
-     * Not being able to reach billing is not a statement about this
-     * organization's subscription. Refusing is still correct — the allowance is
-     * unknown, and admitting traffic on an unknown allowance is how a plan gets
-     * overspent — but it has to be refused as our fault and as temporary.
-     *
-     * The distinction is the whole point: `402` tells a client its customer has
-     * to go and pay, which a mobile app surfaces as an upsell and does not
-     * retry. During an outage that would tell every paying customer they are
-     * unsubscribed. `503` says the same request is worth sending again.
-     */
-    if (access.reason === "billing_unavailable") {
-      throw new GatewayError(
-        503,
-        "billing_unavailable",
-        "Billing could not be reached, so the request was not attempted",
-        { "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS) },
-      );
-    }
+  /*
+   * Not being able to reach billing is not a statement about this
+   * organization's subscription. Refusing is still correct — the allowance is
+   * unknown, and admitting traffic on an unknown allowance is how a plan gets
+   * overspent — but it has to be refused as our fault and as temporary.
+   *
+   * The distinction is the whole point: `402` tells a client its customer has
+   * to go and pay, which a mobile app surfaces as an upsell and does not
+   * retry. During an outage that would tell every paying customer they are
+   * unsubscribed. `503` says the same request is worth sending again.
+   */
+  if (access.state === "unavailable") {
+    throw new GatewayError(
+      503,
+      "billing_unavailable",
+      "Billing could not be reached, so the request was not attempted",
+      { "Retry-After": String(BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS) },
+    );
+  }
+  if (access.state === "billed" && access.plan === null) {
     throw new GatewayError(
       402,
       "payment_required",
-      "An active subscription or trial is required",
+      "No plan is available for this organization",
     );
   }
   return access;
@@ -199,11 +217,13 @@ function requestAllowance(value: unknown): number | undefined {
 }
 
 export function billingPlanLimits(access: GatewayBillingAccess): BillingPlanLimits {
-  if (access.status === "inactive" || access.selfHosted || access.limits === undefined) return {};
-  if (typeof access.limits !== "object" || access.limits === null || Array.isArray(access.limits)) {
+  if (access.state !== "billed" || access.plan === null) return {};
+  const planLimits = access.plan.limits;
+  if (planLimits === undefined) return {};
+  if (typeof planLimits !== "object" || planLimits === null || Array.isArray(planLimits)) {
     throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
   }
-  const limits = access.limits as Record<string, unknown>;
+  const limits = planLimits as Record<string, unknown>;
   const maxRequestsPerMonth = requestAllowance(limits.maxRequestsPerMonth);
   return maxRequestsPerMonth === undefined ? {} : { maxRequestsPerMonth };
 }

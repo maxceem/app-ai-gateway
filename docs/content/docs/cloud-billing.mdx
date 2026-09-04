@@ -31,6 +31,39 @@ The gateway always calls billing with service ID `app-ai-gateway` and the curren
 operator organization ID as the tenant ID. Create matching service and plan data
 in the billing worker before enabling the binding.
 
+## Plans, subscriptions and the default plan
+
+An organization's plan is the plan of its access-granting subscription. Without
+one, it is the billing service's **default plan** — the free tier configured as
+`service.default_plan_key` in cf-billing. There are no exceptions: an
+organization that never subscribed, whose subscription expired, or whose payment
+went unpaid, all land on the same default plan and keep serving traffic against
+its allowance.
+
+`GET /v1/admin/billing/status` reports both halves separately, because they
+answer different questions:
+
+```json
+{
+  "access": {
+    "state": "billed",
+    "plan": { "planKey": "free", "planName": "Free", "limits": { "maxRequestsPerMonth": 1000 }, "isDefault": true },
+    "subscription": { "status": "expired", "planKey": "growth", "planName": "Growth", "billingPeriod": "month", "renewsAt": null, "endsAt": "2026-09-01T00:00:00.000Z", "trialEndsAt": null, "source": "lemon_squeezy" }
+  }
+}
+```
+
+`plan` is what the organization may do — `isDefault` says whether it came from
+the default plan rather than from a subscription. `subscription` is what it is
+paying for, reported verbatim whether or not it still entitles anything, which is
+what lets the console say "your subscription has ended" rather than only "you are
+on Free". `state` is the gateway's own wrapper: `self_hosted` for a deployment
+with no `BILLING` binding, `unavailable` when the billing service could not be
+reached, and `billed` for cf-billing's answer.
+
+A `plan` of `null` means nothing resolved: the billing service has no default
+plan configured, or the service has been deactivated.
+
 ## The plan's request allowance
 
 A plan carries exactly one limit, and it is the gateway's only quota:
@@ -53,16 +86,20 @@ validating, and updating apps are entitlement checks only.
 See [Operations](/docs/operations) for what a client sees when the allowance runs
 out.
 
-Inactive organizations receive `402 payment_required` on their apps' data-plane
-routes. Billing RPC failures also fail closed, but under a different code: an
-unreachable billing service says nothing about the subscription, so the gateway
-answers `503 billing_unavailable` with a short `Retry-After` instead. Clients
-should treat the first as something the customer has to act on and the second as
-worth retrying. Neither condition deletes or disables application records, so
-access resumes when billing becomes active again.
+An organization with no plan at all — `access.plan` is `null` — receives
+`402 payment_required` on its apps' data-plane routes. With a default plan
+configured that is rare: a lapsed subscription drops to the free tier rather than
+to a paywall, so `402` is left for the two cases where nothing resolves, namely a
+billing service with no default plan and a deactivated service. Billing RPC
+failures also fail closed, but under a different code: an unreachable billing
+service says nothing about the subscription, so the gateway answers
+`503 billing_unavailable` with a short `Retry-After` instead. Clients should
+treat the first as something the customer has to act on and the second as worth
+retrying. Neither condition deletes or disables application records, so access
+resumes when billing becomes readable again.
 
-`GET /v1/admin/billing/status` reports the month against the allowance beside
-the subscription, as `quota`:
+`GET /v1/admin/billing/status` also reports the month against the allowance,
+beside the access state, as `quota`:
 
 ```json
 { "month": "2026-09", "used": 41288, "limit": 100000, "resetAt": "2026-10-01T00:00:00.000Z" }

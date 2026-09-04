@@ -3,7 +3,9 @@ import type {
   BillingAccess,
   BillingPlan,
   BillingPrice,
+  EntitledPlan,
   OrganizationQuota,
+  SubscriptionState,
 } from "./types";
 
 /**
@@ -19,60 +21,96 @@ export interface BillingNotice {
   actionable: boolean;
 }
 
-const INACTIVE_COPY: Record<string, { title: string; description: string }> = {
-  trial_expired: {
-    title: "Your trial has ended",
-    description: "Choose a plan to keep serving gateway traffic.",
-  },
-  past_due: {
-    title: "Payment past due",
-    description: "Update your payment method to restore gateway traffic.",
-  },
-  canceled: {
-    title: "Subscription canceled",
-    description: "Resubscribe to keep serving gateway traffic.",
-  },
-  missing_subscription: {
-    title: "No active subscription",
-    description: "Choose a plan to start serving gateway traffic.",
-  },
-  service_inactive: {
-    title: "Billing is not active for this service",
-    description: "Contact support to re-enable billing for this deployment.",
-  },
-  billing_unavailable: {
-    title: "Billing service unavailable",
-    description: "Gateway traffic may be interrupted. This usually resolves on its own.",
-  },
-};
+/** The plan the organization holds, or `null` where there is none to show. */
+export function entitledPlan(
+  access: BillingAccess | undefined | null,
+): EntitledPlan | null {
+  return access?.state === "billed" ? access.plan : null;
+}
+
+/** The subscription to act on, or `null` where there is none. */
+export function subscriptionOf(
+  access: BillingAccess | undefined | null,
+): SubscriptionState | null {
+  return access?.state === "billed" ? access.subscription : null;
+}
+
+/**
+ * "the Free plan (1,000 requests/month)", from whatever the plan actually says.
+ *
+ * The allowance is read the same way the gateway reads it — a whole number, or
+ * a JSON string holding one — and anything else is simply left unstated rather
+ * than rendered as a number the plan does not grant.
+ */
+function describePlan(plan: EntitledPlan): string {
+  const limits = plan.limits;
+  const allowance =
+    typeof limits === "object" && limits !== null && !Array.isArray(limits)
+      ? (limits as Record<string, unknown>).maxRequestsPerMonth
+      : undefined;
+  const count =
+    typeof allowance === "number"
+      ? allowance
+      : typeof allowance === "string" && allowance.trim().length > 0
+        ? Number(allowance)
+        : Number.NaN;
+  return Number.isSafeInteger(count) && count >= 0
+    ? `the ${plan.planName} plan (${formatNumber(count)} requests/month)`
+    : `the ${plan.planName} plan`;
+}
 
 /**
  * The banner to show above the console, or `null` when nothing is wrong.
- * A self-hosted deployment never produces one.
+ *
+ * A self-hosted deployment never produces one, and neither does a healthy
+ * organization — including one sitting on the free default plan, whose limit
+ * the quota meter already states in full. Only two things are worth
+ * interrupting for: traffic that has quietly changed allowance, and traffic
+ * that is about to stop.
  */
 export function billingNotice(access: BillingAccess | undefined | null): BillingNotice | null {
-  if (!access || access.selfHosted) return null;
-  if (access.status === "active") return null;
+  if (!access || access.state === "self_hosted") return null;
 
-  if (access.status === "trialing") {
-    const ends = formatBillingDate(access.trialEndsAt);
+  if (access.state === "unavailable") {
     return {
-      tone: "warning",
-      title: "Trial in progress",
-      description: ends ? `Your trial ends on ${ends}.` : "Your trial is active.",
+      tone: "destructive",
+      title: "Billing service unavailable",
+      description: "Gateway traffic may be interrupted. This usually resolves on its own.",
+      // Nothing a plan change can fix.
+      actionable: false,
+    };
+  }
+
+  if (access.plan === null) {
+    return {
+      tone: "destructive",
+      title: "No active plan",
+      description: "Gateway traffic is being refused. Choose a plan to start serving it again.",
       actionable: true,
     };
   }
 
-  const copy = INACTIVE_COPY[access.reason ?? "missing_subscription"]
-    ?? INACTIVE_COPY.missing_subscription!;
-  return {
-    tone: "destructive",
-    title: copy.title,
-    description: copy.description,
-    // A service-level outage or deactivation is not something a plan change fixes.
-    actionable: access.reason !== "billing_unavailable" && access.reason !== "service_inactive",
-  };
+  // A subscription that no longer entitles anything: traffic still flows, on
+  // the default plan, so this is a change of allowance rather than an outage.
+  if (access.subscription && access.plan.isDefault) {
+    return {
+      tone: "warning",
+      title: "Your subscription has ended",
+      description: `You’re on ${describePlan(access.plan)}. Resubscribe to restore your previous allowance.`,
+      actionable: true,
+    };
+  }
+
+  if (access.subscription?.status === "past_due") {
+    return {
+      tone: "warning",
+      title: "Payment past due",
+      description: "Update your payment method to keep this plan.",
+      actionable: true,
+    };
+  }
+
+  return null;
 }
 
 /** The share of the allowance at which the operator is warned it is running out. */
@@ -148,11 +186,6 @@ export function quotaNotice(quota: OrganizationQuota | undefined | null): Billin
       };
 }
 
-/** True when the organization may not currently serve gateway traffic. */
-export function isBillingBlocked(access: BillingAccess | undefined | null): boolean {
-  return Boolean(access && !access.selfHosted && access.status === "inactive");
-}
-
 export function formatBillingDate(value: string | undefined | null): string | null {
   if (!value) return null;
   const date = new Date(value);
@@ -175,28 +208,46 @@ export function priceFor(plan: BillingPlan, period: "month" | "year"): BillingPr
 
 /**
  * The subscription's next meaningful date. A canceled-but-running subscription
- * reports when access ends; an active one reports when it renews.
+ * reports when it ends; an active one reports when it renews.
  */
-export function subscriptionTimeline(access: BillingAccess): {
+export function subscriptionTimeline(subscription: SubscriptionState): {
   label: string;
   value: string;
 } | null {
-  if (access.endsAt) {
-    const formatted = formatBillingDate(access.endsAt);
+  if (subscription.endsAt) {
+    const formatted = formatBillingDate(subscription.endsAt);
     if (formatted) return { label: "Access ends", value: formatted };
   }
-  if (access.status === "trialing" && access.trialEndsAt) {
-    const formatted = formatBillingDate(access.trialEndsAt);
+  if (subscription.status === "on_trial" && subscription.trialEndsAt) {
+    const formatted = formatBillingDate(subscription.trialEndsAt);
     if (formatted) return { label: "Trial ends", value: formatted };
   }
-  if (access.renewsAt) {
-    const formatted = formatBillingDate(access.renewsAt);
+  if (subscription.renewsAt) {
+    const formatted = formatBillingDate(subscription.renewsAt);
     if (formatted) return { label: "Renews", value: formatted };
   }
   return null;
 }
 
-/** A canceled subscription still inside its paid period can be resumed. */
-export function canResume(access: BillingAccess): boolean {
-  return Boolean(access.endsAt) || access.subscriptionStatus === "cancelled";
+/**
+ * LemonSqueezy statuses cf-billing can still cancel. Deliberately keyed off the
+ * *subscription*, never off the entitled plan: an organization can hold a
+ * cancellable subscription while sitting on the free default plan, and one on a
+ * paid plan may have nothing to cancel.
+ */
+const CANCELLABLE = new Set(["on_trial", "active", "paused", "past_due"]);
+
+/** Whether the subscription can be canceled at period end. */
+export function canCancel(subscription: SubscriptionState | null): boolean {
+  return Boolean(
+    subscription
+      // Manual grants are not LemonSqueezy's to cancel.
+      && subscription.source === "lemon_squeezy"
+      && CANCELLABLE.has(subscription.status),
+  );
+}
+
+/** A canceled subscription can be un-canceled, whether or not it still entitles. */
+export function canResume(subscription: SubscriptionState | null): boolean {
+  return subscription?.status === "cancelled";
 }

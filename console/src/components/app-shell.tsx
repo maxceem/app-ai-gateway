@@ -21,8 +21,11 @@ import { billingNotice, quotaNotice } from "@/lib/billing";
  */
 function BillingBanner() {
   const { capabilities, billing, quota } = useConsoleSession();
+  const location = useLocation();
   const notice = capabilities.billing ? billingNotice(billing) ?? quotaNotice(quota) : null;
-  if (!notice) return null;
+  // The billing page states all of this itself, right next to the controls
+  // that act on it; repeating it above would show the same words twice.
+  if (!notice || location.pathname === "/billing") return null;
 
   return (
     <Alert

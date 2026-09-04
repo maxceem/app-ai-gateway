@@ -152,21 +152,25 @@ describe("AppShell navigation", () => {
   it("hides every billing trace when the deployment has billing off", async () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: false },
-      // Even a stale inactive status must not leak billing into a self-hosted console.
-      billing: { status: "inactive", reason: "past_due" },
+      // Even a stale lapsed status must not leak billing into a self-hosted console.
+      billing: { state: "billed", plan: null, subscription: null },
     });
 
     await openAccountMenu();
 
     expect(screen.queryByRole("menuitem", { name: /billing/i })).toBeNull();
-    expect(screen.queryByText(/past due/i)).toBeNull();
+    expect(screen.queryByText(/no active plan/i)).toBeNull();
     expect(screen.queryByText(/view plans/i)).toBeNull();
   });
 
   it("shows billing in the user menu when the capability is present", async () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: true },
-      billing: { status: "active" },
+      billing: {
+        state: "billed",
+        plan: { planKey: "pro", planName: "Pro", isDefault: false },
+        subscription: null,
+      },
     });
 
     await openAccountMenu();
@@ -177,11 +181,21 @@ describe("AppShell navigation", () => {
   it("raises a banner with a route to plans when the subscription lapses", () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       capabilities: { billing: true },
-      billing: { status: "inactive", reason: "past_due" },
+      billing: { state: "billed", plan: null, subscription: null },
     });
 
-    expect(screen.getByText(/payment past due/i)).toBeTruthy();
+    expect(screen.getByText(/no active plan/i)).toBeTruthy();
     expect(screen.getByRole("link", { name: /view plans/i })).toBeTruthy();
+  });
+
+  it("suppresses the banner on the billing page, which states the same thing itself", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      route: "/billing",
+      capabilities: { billing: true },
+      billing: { state: "billed", plan: null, subscription: null },
+    });
+
+    expect(screen.queryByText(/no active plan/i)).toBeNull();
   });
 
   it("offers Providers to every role, since credentials are readable by members", () => {
