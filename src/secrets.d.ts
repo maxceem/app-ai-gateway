@@ -6,6 +6,8 @@ interface Env {
   BETTER_AUTH_SECRET: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  OAUTH_PROXY_PRODUCTION_URL?: string;
+  OAUTH_PROXY_SECRET?: string;
   ALLOW_PUBLIC_REGISTRATION?: string;
   BILLING?: import("cf-billing").BillingRuntime;
   // Vault credentials. Each is required only in its own SECRET_VAULT_MODE, and
@@ -22,6 +24,8 @@ declare namespace Cloudflare {
     BETTER_AUTH_SECRET: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
+    OAUTH_PROXY_PRODUCTION_URL?: string;
+    OAUTH_PROXY_SECRET?: string;
     ALLOW_PUBLIC_REGISTRATION?: string;
     BILLING?: import("cf-billing").BillingRuntime;
     SECRET_VAULT_KMS_URL?: string;

@@ -86,6 +86,25 @@ The public `wrangler.jsonc` intentionally has no custom production domain or
 Cloudflare account-specific D1 database ID. Add a custom route and the
 identifiers for resources you own in your private deployment configuration.
 
+### Google OAuth from changing preview hosts
+
+Google requires an exact OAuth callback URL and does not accept wildcard
+subdomains. To let local or preview instances use one Google OAuth client, set
+`OAUTH_PROXY_PRODUCTION_URL` to the stable deployed origin and configure the
+same dedicated `OAUTH_PROXY_SECRET` in that deployment and each participating
+local environment. Keep `BETTER_AUTH_SECRET` different between environments.
+
+Register only this callback with Google:
+
+```text
+<OAUTH_PROXY_PRODUCTION_URL>/v1/auth/callback/google
+```
+
+The stable deployment exchanges the Google code and relays a short-lived,
+encrypted profile to the originating instance. The originating instance writes
+the user and session to its own database; the stable deployment does not write
+the preview user to its database.
+
 ## Verify
 
 Call the deployed health endpoint and then sign in to the console:

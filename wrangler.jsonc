@@ -63,12 +63,16 @@
         "GATEWAY_TOKEN_TTL_SECONDS": "3600",
         "CONFIG_CACHE_TTL_SECONDS": "60",
         "ALLOW_PUBLIC_REGISTRATION": "true",
+        "OAUTH_PROXY_PRODUCTION_URL": "https://console.appaigateway.com",
         "SECRET_VAULT_MODE": "kms"
       },
       "secrets": {
         "required": [
           "JWT_SECRET",
           "BETTER_AUTH_SECRET",
+          "GOOGLE_CLIENT_ID",
+          "GOOGLE_CLIENT_SECRET",
+          "OAUTH_PROXY_SECRET",
           "SECRET_VAULT_KMS_URL",
           "SECRET_VAULT_KMS_TOKEN"
         ]
@@ -107,6 +111,7 @@
       "vars": {
         "ENVIRONMENT": "local",
         "ALLOW_PUBLIC_REGISTRATION": "true",
+        "OAUTH_PROXY_PRODUCTION_URL": "https://console.appaigateway.com",
         "SECRET_VAULT_MODE": "local",
         "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
       },

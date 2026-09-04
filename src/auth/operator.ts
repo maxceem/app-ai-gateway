@@ -19,8 +19,22 @@ export function googleAuthEnabled(env: Env): boolean {
   return Boolean(env.GOOGLE_CLIENT_ID?.trim() && env.GOOGLE_CLIENT_SECRET?.trim());
 }
 
+function oauthProxyConfig(env: Env) {
+  const productionUrl = env.OAUTH_PROXY_PRODUCTION_URL?.trim();
+  const secret = env.OAUTH_PROXY_SECRET?.trim();
+  if (!productionUrl && !secret) return undefined;
+  if (!productionUrl || !secret) {
+    throw new Error(
+      "OAUTH_PROXY_PRODUCTION_URL and OAUTH_PROXY_SECRET must be configured together",
+    );
+  }
+  return { productionUrl, secret };
+}
+
 export function createOperatorAuth(env: Env, requestUrl: string): CfAuth {
   const origin = new URL(requestUrl).origin;
+  const googleEnabled = googleAuthEnabled(env);
+  const oauthProxy = googleEnabled ? oauthProxyConfig(env) : undefined;
   return createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
@@ -34,7 +48,8 @@ export function createOperatorAuth(env: Env, requestUrl: string): CfAuth {
     organizations: { autoProvisionDefaultOrganization: true },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
     cookies: { prefix: "agw_operator" },
-    ...(googleAuthEnabled(env)
+    ...(oauthProxy ? { oauthProxy } : {}),
+    ...(googleEnabled
       ? {
           google: {
             clientId: env.GOOGLE_CLIENT_ID!,

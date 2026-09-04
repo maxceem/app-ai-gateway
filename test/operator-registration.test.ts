@@ -65,6 +65,10 @@ async function googleSignIn(
     ALLOW_PUBLIC_REGISTRATION: "false",
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET: "test-google-secret",
+    // These tests exercise Better Auth's direct ID-token path, not the
+    // cross-environment OAuth redirect proxy.
+    OAUTH_PROXY_PRODUCTION_URL: undefined,
+    OAUTH_PROXY_SECRET: undefined,
   }));
 }
 

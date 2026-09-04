@@ -11,3 +11,9 @@ SECRET_VAULT_LOCAL_KEK_V1=
 ALLOW_PUBLIC_REGISTRATION=true
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
+# To support changing local/preview hostnames, configure both values below and
+# register only <production URL>/v1/auth/callback/google with Google. The proxy
+# secret must be identical in production and local, but different from
+# BETTER_AUTH_SECRET.
+# OAUTH_PROXY_PRODUCTION_URL=https://auth.example.com
+# OAUTH_PROXY_SECRET=
