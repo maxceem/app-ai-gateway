@@ -18,10 +18,13 @@ import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
 import {
   billingNotice,
+  canCancel,
   canResume,
+  entitledPlan,
   formatPrice,
   priceFor,
   quotaMeter,
+  subscriptionOf,
   subscriptionTimeline,
   type QuotaMeter,
 } from "@/lib/billing";
@@ -33,7 +36,12 @@ import {
   useResumeSubscription,
   useStartCheckout,
 } from "@/lib/queries";
-import type { BillingAccess, BillingPlan, OrganizationQuota } from "@/lib/types";
+import type {
+  BillingAccess,
+  BillingPlan,
+  BillingSubscriptionStatus,
+  OrganizationQuota,
+} from "@/lib/types";
 
 type Period = "month" | "year";
 
@@ -71,11 +79,14 @@ export function BillingPage() {
   };
 
   const doResume = async () => {
-    if (!access?.planKey) return;
+    // Resuming acts on the subscription, which is not necessarily the plan the
+    // organization is currently entitled to.
+    const subscription = subscriptionOf(access);
+    if (!subscription) return;
     try {
       const result = await resume.mutateAsync({
-        planKey: access.planKey,
-        billingPeriod: access.billingPeriod ?? period,
+        planKey: subscription.planKey,
+        billingPeriod: subscription.billingPeriod ?? period,
       });
       if (result.requiredActionUrl) {
         window.location.assign(result.requiredActionUrl);
@@ -150,7 +161,7 @@ export function BillingPage() {
               key={plan.planKey}
               plan={plan}
               period={period}
-              current={access?.planKey === plan.planKey}
+              current={entitledPlan(access)?.planKey === plan.planKey}
               pending={checkout.isPending}
               onSubscribe={() => void subscribe(plan)}
             />
@@ -194,17 +205,16 @@ function SubscriptionCard({
   onCancel: () => void;
   onResume: () => void;
 }) {
-  const timeline = access ? subscriptionTimeline(access) : null;
-  const resumable = access ? canResume(access) : false;
+  const plan = entitledPlan(access);
+  const subscription = subscriptionOf(access);
+  const timeline = subscription ? subscriptionTimeline(subscription) : null;
   const meter = quotaMeter(quota);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Current subscription</CardTitle>
-        <CardDescription>
-          {pending ? "Loading…" : (access?.planName ?? access?.planKey ?? "No plan")}
-        </CardDescription>
+        <CardTitle className="text-sm">Current plan</CardTitle>
+        <CardDescription>{pending ? "Loading…" : (plan?.planName ?? "No plan")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {pending ? (
@@ -222,19 +232,25 @@ function SubscriptionCard({
 
         {meter && !pending ? <AllowanceMeter meter={meter} /> : null}
 
-        {access && !pending ? (
+        {/*
+          Both buttons act on the subscription, never on the entitled plan: an
+          organization dropped onto the free default plan may still have a
+          cancelled subscription to resume, and one holding a paid plan through
+          a manual grant has nothing to cancel.
+        */}
+        {!pending && subscription ? (
           <div className="flex flex-wrap gap-2">
-            {resumable ? (
+            {canResume(subscription) ? (
               <GuardedButton
                 variant="outline"
                 size="sm"
-                disabled={resumePending || !access.planKey}
+                disabled={resumePending}
                 onClick={onResume}
               >
                 {resumePending ? <Loader2 className="size-4 animate-spin" /> : null}
                 Resume subscription
               </GuardedButton>
-            ) : access.status !== "inactive" ? (
+            ) : canCancel(subscription) ? (
               <GuardedButton
                 variant="outline"
                 size="sm"
@@ -297,11 +313,21 @@ function AllowanceMeter({ meter }: { meter: QuotaMeter }) {
   );
 }
 
+const SUBSCRIPTION_LABEL: Partial<Record<BillingSubscriptionStatus, string>> = {
+  on_trial: "Trialing",
+  past_due: "Past due",
+  cancelled: "Canceled",
+  paused: "Paused",
+};
+
 function StatusBadge({ access }: { access: BillingAccess | undefined }) {
-  if (!access) return <Badge variant="secondary">Unknown</Badge>;
-  if (access.status === "active") return <Badge>Active</Badge>;
-  if (access.status === "trialing") return <Badge variant="secondary">Trialing</Badge>;
-  return <Badge variant="destructive">Inactive</Badge>;
+  if (!access || access.state !== "billed") return <Badge variant="secondary">Unknown</Badge>;
+  if (access.plan === null) return <Badge variant="destructive">No plan</Badge>;
+  // On the default plan the subscription, if any, is not what grants access —
+  // naming its status here would claim an entitlement the organization has lost.
+  if (access.plan.isDefault) return <Badge variant="secondary">{access.plan.planName}</Badge>;
+  const label = access.subscription ? SUBSCRIPTION_LABEL[access.subscription.status] : undefined;
+  return label ? <Badge variant="secondary">{label}</Badge> : <Badge>Active</Badge>;
 }
 
 function PlanCard({
@@ -318,6 +344,10 @@ function PlanCard({
   onSubscribe: () => void;
 }) {
   const price = priceFor(plan, period);
+  // A plan with no price rows at all is the service's free tier: it is not
+  // something to buy, it is what an organization falls back to. Showing "—" and
+  // a dead Subscribe button would read as a broken paid plan.
+  const free = plan.prices.length === 0;
 
   return (
     <Card className={current ? "border-primary" : undefined}>
@@ -330,7 +360,7 @@ function PlanCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="tabular text-2xl font-semibold">
-          {price ? formatPrice(price) : "—"}
+          {free ? "Free" : price ? formatPrice(price) : "—"}
         </p>
         {plan.trialDays > 0 && !current ? (
           <p className="text-xs text-muted-foreground">{plan.trialDays}-day free trial</p>
@@ -345,15 +375,17 @@ function PlanCard({
             ))}
           </ul>
         ) : null}
-        <GuardedButton
-          className="w-full"
-          variant={current ? "outline" : "default"}
-          disabled={pending || !price}
-          onClick={onSubscribe}
-        >
-          {pending ? <Loader2 className="size-4 animate-spin" /> : null}
-          {current ? "Change billing period" : "Subscribe"}
-        </GuardedButton>
+        {free ? null : (
+          <GuardedButton
+            className="w-full"
+            variant={current ? "outline" : "default"}
+            disabled={pending || !price}
+            onClick={onSubscribe}
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+            {current ? "Change billing period" : "Subscribe"}
+          </GuardedButton>
+        )}
       </CardContent>
     </Card>
   );

@@ -18,14 +18,16 @@ pnpm run startup:check
 
 The gateway enforces exactly one quota: `maxRequestsPerMonth`, a UTC calendar
 month's worth of requests shared by an entire organization. It comes from the
-billing plan (see [Cloud billing](/docs/cloud-billing)); a self-hosted
-deployment, and any organization whose plan does not state one, is unlimited.
+billing plan (see [Cloud billing](/docs/cloud-billing)) — from its subscription's
+plan, or from the billing service's default plan when no subscription grants it
+one. A self-hosted deployment, and any organization whose plan does not state an
+allowance, is unlimited.
 
 **One request is counted at the moment it is admitted for dispatch to a
 provider**, and never before. Everything the gateway can refuse on its own —
 a rejected credential, a disallowed model or path, a malformed body, an
 unconfigured or disabled provider, an unpriced model, a blocked user, an
-inactive subscription — is settled before that point and costs nothing.
+organization with no plan — is settled before that point and costs nothing.
 
 Two consequences follow from the boundary being dispatch rather than success:
 
@@ -66,10 +68,15 @@ raises a banner above every page once four fifths of the allowance is spent.
 The allowance comes from the billing service on every request, so a request that
 cannot be checked against it is refused. That refusal is `503
 billing_unavailable` with a short `Retry-After`, deliberately not the
-`402 payment_required` an organization without a subscription receives: an
+`402 payment_required` an organization with no plan at all receives: an
 unreachable billing service is not a verdict on anyone's subscription, and a
 client that treats it as one shows a paying customer an upsell during your
 outage. Treat `402` as something the customer must act on and `503` as a wait.
+
+Note that a lapsed subscription is not a `402`. Where the billing service
+configures a default plan, an organization that never subscribed or whose
+subscription ended falls back to it and keeps serving traffic against its
+allowance; `402` means no plan resolved at all.
 
 ### What an unlimited deployment is trading away
 

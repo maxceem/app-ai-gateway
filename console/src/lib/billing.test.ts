@@ -1,26 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
   billingNotice,
+  canCancel,
   canResume,
-  isBillingBlocked,
   priceFor,
   quotaMeter,
   quotaNotice,
   subscriptionTimeline,
 } from "./billing";
-import type { BillingAccess, BillingPlan } from "./types";
+import type {
+  BillingAccess,
+  BillingPlan,
+  BillingSubscriptionStatus,
+  EntitledPlan,
+  SubscriptionState,
+} from "./types";
 
 const RESETS = "2026-10-01T00:00:00.000Z";
 
+const subscription = (overrides: Partial<SubscriptionState> = {}): SubscriptionState => ({
+  status: "active",
+  planKey: "pro",
+  planName: "Pro",
+  billingPeriod: "month",
+  renewsAt: null,
+  endsAt: null,
+  trialEndsAt: null,
+  source: "lemon_squeezy",
+  ...overrides,
+});
+
+const paidPlan: EntitledPlan = { planKey: "pro", planName: "Pro", isDefault: false };
+const freePlan: EntitledPlan = {
+  planKey: "free",
+  planName: "Free",
+  limits: { maxRequestsPerMonth: 1000 },
+  isDefault: true,
+};
+
+const billed = (
+  plan: EntitledPlan | null,
+  sub: SubscriptionState | null = null,
+): BillingAccess => ({ state: "billed", plan, subscription: sub });
+
 describe("billingNotice", () => {
   it("stays silent for a self-hosted deployment", () => {
-    expect(billingNotice({ status: "active", selfHosted: true })).toBeNull();
-    // Even a nominally inactive status must not surface billing when self-hosted.
-    expect(billingNotice({ status: "inactive", reason: "past_due", selfHosted: true })).toBeNull();
-  });
-
-  it("stays silent for an active subscription", () => {
-    expect(billingNotice({ status: "active" })).toBeNull();
+    expect(billingNotice({ state: "self_hosted" })).toBeNull();
   });
 
   it("stays silent when billing status is unknown", () => {
@@ -28,72 +53,103 @@ describe("billingNotice", () => {
     expect(billingNotice(null)).toBeNull();
   });
 
-  it("warns during a trial and offers plans", () => {
-    const notice = billingNotice({ status: "trialing", trialEndsAt: "2026-09-01T00:00:00.000Z" });
-    expect(notice?.tone).toBe("warning");
-    expect(notice?.actionable).toBe(true);
-    expect(notice?.description).toMatch(/2026/);
+  it("stays silent for a healthy paid subscription", () => {
+    expect(billingNotice(billed(paidPlan, subscription()))).toBeNull();
   });
 
-  it("escalates an inactive subscription with reason-specific copy", () => {
-    const notice = billingNotice({ status: "inactive", reason: "past_due" });
-    expect(notice?.tone).toBe("destructive");
+  /**
+   * The quota meter already states the free allowance in full. A banner on a
+   * working organization that never subscribed would be permanent nagging, not
+   * information.
+   */
+  it("stays silent for a fresh organization on the default plan", () => {
+    expect(billingNotice(billed(freePlan))).toBeNull();
+  });
+
+  it("warns that traffic moved to the default plan when a subscription ends", () => {
+    const notice = billingNotice(billed(freePlan, subscription({ status: "expired" })));
+    // Traffic still flows, so this is a change of allowance, not an outage.
+    expect(notice?.tone).toBe("warning");
+    expect(notice?.title).toMatch(/subscription has ended/i);
+    expect(notice?.description).toMatch(/Free plan \(1,000 requests\/month\)/);
+    expect(notice?.actionable).toBe(true);
+  });
+
+  it("warns about a past-due payment that has not yet cost the plan", () => {
+    const notice = billingNotice(billed(paidPlan, subscription({ status: "past_due" })));
+    expect(notice?.tone).toBe("warning");
     expect(notice?.title).toMatch(/past due/i);
     expect(notice?.actionable).toBe(true);
   });
 
-  it("does not offer plans for failures a plan change cannot fix", () => {
-    expect(billingNotice({ status: "inactive", reason: "billing_unavailable" })?.actionable).toBe(false);
-    expect(billingNotice({ status: "inactive", reason: "service_inactive" })?.actionable).toBe(false);
+  it("escalates when no plan resolves at all", () => {
+    const notice = billingNotice(billed(null));
+    expect(notice?.tone).toBe("destructive");
+    expect(notice?.title).toMatch(/no active plan/i);
+    expect(notice?.actionable).toBe(true);
   });
 
-  it("falls back to the missing-subscription copy for an unknown reason", () => {
-    const notice = billingNotice({ status: "inactive" } as BillingAccess);
-    expect(notice?.title).toMatch(/no active subscription/i);
-  });
-});
-
-describe("isBillingBlocked", () => {
-  it("blocks only a non-self-hosted inactive organization", () => {
-    expect(isBillingBlocked({ status: "inactive", reason: "canceled" })).toBe(true);
-    expect(isBillingBlocked({ status: "inactive", selfHosted: true })).toBe(false);
-    expect(isBillingBlocked({ status: "trialing", trialEndsAt: "x" })).toBe(false);
-    expect(isBillingBlocked(undefined)).toBe(false);
+  it("does not offer plans for an unreachable billing service", () => {
+    const notice = billingNotice({ state: "unavailable" });
+    expect(notice?.tone).toBe("destructive");
+    expect(notice?.actionable).toBe(false);
   });
 });
 
 describe("subscriptionTimeline", () => {
   it("prefers the end date of a canceled subscription over its renewal", () => {
-    const timeline = subscriptionTimeline({
-      status: "active",
+    const timeline = subscriptionTimeline(subscription({
       renewsAt: "2026-10-01T00:00:00.000Z",
       endsAt: "2026-09-15T00:00:00.000Z",
-    });
+    }));
     expect(timeline?.label).toBe("Access ends");
   });
 
   it("reports the renewal date of a healthy subscription", () => {
-    expect(subscriptionTimeline({ status: "active", renewsAt: "2026-10-01T00:00:00.000Z" })?.label)
+    expect(subscriptionTimeline(subscription({ renewsAt: "2026-10-01T00:00:00.000Z" }))?.label)
       .toBe("Renews");
   });
 
   it("reports the trial end during a trial", () => {
     expect(
-      subscriptionTimeline({ status: "trialing", trialEndsAt: "2026-10-01T00:00:00.000Z" })?.label,
+      subscriptionTimeline(subscription({
+        status: "on_trial",
+        trialEndsAt: "2026-10-01T00:00:00.000Z",
+      }))?.label,
     ).toBe("Trial ends");
   });
 
   it("returns nothing when no date is known or parseable", () => {
-    expect(subscriptionTimeline({ status: "active" })).toBeNull();
-    expect(subscriptionTimeline({ status: "active", renewsAt: "not-a-date" })).toBeNull();
+    expect(subscriptionTimeline(subscription())).toBeNull();
+    expect(subscriptionTimeline(subscription({ renewsAt: "not-a-date" }))).toBeNull();
   });
 });
 
-describe("canResume", () => {
-  it("offers resume for a cancelled subscription still inside its period", () => {
-    expect(canResume({ status: "active", endsAt: "2026-09-15T00:00:00.000Z" })).toBe(true);
-    expect(canResume({ status: "inactive", subscriptionStatus: "cancelled" })).toBe(true);
-    expect(canResume({ status: "active", renewsAt: "2026-09-15T00:00:00.000Z" })).toBe(false);
+describe("canCancel / canResume", () => {
+  it.each<BillingSubscriptionStatus>(["on_trial", "active", "paused", "past_due"])(
+    "offers cancel for a %s subscription",
+    (status) => {
+      expect(canCancel(subscription({ status }))).toBe(true);
+      expect(canResume(subscription({ status }))).toBe(false);
+    },
+  );
+
+  it("offers resume, and not cancel, for a cancelled subscription", () => {
+    expect(canResume(subscription({ status: "cancelled" }))).toBe(true);
+    expect(canCancel(subscription({ status: "cancelled" }))).toBe(false);
+  });
+
+  it("offers neither once the subscription is gone for good", () => {
+    for (const status of ["expired", "unpaid"] as const) {
+      expect(canCancel(subscription({ status }))).toBe(false);
+      expect(canResume(subscription({ status }))).toBe(false);
+    }
+    expect(canCancel(null)).toBe(false);
+    expect(canResume(null)).toBe(false);
+  });
+
+  it("never offers to cancel a manual grant, which is not LemonSqueezy's to cancel", () => {
+    expect(canCancel(subscription({ source: "manual" }))).toBe(false);
   });
 });
 

@@ -33,28 +33,47 @@ async function seedOrganization(id: string): Promise<void> {
   await seedProvider({ type: "openai", organizationId: id });
 }
 
+/** An entitled organization on a paid plan carrying `limits`. */
+function onPlan(limits?: unknown): BillingAccess {
+  return {
+    plan: {
+      planKey: "growth",
+      planName: "Growth",
+      limits,
+      isDefault: false,
+    },
+    subscription: {
+      status: "active",
+      planKey: "growth",
+      planName: "Growth",
+      billingPeriod: "month",
+      renewsAt: null,
+      endsAt: null,
+      trialEndsAt: null,
+      source: "lemon_squeezy",
+    },
+  };
+}
+
+/** No plan resolves at all: the only remaining reason to answer 402. */
+const NO_PLAN: BillingAccess = { plan: null, subscription: null };
+
 function billingStub(access: () => BillingAccess | Promise<BillingAccess>): BillingRuntime {
-  const inactive: BillingAccess = { status: "inactive", reason: "missing_subscription" };
   return {
     getTenantAccess: async () => access(),
-    getAccess: async () => inactive,
     listPlans: async () => ({ plans: [] }),
     createCheckout: async () => ({ url: "https://checkout.example.test" }),
     changePlan: async () => ({ ok: true }),
     resumeSubscription: async () => ({ ok: true }),
     cancelSubscription: async () => ({ ok: true }),
-    startTrial: async () => inactive,
+    startTrial: async () => NO_PLAN,
     handleLemonWebhook: async () => ({ ok: true, duplicate: false, stale: false }),
   };
 }
 
 /** A hosted deployment: the same bindings, plus a billing service. */
 function hosted(limits: unknown): Env {
-  const binding = billingStub(() => ({
-    status: "active",
-    planKey: "growth",
-    ...(limits === undefined ? {} : { limits }),
-  }) as BillingAccess);
+  const binding = billingStub(() => onPlan(limits));
   return new Proxy(env, {
     get: (target, property, receiver) =>
       property === "BILLING" ? binding : Reflect.get(target, property, receiver),
@@ -280,7 +299,7 @@ describe("organization monthly request quota", () => {
     const organizationId = "quota-unpaid-org";
     await seedOrganization(organizationId);
     const key = await seedServerApp("quota-unpaid", { organizationId });
-    const binding = billingStub(() => ({ status: "inactive", reason: "past_due" }));
+    const binding = billingStub(() => NO_PLAN);
     const billing = new Proxy(env, {
       get: (target, property, receiver) =>
         property === "BILLING" ? binding : Reflect.get(target, property, receiver),
@@ -293,8 +312,8 @@ describe("organization monthly request quota", () => {
   });
 
   /**
-   * The distinction the data plane turns on: an organization with no
-   * subscription has to go and pay, and one whose billing service is down has to
+   * The distinction the data plane turns on: an organization with no plan at
+   * all has to go and pay, and one whose billing service is down has to
    * wait. Answering the second with the first tells every paying customer they
    * are unsubscribed for the length of an outage, and clients are built to treat
    * `402` as final.
@@ -307,7 +326,7 @@ describe("organization monthly request quota", () => {
     const binding = billingStub(() => {
       calls += 1;
       if (calls === 1) throw new Error("billing service unreachable");
-      return { status: "active", planKey: "growth", limits: { maxRequestsPerMonth: 5 } } as BillingAccess;
+      return onPlan({ maxRequestsPerMonth: 5 });
     });
     const billing = new Proxy(env, {
       get: (target, property, receiver) =>

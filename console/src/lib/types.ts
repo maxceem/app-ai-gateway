@@ -244,28 +244,53 @@ export interface ProviderResponse {
   validated: boolean | null;
 }
 
-export type BillingInactiveReason =
-  | "trial_expired"
+/** Raw LemonSqueezy subscription status, passed through unmapped. */
+export type BillingSubscriptionStatus =
+  | "on_trial"
+  | "active"
+  | "paused"
   | "past_due"
-  | "canceled"
-  | "missing_subscription"
-  | "service_inactive"
-  | "billing_unavailable";
+  | "unpaid"
+  | "cancelled"
+  | "expired";
 
-export interface BillingAccess {
-  status: "active" | "trialing" | "inactive";
-  reason?: BillingInactiveReason;
-  selfHosted?: boolean;
-  subscriptionStatus?: string;
-  planKey?: string;
-  planName?: string;
-  billingPeriod?: "month" | "year";
-  trialEndsAt?: string;
-  renewsAt?: string;
-  endsAt?: string;
-  canUpgrade?: boolean;
-  billingErrorCode?: string;
+/**
+ * The plan the organization may use right now. Resolved either from an
+ * access-granting subscription or, failing that, from the service's default
+ * plan — which is what `isDefault` distinguishes.
+ */
+export interface EntitledPlan {
+  planKey: string;
+  planName: string;
+  limits?: unknown;
+  isDefault: boolean;
 }
+
+/**
+ * What the organization is paying for, reported whether or not it still
+ * entitles anything: a lapsed subscription is exactly what "your plan ended"
+ * is written from.
+ */
+export interface SubscriptionState {
+  status: BillingSubscriptionStatus;
+  planKey: string;
+  planName: string;
+  billingPeriod: "month" | "year" | null;
+  renewsAt: string | null;
+  endsAt: string | null;
+  trialEndsAt: string | null;
+  source: "lemon_squeezy" | "manual";
+}
+
+/**
+ * Mirrors the gateway's `GatewayBillingAccess`. The two non-`billed` states are
+ * the gateway's own: the billing service does not know it is absent, nor that
+ * it is unreachable.
+ */
+export type BillingAccess =
+  | { state: "self_hosted" }
+  | { state: "unavailable"; billingErrorCode?: string }
+  | { state: "billed"; plan: EntitledPlan | null; subscription: SubscriptionState | null };
 
 /**
  * The organization's month so far against the allowance its plan grants.

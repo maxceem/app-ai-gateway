@@ -361,7 +361,7 @@ register({
   responses: {
     200: response("A five-minute, single-use challenge.", z.object({ challenge: z.string(), expires_in: z.number() })),
     ...errorResponses,
-    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
   },
 });
 
@@ -379,7 +379,7 @@ register({
     200: response("The key was registered for the verified issuer identity.", z.object({ user_id: z.string() })),
     ...errorResponses,
     ...issuerErrorResponses,
-    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
   },
 });
 
@@ -401,7 +401,7 @@ register({
     200: response("A short-lived gateway access token.", z.object({ access_token: z.string(), expires_in: z.number() })),
     ...errorResponses,
     ...issuerErrorResponses,
-    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
   },
 });
 
@@ -422,7 +422,7 @@ register({
       blocked: z.boolean(),
     })),
     ...errorResponses,
-    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
   },
 });
 
@@ -447,7 +447,7 @@ register({
   responses: {
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
-    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
     429: response("The organization's monthly request allowance is exhausted. The body carries code monthly_request_quota_exceeded with limit, used, and the UTC resetAt, and the response carries a Retry-After header.", ErrorResponseSchema),
     502: response("The upstream provider request failed.", ErrorResponseSchema),
   },
@@ -490,7 +490,7 @@ register({
   responses: {
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
-    402: response("The organization requires an active subscription or trial.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
     429: response("The organization's monthly request allowance is exhausted. The body carries code monthly_request_quota_exceeded with limit, used, and the UTC resetAt, and the response carries a Retry-After header.", ErrorResponseSchema),
     502: response("Every configured target failed.", ErrorResponseSchema),
   },
