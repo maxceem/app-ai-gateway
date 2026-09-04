@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startGoogleSignIn } from "./auth";
+import { signOut, startGoogleSignIn } from "./auth";
 
 function stubSocial(url = "https://accounts.google.test/o/oauth2/auth") {
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -15,6 +15,22 @@ function socialBody(fetchMock: ReturnType<typeof stubSocial>) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("signOut", () => {
+  it("posts a JSON body so better-call does not reject the request", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ success: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await signOut();
+
+    // A bodyless POST is answered 415 by better-call and leaves the session up.
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("/v1/auth/sign-out");
+    expect(init!.body).toBe("{}");
+    expect(new Headers(init!.headers).get("content-type")).toBe("application/json");
+  });
+});
 
 describe("startGoogleSignIn", () => {
   it("returns to the console landing page by default", async () => {

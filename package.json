@@ -2,7 +2,7 @@
   "name": "@calories-tracker/ai-gateway",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@11.24.0",
+  "packageManager": "pnpm@11.0.4",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --env local",
