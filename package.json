@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit && wrangler types --check --env-file .dev.vars.example && pnpm run console:typecheck && pnpm run docs:typecheck",
     "test": "vitest run && node --test test/deploy-script.node.mjs",
     "test:watch": "vitest",
-    "check": "pnpm run typecheck && pnpm run openapi:check && pnpm test && pnpm run console:test && pnpm run docs:build",
+    "check": "node scripts/check.mjs",
     "openapi:generate": "node --experimental-strip-types scripts/generate-openapi.ts",
     "openapi:check": "node scripts/check-openapi.mjs",
     "docs:dev": "pnpm --filter @ai-gateway/docs dev",
