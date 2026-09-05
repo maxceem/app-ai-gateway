@@ -31,8 +31,9 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Keep the production docs deployment static-only. Do not add route handlers,
   SSR, OpenNext, `run_worker_first`, or a Worker `main` entry without explicit
   approval; those would introduce Worker invocations and billing.
-- Deploy documentation with `pnpm run docs:deploy`. Its custom domain is
-  `docs.appaigateway.com`.
+- Deploy documentation with `pnpm run docs:deploy`. A custom domain belongs in
+  a gitignored `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked
+  config; deploy it with `pnpm run docs:deploy --profile <name>`.
 
 ## Security
 

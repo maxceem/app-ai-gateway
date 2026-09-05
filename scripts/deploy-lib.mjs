@@ -10,8 +10,21 @@ export function parseSecretList(output) {
   return new Set(parsed.map((entry) => entry.name));
 }
 
-export function missingRequiredSecrets(existingNames) {
-  return REQUIRED_USER_SECRETS.filter((name) => !existingNames.has(name));
+/**
+ * The operator-supplied secrets a deployment cannot start without, derived from
+ * the vault mode in the resolved Wrangler configuration's `vars`.
+ */
+export function requiredUserSecrets(config) {
+  const vars = config?.vars ?? {};
+  if (vars.SECRET_VAULT_MODE === "kms") {
+    return ["SECRET_VAULT_KMS_URL", "SECRET_VAULT_KMS_TOKEN"];
+  }
+  const version = String(vars.SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION ?? "1");
+  return [`SECRET_VAULT_LOCAL_KEK_V${version}`];
+}
+
+export function missingRequiredSecrets(existingNames, required = REQUIRED_USER_SECRETS) {
+  return required.filter((name) => !existingNames.has(name));
 }
 
 export function createMissingGeneratedSecrets(existingNames, random = randomBytes) {

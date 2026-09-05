@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolveWranglerConfig, wranglerBin } from "./wrangler-config.mjs";
 import { hashPassword } from "better-auth/crypto";
 
 const args = process.argv.slice(2);
@@ -26,8 +26,8 @@ function sqlString(input) {
 
 if (has("--help")) {
   console.log(`Usage:
-  pnpm recover-access -- --email <email> --password-stdin (--local|--remote) [--env <name>]
-  pnpm recover-access -- --email <email> --promote-owner --organization-id <id> (--local|--remote) [--env <name>]
+  pnpm recover-access -- --email <email> --password-stdin (--local|--remote) [--profile <name>]
+  pnpm recover-access -- --email <email> --promote-owner --organization-id <id> (--local|--remote) [--profile <name>]
 
 Both recovery operations may be requested together. The script executes only
 against the D1 target explicitly selected with --local or --remote.`);
@@ -71,10 +71,8 @@ if (promoteOwner) {
   );
 }
 
-const wranglerBin = fileURLToPath(new URL("../node_modules/.bin/wrangler", import.meta.url));
 const wranglerArgs = ["d1", "execute", "DB", target, "--command", statements.join("\n")];
-const environment = value("--env");
-if (environment) wranglerArgs.push("--env", environment);
+wranglerArgs.push(...resolveWranglerConfig(value("--profile")).configArgs);
 
 const result = spawnSync(wranglerBin, wranglerArgs, { stdio: "inherit" });
 if (result.error) throw result.error;

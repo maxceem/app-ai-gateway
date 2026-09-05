@@ -9,6 +9,10 @@ interface Env {
   OAUTH_PROXY_PRODUCTION_URL?: string;
   OAUTH_PROXY_SECRET?: string;
   ALLOW_PUBLIC_REGISTRATION?: string;
+  // Optional links shown on the sign-up screen, set as plain vars by a
+  // deployment profile. Both must be present for the consent line to appear.
+  TERMS_OF_SERVICE_URL?: string;
+  PRIVACY_POLICY_URL?: string;
   BILLING?: import("cf-billing").BillingRuntime;
   // Vault credentials. Each is required only in its own SECRET_VAULT_MODE, and
   // src/vault validates the full per-mode set on first use rather than trusting
@@ -27,6 +31,8 @@ declare namespace Cloudflare {
     OAUTH_PROXY_PRODUCTION_URL?: string;
     OAUTH_PROXY_SECRET?: string;
     ALLOW_PUBLIC_REGISTRATION?: string;
+    TERMS_OF_SERVICE_URL?: string;
+    PRIVACY_POLICY_URL?: string;
     BILLING?: import("cf-billing").BillingRuntime;
     SECRET_VAULT_KMS_URL?: string;
     SECRET_VAULT_KMS_TOKEN?: string;

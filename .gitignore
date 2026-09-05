@@ -2,6 +2,11 @@ node_modules/
 .pnpm-store/
 .wrangler/
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
+# Deployment profiles: private overlays and the files generated from them.
+/wrangler.*.jsonc
+/docs/wrangler.*.jsonc
 .env
 .env.*
 !.env.example
