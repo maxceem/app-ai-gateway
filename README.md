@@ -162,14 +162,6 @@ Add `--profile <name>` to target a deployment profile. This invokes
 `wrangler d1 execute` and does not print the password or hash. Prefer `--local` while validating a recovery
 procedure; remote execution is an explicit owner-operated step.
 
-### Migrating an ADMIN_TOKEN deployment
-
-Existing deployments can create their first operator organization and backfill
-legacy apps with `scripts/migrate-to-orgs.mjs`. The command requires an explicit
-`--local` or `--remote` target; validate it with local D1 state before the owner
-runs the documented production step. See the
-[admin auth migration guide](https://docs.appaigateway.com/docs/auth-migration).
-
 The tracked `wrangler.jsonc` contains no personal domain or D1 ID. Configure
 those deployment-specific values in a deployment profile overlay, and keep
 `SECRET_VAULT_LOCAL_KEK_V1` (or the `SECRET_VAULT_KMS_*` pair) in Worker secrets

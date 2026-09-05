@@ -27,7 +27,6 @@
     "secrets:upload": "wrangler secret bulk .dev.vars",
     "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
     "recover-access": "node scripts/recover-access.mjs",
-    "migrate-to-orgs": "node scripts/migrate-to-orgs.mjs",
     "deploy:dry-run": "pnpm run console:build && node scripts/wrangler.mjs deploy --dry-run",
     "startup:check": "wrangler check startup",
     "console:test": "pnpm --filter @ai-gateway/console test",
