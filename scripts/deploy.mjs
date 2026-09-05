@@ -1,20 +1,48 @@
+// Deploys the gateway Worker.
+//
+//   pnpm run deploy                    # the tracked wrangler.jsonc, as one-click deploy uses it
+//   pnpm run deploy --profile <name>   # wrangler.jsonc merged with wrangler.<name>.overlay.jsonc
+//
+// See scripts/wrangler-config.mjs for how profiles are resolved.
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
   createMissingGeneratedSecrets,
   missingRequiredSecrets,
   parseSecretList,
+  requiredUserSecrets,
 } from "./deploy-lib.mjs";
+import {
+  projectRoot,
+  resolveWranglerConfig,
+  takeProfileArgument,
+  wranglerBin,
+} from "./wrangler-config.mjs";
 
-const projectRoot = fileURLToPath(new URL("..", import.meta.url));
-const localSecretsPath = fileURLToPath(new URL("../.dev.vars", import.meta.url));
-const wranglerBin =
-  process.env.AI_GATEWAY_WRANGLER_BIN ??
-  fileURLToPath(new URL("../node_modules/.bin/wrangler", import.meta.url));
+function parseArguments(argv) {
+  const { profile, rest } = takeProfileArgument(argv);
+  if (rest.length > 0) {
+    throw new Error(`Unexpected arguments: ${rest.join(" ")}\nUsage: pnpm run deploy [--profile <name>]`);
+  }
+  return { profile };
+}
+
+let profile;
+let config;
+let configArgs = [];
+let localSecretsFile = ".dev.vars";
+let localSecretsPath = join(projectRoot, localSecretsFile);
+
+function prepare(argv) {
+  ({ profile } = parseArguments(argv));
+  ({ config, configArgs } = resolveWranglerConfig(profile));
+  localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
+  localSecretsPath = join(projectRoot, localSecretsFile);
+}
 
 function wrangler(args, options = {}) {
-  const result = spawnSync(wranglerBin, args, {
+  const result = spawnSync(wranglerBin, [...args, ...configArgs], {
     cwd: projectRoot,
     encoding: "utf8",
     env: process.env,
@@ -38,6 +66,11 @@ function workerDoesNotExist(result) {
   return output.includes("not found") && output.includes("wrangler deploy");
 }
 
+function uploadLocalSecretsFile() {
+  console.log(`Uploading the values from ${localSecretsFile}.`);
+  wrangler(["secret", "bulk", localSecretsFile]);
+}
+
 function listSecrets() {
   let result = wrangler(["secret", "list", "--format", "json"], {
     allowFailure: true,
@@ -45,8 +78,8 @@ function listSecrets() {
   });
 
   if (result.status !== 0 && workerDoesNotExist(result) && existsSync(localSecretsPath)) {
-    console.log("No deployed Worker found; uploading the values from .dev.vars first.");
-    wrangler(["secret", "bulk", ".dev.vars"]);
+    console.log("No deployed Worker found.");
+    uploadLocalSecretsFile();
     result = wrangler(["secret", "list", "--format", "json"], {
       allowFailure: true,
       capture: true,
@@ -80,14 +113,20 @@ function databaseNeedsProvisioning(result) {
 }
 
 function ensureDeploymentSecrets() {
-  const existingNames = listSecrets();
-  const missing = missingRequiredSecrets(existingNames);
+  const required = requiredUserSecrets(config);
+  let existingNames = listSecrets();
+  let missing = missingRequiredSecrets(existingNames, required);
+  if (missing.length > 0 && existsSync(localSecretsPath)) {
+    uploadLocalSecretsFile();
+    existingNames = listSecrets();
+    missing = missingRequiredSecrets(existingNames, required);
+  }
   if (missing.length > 0) {
     throw new Error(
       [
         `Missing required deployment values: ${missing.join(", ")}`,
-        "Use the Deploy to Cloudflare form, or put the values in .dev.vars and run",
-        "`pnpm run secrets:upload` before deploying from a local checkout.",
+        `Use the Deploy to Cloudflare form, or put the values in ${localSecretsFile}`,
+        "and run the deployment again from this checkout.",
       ].join("\n"),
     );
   }
@@ -119,12 +158,14 @@ function applyMigrations() {
 }
 
 function deploy() {
+  if (profile) console.log(`Deploying with the "${profile}" profile.`);
   ensureDeploymentSecrets();
   const deployedWhileProvisioning = applyMigrations();
   if (!deployedWhileProvisioning) wrangler(["deploy"]);
 }
 
 try {
+  prepare(process.argv.slice(2));
   deploy();
 } catch (error) {
   console.error("");

@@ -83,8 +83,45 @@ Auth signing secrets, provisions D1 when necessary, applies migrations by bindin
 name, and deploys the console and API.
 
 The public `wrangler.jsonc` intentionally has no custom production domain or
-Cloudflare account-specific D1 database ID. Add a custom route and the
-identifiers for resources you own in your private deployment configuration.
+Cloudflare account-specific D1 database ID. Those belong in a deployment
+profile.
+
+## Deployment profiles
+
+A profile is a gitignored `wrangler.<profile>.overlay.jsonc` in the repository
+root holding only the keys that differ from `wrangler.jsonc`. It is not a
+complete Wrangler configuration: every command merges it over the tracked file
+first, so shared sections such as Durable Object migrations are never duplicated.
+Objects merge recursively, an array replaces the base array, and `null` removes
+a key.
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "workers_dev": false,
+  "routes": [{ "pattern": "console.example.com", "custom_domain": true }],
+  "vars": { "SECRET_VAULT_MODE": "kms", "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": null },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "app-ai-gateway-prod",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
+```
+
+```sh
+pnpm run deploy --profile prod
+pnpm run deploy:dry-run --profile prod
+pnpm run db:migrate --profile prod
+```
+
+The merged result is written to `wrangler.<profile>.generated.jsonc`, also
+ignored, and handed to Wrangler with `--config`. A profile's first deployment
+uploads operator secrets from `.dev.vars.<profile>` when that file exists. Keep
+overlays out of version control; they are the only place account identifiers,
+domains, and service bindings should live.
 
 ### Google OAuth from changing preview hosts
 

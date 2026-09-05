@@ -187,5 +187,5 @@ Update package tests accordingly. App-side adoption is specified in `calories-tr
 
 ## 5. Rollout order
 
-1. Merge + deploy the gateway (migrations apply during `deploy:production`).
+1. Merge + deploy the gateway (migrations apply during `pnpm run deploy --profile <name>`).
 2. Then release the iOS app update built against the updated `ai-gateway-swift` (companion plan). The gateway must go first so the new codes are live before any client expects them. Old installed builds keep working: unrecognized codes decode to `.unknown` and display the server message — that is the accepted trade-off.

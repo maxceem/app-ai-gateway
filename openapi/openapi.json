@@ -1748,6 +1748,14 @@
                     },
                     "googleAuth": {
                       "type": "boolean"
+                    },
+                    "termsOfServiceUrl": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "privacyPolicyUrl": {
+                      "type": "string",
+                      "format": "uri"
                     }
                   },
                   "required": [

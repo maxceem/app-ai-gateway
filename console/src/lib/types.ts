@@ -5,6 +5,8 @@ export interface Capabilities {
   billing: boolean;
   registrationOpen: boolean;
   googleAuth: boolean;
+  termsOfServiceUrl?: string;
+  privacyPolicyUrl?: string;
 }
 
 export interface OperatorUser {

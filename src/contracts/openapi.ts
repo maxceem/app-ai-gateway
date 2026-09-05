@@ -286,6 +286,8 @@ register({
       billing: z.boolean(),
       registrationOpen: z.boolean(),
       googleAuth: z.boolean(),
+      termsOfServiceUrl: z.string().url().optional(),
+      privacyPolicyUrl: z.string().url().optional(),
     })),
   },
 });

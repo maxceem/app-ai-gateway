@@ -16,20 +16,20 @@ describe("operator OAuth proxy", () => {
     const auth = createOperatorAuth(operatorEnv({
       GOOGLE_CLIENT_ID: "google-client-id",
       GOOGLE_CLIENT_SECRET: "google-client-secret",
-      OAUTH_PROXY_PRODUCTION_URL: "https://console.appaigateway.com",
+      OAUTH_PROXY_PRODUCTION_URL: "https://console.example.com",
       OAUTH_PROXY_SECRET: "shared-proxy-secret",
     }), "http://feature.app-ai-gateway.localhost:8080/v1/auth/sign-in/social");
 
     expect(auth.config.baseUrl).toBe("http://feature.app-ai-gateway.localhost:8080");
     expect(auth.config.oauthProxy).toEqual({
-      productionUrl: "https://console.appaigateway.com",
+      productionUrl: "https://console.example.com",
       secret: "shared-proxy-secret",
     });
   });
 
   it("sends Google the stable production callback from a branch origin", async () => {
     const branchOrigin = "http://feature.app-ai-gateway.localhost:8080";
-    const productionOrigin = "https://console.appaigateway.com";
+    const productionOrigin = "https://console.example.com";
     const auth = createOperatorAuth(operatorEnv({
       GOOGLE_CLIENT_ID: "google-client-id",
       GOOGLE_CLIENT_SECRET: "google-client-secret",
@@ -56,7 +56,7 @@ describe("operator OAuth proxy", () => {
     const auth = createOperatorAuth(operatorEnv({
       GOOGLE_CLIENT_ID: undefined,
       GOOGLE_CLIENT_SECRET: undefined,
-      OAUTH_PROXY_PRODUCTION_URL: "https://console.appaigateway.com",
+      OAUTH_PROXY_PRODUCTION_URL: "https://console.example.com",
       OAUTH_PROXY_SECRET: undefined,
     }), "https://self-hosted.example/v1/auth/sign-in/social");
 
@@ -67,7 +67,7 @@ describe("operator OAuth proxy", () => {
     expect(() => createOperatorAuth(operatorEnv({
       GOOGLE_CLIENT_ID: "google-client-id",
       GOOGLE_CLIENT_SECRET: "google-client-secret",
-      OAUTH_PROXY_PRODUCTION_URL: "https://console.appaigateway.com",
+      OAUTH_PROXY_PRODUCTION_URL: "https://console.example.com",
       OAUTH_PROXY_SECRET: undefined,
     }), "http://feature.app-ai-gateway.localhost:8080/v1/auth/sign-in/social")).toThrowError(
       /must be configured together/u,

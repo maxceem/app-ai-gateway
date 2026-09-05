@@ -34,7 +34,7 @@ pnpm migrate-to-orgs -- \
   --email owner@example.com \
   --password-stdin \
   --organization-name "Gateway operators" \
-  --remote --env production < /secure/password-file
+  --remote --profile prod < /secure/password-file
 ```
 
 The script exits on duplicate operator data instead of guessing how to merge it.
@@ -51,7 +51,7 @@ break-glass recovery tool rather than rerunning blindly.
 4. Only after verification, delete the obsolete secret manually:
 
 ```sh
-pnpm exec wrangler secret delete ADMIN_TOKEN --env production
+pnpm exec wrangler secret delete ADMIN_TOKEN --config wrangler.prod.generated.jsonc
 ```
 
 The new admin API returns `404` for another organization's apps. Owner/admin

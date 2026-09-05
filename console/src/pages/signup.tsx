@@ -117,13 +117,13 @@ export function SignupPage() {
             </Button>
           </form>
 
-          {/* The linked documents govern the hosted service only, so a
-              self-hosted deployment (no billing) must not show them. */}
-          {capabilities.data?.billing ? (
+          {/* The consent line names deployment-specific documents, so it
+              appears only when the operator configured both links. */}
+          {capabilities.data?.termsOfServiceUrl && capabilities.data?.privacyPolicyUrl ? (
             <p className="text-center text-xs text-muted-foreground">
               By creating an account you agree to the{" "}
               <a
-                href="https://appaigateway.com/terms/"
+                href={capabilities.data.termsOfServiceUrl}
                 target="_blank"
                 rel="noopener"
                 className="text-foreground underline underline-offset-4"
@@ -132,7 +132,7 @@ export function SignupPage() {
               </a>{" "}
               and{" "}
               <a
-                href="https://appaigateway.com/privacy/"
+                href={capabilities.data.privacyPolicyUrl}
                 target="_blank"
                 rel="noopener"
                 className="text-foreground underline underline-offset-4"

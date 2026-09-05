@@ -23,7 +23,8 @@ infer production configuration from project-specific examples.
 - `src/contracts/schemas.ts` contains shared runtime schemas; `src/contracts/openapi.ts`
   assembles them into documented operations.
 - `.dev.vars.example` lists required secret names without values.
-- `wrangler.jsonc` declares Cloudflare resources and environments.
+- `wrangler.jsonc` declares Cloudflare resources; gitignored
+  `wrangler.<profile>.overlay.jsonc` files hold deployment-specific overrides.
 
 ## Secret rules
 
