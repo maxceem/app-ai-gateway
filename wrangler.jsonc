@@ -10,8 +10,7 @@
     "SECRET_VAULT_MODE": "local",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
   },
-  // Nightly retention for `app_auth_event` only. Named environments do not
-  // inherit top-level triggers, so each one below repeats it.
+  // Nightly retention for `app_auth_event` only.
   "triggers": { "crons": ["17 3 * * *"] },
   "observability": {
     "enabled": true,
@@ -40,41 +39,10 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] },
     { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] }
-  ],
+  ]
   // This file is the complete self-hosted configuration and what the Deploy to
   // Cloudflare button uses. Deployment-specific additions (a custom domain, a
   // fixed D1 database, kms vault mode, a BILLING service binding) belong in a
   // gitignored `wrangler.<profile>.overlay.jsonc`; see README "Deployment
   // profiles". Never add account identifiers or domains here.
-  "env": {
-    "local": {
-      "name": "app-ai-gateway-local",
-      "routes": [],
-      "triggers": { "crons": ["17 3 * * *"] },
-      "assets": {
-        "directory": "./console/dist",
-        "not_found_handling": "single-page-application",
-        "run_worker_first": ["/v1/*"]
-      },
-      "vars": {
-        "ENVIRONMENT": "local",
-        "ALLOW_PUBLIC_REGISTRATION": "true",
-        "SECRET_VAULT_MODE": "local",
-        "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
-      },
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "ai-gateway-local",
-          "migrations_dir": "migrations"
-        }
-      ],
-      "durable_objects": {
-        "bindings": [
-          { "name": "USER_LIMITER", "class_name": "UserLimiter" },
-          { "name": "ORG_QUOTA", "class_name": "OrgQuota" }
-        ]
-      }
-    }
-  }
 }
