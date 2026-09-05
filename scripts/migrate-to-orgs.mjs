@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolveWranglerConfig, wranglerBin } from "./wrangler-config.mjs";
 import { hashPassword } from "better-auth/crypto";
 
 const args = process.argv.slice(2);
@@ -34,7 +34,7 @@ Options:
   --name <name>                   Operator display name (defaults to email prefix)
   --organization-name <name>     Organization name (defaults to "<name>'s Organization")
   --organization-id <id>         Explicit organization ID (defaults to a UUID)
-  --env <name>                   Wrangler environment
+  --profile <name>               Deployment profile (wrangler.<name>.overlay.jsonc)
   --persist-to <directory>       Isolated local D1 state; valid only with --local
 
 This one-time migration creates an owner and credential account, creates an
@@ -85,10 +85,8 @@ const statements = [
   `UPDATE app SET organization_id = ${sqlString(organizationId)} WHERE organization_id IS NULL;`,
 ];
 
-const wranglerBin = fileURLToPath(new URL("../node_modules/.bin/wrangler", import.meta.url));
 const wranglerArgs = ["d1", "execute", "DB", target, "--command", statements.join("\n")];
-const environment = value("--env");
-if (environment) wranglerArgs.push("--env", environment);
+wranglerArgs.push(...resolveWranglerConfig(value("--profile")).configArgs);
 if (persistTo) wranglerArgs.push("--persist-to", persistTo);
 
 const result = spawnSync(wranglerBin, wranglerArgs, { stdio: "inherit" });
@@ -102,4 +100,4 @@ console.log("1. Sign in and verify that every expected app is visible.");
 console.log("2. Create and securely store an agw_mgmt_ management key if automation needs one.");
 console.log("3. Close public registration if this is a private deployment.");
 console.log("4. After verification, manually delete the obsolete ADMIN_TOKEN secret:");
-console.log("   pnpm exec wrangler secret delete ADMIN_TOKEN [--env <name>]");
+console.log("   pnpm exec wrangler secret delete ADMIN_TOKEN [--profile <name>]");

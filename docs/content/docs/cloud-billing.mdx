@@ -9,7 +9,8 @@ access as self-hosted and does not impose subscription entitlements.
 ## Add the service binding
 
 Hosted operators can bind the `BillingWorker` entrypoint from a deployed
-`cf-billing` service in the environment that needs billing:
+`cf-billing` service in the [deployment profile](/docs/deployment#deployment-profiles)
+of the deployment that needs billing:
 
 ```jsonc
 {
@@ -23,8 +24,8 @@ Hosted operators can bind the `BillingWorker` entrypoint from a deployed
 }
 ```
 
-Do not add this binding to an OSS/self-hosted environment unless it has a
-corresponding billing service. The console discovers availability from
+Do not add this binding to `wrangler.jsonc` or to a self-hosted deployment
+unless it has a corresponding billing service. The console discovers availability from
 `GET /v1/console/capabilities`.
 
 The gateway always calls billing with service ID `app-ai-gateway` and the current

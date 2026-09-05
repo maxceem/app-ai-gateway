@@ -10,7 +10,6 @@
     "prebuild": "node scripts/generate-api.mjs",
     "build": "next build --webpack",
     "static:build": "node scripts/generate-api.mjs && next build --webpack",
-    "cf:deploy": "pnpm run static:build && wrangler deploy",
     "pretypecheck": "node scripts/generate-api.mjs",
     "typecheck": "next typegen && tsc --noEmit"
   },

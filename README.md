@@ -49,6 +49,55 @@ pnpm run secrets:upload
 pnpm run deploy
 ```
 
+### Deployment profiles
+
+`wrangler.jsonc` is complete and deploys as is; keep it free of anything that
+belongs to one Cloudflare account. Deployment-specific settings go in a
+gitignored overlay named `wrangler.<profile>.overlay.jsonc` in the repository
+root. An overlay is not a Wrangler configuration on its own: it holds only the
+keys that differ from `wrangler.jsonc` and is merged over it on every run, so
+shared sections such as Durable Object migrations are never copied and cannot
+drift. Objects merge recursively, an array replaces the base array, and `null`
+removes a key.
+
+`wrangler.prod.overlay.jsonc` for a private deployment with a custom domain, a
+fixed D1 database, and the kms vault mode:
+
+```jsonc
+{
+  "workers_dev": false,
+  "routes": [{ "pattern": "console.example.com", "custom_domain": true }],
+  "vars": { "SECRET_VAULT_MODE": "kms", "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": null },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "app-ai-gateway-prod",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
+```
+
+Every command that talks to Cloudflare accepts `--profile <name>`:
+
+```sh
+pnpm run deploy --profile prod
+pnpm run deploy:dry-run --profile prod
+pnpm run db:migrate --profile prod
+pnpm recover-access -- --email owner@example.com --promote-owner \
+  --organization-id <organization-id> --remote --profile prod
+```
+
+The merged configuration is written to `wrangler.<profile>.generated.jsonc`
+(also ignored) and passed to Wrangler with `--config`, so it can be inspected or
+used directly with `pnpm exec wrangler ... --config wrangler.prod.generated.jsonc`.
+A profile's first deployment reads its operator secrets from `.dev.vars.<profile>`
+when that file exists, otherwise set them with
+`pnpm exec wrangler secret put <NAME> --config wrangler.<profile>.generated.jsonc`.
+The documentation Worker follows the same convention with
+`docs/wrangler.<profile>.overlay.jsonc` and `pnpm run docs:deploy --profile <name>`.
+
 ## Run locally
 
 Requirements: Node.js 22+, pnpm 11, and Wrangler 4.
@@ -109,8 +158,8 @@ pnpm recover-access -- --email owner@example.com --promote-owner \
   --organization-id <organization-id> --remote
 ```
 
-Add `--env production` when applicable. This invokes `wrangler d1 execute` and
-does not print the password or hash. Prefer `--local` while validating a recovery
+Add `--profile <name>` to target a deployment profile. This invokes
+`wrangler d1 execute` and does not print the password or hash. Prefer `--local` while validating a recovery
 procedure; remote execution is an explicit owner-operated step.
 
 ### Migrating an ADMIN_TOKEN deployment
@@ -121,17 +170,20 @@ legacy apps with `scripts/migrate-to-orgs.mjs`. The command requires an explicit
 runs the documented production step. See the
 [admin auth migration guide](https://docs.appaigateway.com/docs/auth-migration).
 
-The checked-in Wrangler environments contain no personal domain or D1 ID.
-Configure those deployment-specific values in your own environment, and keep
+The tracked `wrangler.jsonc` contains no personal domain or D1 ID. Configure
+those deployment-specific values in a deployment profile overlay, and keep
 `SECRET_VAULT_LOCAL_KEK_V1` (or the `SECRET_VAULT_KMS_*` pair) in Worker secrets
 rather than committing them.
 
 ### Optional cloud billing
 
 The OSS configuration has no `BILLING` service binding and therefore grants
-self-hosted access without subscription checks. A hosted environment can bind
-the `BillingWorker` entrypoint from `cf-billing`; the commented example in
-`wrangler.jsonc` shows the binding shape. The gateway scopes every RPC to
+self-hosted access without subscription checks. A hosted deployment can bind
+the `BillingWorker` entrypoint from `cf-billing` through a deployment profile
+overlay; the [cloud billing guide](https://docs.appaigateway.com/docs/cloud-billing)
+shows the binding shape. The optional `TERMS_OF_SERVICE_URL` and
+`PRIVACY_POLICY_URL` vars make the sign-up screen link to that deployment's
+legal documents. The gateway scopes every RPC to
 service `app-ai-gateway` and the authenticated organization ID as the tenant.
 LemonSqueezy delivers webhooks to cf-billing directly, at
 `/webhooks/lemon-squeezy/app-ai-gateway`; the gateway never forwards them.
