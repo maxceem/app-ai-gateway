@@ -1,0 +1,23 @@
+# Required value requested by the Deploy to Cloudflare flow. Never commit real
+# values. Provider credentials themselves are added per organization in the
+# console and encrypted with the key below.
+# Generate with `openssl rand -base64 32`.
+SECRET_VAULT_MODE=local
+SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=1
+SECRET_VAULT_LOCAL_KEK_V1=
+
+# JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
+# For local development, run `pnpm run secrets:setup-local` to generate it.
+ALLOW_PUBLIC_REGISTRATION=true
+# Seconds an upstream provider may take to send its response headers before the
+# gateway gives up with 504. Defaults to 120. Once headers arrive the body
+# streams for as long as the model needs; only this first byte is bounded.
+# PROVIDER_TTFB_TIMEOUT_SECONDS=120
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+# To support changing local/preview hostnames, configure both values below and
+# register only <production URL>/v1/auth/callback/google with Google. The proxy
+# secret must be identical in production and local, but different from
+# BETTER_AUTH_SECRET.
+# OAUTH_PROXY_PRODUCTION_URL=https://auth.example.com
+# OAUTH_PROXY_SECRET=

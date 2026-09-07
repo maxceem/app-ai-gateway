@@ -1,0 +1,132 @@
+---
+title: Self-host quickstart
+description: Deploy, create the first operator, and register an application.
+---
+
+## 1. Deploy the Worker
+
+You need Node.js 22+, pnpm 11, and a Cloudflare account. No second service and no
+Cloudflare AI Gateway is required. From a clean checkout:
+
+```sh
+pnpm install
+cp .dev.vars.example .dev.vars
+# Put `openssl rand -base64 32` into SECRET_VAULT_LOCAL_KEK_V1 in .dev.vars.
+pnpm run secrets:upload
+pnpm run deploy
+```
+
+That one key encrypts the provider credentials you will add in step 4; back it up
+somewhere safe, because losing it makes them unreadable. The deploy script
+provisions the Worker-owned resources, applies D1 migrations, and generates the
+JWT and Better Auth signing secrets.
+
+For local development, use `pnpm run secrets:setup-local`,
+`pnpm run db:migrate:local`, and `pnpm run dev` instead.
+
+## 2. Create the first operator
+
+Open the deployed URL and sign up, or call the email signup API. The first user
+receives a new organization and its owner role automatically.
+
+```sh
+export GATEWAY_URL="https://YOUR-WORKER.workers.dev"
+curl -i -c operator.cookies \
+  -H 'content-type: application/json' \
+  -d '{"name":"Owner","email":"owner@example.com","password":"use-a-long-password"}' \
+  "$GATEWAY_URL/v1/auth/sign-up/email"
+```
+
+For a private instance, set `ALLOW_PUBLIC_REGISTRATION=false` after this account
+exists. Existing operators can still sign in.
+
+## 3. Create an application
+
+Cookie-authenticated admin calls require `x-console-request: 1`. This example
+creates a trusted-server app limited to OpenAI Responses:
+
+```sh
+curl -b operator.cookies \
+  -H 'x-console-request: 1' \
+  -H 'content-type: application/json' \
+  -d @- "$GATEWAY_URL/v1/admin/apps" <<'JSON'
+{
+  "id": "example-agent",
+  "name": "Example agent",
+  "config": {
+    "authentication": {
+      "type": "api_key",
+      "end_user": { "header": "x-end-user-id", "required": false, "fallback": "api_key" }
+    },
+    "routing": {
+      "providers": {
+        "mode": "selected",
+        "selected": {
+          "openai": {
+            "allowed_paths": ["v1/responses"],
+            "allowed_models": ["gpt-5.6-terra"],
+            "max_output_tokens": 4096
+          }
+        }
+      },
+      "model_rewrites": { "gpt-5.6-terra": "gpt-5.6" }
+    },
+    "limits": {
+      "per_user": {
+        "requests": { "per_minute": 30, "per_day": 1000 },
+        "spending": { "monthly_usd": 10 }
+      },
+      "per_app": {
+        "requests": { "per_minute": 300, "per_day": 10000 },
+        "spending": { "monthly_usd": 100 }
+      }
+    }
+  }
+}
+JSON
+```
+
+The response includes the initial `agw_` application key once. Store it in the
+calling service's secret manager.
+
+`id` asks for that exact ID: you get it, or `409 app_id_taken` if it is already
+in use anywhere on this deployment. Leave `id` out and the gateway assigns
+`example-agent-<suffix>` and returns it as `app_id`. Either way, `app_id` in the
+response is the segment every URL below uses, and it cannot be changed later.
+See [Application IDs](/configuration#application-ids).
+
+## 4. Add a provider credential
+
+The application above allows OpenAI, so the organization needs an OpenAI key.
+Add one in the console under **Providers**, or from the API:
+
+```sh
+curl -b operator.cookies \
+  -H 'x-console-request: 1' \
+  -H 'content-type: application/json' \
+  -d '{"type":"openai","name":"Prod OpenAI","secret":"sk-…"}' \
+  "$GATEWAY_URL/v1/admin/providers"
+```
+
+The key is probed against the provider, encrypted, and never returned again — the
+response carries only a `secretHint`. Until this exists, proxy requests answer
+`502 provider_not_configured`. See [Providers](/providers) for routing
+through your own Cloudflare AI Gateway and for pricing models the built-in
+catalog does not cover.
+
+## 5. Create an automation key
+
+Management keys authenticate organization-scoped admin automation. They do not
+authenticate model requests.
+
+```sh
+curl -b operator.cookies \
+  -H 'x-console-request: 1' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Deployment automation"}' \
+  "$GATEWAY_URL/v1/admin/keys"
+```
+
+The plaintext `agw_mgmt_` token is also returned once. Owners and admins can use
+it for ordinary management calls; minting and revoking management keys requires
+an operator session.

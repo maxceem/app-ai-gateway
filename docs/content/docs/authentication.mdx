@@ -1,0 +1,108 @@
+---
+title: Authentication
+description: Separate client proof from user identity for mobile apps and trusted backends.
+---
+
+## Identity model
+
+Authentication answers two independent questions:
+
+1. Client proof authenticates the software with Apple App Attest or an application API key.
+2. An issuer JWT, when configured, authenticates the end user from its verified `user_id_claim`.
+
+The resulting gateway token is a one-hour receipt for both proofs. A client cannot
+self-assert the user represented by that token.
+
+## Scoping an issuer to your tenant
+
+Every issuer block carries two required fields, `issuer` and `audience`, and the
+gateway refuses any token whose `iss` or `aud` is not among them. Each accepts
+one string or a list of accepted alternatives, which is what makes a migration
+between two projects a configuration edit.
+
+They are required because a JWKS URL identifies nobody on the issuers that
+matter most: Firebase Authentication signs every project's tokens with the same
+`securetoken@system.gserviceaccount.com` key set, and Sign in with Apple and
+Google Sign-In are shared the same way. Without `iss` and `aud`, anyone can
+create their own free Firebase project, mint a token with any `sub` and any
+custom claims, and it verifies against your application — `required_claims` does
+not help, because the attacker writes those claims too.
+
+| Issuer | `issuer` | `audience` |
+| --- | --- | --- |
+| Firebase Authentication | `https://securetoken.google.com/<project-id>` | `<project-id>` |
+| Supabase Auth | `https://<ref>.supabase.co/auth/v1` | `authenticated` |
+| Sign in with Apple | `https://appleid.apple.com` | your bundle id |
+| Auth0 | `https://<tenant-domain>/` (trailing slash included) | your API identifier |
+| Clerk | `https://<frontend-api-host>` | the `aud` your JWT template sets |
+
+The console's issuer presets fill both fields in for you. A stored configuration
+without them does not run: it is reported as a configuration error and its token
+exchanges answer `500 internal_error`.
+
+## Issuer-less API-key applications
+
+Pure machine consumers send their application API key directly to data-plane requests:
+
+```http
+Authorization: Bearer agw_...
+X-End-User-ID: customer-123
+```
+
+The optional end-user header selects the per-user limit identity. When absent,
+the API key itself is the principal. This direct-key flow is valid only when the
+application has no `issuer` configured. Only the key hash and display prefix are
+stored in D1.
+
+## Issuer-backed API-key applications
+
+Trusted clients that front real users exchange both proofs at the token endpoint:
+
+```http
+POST /v1/apps/my-app/auth/token
+Content-Type: application/json
+
+{"api_key":"agw_...","issuer_token":"eyJ..."}
+```
+
+The API key must be active and belong to that application. The gateway verifies
+the issuer token and its required claims, uses its `user_id_claim` as identity,
+and returns a gateway token. Once an API-key app has an issuer, bare `agw_` keys
+are rejected on data-plane requests.
+
+## iOS applications
+
+Mobile authentication combines the same two proofs:
+
+1. An issuer token proves the signed-in user identity.
+2. Apple App Attest proves the request originates from an accepted application installation.
+
+The client first requests a challenge and registers its App Attest key. Subsequent
+token exchanges submit a fresh challenge and assertion. App Attest accepts only
+Apple's production environment. The gateway verifies the issuer identity and
+returns a short-lived bearer token for proxy and `/me` requests.
+
+## Why a token exchange was refused
+
+A refused exchange answers with one of three codes, chosen by what the client
+should do about it rather than by the internal cause. The granular cause is
+recorded server-side as a `reason`, and is never sent to the client.
+
+| Status and code | What happened | What the client should do |
+| --- | --- | --- |
+| `403 issuer_token_rejected` | The token did not verify: bad signature, unknown key, disallowed algorithm, expired, over the configured lifetime, an `iss` or `aud` the application does not accept, or no `user_id_claim`. | Fetch a fresh issuer token, retry once, then fail. |
+| `403 issuer_claims_missing` | The token verified, but the application's `required_claims` are not all present yet. | Do **not** re-authenticate. Wait and retry — the entitlement is still propagating. |
+| `503 issuer_verification_unavailable` | The gateway could not reach or read the issuer's JWKS, so the token was never judged. | Retry with backoff. Nothing about the credential is known to be wrong. |
+
+The separation matters most for `required_claims` backed by an asynchronous
+writer — a purchase that a store webhook turns into an entitlement claim, for
+instance. During that gap the user holds a perfectly valid token, and treating
+the refusal as an authentication failure sends the client re-authenticating in a
+loop it cannot escape. The gateway measures the gap: see
+[claim propagation](/operations#authentication-observability).
+
+<Callout>
+Clients built before these codes existed decode an unrecognised code as unknown
+and display the server's message, so they degrade to showing the reason rather
+than acting on it.
+</Callout>

@@ -1,0 +1,83 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "fumadocs-openapi/css/preset.css";
+
+/* Match the marketing site: white paper, the brand purple as the only accent,
+   system fonts, no decoration. The neutral preset's pure-gray panels read
+   muddy next to white, so surfaces are white with hairline borders and the
+   few filled ones use the marketing slate tints instead. */
+:root {
+  --color-fd-background: #ffffff;
+  --color-fd-foreground: #0b1120;
+  --color-fd-card: #ffffff;
+  --color-fd-card-foreground: #0b1120;
+  --color-fd-popover: #ffffff;
+  --color-fd-popover-foreground: #1e293b;
+  --color-fd-muted: #f8fafc;
+  --color-fd-muted-foreground: #64748b;
+  --color-fd-secondary: #f8fafc;
+  --color-fd-secondary-foreground: #1e293b;
+  --color-fd-accent: #f1f5f9;
+  --color-fd-accent-foreground: #0b1120;
+  --color-fd-border: #e5e9ef;
+  --color-fd-primary: #7c3aed;
+  --color-fd-primary-foreground: #ffffff;
+
+  /* Constant across themes so the logo never inverts. */
+  --brand-mark: #7c3aed;
+}
+
+.dark {
+  --color-fd-background: #0c0e16;
+  --color-fd-foreground: #e5eaf2;
+  --color-fd-card: #11141d;
+  --color-fd-card-foreground: #e5eaf2;
+  --color-fd-popover: #11141d;
+  --color-fd-popover-foreground: #c8d2e0;
+  --color-fd-muted: #11141d;
+  --color-fd-muted-foreground: #94a2b5;
+  --color-fd-secondary: #1b222c;
+  --color-fd-secondary-foreground: #e5eaf2;
+  --color-fd-accent: #262e3b;
+  --color-fd-accent-foreground: #e5eaf2;
+  --color-fd-border: #262e3b;
+  --color-fd-primary: #a78bfa;
+  --color-fd-primary-foreground: #17092e;
+}
+
+/* The neutral preset re-darkens the dark sidebar with pure grays; keep it on
+   the same slate ramp as everything else. */
+.dark #nd-sidebar {
+  --color-fd-muted: #1b222c;
+  --color-fd-secondary: #262e3b;
+  --color-fd-muted-foreground: #aab7c8;
+}
+
+/* The marketing wordmark: "App [AI] Gateway", with the AI in a rounded block
+   inside the text rather than as a separate mark beside it. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32em;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+}
+
+/* Fixed 24px square between "App" and "Gateway", mirroring the console mark's
+   24x24 frame with a 4px radius. Deliberately not sized in `em`: scaling it up
+   loses the compact look. */
+.brand-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background: var(--brand-mark);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}

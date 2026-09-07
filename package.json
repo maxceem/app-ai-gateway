@@ -1,0 +1,77 @@
+{
+  "name": "app-ai-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@12.3.4",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "console:dev": "pnpm --filter @app-ai-gateway/console dev",
+    "console:build": "pnpm --filter @app-ai-gateway/console build",
+    "console:typecheck": "pnpm --filter @app-ai-gateway/console typecheck",
+    "deploy": "pnpm run console:build && node scripts/deploy.mjs",
+    "typecheck": "pnpm run typecheck:worker && pnpm run typecheck:bindings && pnpm run console:typecheck && pnpm run docs:typecheck",
+    "test": "pnpm run test:worker && pnpm run test:deploy-script",
+    "test:watch": "vitest",
+    "check": "node scripts/check.mjs",
+    "openapi:generate": "node --experimental-strip-types scripts/generate-openapi.ts",
+    "openapi:check": "node scripts/check-openapi.mjs",
+    "docs:dev": "pnpm --filter @app-ai-gateway/docs dev",
+    "docs:build": "pnpm --filter @app-ai-gateway/docs build",
+    "docs:deploy": "pnpm --filter @app-ai-gateway/docs static:build && node scripts/wrangler.mjs --cwd docs deploy",
+    "docs:typecheck": "pnpm --filter @app-ai-gateway/docs typecheck",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate": "node scripts/wrangler.mjs d1 migrations apply DB --remote",
+    "secrets:upload": "wrangler secret bulk .dev.vars",
+    "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
+    "recover-access": "node scripts/recover-access.mjs",
+    "deploy:dry-run": "pnpm run console:build && node scripts/wrangler.mjs deploy --dry-run",
+    "startup:check": "wrangler check startup",
+    "console:test": "pnpm --filter @app-ai-gateway/console test",
+    "console:ensure": "node -e \"require('node:fs').mkdirSync('console/dist',{recursive:true})\"",
+    "predev": "pnpm run console:ensure",
+    "typecheck:worker": "tsgo --noEmit",
+    "typecheck:bindings": "wrangler types --check --env-file .dev.vars.example",
+    "typecheck:tsc": "tsc --noEmit && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
+    "test:worker": "vitest run",
+    "test:deploy-script": "node --test test/deploy-script.node.mjs",
+    "pretest:worker": "pnpm run console:ensure"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.9",
+    "@hono/zod-openapi": "^1.5.1",
+    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.1.0/maxceem-cf-auth-0.1.0.tgz",
+    "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
+    "asn1js": "^3.0.7",
+    "better-auth": "1.6.9",
+    "cbor-x": "^1.6.0",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.9.0",
+    "jose": "^6.0.0",
+    "pkijs": "^3.3.3",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.7",
+    "@cloudflare/workers-types": "^5.20260723.1",
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "drizzle-kit": "^0.31.10",
+    "jsonc-parser": "^3.3.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "cloudflare": {
+    "bindings": {
+      "SECRET_VAULT_LOCAL_KEK_V1": {
+        "description": "Generate a unique local vault key with `openssl rand -base64 32`. It encrypts provider credentials at rest and must be backed up securely."
+      }
+    }
+  }
+}
