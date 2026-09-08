@@ -61,12 +61,18 @@ async function seedOrganization(name: string, userId: string, role = "owner"): P
   return organizationId;
 }
 
-async function createApp(cookie: string, id: string) {
+async function createApp(cookie: string, name: string) {
   return exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
     method: "POST",
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ id, name: id, config: serverConfig() }),
+    body: JSON.stringify({ name, config: serverConfig() }),
   });
+}
+
+/** The id the gateway assigned, which is the only place a caller learns it. */
+async function createdAppId(response: Response): Promise<string> {
+  expect(response.status).toBe(201);
+  return (await response.json<{ app: { id: string } }>()).app.id;
 }
 
 describe("operator authentication", () => {
@@ -282,22 +288,22 @@ describe("operator authentication", () => {
   it("keeps applications and every nested admin surface invisible across organizations", async () => {
     const first = await signup("isolation-one@example.test");
     const second = await signup("isolation-two@example.test");
-    expect((await createApp(first.cookie, "org-one-app")).status).toBe(201);
-    expect((await createApp(second.cookie, "org-two-app")).status).toBe(201);
+    const firstApp = await createdAppId(await createApp(first.cookie, "org one app"));
+    const secondApp = await createdAppId(await createApp(second.cookie, "org two app"));
 
     const firstList = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       headers: sessionHeaders(first.cookie),
     });
     const firstBody = await firstList.json<{ apps: Array<{ id: string }> }>();
-    expect(firstBody.apps.map((app) => app.id)).toContain("org-one-app");
-    expect(firstBody.apps.map((app) => app.id)).not.toContain("org-two-app");
+    expect(firstBody.apps.map((app) => app.id)).toContain(firstApp);
+    expect(firstBody.apps.map((app) => app.id)).not.toContain(secondApp);
 
     for (const path of [
-      "/v1/admin/apps/org-two-app",
-      "/v1/admin/apps/org-two-app/keys",
-      "/v1/admin/apps/org-two-app/users",
-      "/v1/admin/apps/org-two-app/usage/timeseries",
-      "/v1/admin/apps/org-two-app/events",
+      `/v1/admin/apps/${secondApp}`,
+      `/v1/admin/apps/${secondApp}/keys`,
+      `/v1/admin/apps/${secondApp}/users`,
+      `/v1/admin/apps/${secondApp}/usage/timeseries`,
+      `/v1/admin/apps/${secondApp}/events`,
     ]) {
       const response = await exports.default.fetch(`${ORIGIN}${path}`, {
         headers: sessionHeaders(first.cookie),

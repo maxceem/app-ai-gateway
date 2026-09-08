@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { appleConfig, seedApp, seedProvider, serverConfig } from "./helpers";
+import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
 
 describe("admin API", () => {
   it("requires operator authentication and returns exact monthly usage rollups", async () => {
@@ -480,7 +480,8 @@ describe("admin API", () => {
     await env.DB.prepare("DELETE FROM provider WHERE id = 'admin-reprice-custom'").run();
   });
 
-  it("rejects an insecure issuer URL during app upsert", async () => {
+  it("rejects an insecure issuer URL when updating an app", async () => {
+    await seedApp("insecure-issuer");
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/insecure-issuer", {
       method: "POST",
       headers: {
@@ -503,6 +504,7 @@ describe("admin API", () => {
     const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
     delete config.authentication.issuer.issuer;
     delete config.authentication.issuer.audience;
+    await seedApp("unscoped-issuer");
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/unscoped-issuer", {
       method: "POST",
       headers: {
@@ -544,6 +546,7 @@ describe("admin API", () => {
         end_user: { header: "x-end-user-id", required: false, fallback: "api_key" },
       },
     });
+    await seedServerApp("invalid-api-key-issuer");
     const response = await exports.default.fetch(
       "https://example.test/v1/admin/apps/invalid-api-key-issuer",
       {
@@ -565,9 +568,11 @@ describe("admin API", () => {
       config.authentication.development_access = true;
       return config;
     }],
-  ])("rejects the removed auth field %s instead of stripping it", async (_field, config) => {
+  ])("rejects the removed auth field %s instead of stripping it", async (field, config) => {
+    const appId = `removed-${field.replace(/[^a-z]+/gu, "-")}`;
+    await seedApp(appId);
     const response = await exports.default.fetch(
-      "https://example.test/v1/admin/apps/removed-auth-field",
+      `https://example.test/v1/admin/apps/${appId}`,
       {
         method: "POST",
         headers: {
@@ -586,6 +591,7 @@ describe("admin API", () => {
   it("stores an App Attest development environment opt-in", async () => {
     const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
     config.authentication.app_attest.environments = ["production", "development"];
+    await seedApp("attest-environments");
     const created = await exports.default.fetch(
       "https://example.test/v1/admin/apps/attest-environments",
       {
@@ -618,6 +624,7 @@ describe("admin API", () => {
   it("rejects an unknown App Attest environment", async () => {
     const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
     config.authentication.app_attest.environments = ["staging"];
+    await seedApp("attest-environments-invalid");
     const response = await exports.default.fetch(
       "https://example.test/v1/admin/apps/attest-environments-invalid",
       {
@@ -636,21 +643,10 @@ describe("admin API", () => {
   });
 
   it("creates, lists, and revokes one-time server API keys", async () => {
-    const createApp = await exports.default.fetch(
-      "https://example.test/v1/admin/apps/admin-server-keys",
-      {
-        method: "POST",
-        headers: {
-          authorization: "Bearer agw_mgmt_test-admin-secret",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          name: "Admin server keys",
-          config: serverConfig(),
-        }),
-      },
-    );
-    expect(createApp.status).toBe(200);
+    await seedServerApp("admin-server-keys");
+    // The fixture ships a key of its own; the assertions below are about the
+    // keys this test creates, so the app starts with none.
+    await env.DB.prepare("DELETE FROM app_api_key WHERE app_id = 'admin-server-keys'").run();
 
     const created = await exports.default.fetch(
       "https://example.test/v1/admin/apps/admin-server-keys/keys",
@@ -713,6 +709,8 @@ describe("admin API", () => {
   });
 
   it("rejects unknown auth modes and malformed routing", async () => {
+    const appId = "invalid-server-config";
+    await seedServerApp(appId);
     for (const body of [
       {
         name: "Unknown mode",
@@ -726,7 +724,7 @@ describe("admin API", () => {
       },
     ]) {
       const response = await exports.default.fetch(
-        "https://example.test/v1/admin/apps/invalid-server-config",
+        `https://example.test/v1/admin/apps/${appId}`,
         {
           method: "POST",
           headers: {

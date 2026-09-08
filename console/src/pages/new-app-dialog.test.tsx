@@ -5,35 +5,36 @@ import { NewAppDialog } from "./new-app-dialog";
 import { renderAuthenticated } from "@/test/render";
 
 interface CreateAttempt {
-  id: string;
+  id?: unknown;
   name: string;
   config?: { limits?: unknown };
 }
 
 /**
- * Answers `POST /v1/admin/apps` by echoing the id the console asked for, which
- * is the property under test: the server never invents a different one, so a
- * test that echoed a fixed id could not tell a rename from a match.
+ * Answers `POST /v1/admin/apps` the way the gateway does: with the created
+ * application, whose id is the server's and which the console learns only from
+ * this response.
  */
-function stubCreate(outcomes: Array<"created" | "taken">) {
+function stubCreate(appId = "calorie-tracker-k3f9x1") {
   const attempts: CreateAttempt[] = [];
-  const remaining = [...outcomes];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.startsWith("/v1/admin/apps") && init?.method === "POST") {
-        const body = JSON.parse(String(init.body)) as CreateAttempt;
-        attempts.push(body);
-        if ((remaining.shift() ?? "created") === "taken") {
-          return new Response(
-            JSON.stringify({ error: { code: "app_id_taken", message: `App id ${body.id} is already taken` } }),
-            { status: 409 },
-          );
-        }
+        attempts.push(JSON.parse(String(init.body)) as CreateAttempt);
         return new Response(
           JSON.stringify({
-            app_id: body.id,
+            app: {
+              id: appId,
+              name: "Created app",
+              config: {},
+              status: "active",
+              created_at: "2026-09-02T00:00:00.000Z",
+              updated_at: "2026-09-02T00:00:00.000Z",
+            },
+            resolved: null,
+            config_error: null,
             api_key: {
               id: "key-1",
               name: "Default key",
@@ -66,73 +67,42 @@ afterEach(() => {
 });
 
 describe("creating an application", () => {
-  it("shows the suffixed id up front and creates exactly that id", async () => {
-    const attempts = stubCreate(["created"]);
-    renderAuthenticated(<NewAppDialog existingIds={[]} />);
+  it("previews the id without choosing it, and never sends one", async () => {
+    const attempts = stubCreate();
+    renderAuthenticated(<NewAppDialog />);
 
     const user = await openServerAppForm("Calorie Tracker");
 
-    const shown = appIdField().value;
-    expect(shown).toMatch(/^calorie-tracker-[0-9a-z]{6}$/u);
-    // The URL the id will live in, spelled out before anything is created.
-    // One <code> in the dialog, and the id inside it is its own element, so the
-    // preview has to be matched on the whole node rather than on a text run.
-    expect(
-      screen.getByText(
-        (_, element) =>
-          element?.tagName === "CODE"
-          && (element.textContent ?? "").includes(`/v1/apps/${shown}/proxy/`),
-      ),
-    ).toBeTruthy();
+    // The stem is knowable; the suffix is the gateway's, so it is shown as a
+    // placeholder rather than as a value the person could rely on.
+    const field = appIdField();
+    expect(field.value).toBe("calorie-tracker-••••••");
+    expect(field.readOnly).toBe(true);
+    expect(screen.queryByRole("button", { name: /application ID/iu })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Create app" }));
 
     await waitFor(() => expect(attempts).toHaveLength(1));
-    expect(attempts[0]).toMatchObject({ id: shown, name: "Calorie Tracker" });
-    // The confirmation repeats the id that was created, in the URL it created it
-    // at, so the last thing seen is the same string as the first.
+    expect(attempts[0]).toMatchObject({ name: "Calorie Tracker" });
+    expect(attempts[0]).not.toHaveProperty("id");
+  });
+
+  it("uses the id the server assigned, not the previewed stem", async () => {
+    stubCreate("calorie-tracker-zz9zz9");
+    renderAuthenticated(<NewAppDialog />);
+
+    const user = await openServerAppForm("Calorie Tracker");
+    await user.click(screen.getByRole("button", { name: "Create app" }));
+
+    // The confirmation spells out the URL the app actually lives at.
     expect(await screen.findByText("Base URL")).toBeTruthy();
     expect(
       screen.getByText(
         (_, element) =>
           element?.tagName === "CODE"
-          && (element.textContent ?? "").includes(`/v1/apps/${shown}/proxy/`),
+          && (element.textContent ?? "").includes("/v1/apps/calorie-tracker-zz9zz9/proxy/"),
       ),
     ).toBeTruthy();
-  });
-
-  it("never resubmits behind the caller: a taken id is replaced in the form, not on the server", async () => {
-    const attempts = stubCreate(["taken", "created"]);
-    renderAuthenticated(<NewAppDialog existingIds={[]} />);
-
-    const user = await openServerAppForm("Calorie Tracker");
-    const first = appIdField().value;
-
-    await user.click(screen.getByRole("button", { name: "Create app" }));
-
-    // One attempt only, and the dialog stays open showing a different id.
-    await waitFor(() => expect(appIdField().value).not.toBe(first));
-    expect(attempts).toEqual([expect.objectContaining({ id: first })]);
-    const second = appIdField().value;
-    expect(second).toMatch(/^calorie-tracker-[0-9a-z]{6}$/u);
-
-    await user.click(screen.getByRole("button", { name: "Create app" }));
-
-    await waitFor(() => expect(attempts).toHaveLength(2));
-    expect(attempts[1]).toMatchObject({ id: second });
-  });
-
-  it("refuses a custom id the gateway reserves", async () => {
-    stubCreate(["created"]);
-    renderAuthenticated(<NewAppDialog existingIds={["calorie-tracker-aaaaaa"]} />);
-
-    const user = await openServerAppForm("Calorie Tracker");
-    await user.click(screen.getByRole("button", { name: "Edit application ID" }));
-    await user.clear(appIdField());
-    await user.type(appIdField(), "admin");
-
-    expect(screen.getByText("This ID is reserved. Pick another one.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create app" })).toHaveProperty("disabled", true);
   });
 });
 
@@ -145,8 +115,8 @@ describe("creating an application", () => {
  */
 describe("default limits on a new application", () => {
   it("leaves a server application unlimited", async () => {
-    const attempts = stubCreate(["created"]);
-    renderAuthenticated(<NewAppDialog existingIds={[]} />);
+    const attempts = stubCreate("search-service-k3f9x1");
+    renderAuthenticated(<NewAppDialog />);
 
     const user = await openServerAppForm("Search service");
     await user.click(screen.getByRole("button", { name: "Create app" }));

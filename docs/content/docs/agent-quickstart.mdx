@@ -22,13 +22,13 @@ export MGMT_KEY="$(curl --fail-with-body -sS -b operator.cookies \
   -d '{"name":"Agent bootstrap"}' \
   "$GATEWAY_URL/v1/admin/keys" | jq -r '.key.plaintext')"
 
-# Create a server app; capture its one-time data-plane key.
-export APP_KEY="$(curl --fail-with-body -sS \
+# Create a server app. The gateway assigns the application ID; the response
+# answers with the created application, alongside the one-time data-plane key.
+curl --fail-with-body -sS \
   -H "authorization: Bearer $MGMT_KEY" \
   -H 'content-type: application/json' \
-  -d @- "$GATEWAY_URL/v1/admin/apps" <<'JSON' | jq -r '.api_key.key'
+  -d @- "$GATEWAY_URL/v1/admin/apps" > app.json <<'JSON'
 {
-  "id": "curl-agent",
   "name": "curl agent",
   "config": {
     "authentication": {
@@ -61,18 +61,28 @@ export APP_KEY="$(curl --fail-with-body -sS \
   }
 }
 JSON
-)"
+
+export APP_ID="$(jq -r '.app.id' app.json)"
+export APP_KEY="$(jq -r '.api_key.key' app.json)"
+# app.json held the one-time application key in plaintext; it must not survive.
+rm app.json
 
 # Proxy a provider-native request.
 curl --fail-with-body -sS \
   -H "authorization: Bearer $APP_KEY" \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5.6-terra","input":"Reply with exactly: gateway ready"}' \
-  "$GATEWAY_URL/v1/apps/curl-agent/proxy/openai/v1/responses"
+  "$GATEWAY_URL/v1/apps/$APP_ID/proxy/openai/v1/responses"
 ```
+
+Never send `id` when creating an application: the gateway derives it from the
+name (`curl-agent-<suffix>` here) and answers with it as `app.id`. A body that
+carries `id` is refused with `400`, and no request can change an ID afterwards.
 
 The organization must already have an OpenAI credential, added under
 [Providers](/providers) or with `POST /v1/admin/providers`; without one the
-proxy answers `502 provider_not_configured`. Clear the exported keys from shell
-history or close the shell after placing them in a secret manager. Then close
-public registration for a private deployment.
+proxy answers `502 provider_not_configured`. The application key exists in three
+places this script created: `app.json`, which the `rm` above removes; the
+exported `APP_KEY`; and your shell history. Place the key in a secret manager,
+then clear that history or close the shell, and confirm `app.json` is gone —
+back it up nowhere. Then close public registration for a private deployment.

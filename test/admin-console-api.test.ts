@@ -7,6 +7,7 @@ import {
   defaultProxyConfig,
   seedApp,
   seedProvider,
+  seedServerApp,
   serverConfig,
 } from "./helpers";
 
@@ -153,12 +154,14 @@ describe("admin console API", () => {
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
-      body: JSON.stringify({ id: "app-on-paused", name: "On a paused instance", config }),
+      body: JSON.stringify({ name: "On a paused instance", config }),
     });
     expect(created.status, await created.clone().text()).toBe(201);
+    const { app: createdApp } = await created.json<{ app: { id: string } }>();
+    const createdId = createdApp.id;
 
-    await env.DB.prepare("DELETE FROM app_api_key WHERE app_id = 'app-on-paused'").run();
-    await env.DB.prepare("DELETE FROM app WHERE id = 'app-on-paused'").run();
+    await env.DB.prepare("DELETE FROM app_api_key WHERE app_id = ?").bind(createdId).run();
+    await env.DB.prepare("DELETE FROM app WHERE id = ?").bind(createdId).run();
     await env.DB.prepare("DELETE FROM provider WHERE id = 'app-save-paused'").run();
     clearProviderCaches();
   });
@@ -223,6 +226,8 @@ describe("admin console API", () => {
     const appId = "grandfathered-slug";
     await seedProvider({ type: "openai", id: "grandfathered-openai-dev", slug: "openai-dev" });
     clearProviderCaches();
+    // PUT only ever updates, so the row this test edits has to exist first.
+    await seedApp(appId, { proxy: { "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] } } });
     const config = (extra: Record<string, unknown> = {}) => serverConfig({
       proxy: {
         "openai-dev": { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
@@ -261,7 +266,7 @@ describe("admin console API", () => {
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
-      body: JSON.stringify({ id: "grandfathered-new", name: "New", config: config() }),
+      body: JSON.stringify({ name: "Grandfathered new", config: config() }),
     });
     expect(created.status).toBe(400);
   });
@@ -273,7 +278,8 @@ describe("admin console API", () => {
       body: JSON.stringify({ name: "Unclaimed Name", config: serverConfig() }),
     });
     expect(created.status).toBe(201);
-    const { app_id: appId } = await created.json<{ app_id: string }>();
+    const { app: createdApp } = await created.json<{ app: { id: string } }>();
+    const appId = createdApp.id;
     // Nothing held `unclaimed-name`, and it is still not what was created: the
     // suffix is the format, not a collision repair.
     expect(appId).toMatch(/^unclaimed-name-[a-z0-9]{6}$/u);
@@ -281,45 +287,59 @@ describe("admin console API", () => {
     expect((await get("/v1/admin/apps/unclaimed-name")).status).toBe(404);
   });
 
-  it("refuses a requested id that is taken rather than renaming it", async () => {
-    await seedApp("taken-id");
-
+  it("refuses a body that names an id, and says who assigns it", async () => {
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: JSON_AUTH,
-      body: JSON.stringify({ id: "taken-id", name: "Taken Id", config: serverConfig() }),
+      body: JSON.stringify({ id: "chosen-id", name: "Chosen Id", config: serverConfig() }),
     });
-    expect(created.status).toBe(409);
-    expect((await created.json<{ error: { code: string } }>()).error.code).toBe("app_id_taken");
+    expect(created.status).toBe(400);
+    await expect(created.json()).resolves.toMatchObject({
+      error: {
+        code: "invalid_request",
+        message: "id is assigned by the server: omit it and read app.id from the response",
+      },
+    });
 
-    // The refusal wrote nothing: the app that held the id is as it was, and no
-    // second app was created under any other id.
-    const original = await get("/v1/admin/apps/taken-id");
-    expect(original.body.app.name).toBe("Test taken-id");
+    // Nothing was created, under the asked-for id or any other.
+    expect((await get("/v1/admin/apps/chosen-id")).status).toBe(404);
     const listed = (await get("/v1/admin/apps")).body.apps as Array<{ id: string }>;
-    expect(listed.filter((row) => row.id.startsWith("taken-id"))).toHaveLength(1);
+    expect(listed.filter((row) => row.id.startsWith("chosen-id"))).toHaveLength(0);
   });
 
-  it("refuses a reserved id, and only when it would create one", async () => {
-    const reserved = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
-      method: "POST",
-      headers: JSON_AUTH,
-      body: JSON.stringify({ id: "admin", name: "Admin", config: serverConfig() }),
-    });
-    expect(reserved.status).toBe(400);
-    await expect(reserved.json()).resolves.toMatchObject({
-      error: { message: "App id admin is reserved" },
-    });
-
-    const upserted = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/console`, {
+  it("updates through PUT but never creates: an unknown id is a 404", async () => {
+    const body = JSON.stringify({ name: "Bare Id", config: serverConfig() });
+    const missing = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/bare-id`, {
       method: "PUT",
       headers: JSON_AUTH,
-      body: JSON.stringify({ name: "Console", config: serverConfig() }),
+      body,
     });
-    expect(upserted.status).toBe(400);
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({
+      error: { code: "app_not_found" },
+    });
+    // The refusal wrote nothing: the id is still free of any row.
+    const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM app WHERE id = ?")
+      .bind("bare-id")
+      .first<{ count: number }>();
+    expect(row?.count).toBe(0);
+
+    await seedServerApp("put-updates-me");
+    const updated = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/put-updates-me`, {
+      method: "PUT",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Renamed", config: serverConfig() }),
+    });
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    // An update answers with the same object a read does, already renamed.
+    const updatedBody = await updated.json<{ app: { id: string; name: string }; config_error: null }>();
+    expect(updatedBody.app.id).toBe("put-updates-me");
+    expect(updatedBody.app.name).toBe("Renamed");
+    expect(updatedBody.config_error).toBeNull();
+    expect((await get("/v1/admin/apps/put-updates-me")).body.app).toEqual(updatedBody.app);
   });
 
-  it("assigns a suffixed id when the caller names none, and returns a server key once", async () => {
+  it("assigns the id from the name, and returns a server key once", async () => {
     await seedApp("calorie-tracker");
 
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
@@ -332,29 +352,36 @@ describe("admin console API", () => {
     });
     expect(created.status).toBe(201);
     const body = await created.json<{
-      app_id: string;
+      app: { id: string; name: string; status: string; created_at: string; updated_at: string };
+      resolved: { routing: { providerMode: string } };
+      config_error: string | null;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
-    expect(body.app_id).toMatch(/^calorie-tracker-[a-z0-9]{6}$/u);
+    expect(body.app.id).toMatch(/^calorie-tracker-[a-z0-9]{6}$/u);
     expect(body.api_key.key).toMatch(/^agw_[0-9A-Za-z]{40,}$/u);
     expect(body.api_key.key_prefix).toBe(body.api_key.key.slice(0, 12));
+
+    // A create answers with the application, in the shape a read answers with.
+    const readBack = await get(`/v1/admin/apps/${body.app.id}`);
+    expect(body.app).toEqual(readBack.body.app);
+    expect(body.resolved).toEqual(readBack.body.resolved);
+    expect(body.config_error).toBeNull();
 
     const original = await get("/v1/admin/apps/calorie-tracker");
     expect(original.body.app.name).toBe("Test calorie-tracker");
 
-    const keyList = await get(`/v1/admin/apps/${body.app_id}/keys`);
+    const keyList = await get(`/v1/admin/apps/${body.app.id}/keys`);
     expect(keyList.body.keys).toEqual([
       expect.objectContaining({ id: body.api_key.id, name: "Default key", status: "active" }),
     ]);
     expect(JSON.stringify(keyList.body)).not.toContain(body.api_key.key);
 
-    const defaultAccess = await get(`/v1/admin/apps/${body.app_id}`);
-    expect(defaultAccess.body.resolved.routing.providerMode).toBe("all");
+    expect(body.resolved.routing.providerMode).toBe("all");
     const appList = await get("/v1/admin/apps");
     // The fixture configures one instance of every provider type, and an
     // all-providers app reaches all of them.
     expect(
-      appList.body.apps.find((app: any) => app.id === body.app_id).providers.sort(),
+      appList.body.apps.find((app: any) => app.id === body.app.id).providers.sort(),
     ).toEqual([...PROVIDER_TYPES].sort());
   });
 
@@ -368,8 +395,8 @@ describe("admin console API", () => {
       }),
     });
     expect(created.status).toBe(201);
-    const body = await created.json<{ app_id: string; api_key: null }>();
-    expect(body.app_id).toMatch(/^cafe-companion-ios-[a-z0-9]{6}$/u);
+    const body = await created.json<{ app: { id: string }; api_key: null }>();
+    expect(body.app.id).toMatch(/^cafe-companion-ios-[a-z0-9]{6}$/u);
     expect(body.api_key).toBeNull();
   });
 
@@ -405,7 +432,12 @@ describe("admin console API", () => {
       { method: "DELETE", headers: AUTH },
     );
     expect(deleted.status).toBe(200);
-    await expect(deleted.json()).resolves.toMatchObject({ deleted: "delete-me", removed_users: 1 });
+    await expect(deleted.json()).resolves.toEqual({
+      deleted: true,
+      app_id: "delete-me",
+      removed_users: 1,
+      usage_events_retained: true,
+    });
     expect((await get("/v1/admin/apps/delete-me")).status).toBe(404);
 
     const remaining = await env.DB.prepare(
