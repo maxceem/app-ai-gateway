@@ -353,6 +353,17 @@
                       },
                       "bundle_id": {
                         "type": "string"
+                      },
+                      "environments": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "production",
+                            "development"
+                          ]
+                        },
+                        "minItems": 1
                       }
                     },
                     "required": [

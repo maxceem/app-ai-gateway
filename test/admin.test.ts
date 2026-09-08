@@ -565,11 +565,6 @@ describe("admin API", () => {
       config.authentication.development_access = true;
       return config;
     }],
-    ["app_attest.environments", () => {
-      const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
-      config.authentication.app_attest.environments = ["development"];
-      return config;
-    }],
   ])("rejects the removed auth field %s instead of stripping it", async (_field, config) => {
     const response = await exports.default.fetch(
       "https://example.test/v1/admin/apps/removed-auth-field",
@@ -580,6 +575,58 @@ describe("admin API", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({ name: "Removed auth field", config: config() }),
+      },
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request" },
+    });
+  });
+
+  it("stores an App Attest development environment opt-in", async () => {
+    const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
+    config.authentication.app_attest.environments = ["production", "development"];
+    const created = await exports.default.fetch(
+      "https://example.test/v1/admin/apps/attest-environments",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "Attest environments", config }),
+      },
+    );
+    expect(created.status).toBe(200);
+
+    const read = await exports.default.fetch(
+      "https://example.test/v1/admin/apps/attest-environments",
+      { headers: { authorization: "Bearer agw_mgmt_test-admin-secret" } },
+    );
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toMatchObject({
+      app: {
+        config: {
+          authentication: {
+            app_attest: { environments: ["production", "development"] },
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects an unknown App Attest environment", async () => {
+    const config = appleConfig({ jwks_url: "https://issuer.test/jwks" }) as any;
+    config.authentication.app_attest.environments = ["staging"];
+    const response = await exports.default.fetch(
+      "https://example.test/v1/admin/apps/attest-environments-invalid",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "Attest environments invalid", config }),
       },
     );
     expect(response.status).toBe(400);

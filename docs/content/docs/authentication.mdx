@@ -78,9 +78,47 @@ Mobile authentication combines the same two proofs:
 2. Apple App Attest proves the request originates from an accepted application installation.
 
 The client first requests a challenge and registers its App Attest key. Subsequent
-token exchanges submit a fresh challenge and assertion. App Attest accepts only
-Apple's production environment. The gateway verifies the issuer identity and
-returns a short-lived bearer token for proxy and `/me` requests.
+token exchanges submit a fresh challenge and assertion. The gateway verifies the
+issuer identity and returns a short-lived bearer token for proxy and `/me`
+requests.
+
+### App Attest environments
+
+Apple runs App Attest in one of two environments and stamps which one into the
+attestation. A build signed for development attests in the development
+environment; TestFlight and App Store builds always attest in production. An
+application accepts production only, unless
+`authentication.app_attest.environments` says otherwise:
+
+```json
+"app_attest": {
+  "team_id": "ABCDE12345",
+  "bundle_id": "com.example.app.dev",
+  "environments": ["development"]
+}
+```
+
+Omit the field and it means `["production"]`, so an application that never
+mentions it behaves exactly as before.
+
+Accepting development is narrower than it sounds: the attestation carries
+`SHA256("<team id>.<bundle id>")`, which the gateway checks, so only builds
+signed by your team for that bundle id are accepted either way. What it does
+widen is that development-signed builds are debuggable and run on any device
+carrying your provisioning profile. Put the opt-in on a development bundle id —
+never on the one you ship.
+
+The environment a key registered in is stored with it, so withdrawing an
+environment also stops the keys it admitted: their next token exchange answers
+`403 attest_failed`, and the client re-registers. Keys registered before this
+was recorded count as production, which no application can refuse.
+
+Two things no configuration can change. App Attest is unavailable in the
+Simulator, because it needs the Secure Enclave. And a development build can be
+made to attest in *production* instead, by setting the
+`com.apple.developer.devicecheck.appattest-environment` entitlement to
+`production` — which is the better answer when a development build only needs to
+reach a production-only application.
 
 ## Why a token exchange was refused
 

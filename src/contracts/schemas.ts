@@ -54,6 +54,20 @@ const AppleAppAttestAuthenticationSchema = z.object({
   app_attest: z.object({
     team_id: z.string(),
     bundle_id: z.string(),
+    /**
+     * Which of Apple's two App Attest environments this application accepts.
+     * Omitted means `["production"]` alone, because a development-signed build
+     * stamps a different aaguid and is debuggable on any device carrying the
+     * team's provisioning profile. Accepting one is therefore a deliberate
+     * per-application opt-in, and belongs on a development bundle id rather
+     * than the one shipped to the App Store.
+     */
+    environments: z.array(z.enum(["production", "development"]))
+      .min(1)
+      .refine((values) => new Set(values).size === values.length, {
+        error: "environments cannot repeat a value",
+      })
+      .optional(),
   }).strict(),
 }).strict();
 

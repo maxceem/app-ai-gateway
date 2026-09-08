@@ -7,7 +7,7 @@ import { log } from "../core/log";
 import { lookupApiKeyUncached } from "../core/apikeys";
 import { verifyIssuerToken } from "../core/issuer";
 import { issueGatewayToken } from "../core/jwt";
-import type { AppConfig, AppleAppAttestAuthentication } from "../core/types";
+import type { AppAttestEnvironment, AppConfig, AppleAppAttestAuthentication } from "../core/types";
 import { database } from "../db";
 import { appAuthChallenge, appUser, type AuthEventName, type AuthMethod } from "../db/schema";
 import {
@@ -75,6 +75,7 @@ export async function storeAttestedUser(input: {
   userId: string;
   keyId: string;
   publicKeyPem: string;
+  environment: AppAttestEnvironment;
 }): Promise<void> {
   await database(input.env.DB)
     .insert(appUser)
@@ -84,6 +85,7 @@ export async function storeAttestedUser(input: {
       attestKeyId: input.keyId,
       attestPublicKey: input.publicKeyPem,
       attestCounter: 0,
+      attestEnvironment: input.environment,
       lastSeenAt: sql`datetime('now')`,
     })
     .onConflictDoUpdate({
@@ -92,6 +94,7 @@ export async function storeAttestedUser(input: {
         attestKeyId: input.keyId,
         attestPublicKey: input.publicKeyPem,
         attestCounter: 0,
+        attestEnvironment: input.environment,
         lastSeenAt: sql`datetime('now')`,
       },
     });
@@ -332,6 +335,7 @@ authRoutes.post("/register", (c) => recorded(c, "register", async (attempt) => {
   const { verifyAppAttestation } = await import("../core/appattest");
   const verifiedAttestation = await verifyAppAttestation({
     appId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
+    allowedEnvironments: auth.app_attest.environments,
     keyId: body.key_id,
     challenge: body.challenge,
     attestation: body.attestation,
@@ -342,6 +346,7 @@ authRoutes.post("/register", (c) => recorded(c, "register", async (attempt) => {
     userId,
     keyId: body.key_id,
     publicKeyPem: verifiedAttestation.publicKeyPem,
+    environment: verifiedAttestation.environment,
   });
   attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, claimPendingSince);
   return c.json({ user_id: userId });
@@ -416,6 +421,7 @@ authRoutes.post("/token", (c) => recorded(c, "token_exchange", async (attempt) =
       attestKeyId: true,
       attestPublicKey: true,
       attestCounter: true,
+      attestEnvironment: true,
       status: true,
       // Read alongside the key material rather than in a second round trip:
       // this branch already has to fetch the row.
@@ -428,6 +434,16 @@ authRoutes.post("/token", (c) => recorded(c, "token_exchange", async (attempt) =
   }
   if (!user || user.attestKeyId !== body.key_id || !user.attestPublicKey) {
     throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
+  }
+  // Withdrawing an environment has to stop the keys it admitted, not just new
+  // registrations: an assertion carries no aaguid, so the environment the key
+  // was registered in is the only record of it. Null predates the column and
+  // can only be production, which no application can refuse.
+  if (
+    user.attestEnvironment !== null &&
+    !auth.app_attest.environments.includes(user.attestEnvironment)
+  ) {
+    throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
   }
   await consumeChallenge(c.env, appId, body.challenge);
   const { verifyAppAssertion } = await import("../core/appattest");

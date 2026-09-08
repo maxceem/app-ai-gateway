@@ -13,6 +13,8 @@ import {
 import { hasModelPrice, isBillable } from "./usage";
 import type {
   AllowedPath,
+  ApiKeyAuthentication,
+  AppAttestEnvironment,
   AppConfig,
   AuthenticationConfig,
   ClaimRequirement,
@@ -30,7 +32,10 @@ import type {
   ResolvedRoutingConfig,
   RoutingConfig,
   StoredAppConfig,
+  StoredAuthenticationConfig,
 } from "./types";
+
+const APP_ATTEST_ENVIRONMENTS: AppAttestEnvironment[] = ["production", "development"];
 
 interface CacheEntry {
   expiresAt: number;
@@ -174,7 +179,10 @@ function parseIssuer(raw: unknown): IssuerAuthConfig {
   };
 }
 
-function parseAuthentication(raw: unknown): AuthenticationConfig {
+function parseAuthentication(raw: unknown): {
+  stored: StoredAuthenticationConfig;
+  resolved: AuthenticationConfig;
+} {
   const value = record(raw, "authentication");
   if (Object.hasOwn(value, "development_access")) {
     throw new GatewayError(
@@ -188,33 +196,66 @@ function parseAuthentication(raw: unknown): AuthenticationConfig {
     if (endUser.header !== "x-end-user-id" || typeof endUser.required !== "boolean" || endUser.fallback !== "api_key") {
       throw new GatewayError(500, "internal_error", "Invalid authentication.end_user configuration");
     }
-    return {
+    const apiKey: ApiKeyAuthentication = {
       type: "api_key",
       ...(value.issuer === undefined ? {} : { issuer: parseIssuer(value.issuer) }),
       end_user: { header: "x-end-user-id", required: endUser.required, fallback: "api_key" },
     };
+    return { stored: apiKey, resolved: apiKey };
   }
   if (value.type !== "apple_app_attest") {
     throw new GatewayError(500, "internal_error", "authentication.type is invalid");
   }
 
   const appAttest = record(value.app_attest, "authentication.app_attest");
-  if (Object.hasOwn(appAttest, "environments")) {
-    throw new GatewayError(
-      500,
-      "internal_error",
-      "authentication.app_attest.environments is no longer supported",
-    );
-  }
 
-  return {
-    type: "apple_app_attest",
+  const environments = parseAppAttestEnvironments(appAttest.environments);
+  const common = {
+    type: "apple_app_attest" as const,
     issuer: parseIssuer(value.issuer),
-    app_attest: {
-      team_id: requiredString(appAttest.team_id, "authentication.app_attest.team_id"),
-      bundle_id: requiredString(appAttest.bundle_id, "authentication.app_attest.bundle_id"),
+    team_id: requiredString(appAttest.team_id, "authentication.app_attest.team_id"),
+    bundle_id: requiredString(appAttest.bundle_id, "authentication.app_attest.bundle_id"),
+  };
+  return {
+    stored: {
+      type: common.type,
+      issuer: common.issuer,
+      app_attest: {
+        team_id: common.team_id,
+        bundle_id: common.bundle_id,
+        // Only when the operator opted in, so an application that never named
+        // the field is not rewritten to carry its own default.
+        ...(appAttest.environments === undefined ? {} : { environments }),
+      },
+    },
+    resolved: {
+      type: common.type,
+      issuer: common.issuer,
+      app_attest: {
+        team_id: common.team_id,
+        bundle_id: common.bundle_id,
+        environments,
+      },
     },
   };
+}
+
+/**
+ * Defaulted here rather than in the contract schema because the schema's output
+ * is what gets persisted: a `z.default()` would write the field into every
+ * application's stored configuration on any unrelated edit.
+ */
+function parseAppAttestEnvironments(value: unknown): AppAttestEnvironment[] {
+  if (value === undefined) return ["production"];
+  if (
+    !Array.isArray(value)
+    || value.length === 0
+    || value.some((environment) => !APP_ATTEST_ENVIRONMENTS.includes(environment as AppAttestEnvironment))
+    || new Set(value).size !== value.length
+  ) {
+    throw new GatewayError(500, "internal_error", "authentication.app_attest.environments is invalid");
+  }
+  return value as AppAttestEnvironment[];
 }
 
 function allowedPaths(value: unknown, label: string): AllowedPath[] {
@@ -540,13 +581,13 @@ export function parseStoredAppConfig(
   const limits = parseLimits(value.limits);
   return {
     stored: {
-      authentication,
+      authentication: authentication.stored,
       routing: routing.stored,
       ...(limits.stored === undefined ? {} : { limits: limits.stored }),
       ...(value.endpoints === undefined ? {} : { endpoints }),
     },
     resolved: {
-      authentication,
+      authentication: authentication.resolved,
       routing: routing.resolved,
       limits: limits.resolved,
       endpoints,

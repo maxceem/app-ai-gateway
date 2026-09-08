@@ -119,10 +119,15 @@ export type AuthenticationConfig =
   | {
       type: "apple_app_attest";
       issuer: AuthConfig;
-      /** App Attest is verified against Apple's production environment only. */
       app_attest: {
         team_id: string;
         bundle_id: string;
+        /**
+         * Absent means production only. The console does not offer the
+         * development opt-in, but carries it through an edit rather than
+         * dropping it from an application configured through the API.
+         */
+        environments?: ("production" | "development")[];
       };
     }
   | {

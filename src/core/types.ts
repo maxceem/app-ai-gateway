@@ -27,12 +27,32 @@ export interface IssuerAuthConfig {
   max_token_lifetime_seconds: number;
 }
 
+export type AppAttestEnvironment = "production" | "development";
+
 export interface AppleAppAttestAuthentication {
   type: "apple_app_attest";
   issuer: IssuerAuthConfig;
   app_attest: {
     team_id: string;
     bundle_id: string;
+    /** Resolved, so never empty: a stored config without one reads as production-only. */
+    environments: AppAttestEnvironment[];
+  };
+}
+
+/**
+ * As written to `config_json`, where `environments` appears only for an
+ * application that opted in. Keeping it absent otherwise means an ordinary edit
+ * never rewrites a configuration to name a default it never asked for, the same
+ * way an absent `limits` stays absent.
+ */
+export interface StoredAppleAppAttestAuthentication {
+  type: "apple_app_attest";
+  issuer: IssuerAuthConfig;
+  app_attest: {
+    team_id: string;
+    bundle_id: string;
+    environments?: AppAttestEnvironment[];
   };
 }
 
@@ -47,6 +67,7 @@ export interface ApiKeyAuthentication {
 }
 
 export type AuthenticationConfig = AppleAppAttestAuthentication | ApiKeyAuthentication;
+export type StoredAuthenticationConfig = StoredAppleAppAttestAuthentication | ApiKeyAuthentication;
 
 export interface ProviderProxyConfig {
   allowed_paths: AllowedPath[];
@@ -131,7 +152,7 @@ export interface EndpointConfig extends EndpointTarget {
 export type EndpointsConfig = Record<string, EndpointConfig>;
 
 export interface StoredAppConfig {
-  authentication: AuthenticationConfig;
+  authentication: StoredAuthenticationConfig;
   routing: RoutingConfig;
   /** Absent means unlimited, the same way an absent `endpoints` means none. */
   limits?: LimitsConfig;

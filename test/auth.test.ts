@@ -398,19 +398,86 @@ describe("blocked App Attest users", () => {
   });
 });
 
-describe("production-only App Attest", () => {
-  it("rejects the development AAGUID and accepts production", () => {
-    const development = authDataWithAaguid(Buffer.from("appattestdevelop"));
-    expect(() => appAttestEnvironment(development)).toThrow();
+describe("App Attest environments", () => {
+  const development = () => authDataWithAaguid(Buffer.from("appattestdevelop"));
+  const production = () => authDataWithAaguid(
+    Buffer.concat([Buffer.from("appattest"), Buffer.alloc(7)]),
+  );
 
-    const production = authDataWithAaguid(
-      Buffer.concat([Buffer.from("appattest"), Buffer.alloc(7)]),
-    );
-    expect(appAttestEnvironment(production)).toBe("production");
+  it("rejects the development AAGUID unless the application opted into it", () => {
+    expect(() => appAttestEnvironment(development(), ["production"])).toThrow();
+    expect(appAttestEnvironment(development(), ["development"])).toBe("development");
+    expect(appAttestEnvironment(development(), ["production", "development"])).toBe("development");
+  });
+
+  it("accepts production whenever it is allowed", () => {
+    expect(appAttestEnvironment(production(), ["production"])).toBe("production");
+    expect(appAttestEnvironment(production(), ["production", "development"])).toBe("production");
+  });
+
+  it("rejects production for an application that only allows development", () => {
+    expect(() => appAttestEnvironment(production(), ["development"])).toThrow();
   });
 
   it("rejects unknown AAGUIDs", () => {
-    expect(() => appAttestEnvironment(authDataWithAaguid(Buffer.alloc(16, 7)))).toThrow();
+    expect(() => appAttestEnvironment(authDataWithAaguid(Buffer.alloc(16, 7)), ["production", "development"]))
+      .toThrow();
+  });
+});
+
+describe("withdrawing an App Attest environment", () => {
+  async function seedRegisteredKey(
+    appId: string,
+    attestEnvironment: "production" | "development" | null,
+  ) {
+    const fixture = await signingFixture(appId);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
+    // Seeded without an `environments` opt-in, so the app is production-only.
+    await seedApp(appId);
+    await database(env.DB).insert(appUser).values({
+      appId,
+      id: "registered-user",
+      attestKeyId: "registered-key",
+      attestPublicKey: "not-used",
+      ...(attestEnvironment === null ? {} : { attestEnvironment }),
+    });
+    await env.DB.prepare(
+      "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
+    ).bind(`${appId}-challenge`, appId).run();
+    return exchangeToken(appId, {
+      issuer_token: await issuerToken(fixture, { sub: "registered-user" }),
+      key_id: "registered-key",
+      assertion: "not-used",
+      challenge: `${appId}-challenge`,
+    });
+  }
+
+  it("stops a key registered in an environment the app no longer allows", async () => {
+    const response = await seedRegisteredKey("attest-env-withdrawn", "development");
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "attest_failed",
+        message: "The registered App Attest environment is no longer allowed",
+      },
+    });
+  });
+
+  it("keeps accepting a key registered in an environment the app still allows", async () => {
+    const response = await seedRegisteredKey("attest-env-kept", "production");
+    // Fails later, on the unusable assertion, rather than on the environment.
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.not.toMatchObject({
+      error: { message: "The registered App Attest environment is no longer allowed" },
+    });
+  });
+
+  it("treats a key predating the recorded environment as production", async () => {
+    const response = await seedRegisteredKey("attest-env-legacy", null);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.not.toMatchObject({
+      error: { message: "The registered App Attest environment is no longer allowed" },
+    });
   });
 });
 

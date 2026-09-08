@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateAppConfigJson } from "../src/core/config";
+import { parseStoredAppConfig, validateAppConfigJson } from "../src/core/config";
 import { providersForEndpointStyle } from "../src/core/capabilities";
 import { serverConfig } from "./helpers";
 
@@ -84,7 +84,15 @@ describe("canonical app configuration", () => {
     ["authentication.development_access", (config: any) => {
       config.authentication.development_access = true;
     }],
-    ["authentication.app_attest.environments", (config: any) => {
+  ])("rejects removed config field %s", (field, mutate) => {
+    const config = serverConfig();
+    mutate(config);
+    expect(() => validateAppConfigJson(config)).toThrowError(`${field} is no longer supported`);
+  });
+
+  describe("authentication.app_attest.environments", () => {
+    function appleConfig(environments?: unknown): any {
+      const config = serverConfig() as any;
       config.authentication = {
         type: "apple_app_attest",
         issuer: {
@@ -98,14 +106,42 @@ describe("canonical app configuration", () => {
         app_attest: {
           team_id: "AAAAAAAAAA",
           bundle_id: "com.example.test",
-          environments: ["development"],
+          ...(environments === undefined ? {} : { environments }),
         },
       };
-    }],
-  ])("rejects removed config field %s", (field, mutate) => {
-    const config = serverConfig();
-    mutate(config);
-    expect(() => validateAppConfigJson(config)).toThrowError(`${field} is no longer supported`);
+      return config;
+    }
+
+    it("does not write the field into a config that never named it", () => {
+      // What this returns is what gets persisted, so a default materialised
+      // here would be a default written to every App Attest app on any edit.
+      const stored = validateAppConfigJson(appleConfig()) as any;
+      expect(stored.authentication.app_attest).not.toHaveProperty("environments");
+      expect(Object.keys(stored.authentication.app_attest)).toEqual(["team_id", "bundle_id"]);
+    });
+
+    it("resolves an absent field to production-only for the request path", () => {
+      const resolved = parseStoredAppConfig(appleConfig(), null).resolved as any;
+      expect(resolved.authentication.app_attest.environments).toEqual(["production"]);
+    });
+
+    it("keeps an explicit opt-in in both the stored and resolved views", () => {
+      const config = appleConfig(["production", "development"]);
+      const stored = validateAppConfigJson(config) as any;
+      expect(stored.authentication.app_attest.environments).toEqual(["production", "development"]);
+      const resolved = parseStoredAppConfig(config, null).resolved as any;
+      expect(resolved.authentication.app_attest.environments).toEqual(["production", "development"]);
+    });
+
+    it.each([
+      ["an empty list", []],
+      ["an unknown environment", ["staging"]],
+      ["a duplicate", ["production", "production"]],
+      ["a non-array", "development"],
+    ])("rejects %s", (_case, environments) => {
+      expect(() => validateAppConfigJson(appleConfig(environments)))
+        .toThrowError("authentication.app_attest.environments is invalid");
+    });
   });
 
   it("rejects allowlisted and fixed models without provider pricing", () => {

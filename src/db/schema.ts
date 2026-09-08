@@ -15,6 +15,7 @@ import type { ProviderType, StoredAppConfig } from "../core/types";
 export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
 export type AuthMethod = "attest" | "api_key";
+export type AttestEnvironment = "production" | "development";
 export type ApiKeyStatus = "active" | "revoked";
 /**
  * `disabled` is a reversible pause, not a credential event: the row keeps its
@@ -265,6 +266,13 @@ export const appUser = sqliteTable(
     attestKeyId: text("attest_key_id"),
     attestPublicKey: text("attest_public_key"),
     attestCounter: integer("attest_counter").notNull().default(0),
+    /**
+     * Which App Attest environment registered the stored key, so that removing
+     * an application's development opt-in also stops the keys that opt-in
+     * admitted. Null for a row written before the column existed, which can
+     * only have been production: nothing else was acceptable then.
+     */
+    attestEnvironment: text("attest_env").$type<AttestEnvironment>(),
     status: text("status").$type<UserStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     lastSeenAt: text("last_seen_at"),
