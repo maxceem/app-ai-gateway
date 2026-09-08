@@ -15,7 +15,7 @@ import {
   organizationProviders,
   type OrganizationProviders,
 } from "../../core/provider-store";
-import { insertApp, upsertApp } from "../../core/app-writes";
+import { insertApp, updateApp, type StoredAppRow } from "../../core/app-writes";
 import { database } from "../../db";
 import {
   appApiKey,
@@ -25,42 +25,38 @@ import {
   appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { AppWriteSchema } from "../../contracts/schemas";
+import { APP_ID_IS_SERVER_ASSIGNED, AppWriteSchema } from "../../contracts/schemas";
 import { currentMonth, eventDay, monthBounds, usageTotals } from "./shared";
 
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const APP_ID_MAX_LENGTH = 63;
 const APP_ID_SUFFIX_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 /**
- * Every generated id carries one, so the readable stem is never the whole
- * identifier. Six characters is 36^6 — enough that a deployment can hold every
- * app any organization will ever create without a retry, and enough that the
+ * Every id carries one, so the readable stem is never the whole identifier.
+ * Six characters is 36^6 — enough that a deployment can hold every app any
+ * organization will ever create without a retry, and enough that the
  * unauthenticated `/v1/apps/{app}/auth/challenge` route cannot be found by
- * guessing an app's name.
+ * guessing an app's name. It also keeps every assigned id clear of the segments
+ * the console and the gateway use themselves (`admin`, `new`, `v1`, …): none of
+ * them ends in `-<six characters>`.
  */
 const APP_ID_SUFFIX_LENGTH = 6;
-/**
- * Ids no new app may take. Nothing in the gateway's own routing can collide —
- * every app lives under `/v1/apps/` — so this exists for the console's paths
- * and for any future segment beside them. Only creation consults it: an id
- * already stored stays readable, writable and deletable whatever it says.
- */
-const RESERVED_APP_IDS = new Set([
-  "admin", "api", "app", "apps", "assets", "auth", "billing", "console",
-  "docs", "endpoints", "healthz", "keys", "login", "me", "new", "providers",
-  "proxy", "settings", "signup", "static", "usage", "v1",
-]);
 
-interface AppUpsertBody {
+interface AppWriteBody {
   name: string;
   config: Record<string, unknown>;
   status?: "active" | "disabled";
 }
 
-function appBody(value: unknown): AppUpsertBody {
+function appBody(value: unknown): AppWriteBody {
   const parsed = AppWriteSchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
+    // The one rejection a client is likely to hit while catching up with the
+    // contract, and "unrecognized key" would not tell it what to do instead.
+    if (issue?.code === "unrecognized_keys" && issue.keys.includes("id")) {
+      throw new GatewayError(400, "invalid_request", APP_ID_IS_SERVER_ASSIGNED);
+    }
     throw new GatewayError(
       400,
       "invalid_request",
@@ -77,15 +73,6 @@ function appBody(value: unknown): AppUpsertBody {
 
 function assertAppId(appId: string): string {
   if (!APP_ID.test(appId)) throw new GatewayError(400, "invalid_request", "App id must be a lowercase slug");
-  return appId;
-}
-
-/** {@link assertAppId} plus the reserved list, which only a new id must clear. */
-function assertCreatableAppId(appId: string): string {
-  assertAppId(appId);
-  if (RESERVED_APP_IDS.has(appId)) {
-    throw new GatewayError(400, "invalid_request", `App id ${appId} is reserved`);
-  }
   return appId;
 }
 
@@ -107,14 +94,14 @@ function randomAppIdSuffix(): string {
 }
 
 /**
- * The id a caller gets when it names an app but does not name its id.
+ * The id of a new app, derived here and nowhere else: a client sends a name and
+ * is answered with the id, which it can neither choose nor change afterwards.
  *
  * Suffixed unconditionally, for the first app of the first organization as much
  * as for the thousandth: an id is claimed against the whole deployment, and a
  * bare stem would mean whoever arrived first owns `chat` and everyone after is
- * quietly given something else. A suffix nobody escapes is the fair form of
- * that, and it is the only form under which a caller can be told its id up
- * front — which the console does, before the app exists.
+ * quietly given something else. One rule for everybody is the fair form of
+ * that, and it leaves nothing for a caller to negotiate over.
  */
 function generatedAppId(name: string): string {
   const suffix = randomAppIdSuffix();
@@ -309,39 +296,30 @@ appRoutes.post("/apps", async (c) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
   }
-  const raw = value as Record<string, unknown>;
-  const body = appBody(raw);
+  const body = appBody(value);
   const name = body.name.trim();
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
-  if (raw.id !== undefined && typeof raw.id !== "string") throw new GatewayError(400, "invalid_request", "id must be a lowercase slug");
-  // Two different asks, and the difference is the whole contract: a caller that
-  // named an id gets that id or an error, never a substitute, because an app id
-  // is a URL compiled into a shipped client. A caller that named none is
-  // assigned one, and only that one may be re-rolled.
-  const requestedId = raw.id === undefined ? null : assertCreatableAppId(raw.id);
   const organizationId = c.get("admin").organizationId;
   const config = validatedConfig(
     body.config,
     await organizationProviders(c.env, organizationId),
   );
   const db = database(c.env.DB);
-  let appId = requestedId ?? generatedAppId(name);
-  let created = false;
+  // The id is the gateway's to assign, so a collision is nobody's problem but
+  // its own: re-roll the suffix and insert again.
+  let created: StoredAppRow | null = null;
   for (let attempt = 0; attempt < 16; attempt += 1) {
     created = await insertApp(c.env.DB, {
-      id: appId,
+      id: generatedAppId(name),
       organizationId,
       name,
       config,
       status: body.status ?? "active",
     });
     if (created) break;
-    if (requestedId !== null) {
-      throw new GatewayError(409, "app_id_taken", `App id ${requestedId} is already taken`);
-    }
-    appId = generatedAppId(name);
   }
   if (!created) throw new GatewayError(409, "invalid_request", "Could not allocate a unique app id");
+  const appId = created.id;
 
   let createdKey: { id: string; name: string; key: string; key_prefix: string; created_at: string } | null = null;
   try {
@@ -367,7 +345,15 @@ appRoutes.post("/apps", async (c) => {
     throw error;
   }
   invalidateAppConfig(appId);
-  return c.json({ app_id: appId, api_key: createdKey }, 201);
+  // The same body every other application route answers with, so a client reads
+  // one shape whether it just created the app or fetched it. `config_error` is
+  // null by construction here: the configuration was validated a moment ago.
+  return c.json({
+    app: serializeRow(created),
+    resolved: await loadAppConfig(c.env, appId),
+    config_error: null,
+    api_key: createdKey,
+  }, 201);
 });
 
 appRoutes.get("/apps/:app", async (c) => {
@@ -425,16 +411,14 @@ appRoutes.post("/apps/:app/validate", async (c) => {
 async function backfillAppLedger(
   env: Env,
   appId: string,
-  previousConfig: unknown | undefined,
+  previousConfig: unknown,
   next: Awaited<ReturnType<typeof loadAppConfig>>,
 ): Promise<void> {
   if (!hasAppLevelLimits(next)) return;
   // Only the transition. An app that already had them has been settling all
   // along, and re-summing would be a needless read on every unrelated edit.
-  if (previousConfig !== undefined) {
-    const before = parseStoredAppConfig(previousConfig, null).resolved.limits;
-    if (hasAppLevelLimits({ ...next, limits: before })) return;
-  }
+  const before = parseStoredAppConfig(previousConfig, null).resolved.limits;
+  if (hasAppLevelLimits({ ...next, limits: before })) return;
   const month = new Date().toISOString().slice(0, 7);
   const [total] = await database(env.DB)
     .select({
@@ -454,20 +438,20 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   const body = appBody(await c.req.json());
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
-  // An upsert of an existing app is an update: the slugs it already names stay
-  // writable even if their provider rows were deleted in the meantime.
+  // Update only. Applications are created through `POST /v1/admin/apps`, which
+  // is the sole place an id is minted; a path id nobody has ever been given is
+  // simply an app that does not exist, whoever asked for it.
   const existing = await db.query.app.findFirst({
     columns: { config: true },
     where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
-  // An upsert that creates is a creation, so it clears the reserved list too.
-  // An upsert that updates does not: the row already holds the id, and refusing
-  // to write it would strand an app nobody can edit.
-  if (!existing) assertCreatableAppId(appId);
+  if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
+  // The slugs the stored row already names stay writable even if their provider
+  // rows were deleted in the meantime.
   const config = validatedConfig(
     body.config,
     await organizationProviders(c.env, organizationId),
-    existing ? referencedProviderSlugs(existing.config) : undefined,
+    referencedProviderSlugs(existing.config),
   );
   const values = {
     id: appId,
@@ -477,21 +461,15 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     status: body.status ?? "active",
     updatedAt: new Date().toISOString(),
   };
-  const written = await upsertApp(c.env.DB, values);
-  if (!written) {
-    const occupied = await db.query.app.findFirst({
-      columns: { organizationId: true },
-      where: eq(app.id, appId),
-    });
-    if (occupied && occupied.organizationId !== organizationId) {
-      throw new GatewayError(404, "app_not_found", "App is not registered");
-    }
-    throw new GatewayError(409, "invalid_request", "The application changed concurrently; retry the request");
-  }
+  // Conditional on the row still being this organization's, so an app deleted
+  // or handed over between the read above and this write is not resurrected
+  // under the caller's name.
+  const written = await updateApp(c.env.DB, values);
+  if (!written) throw new GatewayError(404, "app_not_found", "App is not registered");
   invalidateAppConfig(appId);
-  const loaded = await loadAppConfig(c.env, appId);
-  await backfillAppLedger(c.env, appId, existing?.config, loaded);
-  return c.json({ app: loaded }, 200);
+  const resolved = await loadAppConfig(c.env, appId);
+  await backfillAppLedger(c.env, appId, existing.config, resolved);
+  return c.json({ app: serializeRow(written), resolved, config_error: null }, 200);
 });
 
 appRoutes.delete("/apps/:app", async (c) => {
@@ -513,5 +491,10 @@ appRoutes.delete("/apps/:app", async (c) => {
     eq(app.organizationId, c.get("admin").organizationId),
   ));
   invalidateAppConfig(appId);
-  return c.json({ deleted: appId, removed_users: removedUsers.length, usage_events_retained: true });
+  return c.json({
+    deleted: true,
+    app_id: appId,
+    removed_users: removedUsers.length,
+    usage_events_retained: true,
+  });
 });

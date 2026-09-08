@@ -534,7 +534,7 @@ describe("billing gateway", () => {
     const inactiveCreate = await worker.request(`${ORIGIN}/v1/admin/apps`, {
       method: "POST",
       headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
-      body: JSON.stringify({ id: "billing-inactive", name: "Inactive", config: serverConfig() }),
+      body: JSON.stringify({ name: "Inactive", config: serverConfig() }),
     }, withBilling(stub()));
     expect(inactiveCreate.status).toBe(402);
     await expect(inactiveCreate.json()).resolves.toMatchObject({
@@ -549,11 +549,11 @@ describe("billing gateway", () => {
         limits: { maxApps: 0, maxRpm: 5, maxRpd: 10, maxMonthlyUsd: 1 },
       }),
     }));
-    for (const id of ["billing-uncapped-a", "billing-uncapped-b"]) {
+    for (const name of ["billing-uncapped-a", "billing-uncapped-b"]) {
       const created = await worker.request(`${ORIGIN}/v1/admin/apps`, {
         method: "POST",
         headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
-        body: JSON.stringify({ id, name: id, config: serverConfig() }),
+        body: JSON.stringify({ name, config: serverConfig() }),
       }, legacyCeilingEnv);
       expect(created.status).toBe(201);
     }

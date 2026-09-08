@@ -42,7 +42,7 @@ export function AppsPage() {
         action={
           <>
             <MonthPicker value={month} onChange={setMonth} />
-            <NewAppDialog existingIds={apps.data?.apps.map((app) => app.id) ?? []} />
+            <NewAppDialog />
           </>
         }
       />

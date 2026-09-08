@@ -123,18 +123,21 @@ export const AppConfigSchema = z.object({
   endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), EndpointSchema).optional(),
 }).meta({ id: "AppConfig" });
 
+/**
+ * The body of every application write. It carries no `id`: the gateway derives
+ * one from `name` on create and answers with it as `app.id`, and no request may
+ * choose or change it. Strict, so a client still sending `id` is told that in
+ * so many words instead of having it silently ignored.
+ */
 export const AppWriteSchema = z.object({
-  /**
-   * The URL segment for this app, and immutable once created. Optional on
-   * create: leave it out and the gateway assigns `<name-slug>-<suffix>` and
-   * answers with it. Supplied, it is honoured exactly or refused with
-   * `app_id_taken` — never renamed, because clients ship it in their base URL.
-   */
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(),
   name: z.string().min(1).max(100),
   config: AppConfigSchema,
   status: z.enum(["active", "disabled"]).optional(),
-}).meta({ id: "AppWrite" });
+}).strict().meta({ id: "AppWrite" });
+
+/** The answer to a body that still names an id, wherever one is rejected. */
+export const APP_ID_IS_SERVER_ASSIGNED =
+  "id is assigned by the server: omit it and read app.id from the response";
 
 export const AppAttestRegisterRequestSchema = z.object({
   issuer_token: z.string().min(1),

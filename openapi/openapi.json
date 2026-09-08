@@ -202,34 +202,6 @@
         ],
         "additionalProperties": false
       },
-      "AppWrite": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "config": {
-            "$ref": "#/components/schemas/AppConfig"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "active",
-              "disabled"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "config"
-        ]
-      },
       "AppConfig": {
         "type": "object",
         "properties": {
@@ -763,6 +735,92 @@
         "required": [
           "authentication",
           "routing"
+        ]
+      },
+      "AppWrite": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "config": {
+            "$ref": "#/components/schemas/AppConfig"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "config"
+        ],
+        "additionalProperties": false
+      },
+      "AppResponse": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+              },
+              "name": {
+                "type": "string"
+              },
+              "config": {
+                "$ref": "#/components/schemas/AppConfig"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "disabled"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "config",
+              "status",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "resolved": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "description": "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig."
+          },
+          "config_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write."
+          }
+        },
+        "required": [
+          "app",
+          "resolved",
+          "config_error"
         ]
       },
       "Provider": {
@@ -3237,7 +3295,7 @@
         ],
         "operationId": "createApp",
         "summary": "Create an application",
-        "description": "Omit `id` and the gateway assigns one from the name, suffixed to keep it unique across the deployment, and returns it as `app_id`. Send `id` and that exact id is used or the request is refused — a requested id is never silently replaced. API-key applications receive a one-time plaintext initial key in the response.",
+        "description": "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response.",
         "security": [
           {
             "OperatorSession": []
@@ -3258,19 +3316,69 @@
         },
         "responses": {
           "201": {
-            "description": "Application created. `app_id` is the assigned id and the segment every gateway URL for this app uses.",
+            "description": "Application created. `app.id` is the assigned id and the segment every gateway URL for this app uses. `api_key` is the one-time plaintext initial key for an API-key application, and null for any other.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "app_id": {
-                      "type": "string"
+                    "app": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "config": {
+                          "$ref": "#/components/schemas/AppConfig"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "disabled"
+                          ]
+                        },
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "config",
+                        "status",
+                        "created_at",
+                        "updated_at"
+                      ]
+                    },
+                    "resolved": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": {},
+                      "description": "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig."
+                    },
+                    "config_error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write."
                     },
                     "api_key": {}
                   },
                   "required": [
-                    "app_id"
+                    "app",
+                    "resolved",
+                    "config_error"
                   ]
                 }
               }
@@ -3317,7 +3425,7 @@
             }
           },
           "409": {
-            "description": "`app_id_taken` — the requested `id` already belongs to an application. `invalid_request` — no unique generated id could be allocated.",
+            "description": "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4095,7 +4203,9 @@
             "description": "Application state.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
               }
             }
           },
@@ -4147,6 +4257,7 @@
         ],
         "operationId": "updateApp",
         "summary": "Update an application",
+        "description": "Updates an existing application in place. It never creates one: an id no application in your organization holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
         "security": [
           {
             "OperatorSession": []
@@ -4181,7 +4292,9 @@
             "description": "Application state.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
               }
             }
           },
@@ -4262,7 +4375,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Application deleted.",
+            "description": "Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4276,11 +4389,22 @@
                     },
                     "app_id": {
                       "type": "string"
+                    },
+                    "removed_users": {
+                      "type": "integer"
+                    },
+                    "usage_events_retained": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
                     }
                   },
                   "required": [
                     "deleted",
-                    "app_id"
+                    "app_id",
+                    "removed_users",
+                    "usage_events_retained"
                   ]
                 }
               }
