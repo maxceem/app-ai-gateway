@@ -68,7 +68,6 @@ export function SecretRevealDialog({
         showCloseButton={false}
         className="sm:max-w-lg"
         onEscapeKeyDown={(event) => event.preventDefault()}
-        onInteractOutside={(event) => event.preventDefault()}
       >
         <DialogHeader>
           <div className="mb-1 flex size-11 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">

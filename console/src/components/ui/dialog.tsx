@@ -51,14 +51,22 @@ function DialogOverlay({
  * Column layout with an unpadded shell: the header and footer keep their own
  * padding and hairline rules, and only the body between them scrolls. Content
  * goes in `DialogBody` so long dialogs never scroll their title out of view.
+ *
+ * Clicking the backdrop never closes a dialog. Nearly every dialog in the
+ * console is a form, and a stray click beside it used to throw away everything
+ * typed so far; closing stays with the close button, Cancel, and Escape. Pass
+ * `dismissOnOutsideInteraction` for a dialog that holds nothing worth losing.
  */
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  dismissOnOutsideInteraction = false,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  dismissOnOutsideInteraction?: boolean
 }) {
   return (
     <DialogPortal data-slot="dialog-portal">
@@ -71,6 +79,10 @@ function DialogContent({
           showCloseButton && "[&_[data-slot=dialog-header]]:pr-14",
           className
         )}
+        onInteractOutside={(event) => {
+          onInteractOutside?.(event)
+          if (!dismissOnOutsideInteraction) event.preventDefault()
+        }}
         {...props}
       >
         {children}
