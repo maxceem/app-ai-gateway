@@ -153,16 +153,20 @@ Leaving it unset is the default and changes nothing: the console builds client
 URLs from its own origin.
 
 Static assets are served before the Worker runs, so the console SPA still loads
-at `https://api.example.com/`. If you would rather it did not, send everything
-outside the API away with a zone [Redirect Rule](https://developers.cloudflare.com/rules/url-forwarding/single-redirects/) —
-a 301 to the console or the docs:
+at `https://api.example.com/`. An API host should answer nothing but the API, so
+refuse everything outside `/v1/` with a zone
+[WAF custom rule](https://developers.cloudflare.com/waf/custom-rules/) — action
+Block — matching:
 
 ```txt
 (http.host eq "api.example.com" and not starts_with(http.request.uri.path, "/v1/"))
 ```
 
-Fill the rest of the rule in as a static redirect to `https://console.example.com/`
-(or the documentation site), status code 301, with "preserve query string" off.
+Unknown paths under `/v1/` still reach the Worker and get its JSON 404. On the
+Free plan the blocked request receives Cloudflare's own 403 page; on Pro and
+above, give the Block action a custom JSON response with status 404 and the
+Worker's body, `{"error":{"code":"invalid_request","message":"Route not found"}}`,
+so every miss on that host looks the same.
 
 That is zone configuration, not code. Do not reach for `run_worker_first` on the
 whole site instead: it would put every asset request through the Worker and bill
