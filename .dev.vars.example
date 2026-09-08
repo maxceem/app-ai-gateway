@@ -15,9 +15,7 @@ ALLOW_PUBLIC_REGISTRATION=true
 # PROVIDER_TTFB_TIMEOUT_SECONDS=120
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
-# To support changing local/preview hostnames, configure both values below and
-# register only <production URL>/v1/auth/callback/google with Google. The proxy
-# secret must be identical in production and local, but different from
-# BETTER_AUTH_SECRET.
-# OAUTH_PROXY_PRODUCTION_URL=https://auth.example.com
-# OAUTH_PROXY_SECRET=
+# Origin of an OAuth callback relay, for local hostnames that change and so
+# cannot be registered with Google. Register only <relay origin>/callback/google
+# with a dedicated development Google client; see the deployment guide.
+# OAUTH_RELAY_URL=https://dev-oauth.example.com

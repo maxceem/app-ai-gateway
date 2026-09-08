@@ -14,10 +14,10 @@ export default defineConfig({
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-thirty-two-bytes",
             // Tests must not change behavior based on a developer's ignored
-            // local Google/OAuth-proxy credentials from .dev.vars.
+            // local Google credentials or OAuth relay from .dev.vars.
             GOOGLE_CLIENT_ID: "",
             GOOGLE_CLIENT_SECRET: "",
-            OAUTH_PROXY_SECRET: "",
+            OAUTH_RELAY_URL: "",
             SECRET_VAULT_MODE: "local",
             SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
             SECRET_VAULT_LOCAL_KEK_V1: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",

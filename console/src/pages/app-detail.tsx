@@ -31,9 +31,6 @@ import { UsersTab } from "@/pages/tabs/users";
 // Charts and the code editor are each larger than the rest of the console; they
 // load only when their tab is opened.
 const UsageTab = lazy(() => import("@/pages/tabs/usage").then((module) => ({ default: module.UsageTab })));
-const RawJsonTab = lazy(() =>
-  import("@/pages/tabs/raw-json").then((module) => ({ default: module.RawJsonTab })),
-);
 const EndpointsTab = lazy(() =>
   import("@/pages/tabs/endpoints").then((module) => ({ default: module.EndpointsTab })),
 );
@@ -92,10 +89,6 @@ export function AppDetailPage() {
           </div>
         )}
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => void state.validate()} disabled={!draft}>
-            {state.validating ? <Loader2 className="size-4 animate-spin" /> : null}
-            Validate
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="icon" aria-label="More actions">
@@ -164,10 +157,8 @@ export function AppDetailPage() {
         <Suspense fallback={<Skeleton className="h-64 w-full" />}>
           {tab === "usage" ? (
             <UsageTab appId={appId} />
-          ) : tab === "endpoints" ? (
-            <EndpointsTab appId={appId} state={state} />
           ) : (
-            <RawJsonTab state={state} />
+            <EndpointsTab appId={appId} state={state} />
           )}
         </Suspense>
       )}

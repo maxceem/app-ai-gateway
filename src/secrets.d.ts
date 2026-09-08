@@ -6,8 +6,6 @@ interface Env {
   BETTER_AUTH_SECRET: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
-  OAUTH_PROXY_PRODUCTION_URL?: string;
-  OAUTH_PROXY_SECRET?: string;
   ALLOW_PUBLIC_REGISTRATION?: string;
   // How long an upstream provider may take to send its response headers, in
   // seconds. Unset means 120 s: reasoning models can think for a minute before
@@ -20,6 +18,10 @@ interface Env {
   // Origin the console advertises to application clients, for a deployment that
   // serves this Worker on a second host. Unset means the console's own origin.
   PUBLIC_API_URL?: string;
+  // Origin of an OAuth callback relay, for local instances whose hostname
+  // changes and so cannot be registered with Google. Not a secret, and unset in
+  // every deployment that owns its callback URL. See the deployment guide.
+  OAUTH_RELAY_URL?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
   // Vault credentials. Each is required only in its own SECRET_VAULT_MODE, and
   // src/vault validates the full per-mode set on first use rather than trusting
@@ -35,13 +37,12 @@ declare namespace Cloudflare {
     BETTER_AUTH_SECRET: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
-    OAUTH_PROXY_PRODUCTION_URL?: string;
-    OAUTH_PROXY_SECRET?: string;
     ALLOW_PUBLIC_REGISTRATION?: string;
     PROVIDER_TTFB_TIMEOUT_SECONDS?: string;
     TERMS_OF_SERVICE_URL?: string;
     PRIVACY_POLICY_URL?: string;
     PUBLIC_API_URL?: string;
+    OAUTH_RELAY_URL?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
     SECRET_VAULT_KMS_URL?: string;
     SECRET_VAULT_KMS_TOKEN?: string;

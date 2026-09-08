@@ -11,7 +11,7 @@ import {
   type ProxyConfig,
   type StoredAppConfig,
 } from "@/lib/config-types";
-import { useApp, useSaveApp, useValidateApp } from "@/lib/queries";
+import { useApp, useSaveApp } from "@/lib/queries";
 import type { AppRow, AppUpsertBody } from "@/lib/types";
 
 export interface Draft {
@@ -29,7 +29,6 @@ const asBody = (draft: Draft): AppUpsertBody => draft;
 export function useAppDraft(appId: string) {
   const query = useApp(appId);
   const saveMutation = useSaveApp(appId);
-  const validateMutation = useValidateApp(appId);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
   const [draftAppId, setDraftAppId] = useState<string | null>(null);
@@ -154,20 +153,9 @@ export function useAppDraft(appId: string) {
     }
   }, [activeDraft, saveMutation]);
 
-  const validate = useCallback(async () => {
-    if (!activeDraft) return;
-    try {
-      await validateMutation.mutateAsync(asBody(activeDraft));
-      toast.success("Configuration is valid");
-    } catch (error) {
-      toast.error("Configuration is invalid", { description: error instanceof Error ? error.message : "Unknown error" });
-    }
-  }, [activeDraft, validateMutation]);
-
   return {
     query,
     draft: activeDraft,
-    setDraft,
     dirty,
     update,
     updateConfig,
@@ -180,8 +168,6 @@ export function useAppDraft(appId: string) {
     reset,
     save,
     saving: saveMutation.isPending,
-    validate,
-    validating: validateMutation.isPending,
   };
 }
 

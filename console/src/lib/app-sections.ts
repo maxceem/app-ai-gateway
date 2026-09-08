@@ -1,6 +1,5 @@
 import {
   BadgeCheck,
-  Braces,
   ChartNoAxesColumn,
   Gauge,
   Route,
@@ -21,8 +20,7 @@ export interface AppSection {
  * because the sidebar is what lists them: opening an app hands the rail over
  * to that app, and these are the rows it shows.
  *
- * The order reads the configuration down, then what it produced, then the
- * whole document at the end.
+ * The order reads the configuration down, then what it produced.
  */
 export const APP_SECTIONS: AppSection[] = [
   { slug: "overview", label: "Overview", icon: BadgeCheck },
@@ -35,7 +33,6 @@ export const APP_SECTIONS: AppSection[] = [
   // Next to Usage because it answers the other half of "what happened": one
   // counts the requests that got through, the other the ones that did not.
   { slug: "auth-events", label: "Auth & Errors", icon: ShieldAlert },
-  { slug: "json", label: "Raw JSON", icon: Braces },
 ];
 
 export const DEFAULT_APP_SECTION = APP_SECTIONS[0]!.slug;

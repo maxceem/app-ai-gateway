@@ -426,16 +426,6 @@ export function useCreateApp() {
   });
 }
 
-export function useValidateApp(appId: string) {
-  return useMutation({
-    mutationFn: (body: AppUpsertBody) =>
-      api.post<{ valid: boolean; exists: boolean }>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}/validate`,
-        body,
-      ),
-  });
-}
-
 export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({

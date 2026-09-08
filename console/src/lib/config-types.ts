@@ -96,8 +96,7 @@ export interface ClaimRequirement {
 /**
  * Every field except `token_header` is required by the Worker; they are
  * optional here because a draft passes through incomplete states while an
- * operator types, and the raw JSON editor can hold anything. The save is what
- * enforces the contract.
+ * operator types. The save is what enforces the contract.
  */
 export interface AuthConfig {
   jwks_url?: string;

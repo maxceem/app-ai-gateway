@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { AppDetailPage } from "./app-detail";
@@ -63,15 +63,5 @@ describe("AppDetailPage actions menu", () => {
     expect(await screen.findByRole("menuitem", { name: /delete app/i }))
       .toHaveProperty("ariaDisabled", null);
     expect(screen.queryByText(/read-only/i)).toBeNull();
-  });
-
-  it("keeps validation available to a member, matching the server's exemption", async () => {
-    renderDetail("member");
-
-    // The gateway exempts /validate from its owner/admin mutation gate.
-    // It is also disabled until the draft loads, so wait for that first.
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /validate/i }))
-        .toHaveProperty("disabled", false));
   });
 });

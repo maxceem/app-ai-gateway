@@ -1,10 +1,18 @@
 import { Hono } from "hono";
-import { createOperatorAuth, registrationOpen } from "../auth/operator";
+import {
+  createOperatorAuth,
+  OPERATOR_AUTH_BASE_PATH,
+  registrationOpen,
+  relaySocialSignIn,
+} from "../auth/operator";
 
 export const operatorAuthRoutes = new Hono<{ Bindings: Env }>();
 
 /** Where the console serves its sign-in screen. */
 const CONSOLE_LOGIN_PATH = "/login";
+
+/** The Better Auth route that answers with a provider authorization URL. */
+const SOCIAL_SIGN_IN_PATH = `${OPERATOR_AUTH_BASE_PATH}/sign-in/social`;
 
 function registrationDisabled() {
   return {
@@ -83,7 +91,12 @@ operatorAuthRoutes.all("/*", async (c) => {
     return c.json(registrationDisabled(), 403);
   }
 
-  const response = await createOperatorAuth(c.env, c.req.url).handler(c.req.raw);
+  const handled = await createOperatorAuth(c.env, c.req.url).handler(c.req.raw);
+  // Only the one response that hands the browser a provider URL is rewritten,
+  // and only when an OAuth relay is configured; everything else is untouched.
+  const response = c.req.method === "POST" && c.req.path === SOCIAL_SIGN_IN_PATH
+    ? await relaySocialSignIn(c.env, c.req.url, handled)
+    : handled;
   if (!registrationOpen(c.env) && await isDisabledSocialSignup(response)) {
     // The OAuth callback is a top-level navigation, so the rejection has to be
     // delivered as one. Returning JSON here would leave the operator looking at
