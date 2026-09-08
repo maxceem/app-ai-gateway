@@ -292,6 +292,7 @@ register({
       googleAuth: z.boolean(),
       termsOfServiceUrl: z.string().url().optional(),
       privacyPolicyUrl: z.string().url().optional(),
+      apiBaseUrl: z.string().url().optional(),
     })),
   },
 });

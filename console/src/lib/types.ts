@@ -7,6 +7,8 @@ export interface Capabilities {
   googleAuth: boolean;
   termsOfServiceUrl?: string;
   privacyPolicyUrl?: string;
+  /** Origin application clients call, when it differs from the console's own. */
+  apiBaseUrl?: string;
 }
 
 export interface OperatorUser {

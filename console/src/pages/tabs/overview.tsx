@@ -5,6 +5,8 @@ import { Switch } from "@/components/ui/switch";
 import { Field } from "@/components/field";
 import { StatCard } from "@/components/stat-card";
 import type { AppDraft } from "@/hooks/use-app-draft";
+import { useConsoleSession } from "@/lib/console-session";
+import { clientApiOrigin } from "@/lib/client-api";
 import {
   authIssuer,
   providerMode,
@@ -23,6 +25,7 @@ function Fact({ label, value }: { label: string; value: ReactNode }) {
 }
 
 export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }) {
+  const { capabilities } = useConsoleSession();
   const month = currentMonth();
   const usage = useMonthlyUsage(appId, month);
   const users = useUsers(appId, { month, limit: 1 });
@@ -174,7 +177,7 @@ export function OverviewTab({ appId, state }: { appId: string; state: AppDraft }
         </CardHeader>
         <CardContent>
           <code className="block rounded-md bg-muted px-3 py-2 font-mono text-xs break-all">
-            {window.location.origin}/v1/apps/{appId}/proxy/&#123;provider&#125;/&#123;provider_path&#125;
+            {clientApiOrigin(capabilities)}/v1/apps/{appId}/proxy/&#123;provider&#125;/&#123;provider_path&#125;
           </code>
           <p className="mt-2 text-xs text-muted-foreground">
             {issuer ? (

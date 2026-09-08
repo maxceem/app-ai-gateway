@@ -2005,6 +2005,10 @@
                     "privacyPolicyUrl": {
                       "type": "string",
                       "format": "uri"
+                    },
+                    "apiBaseUrl": {
+                      "type": "string",
+                      "format": "uri"
                     }
                   },
                   "required": [

@@ -17,6 +17,9 @@ interface Env {
   // deployment profile. Both must be present for the consent line to appear.
   TERMS_OF_SERVICE_URL?: string;
   PRIVACY_POLICY_URL?: string;
+  // Origin the console advertises to application clients, for a deployment that
+  // serves this Worker on a second host. Unset means the console's own origin.
+  PUBLIC_API_URL?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
   // Vault credentials. Each is required only in its own SECRET_VAULT_MODE, and
   // src/vault validates the full per-mode set on first use rather than trusting
@@ -38,6 +41,7 @@ declare namespace Cloudflare {
     PROVIDER_TTFB_TIMEOUT_SECONDS?: string;
     TERMS_OF_SERVICE_URL?: string;
     PRIVACY_POLICY_URL?: string;
+    PUBLIC_API_URL?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
     SECRET_VAULT_KMS_URL?: string;
     SECRET_VAULT_KMS_TOKEN?: string;

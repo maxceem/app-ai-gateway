@@ -1,8 +1,9 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import type { BillingVariables } from "./billing/gateway";
 import { AUTH_EVENT_RETENTION_DAYS, pruneAuthChallenges, pruneAuthEvents } from "./core/auth-events";
 import { GatewayError } from "./core/errors";
 import { log } from "./core/log";
+import { publicApiHost } from "./core/public-api-url";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { adminAuth, type AdminVariables } from "./middleware/admin";
@@ -24,6 +25,8 @@ import { vaultStatus } from "./vault";
 
 export { OrgQuota, UserLimiter };
 
+const ROUTE_NOT_FOUND = { error: { code: "invalid_request", message: "Route not found" } } as const;
+
 const app = new Hono<{
   Bindings: Env;
   Variables: GatewayVariables & AdminVariables & ProxyVariables & EndpointVariables & BillingVariables;
@@ -39,6 +42,27 @@ app.get("/v1/healthz", (c) => c.json({
   service: "app-ai-gateway",
   vault: vaultStatus(c.env),
 }));
+
+/**
+ * Keeps the operator surface off the host application clients call.
+ *
+ * A deployment may publish this Worker on a second custom domain named by
+ * `PUBLIC_API_URL`. Operator authentication answers 404 there, so no operator
+ * session cookie can ever be issued for that host, which makes every management
+ * call arriving on it key-only by construction; the console API answers 404 for
+ * the same reason. The console host is left alone and keeps serving the app
+ * routes too, so clients configured before the second host still work.
+ */
+const consoleHostOnly: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const apiHost = publicApiHost(c.env);
+  if (apiHost !== undefined && new URL(c.req.url).host === apiHost) {
+    return c.json(ROUTE_NOT_FOUND, 404);
+  }
+  await next();
+};
+
+app.use("/v1/auth/*", consoleHostOnly);
+app.use("/v1/console/*", consoleHostOnly);
 
 app.route("/v1/auth", operatorAuthRoutes);
 app.route("/v1/console", consoleRoutes);
@@ -58,7 +82,7 @@ app.route("/v1/apps/:app/me", meRoutes);
 app.use("/v1/admin/*", adminAuth);
 app.route("/v1/admin", adminRoutes);
 
-app.notFound((c) => c.json({ error: { code: "invalid_request", message: "Route not found" } }, 404));
+app.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 
 app.onError((error, c) => {
   const headers = new Headers();

@@ -123,6 +123,51 @@ uploads operator secrets from `.dev.vars.<profile>` when that file exists. Keep
 overlays out of version control; they are the only place account identifiers,
 domains, and service bindings should live.
 
+### Separate host for application clients
+
+One Worker can answer on two custom domains: the one operators sign in to, and
+one applications call. Add both routes to the overlay and name the second one in
+`vars`:
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "routes": [
+    { "pattern": "console.example.com", "custom_domain": true },
+    { "pattern": "api.example.com", "custom_domain": true }
+  ],
+  "vars": { "PUBLIC_API_URL": "https://api.example.com" }
+}
+```
+
+`PUBLIC_API_URL` is an origin: `https`, no path, no query. It changes two
+things. The console prints it as the client base URL wherever it shows one, so
+new apps are configured against the API host from the start. And on that host
+the Worker refuses the operator surface: `/v1/auth/*` and `/v1/console/*` answer
+404, while application routes, `/v1/healthz` and `/v1/admin/*` are served
+normally. No operator session cookie can be issued for a host that has no
+sign-in, so management calls arriving there are management-key calls by
+construction. The console host is unchanged and keeps serving the application
+routes too, so clients configured before the second host keep working.
+
+Leaving it unset is the default and changes nothing: the console builds client
+URLs from its own origin.
+
+Static assets are served before the Worker runs, so the console SPA still loads
+at `https://api.example.com/`. If you would rather it did not, send everything
+outside the API away with a zone [Redirect Rule](https://developers.cloudflare.com/rules/url-forwarding/single-redirects/) —
+a 301 to the console or the docs:
+
+```txt
+(http.host eq "api.example.com" and not starts_with(http.request.uri.path, "/v1/"))
+```
+
+Fill the rest of the rule in as a static redirect to `https://console.example.com/`
+(or the documentation site), status code 301, with "preserve query string" off.
+
+That is zone configuration, not code. Do not reach for `run_worker_first` on the
+whole site instead: it would put every asset request through the Worker and bill
+for it.
+
 ### Google OAuth from changing preview hosts
 
 Google requires an exact OAuth callback URL and does not accept wildcard
@@ -191,6 +236,9 @@ rather than skip:
   ```txt
   starts_with(http.request.uri.path, "/v1/apps/") and (ends_with(http.request.uri.path, "/auth/challenge") or ends_with(http.request.uri.path, "/auth/token") or ends_with(http.request.uri.path, "/auth/register"))
   ```
+
+The rules above match on the path alone, so they cover every host in the zone —
+a separate application client host included, with no second set of rules.
 
 The rules belong to a zone, so a deployment reachable only on `workers.dev` has
 nowhere to put them. That is one more reason to serve the gateway on a custom

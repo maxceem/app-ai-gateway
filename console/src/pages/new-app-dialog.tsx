@@ -30,6 +30,8 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { PresetPicker, PresetPreview } from "@/components/preset-picker";
 import { appIdPreview } from "@/lib/app-id";
+import { clientApiOrigin } from "@/lib/client-api";
+import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
 import { useCreateApp } from "@/lib/queries";
 import type { CreatedApiKey } from "@/lib/types";
@@ -68,6 +70,7 @@ const TYPE_OPTIONS: Array<{
 ];
 
 export function NewAppDialog() {
+  const { capabilities } = useConsoleSession();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [applicationType, setApplicationType] = useState<ApplicationType | null>(null);
@@ -460,7 +463,7 @@ export function NewAppDialog() {
             <div className="space-y-2">
               <p className="text-sm font-medium">Base URL</p>
               <code className="block rounded-md bg-muted px-3 py-2 font-mono text-xs break-all text-muted-foreground">
-                {window.location.origin}/v1/apps/
+                {clientApiOrigin(capabilities)}/v1/apps/
                 <span className="text-foreground">{createdAppId}</span>
                 /proxy/&#123;provider&#125;/&#123;provider_path&#125;
               </code>
