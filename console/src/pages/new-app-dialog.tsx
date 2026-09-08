@@ -7,7 +7,6 @@ import {
   Globe2,
   KeyRound,
   Loader2,
-  Pencil,
   Plus,
   Server,
   ShieldCheck,
@@ -30,10 +29,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { PresetPicker, PresetPreview } from "@/components/preset-picker";
-import { appIdSuffix, generatedAppId, isReservedAppId, isValidAppId } from "@/lib/app-id";
+import { appIdPreview } from "@/lib/app-id";
 import { cn } from "@/lib/utils";
 import { useCreateApp } from "@/lib/queries";
-import { ApiError } from "@/lib/api";
 import type { CreatedApiKey } from "@/lib/types";
 import {
   ENTITLEMENT_PRESETS,
@@ -69,16 +67,9 @@ const TYPE_OPTIONS: Array<{
   },
 ];
 
-export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
+export function NewAppDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [customId, setCustomId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState(false);
-  // Drawn once per dialog, not per render: the generated id has to hold still
-  // while the name is typed, because it is the id that will be created.
-  const [suffix, setSuffix] = useState(appIdSuffix);
-  /** An id the server refused as taken, kept so the field can say which one. */
-  const [rejectedId, setRejectedId] = useState<string | null>(null);
   const [applicationType, setApplicationType] = useState<ApplicationType | null>(null);
   const [appleTeamId, setAppleTeamId] = useState("");
   const [appleBundleId, setAppleBundleId] = useState("");
@@ -93,8 +84,9 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
   const navigate = useNavigate();
   const createApp = useCreateApp();
 
-  const generatedId = name.trim() ? generatedAppId(name, suffix) : "";
-  const id = customId ?? generatedId;
+  // The stem of the id, with the suffix still to be drawn. Only the gateway
+  // knows the id, and only once the app exists.
+  const idPreview = name.trim() ? appIdPreview(name) : "";
 
   const authConfig = useMemo(() => {
     const fragment = buildIssuer(issuer, issuerValues);
@@ -105,23 +97,11 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
     return { ...fragment, required_claims: claims };
   }, [issuer, issuerValues, entitlement, entitlementValues]);
 
-  const idIsTaken = existingIds.includes(id) || rejectedId === id;
-  const idError =
-    id && !isValidAppId(id)
-      ? "Use lowercase letters, numbers, and hyphens (63 characters max)."
-      : id && isReservedAppId(id)
-        ? "This ID is reserved. Pick another one."
-        : idIsTaken
-          ? "This ID is already taken. Pick another one."
-          : null;
   const presetsComplete =
     presetInputsComplete(issuer, issuerValues) &&
     presetInputsComplete(entitlement, entitlementValues);
   const ready =
     name.trim().length > 0 &&
-    isValidAppId(id) &&
-    !isReservedAppId(id) &&
-    !idIsTaken &&
     applicationType !== null &&
     (applicationType === "server" ||
       (presetsComplete &&
@@ -135,10 +115,6 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
 
   const resetForm = () => {
     setName("");
-    setCustomId(null);
-    setEditingId(false);
-    setSuffix(appIdSuffix());
-    setRejectedId(null);
     setApplicationType(null);
     setAppleTeamId("");
     setAppleBundleId("");
@@ -157,7 +133,6 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
     if (!applicationType) return;
     try {
       const result = await createApp.mutateAsync({
-        id,
         name: name.trim(),
         config: {
           authentication:
@@ -210,29 +185,16 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
       setOpen(false);
       if (applicationType === "server") {
         if (!result.api_key) throw new Error("The app was created without its initial API key");
-        setCreatedAppId(result.app_id);
+        setCreatedAppId(result.app.id);
         setCreatedKey(result.api_key);
         setCopied(false);
         setKeyOpen(true);
         return;
       }
 
-      toast.success(`Created ${result.app_id}`);
-      navigate(`/apps/${result.app_id}/proxy`);
+      toast.success(`Created ${result.app.id}`);
+      navigate(`/apps/${result.app.id}/proxy`);
     } catch (error) {
-      // The only rejection the form can act on. A generated id is replaced here,
-      // in the open dialog, where the field shows the replacement before
-      // anything is created — the server never substitutes one on its own.
-      if (error instanceof ApiError && error.code === "app_id_taken") {
-        setRejectedId(id);
-        if (customId === null) setSuffix(appIdSuffix());
-        toast.error(
-          customId === null
-            ? `${id} was just taken. A new ID is ready — check it and create again.`
-            : `${id} is already taken. Pick another ID.`,
-        );
-        return;
-      }
       toast.error(error instanceof Error ? error.message : "Could not create the app");
     }
   };
@@ -284,59 +246,21 @@ export function NewAppDialog({ existingIds }: { existingIds: string[] }) {
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <Label htmlFor="app-id">Application ID</Label>
-                {customId === null ? (
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                    Generated
-                  </span>
-                ) : null}
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  Assigned
+                </span>
               </div>
-              <div className="flex gap-2">
-                <Input
-                  id="app-id"
-                  value={id}
-                  placeholder="generated-from-name"
-                  readOnly={!editingId}
-                  aria-invalid={idError ? true : undefined}
-                  className={cn(
-                    "font-mono text-sm",
-                    !editingId && "bg-muted/60 text-muted-foreground",
-                  )}
-                  onChange={(event) => setCustomId(event.target.value.toLowerCase())}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className="size-10 shrink-0 active:scale-[0.96]"
-                  disabled={!name.trim() && customId === null}
-                  aria-label={editingId ? "Finish editing application ID" : "Edit application ID"}
-                  onClick={() => {
-                    if (customId === null) setCustomId(generatedId);
-                    setEditingId((current) => !current);
-                  }}
-                >
-                  {editingId ? <Check className="size-4" /> : <Pencil className="size-4" />}
-                </Button>
-              </div>
-              {id && !idError ? (
-                <code className="block rounded-md bg-muted px-3 py-2 font-mono text-xs break-all text-muted-foreground">
-                  {window.location.origin}/v1/apps/<span className="text-foreground">{id}</span>
-                  /proxy/&#123;provider&#125;/&#123;provider_path&#125;
-                </code>
-              ) : null}
-              <p
-                className={cn(
-                  "text-xs text-muted-foreground",
-                  idError && "text-destructive",
-                )}
-                aria-live="polite"
-              >
-                {idError ??
-                  (!name.trim()
-                    ? "Generated from the name, and shown here before the app is created."
-                    : customId === null
-                    ? "This exact ID will be created. Every ID ends in a short random suffix, and none of it can be changed later."
-                    : "This exact ID will be created, and it cannot be changed later.")}
+              <Input
+                id="app-id"
+                value={idPreview}
+                placeholder="generated-from-name"
+                readOnly
+                className="bg-muted/60 font-mono text-sm text-muted-foreground"
+              />
+              <p className="text-xs text-muted-foreground" aria-live="polite">
+                {name.trim()
+                  ? "The gateway assigns this ID when the app is created, ending in a short random suffix shown here as dots. It cannot be chosen or changed later."
+                  : "Assigned from the name when the app is created, ending in a short random suffix. It cannot be chosen or changed later."}
               </p>
             </div>
 

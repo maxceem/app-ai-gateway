@@ -407,7 +407,7 @@ export function useSaveApp(appId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: AppUpsertBody) =>
-      api.put<{ app: unknown }>(`/v1/admin/apps/${encodeURIComponent(appId)}`, body),
+      api.put<AppResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}`, body),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });
       void client.invalidateQueries({ queryKey: ["apps"] });
@@ -420,7 +420,7 @@ export function useCreateApp() {
   return useMutation({
     mutationFn: (body: AppCreateBody) => api.post<CreatedApp>("/v1/admin/apps", body),
     onSuccess: (created) => {
-      void client.invalidateQueries({ queryKey: keys.app(created.app_id) });
+      void client.invalidateQueries({ queryKey: keys.app(created.app.id) });
       void client.invalidateQueries({ queryKey: ["apps"] });
     },
   });
@@ -440,7 +440,12 @@ export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (appId: string) =>
-      api.delete<{ deleted: string; removed_users: number }>(
+      api.delete<{
+        deleted: true;
+        app_id: string;
+        removed_users: number;
+        usage_events_retained: true;
+      }>(
         `/v1/admin/apps/${encodeURIComponent(appId)}${query({ confirm: appId })}`,
       ),
     onSuccess: () => client.invalidateQueries({ queryKey: ["apps"] }),

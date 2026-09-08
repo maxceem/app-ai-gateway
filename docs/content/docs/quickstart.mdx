@@ -51,7 +51,6 @@ curl -b operator.cookies \
   -H 'content-type: application/json' \
   -d @- "$GATEWAY_URL/v1/admin/apps" <<'JSON'
 {
-  "id": "example-agent",
   "name": "Example agent",
   "config": {
     "authentication": {
@@ -86,14 +85,16 @@ curl -b operator.cookies \
 JSON
 ```
 
-The response includes the initial `agw_` application key once. Store it in the
-calling service's secret manager.
+The printed response holds two things you need. `api_key.key` is the initial
+`agw_` application key, shown this once only — copy it straight into the calling
+service's secret manager, and do not save the response to a file. `app.id` is
+the application's ID, which the gateway assigned from the name:
+`example-agent-<suffix>`.
 
-`id` asks for that exact ID: you get it, or `409 app_id_taken` if it is already
-in use anywhere on this deployment. Leave `id` out and the gateway assigns
-`example-agent-<suffix>` and returns it as `app_id`. Either way, `app_id` in the
-response is the segment every URL below uses, and it cannot be changed later.
-See [Application IDs](/configuration#application-ids).
+You do not choose the ID and you cannot change it later: it is the segment every
+URL for this application uses, so clients compile it into their base URL. Send
+no `id` in the body — a body that carries one is refused with `400`. See
+[Application IDs](/configuration#application-ids).
 
 ## 4. Add a provider credential
 

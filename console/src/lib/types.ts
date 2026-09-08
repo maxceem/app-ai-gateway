@@ -413,13 +413,17 @@ export interface AppUpsertBody {
   status?: "active" | "disabled";
 }
 
-export interface AppCreateBody extends AppUpsertBody {
-  /** Preferred slug. The API adds a short suffix if another app claimed it first. */
-  id: string;
-}
+/**
+ * Creating an app carries no id: the gateway derives one from the name and
+ * answers with the created application, whose `app.id` holds it.
+ */
+export type AppCreateBody = AppUpsertBody;
 
-export interface CreatedApp {
-  app_id: string;
+/**
+ * A create answers with the application itself, exactly as a read or an update
+ * does, plus the one-time key an API-key application is born with.
+ */
+export interface CreatedApp extends AppResponse {
   api_key: CreatedApiKey | null;
 }
 

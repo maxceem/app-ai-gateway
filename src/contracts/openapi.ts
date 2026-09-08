@@ -4,6 +4,7 @@ import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
+  AppConfigSchema,
   AppWriteSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
@@ -520,19 +521,40 @@ register({
   responses: { 200: response("Applications and current usage summaries.", z.object({ month: z.string(), apps: z.array(z.unknown()) })), ...errorResponses },
 });
 
+/**
+ * The one shape every single-application route answers with. Reading an app,
+ * creating one and updating one all return the same object, so a client parses
+ * one type and never has to ask which route produced it.
+ */
+const AppResponseSchema = z.object({
+  app: z.object({
+    id: z.string().openapi({ description: "The gateway-assigned id, and the `{app}` segment of every URL for this application." }),
+    name: z.string(),
+    config: AppConfigSchema,
+    status: z.enum(["active", "disabled"]),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }),
+  resolved: z.record(z.string(), z.unknown()).nullable().openapi({ description: "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig." }),
+  config_error: z.string().nullable().openapi({ description: "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write." }),
+}).meta({ id: "AppResponse" });
+
 register({
   method: "post",
   path: "/v1/admin/apps",
   tags: ["Admin applications"],
   operationId: "createApp",
   summary: "Create an application",
-  description: "Omit `id` and the gateway assigns one from the name, suffixed to keep it unique across the deployment, and returns it as `app_id`. Send `id` and that exact id is used or the request is refused — a requested id is never silently replaced. API-key applications receive a one-time plaintext initial key in the response.",
+  description: "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(AppWriteSchema) } },
   responses: {
-    201: response("Application created. `app_id` is the assigned id and the segment every gateway URL for this app uses.", z.object({ app_id: z.string(), api_key: z.unknown().nullable() })),
+    201: response(
+      "Application created. `app.id` is the assigned id and the segment every gateway URL for this app uses. `api_key` is the one-time plaintext initial key for an API-key application, and null for any other.",
+      AppResponseSchema.extend({ api_key: z.unknown().nullable() }),
+    ),
     ...errorResponses,
-    409: response("`app_id_taken` — the requested `id` already belongs to an application. `invalid_request` — no unique generated id could be allocated.", ErrorResponseSchema),
+    409: response("`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.", ErrorResponseSchema),
   },
 });
 
@@ -637,7 +659,12 @@ register({
 
 for (const definition of [
   { method: "get", operationId: "getApp", summary: "Get an application" },
-  { method: "put", operationId: "updateApp", summary: "Update an application" },
+  {
+    method: "put",
+    operationId: "updateApp",
+    summary: "Update an application",
+    description: "Updates an existing application in place. It never creates one: an id no application in your organization holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+  },
 ] as const) {
   register({
     method: definition.method,
@@ -645,12 +672,13 @@ for (const definition of [
     tags: ["Admin applications"],
     operationId: definition.operationId,
     summary: definition.summary,
+    ...("description" in definition ? { description: definition.description } : {}),
     security: operatorSecurity,
     request: {
       params: AppPath,
       ...(definition.method === "put" ? { body: { required: true, content: json(AppWriteSchema) } } : {}),
     },
-    responses: { 200: response("Application state.", z.unknown()), ...errorResponses },
+    responses: { 200: response("Application state.", AppResponseSchema), ...errorResponses },
   });
 }
 
@@ -673,7 +701,15 @@ register({
   summary: "Delete an application and its associated operational data",
   security: operatorSecurity,
   request: { params: AppPath, query: z.object({ confirm: z.string() }) },
-  responses: { 200: response("Application deleted.", z.object({ deleted: z.literal(true), app_id: z.string() })), ...errorResponses },
+  responses: {
+    200: response("Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.", z.object({
+      deleted: z.literal(true),
+      app_id: z.string(),
+      removed_users: z.number().int(),
+      usage_events_retained: z.literal(true),
+    })),
+    ...errorResponses,
+  },
 });
 
 const ManagementKeySummarySchema = z.object({

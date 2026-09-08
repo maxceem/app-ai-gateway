@@ -10,12 +10,18 @@ infer production configuration from project-specific examples.
 
 1. Inspect the target application's identity provider and runtime.
 2. Choose App Attest or API-key client proof, then decide whether the app needs issuer-backed user identity.
-3. Produce a candidate application JSON document.
+3. Produce a candidate application JSON document. It carries `name`, `config` and
+   an optional `status` — never `id`, which the gateway assigns and a create
+   request that sends one is refused with `400`.
 4. Validate it before applying it.
 5. Confirm Cloudflare authentication and required secrets without printing values.
 6. Perform a deployment dry run when available.
 7. Deploy, call `/v1/healthz`, and confirm the application through the admin API.
 8. Return the gateway URL, application ID, and non-secret client configuration.
+
+The application ID is the server's: read `app.id` from the create response and
+use that exact value in every later URL. It cannot be chosen or changed, and
+`PUT /v1/admin/apps/{app}` only updates an application that already exists.
 
 ## Machine-readable sources
 
