@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d90399b4-43c9-437a-9565-cbfda3d11e8c",
+  "id": "5a1ae042-e794-449d-845e-2e9ebc5dea2c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "app": {
@@ -376,7 +376,7 @@
           "type": "integer",
           "primaryKey": true,
           "notNull": true,
-          "autoincrement": true
+          "autoincrement": false
         },
         "event_id": {
           "name": "event_id",

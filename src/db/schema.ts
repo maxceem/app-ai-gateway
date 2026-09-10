@@ -294,7 +294,24 @@ export const appUser = sqliteTable(
 export const appUsageEvent = sqliteTable(
   "app_usage_event",
   {
-    id: integer("id").primaryKey({ autoIncrement: true }),
+    /**
+     * The rowid, which is also the keyset cursor the events list pages on.
+     *
+     * Deliberately not `AUTOINCREMENT`: that keeps a `sqlite_sequence` row in
+     * step with every insert, and D1 bills that extra write on every single
+     * proxied request.
+     *
+     * What is given up is that ids are reused once the row holding the highest
+     * one is gone — emptying the table restarts at 1. What is kept is the only
+     * property the cursor needs: a new id is always greater than every id still
+     * live, so paging backwards through `id` never revisits or skips a row that
+     * exists. A purge that removes the maximum (deleting an app's history, or
+     * retention catching up with an idle deployment) can hand an old id out
+     * again, which is harmless — rows are identified by `event_id`, and a
+     * cursor held across such a purge belongs to a page that no longer exists
+     * either way.
+     */
+    id: integer("id").primaryKey(),
     /**
      * Recording identity, generated once per event and reused by every retry so
      * the insert can be replayed without duplicating the row. Null on rows

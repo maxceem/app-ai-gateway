@@ -53,7 +53,7 @@ CREATE INDEX `idx_auth_events_app_created` ON `app_auth_event` (`app_id`,`create
 CREATE INDEX `idx_auth_events_app_user_created` ON `app_auth_event` (`app_id`,`user_id`,`created_at`);--> statement-breakpoint
 CREATE UNIQUE INDEX `auth_events_event_id_unique` ON `app_auth_event` (`event_id`);--> statement-breakpoint
 CREATE TABLE `app_usage_event` (
-	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`id` integer PRIMARY KEY NOT NULL,
 	`event_id` text,
 	`app_id` text NOT NULL,
 	`user_id` text,
