@@ -2,7 +2,7 @@ import { useState } from "react";
 import { AlertCircle, Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -22,10 +22,12 @@ import {
   canResume,
   entitledPlan,
   formatPrice,
+  planAction,
   priceFor,
   quotaMeter,
   subscriptionOf,
   subscriptionTimeline,
+  type PlanAction,
   type QuotaMeter,
 } from "@/lib/billing";
 import { cn } from "@/lib/utils";
@@ -33,15 +35,11 @@ import {
   useBillingPlans,
   useBillingStatus,
   useCancelSubscription,
+  useChangePlan,
   useResumeSubscription,
   useStartCheckout,
 } from "@/lib/queries";
-import type {
-  BillingAccess,
-  BillingPlan,
-  BillingSubscriptionStatus,
-  OrganizationQuota,
-} from "@/lib/types";
+import type { BillingAccess, BillingPlan, OrganizationQuota } from "@/lib/types";
 
 type Period = "month" | "year";
 
@@ -49,15 +47,21 @@ export function BillingPage() {
   const { capabilities } = useConsoleSession();
   const [period, setPeriod] = useState<Period>("month");
   const [confirmCancel, setConfirmCancel] = useState(false);
+  // The plan a change was asked for, held until it is confirmed: unlike a
+  // checkout, which asks for the card on the provider's own page, a change on a
+  // live subscription bills without another screen in between.
+  const [confirmChange, setConfirmChange] = useState<BillingPlan | null>(null);
 
   const status = useBillingStatus(capabilities.billing);
   const plans = useBillingPlans(capabilities.billing);
   const checkout = useStartCheckout();
+  const change = useChangePlan();
   const cancel = useCancelSubscription();
   const resume = useResumeSubscription();
 
   const access = status.data?.access;
   const quota = status.data?.quota;
+  const catalog = plans.data?.plans ?? [];
 
   const subscribe = async (plan: BillingPlan) => {
     try {
@@ -66,6 +70,33 @@ export function BillingPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not start checkout");
     }
+  };
+
+  const doChange = async () => {
+    if (!confirmChange) return;
+    try {
+      // The subscription's own period, not the page's: a change must not
+      // silently move a yearly subscription onto a monthly schedule.
+      const result = await change.mutateAsync({
+        planKey: confirmChange.planKey,
+        billingPeriod: subscriptionOf(access)?.billingPeriod ?? period,
+      });
+      setConfirmChange(null);
+      if (result.requiredActionUrl) {
+        window.location.assign(result.requiredActionUrl);
+        return;
+      }
+      toast.success(`Moved to ${confirmChange.name}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not change the plan");
+    }
+  };
+
+  // A plan card acts on whichever route the billing contract serves for it.
+  const act = (plan: BillingPlan, action: PlanAction) => {
+    if (action.intent === "checkout") return void subscribe(plan);
+    if (action.intent === "change") return setConfirmChange(plan);
+    if (action.intent === "cancel") return setConfirmCancel(true);
   };
 
   const doCancel = async () => {
@@ -104,7 +135,7 @@ export function BillingPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Billing" description="Manage this organization’s subscription." />
+      <PageHeader title="Billing" />
 
       {status.isError ? (
         <Alert variant="destructive">
@@ -138,7 +169,7 @@ export function BillingPage() {
         <h2 className="text-sm font-semibold">Plans</h2>
         {/* The catalog is monthly-only today; a period toggle whose Yearly tab
             prices every plan as "—" reads as a broken purchase path. */}
-        {(plans.data?.plans ?? []).some((plan) => priceFor(plan, "year")) ? (
+        {catalog.some((plan) => priceFor(plan, "year")) ? (
           <Tabs value={period} onValueChange={(value) => setPeriod(value as Period)}>
             <TabsList>
               <TabsTrigger value="month">Monthly</TabsTrigger>
@@ -156,18 +187,37 @@ export function BillingPage() {
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {(plans.data?.plans ?? []).map((plan) => (
-            <PlanCard
-              key={plan.planKey}
-              plan={plan}
-              period={period}
-              current={entitledPlan(access)?.planKey === plan.planKey}
-              pending={checkout.isPending}
-              onSubscribe={() => void subscribe(plan)}
-            />
-          ))}
+          {catalog.map((plan) => {
+            const action = planAction(plan, catalog, access);
+            return (
+              <PlanCard
+                key={plan.planKey}
+                plan={plan}
+                period={period}
+                action={action}
+                pending={checkout.isPending || change.isPending}
+                onAct={() => act(plan, action)}
+              />
+            );
+          })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmChange !== null}
+        onOpenChange={(open) => setConfirmChange(open ? confirmChange : null)}
+        title={`Move to ${confirmChange?.name ?? ""}`}
+        description={
+          <p>
+            Your subscription changes to this plan and its allowance applies from the change. The
+            billing provider settles the difference, charging an upgrade right away and putting a
+            downgrade on your next invoice.
+          </p>
+        }
+        confirmLabel="Change plan"
+        pending={change.isPending}
+        onConfirm={() => void doChange()}
+      />
 
       <ConfirmDialog
         open={confirmCancel}
@@ -213,24 +263,19 @@ function SubscriptionCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Current plan</CardTitle>
-        <CardDescription>{pending ? "Loading…" : (plan?.planName ?? "No plan")}</CardDescription>
+        <CardTitle className="flex items-center gap-1.5 text-sm">
+          Current plan:
+          {pending
+            ? <Skeleton className="h-4 w-24" />
+            : <span>{plan?.planName ?? "No plan"}</span>}
+        </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {pending ? (
-          <Skeleton className="h-6 w-40" />
-        ) : (
-          <div className="flex flex-wrap items-center gap-3">
-            <StatusBadge access={access} />
-            {timeline ? (
-              <span className="text-sm text-muted-foreground">
-                {timeline.label} <span className="tabular text-foreground">{timeline.value}</span>
-              </span>
-            ) : null}
-          </div>
-        )}
+        {pending ? <Skeleton className="h-6 w-40" /> : null}
 
-        {meter && !pending ? <AllowanceMeter meter={meter} /> : null}
+        {meter && !pending ? <AllowanceMeter meter={meter} timeline={timeline} /> : null}
+        {/* Without an allowance to sit under, the date still belongs on the card. */}
+        {!meter && !pending && timeline ? <TimelineLine timeline={timeline} /> : null}
 
         {/*
           Both buttons act on the subscription, never on the entitled plan: an
@@ -280,7 +325,13 @@ const METER_FILL: Record<QuotaMeter["tone"], string> = {
  * quota object, not in the usage tables, so without this an operator learns the
  * allowance is gone from their users rather than from here.
  */
-function AllowanceMeter({ meter }: { meter: QuotaMeter }) {
+function AllowanceMeter({
+  meter,
+  timeline,
+}: {
+  meter: QuotaMeter;
+  timeline: { label: string; value: string } | null;
+}) {
   return (
     <div className="space-y-1.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -308,70 +359,48 @@ function AllowanceMeter({ meter }: { meter: QuotaMeter }) {
           />
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
-        Current period <span className="tabular text-foreground">{meter.period}</span>
-      </p>
-      <p className="text-xs text-muted-foreground">{meter.caption}</p>
-      {/*
-        Named against the other quota, because the two are easy to read as one
-        and are not. This one is organization-wide and comes from the plan; the
-        per-user and per-app ones are the operator's own, set per app.
-      */}
-      <p className="text-xs text-muted-foreground">
-        Shared by every app, credential and user in this organization. To limit individual users of
-        one app, use that app's <span className="font-medium text-foreground">Limits</span> tab —
-        those limits are yours to set and are checked before this allowance.
-      </p>
+      {timeline ? <TimelineLine timeline={timeline} /> : null}
     </div>
   );
 }
 
-const SUBSCRIPTION_LABEL: Partial<Record<BillingSubscriptionStatus, string>> = {
-  on_trial: "Trialing",
-  past_due: "Past due",
-  cancelled: "Canceled",
-  paused: "Paused",
-};
-
-function StatusBadge({ access }: { access: BillingAccess | undefined }) {
-  if (!access || access.state !== "billed") return <Badge variant="secondary">Unknown</Badge>;
-  if (access.plan === null) return <Badge variant="destructive">No plan</Badge>;
-  // On the default plan the subscription, if any, is not what grants access —
-  // naming its status here would claim an entitlement the organization has lost.
-  if (access.plan.isDefault) return <Badge variant="secondary">{access.plan.planName}</Badge>;
-  const label = access.subscription ? SUBSCRIPTION_LABEL[access.subscription.status] : undefined;
-  return label ? <Badge variant="secondary">{label}</Badge> : <Badge>Active</Badge>;
+/** The subscription's next date — "Renews Oct 10, 2026". */
+function TimelineLine({ timeline }: { timeline: { label: string; value: string } }) {
+  return (
+    <p className="text-xs text-muted-foreground">
+      {timeline.label} <span className="tabular text-foreground">{timeline.value}</span>
+    </p>
+  );
 }
 
 function PlanCard({
   plan,
   period,
-  current,
+  action,
   pending,
-  onSubscribe,
+  onAct,
 }: {
   plan: BillingPlan;
   period: Period;
-  current: boolean;
+  action: PlanAction;
   pending: boolean;
-  onSubscribe: () => void;
+  onAct: () => void;
 }) {
   const price = priceFor(plan, period);
   // A plan with no price rows at all is the service's free tier: it is not
-  // something to buy, it is what an organization falls back to. Showing "—" and
-  // a dead Subscribe button would read as a broken paid plan.
+  // something to buy, it is what a lapsed subscription falls back to.
   const free = plan.prices.length === 0;
+  const current = action.intent === "current";
 
   return (
-    <Card className={current ? "border-primary" : undefined}>
+    <Card className={cn("h-full", current && "border-primary")}>
       <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm">{plan.name}</CardTitle>
-          {current ? <Badge variant="secondary">Current</Badge> : null}
-        </div>
+        <CardTitle className="text-sm">{plan.name}</CardTitle>
         <CardDescription>{plan.description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      {/* A column, so the button can sit at the bottom of every card in the row
+          rather than wherever this plan's feature list happens to end. */}
+      <CardContent className="flex flex-1 flex-col gap-4">
         <p className="tabular text-2xl font-semibold">
           {free ? "Free" : price ? formatPrice(price) : "—"}
         </p>
@@ -388,17 +417,30 @@ function PlanCard({
             ))}
           </ul>
         ) : null}
-        {free ? null : (
-          <GuardedButton
-            className="w-full"
-            variant={current ? "outline" : "default"}
-            disabled={pending || !price}
-            onClick={onSubscribe}
-          >
-            {pending ? <Loader2 className="size-4 animate-spin" /> : null}
-            {current ? "Change billing period" : "Subscribe"}
-          </GuardedButton>
-        )}
+        {/*
+          Every card carries the same control in the same place, so the plans
+          read as one row of choices: the plan already held states itself and
+          stays inert, and the others name the plan they move you to.
+        */}
+        <div className="mt-auto pt-2">
+          {current ? (
+            <Button className="w-full" variant="outline" disabled>
+              {action.label}
+            </Button>
+          ) : (
+            <GuardedButton
+              className="w-full"
+              wrapperClassName="w-full"
+              variant={action.variant}
+              disabled={pending || (!free && !price)}
+              {...(action.reason ? { reason: action.reason } : {})}
+              onClick={onAct}
+            >
+              {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+              {action.label}
+            </GuardedButton>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

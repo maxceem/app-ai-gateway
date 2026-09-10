@@ -42,19 +42,19 @@ page gives the regex-free form for lower plans.
 ## The monthly request allowance
 
 The gateway enforces exactly one quota: `maxRequestsPerMonth`, a monthly
-allowance shared by an entire organization. Its boundaries follow the
-organization's Free-plan anniversary or its subscription schedule; they do not
+allowance shared by every app, key and user you own. Its boundaries follow your
+Free-plan anniversary or your subscription schedule; they do not
 have to fall on the first day of a UTC calendar month. The allowance comes from
 the billing plan (see [Cloud billing](/cloud-billing)) — from its subscription's
 plan, or from the billing service's default plan when no subscription grants it
-one. A self-hosted deployment, and any organization whose plan does not state an
+one. A self-hosted deployment, and any plan that does not state an
 allowance, is unlimited.
 
 **One request is counted at the moment it is admitted for dispatch to a
 provider**, and never before. Everything the gateway can refuse on its own —
 a rejected credential, a disallowed model or path, a malformed body, an
-unconfigured or disabled provider, an unpriced model, a blocked user, an
-organization with no plan — is settled before that point and costs nothing.
+unconfigured or disabled provider, an unpriced model, a blocked user, a
+caller with no plan — is settled before that point and costs nothing.
 
 Two consequences follow from the boundary being dispatch rather than success:
 
@@ -70,7 +70,7 @@ Exhaustion answers `429` with code `billing_request_quota_exceeded`, a
 {
   "error": {
     "code": "billing_request_quota_exceeded",
-    "message": "The organization's monthly request allowance of 10000 is exhausted until 2026-10-18T09:30:00.000Z",
+    "message": "The plan's monthly request allowance of 10000 is exhausted until 2026-10-18T09:30:00.000Z",
     "data": {
       "periodId": "paid:2026-05-18T09:30:00.000Z:2026-09-18T09:30:00.000Z",
       "periodStart": "2026-09-18T09:30:00.000Z",
@@ -83,13 +83,13 @@ Exhaustion answers `429` with code `billing_request_quota_exceeded`, a
 }
 ```
 
-`resetAt` is the exact start of the organization's next allowance period,
+`resetAt` is the exact start of the next allowance period,
 which is when a whole allowance becomes available again. It equals `periodEnd`;
 `periodId` is opaque. Refused requests are stored in the usage log with status
 `blocked_billing`, so an exhausted period is visible in the console rather than
 only in client logs.
 
-The count lives in one `OrgQuota` Durable Object per organization, and the claim
+The count lives in a single `OrgQuota` Durable Object, and the claim
 is a single conditional SQL upsert, so concurrent requests can never push the
 period past its allowance.
 
@@ -100,20 +100,20 @@ page and raises a banner above every page once four fifths of the allowance is
 spent.
 
 On the first deployment of anniversary periods, existing calendar-month
-counters remain stored for history but are not mapped into a new schedule. Each
-organization therefore starts with a fresh counter in its resolved anniversary
-period. No organization, application, provider, credential, or usage-log data
+counters remain stored for history but are not mapped into a new schedule. Every
+deployment therefore starts with a fresh counter in its resolved anniversary
+period. No account, application, provider, credential, or usage-log data
 needs to be deleted.
 
 ### Not to be confused with an application's own limits
 
 The allowance above is the one quota this gateway imposes on *you*. It is
 separate from the per-user and per-app limits you set on your own applications,
-which constrain your users rather than your organization and are documented in
+which constrain your users rather than you, and are documented in
 [Application configuration](/configuration).
 
 Those application limits continue to use UTC calendar months. Their boundaries
-do not move with the organization's plan allowance.
+do not move with your plan allowance.
 
 Those are checked first, so a request your own limits refused never spends your
 allowance. They answer `429 app_rate_limited` or `429 app_budget_exhausted`,
@@ -130,19 +130,19 @@ something your own configuration decided.
 The allowance comes from the billing service on every request, so a request that
 cannot be checked against it is refused. That refusal is `503
 billing_unavailable` with a short `Retry-After`, deliberately not the
-`402 billing_payment_required` an organization with no plan at all receives: an
+`402 billing_payment_required` a caller with no plan at all receives: an
 unreachable billing service is not a verdict on anyone's subscription, and a
 client that treats it as one shows a paying customer an upsell during your
 outage. Treat `402` as something the customer must act on and `503` as a wait.
 
 Note that a lapsed subscription is not a `402`. Where the billing service
-configures a default plan, an organization that never subscribed or whose
+configures a default plan, a caller that never subscribed or whose
 subscription ended falls back to it and keeps serving traffic against its
 allowance; `402` means no plan resolved at all.
 
 ### What an unlimited deployment is trading away
 
-This allowance is the gateway's only volume control, so an organization without
+This allowance is the gateway's only volume control, so a deployment without
 one has no gateway-side ceiling on how much a compromised credential, a looping
 client, or a runaway agent can spend at your providers. That is the deliberate
 trade for a single, comprehensible quota, and it applies to every self-hosted
@@ -283,10 +283,10 @@ of them. A background rate is normal; a rising one from a single app or user is
 worth investigating.
 
 What bounds the damage in the meantime depends on the deployment, and it is worth
-being exact about it. A hosted organization on a plan with a
+being exact about it. A hosted deployment on a plan with a
 [`maxRequestsPerMonth`](#the-monthly-request-allowance) has a real ceiling: the
 month cannot cost more than that many dispatched requests, whatever any of them
-turned out to cost. **A self-hosted deployment, and any organization whose plan
+turned out to cost. **A self-hosted deployment, and any plan that
 states no allowance, has no such ceiling** — that is deliberate, and it is the
 trade for having no other quota. There, the bound has to come from outside the
 gateway: your own provider-side spend caps and billing alerts at the provider,
@@ -318,7 +318,7 @@ a null means nothing settled it rather than "probably yours".
 so it can be grouped in SQL. It answers "how much Google-model spend, on any
 route" — a question the provider type cannot, once one provider serves several
 authors' models. It is an analytics dimension only: allowlists stay per provider
-instance and per app, and the request allowance is organization-wide.
+instance and per app, and the request allowance is shared by all your apps.
 
 `served_provider`, `served_model` and `reported_cost_usd` are for upstreams that
 report what actually served a request and what it cost. They are populated on

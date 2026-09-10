@@ -286,7 +286,7 @@ export const quotaGate: MiddlewareHandler<{
     throw new GatewayError(
       429,
       "billing_request_quota_exceeded",
-      `The organization's monthly request allowance of ${admission.limit} is exhausted until ${admission.resetAt}`,
+      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${admission.resetAt}`,
       { "Retry-After": String(admission.retryAfterSeconds) },
       {
         data: {

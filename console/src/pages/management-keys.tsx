@@ -192,7 +192,7 @@ export function ManagementKeysPage() {
         }
         label="Management key"
         secret={created?.plaintext ?? ""}
-        footnote="Store it in your secret manager. It acts with full authority inside this organization."
+        footnote="Store it in your secret manager. It acts with full authority over every app and provider key here."
         onAcknowledge={() => {
           setCreated(null);
           // The plaintext also sits in the mutation's cached result; drop it

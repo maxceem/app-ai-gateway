@@ -13,14 +13,14 @@ different people, and are easy to read as one thing when they are not.
 
 |  | **Plan allowance** | **Application limits** |
 | --- | --- | --- |
-| Who it limits | Your organization | Your application's end users |
+| Who it limits | All your apps together | Your application's end users |
 | Who sets it | Your billing plan | You, in `config.limits` |
 | Scope | Every app, key and user you own | One user, or one app |
 | Refusal | `billing_request_quota_exceeded` | `app_rate_limited`, `app_budget_exhausted` |
 
 Neither constrains the other. A large plan does not stop you capping your own
 users at ten requests a minute, and a user well inside your limits is still
-refused once your organization's allowance runs out. Application limits are
+refused once your plan's allowance runs out. Application limits are
 checked first, so a request your own limits refused never spends the allowance
 you are billed for.
 
@@ -43,8 +43,8 @@ carries `id` is refused with `400`, and no later request can rename an app.
 an ID of your choosing either.
 
 Suffixing every ID, including the first one on an empty deployment, is what
-keeps the namespace fair: no organization can claim a bare name that everyone
-after it has to work around. The console shows the readable half while you type
+keeps the namespace fair: nobody can claim a bare name that everyone
+after them has to work around. The console shows the readable half while you type
 a name — `calorie-tracker-••••••` — and the real ID once the app exists.
 
 The ID is not a secret: it travels in every client URL. It is also not a
@@ -95,14 +95,14 @@ immediately in the calling application's secret manager.
 The keys of `routing.providers.selected` are **provider instance slugs**, not
 provider types, so `"openai"` above means the instance reachable at
 `/proxy/openai/…`. Naming `"openai-dev"` instead restricts the app to that
-second key. `mode: "all"` keeps its meaning: any instance the organization has
+second key. `mode: "all"` keeps its meaning: any instance you have
 configured. See [Providers](/providers).
 
 Slugs are checked when a configuration is written, and the rule differs between
 creating and updating an application:
 
 - **Create** — every slug named by `routing.providers.selected` and by any
-  endpoint target must belong to an active instance of the organization.
+  endpoint target must belong to an active instance you have configured.
 - **Update** — only slugs the request *introduces* must exist. A slug the
   stored configuration already names stays writable even after its provider is
   deleted, so removing a credential never blocks unrelated edits to the apps
@@ -115,7 +115,7 @@ write it previews.
 
 `model_rewrites` targets are model names rather than instance references, so
 they are priced against the shipped catalog for any provider type plus any
-instance's own overrides — an organization with no providers configured yet can
+instance's own overrides — a deployment with no providers configured yet can
 still save an application that rewrites models.
 
 ## Limits
@@ -175,7 +175,7 @@ A caller can read its own standing with `GET /v1/apps/{app}/me`, which returns
 the per-user limits, the day's request count, what is left of it, and the
 month's spend. Requests are only counted while a per-user limit is set — an
 application with none never reaches the counter — so `requests_today` is `null`
-rather than `0` on such an app. The organization's plan allowance is deliberately not reported
+rather than `0` on such an app. Your plan allowance is deliberately not reported
 there: it is your arrangement with the gateway, not your users' business.
 
 Set `end_user.source` to `issuer` when the trusted client acts for real users.

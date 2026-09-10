@@ -126,8 +126,7 @@ export interface QuotaMeter {
   tone: "normal" | "warning" | "destructive";
   /** "8,420 of 10,000 requests", or the bare count when unlimited. */
   label: string;
-  /** The exact local start and end of the period being counted. */
-  period: string;
+  /** "Resets Oct 8, 2026, 11:15 AM GMT+8". Only the notices state it. */
   caption: string;
 }
 
@@ -138,10 +137,7 @@ export interface QuotaMeter {
  */
 export function quotaMeter(quota: OrganizationQuota | undefined | null): QuotaMeter | null {
   if (!quota) return null;
-  const start = formatBillingDateTime(quota.periodStart);
-  const end = formatBillingDateTime(quota.periodEnd);
   const resets = formatBillingDateTime(quota.resetAt);
-  const period = start && end ? `${start} – ${end}` : "Period dates unavailable";
   const caption = resets ? `Resets ${resets}` : "Reset time unavailable";
   if (quota.limit === undefined || quota.limit === null) {
     return {
@@ -150,7 +146,6 @@ export function quotaMeter(quota: OrganizationQuota | undefined | null): QuotaMe
       ratio: null,
       tone: "normal",
       label: `${formatNumber(quota.used)} requests this period`,
-      period,
       caption,
     };
   }
@@ -163,7 +158,6 @@ export function quotaMeter(quota: OrganizationQuota | undefined | null): QuotaMe
     ratio,
     tone: ratio >= 1 ? "destructive" : ratio >= QUOTA_WARNING_RATIO ? "warning" : "normal",
     label: `${formatNumber(quota.used)} of ${formatNumber(quota.limit)} requests`,
-    period,
     caption,
   };
 }
@@ -272,4 +266,80 @@ export function canCancel(subscription: SubscriptionState | null): boolean {
 /** A canceled subscription can be un-canceled, whether or not it still entitles. */
 export function canResume(subscription: SubscriptionState | null): boolean {
   return subscription?.status === "cancelled";
+}
+
+/**
+ * Where a plan sits against the others: its monthly price in cents.
+ *
+ * The catalog carries no explicit order, and the console needs one to say
+ * "upgrade" or "downgrade" rather than a bare "subscribe". Price is what the
+ * operator is actually comparing, and the default plan — which has no price row
+ * at all, because it is not purchasable — ranks below every paid one at zero.
+ */
+export function planRank(plan: BillingPlan): number {
+  return priceFor(plan, "month")?.priceAmountCents ?? 0;
+}
+
+/** What a plan card's single button does, ready to render. */
+export interface PlanAction {
+  /**
+   * `current` is the plan already held. `checkout` buys a first subscription,
+   * `change` moves a live one between paid plans, and `cancel` is the only way
+   * back to the free default plan — the billing service has no price to change
+   * to, so leaving a paid plan *is* cancelling it.
+   */
+  intent: "current" | "checkout" | "change" | "cancel";
+  label: string;
+  /** A downgrade should not compete with the upgrade beside it. */
+  variant: "default" | "outline";
+  /** Set when the action cannot be taken, and why. */
+  reason?: string;
+}
+
+const MANUALLY_MANAGED =
+  "This plan was granted manually. Ask support to change it.";
+
+/**
+ * The button for one plan card, decided against the plan currently held.
+ *
+ * Every route through here is one the billing contract already serves: no
+ * subscription means a checkout, a live one means a plan change, and the free
+ * plan means a cancellation. A manual grant is refused by the billing service
+ * on all three, so it is disabled here rather than left to fail on click.
+ */
+export function planAction(
+  plan: BillingPlan,
+  plans: BillingPlan[],
+  access: BillingAccess | undefined | null,
+): PlanAction {
+  const current = entitledPlan(access);
+  if (current && plan.planKey === current.planKey) {
+    return { intent: "current", label: "Current plan", variant: "outline" };
+  }
+
+  const held = plans.find((entry) => entry.planKey === current?.planKey);
+  const upgrade = planRank(plan) > (held ? planRank(held) : 0);
+  const free = plan.prices.length === 0;
+  const variant = upgrade ? "default" : "outline";
+  // Named, not "this plan": the button is read on its own, and the plan it
+  // moves you to is the one thing it has to say.
+  const label = `${upgrade ? "Upgrade" : "Downgrade"} to ${plan.name}`;
+
+  const subscription = subscriptionOf(access);
+  if (subscription && subscription.source === "manual" && CANCELLABLE.has(subscription.status)) {
+    return { intent: free ? "cancel" : "change", label, variant, reason: MANUALLY_MANAGED };
+  }
+
+  if (free) {
+    return canCancel(subscription)
+      ? { intent: "cancel", label, variant }
+      : {
+          intent: "cancel",
+          label,
+          variant,
+          reason: "There is no paid subscription to leave.",
+        };
+  }
+
+  return { intent: canCancel(subscription) ? "change" : "checkout", label, variant };
 }

@@ -388,7 +388,7 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {instances.length === 0 ? (
                       <span className="text-xs text-muted-foreground">
-                        This organization has no provider instances yet.
+                        No provider instances yet.
                       </span>
                     ) : (
                       // A disabled instance is listed but muted: "every

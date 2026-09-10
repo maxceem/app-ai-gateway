@@ -49,7 +49,7 @@ export function LimitsTab({ state }: { state: AppDraft }) {
         <Link to="/billing" className="text-primary-ink underline underline-offset-4">
           plan allowance
         </Link>
-        , which meters your whole organization: a request refused here never spends it. Edits take
+        , which meters all your apps together: a request refused here never spends it. Edits take
         up to a minute to apply everywhere.
       </p>
 
