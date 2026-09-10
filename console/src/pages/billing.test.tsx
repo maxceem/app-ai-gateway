@@ -103,22 +103,52 @@ function renderBilling(role: "owner" | "member" = "owner") {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("BillingPage", () => {
-  it("shows the current plan and renewal date", async () => {
+  it("names the plan held and when it renews, on one line each", async () => {
     stubBilling(billed(PAID_PLAN, subscription({ renewsAt: "2026-10-01T00:00:00.000Z" })));
     renderBilling();
 
-    expect(await screen.findByText("Active")).toBeTruthy();
+    // The title renders before the status arrives, so wait for the plan in it.
+    const title = await screen.findByText(/current plan:/i);
+    await waitFor(() => expect(title.textContent).toMatch(/Current plan:\s*Pro/));
     expect(await screen.findByText(/renews/i)).toBeTruthy();
+    // The subscription's own state is the banner's job, not a badge's.
+    expect(screen.queryByText("Active")).toBeNull();
   });
 
-  it("shows the exact current allowance period and reset time", async () => {
+  it("shows the allowance used this period, and nothing else about it", async () => {
     stubBilling(billed(FREE_PLAN), undefined, QUOTA);
     renderBilling();
 
     expect(await screen.findByText("Requests this period")).toBeTruthy();
     expect(await screen.findByText("250 of 1,000 requests")).toBeTruthy();
-    expect(await screen.findByText(/current period/i)).toBeTruthy();
-    expect(await screen.findByText(/^resets /i)).toBeTruthy();
+    expect(screen.queryByText(/current period/i)).toBeNull();
+    expect(screen.queryByText(/^resets /i)).toBeNull();
+  });
+
+  it("puts the renewal date under the allowance", async () => {
+    stubBilling(
+      billed(PAID_PLAN, subscription({ renewsAt: "2026-10-01T00:00:00.000Z" })),
+      undefined,
+      QUOTA,
+    );
+    renderBilling();
+
+    const renews = await screen.findByText(/renews/i);
+    // Below the count, not beside the status badge.
+    expect(renews.compareDocumentPosition(await screen.findByText("250 of 1,000 requests")))
+      .toBe(Node.DOCUMENT_POSITION_PRECEDING);
+  });
+
+  /** The catalog is monthly-only, so the plan already held has nothing to buy. */
+  it("states the current plan in the button every other card offers", async () => {
+    stubBilling(billed(PAID_PLAN, subscription()));
+    renderBilling();
+
+    const proCard = (await screen.findByText("For production workloads"))
+      .closest("[data-slot=card]") as HTMLElement;
+    const button = within(proCard).getByRole("button");
+    expect(button.textContent).toMatch(/current plan/i);
+    expect(button).toHaveProperty("disabled", true);
   });
 
   it("lists plans with prices for the selected billing period", async () => {
@@ -149,7 +179,7 @@ describe("BillingPage", () => {
       // The plan title and its price both read "Free"; neither period shows a
       // dash, which is how a paid plan says it has no price for that period.
       await waitFor(() => expect(within(freeCard()).getAllByText("Free")).toHaveLength(2));
-      expect(within(freeCard()).queryByRole("button", { name: /subscribe/iu })).toBeNull();
+      expect(within(freeCard()).queryByRole("button", { name: /upgrade|subscribe/iu })).toBeNull();
     }
   });
 
@@ -157,7 +187,33 @@ describe("BillingPage", () => {
     stubBilling(billed(FREE_PLAN));
     renderBilling();
 
-    expect(await screen.findByText("Current")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /current plan/i })).toBeTruthy();
+  });
+
+  /**
+   * Direction, not a bare "subscribe": the operator is choosing against the plan
+   * they already hold, and the catalog carries no order of its own to say which
+   * way each card moves them.
+   */
+  it("names each plan's direction from the one currently held", async () => {
+    stubBilling(billed(PAID_PLAN, subscription()));
+    renderBilling();
+
+    // Pro is $20/mo and the only other priced plan is the $200/yr-only Free…
+    expect(await screen.findByRole("button", { name: /current plan/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /downgrade to Free/i })).toBeTruthy();
+  });
+
+  /**
+   * The billing service has no price to change *to* on the default plan, so the
+   * button that leaves a paid plan is the cancellation, confirmation included.
+   */
+  it("leaves a paid plan through the cancellation dialog", async () => {
+    stubBilling(billed(PAID_PLAN, subscription()));
+    renderBilling();
+
+    await userEvent.click(await screen.findByRole("button", { name: /downgrade to Free/i }));
+    expect(await screen.findByRole("heading", { name: /cancel subscription/i })).toBeTruthy();
   });
 
   it("says traffic moved to the default plan when a subscription ends", async () => {
@@ -190,7 +246,7 @@ describe("BillingPage", () => {
     const fetchMock = stubBilling(billed(FREE_PLAN));
     renderBilling();
 
-    await userEvent.click(await screen.findByRole("button", { name: /subscribe/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /upgrade to Pro/i }));
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/billing/checkout"));
@@ -243,7 +299,7 @@ describe("BillingPage", () => {
     renderBilling("member");
 
     // Billing changes are mutations; the server rejects them for members.
-    expect(await screen.findByRole("button", { name: /subscribe/i }))
+    expect(await screen.findByRole("button", { name: /upgrade to Pro/i }))
       .toHaveProperty("disabled", true);
   });
 });

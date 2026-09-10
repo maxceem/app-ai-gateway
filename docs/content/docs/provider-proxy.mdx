@@ -9,15 +9,15 @@ The proxy route is:
 /v1/apps/{app}/proxy/{slug}/{provider-path}
 ```
 
-`{slug}` names one of the organization's **provider instances**, not a provider
+`{slug}` names one of your **provider instances**, not a provider
 type. Each instance is a credential (or a gateway reference) with a URL segment
-of its own, so an organization can run several keys for the same provider type
+of its own, so you can run several keys for the same provider type
 side by side. The application configuration must allow both the provider path and
 the model.
 
 ## Slugs
 
-A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique per organization across every
+A slug is `^[a-z0-9][a-z0-9-]{0,62}$` and is unique across every
 instance, disabled ones included; only deleting an instance frees its slug. It
 defaults to the provider type, so the first instance of each type
 keeps the familiar URLs — `openai`, `anthropic`, `xai`, `gemini`, `perplexity`,
@@ -141,7 +141,7 @@ asks for it.
 
 | Code | Status | Meaning |
 | --- | --- | --- |
-| `provider_not_configured` | 502 | The organization has no provider instance with this slug. Add one under Providers. |
+| `provider_not_configured` | 502 | No provider instance with this slug exists. Add one under Providers. |
 | `provider_disabled` | 502 | An instance with this slug exists but is disabled. Enable it under Providers. |
 | `provider_unavailable` | 502 | The stored credential could not be decrypted, or the gateway the instance references was revoked — usually a misconfigured secret vault. Check `/v1/healthz`. |
 | `pricing_not_configured` | 400 | Neither the shipped catalog nor the provider's custom pricing knows this model. |

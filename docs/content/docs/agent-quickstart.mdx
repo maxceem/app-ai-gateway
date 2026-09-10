@@ -15,7 +15,7 @@ curl --fail-with-body -sS -c operator.cookies \
   -d '{"name":"Agent owner","email":"owner@example.com","password":"use-a-long-password"}' \
   "$GATEWAY_URL/v1/auth/sign-up/email" >/dev/null
 
-# Mint an organization-scoped management key.
+# Mint a management key.
 export MGMT_KEY="$(curl --fail-with-body -sS -b operator.cookies \
   -H 'x-console-request: 1' \
   -H 'content-type: application/json' \
@@ -78,7 +78,7 @@ Never send `id` when creating an application: the gateway derives it from the
 name (`curl-agent-<suffix>` here) and answers with it as `app.id`. A body that
 carries `id` is refused with `400`, and no request can change an ID afterwards.
 
-The organization must already have an OpenAI credential, added under
+You must already have an OpenAI credential, added under
 [Providers](/providers) or with `POST /v1/admin/providers`; without one the
 proxy answers `502 provider_not_configured`. The application key exists in three
 places this script created: `app.json`, which the `rm` above removes; the

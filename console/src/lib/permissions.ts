@@ -18,7 +18,7 @@ export function canManage(role: OrganizationRole | null | undefined): boolean {
 }
 
 export const READ_ONLY_REASON =
-  "Your role in this organization is read-only. Ask an owner or admin to make this change.";
+  "Your role is read-only. Ask an owner or admin to make this change.";
 
 /** The org switcher is noise until the operator actually belongs to more than one. */
 export function shouldShowOrganizationSwitcher(membershipCount: number): boolean {

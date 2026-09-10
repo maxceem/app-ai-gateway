@@ -63,7 +63,7 @@ export function MissingProvidersAlert({ proxy }: { proxy: ProxyConfig }) {
       </AlertTitle>
       <AlertDescription>
         This app allows{" "}
-        {missing.length === 1 ? "a provider" : "providers"} your organization has not configured, so
+        {missing.length === 1 ? "a provider" : "providers"} you have not configured, so
         those requests fail with <code className="font-mono text-xs">provider_not_configured</code>.{" "}
         <Link to="/providers" className="text-primary-ink underline underline-offset-4">
           Add a provider key

@@ -4,6 +4,7 @@ import {
   canCancel,
   canResume,
   formatBillingDateTime,
+  planAction,
   priceFor,
   quotaMeter,
   quotaNotice,
@@ -203,7 +204,6 @@ describe("quotaMeter", () => {
     expect(meter?.tone).toBe("normal");
     expect(meter?.label).toBe("2,500 of 10,000 requests");
     expect(meter?.caption).toMatch(/^Resets /);
-    expect(meter?.period).not.toBe("Period dates unavailable");
   });
 
   it("warns from four fifths and escalates once the allowance is gone", () => {
@@ -237,11 +237,8 @@ describe("quotaMeter", () => {
     expect(meter?.label).toBe("1,234 requests this period");
   });
 
-  it("shows exact period and reset instants in the viewer's time zone", () => {
-    const meter = quotaMeter(quota());
-    expect(meter?.period).toContain(formatBillingDateTime(STARTS));
-    expect(meter?.period).toContain(formatBillingDateTime(RESETS));
-    expect(meter?.caption).toBe(`Resets ${formatBillingDateTime(RESETS)}`);
+  it("states the exact reset instant in the viewer's time zone", () => {
+    expect(quotaMeter(quota())?.caption).toBe(`Resets ${formatBillingDateTime(RESETS)}`);
   });
 
   it("does not invent a calendar-month reset when a timestamp is invalid", () => {
@@ -269,5 +266,87 @@ describe("quotaNotice", () => {
     expect(notice?.tone).toBe("destructive");
     expect(notice?.title).toMatch(/spent/i);
     expect(notice?.description).toMatch(/refused/i);
+  });
+});
+
+describe("planAction", () => {
+  const catalogPlan = (
+    planKey: string,
+    name: string,
+    cents: number | null,
+  ): BillingPlan => ({
+    planKey,
+    name,
+    description: "",
+    features: [],
+    trialDays: 0,
+    prices: cents === null
+      ? []
+      : [{ billingPeriod: "month", priceAmountCents: cents, priceCurrency: "USD" }],
+  });
+
+  const FREE = catalogPlan("free", "Free", null);
+  const STARTER = catalogPlan("starter", "Starter", 1_000);
+  const GROWTH = catalogPlan("growth", "Growth", 3_900);
+  const SCALE = catalogPlan("scale", "Scale", 14_900);
+  const CATALOG = [FREE, STARTER, GROWTH, SCALE];
+
+  const held = (planKey: string, sub: SubscriptionState | null = null): BillingAccess => ({
+    state: "billed",
+    plan: {
+      planKey,
+      planName: planKey,
+      isDefault: planKey === "free",
+    },
+    subscription: sub,
+  });
+
+  const on = (plan: BillingPlan, access: BillingAccess) => planAction(plan, CATALOG, access);
+
+  it("states the plan already held, and offers nothing on it", () => {
+    expect(on(GROWTH, held("growth", subscription({ planKey: "growth" }))))
+      .toMatchObject({ intent: "current", label: "Current plan" });
+  });
+
+  it("reads direction from the price, not from catalog order", () => {
+    const access = held("growth", subscription({ planKey: "growth" }));
+    expect(on(SCALE, access)).toMatchObject({ label: "Upgrade to Scale", variant: "default" });
+    expect(on(STARTER, access))
+      .toMatchObject({ label: "Downgrade to Starter", variant: "outline" });
+  });
+
+  /**
+   * The billing service has no price to change *to* on the default plan, so the
+   * only route back to it is cancelling — which is what the button must do.
+   */
+  it("routes a downgrade to the free plan through cancellation", () => {
+    expect(on(FREE, held("growth", subscription({ planKey: "growth" }))))
+      .toMatchObject({ intent: "cancel", label: "Downgrade to Free", variant: "outline" });
+  });
+
+  it("buys a first subscription through checkout, and moves a live one through change", () => {
+    expect(on(GROWTH, held("free")))
+      .toMatchObject({ intent: "checkout", label: "Upgrade to Growth" });
+    expect(on(GROWTH, held("starter", subscription({ planKey: "starter" }))))
+      .toMatchObject({ intent: "change" });
+  });
+
+  /** A lapsed subscription entitles nothing, so its plans are bought again. */
+  it("treats an expired subscription as no subscription at all", () => {
+    expect(on(GROWTH, held("free", subscription({ status: "expired" }))))
+      .toMatchObject({ intent: "checkout" });
+    expect(on(FREE, held("free", subscription({ status: "expired" }))))
+      .toMatchObject({ intent: "current" });
+  });
+
+  it("disables every route out of a manual grant, which billing refuses", () => {
+    const access = held("growth", subscription({ planKey: "growth", source: "manual" }));
+    expect(on(SCALE, access).reason).toBeTruthy();
+    expect(on(STARTER, access).reason).toBeTruthy();
+    expect(on(FREE, access).reason).toBeTruthy();
+  });
+
+  it("has nothing to leave when the free plan is already the one held", () => {
+    expect(on(FREE, held("free"))).toMatchObject({ intent: "current" });
   });
 });

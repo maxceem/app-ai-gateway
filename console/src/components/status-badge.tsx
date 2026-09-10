@@ -42,7 +42,7 @@ export const USAGE_STATUS_LABELS: Record<UsageStatus, string> = {
   provider_error: "The provider refused or failed the request",
   blocked_app_rate: "Refused by this app's own rate limit, which you set",
   blocked_app_budget: "Refused by this app's own monthly budget, which you set",
-  blocked_billing: "Refused: your plan's organization-wide monthly request allowance was exhausted",
+  blocked_billing: "Refused: your plan's monthly request allowance was exhausted",
   blocked_user: "Refused: this user is blocked",
 };
 

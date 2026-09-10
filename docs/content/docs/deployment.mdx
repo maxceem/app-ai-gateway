@@ -5,7 +5,7 @@ description: Deploy safely through Cloudflare's template flow or Wrangler, and c
 
 ## The one secret you must supply
 
-Provider credentials are added per organization in the console, not at deploy
+Provider credentials are added in the console, not at deploy
 time. The deployment itself needs exactly one operator-supplied secret: the key
 that encrypts those credentials at rest.
 
@@ -269,11 +269,11 @@ Confirm `"vault": "ok"` before adding provider credentials.
 
 Create the initial operator with `/v1/auth/sign-up/email`, then set
 `ALLOW_PUBLIC_REGISTRATION=false` for a private deployment. Admin automation uses
-organization-scoped `agw_mgmt_` keys created under `/v1/admin/keys`.
+`agw_mgmt_` keys created under `/v1/admin/keys`.
 
 Finally, add provider credentials under **Providers** in the console — see
-[Providers](/providers). Until an organization has a credential for a
-provider, its requests answer `502 provider_not_configured`.
+[Providers](/providers). Until a provider has a credential, requests for it
+answer `502 provider_not_configured`.
 
 <Callout type="warn" title="Migration state is separate from Worker versions">
   A Worker rollback does not roll back D1. Review new migrations before deploying

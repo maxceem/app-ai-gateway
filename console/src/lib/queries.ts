@@ -372,6 +372,22 @@ export function useStartCheckout() {
   });
 }
 
+/**
+ * Moves a live subscription between paid plans.
+ *
+ * Only for a subscription that already exists: the billing service answers
+ * `409 billing_subscription_not_found` otherwise, and a first purchase has to
+ * go through checkout instead. See `planAction` in `lib/billing`.
+ */
+export function useChangePlan() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+      api.post<{ ok: true; requiredActionUrl?: string }>("/v1/admin/billing/change", input),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
+  });
+}
+
 export function useCancelSubscription() {
   const client = useQueryClient();
   return useMutation({

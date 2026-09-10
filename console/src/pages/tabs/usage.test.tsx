@@ -224,7 +224,7 @@ describe("UsageTab event statuses", () => {
 
     const badge = await screen.findByText("blocked_billing");
     expect(badge.getAttribute("title"))
-      .toBe("Refused: your plan's organization-wide monthly request allowance was exhausted");
+      .toBe("Refused: your plan's monthly request allowance was exhausted");
   });
 
   it("explains an app budget rejection behind its stored status value", async () => {

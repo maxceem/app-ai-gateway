@@ -35,10 +35,10 @@ in the billing worker before enabling the binding.
 
 ## Plans, subscriptions and the default plan
 
-An organization's plan is the plan of its access-granting subscription. Without
+A tenant's plan is the plan of its access-granting subscription. Without
 one, it is the billing service's **default plan** — the free tier configured as
-the billing service's default plan. There are no exceptions: an
-organization that never subscribed, whose subscription expired, or whose payment
+the billing service's default plan. There are no exceptions: a
+tenant that never subscribed, whose subscription expired, or whose payment
 went unpaid, all land on the same default plan and keep serving traffic against
 its allowance.
 
@@ -70,7 +70,7 @@ answer different questions:
 }
 ```
 
-`plan` is what the organization may do — `isDefault` says whether it came from
+`plan` is what the tenant may do — `isDefault` says whether it came from
 the default plan rather than from a subscription. `subscription` is what it is
 paying for, reported verbatim whether or not it still entitles anything, which is
 what lets the console say "your subscription has ended" rather than only "you are
@@ -89,18 +89,18 @@ A plan carries exactly one limit, and it is the gateway's only quota:
 { "maxRequestsPerMonth": 100000 }
 ```
 
-It is a whole, non-negative count of requests the organization may dispatch
+It is a whole, non-negative count of requests the tenant may dispatch
 during its current monthly allowance period, shared by every application,
 credential and end user it owns. A plan that omits the key leaves the
-organization unlimited. The value may be written as a number or as a JSON
+tenant unlimited. The value may be written as a number or as a JSON
 string; anything else — a fraction, a negative, `null` — is a plan
 misconfiguration, and the gateway answers `502 billing_unavailable` rather than
 guess an allowance.
 
-The period follows the organization rather than the calendar:
+The period follows the tenant rather than the calendar:
 
 - The default Free plan starts a period at the exact UTC date and time the
-  organization was created, then repeats monthly from that anniversary.
+  tenant was created, then repeats monthly from that anniversary.
 - A subscription uses its normalized billing schedule. Annual subscriptions
   still receive a new request allowance every month.
 - An anniversary on day 29, 30, or 31 clamps to the last day of a shorter
@@ -110,8 +110,8 @@ The period follows the organization rather than the calendar:
 Changing plans within the same subscription schedule retains the current
 period's usage. Canceling and resuming also retain it. A new paid subscription
 or a provider-confirmed change to the billing cadence or anchor starts a new
-schedule. When an organization returns to Free, it returns to the original
-organization-anniversary schedule and to the count already recorded in that
+schedule. When a tenant returns to Free, it returns to the original
+tenant-anniversary schedule and to the count already recorded in that
 Free period.
 
 Nothing about a stored application configuration is capped by a plan. Creating,
@@ -120,12 +120,12 @@ validating, and updating apps are entitlement checks only.
 See [Operations](/operations) for what a client sees when the allowance runs
 out.
 
-The allowance is not a per-user limit and does not cap what an organization may
-grant its own users. An organization sets those separately, per app, and they
+The allowance is not a per-user limit and does not cap what a tenant may
+grant its own users. Those are set separately, per app, and they
 are checked before the allowance; see
 [Application configuration](/configuration).
 
-An organization with no plan at all — `access.plan` is `null` — receives
+A tenant with no plan at all — `access.plan` is `null` — receives
 `402 billing_payment_required` on its apps' data-plane routes. With a default plan
 configured that is rare: a lapsed subscription drops to the free tier rather than
 to a paywall, so `402` is left for the two cases where nothing resolves, namely a

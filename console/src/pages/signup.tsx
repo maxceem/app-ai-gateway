@@ -176,7 +176,7 @@ function RegistrationClosed({ googleAuth }: { googleAuth: boolean }) {
           <Alert>
             <AlertTitle>This gateway does not accept public sign-ups</AlertTitle>
             <AlertDescription>
-              Ask an organization owner or admin to add your account, then sign in.
+              Ask an owner or admin to add your account, then sign in.
             </AlertDescription>
           </Alert>
           {googleAuth ? <GoogleButton label="Continue with Google" /> : null}

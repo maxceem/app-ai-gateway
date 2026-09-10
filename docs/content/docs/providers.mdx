@@ -3,14 +3,14 @@ title: Providers
 description: Bring your own provider credentials, route them directly or through your Cloudflare AI Gateway, and price the models the catalog does not know.
 ---
 
-Every organization brings its own provider credentials. You add them once in the
+You bring your own provider credentials. You add them once in the
 console, the gateway encrypts them before storage, and no API ever returns them
 again — only the last few characters, so you can tell two keys apart.
 
 ## The model: named provider instances
 
 A provider row is one *instance*: this provider type, with this credential, as
-configured by this organization. There are no credential "kinds" and no fallback
+you configured it. There are no credential "kinds" and no fallback
 tiers — an instance either owns a key of its own or references a shared
 [provider gateway](#provider-gateways).
 
@@ -29,8 +29,8 @@ database enforces it: a direct instance owns a key, a gateway-routed instance
 carries no secret at all because the provider keys live in the gateway's own BYOK
 store.
 
-Slugs are unique per organization among **active** rows, so resolution stays a
-plain lookup with no precedence rules. A request for a slug the organization has
+Slugs are unique among **active** rows, so resolution stays a
+plain lookup with no precedence rules. A request for a slug you have
 not configured fails with `502 provider_not_configured`.
 
 ## Supported provider types
@@ -134,7 +134,7 @@ fee alone would let roughly twenty times as much spend through unmetered.
   at `$0` in your usage reporting, even though OpenRouter charged for the tokens.
   Watch the unresolved count on OpenRouter instances, and set per-user rate
   limits on the apps that route through them: they bound how much can go
-  unmetered before you notice. On a hosted plan the organization's monthly
+  unmetered before you notice. On a hosted plan your monthly
   request allowance is a second ceiling; a self-hosted deployment has only the
   app's own limits and OpenRouter's spend controls, until generation-lookup
   reconciliation ships.
@@ -303,7 +303,7 @@ destination after the URL was checked.
   pin the address `fetch` connects to. DNS rebinding is outside what any
   in-Worker check can detect. The real control is that this field is
   operator-only — it is written through the console or a management key by
-  somebody who already administers the organization, and **no gateway client can
+  somebody who already administers this gateway, and **no gateway client can
   influence it**. Clients still never supply a URL. Treat pointing an instance
   at an origin as equivalent to handing that origin the instance's API key,
   because that is what it does.
@@ -523,7 +523,7 @@ cap, `providerOnly`, and cost-report opt-ins.
 ## Custom model pricing
 
 Model pricing ships with the deployment as a code-level catalog, because prices
-are market data about models rather than per-organization state. A model the
+are market data about models rather than per-deployment state. A model the
 catalog does not know — or knows at a stale price — is unblocked by adding it
 under **custom model pricing** on the provider.
 
@@ -605,7 +605,7 @@ response that arrives without one.
 
 ## When a provider is missing
 
-An app that allows a slug the organization has not configured keeps working for
+An app that allows a slug you have not configured keeps working for
 every other instance; only that slug's requests fail. The console shows a
 non-blocking banner on the app's pages naming the missing providers and linking
 to the Providers page — a provider type counts as configured when any instance of

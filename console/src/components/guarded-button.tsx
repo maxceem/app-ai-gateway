@@ -56,9 +56,18 @@ export function DisabledReason({
  */
 export function GuardedButton({
   reason,
+  wrapperClassName,
   disabled,
   ...props
-}: ComponentProps<typeof Button> & { reason?: string }) {
+}: ComponentProps<typeof Button> & {
+  reason?: string;
+  /**
+   * Sizes the tooltip wrapper a blocked button is put inside. Without it the
+   * wrapper is only as wide as its content, so a button that fills its
+   * container everywhere else shrinks the moment it is disabled.
+   */
+  wrapperClassName?: string;
+}) {
   const { readOnly } = useConsoleSession();
   const reasonId = useId();
   const blockedReason = reason ?? (readOnly ? READ_ONLY_REASON : undefined);
@@ -66,7 +75,7 @@ export function GuardedButton({
   if (!blockedReason) return <Button disabled={disabled} {...props} />;
 
   return (
-    <DisabledReason reason={blockedReason} reasonId={reasonId}>
+    <DisabledReason reason={blockedReason} reasonId={reasonId} className={wrapperClassName}>
       <Button {...props} disabled aria-disabled="true" aria-describedby={reasonId} />
     </DisabledReason>
   );

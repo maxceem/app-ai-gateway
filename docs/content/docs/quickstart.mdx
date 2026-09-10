@@ -28,7 +28,7 @@ and the Worker together at `http://localhost:5173`, both hot-reloading.
 ## 2. Create the first operator
 
 Open the deployed URL and sign up, or call the email signup API. The first user
-receives a new organization and its owner role automatically.
+receives the owner role automatically.
 
 ```sh
 export GATEWAY_URL="https://YOUR-WORKER.workers.dev"
@@ -98,7 +98,7 @@ no `id` in the body — a body that carries one is refused with `400`. See
 
 ## 4. Add a provider credential
 
-The application above allows OpenAI, so the organization needs an OpenAI key.
+The application above allows OpenAI, so you need an OpenAI key.
 Add one in the console under **Providers**, or from the API:
 
 ```sh
@@ -118,7 +118,7 @@ catalog does not cover.
 
 ## 5. Create an automation key
 
-Management keys authenticate organization-scoped admin automation. They do not
+Management keys authenticate admin automation across all your apps. They do not
 authenticate model requests.
 
 ```sh
