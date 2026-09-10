@@ -1,0 +1,208 @@
+---
+title: Application configuration
+description: Define authentication, provider routing, and limits for one tenant.
+---
+
+An application row is the only tenant-specific input. Do not add tenant branches
+to Worker code.
+
+## Application limits and the plan allowance
+
+The gateway has two quotas. They constrain different people, are set by
+different people, and are easy to read as one thing when they are not.
+
+|  | **Plan allowance** | **Application limits** |
+| --- | --- | --- |
+| Who it limits | Your organization | Your application's end users |
+| Who sets it | Your billing plan | You, in `config.limits` |
+| Scope | Every app, key and user you own | One user, or one app |
+| Refusal | `billing_request_quota_exceeded` | `app_rate_limited`, `app_budget_exhausted` |
+
+Neither constrains the other. A large plan does not stop you capping your own
+users at ten requests a minute, and a user well inside your limits is still
+refused once your organization's allowance runs out. Application limits are
+checked first, so a request your own limits refused never spends the allowance
+you are billed for.
+
+The allowance is documented in [Operations](/operations); everything below
+is yours to set.
+
+## Application IDs
+
+The ID is the `{app}` segment of every URL the app uses, it is unique across the
+whole deployment, and it cannot be changed once the app exists — clients compile
+it into their base URL.
+
+The gateway assigns it, always: the name, slugified, plus a six-character random
+suffix (`Calorie Tracker` becomes `calorie-tracker-k3f9x1`). Create an
+application with `name`, `config` and an optional `status`, and read the ID back
+as `app.id` in the response. There is nothing to choose: a create body that
+carries `id` is refused with `400`, and no later request can rename an app.
+`PUT /v1/admin/apps/{app}` updates an existing application and answers
+`404 app_not_found` for an ID that does not exist, so it never creates one under
+an ID of your choosing either.
+
+Suffixing every ID, including the first one on an empty deployment, is what
+keeps the namespace fair: no organization can claim a bare name that everyone
+after it has to work around. The console shows the readable half while you type
+a name — `calorie-tracker-••••••` — and the real ID once the app exists.
+
+The ID is not a secret: it travels in every client URL. It is also not a
+credential — App Attest or an API key still has to pass.
+
+## Server application
+
+Use API-key authentication for a trusted backend:
+
+```json
+{
+  "name": "Search service",
+  "config": {
+    "authentication": {
+      "type": "api_key",
+      "end_user": { "source": "header", "header": "x-end-user-id" }
+    },
+    "routing": {
+      "providers": {
+        "mode": "selected",
+        "selected": {
+          "openai": {
+            "allowed_paths": ["v1/responses"],
+            "allowed_models": ["gpt-5.6-terra"],
+            "max_output_tokens": 4096
+          }
+        }
+      },
+      "model_rewrites": {}
+    },
+    "limits": {
+      "per_user": {
+        "requests": { "per_minute": 30, "per_day": 1000 },
+        "spending": { "monthly_usd": 10 }
+      },
+      "per_app": {
+        "requests": { "per_minute": 300, "per_day": 10000 },
+        "spending": { "monthly_usd": 100 }
+      }
+    }
+  }
+}
+```
+
+Creating an API-key application returns its initial plaintext key once. Store it
+immediately in the calling application's secret manager.
+
+The keys of `routing.providers.selected` are **provider instance slugs**, not
+provider types, so `"openai"` above means the instance reachable at
+`/proxy/openai/…`. Naming `"openai-dev"` instead restricts the app to that
+second key. `mode: "all"` keeps its meaning: any instance the organization has
+configured. See [Providers](/providers).
+
+Slugs are checked when a configuration is written, and the rule differs between
+creating and updating an application:
+
+- **Create** — every slug named by `routing.providers.selected` and by any
+  endpoint target must belong to an active instance of the organization.
+- **Update** — only slugs the request *introduces* must exist. A slug the
+  stored configuration already names stays writable even after its provider is
+  deleted, so removing a credential never blocks unrelated edits to the apps
+  that mention it.
+
+A dangling slug is not silently repaired: requests routed to it keep failing
+with `502 provider_not_configured` until you re-create the instance or drop the
+reference. `POST /v1/admin/apps/{app}/validate` applies the same rule as the
+write it previews.
+
+`model_rewrites` targets are model names rather than instance references, so
+they are priced against the shipped catalog for any provider type plus any
+instance's own overrides — an organization with no providers configured yet can
+still save an application that rewrites models.
+
+## Limits
+
+`limits` is optional. Omit it and the application is unlimited; every field is
+independently nullable, and `null` means unlimited for that field alone.
+
+`per_user` applies to each authenticated end user separately. `per_app` is one
+budget shared by every user and credential of the application at once.
+
+```json
+"limits": {
+  "per_user": {
+    "requests": { "per_minute": 30, "per_day": 1000 },
+    "spending": { "monthly_usd": 10 }
+  },
+  "per_app": {
+    "requests": { "per_minute": null, "per_day": null },
+    "spending": { "monthly_usd": 100 }
+  }
+}
+```
+
+Rate limits answer `429 app_rate_limited`; an exhausted budget answers
+`429 app_budget_exhausted`. Both carry a `Retry-After` header and a
+`data.scope` of `"user"` or `"app"` saying which of the two refused — worth
+telling apart in a client, because an `"app"` refusal is somebody else's traffic
+and backing off this one user will not clear it.
+
+Four things to know before you rely on them:
+
+- **Rate windows are fixed, not sliding.** A caller can spend a full minute's
+  allowance at the end of one minute and again at the start of the next, so a
+  burst of up to twice `per_minute` is possible across a boundary. Days roll at
+  UTC midnight.
+- **Budgets are settled after the fact.** A request's cost is known only once
+  its response completes, so a budget refuses the request *after* the one that
+  crossed it. A single very expensive call can overshoot. Turning an app-wide
+  budget on part-way through a month backfills from the month's usage, so it
+  counts what has already been spent rather than starting from zero.
+- **Edits take up to a minute** to reach every isolate, because application
+  configuration is cached for 60 seconds.
+- **`monthly_usd: 0` is a closed door, not "unlimited".** Use `null` for
+  unlimited. A request limit of `0` is rejected outright as a likely typo, but a
+  budget of zero is a legitimate way to stop all billable traffic for a scope.
+
+`per_user` limits need an application that identifies its end users. One that
+does not — an `api_key` application with no `authentication.end_user` — is
+refused a `per_user` block outright rather than quietly metering the whole
+backend as a single user, and the console hides the card. Give the application
+an end-user source, or use `per_app`.
+
+Blocking a user is a separate switch and is not a limit: it is immediate, and it
+answers `403 auth_required`. See [Operations](/operations).
+
+A caller can read its own standing with `GET /v1/apps/{app}/me`, which returns
+the per-user limits, the day's request count, what is left of it, and the
+month's spend. Requests are only counted while a per-user limit is set — an
+application with none never reaches the counter — so `requests_today` is `null`
+rather than `0` on such an app. The organization's plan allowance is deliberately not reported
+there: it is your arrangement with the gateway, not your users' business.
+
+Set `end_user.source` to `issuer` when the trusted client acts for real users.
+In that mode the key is client proof only: exchange it with an issuer JWT at
+`/v1/apps/{app}/auth/token`, then use the returned gateway token on data-plane
+requests. See [Authentication](/authentication) for every end-user source.
+
+An issuer block always carries `jwks_url`, `issuer`, `audience`, `user_id_claim`,
+`required_claims` and `max_token_lifetime_seconds`. `issuer` and `audience` are
+required — each one string or a list of accepted alternatives — because issuers
+such as Firebase, Sign in with Apple and Google Sign-In publish one key set for
+every customer, so without them a token minted in someone else's project
+verifies against your application. See
+[Authentication](/authentication#scoping-an-issuer-to-your-tenant) for the
+value each provider expects. Two optional fields, `provider` and `entitlement`,
+record which identity provider and which paid-user check the block was written
+for; the console reads them to show the configuration in those terms, and the
+gateway ignores them.
+
+## Named endpoints
+
+An optional top-level `endpoints` block moves the provider, model, and fixed
+parameters out of the client and behind a slug. See
+[Named endpoints](/named-endpoints).
+
+## Validation workflow
+
+Use the console for guided editing. Automation should validate a candidate through
+`POST /v1/admin/apps/{app}/validate` before updating the stored configuration.
+The generated API reference describes the canonical request schema.

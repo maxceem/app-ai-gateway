@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "exactOptionalPropertyTypes": false,
+    "types": ["vite/client"],
+    // No `baseUrl`: TypeScript 7 removed the option, and the two `paths` entries
+    // below already resolve relative to this file, so it was a no-op here.
+    // `@shared` is the capability matrix the Worker enforces, imported rather
+    // than mirrored. Everything under it is dependency-free by contract — see
+    // the module's own header — so nothing server-side reaches this bundle.
+    "paths": { "@/*": ["./src/*"], "@shared/*": ["../src/shared/*"] }
+  },
+  "include": ["src", "vite.config.ts", "../src/shared"]
+}

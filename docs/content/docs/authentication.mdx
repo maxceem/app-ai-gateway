@@ -1,0 +1,235 @@
+---
+title: Authentication
+description: Separate client proof from user identity for mobile apps and trusted backends.
+---
+
+## Identity model
+
+Authentication answers two independent questions, and the configuration keeps
+them apart:
+
+1. **How does the client prove itself?** `authentication.type` — Apple App Attest,
+   or an application API key.
+2. **Which end user is it acting for?** `authentication.end_user` — one source,
+   never two, so a configuration cannot claim two identities at once.
+
+The resulting gateway token is a one-hour receipt for both proofs.
+
+### End-user sources
+
+| Source | Available to | Who vouches for the id |
+| --- | --- | --- |
+| *(omitted)* | `api_key` | Nobody. The application has no end users. |
+| `header` | `api_key` | Your own backend, on trust. |
+| `app_install` | `apple_app_attest` | Apple, via the attested key. |
+| `issuer` | both | The gateway, by verifying a JWT. |
+
+Omitting `end_user` on an API-key application is a position rather than a
+default: the application has no end users, `limits.per_user` is refused as
+meaningless, usage records no user, and `/v1/apps/{app}/me` answers `404`. Use
+`limits.per_app` instead. On an App Attest application `end_user` is mandatory,
+because an attested client always resolves to some user.
+
+Two pairings are not expressible. An `api_key` application has no attested key,
+so it cannot use `app_install`. An App Attest client is the end user's own
+device, so it cannot use `header` — letting it name itself would put the party
+being limited in charge of the limit.
+
+## Scoping an issuer to your tenant
+
+Every issuer block carries two required fields, `issuer` and `audience`, and the
+gateway refuses any token whose `iss` or `aud` is not among them. Each accepts
+one string or a list of accepted alternatives, which is what makes a migration
+between two projects a configuration edit.
+
+They are required because a JWKS URL identifies nobody on the issuers that
+matter most: Firebase Authentication signs every project's tokens with the same
+`securetoken@system.gserviceaccount.com` key set, and Sign in with Apple and
+Google Sign-In are shared the same way. Without `iss` and `aud`, anyone can
+create their own free Firebase project, mint a token with any `sub` and any
+custom claims, and it verifies against your application — `required_claims` does
+not help, because the attacker writes those claims too.
+
+| Issuer | `issuer` | `audience` |
+| --- | --- | --- |
+| Firebase Authentication | `https://securetoken.google.com/<project-id>` | `<project-id>` |
+| Supabase Auth | `https://<ref>.supabase.co/auth/v1` | `authenticated` |
+| Sign in with Apple | `https://appleid.apple.com` | your bundle id |
+| Auth0 | `https://<tenant-domain>/` (trailing slash included) | your API identifier |
+| Clerk | `https://<frontend-api-host>` | the `aud` your JWT template sets |
+
+The console's issuer presets fill both fields in for you. A stored configuration
+without them does not run: it is reported as a configuration error and its token
+exchanges answer `500 internal_error`.
+
+## API-key applications with no end users
+
+Pure machine consumers send their application API key directly to data-plane
+requests, and identify nobody:
+
+```json
+"authentication": { "type": "api_key" }
+```
+
+```http
+Authorization: Bearer agw_...
+```
+
+Only the key hash and display prefix are stored in D1. Usage rows record the
+API key that served the traffic and no user.
+
+## API-key applications whose backend names the user
+
+A trusted backend that fronts real users can assert which one, in a header it
+chooses:
+
+```json
+"authentication": {
+  "type": "api_key",
+  "end_user": { "source": "header", "header": "x-end-user-id" }
+}
+```
+
+```http
+Authorization: Bearer agw_...
+X-End-User-ID: customer-123
+```
+
+The header is **required** once configured: an application that collects user
+ids and tolerated their absence would silently meter part of its traffic as
+nobody. Values are 1–128 printable ASCII characters, the name is matched
+case-insensitively, and the gateway strips it before the request reaches any
+provider.
+
+The id is taken on trust, so this belongs on a server you control. It is never
+appropriate for a client an end user runs — such a client can send any id it
+likes, which would make per-user limits and blocks opt-out.
+
+## Issuer-backed API-key applications
+
+Trusted clients that front real users exchange both proofs at the token endpoint:
+
+```json
+"authentication": {
+  "type": "api_key",
+  "end_user": { "source": "issuer", "issuer": { "jwks_url": "…", "issuer": "…", "audience": "…" } }
+}
+```
+
+```http
+POST /v1/apps/my-app/auth/token
+Content-Type: application/json
+
+{"api_key":"agw_...","issuer_token":"eyJ..."}
+```
+
+The API key must be active and belong to that application. The gateway verifies
+the issuer token and its required claims, uses its `user_id_claim` as identity,
+and returns a gateway token. Once an API-key app has an issuer source, bare
+`agw_` keys are rejected on data-plane requests.
+
+## iOS applications
+
+App Attest proves the request originates from an accepted application
+installation. Which end user that installation acts for is the second question,
+and an iOS application answers it one of two ways.
+
+### With a signed-in user
+
+```json
+"authentication": {
+  "type": "apple_app_attest",
+  "app_attest": { "team_id": "ABCDE12345", "bundle_id": "com.example.app" },
+  "end_user": { "source": "issuer", "issuer": { "jwks_url": "…", "issuer": "…", "audience": "…" } }
+}
+```
+
+The client requests a challenge and registers its App Attest key, presenting an
+issuer token. Subsequent token exchanges submit a fresh challenge and assertion
+alongside the issuer token. This is the only mode that supports `required_claims`,
+so paid-entitlement verification needs it.
+
+### Without one
+
+```json
+"authentication": {
+  "type": "apple_app_attest",
+  "app_attest": { "team_id": "ABCDE12345", "bundle_id": "com.example.app" },
+  "end_user": { "source": "app_install" }
+}
+```
+
+The attested key *is* the identity, so registration and token exchange present
+no issuer token — and one sent anyway is refused rather than ignored, because a
+client presenting a token believes it is authenticating a person. The user id is
+the App Attest key id, and per-install limits, blocks and usage all work with
+nothing self-reported.
+
+Two limits are worth knowing. Apple binds the key to one installation of one app
+on one device, so it does not survive reinstalling, clearing the app's data, or
+moving to a new phone: a user can shed an install identity — and the limits and
+blocks attached to it — by starting over. And `required_claims` has no token to
+inspect here, so entitlement gating needs a verified identity token instead.
+
+### App Attest environments
+
+Apple runs App Attest in one of two environments and stamps which one into the
+attestation. A build signed for development attests in the development
+environment; TestFlight and App Store builds always attest in production. An
+application accepts production only, unless
+`authentication.app_attest.environments` says otherwise:
+
+```json
+"app_attest": {
+  "team_id": "ABCDE12345",
+  "bundle_id": "com.example.app.dev",
+  "environments": ["development"]
+}
+```
+
+Omit the field and it means `["production"]`, so an application that never
+mentions it behaves exactly as before.
+
+Accepting development is narrower than it sounds: the attestation carries
+`SHA256("<team id>.<bundle id>")`, which the gateway checks, so only builds
+signed by your team for that bundle id are accepted either way. What it does
+widen is that development-signed builds are debuggable and run on any device
+carrying your provisioning profile. Put the opt-in on a development bundle id —
+never on the one you ship.
+
+The environment a key registered in is stored with it, so withdrawing an
+environment also stops the keys it admitted: their next token exchange answers
+`403 attest_failed`, and the client re-registers. Keys registered before this
+was recorded count as production, which no application can refuse.
+
+Two things no configuration can change. App Attest is unavailable in the
+Simulator, because it needs the Secure Enclave. And a development build can be
+made to attest in *production* instead, by setting the
+`com.apple.developer.devicecheck.appattest-environment` entitlement to
+`production` — which is the better answer when a development build only needs to
+reach a production-only application.
+
+## Why a token exchange was refused
+
+A refused exchange answers with one of three codes, chosen by what the client
+should do about it rather than by the internal cause. The granular cause is
+recorded server-side as a `reason`, and is never sent to the client.
+
+| Status and code | What happened | What the client should do |
+| --- | --- | --- |
+| `403 issuer_token_rejected` | The token did not verify: bad signature, unknown key, disallowed algorithm, expired, over the configured lifetime, an `iss` or `aud` the application does not accept, or no `user_id_claim`. | Fetch a fresh issuer token, retry once, then fail. |
+| `403 issuer_claims_missing` | The token verified, but the application's `required_claims` are not all present yet. | Do **not** re-authenticate. Wait and retry — the entitlement is still propagating. |
+| `503 issuer_verification_unavailable` | The gateway could not reach or read the issuer's JWKS, so the token was never judged. | Retry with backoff. Nothing about the credential is known to be wrong. |
+
+The separation matters most for `required_claims` backed by an asynchronous
+writer — a purchase that a store webhook turns into an entitlement claim, for
+instance. During that gap the user holds a perfectly valid token, and treating
+the refusal as an authentication failure sends the client re-authenticating in a
+loop it cannot escape. The gateway measures the gap: see
+[claim propagation](/operations#authentication-observability).
+
+<Callout>
+Clients built before these codes existed decode an unrecognised code as unknown
+and display the server's message, so they degrade to showing the reason rather
+than acting on it.
+</Callout>

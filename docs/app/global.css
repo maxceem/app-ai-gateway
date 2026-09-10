@@ -1,0 +1,105 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "fumadocs-openapi/css/preset.css";
+
+/* Match the marketing site: white paper, the brand blue as the only accent,
+   system fonts, no decoration. The neutral preset's pure-gray panels read
+   muddy next to white, so surfaces are white with hairline borders and the
+   few filled ones use the marketing slate tints instead. */
+:root {
+  --color-fd-background: #ffffff;
+  --color-fd-foreground: #0b1120;
+  --color-fd-card: #ffffff;
+  --color-fd-card-foreground: #0b1120;
+  --color-fd-popover: #ffffff;
+  --color-fd-popover-foreground: #1e293b;
+  --color-fd-muted: #f8fafc;
+  --color-fd-muted-foreground: #64748b;
+  --color-fd-secondary: #f8fafc;
+  --color-fd-secondary-foreground: #1e293b;
+  --color-fd-accent: #f1f5f9;
+  --color-fd-accent-foreground: #0b1120;
+  --color-fd-border: #e5e9ef;
+  --color-fd-primary: #2376e4;
+  --color-fd-primary-foreground: #ffffff;
+
+  /* Constant across themes so the logo never inverts. */
+  --brand-mark: #2376e4;
+}
+
+.dark {
+  --color-fd-background: #0c0e16;
+  --color-fd-foreground: #e5eaf2;
+  --color-fd-card: #11141d;
+  --color-fd-card-foreground: #e5eaf2;
+  --color-fd-popover: #11141d;
+  --color-fd-popover-foreground: #c8d2e0;
+  --color-fd-muted: #11141d;
+  --color-fd-muted-foreground: #94a2b5;
+  --color-fd-secondary: #1b222c;
+  --color-fd-secondary-foreground: #e5eaf2;
+  --color-fd-accent: #262e3b;
+  --color-fd-accent-foreground: #e5eaf2;
+  --color-fd-border: #262e3b;
+  /* The same blue as the light theme, as on the marketing site: it is tuned to
+     the luminance where contrast against white and against this page are
+     equal, so it needs no lightened counterpart here either. */
+  --color-fd-primary: #2376e4;
+  --color-fd-primary-foreground: #ffffff;
+}
+
+/* The neutral preset re-darkens the dark sidebar with pure grays; keep it on
+   the same slate ramp as everything else. */
+.dark #nd-sidebar {
+  --color-fd-muted: #1b222c;
+  --color-fd-secondary: #262e3b;
+  --color-fd-muted-foreground: #aab7c8;
+}
+
+/* The marketing wordmark: "App [AI] Gateway", with the shield set inside the
+   text rather than standing as a separate mark beside it. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32em;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+}
+
+/* The mark between "App" and "Gateway": the marketing site's shield, drawn at
+   its own 0.82 aspect so it is the same shape as the favicon. Sized in px
+   rather than `em` — scaling it up loses the compact look — and every
+   proportion below is a ratio of that height, so one number moves the whole
+   mark. Keep the ratios in step with the marketing site's shield spec. */
+.brandmark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: calc(var(--brandmark-h) * 0.82);
+  height: var(--brandmark-h);
+  /* Drops the mark against the wordmark's baseline. A transform, not a margin,
+     so it shifts visually without disturbing the line box. */
+  transform: translateY(calc(var(--brandmark-h) * 0.04));
+}
+
+.brandmark-shield {
+  grid-area: 1 / 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: var(--brand-mark);
+}
+
+.brandmark-letters {
+  grid-area: 1 / 1;
+  /* Offset from centre: a shield tapers to a point, so its optical centre sits
+     above its geometric one and truly centred letters look low. */
+  transform: translateY(calc(var(--brandmark-h) * -0.06));
+  color: #ffffff;
+  font-size: calc(var(--brandmark-h) * 0.46);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}

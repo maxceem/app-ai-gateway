@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The App AI Gateway shield, matching the marketing site's mark. Its ink is
+       82x100, so at scale 0.32 it stands 32 tall and 26.24 wide: flush to the
+       top and bottom of the icon, with 2.88 either side. That side gap is what
+       an 0.82 aspect costs in a square, and is the price of the mark being the
+       same shape here as in the wordmark. Keep this path in step with the
+       shield in the brand-mark component. -->
+  <g transform="translate(2.88 0) scale(0.32)">
+    <path fill="#2376e4" d="M41 0 L82 12 L82 52 C82 71 69.7 90.3 41 100 C12.3 90.3 0 71 0 52 L0 12 Z" />
+  </g>
+  <text
+    x="16"
+    y="14.08"
+    fill="#ffffff"
+    font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif"
+    font-size="14.72"
+    font-weight="700"
+    letter-spacing="0.2"
+    text-anchor="middle"
+    dominant-baseline="central"
+  >AI</text>
+</svg>
