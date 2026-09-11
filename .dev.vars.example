@@ -1,0 +1,21 @@
+# Required value requested by the Deploy to Cloudflare flow. Never commit real
+# values. Provider credentials themselves are added per organization in the
+# console and encrypted with the key below.
+# Generate with `openssl rand -base64 32`.
+SECRET_VAULT_MODE=local
+SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=1
+SECRET_VAULT_LOCAL_KEK_V1=
+
+# JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
+# For local development, run `pnpm run secrets:setup-local` to generate it.
+ALLOW_PUBLIC_REGISTRATION=true
+# Seconds an upstream provider may take to send its response headers before the
+# gateway gives up with 504. Defaults to 120. Once headers arrive the body
+# streams for as long as the model needs; only this first byte is bounded.
+# PROVIDER_TTFB_TIMEOUT_SECONDS=120
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+# Origin of an OAuth callback relay, for local hostnames that change and so
+# cannot be registered with Google. Register only <relay origin>/callback/google
+# with a dedicated development Google client; see the deployment guide.
+# OAUTH_RELAY_URL=https://dev-oauth.example.com

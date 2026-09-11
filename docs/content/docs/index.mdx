@@ -1,0 +1,37 @@
+---
+title: App AI Gateway
+description: Ship AI features without shipping provider keys.
+---
+
+App AI Gateway is a multi-tenant, provider-native proxy for iOS applications
+and trusted server backends. It authenticates users, enforces the limits you
+set on your own users, holds your apps to their shared monthly request
+allowance, and streams model responses straight from the providers you bring
+your own keys for.
+
+## Choose your path
+
+<Cards>
+  <Card title="Deploy the gateway" href="/deployment" description="Provision the Worker, D1 database, Durable Object, migrations, and console." />
+  <Card title="Add provider credentials" href="/providers" description="Bring your own keys, route them directly or through your Cloudflare AI Gateway." />
+  <Card title="Configure an application" href="/configuration" description="Create a server API-key tenant or an Apple App Attest tenant." />
+  <Card title="Integrate authentication" href="/authentication" description="Understand issuer identity, App Attest, API-key client proof, and gateway tokens." />
+  <Card title="Explore the API" href="/api" description="Browse the generated OpenAPI reference and request shapes." />
+</Cards>
+
+## What the gateway owns
+
+- Provider credentials are shared by all your apps, encrypted at rest, and
+  write-only.
+- D1 stores tenant configuration, users, credentials, and usage events.
+- One Durable Object holds the monthly request allowance your apps share, and
+  one per user serializes the limits an application sets on its own users.
+- Provider-native bodies and streaming response formats remain intact.
+- The administration console and API configure the deployed instance.
+
+## What your application owns
+
+Your application supplies its identity policy, its allowed provider paths and
+models, and the request or spending limits it puts on its own end users. An
+issuer such as Firebase decides who may obtain a mobile gateway token. Trusted
+servers can use a long-lived per-application API key instead.

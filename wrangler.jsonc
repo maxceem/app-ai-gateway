@@ -1,0 +1,49 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "app-ai-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "SECRET_VAULT_MODE": "local",
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
+  },
+  // Nightly retention for `app_auth_event` only.
+  "triggers": { "crons": ["17 3 * * *"] },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  },
+  "assets": {
+    "directory": "./console/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/v1/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "USER_LIMITER", "class_name": "UserLimiter" },
+      { "name": "ORG_QUOTA", "class_name": "OrgQuota" }
+    ]
+  },
+  // Append-only: every tag below has already been applied to deployed
+  // installations, so entries are added and never edited or removed.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] },
+    { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] }
+  ]
+  // This file is the complete self-hosted configuration and what the Deploy to
+  // Cloudflare button uses. Deployment-specific additions (a custom domain, a
+  // fixed D1 database, kms vault mode, a BILLING service binding) belong in a
+  // gitignored `wrangler.<profile>.overlay.jsonc`; see the "Deployment
+  // profiles" section of docs/content/docs/deployment.mdx. Never add account
+  // identifiers or domains here.
+}

@@ -1,0 +1,18 @@
+{
+  "title": "App AI Gateway",
+  "pages": [
+    "index",
+    "quickstart",
+    "agent-quickstart",
+    "deployment",
+    "cloud-billing",
+    "providers",
+    "configuration",
+    "authentication",
+    "provider-proxy",
+    "named-endpoints",
+    "operations",
+    "agents",
+    "api"
+  ]
+}
