@@ -27,7 +27,7 @@ import { OrganizationMenuItems } from "@/components/org-switcher";
 import { AppStatusBadge } from "@/components/status-badge";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { APP_SECTIONS } from "@/lib/app-sections";
-import { entitledPlan, quotaMeter } from "@/lib/billing";
+import { entitledPlan, QUOTA_WARNING_RATIO, quotaMeter } from "@/lib/billing";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useApp, useSignOut } from "@/lib/queries";
@@ -93,15 +93,23 @@ function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
 
   const current = location.pathname === "/billing";
   /*
-   * An upgrade is only offered from the plan every organization starts on.
-   * Put to a paying customer it is a nudge to spend more, repeated on every
-   * screen of the console, and the billing page states the whole catalogue for
-   * anyone who goes looking. `isDefault` rather than a plan key: the free tier
+   * Two situations put a plan up for changing, and nothing else does.
+   *
+   * The first is the plan every organization starts on, where an upgrade is the
+   * whole point of naming it. `isDefault` rather than a plan key: the free tier
    * is whichever plan the billing service falls back to, and a deployment is
    * free to name it something other than `free`. A reading with no plan at all
-   * is the paywall, where an upgrade is exactly the thing to offer.
+   * is the paywall, which is the same situation with nothing to show for it.
+   *
+   * The second is a paid plan whose allowance is nearly gone, where more of it
+   * is about to be the operator's actual problem. The same line the meter and
+   * the banner use, so the console never warns that an allowance is running out
+   * while quietly withholding the one thing that would fix it. Below it the
+   * block is a statement and not an offer: a customer who pays and has plenty of
+   * room left is told what they have and how much is spent, and is sold nothing.
    */
-  const upgradable = plan === null || plan.isDefault;
+  const nearlySpent = meter !== null && meter.ratio !== null && meter.ratio >= QUOTA_WARNING_RATIO;
+  const changeable = plan === null || plan.isDefault || nearlySpent;
 
   return (
     <div
@@ -117,21 +125,22 @@ function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
         {/*
           Named for what it does for this operator: a member cannot buy
           anything, so offering them an upgrade would be an action they are
-          refused on arrival, and neither can anyone already on a paid plan
-          upgrade from here.
+          refused on arrival.
         */}
-        <Link
-          to="/billing"
-          onClick={onNavigate}
-          aria-current={current ? "page" : undefined}
-          className={cn(
-            "shrink-0 rounded-sm text-xs font-medium underline underline-offset-4 transition-colors",
-            "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-            current ? "text-sidebar-accent-foreground" : "text-primary-ink hover:text-foreground",
-          )}
-        >
-          {canManage && upgradable ? "Upgrade" : "View plan"}
-        </Link>
+        {changeable ? (
+          <Link
+            to="/billing"
+            onClick={onNavigate}
+            aria-current={current ? "page" : undefined}
+            className={cn(
+              "shrink-0 rounded-sm text-xs font-medium underline underline-offset-4 transition-colors",
+              "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              current ? "text-sidebar-accent-foreground" : "text-primary-ink hover:text-foreground",
+            )}
+          >
+            {canManage ? "Upgrade" : "View plan"}
+          </Link>
+        ) : null}
       </div>
 
       {meter ? (

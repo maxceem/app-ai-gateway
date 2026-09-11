@@ -39,6 +39,11 @@ const QUOTA: OrganizationQuota = {
   resetAt: "2026-10-08T03:15:00.000Z",
 };
 
+/** The same allowance with a different amount of it spent. */
+function quotaAt(used: number): OrganizationQuota {
+  return { ...QUOTA, used };
+}
+
 /** Opens an app so the rail is handed over to it. */
 function renderInsideApp(route = "/apps/app-1/overview", status = "active") {
   stubApi({
@@ -286,10 +291,43 @@ describe("AppShell navigation", () => {
       quota: QUOTA,
     });
 
-    // The plan and the allowance are still stated; it is only the sales pitch
-    // that goes, and billing stays one click away for anyone who wants it.
+    // The plan and the allowance are still stated; the block is there to say
+    // how much is left, and on a plan with room to spare that is all it says.
     expect(screen.getByText("Growth plan")).toBeTruthy();
     expect(screen.getByText("120 of 1,000 requests")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Upgrade" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "View plan" })).toBeNull();
+  });
+
+  it("offers the upgrade once a paid allowance is nearly spent", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      capabilities: { billing: true },
+      billing: GROWTH_ACCESS,
+      quota: quotaAt(800),
+    });
+
+    expect(screen.getByRole("link", { name: "Upgrade" }).getAttribute("href")).toBe("/billing");
+  });
+
+  it("holds the offer back on the last request before that", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      capabilities: { billing: true },
+      billing: GROWTH_ACCESS,
+      quota: quotaAt(799),
+    });
+
+    expect(screen.queryByRole("link", { name: "Upgrade" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "View plan" })).toBeNull();
+  });
+
+  it("gives a member near the limit the plan to read, not a purchase", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      session: { role: "member" },
+      capabilities: { billing: true },
+      billing: GROWTH_ACCESS,
+      quota: quotaAt(800),
+    });
+
     expect(screen.queryByRole("link", { name: "Upgrade" })).toBeNull();
     expect(screen.getByRole("link", { name: "View plan" }).getAttribute("href")).toBe("/billing");
   });

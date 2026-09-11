@@ -124,7 +124,14 @@ export function billingNotice(access: BillingAccess | undefined | null): Billing
   return null;
 }
 
-/** The share of the allowance at which the operator is warned it is running out. */
+/**
+ * The share of the allowance at which it counts as running out.
+ *
+ * One number for the whole idea: it colours the meter, raises the banner, and
+ * is what puts a paid plan's upgrade back in the sidebar. An operator who is
+ * told the allowance is nearly gone and an operator who is offered more of it
+ * are in the same situation, so they are judged by the same line.
+ */
 export const QUOTA_WARNING_RATIO = 0.8;
 
 /** Where the current plan period stands against its allowance, ready to render. */
