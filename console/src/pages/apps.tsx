@@ -23,6 +23,7 @@ import { NewAppDialog } from "@/pages/new-app-dialog";
 import { AddProviderButton } from "@/pages/providers";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
 import { useApp, useApps, usePrices, useProviders } from "@/lib/queries";
+import { useCheckoutSuccessToast } from "@/lib/checkout-return";
 import { firstRequest } from "@/lib/first-request";
 import type { AppSummary } from "@/lib/types";
 
@@ -213,6 +214,9 @@ function WelcomeCard({
 
 export function AppsPage() {
   const [month, setMonth] = useState(currentMonth());
+  // The landing a completed checkout returns to, so the purchase is confirmed
+  // somewhere rather than only implied by a plan that quietly changed.
+  useCheckoutSuccessToast();
   /*
    * The checklist retires on the organization's first proxied request, which is
    * reported by this list and which nothing on this page can cause. So while it

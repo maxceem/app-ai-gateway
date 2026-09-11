@@ -108,6 +108,40 @@ export function loginUrlFor(path: string | null | undefined): string {
   return `${LOGIN_PATH}?${RETURN_PARAM}=${encodeURIComponent(path)}`;
 }
 
+/**
+ * Marks the console landing that a completed checkout returns to.
+ *
+ * The provider redirects the browser back with nothing but a URL, so the fact
+ * that a purchase just happened can only travel as a query parameter. It is
+ * read once, announced, and stripped: reloading a bare landing page must not
+ * congratulate anyone a second time.
+ */
+export const CHECKOUT_PARAM = "checkout";
+export const CHECKOUT_SUCCESS = "success";
+
+/** True when this load is the return leg of a completed checkout. */
+export function checkoutSucceeded(search: string): boolean {
+  return new URLSearchParams(search).get(CHECKOUT_PARAM) === CHECKOUT_SUCCESS;
+}
+
+/** The same location with the checkout marker spent, keeping any other query. */
+export function pathWithoutCheckout(pathname: string, search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete(CHECKOUT_PARAM);
+  const rest = params.toString();
+  return rest ? `${pathname}?${rest}` : pathname;
+}
+
+/**
+ * Where a completed checkout sends the operator.
+ *
+ * The console names this on the checkout it asks for, so it is also the one
+ * place the destination is decided. The billing service holds the same URL as
+ * a fallback for a caller that supplies none; this one wins whenever the
+ * console is the caller.
+ */
+export const CHECKOUT_RETURN_PATH = `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}`;
+
 export interface OAuthErrorNotice {
   tone: "default" | "destructive";
   title: string;

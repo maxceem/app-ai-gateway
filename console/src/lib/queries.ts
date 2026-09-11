@@ -8,6 +8,7 @@ import {
   type SignInInput,
   type SignUpInput,
 } from "./auth";
+import { CHECKOUT_RETURN_PATH } from "./auth-redirect";
 import type {
   AppListResponse,
   AppCreateBody,
@@ -372,7 +373,9 @@ export function useStartCheckout() {
     mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
       api.post<{ url: string }>("/v1/admin/billing/checkout", {
         ...input,
-        successUrl: `${window.location.origin}/billing`,
+        // The landing announces the purchase; an abandoned checkout comes back
+        // to the plans instead, which is where it would be resumed.
+        successUrl: `${window.location.origin}${CHECKOUT_RETURN_PATH}`,
         cancelUrl: `${window.location.origin}/billing`,
       }),
   });

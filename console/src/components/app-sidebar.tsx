@@ -92,6 +92,16 @@ function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
   if (!plan && !meter) return null;
 
   const current = location.pathname === "/billing";
+  /*
+   * An upgrade is only offered from the plan every organization starts on.
+   * Put to a paying customer it is a nudge to spend more, repeated on every
+   * screen of the console, and the billing page states the whole catalogue for
+   * anyone who goes looking. `isDefault` rather than a plan key: the free tier
+   * is whichever plan the billing service falls back to, and a deployment is
+   * free to name it something other than `free`. A reading with no plan at all
+   * is the paywall, where an upgrade is exactly the thing to offer.
+   */
+  const upgradable = plan === null || plan.isDefault;
 
   return (
     <div
@@ -107,7 +117,8 @@ function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
         {/*
           Named for what it does for this operator: a member cannot buy
           anything, so offering them an upgrade would be an action they are
-          refused on arrival.
+          refused on arrival, and neither can anyone already on a paid plan
+          upgrade from here.
         */}
         <Link
           to="/billing"
@@ -119,7 +130,7 @@ function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
             current ? "text-sidebar-accent-foreground" : "text-primary-ink hover:text-foreground",
           )}
         >
-          {canManage ? "Upgrade" : "View plan"}
+          {canManage && upgradable ? "Upgrade" : "View plan"}
         </Link>
       </div>
 

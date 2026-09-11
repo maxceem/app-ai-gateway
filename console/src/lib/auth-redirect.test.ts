@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
   authPathWithPlan,
+  CHECKOUT_RETURN_PATH,
+  checkoutSucceeded,
+  pathWithoutCheckout,
   isRetryableError,
   isSafeReturnPath,
   loginUrlFor,
@@ -153,5 +156,32 @@ describe("plan intent carried in the query string", () => {
   it("carries the plan onto the other auth screen, and nothing when there is none", () => {
     expect(authPathWithPlan("/login", "growth")).toBe("/login?plan=growth");
     expect(authPathWithPlan("/login", null)).toBe("/login");
+  });
+});
+
+describe("checkout return", () => {
+  it("recognises only the completed-checkout marker", () => {
+    expect(checkoutSucceeded("?checkout=success")).toBe(true);
+    expect(checkoutSucceeded("?checkout=cancelled")).toBe(false);
+    expect(checkoutSucceeded("?checkout=")).toBe(false);
+    expect(checkoutSucceeded("")).toBe(false);
+    // Anyone may write this onto a URL; it only ever announces, so the worst a
+    // crafted link achieves is a toast and a re-read of the plan.
+    expect(checkoutSucceeded("?plan=growth")).toBe(false);
+  });
+
+  it("spends the marker without disturbing the rest of the query", () => {
+    expect(pathWithoutCheckout("/apps", "?checkout=success")).toBe("/apps");
+    expect(pathWithoutCheckout("/apps", "?checkout=success&month=2026-09")).toBe(
+      "/apps?month=2026-09",
+    );
+    expect(pathWithoutCheckout("/apps", "")).toBe("/apps");
+  });
+
+  it("returns to the landing page carrying the marker", () => {
+    expect(CHECKOUT_RETURN_PATH).toBe("/apps?checkout=success");
+    expect(checkoutSucceeded(CHECKOUT_RETURN_PATH.slice(CHECKOUT_RETURN_PATH.indexOf("?")))).toBe(
+      true,
+    );
   });
 });

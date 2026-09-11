@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
+import { toast } from "sonner";
 import { AppsPage } from "./apps";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AppSummary, BillingAccess, OrganizationQuota } from "@/lib/types";
@@ -237,4 +238,34 @@ describe("the first-run checklist", () => {
     expect(screen.getByText("Requests")).toBeTruthy();
     expect(screen.getByText("Spend")).toBeTruthy();
   });
+});
+
+describe("returning from a completed checkout", () => {
+  it("announces the purchase and spends the marker", async () => {
+    const success = vi.spyOn(toast, "success");
+    const { router } = renderApps({}, { route: "/apps?checkout=success" });
+
+    await waitFor(() => expect(success).toHaveBeenCalledTimes(1));
+    expect(success.mock.calls[0]?.[0]).toBe("Payment complete");
+    // Spent, so a reload of the page it left behind announces nothing.
+    await waitFor(() => expect(router.location.search).toBe(""));
+  });
+
+  it("keeps the rest of the query when it strips the marker", async () => {
+    vi.spyOn(toast, "success");
+    const { router } = renderApps({}, { route: "/apps?checkout=success&month=2026-08" });
+
+    await waitFor(() => expect(router.location.search).toBe("?month=2026-08"));
+  });
+
+  it("says nothing on an ordinary visit", async () => {
+    const success = vi.spyOn(toast, "success");
+    renderApps({}, { route: "/apps" });
+
+    // Waits for the page to have actually settled, so "nothing was announced"
+    // is a conclusion rather than a race won.
+    expect(await screen.findByText(/start proxying in three steps/i)).toBeTruthy();
+    expect(success).not.toHaveBeenCalled();
+  });
+
 });

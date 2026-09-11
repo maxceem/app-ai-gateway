@@ -18,6 +18,18 @@ const FREE_ACCESS: BillingAccess = {
   subscription: null,
 };
 
+/** An organization on a plan it pays for, which is not the service default. */
+const GROWTH_ACCESS: BillingAccess = {
+  state: "billed",
+  plan: {
+    planKey: "growth",
+    planName: "Growth",
+    limits: { maxRequestsPerMonth: 100000 },
+    isDefault: false,
+  },
+  subscription: null,
+};
+
 const QUOTA: OrganizationQuota = {
   periodId: "free:2026-09-08T03:15:00.000Z",
   periodStart: "2026-09-08T03:15:00.000Z",
@@ -265,6 +277,31 @@ describe("AppShell navigation", () => {
 
     expect(screen.getByRole("link", { name: "View plan" }).getAttribute("href")).toBe("/billing");
     expect(screen.queryByRole("link", { name: "Upgrade" })).toBeNull();
+  });
+
+  it("does not nudge an organization that already pays to upgrade", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      capabilities: { billing: true },
+      billing: GROWTH_ACCESS,
+      quota: QUOTA,
+    });
+
+    // The plan and the allowance are still stated; it is only the sales pitch
+    // that goes, and billing stays one click away for anyone who wants it.
+    expect(screen.getByText("Growth plan")).toBeTruthy();
+    expect(screen.getByText("120 of 1,000 requests")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Upgrade" })).toBeNull();
+    expect(screen.getByRole("link", { name: "View plan" }).getAttribute("href")).toBe("/billing");
+  });
+
+  it("offers the upgrade on a paywalled reading, which has no plan to keep", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      capabilities: { billing: true },
+      billing: { state: "billed", plan: null, subscription: null },
+      quota: QUOTA,
+    });
+
+    expect(screen.getByRole("link", { name: "Upgrade" })).toBeTruthy();
   });
 
   it("marks the plan block while the billing page is the one open", () => {
