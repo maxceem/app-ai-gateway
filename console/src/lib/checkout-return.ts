@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { checkoutSucceeded, pathWithoutCheckout } from "./auth-redirect";
+import { analytics } from "./analytics";
+import { checkoutSucceeded, pathWithoutCheckout, planKeyFrom } from "./auth-redirect";
 import { keys } from "./queries";
 
 /**
@@ -50,6 +51,12 @@ export function useCheckoutSuccessToast(): void {
     announced.current = true;
 
     toast.success("Payment complete", { description: "Your new plan is being activated." });
+
+    // The marker this hook spends is the only evidence a purchase completed, so
+    // the sale is reported from here rather than from the plan changing: the
+    // plan also changes on a downgrade, on a resume, and on a webhook arriving
+    // while nobody is looking.
+    analytics.capture("subscription_started", { plan: planKeyFrom(location.search) ?? "unknown" });
 
     const refresh = () => void client.invalidateQueries({ queryKey: keys.billingStatus });
     refresh();

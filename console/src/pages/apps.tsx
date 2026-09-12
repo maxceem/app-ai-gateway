@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Check, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -24,6 +24,8 @@ import { AddProviderButton } from "@/pages/providers";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
 import { useApp, useApps, usePrices, useProviders } from "@/lib/queries";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
+import { noteProxiedRequests } from "@/lib/analytics";
+import { useConsoleSession } from "@/lib/console-session";
 import { firstRequest } from "@/lib/first-request";
 import type { AppSummary } from "@/lib/types";
 
@@ -242,6 +244,19 @@ export function AppsPage() {
    */
   const firstRun = apps.isSuccess && !apps.data.has_proxied_requests;
   waiting.current = firstRun;
+
+  /*
+   * The same answer the checklist retires on is what the hosted deployment
+   * counts as activation, so it is reported from the page that already asks for
+   * it rather than from a reading of its own.
+   */
+  const { organization } = useConsoleSession();
+  const organizationId = organization?.id;
+  const proxied = apps.data?.has_proxied_requests;
+  useEffect(() => {
+    if (organizationId === undefined || proxied === undefined) return;
+    noteProxiedRequests(organizationId, proxied);
+  }, [organizationId, proxied]);
   const hasApps = (apps.data?.apps.length ?? 0) > 0;
 
   const totals = (apps.data?.apps ?? []).reduce(

@@ -8,7 +8,8 @@ import {
   type SignInInput,
   type SignUpInput,
 } from "./auth";
-import { CHECKOUT_RETURN_PATH } from "./auth-redirect";
+import { analytics, captureAppCreated, captureProviderAdded, noteAuthMethod } from "./analytics";
+import { checkoutReturnPathFor } from "./auth-redirect";
 import type {
   AppListResponse,
   AppCreateBody,
@@ -98,7 +99,10 @@ export function useSession() {
 export function useSignIn() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: SignInInput) => signInWithPassword(input),
+    mutationFn: (input: SignInInput) => {
+      noteAuthMethod("password");
+      return signInWithPassword(input);
+    },
     onSuccess: () => client.invalidateQueries(),
   });
 }
@@ -106,7 +110,10 @@ export function useSignIn() {
 export function useSignUp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: SignUpInput) => signUpWithPassword(input),
+    mutationFn: (input: SignUpInput) => {
+      noteAuthMethod("password");
+      return signUpWithPassword(input);
+    },
     onSuccess: () => client.invalidateQueries(),
   });
 }
@@ -116,8 +123,13 @@ export function useSignOut() {
   return useMutation({
     mutationFn: () => signOut(),
     // Clearing rather than invalidating drops every organization-scoped cache
-    // so the next operator never sees the previous one's data.
-    onSettled: () => client.clear(),
+    // so the next operator never sees the previous one's data. Analytics is
+    // reset for the same reason: whoever signs in next on this browser is
+    // somebody else until they say otherwise.
+    onSettled: () => {
+      analytics.reset();
+      client.clear();
+    },
   });
 }
 
@@ -221,7 +233,11 @@ export function useCreateProvider() {
     mutationFn: (body: ProviderCreateBody) =>
       api.post<ProviderResponse>("/v1/admin/providers", body),
     gcTime: 0,
-    onSuccess: () => invalidateProviderLists(client),
+    onSuccess: (_result, body) => {
+      // The provider type and the route it takes; `body.secret` stays here.
+      captureProviderAdded(body.type, body.providerGatewayId !== undefined);
+      invalidateProviderLists(client);
+    },
   });
 }
 
@@ -374,8 +390,10 @@ export function useStartCheckout() {
       api.post<{ url: string }>("/v1/admin/billing/checkout", {
         ...input,
         // The landing announces the purchase; an abandoned checkout comes back
-        // to the plans instead, which is where it would be resumed.
-        successUrl: `${window.location.origin}${CHECKOUT_RETURN_PATH}`,
+        // to the plans instead, which is where it would be resumed. The plan
+        // travels with it because the return leg is otherwise bodyless, and the
+        // landing reports which plan was bought.
+        successUrl: `${window.location.origin}${checkoutReturnPathFor(input.planKey)}`,
         cancelUrl: `${window.location.origin}/billing`,
       }),
   });
@@ -451,7 +469,10 @@ export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: AppCreateBody) => api.post<CreatedApp>("/v1/admin/apps", body),
-    onSuccess: (created) => {
+    onSuccess: (created, body) => {
+      // Which of the two ways in the application was born with, since App
+      // Attest rather than an API key is what this product is built for.
+      captureAppCreated(body.config.authentication.type);
       void client.invalidateQueries({ queryKey: keys.app(created.app.id) });
       void client.invalidateQueries({ queryKey: ["apps"] });
     },

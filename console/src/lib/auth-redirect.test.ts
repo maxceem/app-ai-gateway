@@ -3,6 +3,7 @@ import { ApiError } from "./api";
 import {
   authPathWithPlan,
   CHECKOUT_RETURN_PATH,
+  checkoutReturnPathFor,
   checkoutSucceeded,
   pathWithoutCheckout,
   isRetryableError,
@@ -170,11 +171,14 @@ describe("checkout return", () => {
     expect(checkoutSucceeded("?plan=growth")).toBe(false);
   });
 
-  it("spends the marker without disturbing the rest of the query", () => {
+  it("spends the marker and its plan without disturbing the rest of the query", () => {
     expect(pathWithoutCheckout("/apps", "?checkout=success")).toBe("/apps");
     expect(pathWithoutCheckout("/apps", "?checkout=success&month=2026-09")).toBe(
       "/apps?month=2026-09",
     );
+    // The plan is spent with it: on the landing it is a record of what was
+    // just bought, not a request to buy it.
+    expect(pathWithoutCheckout("/apps", "?checkout=success&plan=growth")).toBe("/apps");
     expect(pathWithoutCheckout("/apps", "")).toBe("/apps");
   });
 
@@ -183,5 +187,13 @@ describe("checkout return", () => {
     expect(checkoutSucceeded(CHECKOUT_RETURN_PATH.slice(CHECKOUT_RETURN_PATH.indexOf("?")))).toBe(
       true,
     );
+  });
+
+  it("names the purchased plan on the return leg, which carries no body", () => {
+    const path = checkoutReturnPathFor("growth");
+    const search = path.slice(path.indexOf("?"));
+    expect(checkoutSucceeded(search)).toBe(true);
+    expect(planKeyFrom(search)).toBe("growth");
+    expect(pathWithoutCheckout("/apps", search)).toBe("/apps");
   });
 });
