@@ -1531,7 +1531,7 @@ packages:
     resolution: {integrity: sha512-FY+MKLBoTsLNJF/eLWaOsXGdz6uh3Iu1axjPf6TUq92IYumcTcXWHoS747JARLkcdlJ/Waiaxc5wQfFO8jC6NA==}
 
   '@maxceem/cf-auth@https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz':
-    resolution: {integrity: sha512-Wei9+gMTFMlzHRw/OmUf5D8Cx6Mhs2m9RDYROLSzAgrXsbHeiQqkMhphwW9tHJqSt2T6gxbeO9om7wzlpsSRyw==, tarball: https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz}
+    resolution: {integrity: sha512-g2v1GbESMwfZ9cJtv2dLsjCysGQQq5yJzmLzKoVJrOahf6USpK8YWcgkPEJMkaqsLJrnIsfECcCxuSZw0AY3dA==, tarball: https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz}
     version: 0.2.0
     peerDependencies:
       '@better-auth/drizzle-adapter': ^1.6.9
