@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "openapi:generate": "node --experimental-strip-types scripts/generate-openapi.ts",
     "openapi:check": "node scripts/check-openapi.mjs",
+    "suites:check": "node scripts/check-suites.mjs",
     "docs:dev": "pnpm --filter @app-ai-gateway/docs dev",
     "docs:build": "pnpm --filter @app-ai-gateway/docs build",
     "docs:deploy": "pnpm --filter @app-ai-gateway/docs static:build && node scripts/wrangler.mjs --cwd docs deploy",
@@ -34,7 +35,7 @@
     "typecheck:worker": "tsgo --noEmit",
     "typecheck:bindings": "wrangler types --check --env-file .dev.vars.example",
     "typecheck:tsc": "tsc --noEmit && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
-    "test:worker": "vitest run",
+    "test:worker": "vitest run --config vitest.suites.config.ts",
     "test:deploy-script": "node --test test/deploy-script.node.mjs",
     "pretest:worker": "pnpm run console:ensure"
   },

@@ -52,11 +52,9 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 - `pnpm run check` — types across every project, plus generated-OpenAPI drift.
   About five seconds. Run it after every edit.
-- `pnpm run test` — both test suites and the deploy-script tests. Two to three
-  minutes on an idle machine and longer on a busy one, because every Vitest
-  worker boots the Workers runtime and replays the D1 migrations. Run it when a
-  change touches behaviour, and while working on one prefer the files that cover
-  it:
+- `pnpm run test` — both test suites and the deploy-script tests, about a minute
+  and a half. Run it when a change touches behaviour, and while working on one
+  prefer the files that cover it:
   `pnpm exec vitest run test/<name>.test.ts` for the Worker, or
   `pnpm --filter @app-ai-gateway/console exec vitest run src/<path>.test.tsx`
   for the console. Do not use `vitest --changed`: nearly every test imports the
@@ -64,6 +62,13 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - `pnpm run verify` — both of the above, once, before a commit or hand-off. It
   costs essentially no more than `pnpm run test` alone, because the checks run
   alongside the suites rather than after them.
+
+The Worker suite runs through the barrels in `test/suites`, which is what keeps
+it near a minute: a test file costs about nine seconds to load before it runs a
+single test, so the suite pays that nine times rather than thirty-nine. A new
+test file has to be imported by one of them, and `pnpm run check` fails while it
+is not. A barrel's members share one database, so a file that needs a clean one
+belongs in a barrel of its own.
 
 Do not verify a change by driving the app in a browser unless you are explicitly
 asked to. The commands above are the expected evidence; a running app is the

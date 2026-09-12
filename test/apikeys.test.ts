@@ -6,6 +6,7 @@ import {
   clearApiKeyCache,
   generateApiKey,
   hashApiKey,
+  setApiKeyCacheLimit,
   verifyApiKey,
 } from "../src/core/apikeys";
 import { database } from "../src/db";
@@ -89,11 +90,15 @@ describe("server tenant API keys", () => {
     });
   });
 
-  // Each rejected credential is a real D1 lookup, so this one test is slower
-  // than the default 5 s timeout allows.
+  // Each rejected credential is a real D1 lookup, so the bound is narrowed to
+  // keep this to a hundred of them rather than the production ten thousand. The
+  // policy under test is that the bound holds and that the oldest entry goes
+  // first, and neither depends on where the bound sits.
   it("bounds the verification cache and evicts the oldest credential first", async () => {
+    const limit = 100;
+    setApiKeyCacheLimit(limit);
     await seedServerApp("cache-bound");
-    const credentials = Array.from({ length: 10_001 }, (_, index) => `agw_rejected_${index}`);
+    const credentials = Array.from({ length: limit + 1 }, (_, index) => `agw_rejected_${index}`);
 
     for (const credential of credentials) {
       await expect(verifyApiKey(credential, env, "cache-bound", null)).rejects.toMatchObject({
@@ -102,11 +107,11 @@ describe("server tenant API keys", () => {
     }
 
     const hashes = apiKeyCacheHashes();
-    expect(hashes).toHaveLength(10_000);
+    expect(hashes).toHaveLength(limit);
     expect(hashes[0]).toBe(await hashApiKey(credentials[1]!));
     expect(hashes.at(-1)).toBe(await hashApiKey(credentials.at(-1)!));
     expect(hashes).not.toContain(await hashApiKey(credentials[0]!));
-  }, 60_000);
+  });
 
   it("keeps issuer JWTs and API keys exclusive to their configured mode", async () => {
     // No end users, so the request carries nothing but the credential and the

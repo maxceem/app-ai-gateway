@@ -26,6 +26,7 @@ const steps = [
   { name: "docs:typecheck", tier: "check" },
   { name: "typecheck:bindings", tier: "check" },
   { name: "openapi:check", tier: "check" },
+  { name: "suites:check", tier: "check" },
   { name: "typecheck:worker", tier: "check" },
   { name: "console:typecheck", tier: "check" },
   { name: "test:deploy-script", tier: "test" },

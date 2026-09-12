@@ -24,6 +24,9 @@ const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
 const HIT_TTL_MS = 60_000;
 const MISS_TTL_MS = 10_000;
 const MAX_API_KEY_CACHE_ENTRIES = 10_000;
+// Narrowed only by `setApiKeyCacheLimit` below, and restored by
+// `clearApiKeyCache`, so nothing but a test can be running on another bound.
+let apiKeyCacheLimit = MAX_API_KEY_CACHE_ENTRIES;
 
 function randomString(length: number, alphabet: string): string {
   const limit = 256 - (256 % alphabet.length);
@@ -85,7 +88,7 @@ function rememberApiKey(hash: string, value: ApiKeyRecord | null): void {
     expiresAt: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS),
     value,
   });
-  if (apiKeyCache.size > MAX_API_KEY_CACHE_ENTRIES) {
+  if (apiKeyCache.size > apiKeyCacheLimit) {
     const oldest = apiKeyCache.keys().next();
     if (!oldest.done) apiKeyCache.delete(oldest.value);
   }
@@ -146,6 +149,19 @@ export async function markApiKeyUsed(env: Env, apiKeyId: string): Promise<void> 
 
 export function clearApiKeyCache(): void {
   apiKeyCache.clear();
+  apiKeyCacheLimit = MAX_API_KEY_CACHE_ENTRIES;
+}
+
+/**
+ * Narrows the cache bound. Exposed for tests: what wants covering is that the
+ * bound holds and that eviction is insertion-oldest first, neither of which
+ * depends on the number. Filling the real 10,000 costs as many D1 lookups and
+ * about thirty seconds, which is most of what this file spends. Every caller
+ * of this already resets the cache between tests, and that restores the
+ * production bound with it.
+ */
+export function setApiKeyCacheLimit(limit: number): void {
+  apiKeyCacheLimit = limit;
 }
 
 /** Cached credential hashes, oldest first. Exposed for tests. */
