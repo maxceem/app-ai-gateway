@@ -4,8 +4,11 @@ import {
   ISSUER_PRESETS,
   buildEntitlement,
   buildIssuer,
+  REVENUECAT_CLAIM_PATH,
   matchIssuerPreset,
   mergeClaims,
+  revenueCatClaim,
+  revenueCatEntitlement,
 } from "./presets";
 
 describe("issuer presets", () => {
@@ -153,5 +156,56 @@ describe("matchIssuerPreset", () => {
       audience: ["a", "b"],
     });
     expect(found.preset.id).toBe("custom");
+  });
+});
+
+describe("the RevenueCat entitlement check", () => {
+  const revenuecat = ENTITLEMENT_PRESETS.find((preset) => preset.id === "revenuecat")!;
+
+  // The claim RevenueCat's own Firebase extension writes. Getting this wrong
+  // rejects every paying user, and does it silently: the token verifies, the
+  // claim is simply not where the gateway looked.
+  it("writes the claim RevenueCat itself writes, asking only for the entitlement", () => {
+    expect(revenuecat.inputs.map((input) => input.key)).toEqual(["entitlement"]);
+    expect(buildEntitlement(revenuecat, { entitlement: " pro " })).toEqual([
+      { path: "revenueCatEntitlements", contains: "pro" },
+    ]);
+    expect(REVENUECAT_CLAIM_PATH).toBe("revenueCatEntitlements");
+  });
+
+  it("takes several ids as alternatives, any one of which admits the user", () => {
+    expect(buildEntitlement(revenuecat, { entitlement: "pro, pro_test" })).toEqual([
+      { path: REVENUECAT_CLAIM_PATH, contains: ["pro", "pro_test"] },
+    ]);
+  });
+
+  it("reads its entitlement back, so the same one field reopens on what was saved", () => {
+    expect(revenueCatEntitlement([revenueCatClaim("pro")])).toBe("pro");
+    expect(revenueCatEntitlement([revenueCatClaim("pro, pro_test")])).toBe("pro, pro_test");
+    // A check started but not filled in is still a RevenueCat check.
+    expect(revenueCatEntitlement([revenueCatClaim("")])).toBe("");
+  });
+
+  // The field is bound to the claim this writes, so normalizing a lone id would
+  // swallow the comma as it is typed and no list could ever be entered.
+  it("keeps a half-typed list intact between keystrokes", () => {
+    expect(revenueCatEntitlement([revenueCatClaim("pro,")])).toBe("pro, ");
+  });
+
+  it("declines only the shapes its one field could not hold", () => {
+    // Opening the one-field form on either of these would quietly drop whatever
+    // makes them different, so the full editor keeps them.
+    expect(revenueCatEntitlement([{ path: REVENUECAT_CLAIM_PATH, equals: "pro" }])).toBeNull();
+    expect(revenueCatEntitlement([revenueCatClaim("pro"), { path: "scope", contains: "ai" }]))
+      .toBeNull();
+  });
+
+  // The preset owns the path, so a check written against the older default is
+  // still a RevenueCat check; demoting it to a custom claim would lose the
+  // answer over a field the operator never chose.
+  it("reopens a check written against an older claim path", () => {
+    expect(revenueCatEntitlement([{ path: "entitlements", contains: "pro" }])).toBe("pro");
+    // A paid check with nothing filled in yet is one waiting for its id.
+    expect(revenueCatEntitlement([])).toBe("");
   });
 });

@@ -10,6 +10,14 @@ export interface ClaimRequirement {
 
 export type GatewayAuthMethod = "attest" | "api_key";
 
+/** The identity providers the console knows how to write an issuer for. */
+export const ISSUER_PROVIDERS = ["firebase", "supabase", "auth0", "clerk", "custom"] as const;
+export type IssuerProvider = (typeof ISSUER_PROVIDERS)[number];
+
+/** How `required_claims` says a user has paid. */
+export const ENTITLEMENT_CHECKS = ["revenuecat", "custom"] as const;
+export type EntitlementCheck = (typeof ENTITLEMENT_CHECKS)[number];
+
 export interface IssuerAuthConfig {
   jwks_url: string;
   /**
@@ -25,6 +33,18 @@ export interface IssuerAuthConfig {
   token_header?: string;
   required_claims: ClaimRequirement[];
   max_token_lifetime_seconds: number;
+  /**
+   * Which provider the scoping fields were written for, and which kind of
+   * paid-user check `required_claims` implements. The console's bookkeeping:
+   * the gateway verifies from the fields above and reads neither. They are
+   * carried through the parse rather than derived, because a check like
+   * RevenueCat is a claim of an ordinary shape — nothing in the stored claim
+   * says it was meant as one, so a save that dropped this would reopen the
+   * form on "custom" and leave the operator re-answering a question they
+   * already answered.
+   */
+  provider?: IssuerProvider;
+  entitlement?: EntitlementCheck;
 }
 
 export type AppAttestEnvironment = "production" | "development";

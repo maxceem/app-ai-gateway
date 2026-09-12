@@ -52,6 +52,10 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 Verification is tiered by cost. Do not run the full check after every edit.
 
+Do not verify a change by driving the app in a browser unless you are explicitly
+asked to. The checks below are the expected evidence; a running app is the
+author's to look at.
+
 - After each edit, run `pnpm run check:fast`. It type-checks every project and
   checks the generated OpenAPI document for drift in a few seconds.
 - When a change touches behaviour, run only the test files that cover it, by

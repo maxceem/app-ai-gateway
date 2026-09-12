@@ -12,6 +12,7 @@ import {
   PROVIDER_SLUG_PATTERN,
 } from "./providers";
 import { hasModelPrice, isBillable } from "./usage";
+import { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "./types";
 import type {
   AllowedPath,
   ApiKeyAuthentication,
@@ -145,6 +146,19 @@ function parseClaimValues(value: unknown, label: string): string[] {
   return value.map((entry) => requiredString(entry, label));
 }
 
+/**
+ * One of the console's two bookkeeping labels, or absent. Unlike every other
+ * field here, an unrecognized value is dropped rather than refused: the gateway
+ * never acts on these, so an unknown label costs the console its head start on
+ * which form to reopen, and nothing more. Refusing would take a working
+ * application offline over a word it does not read.
+ */
+function parseLabel<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : undefined;
+}
+
 function parseIssuer(raw: unknown): IssuerAuthConfig {
   const issuer = record(raw, "authentication.issuer");
   const jwksUrl = requiredString(issuer.jwks_url, "authentication.issuer.jwks_url");
@@ -168,6 +182,8 @@ function parseIssuer(raw: unknown): IssuerAuthConfig {
   if (maxLifetime === null) {
     throw new GatewayError(500, "internal_error", "authentication.issuer.max_token_lifetime_seconds cannot be null");
   }
+  const provider = parseLabel(issuer.provider, ISSUER_PROVIDERS);
+  const entitlement = parseLabel(issuer.entitlement, ENTITLEMENT_CHECKS);
   return {
     jwks_url: jwks.toString(),
     // Required on read as well as on write: an issuer block without them
@@ -179,6 +195,10 @@ function parseIssuer(raw: unknown): IssuerAuthConfig {
     ...(typeof issuer.token_header === "string" ? { token_header: issuer.token_header.toLowerCase() } : {}),
     required_claims: parseClaims(issuer.required_claims),
     max_token_lifetime_seconds: maxLifetime,
+    // Absent stays absent, so an issuer written before these existed — or by
+    // hand — is not stamped with a label nobody chose.
+    ...(provider === undefined ? {} : { provider }),
+    ...(entitlement === undefined ? {} : { entitlement }),
   };
 }
 

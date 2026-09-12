@@ -5,6 +5,8 @@ export interface PresetInput {
   label: string;
   placeholder: string;
   hint?: string;
+  /** An outside reference, rendered at the end of the hint rather than under it. */
+  docs?: { href: string; label: string };
 }
 
 export interface IssuerFragment {
@@ -294,11 +296,61 @@ export interface EntitlementPreset {
   id: "none" | EntitlementCheck;
   label: string;
   vendor?: string;
-  description: string;
+  /** Absent when the preset's one input already says what the check does. */
+  description?: string;
   inputs: PresetInput[];
   note?: string;
   build: (values: Record<string, string>) => ClaimRequirement[];
 }
+
+/**
+ * The claim a RevenueCat entitlement arrives in. Fixed rather than asked for:
+ * it is the name RevenueCat's own Firebase extension writes, and the point of
+ * the preset is that the shape is known, so the operator is left with the one
+ * thing only they can answer — which entitlement. A backend that writes the
+ * entitlement anywhere else is a custom claim, which is the other preset.
+ */
+export const REVENUECAT_CLAIM_PATH = "revenueCatEntitlements";
+
+/**
+ * A RevenueCat check is exactly one claim, at the one path, matched loosely.
+ * Several ids are alternatives: any one of them admits the user.
+ *
+ * A single id is stored as the raw text rather than the trimmed one, the way
+ * {@link ClaimsEditor} does it, because the field is bound to what this
+ * returns — normalizing here would swallow the comma the operator is in the
+ * middle of typing and make a list impossible to enter.
+ */
+export function revenueCatClaim(entitlements: string): ClaimRequirement {
+  const ids = entitlements.split(",").map((id) => id.trim());
+  return { path: REVENUECAT_CLAIM_PATH, contains: ids.length > 1 ? ids : entitlements };
+}
+
+/**
+ * The entitlement id a stored RevenueCat check was written for, or null when the
+ * claims are a shape the one-field form cannot hold — several claims at once, or
+ * an `equals` rather than a `contains`. Those keep the full editor, because it is
+ * the only form that can show them without dropping what makes them different.
+ *
+ * The path is deliberately not part of the question. The preset owns it, so a
+ * check written against an older default path still reopens as RevenueCat and is
+ * corrected the next time it is saved, rather than being demoted to a custom
+ * claim over a field the operator never chose.
+ */
+export function revenueCatEntitlement(claims: ClaimRequirement[]): string | null {
+  if (claims.length === 0) return "";
+  const [claim, ...rest] = claims;
+  if (!claim || rest.length > 0 || claim.contains === undefined) return null;
+  return Array.isArray(claim.contains) ? claim.contains.join(", ") : claim.contains;
+}
+
+/**
+ * What the picker below is asking, worded once for both the places that ask it:
+ * the creation wizard and the app's own Subscription check page. It states the
+ * question outright rather than echoing either page's heading, so the field
+ * needs no line of explanation under it.
+ */
+export const ENTITLEMENT_FIELD_LABEL = "Which claim says the user has paid";
 
 export const ENTITLEMENT_PRESETS: EntitlementPreset[] = [
   {
@@ -312,25 +364,21 @@ export const ENTITLEMENT_PRESETS: EntitlementPreset[] = [
     id: "revenuecat",
     label: "RevenueCat entitlement",
     vendor: "RevenueCat",
-    description: "Checks a claim your backend writes from RevenueCat webhooks.",
+    // No description: the one input below says what this checks, and saying it
+    // twice on one short step reads as a stutter.
     inputs: [
       {
-        key: "path",
-        label: "Claim path",
-        placeholder: "entitlements",
-        hint: "Dot path into the issuer token, e.g. entitlements or claims.entitlements.",
-      },
-      {
-        key: "value",
-        label: "Entitlement id",
+        key: "entitlement",
+        label: "Entitlement identifier",
         placeholder: "pro",
-        hint: "Matched with contains, so it works whether the claim is a string or an array.",
+        hint: "In RevenueCat, under Product catalog → Entitlements: the identifier, not the display name. Several, comma separated, admit a user carrying any one of them.",
+        docs: {
+          href: "https://www.revenuecat.com/docs/getting-started/entitlements",
+          label: "RevenueCat documentation",
+        },
       },
     ],
-    note:
-      "The gateway never talks to RevenueCat. Your backend receives the RevenueCat webhook and writes this claim onto the user's identity token (a Firebase custom claim, a Supabase app_metadata field, an Auth0 action); the gateway only checks that the claim is present. Subscription environment is invisible here — a sandbox purchase cannot bypass anything, because it still requires your signed build and a valid issuer token.",
-    build: ({ path, value }) =>
-      path && value ? [{ path, contains: value }] : [],
+    build: ({ entitlement }) => (entitlement ? [revenueCatClaim(entitlement)] : []),
   },
   {
     id: "custom",

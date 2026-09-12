@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
+import { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "../core/types.ts";
 
 /**
  * Registry-driven, and deliberately narrower than the database's own CHECK: the
@@ -52,8 +53,8 @@ const IssuerAuthenticationSchema = z.object({
    * the console, so it can show "Firebase, project X" and reopen the same
    * form: the gateway verifies tokens from the fields above and reads neither.
    */
-  provider: z.enum(["firebase", "supabase", "auth0", "clerk", "custom"]).optional(),
-  entitlement: z.enum(["revenuecat", "custom"]).optional(),
+  provider: z.enum(ISSUER_PROVIDERS).optional(),
+  entitlement: z.enum(ENTITLEMENT_CHECKS).optional(),
 }).strict();
 
 /**
