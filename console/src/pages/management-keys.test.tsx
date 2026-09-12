@@ -105,8 +105,9 @@ describe("ManagementKeysPage", () => {
     await screen.findByText("CI deploy");
     expect(screen.getByRole("button", { name: /new key/i })).toHaveProperty("disabled", true);
     const menu = await openRowActions("CI deploy");
-    expect(within(menu).getByRole("menuitem", { name: /revoke key/i }))
-      .toHaveProperty("ariaDisabled", "true");
+    expect(
+      within(menu).getByRole("menuitem", { name: /revoke key/i }).getAttribute("aria-disabled"),
+    ).toBe("true");
   });
 
   it("lets an owner revoke a key after confirming", async () => {

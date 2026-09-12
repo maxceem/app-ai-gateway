@@ -52,8 +52,8 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 - `pnpm run check` — types across every project, plus generated-OpenAPI drift.
   About five seconds. Run it after every edit.
-- `pnpm run test` — both test suites and the deploy-script tests, a little over
-  a minute. Run it when a change touches behaviour, and while working on one
+- `pnpm run test` — both test suites and the deploy-script tests, about a
+  minute. Run it when a change touches behaviour, and while working on one
   prefer the files that cover it:
   `pnpm exec vitest run test/<name>.test.ts` for the Worker, or
   `pnpm --filter @app-ai-gateway/console exec vitest run src/<path>.test.tsx`

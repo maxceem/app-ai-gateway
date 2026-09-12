@@ -1000,12 +1000,14 @@ describe("ProvidersPage", () => {
     expect(within(spare).getByText("…9xyz")).toBeTruthy();
     // A gateway still in use cannot be deleted, and says why.
     const inUse = await openRowActions("Prod CF gateway");
-    expect(within(inUse).getByRole("menuitem", { name: /delete gateway/i }))
-      .toHaveProperty("ariaDisabled", "true");
+    expect(
+      within(inUse).getByRole("menuitem", { name: /delete gateway/i }).getAttribute("aria-disabled"),
+    ).toBe("true");
     await userEvent.keyboard("{Escape}");
     const unused = await openRowActions("Spare gateway");
-    expect(within(unused).getByRole("menuitem", { name: /delete gateway/i }))
-      .toHaveProperty("ariaDisabled", null);
+    expect(
+      within(unused).getByRole("menuitem", { name: /delete gateway/i }).getAttribute("aria-disabled"),
+    ).toBeNull();
   });
 
   it("blocks deleting a gateway only disabled rows still reference", async () => {
@@ -1016,7 +1018,7 @@ describe("ProvidersPage", () => {
     // so "delete the active instances first" would be unactionable advice.
     const menu = await openRowActions("Retired gateway");
     const blocked = within(menu).getByRole("menuitem", { name: /delete gateway/i });
-    expect(blocked).toHaveProperty("ariaDisabled", "true");
+    expect(blocked.getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByText(/disabled provider instances still reference this gateway/i))
       .toBeTruthy();
   });
@@ -1119,7 +1121,7 @@ describe("ProvidersPage", () => {
 
     const menu = await openRowActions("Anthropic via CF");
     const rotate = within(menu).getByRole("menuitem", { name: /update key/i });
-    expect(rotate).toHaveProperty("ariaDisabled", "true");
+    expect(rotate.getAttribute("aria-disabled")).toBe("true");
     expect(rotate.getAttribute("aria-describedby")).toBeTruthy();
   });
 
@@ -1296,13 +1298,15 @@ describe("ProvidersPage", () => {
       .toHaveProperty("disabled", true);
     // The row menus still open, and each action says why it is unavailable.
     const menu = await openRowActions("Prod OpenAI");
-    expect(within(menu).getByRole("menuitem", { name: /update key/i }))
-      .toHaveProperty("ariaDisabled", "true");
-    expect(within(menu).getByRole("menuitem", { name: /delete provider/i }))
-      .toHaveProperty("ariaDisabled", "true");
+    expect(
+      within(menu).getByRole("menuitem", { name: /update key/i }).getAttribute("aria-disabled"),
+    ).toBe("true");
+    expect(
+      within(menu).getByRole("menuitem", { name: /delete provider/i }).getAttribute("aria-disabled"),
+    ).toBe("true");
     // Pricing is only a view until its own save button, which is guarded.
-    expect(within(menu).getByRole("menuitem", { name: /pricing/i }))
-      .toHaveProperty("ariaDisabled", null);
+    expect(within(menu).getByRole("menuitem", { name: /pricing/i }).getAttribute("aria-disabled"))
+      .toBeNull();
   });
 
   it("stops a read-only member adding a gateway", async () => {

@@ -21,7 +21,7 @@ describe("SettingsPage", () => {
 
     const menu = screen.getByRole("navigation", { name: /settings sections/i });
     expect(menu.querySelectorAll("a")).toHaveLength(2);
-    expect(screen.getByRole("link", { name: "Account" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Account" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByText("ada@example.test")).toBeTruthy();
   });
 
