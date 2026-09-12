@@ -8,23 +8,37 @@ const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 // run it. This file only decides what runs alongside what; the commands
 // themselves live in package.json and are not repeated here.
 //
-// Sorted longest-first: the scheduler starts them in this order, so the two
-// slow suites claim a slot before the short steps can crowd them out.
+// One scheduler behind three entry points, so each tier gets the same pooling:
 //
-// `--fast` drops the test steps. The rest finish in a few seconds, which is
-// what makes them worth running after every edit; the test suites take about
-// two minutes and belong before a commit or hand-off, or per file while a
-// change is being worked on (`pnpm exec vitest run test/<name>.test.ts`).
-const fast = process.argv.includes("--fast");
+//   check   the type checks and the generated-document check, a few seconds
+//   test    both suites, a couple of minutes, because every Vitest worker boots
+//           the Workers runtime and replays the D1 migrations
+//   verify  everything, and no slower than `test` alone: the checks finish
+//           inside the shadow of the suites rather than after them
+//
+// Declared longest-first, which is the order the scheduler starts them in, so
+// the two slow suites claim a slot before the short steps can crowd them out.
+// `verify` is every step rather than a third list, so a step added here reaches
+// it without being named twice.
 const steps = [
-  ...(fast ? [] : ["test:worker", "console:test"]),
-  "docs:typecheck",
-  "typecheck:bindings",
-  "openapi:check",
-  "typecheck:worker",
-  "console:typecheck",
-  ...(fast ? [] : ["test:deploy-script"]),
+  { name: "test:worker", tier: "test" },
+  { name: "console:test", tier: "test" },
+  { name: "docs:typecheck", tier: "check" },
+  { name: "typecheck:bindings", tier: "check" },
+  { name: "openapi:check", tier: "check" },
+  { name: "typecheck:worker", tier: "check" },
+  { name: "console:typecheck", tier: "check" },
+  { name: "test:deploy-script", tier: "test" },
 ];
+
+const tier = process.argv[2];
+if (tier !== "check" && tier !== "test" && tier !== "verify") {
+  console.error("usage: node scripts/check.mjs <check|test|verify>");
+  process.exit(2);
+}
+const selected = steps
+  .filter((step) => tier === "verify" || step.tier === tier)
+  .map((step) => step.name);
 
 const pnpm = process.env.npm_execpath ?? "pnpm";
 const runsUnderNode = pnpm.endsWith(".cjs") || pnpm.endsWith(".js") || pnpm.endsWith(".mjs");
@@ -57,10 +71,10 @@ function run(name) {
 // pools underneath, and a fourth concurrent step only makes them contend.
 const slots = Math.max(2, Math.min(3, Math.floor(availableParallelism() / 4)));
 
-for (const name of steps) console.log(`  ... ${name}`);
+for (const name of selected) console.log(`  ... ${name}`);
 
 const started = Date.now();
-const queue = [...steps];
+const queue = [...selected];
 const results = [];
 let failed = false;
 
@@ -83,11 +97,11 @@ for (const failure of failures) {
 
 const total = Math.round((Date.now() - started) / 1000);
 if (failures.length > 0) {
-  const skipped = steps.length - results.length;
+  const skipped = selected.length - results.length;
   console.error(
-    `\ncheck${fast ? " --fast" : ""} failed in ${total}s: ${failures.map((f) => f.name).join(", ")}` +
+    `\n${tier} failed in ${total}s: ${failures.map((f) => f.name).join(", ")}` +
       (skipped > 0 ? ` (${skipped} step${skipped === 1 ? "" : "s"} not run)` : ""),
   );
   process.exit(1);
 }
-console.log(`\ncheck${fast ? " --fast" : ""} passed in ${total}s`);
+console.log(`\n${tier} passed in ${total}s`);
