@@ -200,6 +200,30 @@ Deployments that own a stable hostname leave `OAUTH_RELAY_URL` unset, which is
 the default: the gateway then registers and uses its own
 `<origin>/v1/auth/callback/google` as before.
 
+## Console build variables
+
+The console is a static bundle, so anything it needs is read when it is built,
+not when it runs. These are optional and unset by default.
+
+| Variable | Effect |
+| --- | --- |
+| `VITE_POSTHOG_KEY` | [PostHog](https://posthog.com) project API key for console analytics. |
+| `VITE_POSTHOG_HOST` | PostHog ingestion host, for example `https://eu.i.posthog.com`. |
+
+Both must be set for analytics to be built in at all. With either missing — the
+default — the console collects nothing and does not load the SDK.
+
+Set them in a gitignored `console/.env.production.local`, or export them before
+`pnpm run deploy`:
+
+```sh title="console/.env.production.local"
+VITE_POSTHOG_KEY=phc_your_project_key
+VITE_POSTHOG_HOST=https://eu.i.posthog.com
+```
+
+They are read by `pnpm run console:build`, which the deploy script runs first, so
+changing either means deploying again.
+
 ## Rate limiting
 
 The gateway does not throttle authentication attempts itself, and cannot do it

@@ -124,10 +124,11 @@ export function checkoutSucceeded(search: string): boolean {
   return new URLSearchParams(search).get(CHECKOUT_PARAM) === CHECKOUT_SUCCESS;
 }
 
-/** The same location with the checkout marker spent, keeping any other query. */
+/** The same location with the checkout marker and its plan spent, keeping any other query. */
 export function pathWithoutCheckout(pathname: string, search: string): string {
   const params = new URLSearchParams(search);
   params.delete(CHECKOUT_PARAM);
+  params.delete(PLAN_PARAM);
   const rest = params.toString();
   return rest ? `${pathname}?${rest}` : pathname;
 }
@@ -141,6 +142,17 @@ export function pathWithoutCheckout(pathname: string, search: string): string {
  * console is the caller.
  */
 export const CHECKOUT_RETURN_PATH = `${DEFAULT_LANDING}?${CHECKOUT_PARAM}=${CHECKOUT_SUCCESS}`;
+
+/**
+ * The same destination, naming the plan that was bought.
+ *
+ * The plan is spent on arrival exactly as the checkout marker is — {@link
+ * pathWithoutCheckout} strips both — so it reports the purchase and then stops
+ * existing, rather than lingering on the landing as an intent to buy something.
+ */
+export function checkoutReturnPathFor(planKey: string): string {
+  return `${CHECKOUT_RETURN_PATH}&${PLAN_PARAM}=${encodeURIComponent(planKey)}`;
+}
 
 export interface OAuthErrorNotice {
   tone: "default" | "destructive";
