@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { createTestSessions } from "@maxceem/cf-auth/testing";
 import { issueGatewayToken } from "../src/core/jwt";
 import { hashApiKey } from "../src/core/apikeys";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../src/db/schema";
 import type { ProviderType, StoredAppConfig } from "../src/core/types";
 import { secretVault } from "../src/vault";
+import { createOperatorAuth } from "../src/auth/operator";
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
 export const TEST_OPERATOR_USER_ID = "operator-test-owner";
@@ -337,4 +339,37 @@ export async function seedServerApp(
 export async function gatewayToken(appId: string, userId = "user-1"): Promise<string> {
   const issued = await issueGatewayToken(env.JWT_SECRET, appId, userId, "attest", 3600);
   return issued.token;
+}
+
+/** An operator with their own organization, and a session to act as them. */
+export interface SeededOperator {
+  userId: string;
+  organizationId: string;
+  /** Ready for a request's `cookie` header. */
+  cookie: string;
+  email: string;
+}
+
+/**
+ * Creates one, without going through sign-up.
+ *
+ * Sign-up hashes a password with scrypt, and workerd has no `node:crypto`
+ * scrypt, so better-auth falls back to a pure-JS one costing about two and a
+ * half seconds. A test that only needs an authenticated operator pays that for
+ * nothing. cf-auth mints the session instead — the same rows sign-up writes,
+ * minus the password — and it owns the cookie's name and format so this does
+ * not have to.
+ *
+ * Tests whose subject *is* signing up should still sign up. Nothing here
+ * exercises the password path, so something has to.
+ */
+export async function seedOperator(email?: string): Promise<SeededOperator> {
+  const sessions = createTestSessions(createOperatorAuth(env, "https://example.test"));
+  const operator = await sessions.operator(email === undefined ? {} : { email });
+  return {
+    userId: operator.userId,
+    organizationId: operator.organizationId,
+    cookie: operator.cookie,
+    email: operator.user.email,
+  };
 }

@@ -116,8 +116,8 @@ importers:
         specifier: ^1.5.1
         version: 1.5.1(hono@4.12.31)(zod@4.4.3)
       '@maxceem/cf-auth':
-        specifier: https://github.com/maxceem/cf-auth/releases/download/v0.1.0/maxceem-cf-auth-0.1.0.tgz
-        version: https://github.com/maxceem/cf-auth/releases/download/v0.1.0/maxceem-cf-auth-0.1.0.tgz(@better-auth/drizzle-adapter@1.6.9(@better-auth/core@1.6.9(@better-auth/utils@0.4.0)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@5.20260723.1)(better-call@1.3.5(zod@4.4.3))(jose@6.2.4)(kysely@0.28.17)(nanostores@1.5.2))(@better-auth/utils@0.4.0)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)))(better-auth@1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(hono@4.12.31)
+        specifier: https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz
+        version: https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz(@better-auth/drizzle-adapter@1.6.9(@better-auth/core@1.6.9(@better-auth/utils@0.4.0)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@5.20260723.1)(better-call@1.3.5(zod@4.4.3))(jose@6.2.4)(kysely@0.28.17)(nanostores@1.5.2))(@better-auth/utils@0.4.0)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)))(better-auth@1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(hono@4.12.31)
       '@maxceem/cf-kms':
         specifier: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
         version: https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz
@@ -1530,9 +1530,9 @@ packages:
   '@marijn/find-cluster-break@1.0.3':
     resolution: {integrity: sha512-FY+MKLBoTsLNJF/eLWaOsXGdz6uh3Iu1axjPf6TUq92IYumcTcXWHoS747JARLkcdlJ/Waiaxc5wQfFO8jC6NA==}
 
-  '@maxceem/cf-auth@https://github.com/maxceem/cf-auth/releases/download/v0.1.0/maxceem-cf-auth-0.1.0.tgz':
-    resolution: {integrity: sha512-Eho1mnhGxMyAiKFuG4nHJZ74V9WqNA/4i5uM7pb8bG7Qa1AlEpfsyhFPMic+quR36dPxbJHkmQzplBJLs0Dy6w==, tarball: https://github.com/maxceem/cf-auth/releases/download/v0.1.0/maxceem-cf-auth-0.1.0.tgz}
-    version: 0.1.0
+  '@maxceem/cf-auth@https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz':
+    resolution: {integrity: sha512-Wei9+gMTFMlzHRw/OmUf5D8Cx6Mhs2m9RDYROLSzAgrXsbHeiQqkMhphwW9tHJqSt2T6gxbeO9om7wzlpsSRyw==, tarball: https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz}
+    version: 0.2.0
     peerDependencies:
       '@better-auth/drizzle-adapter': ^1.6.9
       better-auth: ^1.6.9
@@ -5606,7 +5606,7 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.3': {}
 
-  '@maxceem/cf-auth@https://github.com/maxceem/cf-auth/releases/download/v0.1.0/maxceem-cf-auth-0.1.0.tgz(@better-auth/drizzle-adapter@1.6.9(@better-auth/core@1.6.9(@better-auth/utils@0.4.0)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@5.20260723.1)(better-call@1.3.5(zod@4.4.3))(jose@6.2.4)(kysely@0.28.17)(nanostores@1.5.2))(@better-auth/utils@0.4.0)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)))(better-auth@1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(hono@4.12.31)':
+  '@maxceem/cf-auth@https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz(@better-auth/drizzle-adapter@1.6.9(@better-auth/core@1.6.9(@better-auth/utils@0.4.0)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@5.20260723.1)(better-call@1.3.5(zod@4.4.3))(jose@6.2.4)(kysely@0.28.17)(nanostores@1.5.2))(@better-auth/utils@0.4.0)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17)))(better-auth@1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(hono@4.12.31)':
     dependencies:
       '@better-auth/drizzle-adapter': 1.6.9(@better-auth/core@1.6.9(@better-auth/utils@0.4.0)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@5.20260723.1)(better-call@1.3.5(zod@4.4.3))(jose@6.2.4)(kysely@0.28.17)(nanostores@1.5.2))(@better-auth/utils@0.4.0)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))
       better-auth: 1.6.9(@cloudflare/workers-types@5.20260723.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260723.1)(kysely@0.28.17))(next@16.3.0(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.10(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))

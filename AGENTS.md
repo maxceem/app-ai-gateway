@@ -52,8 +52,8 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 - `pnpm run check` — types across every project, plus generated-OpenAPI drift.
   About five seconds. Run it after every edit.
-- `pnpm run test` — both test suites and the deploy-script tests, about a minute
-  and a half. Run it when a change touches behaviour, and while working on one
+- `pnpm run test` — both test suites and the deploy-script tests, a little over
+  a minute. Run it when a change touches behaviour, and while working on one
   prefer the files that cover it:
   `pnpm exec vitest run test/<name>.test.ts` for the Worker, or
   `pnpm --filter @app-ai-gateway/console exec vitest run src/<path>.test.tsx`
@@ -69,6 +69,11 @@ single test, so the suite pays that nine times rather than thirty-nine. A new
 test file has to be imported by one of them, and `pnpm run check` fails while it
 is not. A barrel's members share one database, so a file that needs a clean one
 belongs in a barrel of its own.
+
+A test that needs an authenticated operator should call `seedOperator` from
+`test/helpers.ts`, not sign one up: signing up hashes a password with a pure-JS
+scrypt and costs about two and a half seconds. Sign up only where registering is
+what the test is about.
 
 Do not verify a change by driving the app in a browser unless you are explicitly
 asked to. The commands above are the expected evidence; a running app is the
