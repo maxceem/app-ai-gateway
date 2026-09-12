@@ -32,6 +32,7 @@ import { useCreateApp } from "@/lib/queries";
 import type { CreatedApiKey } from "@/lib/types";
 import { IOS_USER_CHOICES, SERVER_USER_CHOICES, type UserSource } from "@/lib/user-sources";
 import {
+  ENTITLEMENT_FIELD_LABEL,
   ENTITLEMENT_PRESETS,
   ISSUER_PRESETS,
   buildEntitlement,
@@ -491,14 +492,14 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
             {step.id === "subscription" ? (
               <PresetPicker
                 idPrefix="entitlement"
-                label="Subscription check"
+                label={ENTITLEMENT_FIELD_LABEL}
                 presets={ENTITLEMENT_PRESETS}
                 selected={entitlement}
                 values={entitlementValues}
                 compact
                 onSelect={(preset) => {
                   setEntitlement(preset);
-                  setEntitlementValues(preset.id === "revenuecat" ? { path: "entitlements" } : {});
+                  setEntitlementValues({});
                 }}
                 onValueChange={(key, value) =>
                   setEntitlementValues((current) => ({ ...current, [key]: value }))

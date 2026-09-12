@@ -44,7 +44,11 @@ describe("draftProblem", () => {
       type: "api_key",
       end_user: {
         source: "issuer",
-        issuer: { ...issuer, entitlement: "revenuecat", required_claims: [{ path: "entitlements", contains: "" }] },
+        issuer: {
+          ...issuer,
+          entitlement: "revenuecat",
+          required_claims: [{ path: "revenueCatEntitlements", contains: "" }],
+        },
       },
     }))).toMatch(/subscription check/i);
   });

@@ -152,6 +152,57 @@ describe("canonical app configuration", () => {
     });
   });
 
+  describe("the console's issuer labels", () => {
+    function labelled(labels: Record<string, unknown>): any {
+      const config = serverConfig() as any;
+      config.authentication = {
+        type: "api_key",
+        end_user: {
+          source: "issuer",
+          issuer: {
+            jwks_url: "https://issuer.test/jwks",
+            issuer: "https://issuer.test/",
+            audience: "test-audience",
+            user_id_claim: "sub",
+            required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+            max_token_lifetime_seconds: 3600,
+            ...labels,
+          },
+        },
+      };
+      return config;
+    }
+
+    const storedIssuer = (config: unknown): any =>
+      (validateAppConfigJson(config) as any).authentication.end_user.issuer;
+
+    // What this returns is what gets persisted, so dropping a label here loses
+    // the operator's answer on every save: they pick RevenueCat in the wizard
+    // and the app reopens saying "custom claim". Nothing in the claims below
+    // could tell the console otherwise — the shape is an ordinary one.
+    it("keeps which provider and which paid check the block was written for", () => {
+      const stored = storedIssuer(labelled({ provider: "firebase", entitlement: "revenuecat" }));
+      expect(stored.provider).toBe("firebase");
+      expect(stored.entitlement).toBe("revenuecat");
+    });
+
+    it("does not write a label into a block that never named one", () => {
+      const stored = storedIssuer(labelled({}));
+      expect(stored).not.toHaveProperty("provider");
+      expect(stored).not.toHaveProperty("entitlement");
+    });
+
+    // The gateway acts on neither, so an unreadable one costs the console the
+    // form it would have reopened and nothing else. Refusing the config would
+    // take a working application offline over a word nothing reads.
+    it("drops a label it does not recognize rather than refuse the application", () => {
+      const stored = storedIssuer(labelled({ provider: "okta", entitlement: 7 }));
+      expect(stored).not.toHaveProperty("provider");
+      expect(stored).not.toHaveProperty("entitlement");
+      expect(stored.required_claims).toEqual([{ path: "revenueCatEntitlements", contains: "pro" }]);
+    });
+  });
+
   it("rejects allowlisted and fixed models without provider pricing", () => {
     expect(() => validateAppConfigJson(serverConfig({
       proxy: {

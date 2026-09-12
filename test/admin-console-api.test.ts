@@ -552,7 +552,8 @@ describe("admin console API", () => {
         issuer: "https://securetoken.google.com/my-app-1a2b3",
         audience: "my-app-1a2b3",
         user_id_claim: "sub",
-        required_claims: [{ path: "entitlements", contains: "pro" }],
+        required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+        entitlement: "revenuecat",
       },
       supabase: {
         jwks_url: "https://abcdefghijklmnop.supabase.co/auth/v1/.well-known/jwks.json",
@@ -583,9 +584,11 @@ describe("admin console API", () => {
         {
           method: "POST",
           headers: JSON_AUTH,
+          // The console names the preset it wrote the block with, so the form
+          // it reopens is the one that was filled in.
           body: JSON.stringify({
             name: `Preset ${preset}`,
-            config: appleConfig(issuer),
+            config: appleConfig({ ...issuer, provider: preset }),
           }),
         },
       );

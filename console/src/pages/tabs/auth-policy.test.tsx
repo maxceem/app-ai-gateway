@@ -100,7 +100,11 @@ describe("levelStatuses", () => {
     expect(halfDone.users.tone).toBe("incomplete");
 
     const paidWithoutClaim = levelStatuses(
-      draft(appleApp({ ...FIREBASE, entitlement: "revenuecat", required_claims: [{ path: "entitlements", contains: "" }] })),
+      draft(appleApp({
+        ...FIREBASE,
+        entitlement: "revenuecat",
+        required_claims: [{ path: "revenueCatEntitlements", contains: "" }],
+      })),
       undefined,
     );
     expect(paidWithoutClaim.subscription.tone).toBe("incomplete");
@@ -279,7 +283,46 @@ describe("AuthPolicyTab user authentication", () => {
 });
 
 describe("AuthPolicyTab subscription check", () => {
-  it("reads the answer off the required claims and opens the check inline", async () => {
+  it("reopens on the check that was chosen, asking only for the entitlement", async () => {
+    stubKeys();
+    const paid = {
+      ...FIREBASE,
+      entitlement: "revenuecat" as const,
+      required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+    };
+    renderTab(draftFor(appleApp(paid)), "subscription");
+
+    expect((await option(/paid users only/i)).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("combobox", { name: /which claim says the user has paid/i }).textContent)
+      .toContain("RevenueCat entitlement");
+    expect(screen.getByLabelText(/entitlement identifier/i)).toHaveProperty("value", "pro");
+    // The claim path is RevenueCat's own, so it is not a question to ask.
+    expect(screen.queryByLabelText(/claim path/i)).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // The one field cannot show a second claim, so the editor keeps it rather
+  // than a form that would silently drop one on the next keystroke.
+  it("falls back to the full editor when the claims outgrew the RevenueCat shape", async () => {
+    stubKeys();
+    const paid = {
+      ...FIREBASE,
+      entitlement: "revenuecat" as const,
+      required_claims: [
+        { path: "revenueCatEntitlements", contains: "pro" },
+        { path: "scope", contains: "ai.invoke" },
+      ],
+    };
+    renderTab(draftFor(appleApp(paid)), "subscription");
+
+    expect((await screen.findByRole("combobox", { name: /which claim says the user has paid/i })).textContent)
+      .toContain("Custom claim");
+    expect(screen.getByRole("button", { name: /add claim/i })).toBeTruthy();
+  });
+
+  // The preset owns the claim path, so an app configured before it settled on
+  // revenueCatEntitlements still opens on the answer its operator gave.
+  it("reopens a RevenueCat check written against an older claim path", async () => {
     stubKeys();
     const paid = {
       ...FIREBASE,
@@ -288,12 +331,9 @@ describe("AuthPolicyTab subscription check", () => {
     };
     renderTab(draftFor(appleApp(paid)), "subscription");
 
-    expect((await option(/paid users only/i)).getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByRole("combobox", { name: /paid check/i }).textContent)
+    expect((await screen.findByRole("combobox", { name: /which claim says the user has paid/i })).textContent)
       .toContain("RevenueCat entitlement");
-    expect(screen.getByLabelText(/claim path/i)).toHaveProperty("value", "entitlements");
-    expect(screen.getByLabelText(/entitlement id/i)).toHaveProperty("value", "pro");
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText(/entitlement identifier/i)).toHaveProperty("value", "pro");
   });
 
   it("starts a paid check from the RevenueCat shape, to be filled in here", async () => {
@@ -306,13 +346,13 @@ describe("AuthPolicyTab subscription check", () => {
 
     expect(state.updateIssuer).toHaveBeenCalledWith({
       entitlement: "revenuecat",
-      required_claims: [{ path: "entitlements", contains: "" }],
+      required_claims: [{ path: "revenueCatEntitlements", contains: "" }],
     });
   });
 
   it("drops every claim when any signed-in user may call", async () => {
     stubKeys();
-    const paid = { ...FIREBASE, required_claims: [{ path: "entitlements", contains: "pro" }] };
+    const paid = { ...FIREBASE, required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }] };
     const state = draftFor(appleApp(paid));
     renderTab(state, "subscription");
 
@@ -321,20 +361,20 @@ describe("AuthPolicyTab subscription check", () => {
     expect(state.updateIssuer).toHaveBeenCalledWith({ entitlement: undefined, required_claims: [] });
   });
 
-  it("writes the RevenueCat claim from its two fields", async () => {
+  it("writes the RevenueCat claim from the entitlement alone", async () => {
     stubKeys();
     const paid = {
       ...FIREBASE,
       entitlement: "revenuecat" as const,
-      required_claims: [{ path: "entitlements", contains: "pro" }],
+      required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
     };
     const state = draftFor(appleApp(paid));
     renderTab(state, "subscription");
 
-    await userEvent.type(await screen.findByLabelText(/entitlement id/i), "x");
+    await userEvent.type(await screen.findByLabelText(/entitlement identifier/i), "x");
 
     expect(state.updateIssuer).toHaveBeenCalledWith({
-      required_claims: [{ path: "entitlements", contains: "prox" }],
+      required_claims: [{ path: "revenueCatEntitlements", contains: "prox" }],
     });
   });
 
@@ -347,7 +387,7 @@ describe("AuthPolicyTab subscription check", () => {
     };
     renderTab(draftFor(appleApp(paid)), "subscription");
 
-    expect((await screen.findByRole("combobox", { name: /paid check/i })).textContent)
+    expect((await screen.findByRole("combobox", { name: /which claim says the user has paid/i })).textContent)
       .toContain("Custom claim");
     expect(screen.getByRole("button", { name: /add claim/i })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /remove claim/i })).toHaveLength(2);

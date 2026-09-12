@@ -1,5 +1,6 @@
 import { Braces, ExternalLink, TriangleAlert } from "lucide-react";
 import { AuthBrandIcon, isAuthBrand } from "@/components/brand-icon";
+import { ExternalHint } from "@/components/external-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -64,7 +65,9 @@ export function PresetPicker<T extends Preset>({
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">{selected.description}</p>
+        {selected.description ? (
+          <p className="text-xs text-muted-foreground">{selected.description}</p>
+        ) : null}
       </div>
 
       {selected.inputs.map((input: PresetInput) => (
@@ -78,7 +81,17 @@ export function PresetPicker<T extends Preset>({
             disabled={disabled}
             onChange={(event) => onValueChange(input.key, event.target.value)}
           />
-          {input.hint ? <p className="text-xs text-muted-foreground">{input.hint}</p> : null}
+          {input.hint || input.docs ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {input.hint}
+              {input.docs ? (
+                <>
+                  {input.hint ? " " : null}
+                  <ExternalHint href={input.docs.href}>{input.docs.label}</ExternalHint>
+                </>
+              ) : null}
+            </p>
+          ) : null}
         </div>
       ))}
 

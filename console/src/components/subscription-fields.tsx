@@ -11,20 +11,28 @@ import { ClaimsEditor } from "@/components/claims-editor";
 import { ExternalHint } from "@/components/external-hint";
 import { PresetName } from "@/components/preset-picker";
 import type { AuthConfig, ClaimRequirement, EntitlementCheck } from "@/lib/config-types";
-import { ENTITLEMENT_PRESETS } from "@/lib/presets";
+import {
+  ENTITLEMENT_FIELD_LABEL,
+  ENTITLEMENT_PRESETS,
+  REVENUECAT_CLAIM_PATH,
+  revenueCatClaim,
+  revenueCatEntitlement,
+  type PresetInput,
+} from "@/lib/presets";
 
 const CHECKS = ENTITLEMENT_PRESETS.filter(
   (preset): preset is typeof preset & { id: EntitlementCheck } => preset.id !== "none",
 );
 
-/** The default claim the paid check starts from: the RevenueCat convention. */
-export const DEFAULT_PAID_CLAIM: ClaimRequirement = { path: "entitlements", contains: "" };
+/** The default claim the paid check starts from: RevenueCat, entitlement unnamed. */
+export const DEFAULT_PAID_CLAIM: ClaimRequirement = revenueCatClaim("");
 
 /**
- * Which claim says a user has paid. RevenueCat is one claim with a known shape,
- * asked for as two fields; a custom check is whatever claims the operator
- * writes, so it opens the full editor. Both write `required_claims`; the check
- * is remembered so the same form reopens.
+ * Which claim says a user has paid. RevenueCat is one claim at one known path,
+ * so it asks for the one thing only the operator knows — which entitlement; a
+ * custom check is whatever claims the operator writes, so it opens the full
+ * editor. Both write `required_claims`; the check is remembered so the same
+ * form reopens.
  */
 export function SubscriptionFields({
   issuer,
@@ -36,23 +44,35 @@ export function SubscriptionFields({
   onChange: (partial: Partial<AuthConfig>) => void;
 }) {
   const claims = issuer.required_claims ?? [];
-  const check: EntitlementCheck = issuer.entitlement ?? "custom";
+  const entitlement = revenueCatEntitlement(claims);
+  /*
+   * Which form was filled in. The stored label is the console's own record of
+   * that, and it is believed; a block written before the label existed is read
+   * off its claim instead, which names RevenueCat's path when that is what it
+   * checks. Either way the claims still have to be a shape the one-field form
+   * can hold — anything richer belongs in the editor, whatever it is labelled.
+   */
+  const chosen = issuer.entitlement
+    ?? (claims[0]?.path === REVENUECAT_CLAIM_PATH ? "revenuecat" : "custom");
+  const check: EntitlementCheck =
+    chosen === "revenuecat" && entitlement !== null ? "revenuecat" : "custom";
   const selected = CHECKS.find((preset) => preset.id === check) ?? CHECKS[0]!;
 
   const choose = (next: EntitlementCheck) => {
     if (next === check) return;
-    // A RevenueCat check is exactly one claim; whatever was there is replaced
-    // by the shape it expects. Going custom keeps the claims as they are.
+    // A RevenueCat check is exactly one claim at one path; whatever was there
+    // is replaced by the shape it expects, keeping an entitlement id already
+    // typed. Going custom keeps the claims as they are, to be edited freely.
     onChange({
       entitlement: next,
-      required_claims: next === "revenuecat" ? [DEFAULT_PAID_CLAIM] : claims,
+      required_claims: next === "revenuecat" ? [revenueCatClaim(entitlement ?? "")] : claims,
     });
   };
 
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="entitlement-check">Paid check</Label>
+        <Label htmlFor="entitlement-check">{ENTITLEMENT_FIELD_LABEL}</Label>
         <Select value={check} disabled={disabled} onValueChange={(next) => choose(next as EntitlementCheck)}>
           <SelectTrigger id="entitlement-check" className="w-full">
             <SelectValue />
@@ -65,11 +85,18 @@ export function SubscriptionFields({
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">{selected.description}</p>
+        {selected.description ? (
+          <p className="text-xs text-muted-foreground">{selected.description}</p>
+        ) : null}
       </div>
 
       {check === "revenuecat" ? (
-        <RevenueCatClaim claim={claims[0] ?? DEFAULT_PAID_CLAIM} disabled={disabled} onChange={(claim) => onChange({ required_claims: [claim] })} />
+        <RevenueCatEntitlement
+          input={selected.inputs[0]!}
+          entitlement={entitlement ?? ""}
+          disabled={disabled}
+          onChange={(next) => onChange({ required_claims: [revenueCatClaim(next)] })}
+        />
       ) : (
         <ClaimsEditor
           claims={claims}
@@ -81,56 +108,42 @@ export function SubscriptionFields({
   );
 }
 
-function RevenueCatClaim({
-  claim,
+/**
+ * The one thing a RevenueCat check needs, asked for with the same words the
+ * creation wizard uses: the label, placeholder and hint all come off the preset
+ * rather than being written twice and drifting apart.
+ */
+function RevenueCatEntitlement({
+  input,
+  entitlement,
   disabled,
   onChange,
 }: {
-  claim: ClaimRequirement;
+  input: PresetInput;
+  entitlement: string;
   disabled: boolean;
-  onChange: (claim: ClaimRequirement) => void;
+  onChange: (entitlement: string) => void;
 }) {
-  const value = Array.isArray(claim.contains) ? claim.contains.join(", ") : (claim.contains ?? "");
   return (
-    <>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="entitlement-path">Claim path</Label>
-          <Input
-            id="entitlement-path"
-            value={claim.path}
-            placeholder="entitlements"
-            className="font-mono text-xs"
-            disabled={disabled}
-            onChange={(event) => onChange({ path: event.target.value, contains: claim.contains ?? "" })}
-          />
-          <p className="text-xs text-muted-foreground">
-            Where your backend writes the entitlement onto the sign-in token.
-          </p>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="entitlement-value">Entitlement id</Label>
-          <Input
-            id="entitlement-value"
-            value={value}
-            placeholder="pro"
-            className="font-mono text-xs"
-            disabled={disabled}
-            onChange={(event) => onChange({ path: claim.path, contains: event.target.value })}
-          />
-          <p className="text-xs text-muted-foreground">
-            The entitlement identifier from your{" "}
-            <ExternalHint href="https://www.revenuecat.com/docs/getting-started/entitlements">
-              RevenueCat project
-            </ExternalHint>
-            .
-          </p>
-        </div>
-      </div>
+    <div className="space-y-2">
+      <Label htmlFor="entitlement-value">{input.label}</Label>
+      <Input
+        id="entitlement-value"
+        value={entitlement}
+        placeholder={input.placeholder}
+        className="max-w-[320px] font-mono text-xs"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      />
       <p className="text-xs leading-relaxed text-muted-foreground">
-        The gateway never talks to RevenueCat. Your backend receives its webhook and writes this
-        claim onto the user&apos;s sign-in token; the gateway only checks that the claim is there.
+        {input.hint}
+        {input.docs ? (
+          <>
+            {" "}
+            <ExternalHint href={input.docs.href}>{input.docs.label}</ExternalHint>
+          </>
+        ) : null}
       </p>
-    </>
+    </div>
   );
 }
