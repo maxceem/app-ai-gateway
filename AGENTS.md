@@ -50,36 +50,39 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 ## Verification
 
-Verification is tiered by cost. Do not run the full check after every edit.
+- `pnpm run check` — types across every project, plus generated-OpenAPI drift.
+  About five seconds. Run it after every edit.
+- `pnpm run test` — both test suites and the deploy-script tests, about a
+  minute. Run it when a change touches behaviour, and while working on one
+  prefer the files that cover it:
+  `pnpm exec vitest run test/<name>.test.ts` for the Worker, or
+  `pnpm --filter @app-ai-gateway/console exec vitest run src/<path>.test.tsx`
+  for the console. Do not use `vitest --changed`: nearly every test imports the
+  shared routes, so it selects most of the suite anyway.
+- `pnpm run verify` — both of the above, once, before a commit or hand-off. It
+  costs essentially no more than `pnpm run test` alone, because the checks run
+  alongside the suites rather than after them.
+
+The Worker suite runs through the barrels in `test/suites`, which is what keeps
+it near a minute: a test file costs about nine seconds to load before it runs a
+single test, so the suite pays that nine times rather than thirty-nine. A new
+test file has to be imported by one of them, and `pnpm run check` fails while it
+is not. A barrel's members share one database, so a file that needs a clean one
+belongs in a barrel of its own.
+
+A test that needs an authenticated operator should call `seedOperator` from
+`test/helpers.ts`, not sign one up: signing up hashes a password with a pure-JS
+scrypt and costs about two and a half seconds. Sign up only where registering is
+what the test is about.
 
 Do not verify a change by driving the app in a browser unless you are explicitly
-asked to. The checks below are the expected evidence; a running app is the
+asked to. The commands above are the expected evidence; a running app is the
 author's to look at.
 
-- After each edit, run `pnpm run check:fast`. It type-checks every project and
-  checks the generated OpenAPI document for drift in a few seconds.
-- When a change touches behaviour, run only the test files that cover it, by
-  path: `pnpm exec vitest run test/<name>.test.ts` for the Worker, or
-  `pnpm --filter @app-ai-gateway/console exec vitest run src/<path>.test.tsx`
-  for the console. A single file finishes in seconds to tens of seconds; the
-  full suites take about two minutes because every worker boots the Workers
-  runtime and replays the D1 migrations. Do not use `vitest --changed`: nearly
-  every test imports the shared routes, so it selects most of the suite anyway.
-- Before a commit or hand-off, run `pnpm run check` once. It runs everything
-  above plus both test suites and the deploy-script tests.
+Two things `verify` does not cover: run `pnpm run deploy:dry-run` for Worker
+configuration changes, and `pnpm run docs:build` when you change anything under
+`docs/`, which is left out because it is slow and the gateway never imports it.
 
-For Worker configuration changes, also run `pnpm run deploy:dry-run` and
-regenerate binding types when applicable.
-
-Type checking runs on `tsgo` (`@typescript/native-preview`, the Go port of
-TypeScript), which checks these projects several times faster than `tsc`. It is
-still a preview build, so `pnpm run typecheck:tsc` checks the same three
-projects on `tsc` instead — use it to confirm a diagnostic `tsgo` reports, or
-fails to report, is real. The console's production build
-(`pnpm run console:build`) still goes through `tsc`, so the deploy path keeps
-checking against the reference compiler either way.
-
-`pnpm run check` does not build the documentation site: the build is slow and the
-gateway never imports it. `pnpm run docs:deploy` builds before it publishes, so a
-broken docs build fails there rather than silently shipping. When you change
-anything under `docs/`, run `pnpm run docs:build` yourself before handing off.
+Type checking runs on `tsgo` (`@typescript/native-preview`), which is fast but
+still a preview build. `pnpm run typecheck:tsc` checks the same projects on
+`tsc` to confirm a diagnostic it reports, or fails to report, is real.

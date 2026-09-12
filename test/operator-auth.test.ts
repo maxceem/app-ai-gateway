@@ -1,14 +1,15 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { serverConfig } from "./helpers";
+import { seedOperator, serverConfig } from "./helpers";
 
-// Every sign-up and sign-in here hashes a password with scrypt in pure JS
-// (workerd has no node:crypto scrypt), which costs about two and a half
-// seconds each on an idle machine and several times that while the other test
-// workers, and the console's suite beside them, compete for the CPU. The
-// default five seconds is not a bound on these tests, only a coin flip — and
-// nothing below should narrow this, least of all the tests that sign up twice.
+// Signing up hashes a password with scrypt in pure JS (workerd has no
+// node:crypto scrypt), which costs about two and a half seconds on an idle
+// machine and several times that while the other test workers, and the
+// console's suite beside them, compete for the CPU. Only the two tests whose
+// subject is registration do it; everything else needs an authenticated
+// operator rather than a sign-up, and `seedOperator` mints one. The timeout is
+// sized for the two that remain.
 vi.setConfig({ testTimeout: 30_000 });
 
 const ORIGIN = "https://example.test";
@@ -19,6 +20,7 @@ function cookieFrom(response: Response): string {
   return value!.split(";")[0]!;
 }
 
+/** A real registration, for the one test that is about registering. */
 async function signup(email: string): Promise<{ cookie: string; organizationId: string }> {
   const response = await exports.default.fetch(`${ORIGIN}/v1/auth/sign-up/email`, {
     method: "POST",
@@ -168,7 +170,7 @@ describe("operator authentication", () => {
   });
 
   it("lets members read their organization but rejects mutations", async () => {
-    const { cookie, organizationId } = await signup("member@example.test");
+    const { cookie, organizationId } = await seedOperator("member@example.test");
     await env.DB.prepare(
       "UPDATE console_organization_user SET role = 'member' WHERE organization_id = ?",
     ).bind(organizationId).run();
@@ -189,7 +191,7 @@ describe("operator authentication", () => {
   });
 
   it("reports the caller's identity, organization and role to operator clients", async () => {
-    const { cookie, organizationId } = await signup("session-shape@example.test");
+    const { cookie, organizationId } = await seedOperator("session-shape@example.test");
 
     const response = await exports.default.fetch(`${ORIGIN}/v1/admin/session`, {
       headers: sessionHeaders(cookie),
@@ -212,7 +214,7 @@ describe("operator authentication", () => {
   });
 
   it("lets a read-only member switch between the organizations they belong to", async () => {
-    const { cookie, organizationId } = await signup("switcher@example.test");
+    const { cookie, organizationId } = await seedOperator("switcher@example.test");
     const userId = await userIdFor("switcher@example.test");
     const secondOrganizationId = await seedOrganization("second-tenant", userId, "member");
 
@@ -258,7 +260,7 @@ describe("operator authentication", () => {
   });
 
   it("keeps management-key callers out of organization switching", async () => {
-    const { cookie, organizationId } = await signup("machine-seat@example.test");
+    const { cookie, organizationId } = await seedOperator("machine-seat@example.test");
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
       method: "POST",
       headers: sessionHeaders(cookie, true),
@@ -288,8 +290,8 @@ describe("operator authentication", () => {
   });
 
   it("keeps applications and every nested admin surface invisible across organizations", async () => {
-    const first = await signup("isolation-one@example.test");
-    const second = await signup("isolation-two@example.test");
+    const first = await seedOperator("isolation-one@example.test");
+    const second = await seedOperator("isolation-two@example.test");
     const firstApp = await createdAppId(await createApp(first.cookie, "org one app"));
     const secondApp = await createdAppId(await createApp(second.cookie, "org two app"));
 

@@ -32,7 +32,8 @@ export default defineConfig({
     // the suite is heavy enough that the count matters: on a 12-core machine
     // 2 workers took 107s, 6 took 51s, and 8 took 77s because the runtimes
     // then fight over the CPU. Half the cores, capped, lands on that optimum
-    // here without oversubscribing a smaller machine.
+    // here without oversubscribing a smaller machine. Re-checked once the barrels
+    // reduced the suite to nine files: nine workers measured the same as six.
     maxWorkers: Math.max(2, Math.min(6, Math.floor(availableParallelism() / 2))),
     setupFiles: ["./test/apply-migrations.ts"],
     // The console is a browser app with its own jsdom Vitest project, run by

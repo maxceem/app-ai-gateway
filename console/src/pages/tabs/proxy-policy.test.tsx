@@ -102,10 +102,10 @@ describe("ProxyPolicyTab", () => {
     expect(await screen.findByRole("heading", { name: "Dev OpenAI" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Prod OpenAI" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Anthropic" })).toBeTruthy();
-    expect(screen.getByRole("switch", { name: "Enable openai-dev" }))
-      .toHaveProperty("ariaChecked", "true");
-    expect(screen.getByRole("switch", { name: "Enable openai" }))
-      .toHaveProperty("ariaChecked", "false");
+    expect(screen.getByRole("switch", { name: "Enable openai-dev" }).getAttribute("aria-checked"))
+      .toBe("true");
+    expect(screen.getByRole("switch", { name: "Enable openai" }).getAttribute("aria-checked"))
+      .toBe("false");
     expect(screen.getByText("1 of 3 provider instances enabled")).toBeTruthy();
   });
 
@@ -126,7 +126,7 @@ describe("ProxyPolicyTab", () => {
     expect(await screen.findByText(/no instance answers for this slug/i)).toBeTruthy();
     expect(screen.getByText("deleted")).toBeTruthy();
     const orphan = screen.getByRole("switch", { name: "Enable openai-gone" });
-    expect(orphan).toHaveProperty("ariaChecked", "true");
+    expect(orphan.getAttribute("aria-checked")).toBe("true");
 
     await userEvent.click(orphan);
     await waitFor(() =>
@@ -149,8 +149,8 @@ describe("ProxyPolicyTab", () => {
     expect(await screen.findByText("Dev OpenAI")).toBeTruthy();
     expect(screen.getByText("disabled")).toBeTruthy();
     // Still switched on, and still offering the controls that configure it.
-    expect(screen.getByRole("switch", { name: "Enable openai-dev" }))
-      .toHaveProperty("ariaChecked", "true");
+    expect(screen.getByRole("switch", { name: "Enable openai-dev" }).getAttribute("aria-checked"))
+      .toBe("true");
     expect(screen.getAllByRole("button", { name: /add path/i }).length).toBeGreaterThan(0);
     // The row it belongs to is unaffected: no other card is marked.
     expect(screen.queryAllByText("disabled")).toHaveLength(1);
@@ -176,8 +176,8 @@ describe("ProxyPolicyTab", () => {
 
     await waitFor(() =>
       expect(screen.getByText("1 of 3 provider instances enabled")).toBeTruthy());
-    expect(screen.getByRole("switch", { name: "Enable openai" }))
-      .toHaveProperty("ariaChecked", "true");
+    expect(screen.getByRole("switch", { name: "Enable openai" }).getAttribute("aria-checked"))
+      .toBe("true");
   });
 
   it("suggests the models the selected instance itself prices", async () => {

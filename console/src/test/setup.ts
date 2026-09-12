@@ -10,7 +10,7 @@ import { afterEach, vi } from "vitest";
 // long enough that only a genuinely stuck query reaches it.
 configure({ asyncUtilTimeout: 5_000 });
 
-// Radix primitives probe these; jsdom implements neither.
+// Radix primitives probe these; the test DOM implements neither.
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -28,8 +28,8 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
-// Radix Select drives its listbox through the Pointer Capture API, which jsdom
-// does not implement at all.
+// Radix Select drives its listbox through the Pointer Capture API, which the
+// test DOM does not implement at all.
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.setPointerCapture ??= () => {};
 Element.prototype.releasePointerCapture ??= () => {};

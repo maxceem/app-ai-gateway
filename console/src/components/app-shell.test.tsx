@@ -78,7 +78,7 @@ describe("AppShell navigation", () => {
   it("marks the destination matching the current route", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps" });
 
-    expect(screen.getByRole("link", { name: /apps/i })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: /apps/i }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByRole("link", { name: /providers/i }).getAttribute("aria-current"))
       .toBeNull();
   });
@@ -90,7 +90,8 @@ describe("AppShell navigation", () => {
     const links = [...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"));
     // Providers holds its own list, so only the gateways need a row.
     expect(links).toEqual(["/apps", "/providers", "/providers/gateways"]);
-    expect(screen.getByRole("link", { name: "Providers" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Providers" }).getAttribute("aria-current"))
+      .toBe("page");
     const gateways = screen.getByRole("link", { name: "Gateways" });
     expect(gateways.getAttribute("aria-current")).toBeNull();
     // A section reads as a row of the rail like any other, so it carries a
@@ -101,7 +102,8 @@ describe("AppShell navigation", () => {
   it("moves the mark onto Gateways when that is the list open", () => {
     renderAuthenticated(<AppShell>content</AppShell>, { route: "/providers/gateways" });
 
-    expect(screen.getByRole("link", { name: "Gateways" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Gateways" }).getAttribute("aria-current"))
+      .toBe("page");
     // Providers is still the destination the operator is inside, but it is no
     // longer the page they are on.
     expect(screen.getByRole("link", { name: "Providers" }).getAttribute("aria-current")).toBeNull();
@@ -157,7 +159,7 @@ describe("AppShell navigation", () => {
   it("marks the section being read", () => {
     renderInsideApp("/apps/app-1/users");
 
-    expect(screen.getByRole("link", { name: "Users" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Users" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
   });
 
@@ -265,10 +267,8 @@ describe("AppShell navigation", () => {
     // The figure the billing page draws, from the reading the shell already
     // holds: an operator should not have to go looking for it.
     expect(screen.getByText("120 of 1,000 requests")).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: /allowance/i })).toHaveProperty(
-      "ariaValueText",
-      "120 of 1,000 requests",
-    );
+    expect(screen.getByRole("progressbar", { name: /allowance/i }).getAttribute("aria-valuetext"))
+      .toBe("120 of 1,000 requests");
     expect(screen.getByRole("link", { name: "Upgrade" }).getAttribute("href")).toBe("/billing");
   });
 
@@ -350,7 +350,7 @@ describe("AppShell navigation", () => {
       quota: QUOTA,
     });
 
-    expect(screen.getByRole("link", { name: "Upgrade" })).toHaveProperty("ariaCurrent", "page");
+    expect(screen.getByRole("link", { name: "Upgrade" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("says nothing about a plan on a deployment that has none", () => {

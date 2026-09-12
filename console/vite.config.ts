@@ -70,12 +70,17 @@ export default defineConfig(({ command, mode, isPreview }) => {
     },
     test: {
       // Auth screens and capability gating are only meaningful when rendered, so
-      // the suite runs in a DOM. The pure `lib/*` tests are unaffected by it.
-      environment: "jsdom",
+      // the suite runs in a DOM. happy-dom rather than jsdom: the suite is
+      // dominated by rendering, and on this one it measured about twice as
+      // fast — 47.6s to 24.0s across every file. It implements less, which the
+      // polyfills below already anticipated; the one gap that mattered was ARIA
+      // property reflection (`el.ariaDisabled`), so the assertions that used it
+      // read the attribute the component actually sets instead.
+      environment: "happy-dom",
       setupFiles: ["./src/test/setup.ts"],
       restoreMocks: true,
-      // Building a jsdom window is what this suite actually spends its time on
-      // — far more than running the tests inside it — so both knobs here aim at
+      // Building the window is what this suite actually spends its time on —
+      // far more than running the tests inside it — so both knobs here aim at
       // that cost rather than at the tests. Threads share one process per
       // worker instead of forking a new one per file, and `isolate: false`
       // reuses a worker's window and module registry across the files it runs,
@@ -86,8 +91,8 @@ export default defineConfig(({ command, mode, isPreview }) => {
       pool: "threads",
       isolate: false,
       // The interaction tests are CPU-bound, not waiting on anything: rendering a
-      // page and driving a modal through jsdom costs ~15ms per simulated
-      // keystroke, so the heaviest of them spend over a second of real work even
+      // page and driving a modal through a simulated DOM costs real milliseconds
+      // per keystroke, so the heaviest of them spend over a second of work even
       // with the machine to themselves. Run in parallel across every file that
       // work contends and the same test takes three to four times as long, which
       // put the slowest ones within a few hundred milliseconds of the 5s default

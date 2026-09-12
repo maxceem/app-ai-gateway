@@ -3,11 +3,11 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { registrationDisabledRedirect } from "../src/routes/operator-auth";
+import { seedOperator } from "./helpers";
 
-// Sign-up and sign-in hash passwords with scrypt in pure JS (workerd has no
-// node:crypto scrypt), about two seconds each on an idle machine and more while
-// the other test workers compete for the CPU, so the default five seconds is
-// not a bound on these tests, only a coin flip.
+// Google sign-in mints RSA keys and verifies a JWT per call, which the default
+// five seconds is not a comfortable bound on while the other test workers, and
+// the console's suite beside them, compete for the CPU.
 vi.setConfig({ testTimeout: 30_000 });
 
 const ORIGIN = "https://example.test";
@@ -22,15 +22,6 @@ function operatorEnv(overrides: Partial<Record<keyof Env, unknown>>): Env {
       return Reflect.get(target, property, receiver);
     },
   }) as Env;
-}
-
-async function signup(email: string): Promise<void> {
-  const response = await exports.default.fetch(`${ORIGIN}/v1/auth/sign-up/email`, {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: ORIGIN },
-    body: JSON.stringify({ name: email.split("@")[0], email, password: "correct-horse-42" }),
-  });
-  expect(response.status, await response.clone().text()).toBe(200);
 }
 
 async function googleIdToken(email: string, subject: string): Promise<string> {
@@ -80,7 +71,9 @@ async function googleSignIn(
 describe("closed operator registration", () => {
   it("allows existing Google users to sign in", async () => {
     const email = "existing-google@example.test";
-    await signup(email);
+    // What this needs is that the user already exists, not how they came to.
+    // Registering by password would only buy a scrypt.
+    await seedOperator(email);
     const response = await googleSignIn(email, "existing-google-subject");
 
     expect(response.status, await response.clone().text()).toBe(200);
