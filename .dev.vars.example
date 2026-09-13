@@ -1,14 +1,24 @@
-# Required value requested by the Deploy to Cloudflare flow. Never commit real
-# values. Provider credentials themselves are added per organization in the
-# console and encrypted with the key below.
+# The only secret the Deploy to Cloudflare form asks for, and the template for a
+# local .dev.vars. Never commit real values. Provider credentials themselves are
+# added per organization in the console and encrypted with the key below.
 # Generate with `openssl rand -base64 32`.
-SECRET_VAULT_MODE=local
-SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION=1
 SECRET_VAULT_LOCAL_KEK_V1=
 
 # JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
-# For local development, run `pnpm run secrets:setup-local` to generate it.
-ALLOW_PUBLIC_REGISTRATION=true
+# For local development, run `pnpm run secrets:setup-local` to generate them.
+
+# SECRET_VAULT_MODE, SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION and
+# ALLOW_PUBLIC_REGISTRATION are not secrets and are not repeated here: they are
+# plain `vars` in wrangler.jsonc, where a deployment reads and edits them in
+# clear text. A name uncommented in this file becomes a masked field in the
+# deploy form, which is right for a key and wrong for a setting.
+
+# The rest is optional and stays commented out so the deploy form does not ask
+# for it. Uncomment one only where the deployment needs it.
+# The kms vault mode, for a deployment that sets SECRET_VAULT_MODE=kms and no
+# local key.
+# SECRET_VAULT_KMS_URL=
+# SECRET_VAULT_KMS_TOKEN=
 # Seconds an upstream provider may take to send its response headers before the
 # gateway gives up with 504. Defaults to 120. Once headers arrive the body
 # streams for as long as the model needs; only this first byte is bounded.

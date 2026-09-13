@@ -58,8 +58,16 @@ rather than silently.
 
 The repository's deploy button is the shortest interactive path. Cloudflare forks
 the repository, provisions the Worker and compatible bindings, applies migrations,
-and connects subsequent pushes to Workers Builds. The form asks only for the
-vault key above.
+and connects subsequent pushes to Workers Builds.
+
+The form asks for one secret — the vault key above, masked as you type it — and
+shows `SECRET_VAULT_MODE`, `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` and
+`ALLOW_PUBLIC_REGISTRATION` as plain text already filled with the defaults a
+self-hosted installation runs on. Each carries a short description, and each is
+editable before the deployment starts and afterwards in the Worker's
+**Settings → Variables**. That split is deliberate: the form masks every name in
+`.dev.vars.example` and prints every `vars` entry in `wrangler.jsonc`, so a
+setting listed in both is asked for twice, once behind asterisks.
 
 ## Deploy with Wrangler
 

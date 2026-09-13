@@ -6,9 +6,14 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  // Defaults for a plain installation. The Deploy to Cloudflare form shows each
+  // of these as a plain-text field filled with the value below, so an operator
+  // sees what the deployment runs on and can change it there. Only genuine
+  // secrets belong in .dev.vars.example, which that form masks.
   "vars": {
     "SECRET_VAULT_MODE": "local",
-    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1"
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1",
+    "ALLOW_PUBLIC_REGISTRATION": "true"
   },
   // Nightly retention for `app_auth_event` only.
   "triggers": { "crons": ["17 3 * * *"] },

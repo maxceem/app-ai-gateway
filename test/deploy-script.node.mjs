@@ -41,7 +41,7 @@ test("reports missing user-provided deployment values", () => {
   assert.deepEqual(missingRequiredSecrets(new Set(["SECRET_VAULT_LOCAL_KEK_V1"])), []);
 });
 
-test("deploy button requests only the local vault key", () => {
+test("deploy button masks the vault key and shows every setting in clear text", () => {
   const projectRoot = new URL("..", import.meta.url);
   const packageJson = JSON.parse(readFileSync(new URL("package.json", projectRoot), "utf8"));
   const wranglerConfig = JSON.parse(
@@ -56,10 +56,33 @@ test("deploy button requests only the local vault key", () => {
   assert.equal(JSON.stringify(packageJson).includes("CF_AIG"), false);
   assert.equal(JSON.stringify(wranglerConfig).includes("CF_AIG"), false);
   assert.equal(JSON.stringify(wranglerConfig).includes('"AI"'), false);
-  assert.deepEqual(Object.keys(packageJson.cloudflare.bindings), ["SECRET_VAULT_LOCAL_KEK_V1"]);
   assert.match(packageJson.cloudflare.bindings.SECRET_VAULT_LOCAL_KEK_V1.description, /openssl rand -base64 32/u);
-  assert.match(secretTemplate, /^SECRET_VAULT_LOCAL_KEK_V1=$/mu);
-  assert.equal(wranglerConfig.vars?.SECRET_VAULT_MODE, "local");
+
+  // The form masks every uncommented name in the secret template and shows
+  // every `vars` entry as editable text pre-filled with its value. A setting in
+  // both would be asked for twice, once behind asterisks, so the key is the
+  // only name here and each setting is a var carrying the default it runs on.
+  const askedSecrets = secretTemplate
+    .split("\n")
+    .filter((line) => /^[A-Z0-9_]+=/u.test(line.trim()))
+    .map((line) => line.trim().split("=")[0]);
+  assert.deepEqual(askedSecrets, ["SECRET_VAULT_LOCAL_KEK_V1"]);
+  assert.deepEqual(wranglerConfig.vars, {
+    SECRET_VAULT_MODE: "local",
+    SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
+    ALLOW_PUBLIC_REGISTRATION: "true",
+  });
+
+  // Both halves of the form carry an explanation, and nothing in it is blank.
+  for (const name of [...askedSecrets, ...Object.keys(wranglerConfig.vars)]) {
+    assert.ok(packageJson.cloudflare.bindings[name]?.description, `${name} has no description`);
+  }
+  assert.deepEqual(
+    Object.keys(packageJson.cloudflare.bindings).filter(
+      (name) => !askedSecrets.includes(name) && !(name in wranglerConfig.vars),
+    ),
+    [],
+  );
 });
 
 test("generates internal signing secrets once and leaves existing values alone", () => {

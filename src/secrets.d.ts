@@ -23,6 +23,13 @@ interface Env {
   // every deployment that owns its callback URL. See the deployment guide.
   OAUTH_RELAY_URL?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
+  // The vault mode and KEK version are plain `vars` in wrangler.jsonc, so the
+  // deploy form shows their defaults in clear text. `wrangler types` narrows a
+  // var to the literal it finds there, which is wrong for any deployment that
+  // overrides one in a profile overlay or in the dashboard; these declarations
+  // merge the honest type back over it.
+  SECRET_VAULT_MODE: string;
+  SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
   // Vault credentials. Each is required only in its own SECRET_VAULT_MODE, and
   // src/vault validates the full per-mode set on first use rather than trusting
   // these optional markers. Higher local KEK versions are read by name.
@@ -44,6 +51,8 @@ declare namespace Cloudflare {
     PUBLIC_API_URL?: string;
     OAUTH_RELAY_URL?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
+    SECRET_VAULT_MODE: string;
+    SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
     SECRET_VAULT_KMS_URL?: string;
     SECRET_VAULT_KMS_TOKEN?: string;
     SECRET_VAULT_LOCAL_KEK_V1?: string;

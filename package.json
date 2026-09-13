@@ -71,6 +71,15 @@
     "bindings": {
       "SECRET_VAULT_LOCAL_KEK_V1": {
         "description": "Generate a unique local vault key with `openssl rand -base64 32`. It encrypts provider credentials at rest and must be backed up securely."
+      },
+      "SECRET_VAULT_MODE": {
+        "description": "Leave this as `local` to encrypt provider credentials inside the Worker under the key above. `kms` instead routes them through a separate [cf-kms](https://github.com/maxceem/cf-kms) deployment and needs its own URL and token."
+      },
+      "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": {
+        "description": "Which local vault key new credentials are encrypted under. Leave this as `1`; it only changes when you rotate to a second key."
+      },
+      "ALLOW_PUBLIC_REGISTRATION": {
+        "description": "`true` lets anyone sign up, and the first account created becomes the owner. Set it to `false` afterwards to close registration on a private deployment."
       }
     }
   }

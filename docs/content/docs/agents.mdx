@@ -28,7 +28,10 @@ use that exact value in every later URL. It cannot be chosen or changed, and
 - `openapi/openapi.json` is the generated HTTP contract.
 - `src/contracts/schemas.ts` contains shared runtime schemas; `src/contracts/openapi.ts`
   assembles them into documented operations.
-- `.dev.vars.example` lists required secret names without values.
+- `.dev.vars.example` names the one required secret without a value and keeps
+  every optional name commented out: the Deploy to Cloudflare form masks each
+  uncommented name here and shows each `wrangler.jsonc` `vars` entry in clear
+  text, so a setting belongs in exactly one of the two.
 - `wrangler.jsonc` declares Cloudflare resources; gitignored
   `wrangler.<profile>.overlay.jsonc` files hold deployment-specific overrides.
 
