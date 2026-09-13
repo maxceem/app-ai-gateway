@@ -1,0 +1,57 @@
+---
+title: Limits and blocking
+description: The limits you set on your app's users, how they are counted, and how to block a user.
+---
+
+An app's **Limits** page sets what its users and the app as a whole may do.
+There are two scopes, each with the same three fields.
+
+| Field | Per-user limits | Application limits |
+| --- | --- | --- |
+| **Requests per minute** | Each user separately | All users and keys of the app together |
+| **Requests per day** | Each user separately | All together |
+| **Monthly spending budget (USD)** | Each user separately | All together |
+
+Leave a field empty for no limit. A request refused by a per-user limit
+answers `429 app_rate_limited` or `429 app_budget_exhausted` with
+`data.scope` set to `user`. A request refused by an application limit answers
+the same codes with `data.scope` set to `app`. Both carry a `Retry-After`
+header.
+
+Per-user limits are checked before application limits, so one heavy user
+cannot drain the shared window before their own limit stops them.
+
+## How they are counted
+
+- **Rate windows are fixed, not sliding.** A user can spend a full minute's
+  allowance at the end of one minute and again at the start of the next, so a
+  burst of up to twice the per-minute value is possible across a boundary.
+  Days roll over at midnight UTC.
+- **Budgets settle after the response.** A request's cost is known only when
+  its response completes, so a budget stops the request after the one that
+  crossed it. A single very expensive call can overshoot.
+- **Budgets use UTC calendar months.** Turning on an application budget
+  part-way through a month counts what the month has already spent.
+- **A budget of zero is a closed door.** It stops all billable traffic for
+  that scope. Leave the field empty for unlimited instead. A request limit of
+  zero is rejected as a likely typo.
+- **Edits take up to a minute** to apply everywhere.
+
+Per-user limits need an app that identifies users. An app with **No user
+identity** has nobody to apply them to, and the console shows only the
+application limits for it.
+
+## Blocking a user
+
+Blocking is not a limit. On the app's **Users** page, **Block** refuses every
+request from that user with `403 auth_required`. New token exchanges are
+refused at once, and a token the user already holds stops working within ten
+seconds. **Unblock** restores them the same way.
+
+## What a user can see about themselves
+
+An app that identifies users can call `GET /v1/apps/{app}/me` with its
+gateway token to read the user's per-user limits, requests today, what is
+left of the daily limit, the month's spend, and whether the user is blocked.
+It is meant for showing a user where they stand before they hit a limit. See
+[Errors and limits from the client side](/integrate/errors).

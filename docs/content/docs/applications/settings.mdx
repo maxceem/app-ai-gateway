@@ -1,0 +1,30 @@
+---
+title: App settings
+description: Rename an app, pause it, or delete it.
+---
+
+The app's **Settings** page holds the few things that are not policy.
+
+## Name and ID
+
+**Name** can be changed at any time. **Application id** cannot: it was fixed
+when the app was created and is part of every URL your clients call. Use
+**Copy** to grab it.
+
+## App enabled
+
+Turned off, the app refuses every request with `403 app_disabled`. Nothing is
+deleted, and turning it back on restores it as it was. Use it to stop a
+misbehaving release or a runaway client while you investigate.
+
+## Delete this app
+
+Clients of the app stop working immediately. Registered users and App Attest
+keys are removed. Usage history is kept for accounting. The confirmation asks
+you to type the app ID.
+
+## Through the API
+
+- `PUT /v1/admin/apps/{app}` with the full body updates the name, the
+  configuration and the status. `status` is `active` or `disabled`.
+- `DELETE /v1/admin/apps/{app}` deletes the app.

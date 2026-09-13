@@ -1,37 +1,55 @@
 ---
 title: App AI Gateway
-description: Ship AI features without shipping provider keys.
+description: Give your apps access to AI providers without shipping provider keys, and see every request in one place.
 ---
 
-App AI Gateway is a multi-tenant, provider-native proxy for iOS applications
-and trusted server backends. It authenticates users, enforces the limits you
-set on your own users, holds your apps to their shared monthly request
-allowance, and streams model responses straight from the providers you bring
-your own keys for.
+App AI Gateway sits between your apps and the AI providers they use. Your app
+calls the gateway, and the gateway calls OpenAI, Anthropic, Gemini, xAI or
+whichever provider you added. Your provider keys stay on the gateway, every
+request is checked before it goes out, and every request is recorded so you
+can see where the money went.
 
-## Choose your path
+![Your iOS app calls App AI Gateway, which holds the provider keys, applies per-user limits, records usage and cost, and forwards the request to the provider.](/overview.png)
+
+It is built for iOS apps first: the app talks to the gateway directly, and the
+gateway checks that the request comes from a real install of your app, from a
+signed-in user, and, where you require it, from a user who has paid. Server
+applications are supported too, with a private API key, so all your apps can be
+watched from one console.
+
+## What you get
+
+- **Provider keys stay off devices.** Keys are encrypted the moment you add
+  them and are never shown again. Your app never holds one.
+- **One gateway for all your apps.** Add an app in the console instead of
+  building a backend for each one.
+- **Requests are checked before they reach a provider.** Apple App Attest,
+  sign-in tokens from Firebase, Supabase, Auth0, Clerk or your own issuer, and
+  a paid-entitlement check.
+- **Limits you set.** Requests per minute and per day and a monthly budget, per
+  user and per app.
+- **Provider-native requests.** The gateway forwards the provider's own request
+  and response formats, streaming included. Standard SDKs work by changing the
+  base URL.
+- **Usage in one place.** Spend, tokens, errors and latency by app, model,
+  provider, user, endpoint and app version. Block a user who is running up your
+  bill.
+
+## Cloud or self-hosted
+
+The gateway runs in two ways, and the documentation covers both.
+
+- **Cloud.** Sign up at [console.appaigateway.com](https://console.appaigateway.com)
+  and your apps call `https://api.appaigateway.com`. Nothing to deploy.
+- **Self-hosted.** Deploy the open-source gateway to your own Cloudflare
+  account. See
+  [Self-hosting](/self-hosting/deploy-to-cloudflare).
+
+## Where to start
 
 <Cards>
-  <Card title="Deploy the gateway" href="/deployment" description="Provision the Worker, D1 database, Durable Object, migrations, and console." />
-  <Card title="Add provider credentials" href="/providers" description="Bring your own keys, route them directly or through your Cloudflare AI Gateway." />
-  <Card title="Configure an application" href="/configuration" description="Create a server API-key tenant or an Apple App Attest tenant." />
-  <Card title="Integrate authentication" href="/authentication" description="Understand issuer identity, App Attest, API-key client proof, and gateway tokens." />
-  <Card title="Explore the API" href="/api" description="Browse the generated OpenAPI reference and request shapes." />
+  <Card title="Quickstart" href="/quickstart" description="Add a provider key, create an app, and send a request in a few minutes." />
+  <Card title="Integrate your app" href="/integrate/ios" description="Call the gateway from iOS with the Swift package, or from a server with an API key." />
+  <Card title="Applications" href="/applications/create" description="Everything an app's policy can say: identity, providers, limits, endpoints." />
+  <Card title="Automation and agents" href="/automation/agents" description="Let a script, CI job or AI agent manage your apps through the API." />
 </Cards>
-
-## What the gateway owns
-
-- Provider credentials are shared by all your apps, encrypted at rest, and
-  write-only.
-- D1 stores tenant configuration, users, credentials, and usage events.
-- One Durable Object holds the monthly request allowance your apps share, and
-  one per user serializes the limits an application sets on its own users.
-- Provider-native bodies and streaming response formats remain intact.
-- The administration console and API configure the deployed instance.
-
-## What your application owns
-
-Your application supplies its identity policy, its allowed provider paths and
-models, and the request or spending limits it puts on its own end users. An
-issuer such as Firebase decides who may obtain a mobile gateway token. Trusted
-servers can use a long-lived per-application API key instead.

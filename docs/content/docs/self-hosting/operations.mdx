@@ -1,0 +1,155 @@
+---
+title: Operations
+description: Health, logs, key rotation, recovery, retention, and what to watch on a gateway you run yourself.
+---
+
+This page covers what to check, what to watch, and what to do when something
+needs fixing on a running gateway.
+
+## Health
+
+`GET /v1/healthz` answers without authentication:
+
+```json
+{ "ok": true, "service": "app-ai-gateway", "vault": "ok" }
+```
+
+The `vault` field is the one to monitor. `"misconfigured"` means the
+`SECRET_VAULT_*` configuration is incomplete, contradictory, or invalid, and
+every request that needs a provider key answers `provider_unavailable`. The
+structured `secret_vault_misconfigured` log line names the offending variable
+without printing its value. Check this field after any change to a vault
+variable or secret.
+
+## Logs and traces
+
+The Worker ships with Cloudflare observability enabled: every invocation is
+logged and one percent of them is traced. Open the Worker's **Logs** in the
+dashboard, or stream them:
+
+```sh
+pnpm exec wrangler tail
+```
+
+Every rejected request emits one structured `gateway_error` line carrying the
+error `code`, its granular `reason`, the status, the path and method, the app,
+and the `X-App-Version` the client sent. Nothing else: no request body, no
+token, and no other header, because these lines are emitted for authentication
+failures whose payload is a credential. Statuses below 500 log at `warn`, 500
+and above at `error`. A `usage_unresolved_cost` line at `error` level means a
+request was served but its cost could not be read from the provider's
+response.
+
+Proxied responses also carry a `Server-Timing` header with three measurements:
+`auth` for authentication, `limiter` for limit evaluation, and
+`provider_ttfb` for the provider's time to first byte. It is useful when a
+client reports slowness and you want to know which side of the gateway it is
+on.
+
+## Rotate the vault key
+
+In `local` mode, add `SECRET_VAULT_LOCAL_KEK_V2` as a Worker secret and set
+`SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` to `2`:
+
+```sh
+openssl rand -base64 32                              # the new key, kept safe like the first
+pnpm exec wrangler secret put SECRET_VAULT_LOCAL_KEK_V2   # paste it at the hidden prompt
+```
+
+Older versions stay accepted for decryption, so existing provider keys keep
+working and new writes use the new key. There is no bulk re-encryption script,
+so keep the old version until every provider key has been rotated through the
+console, which re-encrypts it under the current version. In `kms` mode, key
+rotation is a cf-kms operation and does not touch this Worker.
+
+Use Wrangler's hidden prompt or stdin so no secret value enters shell history.
+
+## Recover access
+
+If nobody can sign in, `pnpm recover-access` resets a password directly in the
+database. It shells out to `wrangler d1 execute`, prints neither the password
+nor its hash, and refuses to choose a database implicitly: you name `--local`
+or `--remote` yourself.
+
+```sh
+pnpm recover-access -- --email owner@example.com --password-stdin --remote < /secure/password-file
+```
+
+Add `--profile <name>` to target a deployment profile. The script can also
+promote an existing member to owner; run it with `--help` for the flags. Try
+the procedure with `--local` first. Running it against the remote database is
+an explicit, deliberate step.
+
+## Retention
+
+A cron trigger runs nightly and keeps the database bounded:
+
+| Data | Rule |
+| --- | --- |
+| Authentication events | Deleted after 90 days. |
+| App Attest challenges | Deleted once their five-minute window has passed. An expired challenge cannot be redeemed, so nothing a client sees changes. |
+| Usage events | Raw per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
+
+No usage total ever disappears. The **Usage** tab keeps answering for any
+period; what it loses past 90 days is the per-request and per-user detail.
+The nightly run is sized for the D1 limits of Cloudflare's Free plan and
+clears about 55,000 events a night, which comfortably exceeds what a million
+requests a month produces.
+
+## Reprice stored usage
+
+If a provider's prices change or you add a custom price after the fact,
+`POST /v1/admin/apps/{app}/usage/reprice` recomputes the stored cost for one
+provider type, model, and month. Run it with `apply: false` first: the preview
+reports how many events would be rewritten and how many cannot be priced.
+`apply: true` is strict and writes nothing if any matched event has no price,
+so a month is never left half-repriced. Events whose cost the provider itself
+reported are never touched; that figure is what you were charged. The request
+shape is in the [API reference](/api), and management keys for calling it are
+covered in [API](/automation/api).
+
+## Request volume
+
+A self-hosted gateway has no ceiling on request volume. It bounds what a
+request may do: an app reaches only the providers, paths and models it is
+configured for, only priced models proxy at all, and you can block a user or
+disable an app or a provider at any time. It does not bound how many requests
+there are, so a compromised app key, a looping client, or a runaway agent can
+keep spending until you notice.
+
+Put the ceiling where the money is:
+
+- Set a spend cap and an alert in each provider account. Every provider you
+  add offers both.
+- Watch the request and cost trends on the [Usage](/applications/usage) tab,
+  and set per-user and per-app limits on each app.
+- When something looks wrong, block the user on the
+  [Users](/applications/users) tab or disable the app while you look.
+
+<Callout type="warn" title="Aborted streams are unmeasured spend">
+  A client that disconnects before the last chunk of a streamed response takes
+  the provider's usage figures with it. Such events show as **unresolved** in
+  the console and emit `usage_unresolved_cost`. A background rate is normal; a
+  rising one from a single app or user is worth investigating.
+</Callout>
+
+## Routine verification
+
+After a deployment, a configuration change, or a Cloudflare zone change:
+
+```sh
+curl https://YOUR-HOST/v1/healthz
+```
+
+Before deploying a change of your own from a checkout:
+
+```sh
+pnpm run verify
+pnpm run deploy:dry-run
+pnpm run startup:check
+```
+
+`verify` runs the type checks, the OpenAPI drift check, and both test suites.
+The dry run resolves the configuration and builds the console without
+deploying. `startup:check` confirms the Worker starts within Cloudflare's
+startup limit.

@@ -4,6 +4,28 @@ import { AppWriteSchema } from "../src/contracts/schemas";
 import { appleConfig, serverConfig } from "./helpers";
 
 describe("generated OpenAPI contract", () => {
+  it("hides marked endpoints from documentation without rewriting visible contracts", () => {
+    const full = createOpenAPIDocument();
+    const docs = createOpenAPIDocument({ includeHidden: false });
+    const hiddenPaths = [
+      "/v1/admin/billing/plans", "/v1/admin/billing/status",
+      "/v1/admin/billing/portal/status", "/v1/admin/billing/checkout",
+      "/v1/admin/billing/change", "/v1/admin/billing/resume",
+      "/v1/admin/billing/cancel", "/v1/admin/billing/trial",
+    ];
+    for (const path of hiddenPaths) {
+      expect(full.paths).toHaveProperty(path);
+      expect(docs.paths).not.toHaveProperty(path);
+    }
+    for (const [path, operation] of Object.entries(full.paths ?? {})) {
+      if (!hiddenPaths.includes(path)) expect(docs.paths?.[path]).toEqual(operation);
+    }
+    for (const [name, schema] of Object.entries(docs.components?.schemas ?? {})) {
+      expect(schema).toEqual(full.components?.schemas?.[name]);
+    }
+    expect(createOpenAPIDocument()).toEqual(full);
+  });
+
   it("has unique operation IDs and covers every public API family", () => {
     const document = createOpenAPIDocument();
     const operations = Object.values(document.paths ?? {}).flatMap((path) =>
@@ -28,7 +50,7 @@ describe("generated OpenAPI contract", () => {
     expect(document.paths).toHaveProperty("/v1/console/capabilities");
     expect(document.paths).toHaveProperty("/v1/admin/billing/status");
     expect(document.paths).toHaveProperty("/v1/admin/billing/checkout");
-    expect(document.components?.securitySchemes).toHaveProperty("OperatorSession");
+    expect(document.components?.securitySchemes).toHaveProperty("ConsoleSession");
     expect(document.components?.securitySchemes).toHaveProperty("ManagementBearer");
     expect(document.components?.schemas?.UsageEvent).toHaveProperty(
       "properties.api_key_id.type",

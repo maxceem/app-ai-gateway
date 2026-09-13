@@ -3,12 +3,12 @@
   "info": {
     "title": "App AI Gateway API",
     "version": "0.1.0",
-    "description": "A multi-tenant, provider-native LLM proxy for mobile applications and trusted server backends."
+    "description": "A provider-native AI proxy for iOS applications and trusted server backends. Provider keys stay on the gateway; requests are checked, limited and recorded before they reach a provider."
   },
   "servers": [
     {
-      "url": "https://gateway.example.com",
-      "description": "Replace with your deployed gateway origin"
+      "url": "https://api.appaigateway.com",
+      "description": "The cloud API host. On a self-hosted gateway, use your own origin."
     }
   ],
   "tags": [
@@ -17,8 +17,8 @@
       "description": "Unauthenticated service health."
     },
     {
-      "name": "Operator authentication",
-      "description": "Better Auth signup and session lifecycle."
+      "name": "Console authentication",
+      "description": "Sign-up, sign-in and session lifecycle for the console."
     },
     {
       "name": "Application authentication",
@@ -46,7 +46,7 @@
     },
     {
       "name": "Admin management keys",
-      "description": "Organization-scoped agw_mgmt_ credentials."
+      "description": "agw_mgmt_ credentials for scripts, CI and agents."
     },
     {
       "name": "Admin providers",
@@ -58,7 +58,7 @@
     },
     {
       "name": "Admin organizations",
-      "description": "Operator identity and organization switching."
+      "description": "Caller identity and organization switching."
     },
     {
       "name": "Admin billing",
@@ -75,13 +75,13 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "agw_mgmt_…",
-        "description": "An organization-scoped management API key created by an owner or admin."
+        "description": "A management API key. It acts with its creator's permissions across all your apps and providers."
       },
-      "OperatorSession": {
+      "ConsoleSession": {
         "type": "apiKey",
         "in": "cookie",
         "name": "agw_operator_auth.session_token",
-        "description": "The Better Auth operator session cookie. Admin requests also send x-console-request: 1."
+        "description": "The console's session cookie. Admin requests from the console also send x-console-request: 1."
       },
       "GatewayBearer": {
         "type": "http",
@@ -950,7 +950,7 @@
           "slug": {
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-            "description": "Organization-unique URL segment used under /proxy/{slug}/."
+            "description": "The URL segment used under /proxy/{slug}/, unique across your providers."
           },
           "name": {
             "type": "string"
@@ -998,7 +998,7 @@
               "string",
               "null"
             ],
-            "description": "Operator-supplied origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
+            "description": "Your own origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
             "example": "https://my-resource.openai.azure.com/openai/v1/"
           },
           "pricing": {
@@ -1596,7 +1596,7 @@
               "unknown",
               null
             ],
-            "description": "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store or when a reporting upstream says the organization's own key paid for the inference. Never inferred from a successful response; null when nothing settles it."
+            "description": "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from your own key store or when a reporting upstream says your own key paid for the inference. Never inferred from a successful response; null when nothing settles it."
           },
           "model_author": {
             "type": [
@@ -2072,7 +2072,7 @@
         "summary": "Discover optional deployment capabilities",
         "responses": {
           "200": {
-            "description": "Capabilities used by operator clients.",
+            "description": "Capabilities the console adapts to.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2115,10 +2115,10 @@
     "/v1/auth/sign-up/email": {
       "post": {
         "tags": [
-          "Operator authentication"
+          "Console authentication"
         ],
-        "operationId": "signUpOperator",
-        "summary": "Create an operator account and its initial organization",
+        "operationId": "signUp",
+        "summary": "Create an account",
         "requestBody": {
           "required": true,
           "content": {
@@ -2149,7 +2149,7 @@
         },
         "responses": {
           "200": {
-            "description": "Authenticated operator session.",
+            "description": "Authenticated session.",
             "content": {
               "application/json": {
                 "schema": {}
@@ -2202,10 +2202,10 @@
     "/v1/auth/sign-in/email": {
       "post": {
         "tags": [
-          "Operator authentication"
+          "Console authentication"
         ],
-        "operationId": "signInOperator",
-        "summary": "Sign in an operator with email and password",
+        "operationId": "signIn",
+        "summary": "Sign in with email and password",
         "requestBody": {
           "required": true,
           "content": {
@@ -2231,7 +2231,7 @@
         },
         "responses": {
           "200": {
-            "description": "Authenticated operator session.",
+            "description": "Authenticated session.",
             "content": {
               "application/json": {
                 "schema": {}
@@ -2284,13 +2284,13 @@
     "/v1/auth/get-session": {
       "get": {
         "tags": [
-          "Operator authentication"
+          "Console authentication"
         ],
-        "operationId": "getOperatorSession",
-        "summary": "Get the current operator session",
+        "operationId": "getSession",
+        "summary": "Get the current session",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -2348,13 +2348,13 @@
     "/v1/auth/sign-out": {
       "post": {
         "tags": [
-          "Operator authentication"
+          "Console authentication"
         ],
-        "operationId": "signOutOperator",
-        "summary": "End the current operator session",
+        "operationId": "signOut",
+        "summary": "End the current session",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -2412,9 +2412,9 @@
     "/v1/auth/sign-in/social": {
       "get": {
         "tags": [
-          "Operator authentication"
+          "Console authentication"
         ],
-        "operationId": "signInOperatorWithGoogle",
+        "operationId": "signInWithGoogle",
         "summary": "Start optional Google sign-in",
         "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
         "parameters": [
@@ -2539,7 +2539,7 @@
             }
           },
           "402": {
-            "description": "No billing plan resolves for the organization.",
+            "description": "No billing plan resolves for the account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2639,7 +2639,7 @@
             }
           },
           "402": {
-            "description": "No billing plan resolves for the organization.",
+            "description": "No billing plan resolves for the account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2761,7 +2761,7 @@
             }
           },
           "402": {
-            "description": "No billing plan resolves for the organization.",
+            "description": "No billing plan resolves for the account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2881,7 +2881,7 @@
                         },
                         "blocked": {
                           "type": "boolean",
-                          "description": "Whether an operator has blocked this user."
+                          "description": "Whether this user has been blocked in the console."
                         }
                       },
                       "required": [
@@ -2893,7 +2893,7 @@
                         "monthly_budget_usd",
                         "blocked"
                       ],
-                      "description": "The limits the application's operator set on this user, and where the user stands against them. The organization's own plan allowance is not reported here: it is organization-wide, and is reported on the rejection that spends it."
+                      "description": "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it."
                     }
                   },
                   "required": [
@@ -2925,7 +2925,7 @@
             }
           },
           "402": {
-            "description": "No billing plan resolves for the organization.",
+            "description": "No billing plan resolves for the account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2964,7 +2964,7 @@
         ],
         "operationId": "proxyProviderRequest",
         "summary": "Proxy a provider-native model request",
-        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, spends one request from the organization's monthly allowance, and streams the upstream response without buffering.",
+        "description": "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, spends one request from the account's monthly allowance, and streams the upstream response without buffering.",
         "security": [
           {
             "GatewayBearer": []
@@ -3064,7 +3064,7 @@
             }
           },
           "402": {
-            "description": "No billing plan resolves for the organization.",
+            "description": "No billing plan resolves for the account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3094,7 +3094,7 @@
             }
           },
           "429": {
-            "description": "Either the app's own limits or the organization's plan allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.",
+            "description": "Either the app's own limits or the account's request allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3133,7 +3133,7 @@
         ],
         "operationId": "callNamedEndpoint",
         "summary": "Call a server-configured named endpoint",
-        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so an operator can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
         "security": [
           {
             "GatewayBearer": []
@@ -3250,7 +3250,7 @@
             }
           },
           "402": {
-            "description": "No billing plan resolves for the organization.",
+            "description": "No billing plan resolves for the account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3280,7 +3280,7 @@
             }
           },
           "429": {
-            "description": "Either the app's own limits or the organization's plan allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.",
+            "description": "Either the app's own limits or the account's request allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3321,7 +3321,7 @@
         "summary": "List applications",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -3340,7 +3340,7 @@
                     },
                     "has_proxied_requests": {
                       "type": "boolean",
-                      "description": "Whether this organization has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once an organization's traffic has started."
+                      "description": "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started."
                     },
                     "apps": {
                       "type": "array",
@@ -3407,7 +3407,7 @@
         "description": "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -3555,7 +3555,7 @@
         "summary": "List billing plans",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -3619,10 +3619,10 @@
           "Admin billing"
         ],
         "operationId": "getBillingStatus",
-        "summary": "Get organization billing access",
+        "summary": "Get billing access and the current allowance period",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -3657,7 +3657,7 @@
                         },
                         "used": {
                           "type": "integer",
-                          "description": "Requests dispatched to a provider in this period, organization-wide."
+                          "description": "Requests dispatched to a provider in this period, across all apps."
                         },
                         "limit": {
                           "type": "integer",
@@ -3737,7 +3737,7 @@
         "summary": "Poll billing portal/access status",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -3772,7 +3772,7 @@
                         },
                         "used": {
                           "type": "integer",
-                          "description": "Requests dispatched to a provider in this period, organization-wide."
+                          "description": "Requests dispatched to a provider in this period, across all apps."
                         },
                         "limit": {
                           "type": "integer",
@@ -3852,7 +3852,7 @@
         "summary": "Create a hosted checkout",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -3964,7 +3964,7 @@
         "summary": "Change the subscription plan",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4058,7 +4058,7 @@
         "summary": "Resume a canceled subscription",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4152,7 +4152,7 @@
         "summary": "Cancel the subscription at period end",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4232,7 +4232,7 @@
         "summary": "Start a no-card trial",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4318,7 +4318,7 @@
         "summary": "Get an application",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4394,10 +4394,10 @@
         ],
         "operationId": "updateApp",
         "summary": "Update an application",
-        "description": "Updates an existing application in place. It never creates one: an id no application in your organization holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+        "description": "Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4485,7 +4485,7 @@
         "summary": "Delete an application and its associated operational data",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4599,7 +4599,7 @@
         "summary": "Validate an application configuration without saving it",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -4684,10 +4684,10 @@
           "Admin management keys"
         ],
         "operationId": "listManagementKeys",
-        "summary": "List management keys for the current organization",
+        "summary": "List management keys",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -4795,11 +4795,11 @@
           "Admin management keys"
         ],
         "operationId": "createManagementKey",
-        "summary": "Create a management key for the current organization",
-        "description": "Requires an owner/admin user session. The plaintext agw_mgmt_ token is returned once.",
+        "summary": "Create a management key",
+        "description": "Requires a signed-in console session with the owner or admin role; a management key cannot mint another. The plaintext agw_mgmt_ token is returned once.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "requestBody": {
@@ -4934,7 +4934,7 @@
         "description": "Requires an owner/admin user session.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "parameters": [
@@ -5052,10 +5052,10 @@
           "Admin providers"
         ],
         "operationId": "listProviders",
-        "summary": "List the organization's provider credentials",
+        "summary": "List provider credentials",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5130,11 +5130,11 @@
           "Admin providers"
         ],
         "operationId": "createProvider",
-        "summary": "Store a provider credential for the organization",
-        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among the organization's instances, disabled ones included; only deleting an instance frees its slug.",
+        "summary": "Store a provider credential",
+        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5232,7 +5232,7 @@
         "description": "Calls the provider with a credential, and reports what it answered. Nothing is stored, and no other endpoint runs this check: a write stores what it is given. Supply exactly one direct provider secret or an existing providerGatewayId.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5334,7 +5334,7 @@
         "description": "Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling therefore always succeeds. Sending a non-null baseUrl also requires secret in the same request: the stored key is write-only and is never decrypted to be sent to an origin it has not been sent to before, so a move carries the key it is to be used with. Sending baseUrl: null returns the instance to its provider type's own origin and needs nothing else.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5431,7 +5431,7 @@
         "description": "A hard delete, secret and pricing included. Applications using this provider start failing with provider_not_configured within a minute. To pause an instance reversibly instead, send status: \"disabled\" to PUT /v1/admin/providers/{id}.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5526,7 +5526,7 @@
         "summary": "List reusable provider gateways",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5605,7 +5605,7 @@
         "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. The token is encrypted and stored as given, never probed: check a connection first with POST /v1/admin/provider-gateways/test. Provider instances are attached separately through the providers API.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5693,7 +5693,7 @@
         "description": "Calls the gateway with a token, and reports what it answered. Nothing is stored, and no other endpoint runs this check: a write stores what it is given. Unlike the providers API, a refused token is reported as reason: rejected rather than raised as provider_key_invalid, because the same 401 means both a wrong token and a gateway that is not finished being set up.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5795,7 +5795,7 @@
         "summary": "Rename a provider gateway",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5891,7 +5891,7 @@
         "summary": "Delete an unused provider gateway",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -5997,7 +5997,7 @@
         "description": "Re-encrypts the token once for every provider instance referencing this gateway. The new token is stored as given, never probed.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -6091,12 +6091,12 @@
         "tags": [
           "Admin organizations"
         ],
-        "operationId": "getOperatorContext",
+        "operationId": "getAdminSession",
         "summary": "Get the caller's identity, current organization and role",
-        "description": "Operator clients need the caller's role and active organization to gate their UI; the Better Auth session endpoint reports neither.",
+        "description": "The console needs the caller's role and active organization to gate its UI; the sign-in session endpoint reports neither.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -6104,7 +6104,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Resolved operator session.",
+            "description": "Resolved session.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6305,11 +6305,11 @@
         "tags": [
           "Admin organizations"
         ],
-        "operationId": "listOperatorOrganizations",
+        "operationId": "listOrganizations",
         "summary": "List the organizations the caller belongs to",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "responses": {
@@ -6426,12 +6426,12 @@
         "tags": [
           "Admin organizations"
         ],
-        "operationId": "selectOperatorOrganization",
+        "operationId": "selectOrganization",
         "summary": "Switch the caller's active organization",
         "description": "Available to every member, including read-only members, of the target organization.",
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           }
         ],
         "requestBody": {
@@ -6651,7 +6651,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -6758,7 +6758,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -6850,7 +6850,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -6956,7 +6956,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7032,7 +7032,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7125,7 +7125,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7212,7 +7212,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7290,7 +7290,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7377,7 +7377,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7464,7 +7464,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7551,7 +7551,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7629,7 +7629,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7717,7 +7717,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7795,7 +7795,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []
@@ -7873,7 +7873,7 @@
         ],
         "security": [
           {
-            "OperatorSession": []
+            "ConsoleSession": []
           },
           {
             "ManagementBearer": []

@@ -1,0 +1,158 @@
+---
+title: Custom domain and rate limiting
+description: Serve the gateway on your own hostname, give your apps a separate API host, and bound abuse with Cloudflare rules.
+---
+
+A `workers.dev` address works, but it belongs to no zone of yours, so there is
+nowhere to attach a WAF rule or a rate limiting rule. Serving the gateway on a
+domain you own in Cloudflare gives you both. Everything on this page is zone
+configuration and a deployment profile; nothing here changes code.
+
+## Serve on a custom domain
+
+Add the route to a [deployment profile](/self-hosting/deploy-with-wrangler)
+and turn the `workers.dev` address off:
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "workers_dev": false,
+  "routes": [{ "pattern": "console.example.com", "custom_domain": true }]
+}
+```
+
+```sh
+pnpm run deploy --profile prod
+```
+
+The domain must be a zone in the same Cloudflare account. With
+`custom_domain: true`, Cloudflare creates the DNS record and the certificate
+for you.
+
+## A separate host for your apps
+
+One Worker can answer on two custom domains: the one you sign in to, and one
+your apps call. Add both routes to the overlay and name the second one in
+`vars`:
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "console.example.com", "custom_domain": true },
+    { "pattern": "api.example.com", "custom_domain": true }
+  ],
+  "vars": { "PUBLIC_API_URL": "https://api.example.com" }
+}
+```
+
+`PUBLIC_API_URL` is an origin: `https`, no path, no query. A value with a path
+or a query is rejected rather than used, because it would silently produce
+base URLs no client can call. Setting it changes two things:
+
+- **The console advertises the API host.** Wherever the console shows a base
+  URL, it prints `https://api.example.com`, so new apps are configured against
+  the API host from the start.
+- **The API host refuses the console surface.** On `api.example.com`,
+  `/v1/auth/*` and `/v1/console/*` answer `404`. App routes, `/v1/healthz` and
+  `/v1/admin/*` are served normally. No session cookie can be issued for a host
+  that has no sign-in, so a management call arriving there is a management-key
+  call by construction.
+
+The console host is unchanged and keeps serving the app routes too, so clients
+configured before the second host existed keep working. Leaving
+`PUBLIC_API_URL` unset is the default and changes nothing: the console builds
+client URLs from its own origin.
+
+### Keep the API host to the API
+
+Static assets are served before the Worker runs, so the console's files still
+load at `https://api.example.com/`. An API host should answer nothing but the
+API. Refuse everything outside `/v1/` with a zone
+[WAF custom rule](https://developers.cloudflare.com/waf/custom-rules/), action
+**Block**, matching:
+
+```txt
+(http.host eq "api.example.com" and not starts_with(http.request.uri.path, "/v1/"))
+```
+
+Unknown paths under `/v1/` still reach the Worker and get its JSON `404`. On
+the Free plan the blocked request receives Cloudflare's own `403` page. On Pro
+and above, give the Block action a custom JSON response with status `404` and
+the Worker's own body, so every miss on that host looks the same:
+
+```json
+{"error":{"code":"invalid_request","message":"Route not found"}}
+```
+
+Do not reach for `run_worker_first` on the whole site instead. That would put
+every asset request through the Worker and bill for it.
+
+## Rate limiting
+
+The gateway does not throttle sign-in attempts itself, and cannot do it
+usefully: a Worker runs as many separate instances that share no memory, so
+an in-memory counter sees only a fraction of the traffic and limits nothing
+in practice. Bounding password
+guessing and challenge flooding is the zone's job, with
+[Cloudflare rate limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/)
+in front of the Worker. Those counters live at the edge, so they hold across
+instances and locations, and a refused request never reaches the Worker at all.
+
+Create three rules, each counting by client IP.
+
+1. **Console sign-in**, 10 requests per minute, block for 10 minutes. This is
+   the password endpoint and the one route where guessing pays.
+
+   ```txt
+   http.request.uri.path eq "/v1/auth/sign-in/email"
+   ```
+
+2. **Account creation and password reset**, 5 requests per minute.
+
+   ```txt
+   http.request.uri.path matches "^/v1/auth/(sign-up|forget-password|reset-password)"
+   ```
+
+3. **App authentication**, 60 requests per minute. These routes are
+   unauthenticated by design. A legitimate app performs a handful of them per
+   hour per device, so the limit is far above real use and still bounds a
+   flood.
+
+   ```txt
+   http.request.uri.path matches "^/v1/apps/[^/]+/auth/(challenge|token|register)$"
+   ```
+
+The rules match on the path alone, so they cover every host in the zone. A
+separate API host is included with no second set of rules.
+
+### On the Free and Pro plans
+
+Rate limiting rules exist on every Cloudflare plan, but not in equal amounts.
+Adapt rather than skip.
+
+- The Free plan allows **one** rule, with a fixed ten-second counting period
+  and a ten-second block. Spend it on sign-in, at 2 requests per ten seconds.
+- The `matches` operator needs a Business plan or above. On Free and Pro,
+  write rules 2 and 3 without a regular expression:
+
+  ```txt
+  http.request.uri.path in {"/v1/auth/sign-up/email" "/v1/auth/forget-password" "/v1/auth/reset-password"}
+  ```
+
+  ```txt
+  starts_with(http.request.uri.path, "/v1/apps/") and (ends_with(http.request.uri.path, "/auth/challenge") or ends_with(http.request.uri.path, "/auth/token") or ends_with(http.request.uri.path, "/auth/register"))
+  ```
+
+## Checklist
+
+After the profile is deployed and the zone is configured:
+
+```sh
+curl https://api.example.com/v1/healthz
+curl -i https://api.example.com/v1/auth/sign-in/email
+curl -i https://api.example.com/
+```
+
+The first answers `"vault": "ok"`. The second answers `404` from the Worker.
+The third is blocked by the WAF rule. Re-check the rules after any zone change;
+they live in the dashboard, not in the repository.

@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "node scripts/generate-api.mjs",
+    "predev": "node scripts/generate-api.mjs && node scripts/generate-machine-files.mjs",
     "dev": "next dev",
-    "generate:api": "node scripts/generate-api.mjs",
-    "prebuild": "node scripts/generate-api.mjs",
+    "generate:api": "node scripts/generate-api.mjs && node scripts/generate-machine-files.mjs",
+    "prebuild": "node scripts/generate-api.mjs && node scripts/generate-machine-files.mjs",
     "build": "next build --webpack",
-    "static:build": "node scripts/generate-api.mjs && next build --webpack",
+    "static:build": "node scripts/generate-api.mjs && node scripts/generate-machine-files.mjs && next build --webpack",
     "pretypecheck": "node scripts/generate-api.mjs",
     "typecheck": "next typegen && tsgo --noEmit",
     "typecheck:tsc": "next typegen && tsc --noEmit"

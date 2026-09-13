@@ -1,0 +1,215 @@
+---
+title: Add a provider key
+description: Store a provider key once in the console, test it, and manage it over time.
+---
+
+You bring your own provider keys. You add each one on the **Providers** page,
+the gateway encrypts it on arrival, and nothing ever shows it again. The list
+displays only the last four characters, so you can tell two keys apart. A
+provider you add is shared by every app you have.
+
+## Add a provider
+
+Open **Providers** and click **Add provider**. The dialog asks for the fields
+in the order you decide them.
+
+| Field | What to enter |
+| --- | --- |
+| **Name** | How this provider is named in the list, for example `Prod OpenAI`. |
+| **Provider** | The service the key belongs to. See [Supported providers](/providers/supported-providers). |
+| **Authentication** | **API key** to call the provider directly, or **Use gateway** to route through a Cloudflare or Vercel AI Gateway you connected under [Gateways](/providers/gateways). |
+| **API key** | The key from the provider. Shown only with **API key**. |
+| **Base URL (optional)** | Leave empty to use the provider's own API. Fill it to point this provider at an endpoint you control. See [Custom base URLs](/providers/custom-base-urls). |
+| **Gateway** | Which connected gateway carries the traffic. Shown only with **Use gateway**. The provider's own key lives in that gateway, so this row carries no secret. |
+| **Slug** | Appears only when the default slug is already taken. See [Slugs](#slugs). |
+
+Click **Test provider** if you want the gateway to check the key, then
+**Add provider**. Saving does not call the provider. The key is stored exactly
+as you paste it, so a provider outage or a key that is not live yet never stops
+you from saving.
+
+The API equivalent:
+
+```json
+POST /v1/admin/providers
+{ "type": "openai", "name": "Prod OpenAI", "secret": "sk-..." }
+```
+
+Add `"slug": "openai-dev"` for a custom slug, `"baseUrl"` for a custom
+endpoint, or `"providerGatewayId"` instead of `"secret"` to route through a
+gateway. Exactly one of `secret` and `providerGatewayId` must be present. The
+response carries `secretHint`, never the key. The full contract is in the
+[API reference](/api).
+
+## Test provider
+
+**Test provider** runs the cheapest authenticated call the provider offers,
+such as its list-models endpoint, and nothing else. Nothing is stored. The
+answer is one of three verdicts:
+
+| Verdict | What it says | Meaning |
+| --- | --- | --- |
+| Works | "Works. The provider accepted this credential." | The provider answered the test call with this key. |
+| Failed | "OpenAI answered with HTTP 401, so this key could not be used." | The provider refused the key. Any status below 500 other than 429 counts as a refusal. |
+| Unconfirmed | "There is no test call for Perplexity, so nothing was checked." or "OpenAI did not answer in time, so nothing is proven either way." | Nothing was proven, in either direction. Add the key if you know it is right. |
+
+A 5xx or 429 from the provider is also unconfirmed: the provider is having a
+moment, and that says nothing about your key. Not every provider has a test
+call. The per-provider list is in
+[Supported providers](/providers/supported-providers#what-test-provider-calls).
+
+When the provider is routed through a gateway, the test goes through that
+gateway. A refusal then reads "The gateway answered with HTTP 401. Check that
+it holds a stored key for OpenAI."
+
+The API equivalent is a dry run of the create call with the same `type` and
+`secret` (or `providerGatewayId`, or `baseUrl`):
+
+```json
+POST /v1/admin/providers/test
+{ "type": "openai", "secret": "sk-..." }
+```
+
+A refused key answers `400 provider_key_invalid`. Any other outcome answers
+`{ "validated": false, "reason": "no_probe" | "unreachable" | "unexpected_status" }`
+with the upstream `status` where there was one.
+
+## Slugs
+
+A slug is the URL segment your apps use to name this provider:
+
+```text
+/v1/apps/{app}/proxy/{slug}/{provider-path}
+```
+
+It is `^[a-z0-9][a-z0-9-]{0,62}$` and defaults to the provider type. The
+first OpenAI key is reachable at `/proxy/openai/...` with nothing to configure,
+the first Anthropic key at `/proxy/anthropic/...`, and so on for every type in
+[Supported providers](/providers/supported-providers).
+
+A slug equal to a provider type name is reserved for that type, so
+`/proxy/anthropic/...` can never resolve to an OpenAI key. The provider type,
+and with it the upstream URL, the auth header and the price catalog, comes from
+the provider the slug resolves to, never from the URL itself.
+
+### Several keys of one type
+
+You can add as many providers of one type as you like: a second OpenAI key for
+development, one routed through a gateway, one pointed at your own endpoint.
+Only the first gets the default slug. When you pick a type whose default slug
+is already in use, the dialog shows a **Slug** field with the hint "Another
+instance already uses `openai`, so this one needs its own `/proxy/<slug>/...`
+segment." Enter something like `openai-dev`.
+
+| Provider | Slug | Your app calls |
+| --- | --- | --- |
+| OpenAI, first key | `openai` | `POST /v1/apps/my-app/proxy/openai/v1/responses` |
+| OpenAI, second key for dev | `openai-dev` | `POST /v1/apps/my-app/proxy/openai-dev/v1/responses` |
+| OpenAI through Cloudflare AI Gateway | `openai-cf` | `POST /v1/apps/my-app/proxy/openai-cf/v1/chat/completions` |
+| Anthropic, only key | `anthropic` | `POST /v1/apps/my-app/proxy/anthropic/v1/messages` |
+
+Through the API, creating a second provider without a `slug` answers
+`409 slug_taken`. A provider holds its slug for as long as it exists, disabled
+or not. Only deleting it frees the slug.
+
+An app's [proxy policy](/applications/proxy-policy) and its
+[named endpoints](/applications/endpoints) name providers by slug. That is how
+one app can be limited to `openai-cf` while another uses `openai`.
+
+## The Providers list
+
+Each row shows the **Name**, the **Provider** type, the **Slug**, and under
+**Auth** how it authenticates: `API key: ...ab12` for a direct key (its last
+four characters), plus `Base URL` when one is set, or `Gateway: <name>` for a
+routed provider. A paused provider carries a `disabled` badge.
+
+The row's actions menu offers **Pricing**, **Update key**, **Disable
+provider** (or **Enable provider**), and **Delete provider**.
+
+## Update key
+
+**Update key** replaces the key in place. The dialog says it plainly: "The new
+credential replaces the old one in place. Custom pricing is kept, and requests
+pick it up within a minute." Paste the **New API key** and click **Update
+key**. The provider keeps its slug and its custom prices, so nothing in any app
+changes. Prefer this over delete-and-recreate for exactly that reason.
+
+The same dialog has a **Base URL** field. Changing the origin needs the key,
+because the stored key is never sent to a new origin. See
+[Custom base URLs](/providers/custom-base-urls#changing-the-origin).
+
+A gateway-routed provider has no key of its own, so **Update key** is greyed
+out there. Rotate the shared token once with **Update token** on the
+[Gateways](/providers/gateways#update-token) page and every provider behind
+that gateway follows.
+
+```json
+PUT /v1/admin/providers/{id}
+{ "secret": "sk-new..." }
+```
+
+On a gateway-routed provider this answers `409 provider_gateway_managed` and
+points you at the gateway's rotate endpoint.
+
+## Disable or delete
+
+These are two different intentions.
+
+**Disable provider** is a reversible pause. The confirm dialog says "Requests
+to `openai` start failing within a minute" and lists the apps whose
+configuration names that slug. The key, the custom pricing and the slug all
+stay. Requests to the slug answer `502 provider_disabled`. **Enable provider**
+puts it straight back, and always succeeds, because nothing could have taken
+the slug in the meantime.
+
+**Delete provider** is permanent. The confirm dialog says "Apps using OpenAI
+start failing within a minute, and any custom pricing on this provider is
+deleted with it. This cannot be undone. Update the key instead if you only
+want to replace it, or disable the provider to pause it and keep the key."
+Deleting takes the encrypted key and the custom prices with it and frees the
+slug for reuse. Requests to the slug then answer `502 provider_not_configured`.
+
+An app's configuration may keep naming a disabled or deleted slug. Its proxy
+policy page shows the row with a `disabled` or `deleted` badge, and a named
+endpoint whose primary target is unavailable falls through to its fallbacks
+exactly as it would on an upstream failure.
+
+```json
+PUT /v1/admin/providers/{id}
+{ "status": "disabled" }
+```
+
+```text
+DELETE /v1/admin/providers/{id}
+```
+
+## When an app names a provider you have not added
+
+An app can allow a provider before you have a key for it. The app's pages then
+show a banner titled **No credential for OpenAI**: "This app allows a provider
+you have not configured, so those requests fail with
+`provider_not_configured`." The link in the banner takes you to **Providers**.
+
+| Response | Meaning |
+| --- | --- |
+| `502 provider_not_configured` | No provider has this slug. Add one. |
+| `502 provider_disabled` | A provider with this slug exists but is paused. Enable it. |
+| `502 provider_unavailable` | The stored key could not be decrypted, or the gateway it routes through is gone. |
+
+The full list of proxy errors is in [Errors and limits](/integrate/errors).
+
+## Propagation
+
+Every change on this page takes effect within a minute: a new key, a rotated
+key, a disable, a delete. The gateway caches resolved providers for up to sixty
+seconds, which is the same window as an app configuration change.
+
+## How keys are protected
+
+- Every key is encrypted at rest before it is stored, and each one is bound to
+  its own row, so a value lifted from one row cannot be replayed in another.
+- No response body from any endpoint contains a submitted key. The console
+  clears its form the moment a create or update call settles.
+- Your apps never see a key either. The gateway adds it on the way out, and
+  any provider key a client sends is stripped. See
+  [Apps and providers](/how-it-works/apps-and-providers).

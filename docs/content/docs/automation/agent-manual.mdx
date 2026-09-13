@@ -1,0 +1,391 @@
+---
+title: Agent manual
+description: Everything an AI agent needs to manage providers, applications, users and usage through the API, in one page.
+---
+
+This page is written for an AI agent that has been given a management key
+and asked to operate App AI Gateway on someone's behalf. It is complete on its
+own. Read it fully before acting. It is also served as plain markdown at
+`/agents.md`, and the machine-readable API contract is at `/openapi.json`.
+
+## What the gateway is
+
+App AI Gateway is a proxy between a person's applications and AI providers
+(OpenAI, Anthropic, Gemini, xAI and others). The person adds **provider keys**
+once; they are shared by all their apps. They create **applications**; each
+app has a permanent ID, an authentication policy, a proxy policy saying
+which providers, paths and models it may use, optional named endpoints,
+and limits on its users. Client apps call
+`{GATEWAY_URL}/v1/apps/{app}/proxy/{provider_slug}/{provider_path}` with the
+provider's own request format. You manage all of this through the admin API.
+
+## Authentication
+
+- Base URL: the value of `APP_AI_GATEWAY_URL` if set, otherwise
+  `https://api.appaigateway.com`. Call `GET {GATEWAY_URL}/v1/healthz` to confirm the URL
+  answers `{"ok":true,...}`.
+- Credential: a management key starting with `agw_mgmt_`, read from the
+  environment (`APP_AI_GATEWAY_MGMT_KEY` by convention). Send it on every
+  admin call as `Authorization: Bearer <key>`.
+- All admin routes are under `/v1/admin/`. Request and response bodies are
+  JSON with `Content-Type: application/json`.
+- A management key cannot create or revoke management keys, and it cannot
+  call provider routes. It has the permissions of the person who created it.
+
+```sh
+curl -sS "$APP_AI_GATEWAY_URL/v1/admin/apps" \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_MGMT_KEY"
+```
+
+## Rules
+
+1. Never print, log, echo or write to a file any secret: management keys,
+   provider keys, application API keys. When a call returns a key, store it
+   where the person asked, then report where it was stored and its last
+   four characters.
+2. Never send `id` when creating an application. The gateway assigns the ID
+   from the name and returns it as `app.id`. IDs cannot be changed.
+3. Validate an application body with `POST /v1/admin/apps/{app}/validate`
+   before creating or updating it.
+4. `PUT /v1/admin/apps/{app}` replaces the whole application. Always `GET`
+   first, modify the returned `app.name`, `app.config` and `app.status`, and
+   send all three back.
+5. Read before you write. List providers and apps before changing anything,
+   so you use slugs and IDs that exist.
+6. Changes take up to one minute to apply to live traffic. Blocking a user is
+   immediate.
+7. Prefer reversible actions. Disable an app or provider rather than deleting
+   it unless deletion was asked for. Deleting a provider also deletes its
+   custom prices; deleting an app removes its users and keys.
+8. Do not test the setup by sending provider requests unless asked, because
+   each one costs the person money at the provider.
+
+## Errors
+
+Every refusal is JSON:
+
+```json
+{ "error": { "code": "slug_taken", "message": "…", "data": { } } }
+```
+
+| Status | Codes | Meaning |
+| --- | --- | --- |
+| 400 | `invalid_request` | The body is malformed or violates a rule; `message` says which. A create body that carries `id` gets this |
+| 401 | `auth_required` | Missing or wrong management key |
+| 403 | `forbidden` | The key's owner is read-only and may not change things |
+| 404 | `not_found`, `app_not_found` | No such app, provider, gateway or key |
+| 409 | `slug_taken` | A provider already has this slug; supply another |
+| 409 | `gateway_in_use` | A gateway still has providers routed through it |
+| 409 | `provider_gateway_managed` | This provider's key lives in a gateway; rotate the gateway token instead |
+| 400 | `provider_not_supported_by_gateway` | That provider type cannot be routed through that gateway |
+| 400 | `provider_key_invalid` | The provider refused the key during a test |
+| 502 | `provider_unavailable` | The gateway could not decrypt a stored key |
+
+## Workflow for setting up an app
+
+1. `GET /v1/admin/providers`. Note which provider types exist and their
+   `slug` values.
+2. If the app needs a provider that is missing, and the person has given you
+   its key in an environment variable, add it (see Providers). Test it first.
+3. Compose the application body from the reference below.
+4. `POST /v1/admin/apps/{placeholder}/validate` with the body, using any
+   well-formed placeholder ID such as `new-app`. Fix every error.
+5. `POST /v1/admin/apps` with the same body. Read `app.id` from the
+   response. For a server app, `api_key.key` is in the response once; store
+   it where the person asked.
+6. Report the app ID, the base URL
+   `{GATEWAY_URL}/v1/apps/{app.id}/proxy/{provider_slug}/{provider_path}`,
+   and where the key went. Do not include the key.
+
+## Providers
+
+A provider row is one key for one provider type, or a reference to a gateway
+that holds the key. Its `slug` is the URL segment clients use. The first
+provider of each type defaults to the type name as its slug (`openai`,
+`anthropic`, `gemini`, `xai`, `perplexity`, `deepseek`, `groq`, `mistral`,
+`together`, `fireworks`, `cerebras`, `moonshot`, `huggingface`, `baseten`,
+`bytedance`, `openrouter`). A second provider of the same type must be given
+a slug, or the create answers `409 slug_taken`.
+
+| Call | Body | Notes |
+| --- | --- | --- |
+| `GET /v1/admin/providers` | | Returns `providers[]` with `id`, `type`, `slug`, `name`, `secretHint`, `providerGatewayId`, `baseUrl`, `pricing`, `status` |
+| `POST /v1/admin/providers/test` | `{ type, secret }` or `{ type, providerGatewayId }`, optional `baseUrl` | Dry run. `validated: true` means the provider accepted the key. `validated: false` with a `reason` means nothing was proven. A refused key answers `400 provider_key_invalid` |
+| `POST /v1/admin/providers` | `{ type, name, secret }` or `{ type, name, providerGatewayId }`; optional `slug`, `baseUrl`, `pricing`, `gatewayRoute` | Exactly one of `secret` and `providerGatewayId`. `baseUrl` only with `secret` |
+| `PUT /v1/admin/providers/{id}` | Any of `name`, `secret`, `baseUrl`, `pricing`, `gatewayRoute`, `status` | `secret` rotates the key in place. A new non-null `baseUrl` requires `secret` in the same call. `pricing: null` clears prices. `status: "disabled"` pauses without freeing the slug |
+| `DELETE /v1/admin/providers/{id}` | | Permanent. Frees the slug, deletes custom prices |
+
+`pricing` is per model, in USD per million tokens:
+
+```json
+{ "my-model": { "input": 0.5, "output": 1.5 } }
+```
+
+A model that is in neither the built-in catalog (`GET /v1/admin/prices`)
+nor the provider's `pricing` cannot be used by any app: requests answer
+`400 pricing_not_configured`, and an app configuration that names it in
+`allowed_models`, `model_rewrites` targets or endpoints is rejected on
+validation. OpenRouter reports its own cost and needs no price.
+
+Custom `baseUrl` points an `openai`-type provider at an OpenAI-compatible
+server (Azure OpenAI v1, vLLM). It must be `https`, a public hostname, no
+port, no query.
+
+### Gateways
+
+A gateway row is a connection to a Cloudflare AI Gateway or Vercel AI Gateway
+whose token is stored once and shared by providers routed through it.
+
+| Call | Body |
+| --- | --- |
+| `GET /v1/admin/provider-gateways` | |
+| `POST /v1/admin/provider-gateways/test` | `{ type: "cf_aig", accountId, gatewayId, token }` or `{ type: "vercel", token }` |
+| `POST /v1/admin/provider-gateways` | Same plus `name` |
+| `PATCH /v1/admin/provider-gateways/{id}` | `{ name }` |
+| `POST /v1/admin/provider-gateways/{id}/rotate` | `{ token }` |
+| `DELETE /v1/admin/provider-gateways/{id}` | Refused with `409 gateway_in_use` while any provider references it |
+
+Cloudflare routes `openai`, `anthropic`, `xai`, `gemini`, `perplexity`.
+Vercel routes those plus `deepseek` and `moonshot`, and accepts only the
+paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
+
+## Applications
+
+| Call | Body | Notes |
+| --- | --- | --- |
+| `GET /v1/admin/apps` | | `apps[]` with each app's month-to-date usage |
+| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, created_at, updated_at }, resolved, config_error }` |
+| `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id, exists }` or a 400 naming the problem. Works for an ID that does not exist yet |
+| `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
+| `PUT /v1/admin/apps/{app}` | `{ name, config, status? }` | Full replace |
+| `DELETE /v1/admin/apps/{app}` | | Removes users and keys, keeps usage history |
+| `GET /v1/admin/apps/{app}/keys` | | Server apps only |
+| `POST /v1/admin/apps/{app}/keys` | `{ name }` | Returns `key` once |
+| `POST /v1/admin/apps/{app}/keys/{key}/revoke` | | |
+
+`status` is `active` or `disabled`. A disabled app refuses every request
+with `403 app_disabled` and keeps everything.
+
+## Application configuration reference
+
+`config` is one JSON object with four top-level keys. Unknown keys are
+rejected.
+
+```json
+{
+  "authentication": { … },
+  "routing": { … },
+  "limits": { … },
+  "endpoints": { … }
+}
+```
+
+### `authentication`
+
+Discriminated on `type`.
+
+**iOS application** (`apple_app_attest`):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `type` | `"apple_app_attest"` | The app proves itself with Apple App Attest |
+| `app_attest.team_id` | string | Apple Team ID |
+| `app_attest.bundle_id` | string | Bundle ID |
+| `app_attest.environments` | `["production"]`, `["development"]` or both; optional | Which App Attest environments are accepted. Omitted means production only |
+| `end_user` | object, required | `{ "source": "issuer", "issuer": {…} }` for signed-in users, or `{ "source": "app_install" }` to count each install as a user |
+
+**Server application** (`api_key`):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `type` | `"api_key"` | The backend proves itself with an API key |
+| `end_user` | object, optional | Omit for no user identity. `{ "source": "header", "header": "x-end-user-id" }` when the backend names the user in a header. `{ "source": "issuer", "issuer": {…} }` for signed-in users, in which case the key is exchanged with the user's ID token for a gateway token |
+
+**The `issuer` object** (signed-in users):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `jwks_url` | URL | Where the identity provider publishes its signing keys |
+| `issuer` | string or string[] | Accepted `iss` values. Required |
+| `audience` | string or string[] | Accepted `aud` values. Required |
+| `user_id_claim` | string | Claim used as the user ID. Use `"sub"` |
+| `required_claims` | array | Entitlement requirements, each `{ "path": "...", "contains": "x" }` or `{ "path": "...", "equals": value }`. `contains` may be a list of alternatives. Empty array for none |
+| `max_token_lifetime_seconds` | integer | Reject tokens whose `exp - iat` exceeds this. Use `86400` |
+| `token_header` | string, optional | Rarely needed |
+| `provider` | `"firebase"`, `"supabase"`, `"auth0"`, `"clerk"`, `"custom"`, optional | Lets the console show the preset. Set it to match what you configured |
+| `entitlement` | `"revenuecat"` or `"custom"`, optional | Same, for the subscription check |
+
+Preset values for common identity providers:
+
+| Provider | `jwks_url` | `issuer` | `audience` |
+| --- | --- | --- | --- |
+| Firebase | `https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com` | `https://securetoken.google.com/<project-id>` | `<project-id>` |
+| Supabase | `https://<ref>.supabase.co/auth/v1/.well-known/jwks.json` | `https://<ref>.supabase.co/auth/v1` | `authenticated` |
+| Auth0 | `https://<domain>/.well-known/jwks.json` | `https://<domain>/` (trailing slash required) | the API identifier |
+| Clerk | `https://<frontend-api-host>/.well-known/jwks.json` | `https://<frontend-api-host>` | the `aud` the JWT template sets |
+| Sign in with Apple | `https://appleid.apple.com/auth/keys` | `https://appleid.apple.com` | the bundle ID |
+
+A RevenueCat entitlement check is
+`{ "path": "revenueCatEntitlements", "contains": "<entitlement id>" }` with
+`"entitlement": "revenuecat"`.
+
+### `routing`
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `providers.mode` | `"all"` or `"selected"` | `all` allows every provider the account has, now and later. `selected` allows only those in `providers.selected` |
+| `providers.selected` | object keyed by provider slug | Required when mode is `selected`. Each value is a policy object below. Every slug must be an existing provider on create |
+| `model_rewrites` | object | Client model name to real model name. Required key; use `{}` for none. Targets must be priced |
+
+Policy object for one provider:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `allowed_paths` | array | Empty allows every path. Entries are strings like `"v1/responses"`, or objects `{ "path", "fixed_model"?, "clamp"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none` |
+| `allowed_models` | string[] | Empty allows every priced model |
+| `max_output_tokens` | positive integer, optional | Requests above it are refused; requests without an output limit get it injected |
+
+### `limits`
+
+Optional. Omit for no limits. Every field is `null` (unlimited) or a number.
+`per_user` may only be set on an app that identifies users. Request limits
+must be positive; a spend budget may be `0` to stop all spend.
+
+```json
+"limits": {
+  "per_user": { "requests": { "per_minute": 10, "per_day": 300 }, "spending": { "monthly_usd": null } },
+  "per_app":  { "requests": { "per_minute": null, "per_day": null }, "spending": { "monthly_usd": 100 } }
+}
+```
+
+### `endpoints`
+
+Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `api_style` | `"responses"` or `"transcription"` | Request shape the client sends |
+| `provider` | provider slug | Must be an `openai` or `xai` provider |
+| `model` | string | Must be priced |
+| `params` | object, optional | Deep-merged over the client body, server wins. `responses` only |
+| `max_output_tokens` | positive integer, optional | `responses` only |
+| `fallback` | array of `{ provider, model }`, optional | Tried in order when the primary fails before streaming starts |
+
+### Complete examples
+
+A server app for a backend that names its users, restricted to one OpenAI
+model:
+
+```json
+{
+  "name": "Search service",
+  "config": {
+    "authentication": {
+      "type": "api_key",
+      "end_user": { "source": "header", "header": "x-end-user-id" }
+    },
+    "routing": {
+      "providers": {
+        "mode": "selected",
+        "selected": {
+          "openai": { "allowed_paths": ["v1/responses"], "allowed_models": ["gpt-5.6"], "max_output_tokens": 4096 }
+        }
+      },
+      "model_rewrites": {}
+    },
+    "limits": {
+      "per_user": { "requests": { "per_minute": 30, "per_day": 1000 }, "spending": { "monthly_usd": 10 } },
+      "per_app": { "requests": { "per_minute": 300, "per_day": 10000 }, "spending": { "monthly_usd": 100 } }
+    }
+  }
+}
+```
+
+An iOS app with Firebase sign-in, a RevenueCat entitlement, and a named
+endpoint:
+
+```json
+{
+  "name": "Calorie Tracker",
+  "config": {
+    "authentication": {
+      "type": "apple_app_attest",
+      "app_attest": { "team_id": "ABCDE12345", "bundle_id": "com.example.calorietracker" },
+      "end_user": {
+        "source": "issuer",
+        "issuer": {
+          "jwks_url": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+          "issuer": "https://securetoken.google.com/calorie-1a2b3",
+          "audience": "calorie-1a2b3",
+          "user_id_claim": "sub",
+          "required_claims": [{ "path": "revenueCatEntitlements", "contains": "pro" }],
+          "max_token_lifetime_seconds": 86400,
+          "provider": "firebase",
+          "entitlement": "revenuecat"
+        }
+      }
+    },
+    "routing": { "providers": { "mode": "all" }, "model_rewrites": {} },
+    "limits": {
+      "per_user": { "requests": { "per_minute": 20, "per_day": 500 }, "spending": { "monthly_usd": 5 } },
+      "per_app": { "requests": { "per_minute": null, "per_day": null }, "spending": { "monthly_usd": 500 } }
+    },
+    "endpoints": {
+      "chat": {
+        "api_style": "responses",
+        "provider": "openai",
+        "model": "gpt-5.6-luna",
+        "params": { "reasoning": { "effort": "low" } },
+        "fallback": [{ "provider": "xai", "model": "grok-4.5" }]
+      }
+    }
+  }
+}
+```
+
+## Users
+
+| Call | Query or body | Notes |
+| --- | --- | --- |
+| `GET /v1/admin/apps/{app}/users` | `month=YYYY-MM`, `status=active|blocked`, `query=`, `limit=`, `offset=` | Each user with requests, tokens and cost for the month |
+| `GET /v1/admin/apps/{app}/users/{user}` | | |
+| `POST /v1/admin/apps/{app}/users/{user}/block` | | Immediate. Users named by a backend header cannot be blocked |
+| `POST /v1/admin/apps/{app}/users/{user}/unblock` | | |
+
+## Usage and events
+
+| Call | Query | Returns |
+| --- | --- | --- |
+| `GET /v1/admin/apps/{app}/usage` | `month=YYYY-MM` | Totals: requests, tokens, cost |
+| `GET /v1/admin/apps/{app}/usage/timeseries` | `from=`, `to=` (ISO dates) | Daily buckets by provider |
+| `GET /v1/admin/apps/{app}/usage/breakdown` | `by=`, `from=`, `to=`, `limit=` | Grouped totals. `by` is one of `model`, `model_author`, `provider`, `provider_slug`, `provider_gateway`, `credential_source`, `user`, `status`, `cost_source`, `route`, `endpoint`, `app_version` |
+| `GET /v1/admin/apps/{app}/events` | `limit=`, `status=`, `user=`, `model=`, `before_id=` | Individual requests, newest first. Page with `next_before_id` |
+| `GET /v1/admin/apps/{app}/auth-events/summary` | `days=` | Token exchange success rate, failures by cause, claim delay percentiles |
+| `GET /v1/admin/apps/{app}/auth-events` | `limit=`, `outcome=`, `before_id=` | Individual token exchanges and registrations |
+
+Event `status` values: `ok`, `provider_error`, `blocked_app_rate`,
+`blocked_app_budget`, `blocked_user`, `blocked_billing`. Event
+`cost_source` values: `computed`, `reported`, `unresolved`.
+
+## What clients send
+
+You do not normally call these, but you may need to explain them or write
+client code.
+
+- Proxy: `{METHOD} /v1/apps/{app}/proxy/{provider_slug}/{provider_path}`
+  with the provider's own body. Credential: `Authorization: Bearer <gateway
+  token>` plus `X-App-Version` for iOS and signed-in-user apps, or
+  `Authorization: Bearer agw_…` for a server app without user identity.
+- Named endpoint: `POST /v1/apps/{app}/endpoints/{slug}`.
+- Token exchange for a server app with signed-in users:
+  `POST /v1/apps/{app}/auth/token` with `{ "api_key", "issuer_token" }`,
+  returning `{ "access_token", "expires_in": 3600 }`.
+- iOS apps use the AppAIGateway Swift package, which handles App Attest and
+  the token exchange. See the human documentation under Integrate your app.
+
+## Reporting back
+
+When you finish a task, report: what you created or changed, by ID and slug;
+the client base URL for any app; where each secret was stored; and anything
+you could not do, such as a provider whose key was not available. Do not
+include secret values.

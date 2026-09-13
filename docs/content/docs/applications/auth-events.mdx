@@ -1,0 +1,53 @@
+---
+title: Auth and errors
+description: Token exchange success, failures by cause, and how long paid entitlements take to arrive.
+---
+
+The **Auth & Errors** page shows how the app's clients are getting on with
+authentication, and which requests failed and why.
+
+## The numbers
+
+- **Exchange success**: the share of token exchanges that succeeded, with the
+  number of attempts.
+- **Claim delay p50** and **p95**: how long users wait between their first
+  refusal for a missing entitlement claim and the exchange that finally
+  succeeds. Only apps with a [subscription check](/applications/auth-policy/subscription-check)
+  have this.
+- **Pending activations**: users waiting on a claim right now.
+
+## Failures by cause
+
+Refused authentication attempts and non-ok proxied requests, busiest first,
+with **Outcome**, **Reason**, **Count**, **Days affected** and **Last seen**
+over the chosen range. This is the first place to look when a release starts
+failing.
+
+## Recent attempts
+
+Every token exchange and key registration, newest first: **When**, **User**,
+**Call** (`token_exchange` or `register`, with the auth method), **Outcome**,
+**Reason**, **App version**, **Latency**, and **Claim delay** where the
+exchange ended a wait.
+
+Outcomes:
+
+| Outcome | Meaning |
+| --- | --- |
+| `ok` | The exchange succeeded |
+| `issuer_token_rejected` | The sign-in token did not verify |
+| `issuer_claims_missing` | The token verified but a required entitlement claim is not there yet. Amber, because it is a wait, not a failure |
+| `issuer_verification_unavailable` | The identity provider's key set could not be fetched. Amber, transient |
+| `attest_failed` | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted |
+| `auth_required` | No usable credential, or a blocked user |
+
+The **Reason** column carries the granular cause. It is recorded here and
+never sent to the client, so a client sees only the outcome code and what to
+do about it.
+
+## Through the API
+
+- `GET /v1/admin/apps/{app}/auth-events/summary?days=30`
+- `GET /v1/admin/apps/{app}/auth-events?limit=&outcome=&before_id=`
+
+Auth events are kept for 90 days.

@@ -1,0 +1,138 @@
+---
+title: Deploy with Wrangler
+description: Deploy from a checkout with the deploy script, and keep deployment-specific settings in a profile.
+---
+
+Use this path when you want to deploy from your own machine or from your own
+CI, or when your deployment needs settings that the one-click form cannot
+express: a custom domain, a fixed database, or the `kms` vault mode.
+
+## Requirements
+
+- Node.js 22 or newer and pnpm 11.
+- A Cloudflare account. `pnpm install` brings Wrangler 4 with it; run
+  `pnpm exec wrangler login` once so it can act on your account.
+- `openssl`, to generate the vault key.
+
+## Deploy
+
+From a clean checkout:
+
+```sh
+pnpm install
+cp .dev.vars.example .dev.vars
+openssl rand -base64 32   # paste the output into SECRET_VAULT_LOCAL_KEK_V1 in .dev.vars
+```
+
+`.dev.vars` is gitignored. It holds the one secret the deployment needs,
+`SECRET_VAULT_LOCAL_KEK_V1`, which encrypts the provider keys you add later in
+the console. Back it up: losing it makes every stored provider key unreadable,
+and the only fix is to add them again.
+
+Then upload the secret and deploy:
+
+```sh
+pnpm run secrets:upload
+pnpm run deploy
+```
+
+The deploy script does the following, in order:
+
+1. Builds the console.
+2. Checks that the secret the vault mode requires exists on the Worker. If it
+   is missing and `.dev.vars` is present, it uploads the file, so the explicit
+   `secrets:upload` above is a convenience rather than a requirement.
+3. Creates `JWT_SECRET` and `BETTER_AUTH_SECRET` if they do not exist yet.
+   Existing secrets are never overwritten.
+4. Applies the database migrations. On the first run the database does not
+   exist yet, so the script deploys once to provision it and then applies the
+   migrations.
+5. Deploys the Worker with the console bundled as static assets.
+
+Run it again at any time. It is safe to repeat and it is also how you update;
+see [Updating](/self-hosting/updating).
+
+## Verify and sign in
+
+```sh
+curl https://YOUR-WORKER.workers.dev/v1/healthz
+```
+
+Expect `"vault": "ok"`. Then open the Worker URL in a browser and create the
+first account, which becomes the owner. Once it exists, set
+`ALLOW_PUBLIC_REGISTRATION` to `false`, either in the Worker's
+**Settings → Variables** or in a profile overlay as shown below. Existing
+accounts still sign in.
+
+## Deployment profiles
+
+The tracked `wrangler.jsonc` is the complete configuration for a plain
+installation. It deliberately has no custom domain and no account-specific
+database ID. Those belong in a deployment profile.
+
+A profile is a gitignored `wrangler.<profile>.overlay.jsonc` in the repository
+root that holds only the keys your deployment changes. It is not a complete
+Wrangler configuration. Every command merges it over `wrangler.jsonc` first, so
+shared sections such as the resource migrations list are never copied and
+cannot drift. The merge rules are small:
+
+- Objects merge recursively.
+- An array in the overlay replaces the base array.
+- `null` removes a key.
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "workers_dev": false,
+  "routes": [{ "pattern": "console.example.com", "custom_domain": true }],
+  "vars": {
+    "ALLOW_PUBLIC_REGISTRATION": "false",
+    "SECRET_VAULT_MODE": "kms",
+    "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": null
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "app-ai-gateway-prod",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
+```
+
+This example switches the vault to `kms` mode, which is why it removes
+`SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION`: a `local` variable present in `kms`
+mode is a configuration error. Keep `local` mode and drop those two `vars`
+lines if you only want the domain and the database. See
+[Configuration](/self-hosting/configuration) for both modes.
+
+Every script accepts the profile by name:
+
+```sh
+pnpm run deploy --profile prod
+pnpm run deploy:dry-run --profile prod
+pnpm run db:migrate --profile prod
+```
+
+The merged result is written to `wrangler.<profile>.generated.jsonc`, also
+gitignored, and handed to Wrangler with `--config`. Do not edit it; change the
+overlay instead.
+
+A profile reads its secrets from `.dev.vars.<profile>` instead of `.dev.vars`.
+On a profile's first deployment the script uploads that file when it exists,
+so put the secrets the profile's vault mode requires there: in `kms` mode that
+is `SECRET_VAULT_KMS_URL` and `SECRET_VAULT_KMS_TOKEN`, in `local` mode it is
+`SECRET_VAULT_LOCAL_KEK_V1`.
+
+<Callout type="warn" title="Keep overlays out of version control">
+  Overlays are the only place account identifiers, domains, and service
+  bindings should live. They are gitignored by pattern; never force-add one and
+  never copy its contents into `wrangler.jsonc`.
+</Callout>
+
+## Next
+
+Sign in to the console and follow the [Quickstart](/quickstart): add a
+provider key, create an app, and send the first request. When you are ready
+for your own hostname, continue with
+[Custom domain and rate limiting](/self-hosting/custom-domain).

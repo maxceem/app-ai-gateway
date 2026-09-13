@@ -132,7 +132,7 @@ const UsageEventSchema = z.object({
     description: "That gateway's type at request time, for example cf_aig.",
   }),
   credential_source: z.enum(["direct", "byok", "gateway_system", "unknown"]).nullable().openapi({
-    description: "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from the organization's own key store or when a reporting upstream says the organization's own key paid for the inference. Never inferred from a successful response; null when nothing settles it.",
+    description: "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from your own key store or when a reporting upstream says your own key paid for the inference. Never inferred from a successful response; null when nothing settles it.",
   }),
   model_author: z.string().nullable().openapi({
     description: "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists.",
@@ -238,30 +238,34 @@ const AuthEventSummarySchema = z.object({
 }).openapi("AuthEventSummary");
 
 const registry = new OpenAPIHono();
-registry.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
-  type: "http",
-  scheme: "bearer",
-  bearerFormat: "agw_mgmt_…",
-  description: "An organization-scoped management API key created by an owner or admin.",
-});
-registry.openAPIRegistry.registerComponent("securitySchemes", "OperatorSession", {
-  type: "apiKey",
-  in: "cookie",
-  name: "agw_operator_auth.session_token",
-  description: "The Better Auth operator session cookie. Admin requests also send x-console-request: 1.",
-});
-registry.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
-  type: "http",
-  scheme: "bearer",
-  description: "A gateway access token, or an application API key for an issuer-less API-key app.",
-});
+const documentationRegistry = new OpenAPIHono();
+for (const target of [registry, documentationRegistry]) {
+  target.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
+    type: "http",
+    scheme: "bearer",
+    bearerFormat: "agw_mgmt_…",
+    description: "A management API key. It acts with its creator's permissions across all your apps and providers.",
+  });
+  target.openAPIRegistry.registerComponent("securitySchemes", "ConsoleSession", {
+    type: "apiKey",
+    in: "cookie",
+    name: "agw_operator_auth.session_token",
+    description: "The console's session cookie. Admin requests from the console also send x-console-request: 1.",
+  });
+  target.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
+    type: "http",
+    scheme: "bearer",
+    description: "A gateway access token, or an application API key for an issuer-less API-key app.",
+  });
+}
 
-function register(route: RouteConfig): void {
+function register({ hide, ...route }: RouteConfig): void {
   registry.openAPIRegistry.registerPath(route);
+  if (!hide) documentationRegistry.openAPIRegistry.registerPath(route);
 }
 
 const operatorSecurity: RouteConfig["security"] = [
-  { OperatorSession: [] },
+  { ConsoleSession: [] },
   { ManagementBearer: [] },
 ];
 
@@ -287,7 +291,7 @@ register({
   operationId: "getConsoleCapabilities",
   summary: "Discover optional deployment capabilities",
   responses: {
-    200: response("Capabilities used by operator clients.", z.object({
+    200: response("Capabilities the console adapts to.", z.object({
       billing: z.boolean(),
       registrationOpen: z.boolean(),
       googleAuth: z.boolean(),
@@ -302,27 +306,27 @@ for (const authRoute of [
   {
     method: "post",
     path: "/v1/auth/sign-up/email",
-    operationId: "signUpOperator",
-    summary: "Create an operator account and its initial organization",
+    operationId: "signUp",
+    summary: "Create an account",
     body: z.object({ name: z.string(), email: z.email(), password: z.string().min(8) }),
   },
   {
     method: "post",
     path: "/v1/auth/sign-in/email",
-    operationId: "signInOperator",
-    summary: "Sign in an operator with email and password",
+    operationId: "signIn",
+    summary: "Sign in with email and password",
     body: z.object({ email: z.email(), password: z.string() }),
   },
 ] as const) {
   register({
     method: authRoute.method,
     path: authRoute.path,
-    tags: ["Operator authentication"],
+    tags: ["Console authentication"],
     operationId: authRoute.operationId,
     summary: authRoute.summary,
     request: { body: { required: true, content: json(authRoute.body) } },
     responses: {
-      200: response("Authenticated operator session.", z.unknown()),
+      200: response("Authenticated session.", z.unknown()),
       ...errorResponses,
     },
   });
@@ -331,28 +335,28 @@ for (const authRoute of [
 register({
   method: "get",
   path: "/v1/auth/get-session",
-  tags: ["Operator authentication"],
-  operationId: "getOperatorSession",
-  summary: "Get the current operator session",
-  security: [{ OperatorSession: [] }],
+  tags: ["Console authentication"],
+  operationId: "getSession",
+  summary: "Get the current session",
+  security: [{ ConsoleSession: [] }],
   responses: { 200: response("Current session or null.", z.unknown()), ...errorResponses },
 });
 
 register({
   method: "post",
   path: "/v1/auth/sign-out",
-  tags: ["Operator authentication"],
-  operationId: "signOutOperator",
-  summary: "End the current operator session",
-  security: [{ OperatorSession: [] }],
+  tags: ["Console authentication"],
+  operationId: "signOut",
+  summary: "End the current session",
+  security: [{ ConsoleSession: [] }],
   responses: { 200: response("Session ended.", z.unknown()), ...errorResponses },
 });
 
 register({
   method: "get",
   path: "/v1/auth/sign-in/social",
-  tags: ["Operator authentication"],
-  operationId: "signInOperatorWithGoogle",
+  tags: ["Console authentication"],
+  operationId: "signInWithGoogle",
   summary: "Start optional Google sign-in",
   description: "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
   request: { query: z.object({ provider: z.literal("google") }) },
@@ -369,7 +373,7 @@ register({
   responses: {
     200: response("A five-minute, single-use challenge.", z.object({ challenge: z.string(), expires_in: z.number() })),
     ...errorResponses,
-    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the account.", ErrorResponseSchema),
     404: response(
       "This application identifies no end users, so there is no per-user standing to report. Answered with auth_method_not_supported: the request was well-formed, and nothing the caller can rephrase would make it work.",
       ErrorResponseSchema,
@@ -391,7 +395,7 @@ register({
     200: response("The key was registered for the verified issuer identity.", z.object({ user_id: z.string() })),
     ...errorResponses,
     ...issuerErrorResponses,
-    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the account.", ErrorResponseSchema),
   },
 });
 
@@ -413,7 +417,7 @@ register({
     200: response("A short-lived gateway access token.", z.object({ access_token: z.string(), expires_in: z.number() })),
     ...errorResponses,
     ...issuerErrorResponses,
-    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the account.", ErrorResponseSchema),
   },
 });
 
@@ -435,13 +439,13 @@ register({
         requests_per_day: z.number().nullable().describe("The per-user per-day limit this app sets. Null means unlimited."),
         monthly_cost_usd: z.number().describe("What this user's traffic has cost so far in the current UTC calendar month."),
         monthly_budget_usd: z.number().nullable().describe("The per-user monthly spending budget this app sets. Null means unlimited."),
-        blocked: z.boolean().describe("Whether an operator has blocked this user."),
+        blocked: z.boolean().describe("Whether this user has been blocked in the console."),
       }).openapi({
-        description: "The limits the application's operator set on this user, and where the user stands against them. The organization's own plan allowance is not reported here: it is organization-wide, and is reported on the rejection that spends it.",
+        description: "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it.",
       }),
     })),
     ...errorResponses,
-    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the account.", ErrorResponseSchema),
     404: response(
       "This application identifies no end users, so there is no per-user standing to report. Answered with auth_method_not_supported: the request was well-formed, and nothing the caller can rephrase would make it work.",
       ErrorResponseSchema,
@@ -455,7 +459,7 @@ register({
   tags: ["Provider proxy"],
   operationId: "proxyProviderRequest",
   summary: "Proxy a provider-native model request",
-  description: "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, spends one request from the organization's monthly allowance, and streams the upstream response without buffering.",
+  description: "The path, body, and successful response retain the selected provider's native contract. For example, OpenAI clients send v1/responses or v1/chat/completions; gateway-specific provider slug quirks are never part of the client path. The gateway validates the configured path and model, spends one request from the account's monthly allowance, and streams the upstream response without buffering.",
   security: [{ GatewayBearer: [] }],
   request: {
     params: ProviderPath,
@@ -470,8 +474,8 @@ register({
   responses: {
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
-    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
-    429: response("Either the app's own limits or the organization's plan allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the account.", ErrorResponseSchema),
+    429: response("Either the app's own limits or the account's request allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.", ErrorResponseSchema),
     502: response("The upstream provider request failed.", ErrorResponseSchema),
     504: response("The upstream provider sent no response headers within the gateway's time-to-first-byte budget.", ErrorResponseSchema),
   },
@@ -483,7 +487,7 @@ register({
   tags: ["Named endpoints"],
   operationId: "callNamedEndpoint",
   summary: "Call a server-configured named endpoint",
-  description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so an operator can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+  description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
   security: [{ GatewayBearer: [] }],
   request: {
     params: EndpointPath,
@@ -514,8 +518,8 @@ register({
   responses: {
     200: response("Provider-native response. Streaming responses remain streamed.", z.unknown()),
     ...errorResponses,
-    402: response("No billing plan resolves for the organization.", ErrorResponseSchema),
-    429: response("Either the app's own limits or the organization's plan allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.", ErrorResponseSchema),
+    402: response("No billing plan resolves for the account.", ErrorResponseSchema),
+    429: response("Either the app's own limits or the account's request allowance refused the request. The app's limits are checked first and answer app_rate_limited or app_budget_exhausted, carrying scope; the plan allowance answers billing_request_quota_exceeded with limit, used, and the UTC resetAt. Every one of them carries a Retry-After header.", ErrorResponseSchema),
     502: response("Every configured target failed.", ErrorResponseSchema),
     504: response("Every configured target failed, and the last one sent no response headers within the gateway's time-to-first-byte budget.", ErrorResponseSchema),
   },
@@ -535,7 +539,7 @@ register({
         month: z.string(),
         has_proxied_requests: z.boolean().openapi({
           description:
-            "Whether this organization has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once an organization's traffic has started.",
+            "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
         }),
         apps: z.array(z.unknown()),
       }),
@@ -589,6 +593,7 @@ const BillingPlanSelectionSchema = z.object({
 register({
   method: "get",
   path: "/v1/admin/billing/plans",
+  hide: true,
   tags: ["Admin billing"],
   operationId: "listBillingPlans",
   summary: "List billing plans",
@@ -605,19 +610,20 @@ const BillingQuotaSchema = z.object({
   periodId: z.string().describe("Opaque identifier for the allowance period being reported."),
   periodStart: z.string().describe("Inclusive UTC instant at which this allowance period began."),
   periodEnd: z.string().describe("Exclusive UTC instant at which this allowance period ends."),
-  used: z.number().int().describe("Requests dispatched to a provider in this period, organization-wide."),
+  used: z.number().int().describe("Requests dispatched to a provider in this period, across all apps."),
   limit: z.number().int().optional().describe("The plan's maxRequestsPerMonth. Absent means unlimited."),
   resetAt: z.string().describe("UTC instant at which the allowance resets; currently equal to periodEnd."),
 });
 
 for (const route of [
-  { path: "/v1/admin/billing/status", operationId: "getBillingStatus", summary: "Get organization billing access" },
+  { path: "/v1/admin/billing/status", operationId: "getBillingStatus", summary: "Get billing access and the current allowance period" },
   { path: "/v1/admin/billing/portal/status", operationId: "getBillingPortalStatus", summary: "Poll billing portal/access status" },
 ] as const) {
   register({
     method: "get",
     path: route.path,
     tags: ["Admin billing"],
+    hide: true,
     operationId: route.operationId,
     summary: route.summary,
     security: operatorSecurity,
@@ -639,6 +645,7 @@ for (const route of [
 register({
   method: "post",
   path: "/v1/admin/billing/checkout",
+  hide: true,
   tags: ["Admin billing"],
   operationId: "createBillingCheckout",
   summary: "Create a hosted checkout",
@@ -658,6 +665,7 @@ for (const route of [
     method: "post",
     path: route.path,
     tags: ["Admin billing"],
+    hide: true,
     operationId: route.operationId,
     summary: route.summary,
     security: operatorSecurity,
@@ -669,6 +677,7 @@ for (const route of [
 register({
   method: "post",
   path: "/v1/admin/billing/cancel",
+  hide: true,
   tags: ["Admin billing"],
   operationId: "cancelBillingSubscription",
   summary: "Cancel the subscription at period end",
@@ -679,6 +688,7 @@ register({
 register({
   method: "post",
   path: "/v1/admin/billing/trial",
+  hide: true,
   tags: ["Admin billing"],
   operationId: "startBillingTrial",
   summary: "Start a no-card trial",
@@ -693,7 +703,7 @@ for (const definition of [
     method: "put",
     operationId: "updateApp",
     summary: "Update an application",
-    description: "Updates an existing application in place. It never creates one: an id no application in your organization holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+    description: "Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
   },
 ] as const) {
   register({
@@ -759,8 +769,8 @@ register({
   path: "/v1/admin/keys",
   tags: ["Admin management keys"],
   operationId: "listManagementKeys",
-  summary: "List management keys for the current organization",
-  security: [{ OperatorSession: [] }],
+  summary: "List management keys",
+  security: [{ ConsoleSession: [] }],
   responses: {
     200: response("Management key metadata without plaintext tokens.", z.object({
       keys: z.array(ManagementKeySummarySchema),
@@ -774,9 +784,9 @@ register({
   path: "/v1/admin/keys",
   tags: ["Admin management keys"],
   operationId: "createManagementKey",
-  summary: "Create a management key for the current organization",
-  description: "Requires an owner/admin user session. The plaintext agw_mgmt_ token is returned once.",
-  security: [{ OperatorSession: [] }],
+  summary: "Create a management key",
+  description: "Requires a signed-in console session with the owner or admin role; a management key cannot mint another. The plaintext agw_mgmt_ token is returned once.",
+  security: [{ ConsoleSession: [] }],
   request: { body: { required: true, content: json(z.object({ name: z.string().min(1).max(100) })) } },
   responses: {
     201: response("One-time plaintext management key.", z.object({
@@ -793,7 +803,7 @@ register({
   operationId: "revokeManagementKey",
   summary: "Revoke a management key",
   description: "Requires an owner/admin user session.",
-  security: [{ OperatorSession: [] }],
+  security: [{ ConsoleSession: [] }],
   request: { params: ManagementKeyPath },
   responses: {
     200: response("Revoked management key metadata.", z.object({ key: ManagementKeySummarySchema })),
@@ -808,7 +818,7 @@ const ProviderIdPath = z.object({
 const ProviderSummarySchema = z.object({
   id: z.string(),
   type: z.enum(PROVIDER_TYPES),
-  slug: ProviderSlugSchema.openapi({ description: "Organization-unique URL segment used under /proxy/{slug}/." }),
+  slug: ProviderSlugSchema.openapi({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
   name: z.string(),
   secretHint: z.string().nullable().openapi({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
@@ -818,7 +828,7 @@ const ProviderSummarySchema = z.object({
     description: "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway.",
   }),
   baseUrl: z.string().nullable().openapi({
-    description: "Operator-supplied origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
+    description: "Your own origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
     example: "https://my-resource.openai.azure.com/openai/v1/",
   }),
   pricing: ProviderPricingSchema.nullable(),
@@ -846,7 +856,7 @@ register({
   path: "/v1/admin/providers",
   tags: ["Admin providers"],
   operationId: "listProviders",
-  summary: "List the organization's provider credentials",
+  summary: "List provider credentials",
   security: operatorSecurity,
   responses: {
     200: response("Provider metadata without credentials.", z.object({
@@ -861,9 +871,9 @@ register({
   path: "/v1/admin/providers",
   tags: ["Admin providers"],
   operationId: "createProvider",
-  summary: "Store a provider credential for the organization",
+  summary: "Store a provider credential",
   description:
-    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among the organization's instances, disabled ones included; only deleting an instance frees its slug.",
+    "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug.",
   security: operatorSecurity,
   request: { body: { required: true, content: json(ProviderCreateRequestSchema) } },
   responses: {
@@ -1129,21 +1139,21 @@ register({
   method: "get",
   path: "/v1/admin/session",
   tags: ["Admin organizations"],
-  operationId: "getOperatorContext",
+  operationId: "getAdminSession",
   summary: "Get the caller's identity, current organization and role",
   description:
-    "Operator clients need the caller's role and active organization to gate their UI; the Better Auth session endpoint reports neither.",
+    "The console needs the caller's role and active organization to gate its UI; the sign-in session endpoint reports neither.",
   security: operatorSecurity,
-  responses: { 200: response("Resolved operator session.", OperatorSessionSchema), ...errorResponses },
+  responses: { 200: response("Resolved session.", OperatorSessionSchema), ...errorResponses },
 });
 
 register({
   method: "get",
   path: "/v1/admin/organizations",
   tags: ["Admin organizations"],
-  operationId: "listOperatorOrganizations",
+  operationId: "listOrganizations",
   summary: "List the organizations the caller belongs to",
-  security: [{ OperatorSession: [] }],
+  security: [{ ConsoleSession: [] }],
   responses: {
     200: response("Memberships ordered by organization creation time.", z.object({
       organizations: z.array(OrganizationMembershipSchema),
@@ -1156,10 +1166,10 @@ register({
   method: "post",
   path: "/v1/admin/organizations/select",
   tags: ["Admin organizations"],
-  operationId: "selectOperatorOrganization",
+  operationId: "selectOrganization",
   summary: "Switch the caller's active organization",
   description: "Available to every member, including read-only members, of the target organization.",
-  security: [{ OperatorSession: [] }],
+  security: [{ ConsoleSession: [] }],
   request: { body: { required: true, content: json(OrganizationSelectRequestSchema) } },
   responses: { 200: response("Session rescoped to the selected organization.", OperatorSessionSchema), ...errorResponses },
 });
@@ -1228,28 +1238,29 @@ for (const route of adminRoutes) {
   });
 }
 
-export function createOpenAPIDocument() {
-  return registry.getOpenAPI31Document({
+export function createOpenAPIDocument({ includeHidden = true } = {}) {
+  const target = includeHidden ? registry : documentationRegistry;
+  return target.getOpenAPI31Document({
     openapi: "3.1.0",
     info: {
       title: "App AI Gateway API",
       version: "0.1.0",
-      description: "A multi-tenant, provider-native LLM proxy for mobile applications and trusted server backends.",
+      description: "A provider-native AI proxy for iOS applications and trusted server backends. Provider keys stay on the gateway; requests are checked, limited and recorded before they reach a provider.",
     },
-    servers: [{ url: "https://gateway.example.com", description: "Replace with your deployed gateway origin" }],
+    servers: [{ url: "https://api.appaigateway.com", description: "The cloud API host. On a self-hosted gateway, use your own origin." }],
     tags: [
       { name: "Operations", description: "Unauthenticated service health." },
-      { name: "Operator authentication", description: "Better Auth signup and session lifecycle." },
+      { name: "Console authentication", description: "Sign-up, sign-in and session lifecycle for the console." },
       { name: "Application authentication", description: "Issuer identity plus App Attest or API-key client proof." },
       { name: "Application", description: "Authenticated application-user state." },
       { name: "Provider proxy", description: "Provider-native streaming proxy endpoints." },
       { name: "Named endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, and usage." },
-      { name: "Admin management keys", description: "Organization-scoped agw_mgmt_ credentials." },
+      { name: "Admin management keys", description: "agw_mgmt_ credentials for scripts, CI and agents." },
       { name: "Admin providers", description: "Named provider instances and their credentials." },
       { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },
-      { name: "Admin organizations", description: "Operator identity and organization switching." },
+      { name: "Admin organizations", description: "Caller identity and organization switching." },
       { name: "Admin billing", description: "Optional billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },
     ],

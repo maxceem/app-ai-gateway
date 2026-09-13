@@ -1,0 +1,99 @@
+---
+title: Identity and entitlement
+description: The three questions the gateway asks about a request, and which combinations an app can be configured for.
+---
+
+Every request answers up to three questions, and each app's **Auth policy**
+page is organised around them.
+
+| Question | Answered by | Set under |
+| --- | --- | --- |
+| Is this my app? | Apple App Attest, or an application API key | **Application identity** |
+| Which user is it acting for? | A sign-in token, the app install itself, or a header from your backend | **User authentication** |
+| Has that user paid? | A claim in the sign-in token | **Subscription check** |
+
+The first question always has an answer. The second and third are optional,
+and the third needs the second.
+
+## Application identity
+
+An **iOS application** proves itself with Apple App Attest. The device holds a
+key in the Secure Enclave, Apple attests that the key belongs to a genuine
+install of your app, and the gateway checks that attestation against your
+Team ID and Bundle ID. The app then exchanges an assertion for a gateway
+token that lasts one hour. Nothing shippable inside the app can be extracted
+and reused elsewhere.
+
+A **server** application proves itself with an API key, a long-lived
+`agw_…` secret that your backend sends on every request. The key belongs in a
+secret manager, never in a client.
+
+The AppAIGateway Swift package does the App Attest exchange for you. See
+[iOS with the Swift package](/integrate/ios).
+
+## User authentication
+
+Identifying users is what makes per-user limits, per-user usage and blocking
+possible. An app can identify them in one of these ways.
+
+| Choice in the console | App type | Who the user is |
+| --- | --- | --- |
+| **Signed-in users only** | iOS and server | The subject of a sign-in token from your identity provider, verified by the gateway |
+| **Unauthenticated users** | iOS | The app install. The App Attest key is the identity |
+| **Your backend sends the user id** | Server | Whatever your backend puts in a header you choose, taken on trust |
+| **No user identity** | Server | Nobody. Requests are not linked to a user and per-user limits do not apply |
+
+**Signed-in users only** is the strongest choice. Your app sends the ID token
+it already has from Firebase, Supabase, Auth0, Clerk, Sign in with Apple or
+your own issuer, and the gateway verifies the signature, the issuer and the
+audience against your configuration before it trusts the user ID inside.
+
+**Unauthenticated users** is the quick start for an iOS app with no sign-in.
+Each install counts as one user, so per-install limits and blocks work. The
+identity does not survive reinstalling the app, so a determined user can shed
+a block by starting over.
+
+**Your backend sends the user id** belongs on a server you control. The
+gateway takes the value as given, so it is never appropriate for a client an
+end user runs.
+
+Details and the settings for each identity provider are on
+[User authentication](/applications/auth-policy/user-authentication).
+
+## Subscription check
+
+With signed-in users, the gateway can also require that the sign-in token
+carries a claim saying the user has paid. The gateway never talks to the App
+Store itself. Something else, typically RevenueCat's Firebase extension or
+your own backend, writes the entitlement into the user's token, and the
+gateway checks for it on every token exchange.
+
+Because the claim is written after the purchase, there is a short window
+where a paying user holds a token without it yet. The gateway reports that as
+a distinct outcome so your app waits instead of asking the user to sign in
+again. See [Subscription check](/applications/auth-policy/subscription-check).
+
+## What the gateway token is
+
+An iOS app, or a server app with signed-in users, does not send its proof and
+its user's token on every request. It exchanges them once at the app's token
+endpoint and receives a **gateway token**, valid for one hour, that stands for
+both. Requests carry that token and an `X-App-Version` header. The Swift
+package refreshes it before it expires.
+
+A server app with no signed-in users skips the exchange and sends its API key
+directly.
+
+## Combinations
+
+| App type | User authentication | Subscription check |
+| --- | --- | --- |
+| iOS | Signed-in users | Available |
+| iOS | Unauthenticated users | Not available, there is no token to check |
+| Server | Signed-in users | Available |
+| Server | Backend sends the user id | Not available |
+| Server | No user identity | Not available |
+
+Two pairings do not exist. An iOS app cannot name its own user in a header,
+because the device is the party being limited. A server app cannot use the
+app-install identity, because it has no attested key.

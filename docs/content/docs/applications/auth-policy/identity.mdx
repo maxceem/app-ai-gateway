@@ -1,0 +1,106 @@
+---
+title: Application identity
+description: How an app proves it is your app, with App Attest for iOS or API keys for a server.
+---
+
+The **Auth policy** page has three levels, and **Application identity** is the
+first. It answers one question: is this request coming from my app? An iOS
+application answers with Apple App Attest. A server answers with an API key.
+
+The level shows its state at a glance: **Verified with App Attest**, **Team
+or bundle id missing**, **Verified with API keys**, or **No active API key**.
+
+## iOS applications
+
+Only builds signed with your team and bundle ID can call AI providers through
+this app.
+
+- **Apple Team ID**: found in your Apple Developer account under Membership
+  details.
+- **Bundle ID**: on your target's Signing & Capabilities tab in Xcode.
+
+Apple binds an App Attest key to one install of one app on one device, and
+the attestation carries a hash of your team ID and bundle ID. The gateway
+checks that hash, stores the key's public half, and from then on accepts
+assertions signed by that key. The key never leaves the Secure Enclave.
+
+### iOS app environment
+
+Apple runs App Attest in two environments and stamps which one into every
+attestation.
+
+- **Production**: builds signed for TestFlight and the App Store. Always on.
+- **Development**: builds run from Xcode, which attest in Apple's development
+  environment. Off unless you turn it on.
+
+A development-signed build is debuggable and runs on any device carrying your
+team's provisioning profile, which is why Development is off by default and
+why the console warns when you turn it on. Put the opt-in on a development
+bundle ID, never on the one you ship.
+
+Removing an environment also stops the keys it already admitted: their next
+token exchange answers `403 attest_failed` and the app registers a fresh key.
+
+Two things no setting changes. App Attest is unavailable in the Simulator,
+because it needs the Secure Enclave. And a development build can be made to
+attest in production instead by setting the
+`com.apple.developer.devicecheck.appattest-environment` entitlement to
+`production`, which is the better answer when a development build only needs
+to reach a production-only app.
+
+### In the configuration
+
+```json
+"authentication": {
+  "type": "apple_app_attest",
+  "app_attest": {
+    "team_id": "ABCDE12345",
+    "bundle_id": "com.example.app.dev",
+    "environments": ["production", "development"]
+  },
+  "end_user": { "source": "app_install" }
+}
+```
+
+`environments` may be omitted, which means `["production"]`. `end_user` is
+required on an iOS app and is covered under
+[User authentication](/applications/auth-policy/user-authentication).
+
+## Server applications
+
+A server application proves itself with one of its API keys. The card lists
+every key with its **Name**, **Prefix**, **Last used** and **Status**.
+
+**New key** asks for a **Key name** so you can tell keys apart, then shows
+the key once in a dialog titled **Copy your new key now**. The gateway stores
+only a hash, so there is no way to see the key again. Store it in your
+backend's secret manager.
+
+**Revoke** stops a key within a minute. Create the replacement first, move
+your backend to it, then revoke the old one, and rotation costs no downtime.
+
+An app whose every key is revoked answers `401 auth_required` to everything.
+The app's **Overview** page shows a notice when that happens.
+
+### How the key is sent
+
+Without signed-in users, your backend sends the key as the bearer credential
+on every request:
+
+```http
+Authorization: Bearer agw_…
+```
+
+With signed-in users, the key is exchanged together with the user's sign-in
+token for a gateway token instead, and bare keys are refused on requests. See
+[Server applications](/integrate/server).
+
+### In the configuration
+
+```json
+"authentication": { "type": "api_key" }
+```
+
+Keys are not part of the configuration. `POST /v1/admin/apps/{app}/keys`
+creates one and returns `key` once; `POST /v1/admin/apps/{app}/keys/{key}/revoke`
+revokes it.

@@ -1,0 +1,188 @@
+---
+title: Configuration
+description: Every variable and secret the gateway reads, what it does, and where to set it.
+---
+
+The gateway is configured through Worker variables and secrets. A variable is
+plain text you can read back in the dashboard. A secret is write-only: once
+set, only its name is visible. Provider keys are not configured here at all.
+You add them in the console, and the gateway encrypts them with the vault
+described below.
+
+## Where a setting lives
+
+| Place | What it holds | When you use it |
+| --- | --- | --- |
+| The Deploy to Cloudflare form | Every secret name in `.dev.vars.example`, masked, and every entry in the `vars` block of `wrangler.jsonc`, in clear text with its default. | The one-click deployment. |
+| The Worker's **Settings → Variables** in the Cloudflare dashboard | Any variable or secret, after deployment. | Changing a setting on a deployed gateway without a redeploy from a checkout. |
+| `.dev.vars` in your checkout | Secrets. `pnpm run secrets:upload` sends them to the Worker; `pnpm run dev` reads them locally. | Wrangler deployments and local development. |
+| The `vars` block of a profile overlay | Plain variables for one deployment. | Anything a [deployment profile](/self-hosting/deploy-with-wrangler) changes. |
+
+One rule keeps those places consistent: a setting is listed in exactly one of
+`.dev.vars.example`, where it is a secret, or the `vars` block of
+`wrangler.jsonc`, where it is a plain value. The deploy form masks every name
+from the first file and prints every value from the second, so a setting that
+appears in both is asked for twice, once behind asterisks.
+
+Set a secret with Wrangler's hidden prompt or from stdin, never as a command
+argument:
+
+```sh
+pnpm exec wrangler secret put SECRET_VAULT_LOCAL_KEK_V2
+```
+
+## The vault
+
+Provider keys are encrypted at rest. `SECRET_VAULT_MODE` chooses how, and the
+choice is explicit: nothing is inferred from which secrets happen to exist, and
+a missing or mixed configuration is a hard error rather than a quiet fallback.
+
+| `SECRET_VAULT_MODE` | Requires | Use it when |
+| --- | --- | --- |
+| `local` (default) | `SECRET_VAULT_LOCAL_KEK_V1`; optionally `SECRET_VAULT_LOCAL_KEK_V<n>` and `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Self-hosting. AES-256-GCM inside the Worker under a key you hold. No second service. |
+| `kms` | `SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN` | Hardened deployments. Envelope encryption through a [cf-kms](https://github.com/maxceem/cf-kms) Worker in a separate Cloudflare account, so the root key never enters this account and every decrypt is audited and revocable. |
+
+`SECRET_VAULT_LOCAL_KEK_V1` is a secret. Make one with:
+
+```sh
+openssl rand -base64 32
+```
+
+`SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` is a plain variable naming which
+`SECRET_VAULT_LOCAL_KEK_V<n>` new writes use. Older versions stay accepted for
+reading, which is what makes rotation possible; see
+[Operations](/self-hosting/operations).
+
+A variable from the other mode is an error, not something to ignore:
+`SECRET_VAULT_LOCAL_KEK_V1` present in `kms` mode, or `SECRET_VAULT_KMS_URL`
+present in `local` mode, marks the vault as misconfigured. `GET /v1/healthz`
+reports the result in a non-secret `vault` field, `"ok"` or `"misconfigured"`,
+and the Worker log names the offending variable without printing its value.
+
+### Running kms mode
+
+Deploy a cf-kms instance dedicated to this gateway in your security account,
+on a custom domain, with its own `KEK_V1` and a `CALLERS` entry of:
+
+```json
+{ "name": "app-ai-gateway", "requiredContext": { "service": "app-ai-gateway" } }
+```
+
+Then set `SECRET_VAULT_MODE=kms` on this Worker, remove
+`SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION`, and add the URL and the caller token
+as secrets. Encrypted blobs are self-describing by prefix, so switching modes
+on a gateway that already holds provider keys is a decrypt-and-re-encrypt
+migration, and a mismatch fails loudly rather than silently.
+
+<Callout type="warn" title="Back the vault key up">
+  In `local` mode, losing every `SECRET_VAULT_LOCAL_KEK_V<n>` makes the stored
+  provider keys permanently unreadable. Keep a copy outside Cloudflare.
+</Callout>
+
+## Generated secrets
+
+| Name | Purpose |
+| --- | --- |
+| `JWT_SECRET` | Signs the short-lived tokens the gateway issues to your apps. |
+| `BETTER_AUTH_SECRET` | Signs console sessions and management keys. |
+
+Both are created on the first deployment, by the deploy script or by the
+one-click flow, and kept unchanged afterwards. For local development,
+`pnpm run secrets:setup-local` generates them into `.dev.vars`. You never
+supply a value for either.
+
+## Sign-in
+
+### `ALLOW_PUBLIC_REGISTRATION`
+
+Plain variable, default `true`, so the console can create the first account on
+a fresh deployment. Once that account exists, set it to `false`. The sign-up
+form and the sign-up API are then closed, and existing accounts still sign in.
+Set it back to `true` for as long as it takes to add another account.
+
+### `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+
+Secrets. Both must be set for the console to offer sign-in with Google; with
+either missing the button does not appear. Create an OAuth client in Google
+Cloud with the authorised redirect URI:
+
+```text
+https://YOUR-HOST/v1/auth/callback/google
+```
+
+`ALLOW_PUBLIC_REGISTRATION` applies to Google sign-in as well: with it closed,
+a Google account that has no gateway account yet cannot create one.
+
+### `OAUTH_RELAY_URL`
+
+Plain variable, unset by default. It points at an OAuth callback relay for
+local instances whose hostname changes, so it cannot be registered with
+Google. A deployment that owns a stable hostname leaves it unset. See
+[Local development](/self-hosting/local-development).
+
+## Hosts
+
+### `PUBLIC_API_URL`
+
+Plain variable, unset by default. Set it when the gateway answers on a second
+custom domain that your apps call, separate from the one you sign in to. It
+must be an origin: `https`, no path, no query. It changes what the console
+prints as the base URL and which routes answer on that host; see
+[Custom domain and rate limiting](/self-hosting/custom-domain).
+
+## Providers
+
+### `PROVIDER_TTFB_TIMEOUT_SECONDS`
+
+Plain variable, default `120`. How long a provider may take to send its
+response headers before the gateway gives up and answers `504`. Once headers
+arrive the body streams for as long as the model needs; only the first byte is
+bounded. Reasoning models can think for a minute before that first byte, which
+is why the default is generous.
+
+## Legal links
+
+### `TERMS_OF_SERVICE_URL` and `PRIVACY_POLICY_URL`
+
+Plain variables, unset by default. When both are set, the sign-up screen shows
+a consent line linking to them. With either missing, nothing is shown. Set
+them in a profile overlay or in the dashboard.
+
+## Console build variables
+
+The console is a static bundle, so anything it needs is read when it is built,
+not when it runs. Both of these are optional and unset by default.
+
+| Variable | Effect |
+| --- | --- |
+| `VITE_POSTHOG_KEY` | [PostHog](https://posthog.com) project API key for console analytics. |
+| `VITE_POSTHOG_HOST` | PostHog ingestion host, for example `https://eu.i.posthog.com`. |
+
+Both must be set for analytics to be built in. With either missing, the
+console collects nothing and does not load the SDK. Put them in a gitignored
+`console/.env.production.local` or export them before `pnpm run deploy`:
+
+```sh title="console/.env.production.local"
+VITE_POSTHOG_KEY=phc_your_project_key
+VITE_POSTHOG_HOST=https://eu.i.posthog.com
+```
+
+They are read by `pnpm run console:build`, which the deploy script runs first,
+so changing either means deploying again.
+
+## Summary
+
+| Name | Kind | Default |
+| --- | --- | --- |
+| `SECRET_VAULT_MODE` | Variable | `local` |
+| `SECRET_VAULT_LOCAL_KEK_V1`, `SECRET_VAULT_LOCAL_KEK_V<n>` | Secret | Required in `local` mode |
+| `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Variable | `1` |
+| `SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN` | Secret | Required in `kms` mode |
+| `JWT_SECRET`, `BETTER_AUTH_SECRET` | Secret | Generated |
+| `ALLOW_PUBLIC_REGISTRATION` | Variable | `true` |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |
+| `OAUTH_RELAY_URL` | Variable | Unset |
+| `PUBLIC_API_URL` | Variable | Unset |
+| `PROVIDER_TTFB_TIMEOUT_SECONDS` | Variable | `120` |
+| `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |
+| `VITE_POSTHOG_KEY`, `VITE_POSTHOG_HOST` | Console build | Unset |

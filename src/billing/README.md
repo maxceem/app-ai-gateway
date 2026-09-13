@@ -1,7 +1,7 @@
----
-title: Cloud billing setup
-description: Connect the optional billing worker and enforce plan entitlements.
----
+# Cloud billing service binding
+
+This note is for the hosted deployment only. The open-source gateway has no `BILLING` binding and never reads a plan.
+
 
 The open-source default has no `BILLING` binding. In that mode the gateway marks
 access as self-hosted and does not impose subscription entitlements.
@@ -9,7 +9,7 @@ access as self-hosted and does not impose subscription entitlements.
 ## Add the service binding
 
 Hosted operators can bind a billing Worker's entrypoint in the
-[deployment profile](/deployment#deployment-profiles) of the deployment that
+[deployment profile](../../docs/content/docs/self-hosting/deploy-with-wrangler.mdx) of the deployment that
 needs billing. Any Worker satisfying `BillingRuntime` in
 `src/billing/contract.ts` will do:
 
@@ -130,13 +130,13 @@ Free period.
 Nothing about a stored application configuration is capped by a plan. Creating,
 validating, and updating apps are entitlement checks only.
 
-See [Operations](/operations) for what a client sees when the allowance runs
+See the self-hosting operations guide for what a client sees when the allowance runs
 out.
 
 The allowance is not a per-user limit and does not cap what a tenant may
 grant its own users. Those are set separately, per app, and they
 are checked before the allowance; see
-[Application configuration](/configuration).
+the application limits guide.
 
 A tenant with no plan at all — `access.plan` is `null` — receives
 `402 billing_payment_required` on its apps' data-plane routes. With a default plan

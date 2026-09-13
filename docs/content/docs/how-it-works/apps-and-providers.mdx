@@ -1,0 +1,84 @@
+---
+title: Apps and providers
+description: The two things you configure, what each one owns, and how a request moves between them.
+---
+
+You configure two kinds of things in the console. **Providers** are the AI
+services you hold keys for. **Apps** are the applications that call them. A
+request always names one app and one provider:
+
+```text
+https://api.appaigateway.com/v1/apps/{app}/proxy/{provider}/{provider_path}
+```
+
+## Providers are shared, apps are separate
+
+A provider key is added once and is available to every app you have. You do
+not add the same OpenAI key to each app. An app decides which of your
+providers it may use on its **Proxy policy** page, and new apps may use all of
+them until you say otherwise.
+
+Each provider has a **slug**, the short name in the URL above. The first
+provider of each type takes the type name: `openai`, `anthropic`, `gemini`,
+`xai`. A second key of the same type needs a slug of its own, such as
+`openai-dev`, so an app can be pointed at one key or the other. See
+[Add a provider key](/providers/add-a-provider).
+
+An app owns everything about how it may call those providers:
+
+- **Auth policy**: how the app proves it is your app, whether requests belong
+  to signed-in users, and whether those users must have paid.
+- **Proxy policy**: which providers, paths and models the app may use.
+- **Endpoints**: named endpoints whose model and parameters live on the
+  gateway.
+- **Limits**: requests per minute and per day, and a monthly budget, per user
+  and per app.
+
+## The app ID is permanent
+
+The gateway builds an app's ID from its name plus a short random suffix, for
+example `example-app-a1b2c3`. The ID is the `{app}` segment of every
+URL the app calls, so your app compiles it into its base URL. It cannot be
+chosen and it cannot be changed. Renaming the app changes only the name.
+
+The ID is not a secret and it is not a credential. Knowing it lets nobody call
+the app; App Attest or an API key still has to pass.
+
+## What happens to a request
+
+1. The gateway reads the app from the URL and checks the credential: a
+   gateway token for an iOS app, or an API key for a server app.
+2. It works out which user the request belongs to, if the app identifies
+   users, and refuses a blocked user.
+3. It checks the app's limits, per user first and then per app.
+4. It checks the app's proxy policy: is this provider allowed, this path, this
+   model? Is the model priced?
+5. It adds your provider key and forwards the request to the provider. The
+   body goes through unchanged, apart from a few same-format adjustments such
+   as a model rewrite or an output cap you configured.
+6. The provider's response streams back to your app as the provider sent it.
+   The gateway reads the usage out of the stream and records the request with
+   its tokens, cost, latency and outcome.
+
+Requests refused at steps 1 to 4 never reach a provider and cost nothing at
+the provider. Refusals are recorded too, so you can see them on the app's
+**Usage** page.
+
+## Provider-native, not unified
+
+The gateway does not define its own request format. You send OpenAI's body to
+an OpenAI provider and Anthropic's body to an Anthropic provider, and you get
+each provider's own response back. The provider's documentation stays the
+reference for every field.
+
+This is what lets the official SDKs work as they are. Point the OpenAI SDK's
+base URL at `…/proxy/openai/v1` and it appends `responses` or
+`chat/completions` itself. See [Calling the provider proxy](/integrate/proxy).
+
+## Changes take up to a minute
+
+The gateway caches app and provider configuration for sixty seconds. A saved
+change to an app's policy, a rotated key, a disabled provider: all of these
+are live everywhere within a minute. Blocking a user is faster: new token
+exchanges are refused at once, and an already issued token stops working
+within ten seconds.

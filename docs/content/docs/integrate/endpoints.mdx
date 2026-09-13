@@ -1,0 +1,64 @@
+---
+title: Calling named endpoints
+description: Send a request body to a slug and let the gateway choose the provider, model and parameters.
+---
+
+A [named endpoint](/applications/endpoints) is a URL whose provider and
+model are configured on the gateway:
+
+```text
+POST https://api.appaigateway.com/v1/apps/{app}/endpoints/{slug}
+```
+
+Authentication is identical to the proxy: a gateway token with
+`X-App-Version`, or an API key. Limits, usage and error codes are the same.
+Only `POST` is accepted.
+
+## Responses-style endpoints
+
+Send an OpenAI Responses body. You may omit `model`; if you send one, the
+gateway overwrites it with the endpoint's model. The endpoint's parameters
+are deep-merged over your body, with the endpoint winning on conflicts, and
+its output cap is applied like the proxy's.
+
+```sh
+curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/chat \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'X-App-Version: 1.4.2' \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Suggest a 500 kcal lunch."}'
+```
+
+The response is in the serving provider's format. If the endpoint falls back
+from OpenAI to xAI, you get xAI's Responses-style body. Both follow the same
+shape, but read the usage and any provider-specific fields defensively.
+
+Streaming works as on the proxy: set `"stream": true` and read the event
+stream. A fallback happens only if nothing has been streamed yet.
+
+## Transcription endpoints
+
+Send an OpenAI audio-transcription multipart body. `model` may be omitted.
+
+```sh
+curl https://api.appaigateway.com/v1/apps/example-app-a1b2c3/endpoints/transcribe \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'X-App-Version: 1.4.2' \
+  -F file=@note.m4a
+```
+
+## With the Swift package
+
+```swift
+var request = try await gateway.authorizedRequest(endpointSlug: "chat")
+request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+request.httpBody = Data(#"{"input":"Suggest a 500 kcal lunch."}"#.utf8)
+let (data, response) = try await URLSession.shared.data(for: request)
+```
+
+## Errors
+
+An unknown slug answers `404 endpoint_not_found`. A method other than `POST`
+answers `404 invalid_request`. When every target in the chain fails, the last
+provider's error is returned, or `502 provider_error` if none could be
+reached.

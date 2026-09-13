@@ -1,0 +1,154 @@
+---
+title: User authentication
+description: Tie requests to signed-in users from Firebase, Supabase, Auth0, Clerk or your own issuer, or count each install as a user.
+---
+
+**User authentication** is the second level of the **Auth policy** page. It
+decides whether requests belong to a user and how the gateway knows who that
+is. Identifying users is what makes per-user limits, per-user usage and
+blocking possible.
+
+The state line says which choice is active: **Signed-in users only**,
+**Identity provider not finished**, **Your backend names the user**, **Header
+name missing**, **Unauthenticated users allowed**, or **No user identity**.
+
+## The choices
+
+| Choice | App type | User ID |
+| --- | --- | --- |
+| **Signed-in users only** | iOS and server | A claim from a verified sign-in token, `sub` by default |
+| **Unauthenticated users** | iOS | The App Attest key ID of the install |
+| **Your backend sends the user id** | Server | The value of a header your backend sends |
+| **No user identity** | Server | None |
+
+## Signed-in users only
+
+Your app already has an ID token from your identity provider once the user
+signs in. It sends that token to the gateway, and the gateway verifies the
+signature against the provider's public keys, checks the issuer and audience
+against what you configured, and takes the user ID from the token.
+
+Pick your provider under **Identity provider**. The preset fills in the
+verification settings from the values you enter.
+
+| Preset | You enter | What it configures |
+| --- | --- | --- |
+| **Firebase Authentication** | Firebase project id (from Project settings, not the project number) | Google's shared key set, issuer `https://securetoken.google.com/<project-id>`, audience `<project-id>` |
+| **Supabase Auth** | Project ref (the subdomain of your project URL) | Your project's JWKS, issuer `https://<ref>.supabase.co/auth/v1`, audience `authenticated` |
+| **Auth0** | Tenant domain, API identifier | Your tenant's JWKS, issuer `https://<domain>/`, audience = the API identifier |
+| **Clerk** | Frontend API host, Audience | Your Frontend API JWKS, issuer `https://<host>`, audience = what your JWT template sets |
+| **Custom issuer** | JWKS URL, Issuer (iss), Audience (aud) | Exactly what you enter |
+
+Things each provider needs you to know:
+
+- **Firebase** signs every project's tokens with one shared key set, so the
+  key set alone identifies nobody. The issuer and audience are what scope the
+  app to your project. Without them a token from any Firebase project in the
+  world would be accepted, which is why both are required.
+- **Supabase** must be on asymmetric JWT signing keys. A legacy HS256 project
+  publishes no public keys, so every token is rejected.
+- **Auth0** puts a trailing slash in `iss`. The preset writes it. Do not
+  remove it.
+- **Clerk**'s default session token has no `aud`. Add one in your JWT
+  template, because the gateway requires it. Clerk's own guidance also checks
+  `azp` against permitted origins; native apps have no origin, so the preset
+  omits it.
+- **Sign in with Apple** works as a custom issuer: issuer
+  `https://appleid.apple.com`, audience your bundle ID, JWKS URL
+  `https://appleid.apple.com/auth/keys`.
+
+Issuer and audience each accept one value or a list, so a migration between
+two projects or bundle IDs is a configuration edit rather than a cut-over.
+
+A stored configuration missing either value does not run: the console reports
+it as unfinished, and token exchanges fail until it is fixed.
+
+### What the app sends
+
+The app exchanges its proof and the ID token for a gateway token at
+`POST /v1/apps/{app}/auth/token`, then uses the gateway token on requests.
+The Swift package does this for you. See
+[iOS with the Swift package](/integrate/ios) and
+[Server applications](/integrate/server).
+
+A refused exchange answers with one of three codes, chosen by what the app
+should do next:
+
+| Code | Meaning | The app should |
+| --- | --- | --- |
+| `403 issuer_token_rejected` | The token did not verify: bad signature, expired, wrong issuer or audience, or no user ID claim | Get a fresh token from the identity provider, retry once, then fail |
+| `403 issuer_claims_missing` | The token verified, but a required claim from the subscription check is not there yet | Wait and retry. Do not sign the user in again |
+| `503 issuer_verification_unavailable` | The gateway could not reach the provider's key set, so the token was never judged | Retry with backoff |
+
+Every outcome is listed on the app's [Auth & Errors](/applications/auth-events)
+page.
+
+### In the configuration
+
+```json
+"end_user": {
+  "source": "issuer",
+  "issuer": {
+    "jwks_url": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+    "issuer": "https://securetoken.google.com/my-app-1a2b3",
+    "audience": "my-app-1a2b3",
+    "user_id_claim": "sub",
+    "required_claims": [],
+    "max_token_lifetime_seconds": 86400,
+    "provider": "firebase"
+  }
+}
+```
+
+`user_id_claim` names the claim used as the user ID. `max_token_lifetime_seconds`
+rejects a token whose own lifetime, expiry minus issue time, is longer than
+that, so a provider misconfigured to issue week-long tokens cannot widen the
+window. `provider` and `entitlement` are bookkeeping for the console so it can
+reopen the same preset; the gateway ignores them. `required_claims` is the
+subscription check.
+
+## Unauthenticated users
+
+For an iOS app with no sign-in. The App Attest key identifies the install, so
+per-install limits, blocks and usage all work with nothing self-reported. The
+app sends no ID token, and one sent anyway is refused rather than ignored.
+
+The key lives in the Secure Enclave for one install of one app on one device.
+It does not survive reinstalling the app, clearing its data, or moving to a
+new phone, so a user can shed the limits and blocks attached to an install by
+starting over. And there is no token to inspect, so the subscription check is
+unavailable.
+
+```json
+"end_user": { "source": "app_install" }
+```
+
+## Your backend sends the user id
+
+For a server that fronts real users and knows who they are. Your backend
+names the user in a header on every request, and the gateway takes the value
+on trust.
+
+**Header name** defaults to `x-end-user-id`. It is matched case-insensitively
+and removed before the request reaches the provider. Values are 1 to 128
+printable ASCII characters.
+
+The header is required once configured. A request without it is refused with
+`400 invalid_request`, because an app that tolerated its absence would
+silently meter part of its traffic as nobody.
+
+This belongs only on a server you control. A client an end user runs could
+send any ID it likes, which would make per-user limits and blocks optional.
+
+```json
+"end_user": { "source": "header", "header": "x-end-user-id" }
+```
+
+## No user identity
+
+For a server with no users to speak of, such as a batch job. Requests record
+no user, per-user limits cannot be set, and `GET /v1/apps/{app}/me` answers
+`404`. Use the application limits instead.
+
+This is the result of omitting `end_user` on an `api_key` app. Naming a
+source is how an app opts into having users at all.

@@ -1,0 +1,113 @@
+---
+title: Local development
+description: Run the gateway and its console on your machine, with hot reloading and optional Google sign-in.
+---
+
+A local gateway is the same Worker and the same console, run by Vite on one
+origin with a local database. Use it to try a change before deploying it, or
+to develop against the gateway without touching the one your apps use.
+
+## Requirements
+
+- Node.js 22 or newer.
+- pnpm 11.
+- Wrangler 4, which `pnpm install` brings with it.
+- `openssl`, to generate the vault key.
+
+No Cloudflare account is needed to run locally. The database, the vault and
+the other resources run inside Wrangler's local runtime.
+
+## Start it
+
+```sh
+pnpm install
+cp .dev.vars.example .dev.vars
+openssl rand -base64 32   # paste the output into SECRET_VAULT_LOCAL_KEK_V1 in .dev.vars
+pnpm run secrets:setup-local
+pnpm run db:migrate:local
+pnpm run dev
+```
+
+Each step does one thing:
+
+| Command | What it does |
+| --- | --- |
+| `cp .dev.vars.example .dev.vars` | Creates the gitignored secrets file. Locally it only needs a vault key; any value from `openssl rand -base64 32` will do. |
+| `pnpm run secrets:setup-local` | Generates `JWT_SECRET` and `BETTER_AUTH_SECRET` into `.dev.vars` and leaves existing values alone. Deployed gateways get these from the deploy script; locally this script stands in for it. |
+| `pnpm run db:migrate:local` | Applies the migrations to the local database under `.wrangler/`. Run it again after pulling a release that adds one. |
+| `pnpm run dev` | Serves the console and the Worker together. |
+
+Open `http://localhost:5173`. Vite serves the console with hot reloading and
+runs the Worker beside it on the same origin, so an edit to either is live
+without a rebuild. Sign up to create the first account, which becomes the
+owner of this local gateway, then follow the [Quickstart](/quickstart) as you
+would on a deployed one. The local gateway calls real providers with the keys
+you add, so use a key with a low spend cap.
+
+`.dev.vars` is read by `pnpm run dev` and also by `pnpm run secrets:upload`,
+so the same file can feed a deployment. If you would rather keep the two apart,
+give the deployment a [profile](/self-hosting/deploy-with-wrangler), which
+reads `.dev.vars.<profile>` instead.
+
+## Check a change
+
+```sh
+pnpm run check
+pnpm run test
+pnpm run verify
+```
+
+`check` type-checks every project and detects drift in the generated OpenAPI
+document; it takes a few seconds, so run it after every edit. `test` runs both
+test suites, about a minute. `verify` does both and is what to run before a
+commit.
+
+## Google sign-in on a local gateway
+
+Google sign-in works locally once `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+are in `.dev.vars`. Google requires an exact OAuth callback URL, so for a
+gateway that always runs on `http://localhost:5173` register:
+
+```text
+http://localhost:5173/v1/auth/callback/google
+```
+
+### Changing local hosts
+
+A local instance answers on whatever hostname and port it was started on, and
+Google accepts no wildcard redirect URIs. For hosts that change, set the plain
+variable `OAUTH_RELAY_URL` in `.dev.vars` to the origin of an
+[OAuth callback relay](https://github.com/maxceem/cf-oauth-relay), a small,
+secret-free Worker deployed once and shared by every local instance:
+
+```text
+OAUTH_RELAY_URL=https://dev-oauth.example.com
+```
+
+With it set, the gateway asks Google to redirect to
+`<OAUTH_RELAY_URL>/callback/google` and sends the browser through the relay,
+which forwards Google's response back to the local instance that started the
+sign-in. The code exchange, the `state` check and the session all stay in that
+instance. The relay stores nothing and holds no secret.
+
+Give the relay a **separate development Google OAuth client** whose only
+authorised redirect URI is `<OAUTH_RELAY_URL>/callback/google`. Keep its
+consent screen in Testing with the developers as test users, and leave the
+production client alone. Production credentials then never leave production,
+and the shared relay callback is not a valid redirect for them.
+
+Deployments that own a stable hostname leave `OAUTH_RELAY_URL` unset, which is
+the default. The gateway then registers and uses its own
+`<origin>/v1/auth/callback/google`.
+
+## The documentation site
+
+The docs are a separate static site and are never bundled into the Worker:
+
+```sh
+pnpm run docs:dev
+pnpm run docs:build
+```
+
+`docs:build` is left out of `verify` because it is slow. Run it when you change
+anything under `docs/`.
