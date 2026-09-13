@@ -1,0 +1,88 @@
+---
+title: Errors and limits
+description: The error format, every code a client can see, and what to do about each one.
+---
+
+Every refusal from the gateway is JSON with one `error` object:
+
+```json
+{
+  "error": {
+    "code": "app_rate_limited",
+    "message": "Per-user rate limit exceeded",
+    "data": { "scope": "user" }
+  }
+}
+```
+
+`code` is stable and is what your client should switch on. `message` is for
+logs. `data` is present only when the code alone is not actionable. Every
+`429` carries a `Retry-After` header in seconds.
+
+A provider's own error is not in this format: it is passed through as the
+provider sent it, with the provider's status code. Tell the two apart by
+whether the body has a top-level `error.code` string from the table below.
+
+## Authentication
+
+| Code | Status | Meaning | What to do |
+| --- | --- | --- | --- |
+| `auth_required` | 401 or 403 | No usable credential, an expired gateway token, a revoked key, or a blocked user | Exchange a new token. If it persists for one user, they are blocked |
+| `attest_failed` | 403 | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted | Register a new key. The Swift package does this once automatically |
+| `issuer_token_rejected` | 403 | The sign-in token did not verify | Refresh the ID token, retry once, then treat as signed out |
+| `issuer_claims_missing` | 403 | The token verified but the required entitlement claim is not there yet | Wait and retry. Do not sign the user in again. Sync the purchase if you can |
+| `issuer_verification_unavailable` | 503 | The identity provider's keys could not be fetched | Retry with backoff |
+| `auth_method_not_supported` | 404 | The app is not configured for this call, such as a token exchange on an app without user identity | Fix the app's configuration |
+| `invalid_request` | 400 | A malformed body, a missing `X-App-Version`, or a missing end-user header | Fix the request |
+
+## Limits
+
+| Code | Status | Meaning | What to do |
+| --- | --- | --- | --- |
+| `app_rate_limited` | 429 | A per-minute or per-day request limit set on this app refused the call. `data.scope` is `user` or `app` | Wait `Retry-After` seconds. A `user` scope means slow this user down; an `app` scope means the whole app is busy |
+| `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. Same `data.scope` | Wait for the next month, or raise the budget in the console |
+| `billing_request_quota_exceeded` | 429 | The monthly request allowance of the account that owns the app is spent. `data` carries `limit`, `used` and `resetAt` | Nothing on the device fixes it. Show a friendly message and retry after `resetAt` |
+| `billing_unavailable` | 503 | The gateway could not check the account, so it refused rather than guess | Retry after `Retry-After`. Not an account problem |
+| `billing_payment_required` | 402 | The account has no plan at all | The account owner has to act |
+| `payload_too_large` | 413 | The request body is over 20 MB | Send less |
+
+`app_*` codes come from limits set on the app in the console. `billing_*`
+codes come from the account and are unrelated to those limits.
+
+## Policy
+
+| Code | Status | Meaning | What to do |
+| --- | --- | --- | --- |
+| `path_not_allowed` | 403 | The app's proxy policy does not allow this provider or path | Use an allowed path, or allow it in the console |
+| `model_not_allowed` | 403 | The model is not in the app's allowlist | Use an allowed model |
+| `max_output_tokens_exceeded` | 403 | The request asks for more output than the app allows | Lower the output limit in the request |
+| `api_style_not_supported` | 403 | This path does not exist on the route the provider uses, such as Gemini's native API through Vercel | Use a supported path or a direct provider |
+| `pricing_not_configured` | 400 | The model has no price in the catalog or the provider's custom pricing | Add a price in the console, or use a catalogued model |
+| `endpoint_not_found` | 404 | No named endpoint has this slug | Check the slug |
+| `app_not_found` | 404 | No app has this ID | Check the app ID |
+| `app_disabled` | 403 | The app is switched off in its settings | Nothing on the device fixes it |
+
+## Providers
+
+| Code | Status | Meaning | What to do |
+| --- | --- | --- | --- |
+| `provider_not_configured` | 502 | No provider has this slug | Add one in the console |
+| `provider_disabled` | 502 | The provider with this slug is paused | Enable it in the console |
+| `provider_unavailable` | 502 | The provider's key could not be read | Check the gateway's health |
+| `provider_error` | 502 or 504 | The provider could not be reached, or sent nothing for 120 seconds | Retry with backoff |
+| `internal_error` | 500 | Something failed inside the gateway | Retry with backoff |
+
+## A sensible client policy
+
+- Treat `429` and `5xx` as retryable, everything else as something to fix.
+- On `app_rate_limited` with scope `user`, back that user off for
+  `Retry-After` seconds. With scope `app`, show a "busy, try again shortly"
+  state rather than hammering.
+- On `issuer_claims_missing`, keep the user signed in and poll gently.
+- Send `X-App-Version` on every request, so the console can tell you which
+  release a problem belongs to.
+- Log `code` and `message`, never the request body or the token.
+
+The Swift package's `GatewayError` exposes `code`, `retryAfter`, `limitScope`
+and `isRetryable` for exactly this. See
+[iOS with the Swift package](/integrate/ios#reading-errors).

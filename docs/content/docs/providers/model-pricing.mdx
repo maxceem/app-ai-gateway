@@ -1,0 +1,190 @@
+---
+title: Model pricing
+description: How the gateway prices each request, how to add prices for models the catalog does not know, and why unpriced models are refused.
+---
+
+Every request that reaches a provider is recorded with a cost in USD. The
+gateway needs a price for the model before it will forward the request, so a
+model it cannot price is refused rather than served for free. This page covers
+where prices come from and how to add your own.
+
+## The catalog
+
+The gateway ships with a price catalog: input and output prices per million
+tokens for the common models of each provider type, plus cached-input,
+cache-write and long-context rates where the provider has them, and per-minute
+or per-hour rates for transcription models. Prices are market data about
+models rather than something you configure, so the catalog ships with the
+gateway and is updated with it.
+
+The catalog is keyed by provider type and the provider's own model ID:
+`gpt-5.6` under `openai`, `claude-opus-5` under `anthropic`,
+`gemini-2.5-flash` under `gemini`, `grok-4.5` under `xai`. A model priced in
+the catalog works on every provider of that type, direct or routed through a
+gateway, because [model IDs stay canonical](/providers/gateways#model-ids-stay-canonical)
+on every route.
+
+Two provider types ship with no catalog at all, because no static list could
+be right for them: **Fireworks AI** names models per account, and
+**Hugging Face** re-prices the same model ID on every upstream its router might
+pick. Their models proxy once you price them, and not before.
+
+### Where the catalog errs high
+
+Where a provider's real price depends on something the gateway cannot see, the
+shipped entry is the **higher** rate, so the recorded cost is never lower than
+what you pay:
+
+- **DeepSeek** charges half price outside its peak hours. The catalog carries
+  the peak rate, so off-peak traffic records as costing more than it did.
+- Batch and discounted serving tiers, offered by ByteDance, Moonshot and
+  others, are priced per request rather than per model. The catalog carries
+  the standard rate.
+
+Override the entry with a custom price if your traffic sits mostly on the
+cheaper side. Erring high keeps a [spending limit](/applications/limits) a
+limit: a cost recorded too low would let traffic through that the limit was
+meant to stop.
+
+One catalog entry surprises people. **Mistral Medium costs more than Mistral
+Large.** Mistral's size names describe model generations, not a price ladder:
+`mistral-medium-latest` resolves to the current frontier model at $1.50 in and
+$7.50 out per million tokens, while `mistral-large-latest` resolves to the
+older Mistral Large 3 at $0.50 and $1.50. `mistral-small-latest` is $0.15 and
+$0.60. Pick by the model card, not by the name.
+
+## Custom prices
+
+A model the catalog does not know, or knows at a stale price, is unblocked by
+adding it to the provider's custom pricing. Custom prices belong to one
+provider: a model priced only there is usable through that provider alone,
+which is why the model pickers in an app's proxy policy are per slug.
+
+Open **Providers**, open the row's actions menu, and choose **Pricing**. The
+dialog is titled **Custom model pricing** and says: "For models the built-in
+catalog does not cover, or prices it in a way you disagree with. Requests for
+unpriced models are rejected until a price is set here. Enter $0 for a model
+that is genuinely free."
+
+Click **Add model** for each row and fill in three columns:
+
+| Column | Meaning |
+| --- | --- |
+| **Model** | The model ID exactly as your app sends it, for example `gpt-brand-new`. |
+| **Input $/1M** | Price per million input tokens. |
+| **Output $/1M** | Price per million output tokens. |
+
+Then **Save pricing**. Every row needs a model name and both prices, as
+numbers of zero or more. A model cannot appear twice. A row left entirely blank
+is dropped, so a spare one does no harm. Custom prices are ordinary data, not
+secrets, so the dialog shows the stored values and anyone who can read the
+console can see them.
+
+Lookup is a two-level merge: the provider's own custom price for the requested
+model first, then the shipped catalog. A custom price therefore overrides the
+catalog for that provider only. Custom prices carry input and output rates
+only; a catalog entry's cached-input or long-context rates do not apply to a
+model you priced yourself.
+
+The API equivalent sets `pricing` on the provider. It is a full replace, keyed
+by model ID, and `null` clears every custom price:
+
+```json
+PUT /v1/admin/providers/{id}
+{ "pricing": { "gpt-brand-new": { "input": 1.25, "output": 10 } } }
+```
+
+The same field is accepted on `POST /v1/admin/providers` when you create the
+provider.
+
+### Free models
+
+`$0` is a valid price, and it is the right one for a model you host yourself
+and pay no per-token price for. Enter it deliberately: a request priced at
+zero counts toward nothing in any [spending limit](/applications/limits), so a
+free model is also an unmetered one. The dialog refuses an empty price field
+for that reason; zero has to be a typed answer.
+
+## Unpriced models are refused
+
+A request for a model that neither the provider's custom pricing nor the
+catalog knows is refused before it reaches the provider:
+
+```json
+{
+  "error": {
+    "code": "pricing_not_configured",
+    "message": "..."
+  }
+}
+```
+
+The status is `400`, and the message names where to fix it. Entering the price
+is what allows the model. Nothing unpriced ever proxies, no usage goes
+unaccounted, and the cost on a usage event is never empty. This applies to
+custom base URLs too: a model served from your own endpoint is almost
+certainly not in the catalog and needs a price on that provider. See
+[Custom base URLs](/providers/custom-base-urls#custom-endpoints-still-need-prices).
+
+## Providers that report their own cost
+
+One route reports what it charged instead of relying on a local price:
+[OpenRouter](/providers/supported-providers#openrouter). Every OpenRouter
+chat-completions response carries the cost of that request, and the gateway
+records that figure. So OpenRouter models proxy with **no local price**; the
+rule is "priced locally **or** reported upstream".
+
+The **Pricing** dialog says so for an OpenRouter provider: "OpenRouter reports
+the cost of every request, so its models proxy with no price here; a price
+entered here is only used if a response ever comes back without one." A
+custom price on such a provider is honoured as the fallback for a response
+that arrives without a cost.
+
+## Where a cost comes from
+
+Every usage event records how its cost was arrived at, in `cost_source`:
+
+| `cost_source` | Meaning |
+| --- | --- |
+| `reported` | The provider said what the request cost, and that figure is the recorded one. Only OpenRouter reports one today. |
+| `computed` | Priced locally, from the provider's custom pricing or the shipped catalog. |
+| `unresolved` | Neither source could answer on a successful response. |
+
+Reported cost wins because it is what you were charged. Local pricing is the
+default and the fallback: if a cost-reporting route ever answers without a
+cost, a local price for that model is used and the event is `computed`.
+
+An event is `unresolved` when the provider answered successfully but the
+gateway could not measure the spend. That happens when a provider reports
+usage in a shape the gateway does not know, when a cost-reporting route answers
+without a cost and the model has no local price, when a price was removed
+while a request was already in flight, or when a client aborts a streamed
+response before the final chunk that carries the usage. Such an event is shown
+as **unresolved** rather than `$0.00` in the app's event list and can be
+counted with the **By cost source** breakdown. Its cost is zero because nothing
+was measurable, not because nothing was spent. See
+[Usage](/applications/usage) for the breakdowns and what a rising unresolved
+count means.
+
+<Callout type="warn" title="Deleting a provider deletes its custom prices">
+  Custom prices live on the provider. **Update key** keeps them; **Delete
+  provider** discards them along with the key. Usage events outlive the
+  provider, so past traffic priced only by a deleted custom price can no longer
+  be repriced until the price is entered again somewhere.
+</Callout>
+
+## Repricing stored usage
+
+If a price was wrong for a while, `POST /v1/admin/apps/{app}/usage/reprice`
+recomputes the stored cost for one provider type, model and month. Each event
+is priced through the provider that served it, falling back to the catalog, so
+two providers of one type can reprice the same model differently. Run it with
+`"apply": false` first: the preview reports `matched_events` (what would be
+rewritten), `unpriced_events` (events whose serving provider was deleted and
+which no catalog price covers) and `unmetered_events` (events with no readable
+usage, which are rewritten to zero but keep their `unresolved` marker). With
+`"apply": true` the call is strict: if any matched event cannot be priced, it
+answers `400 invalid_request` and writes nothing, so a month is never left
+half-repriced. Events with a `reported` cost are never touched, since a local
+price would replace a fact with an estimate. A repriced event's `cost_source`
+becomes `computed`. See the [API reference](/api) for the request shape.

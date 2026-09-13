@@ -1,0 +1,197 @@
+---
+title: iOS with the Swift package
+description: Add the AppAIGateway package, pick an auth mode, and send provider requests from your app with no key on the device.
+---
+
+The AppAIGateway Swift package does the part of the integration that is easy
+to get wrong: App Attest registration, the token exchange, token refresh, and
+the headers every request needs. You keep sending provider requests with
+`URLSession` or any HTTP client. The package builds and signs the request; it
+does not send it.
+
+Requirements: iOS 16 or later, a real device for App Attest, and an app in
+the console of type **iOS application** with your Team ID and Bundle ID.
+
+## Add the package
+
+In Xcode, choose **File → Add Package Dependencies** and enter:
+
+```text
+https://github.com/maxceem/app-ai-gateway-swift
+```
+
+Or in `Package.swift`:
+
+```swift
+.package(url: "https://github.com/maxceem/app-ai-gateway-swift", from: "1.0.0")
+```
+
+Add the `AppAIGateway` product to your target and `import AppAIGateway`. The
+package is developed in the `app-ai-gateway-swift` directory of the
+[main repository](https://github.com/maxceem/app-ai-gateway), which is where
+to report issues.
+
+## Create the client
+
+```swift
+import AppAIGateway
+
+let gateway = AppAIGatewayClient(
+    appID: "example-app-a1b2c3",
+    baseURL: URL(string: "https://api.appaigateway.com")!,
+    authMode: .appAttestInstall
+)
+```
+
+`appID` is the app's ID from the console. `baseURL` is
+`https://api.appaigateway.com`. Keep one client per
+app for the life of the process; it caches the gateway token and refreshes it
+in the background.
+
+## Choose the auth mode
+
+The mode must match the app's **User authentication** setting in the console.
+
+| Console setting | Auth mode |
+| --- | --- |
+| **Unauthenticated users** | `.appAttestInstall` |
+| **Signed-in users only** | `.appAttest(issuerTokenProvider:)` |
+
+### Unauthenticated users
+
+```swift
+authMode: .appAttestInstall
+```
+
+App Attest alone. The install is the user. No sign-in is involved and no ID
+token is sent.
+
+### Signed-in users
+
+Give the client a closure that returns the user's current ID token from your
+identity provider. The `forceRefresh` flag is set when the gateway rejected
+the previous token, so pass it through to your provider's refresh call.
+
+```swift
+import FirebaseAuth
+
+authMode: .appAttest(issuerTokenProvider: { forceRefresh in
+    guard let user = Auth.auth().currentUser else { throw NotSignedIn() }
+    return try await user.getIDToken(forcingRefresh: forceRefresh)
+})
+```
+
+Any provider works the same way: Supabase's session access token, Auth0's
+ID token, Clerk's session token, or your own. Return the raw JWT string.
+
+## Send a request
+
+`authorizedRequest` returns a `URLRequest` with the URL, the `Authorization`
+header and `X-App-Version` set. Add the provider's own headers and body and
+send it.
+
+```swift
+var request = try await gateway.authorizedRequest(
+    provider: .openai,
+    providerPath: "v1/responses"
+)
+request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+request.httpBody = try JSONEncoder().encode([
+    "model": "gpt-5.6",
+    "input": "Summarise today's meals in one sentence."
+])
+
+let (data, response) = try await URLSession.shared.data(for: request)
+if let error = GatewayError(response: response as! HTTPURLResponse, body: data) {
+    throw error
+}
+```
+
+`provider` is a provider slug. The constants `.openai`, `.anthropic`, `.xai`,
+`.gemini` and `.perplexity` spell the default slug of each type; use
+`.custom("openai-dev")` for any other. `providerPath` is the provider's own
+API path with no leading slash.
+
+For Anthropic add `anthropic-version`; for streaming use
+`URLSession.bytes(for:)` and read the provider's stream as documented by the
+provider. See [Calling the provider proxy](/integrate/proxy) for the paths
+and headers of each provider.
+
+A [named endpoint](/integrate/endpoints) is the same call with a slug:
+
+```swift
+var request = try await gateway.authorizedRequest(endpointSlug: "chat")
+```
+
+## What the client does for you
+
+- **App Attest registration.** On first use it generates a key in the Secure
+  Enclave, asks the gateway for a challenge, attests the key with Apple, and
+  registers it. The key ID is stored in the Keychain under the service
+  `dev.aigateway.credentials`, so later launches skip this step.
+- **Token exchange.** It obtains a gateway token valid for one hour by
+  signing a fresh challenge with the key, with the ID token alongside when
+  the mode has one. Concurrent callers share one exchange.
+- **Refresh.** It refreshes the token five minutes before expiry in a
+  background task, so a request rarely waits for an exchange.
+- **Recovery.** After a reinstall the Keychain may still name a key that no
+  longer exists in the Secure Enclave. The client detects the local signing
+  failure, registers a new key and retries. It does the same once when the
+  gateway answers `attest_failed`.
+- **ID token retries.** On `issuer_token_rejected` it asks your provider for
+  a refreshed token once and retries. On `issuer_claims_missing` it first
+  runs your recovery hook, described below, then retries with a refreshed
+  token.
+- **App version.** `X-App-Version` is set from `CFBundleShortVersionString`,
+  which is what the console's **By app version** breakdown groups by.
+
+## Handling a missing entitlement
+
+With a [subscription check](/applications/auth-policy/subscription-check),
+a user who has just paid may hold a token that does not carry the
+entitlement yet. The gateway answers `issuer_claims_missing`, and the client
+runs the `issuerRejectionRecovery` closure before retrying. Use it to sync
+the purchase, for example by asking RevenueCat to refresh, so the refreshed
+token carries the claim:
+
+```swift
+let gateway = AppAIGatewayClient(
+    appID: "example-app-a1b2c3",
+    baseURL: URL(string: "https://api.appaigateway.com")!,
+    authMode: .appAttest(issuerTokenProvider: { forceRefresh in
+        try await Auth.auth().currentUser!.getIDToken(forcingRefresh: forceRefresh)
+    }),
+    issuerRejectionRecovery: {
+        _ = try await Purchases.shared.syncPurchases()
+    }
+)
+```
+
+The hook runs only for `issuer_claims_missing`, never for
+`issuer_token_rejected`, so an expired token does not trigger a store round
+trip.
+
+## Reading errors
+
+Every refusal is a JSON body with a code, and `GatewayError(response:body:)`
+reads it. The useful properties:
+
+- `code`: a `GatewayErrorCode` such as `.appRateLimited`, or `.unknown` for a
+  code this version of the package does not know.
+- `retryAfter`: seconds until a rate limit or budget window reopens.
+- `limitScope`: `"user"` or `"app"` for an app limit, so you can tell "slow
+  this user down" from "the whole app is busy".
+- `isRetryable`: whether the same request could succeed later without a
+  change.
+
+The full code list and what each one means for your app is on
+[Errors and limits](/integrate/errors).
+
+## Server-side use of the package
+
+The package also builds requests for server applications, with
+`.apiKey(key:)` for an app with no user identity or
+`.apiKey(key:issuerTokenProvider:)` for one with signed-in users, and
+`endUserId` for an app whose backend names the user. That is useful for a
+macOS or server-side Swift process. Never use `.apiKey` inside an iOS app:
+an API key shipped in an app can be extracted.

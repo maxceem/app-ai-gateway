@@ -1,0 +1,78 @@
+---
+title: Subscription check
+description: Require that a signed-in user has paid before they can call AI providers through the app.
+---
+
+**Subscription check** is the third level of the **Auth policy** page. It
+requires the user's sign-in token to carry a claim that says they have paid.
+It is available only with **Signed-in users only**, because it needs a token
+to inspect. The state line says **Paid users only**, **Any signed-in user**,
+**Paid check not finished**, or **Needs signed-in users**.
+
+## How it works
+
+The gateway never talks to the App Store. It checks a claim inside the
+verified ID token, and something else has to put that claim there after the
+purchase:
+
+- **RevenueCat** with its Firebase extension writes the user's active
+  entitlements into their Firebase token as `revenueCatEntitlements`.
+- **Your own backend** can set any custom claim on your identity provider
+  after it confirms a purchase.
+
+On every token exchange the gateway verifies the token as usual and then
+checks the required claims. A token without them is refused with
+`403 issuer_claims_missing`.
+
+## Choices
+
+- **Any signed-in user**: signing in is enough. Nothing about payment is
+  checked.
+- **Paid users only**: the sign-in token must carry a claim that says the
+  user has paid. Then choose which claim:
+  - **RevenueCat entitlement**: enter the **Entitlement identifier** from
+    RevenueCat's Product catalog, the identifier rather than the display
+    name. Several, comma separated, admit a user carrying any one of them.
+  - **Custom claim**: one or more rows of **Path**, **Match** and **Value**.
+    Paths are dot paths into the token. **contains** matches arrays and
+    space-delimited scopes; **equals** compares exactly.
+
+## The propagation gap
+
+The claim is written after the purchase, by a webhook or a backend job, and
+the app may refresh its token before that has happened. During that window a
+paying user holds a perfectly valid token that lacks the claim.
+
+This is why the refusal has its own code. `issuer_claims_missing` means "the
+user is real, the entitlement has not arrived yet, wait and try again". Treating
+it as a sign-in failure would send the user round a loop they cannot escape.
+The Swift package exposes a hook that runs only on this code, so you can
+trigger a purchase sync there. See [iOS with the Swift package](/integrate/ios).
+
+The gateway measures the gap. The app's [Auth & Errors](/applications/auth-events)
+page shows how long activation usually takes and how many users are waiting
+on a claim right now.
+
+## In the configuration
+
+The check is the `required_claims` list on the issuer block. A RevenueCat
+entitlement named `pro`:
+
+```json
+"required_claims": [
+  { "path": "revenueCatEntitlements", "contains": "pro" }
+],
+"entitlement": "revenuecat"
+```
+
+A custom claim requiring a scope:
+
+```json
+"required_claims": [
+  { "path": "scope", "contains": "ai.invoke" }
+]
+```
+
+Each requirement has a `path` and either `contains` (a string or a list of
+alternatives) or `equals` (a string, number or boolean). All requirements
+must pass. `entitlement` is bookkeeping for the console and may be omitted.

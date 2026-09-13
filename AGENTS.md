@@ -28,6 +28,14 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Handwritten guides live in `docs/content/docs/`.
 - Generated endpoint pages under `docs/content/docs/api/` are ignored and replaced
   by `docs/scripts/generate-api.mjs`; never edit them.
+- `docs/scripts/generate-machine-files.mjs` publishes the guides for machines
+  before every docs build: `llms.txt`, `llms-full.txt`, `agents.md`, a `.md`
+  copy of each page and `openapi.json` under `docs/public/`. They are
+  gitignored; never edit them, and keep `automation/agent-manual.mdx` free of
+  MDX components because it is served verbatim as `/agents.md`.
+- Never write "organization", "tenant" or "operator" in a guide, and do not
+  document billing or plans there. Say "you", "your account" or "all your
+  apps" instead.
 - Build docs separately with `pnpm run docs:build`. Do not add Fumadocs code or
   dependencies to the deployed gateway Worker.
 - Keep the production docs deployment static-only. Do not add route handlers,

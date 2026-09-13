@@ -1,134 +1,149 @@
 ---
-title: Self-host quickstart
-description: Deploy, create the first operator, and register an application.
+title: Quickstart
+description: Add a provider key, create an app, and send your first request.
 ---
 
-## 1. Deploy the Worker
+This page takes you from an empty console to a working request. It uses a
+server application, because that is the shortest path: one key, one curl
+command. The last section shows the same thing for an iOS app.
 
-You need Node.js 22+, pnpm 11, and a Cloudflare account. No second service and no
-Cloudflare AI Gateway is required. From a clean checkout:
+Sign up at [console.appaigateway.com](https://console.appaigateway.com). You land on the
+**Apps** page, which shows the same three steps as this guide until your first
+request goes through.
 
-```sh
-pnpm install
-cp .dev.vars.example .dev.vars
-# Put `openssl rand -base64 32` into SECRET_VAULT_LOCAL_KEK_V1 in .dev.vars.
-pnpm run secrets:upload
-pnpm run deploy
+## 1. Add a provider key
+
+Open **Providers** and click **Add provider**.
+
+- **Name** is how the provider is listed, for example `Prod OpenAI`.
+- **Provider** is the service the key belongs to. This guide uses OpenAI.
+- **Authentication** stays on **API key**. Paste the key you got from the
+  provider.
+
+Click **Test provider** if you want the gateway to confirm the key works, then
+**Add provider**. The key is encrypted on arrival and never shown again. The
+list shows only its last characters so you can tell keys apart.
+
+The first provider of each type gets a short name, its **slug**, that your app
+uses in URLs. The first OpenAI key is `openai`, the first Anthropic key is
+`anthropic`, and so on. See [Add a provider key](/providers/add-a-provider) for
+several keys of one type.
+
+## 2. Create an app
+
+Open **Apps** and click **New app**.
+
+1. **Application name**: anything you like. The gateway builds the app's ID
+   from it, for example `example-app-a1b2c3`.
+2. **Application type**: choose **Server**.
+3. **User authentication**: choose **No user identity** for now. You can turn
+   on per-user identity later on the app's **Auth policy** page.
+4. Click **Create app**.
+
+A dialog titled **Your application is ready** shows the app's API key. It is
+shown once, so copy it now and keep it somewhere safe. The dialog also shows
+the **Base URL** your app will call:
+
+```text
+https://api.appaigateway.com/v1/apps/example-app-a1b2c3/proxy/{provider}/{provider_path}
 ```
 
-That one key encrypts the provider credentials you will add in step 4; back it up
-somewhere safe, because losing it makes them unreadable. The deploy script
-provisions the Worker-owned resources, applies D1 migrations, and generates the
-JWT and Better Auth signing secrets.
+`{provider}` is the provider
+slug from step 1, and `{provider_path}` is the provider's own API path.
 
-For local development, use `pnpm run secrets:setup-local`,
-`pnpm run db:migrate:local`, and `pnpm run dev` instead. That serves the console
-and the Worker together at `http://localhost:5173`, both hot-reloading.
+## 3. Send a request
 
-## 2. Create the first operator
-
-Open the deployed URL and sign up, or call the email signup API. The first user
-receives the owner role automatically.
+Put the key in an environment variable and call OpenAI's Responses API through
+the gateway. Replace the app ID with yours.
 
 ```sh
-export GATEWAY_URL="https://YOUR-WORKER.workers.dev"
-curl -i -c operator.cookies \
-  -H 'content-type: application/json' \
-  -d '{"name":"Owner","email":"owner@example.com","password":"use-a-long-password"}' \
-  "$GATEWAY_URL/v1/auth/sign-up/email"
+export APP_AI_GATEWAY_KEY="agw_…"
+
+curl --fail-with-body https://api.appaigateway.com/v1/apps/example-app-a1b2c3/proxy/openai/v1/responses \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5.6","input":"Say hello."}'
 ```
 
-For a private instance, set `ALLOW_PUBLIC_REGISTRATION=false` after this account
-exists. Existing operators can still sign in.
+The response is OpenAI's own, unchanged. Everything after `/proxy/openai/` is
+the path OpenAI documents, and the body is the body OpenAI documents. The
+gateway added your provider key on the way out and recorded the request on the
+way back.
 
-## 3. Create an application
+If you use an SDK instead of curl, point it at the gateway and keep everything
+else:
 
-Cookie-authenticated admin calls require `x-console-request: 1`. This example
-creates a trusted-server app limited to OpenAI Responses:
+```python
+import os
+from openai import OpenAI
 
-```sh
-curl -b operator.cookies \
-  -H 'x-console-request: 1' \
-  -H 'content-type: application/json' \
-  -d @- "$GATEWAY_URL/v1/admin/apps" <<'JSON'
-{
-  "name": "Example agent",
-  "config": {
-    "authentication": {
-      "type": "api_key"
-    },
-    "routing": {
-      "providers": {
-        "mode": "selected",
-        "selected": {
-          "openai": {
-            "allowed_paths": ["v1/responses"],
-            "allowed_models": ["gpt-5.6-terra"],
-            "max_output_tokens": 4096
-          }
-        }
-      },
-      "model_rewrites": { "gpt-5.6-terra": "gpt-5.6" }
-    },
-    "limits": {
-      "per_user": {
-        "requests": { "per_minute": 30, "per_day": 1000 },
-        "spending": { "monthly_usd": 10 }
-      },
-      "per_app": {
-        "requests": { "per_minute": 300, "per_day": 10000 },
-        "spending": { "monthly_usd": 100 }
-      }
-    }
-  }
-}
-JSON
+client = OpenAI(
+    api_key=os.environ["APP_AI_GATEWAY_KEY"],
+    base_url="https://api.appaigateway.com/v1/apps/example-app-a1b2c3/proxy/openai/v1",
+)
 ```
 
-The printed response holds two things you need. `api_key.key` is the initial
-`agw_` application key, shown this once only — copy it straight into the calling
-service's secret manager, and do not save the response to a file. `app.id` is
-the application's ID, which the gateway assigned from the name:
-`example-agent-<suffix>`.
+## 4. See it in the console
 
-You do not choose the ID and you cannot change it later: it is the segment every
-URL for this application uses, so clients compile it into their base URL. Send
-no `id` in the body — a body that carries one is refused with `400`. See
-[Application IDs](/configuration#application-ids).
+Open the app and go to **Usage**. The request is in **Recent events** with its
+model, tokens, cost and latency, and the chart above it shows the day's spend.
+The **Apps** page now shows month-to-date spend and requests across all your
+apps.
 
-## 4. Add a provider credential
+## If something failed
 
-The application above allows OpenAI, so you need an OpenAI key.
-Add one in the console under **Providers**, or from the API:
+| Response | What it means |
+| --- | --- |
+| `502 provider_not_configured` | No provider has the slug in the URL. Check the Providers page. |
+| `400 pricing_not_configured` | The model is not in the price catalog. Add a price under the provider's **Pricing** action, or use a catalogued model. |
+| `401 auth_required` | The key is missing or wrong, or the app was created as an iOS app. |
+| `403 path_not_allowed` or `model_not_allowed` | The app's **Proxy policy** restricts paths or models. New apps allow everything. |
 
-```sh
-curl -b operator.cookies \
-  -H 'x-console-request: 1' \
-  -H 'content-type: application/json' \
-  -d '{"type":"openai","name":"Prod OpenAI","secret":"sk-…"}' \
-  "$GATEWAY_URL/v1/admin/providers"
+The full list is in [Errors and limits](/integrate/errors).
+
+## The same for an iOS app
+
+An iOS app has no key to ship. Instead the app proves it is a real install of
+your app with Apple App Attest, and the gateway gives it a short-lived token.
+
+1. **New app**, type **iOS application**. Enter your **Apple Team ID** and
+   **Bundle ID** from your Apple Developer account and Xcode.
+2. **User authentication**: choose **Unauthenticated users** to start. Each
+   install then counts as one user, with the default limits of ten requests a
+   minute and three hundred a day.
+3. Add the AppAIGateway Swift package to your project and send a request:
+
+```swift
+import AppAIGateway
+
+let gateway = AppAIGatewayClient(
+    appID: "example-app-a1b2c3",
+    baseURL: URL(string: "https://api.appaigateway.com")!,
+    authMode: .appAttestInstall
+)
+
+var request = try await gateway.authorizedRequest(
+    provider: .openai,
+    providerPath: "v1/responses"
+)
+request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+request.httpBody = Data(#"{"model":"gpt-5.6","input":"Say hello."}"#.utf8)
+let (data, _) = try await URLSession.shared.data(for: request)
+print(String(decoding: data, as: UTF8.self))
 ```
 
-The key is encrypted and never returned again — the response carries only a
-`secretHint`. It is stored as given; `POST /v1/admin/providers/test` is what
-checks a key against the provider, when you ask it to. Until this exists, proxy requests answer
-`502 provider_not_configured`. See [Providers](/providers) for routing
-through your own Cloudflare AI Gateway and for pricing models the built-in
-catalog does not cover.
+App Attest needs a real device. It is not available in the Simulator. The
+**Apps** page generates this snippet for your own app once it exists, and
+[iOS with the Swift package](/integrate/ios) covers sign-in, token refresh and
+error handling.
 
-## 5. Create an automation key
+## Next steps
 
-Management keys authenticate admin automation across all your apps. They do not
-authenticate model requests.
-
-```sh
-curl -b operator.cookies \
-  -H 'x-console-request: 1' \
-  -H 'content-type: application/json' \
-  -d '{"name":"Deployment automation"}' \
-  "$GATEWAY_URL/v1/admin/keys"
-```
-
-The plaintext `agw_mgmt_` token is also returned once. Owners and admins can use
-it for ordinary management calls; minting and revoking management keys requires
-an operator session.
+- [Limits](/applications/limits) to cap what a user and an app may spend.
+- [User authentication](/applications/auth-policy/user-authentication) to tie
+  requests to signed-in users from Firebase, Supabase, Auth0, Clerk or your own
+  issuer.
+- [Named endpoints](/applications/endpoints) to keep the model and parameters
+  on the gateway, so you can change them without an app release.
+- [Automation and agents](/automation/agents) to hand the setup to a script or
+  an AI agent.

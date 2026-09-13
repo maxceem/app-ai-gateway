@@ -1,0 +1,46 @@
+---
+title: Users
+description: See who is using the app, what each user has spent, and block a user who is running up your bill.
+---
+
+The **Users** page lists every user the app has identified, with their
+requests, tokens and cost for the selected month.
+
+A row appears once a client completes its first token exchange, or, for a
+server that names users in a header, its first request.
+
+## The list
+
+- **User**: the user ID, from the sign-in token, the App Attest key, or your
+  backend's header. A blocked user carries a `blocked` badge.
+- **Attestation**: `registered` with the assertion counter for an App Attest
+  install, `issuer token` for a user verified by sign-in token, or
+  `server attributed` for a header-named user.
+- **Last seen**, **Requests**, **Tokens**, **Cost** for the selected month.
+
+Search by user ID, filter by **All users**, **Active** or **Blocked**, and
+change the month with the picker. Pages hold 25 users.
+
+## Blocking
+
+**Block** refuses every request from the user. New token exchanges are
+refused immediately with `403 auth_required`, and a gateway token the user
+already holds stops working within ten seconds. **Unblock** restores them the
+same way.
+
+A block is not a limit. Limits reset; a block stays until you lift it.
+
+A user identified only by an app install can shed a block by reinstalling
+the app, because that creates a new install identity. Users identified by a
+sign-in token cannot.
+
+Users your backend names in a header are listed from their usage and cannot
+be blocked here, because the gateway never authenticates them. Stop them in
+your backend instead.
+
+## Through the API
+
+- `GET /v1/admin/apps/{app}/users` with optional `month`, `status`, `query`,
+  `limit` and `offset`.
+- `GET /v1/admin/apps/{app}/users/{user}`.
+- `POST /v1/admin/apps/{app}/users/{user}/block` and `…/unblock`.

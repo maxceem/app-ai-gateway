@@ -1,0 +1,115 @@
+---
+title: Updating
+description: Pick up new releases, understand what a deployment changes, and handle database migrations safely.
+---
+
+How you update depends on how you deployed. Either way the deploy script
+preserves your secrets, applies any new database migrations, and redeploys
+the Worker with a freshly built console.
+
+## Button deployments
+
+The one-click flow forked the repository into your GitHub account and
+connected the fork to Workers Builds. Every push to the connected branch
+triggers a build and a deploy. The deploy command Workers Builds runs is the
+repository's `deploy` script, the same one a checkout uses, so migrations are
+applied as part of it. You can see and change it under the Worker's
+**Settings → Build**.
+
+To pick up a new release, bring the upstream changes into your fork and push:
+
+```sh
+git clone https://github.com/YOUR-ACCOUNT/app-ai-gateway
+cd app-ai-gateway
+git remote add upstream https://github.com/maxceem/app-ai-gateway
+git fetch upstream
+git merge upstream/main
+git push
+```
+
+Watch the build under the Worker's **Deployments** in the Cloudflare
+dashboard. When it finishes, check the health endpoint as after the first
+deployment:
+
+```sh
+curl https://YOUR-WORKER.workers.dev/v1/healthz
+```
+
+Variables you changed in **Settings → Variables** survive a build. Secrets are
+never touched by a deployment.
+
+## Wrangler deployments
+
+Pull the release into your checkout and deploy again:
+
+```sh
+git pull
+pnpm install
+pnpm run deploy
+```
+
+Add `--profile <name>` when the deployment uses a
+[profile](/self-hosting/deploy-with-wrangler). To see what a release would
+change before deploying it, run the dry run first:
+
+```sh
+pnpm run deploy:dry-run --profile prod
+```
+
+The deploy script checks that the vault secret still exists, leaves
+`JWT_SECRET` and `BETTER_AUTH_SECRET` as they are, applies migrations, and
+deploys. Nothing you configured is reset.
+
+Console build variables such as `VITE_POSTHOG_KEY` are read when the console
+is built, so a change to one of them also needs a deploy.
+
+## Database migrations
+
+Migrations live in the `migrations` directory and are applied by the deploy
+script through the `DB` binding, so a deployment does not depend on a
+particular database name. You can also apply them on their own:
+
+```sh
+pnpm run db:migrate
+pnpm run db:migrate --profile prod
+```
+
+Applying is idempotent. A migration that has already run is skipped, so
+running the command twice is harmless.
+
+<Callout type="warn" title="A Worker rollback does not roll back the database">
+  Cloudflare can roll a Worker back to a previous version, but the database
+  keeps every migration that has been applied. Rolling back to a version that
+  predates a migration leaves the code and the schema out of step. Review the
+  migrations a release brings before deploying it to a gateway your apps
+  depend on, and never edit a migration that has been applied.
+</Callout>
+
+A safe routine for a release that includes migrations:
+
+1. Read the new files under `migrations` and confirm they only add what the
+   release needs.
+2. Deploy to a second gateway first if you run one, for example a staging
+   profile with its own database.
+3. Deploy to the gateway your apps use, then check `/v1/healthz` and send one
+   request through an app.
+
+## For contributors
+
+Change the schema definition, run `pnpm run db:generate` to produce the
+migration file, and commit both the schema change and the generated migration
+together. Never modify a migration that a deployment has already applied; add a
+new one instead.
+
+## Checking a checkout
+
+Before deploying a change of your own, run the same checks the project runs:
+
+```sh
+pnpm run verify
+pnpm run deploy:dry-run
+```
+
+`verify` type-checks every project, checks the generated OpenAPI document for
+drift, and runs both test suites. The dry run builds the console and resolves
+the Wrangler configuration without deploying anything.

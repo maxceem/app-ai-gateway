@@ -1,0 +1,56 @@
+---
+title: Limits
+description: Cap how many requests and how much spend each user and the whole app may have.
+---
+
+The **Limits** page sets the limits you place on your app's own users and on
+the app as a whole. Edits take up to a minute to apply everywhere.
+
+## Per-user limits
+
+Applied independently to every identified user.
+
+- **Requests per minute**
+- **Requests per day**
+- **Monthly spending budget (USD)**
+
+Rate limits answer `429 app_rate_limited`. An exhausted budget answers
+`429 app_budget_exhausted`. Both carry `data.scope: "user"` and a
+`Retry-After` header. The budget is settled from completed requests, so it
+stops the request after the one that crosses it.
+
+This card needs an app that identifies users. For an app with **No user
+identity** it is replaced by a note pointing to the **Auth policy** page,
+because there is nobody for a per-user limit to apply to.
+
+## Application limits
+
+Shared across all users and keys of the app. The same three fields, with
+`data.scope: "app"` on refusals. An `app` refusal is everybody's traffic, so
+a client backing off one user will not clear it.
+
+Leave a field empty to keep it unrestricted. A budget of `0` is a closed
+door that stops all billable traffic for that scope; a request limit of `0`
+is refused as a likely typo.
+
+See [Limits and blocking](/how-it-works/limits) for how the windows and months
+are counted.
+
+## In the configuration
+
+```json
+"limits": {
+  "per_user": {
+    "requests": { "per_minute": 30, "per_day": 1000 },
+    "spending": { "monthly_usd": 10 }
+  },
+  "per_app": {
+    "requests": { "per_minute": null, "per_day": null },
+    "spending": { "monthly_usd": 100 }
+  }
+}
+```
+
+The block is optional: omit it and the app is unlimited. Every field is
+nullable, and `null` means unlimited for that field alone. A `per_user`
+block on an app with no user identity is refused.

@@ -1,0 +1,287 @@
+---
+title: Gateways
+description: Route providers through your Cloudflare AI Gateway or Vercel AI Gateway instead of holding their keys here.
+---
+
+A **gateway** is a connection to somebody else's AI gateway, stored once and
+used by as many providers as you like. Two types are supported: **Cloudflare AI
+Gateway** and **Vercel AI Gateway**. A provider routed through a gateway
+carries no provider key of its own. The gateway's token authenticates it, and
+the provider keys live on the gateway's side.
+
+Gateways are optional. A provider with its own **API key** calls the provider
+directly and never touches one.
+
+## Add a gateway
+
+Open **Providers**, then **Gateways** in the sidebar, and click
+**Add gateway**. You can also reach the same dialog from the **Add provider**
+dialog by choosing **Use gateway** and then **New gateway...** in the
+**Gateway** picker, so the provider you were describing is not thrown away.
+
+| Field | Cloudflare AI Gateway | Vercel AI Gateway |
+| --- | --- | --- |
+| **Gateway type** | Cloudflare AI Gateway | Vercel AI Gateway |
+| **Name** | Your label, defaults to `Our CF gateway` | Your label, defaults to `Our Vercel gateway` |
+| **Cloudflare Account ID** | Required | Not shown |
+| **Cloudflare Gateway ID** | Required | Not shown |
+| **Gateway token** | The gateway's own authentication token | An AI Gateway API key |
+
+The **Gateway token** field links to the provider's instructions for creating
+one. Under it, the dialog states the credential policy for the chosen type,
+quoted in [Whose key pays](#whose-key-pays) below.
+
+Click **Test gateway** to check the connection, then **Add gateway**. The
+token is encrypted on arrival and never shown again; the list displays its
+last four characters under **Auth**, next to the Cloudflare account and
+gateway IDs where there are any. Saving does not call the gateway, so a
+connection can be stored while the Cloudflare side of it is still being built.
+
+The API takes exactly the fields the type needs and rejects any other:
+
+```json
+POST /v1/admin/provider-gateways
+{ "type": "cf_aig", "name": "Prod CF gateway", "accountId": "...", "gatewayId": "...", "token": "..." }
+```
+
+```json
+POST /v1/admin/provider-gateways
+{ "type": "vercel", "name": "Prod Vercel gateway", "token": "..." }
+```
+
+## Test gateway
+
+**Test gateway** probes the connection with the fields as entered. Nothing is
+stored. For Cloudflare it calls OpenAI's list-models path through your gateway,
+so it proves the account ID, the gateway ID and the token at once. For Vercel
+it calls Vercel's own authenticated credits endpoint, which rejects a key that
+is not real.
+
+| Verdict | What it says |
+| --- | --- |
+| Works | "Works. The gateway accepted this token." |
+| Failed | "The gateway refused this token (HTTP 401). Check the token itself, that authentication is turned on, and that the gateway holds a key for OpenAI." |
+| Failed | "The gateway answered with HTTP 404. Check the account and gateway IDs." |
+| Unconfirmed | "The gateway did not answer in time, so nothing is proven either way." |
+
+A Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway
+whose authentication or stored key is not set up yet. Only you can tell those
+apart, which is why a refusal never stops you from saving.
+
+```json
+POST /v1/admin/provider-gateways/test
+{ "type": "cf_aig", "accountId": "...", "gatewayId": "...", "token": "..." }
+```
+
+The answer is `{ "validated": true }` or `{ "validated": false, "reason":
+"rejected" | "unreachable" | "unexpected_status", "status": 401 }`. A refusal
+is reported, not raised as an error.
+
+## Attach a provider
+
+A gateway carries no traffic on its own. Attach providers to it one at a time:
+open **Add provider**, set **Authentication** to **Use gateway**, and pick the
+gateway. The **API key** and **Base URL** fields disappear, because the
+provider's own key lives in the gateway and the gateway owns the origin. The
+slug rules are the same as for any provider, so a second OpenAI provider needs
+its own slug, for example `openai-cf`. See
+[Add a provider key](/providers/add-a-provider).
+
+```json
+POST /v1/admin/providers
+{ "type": "openai", "name": "OpenAI via CF", "slug": "openai-cf", "providerGatewayId": "..." }
+```
+
+Each gateway serves only the provider types verified against its live catalog:
+
+| Gateway | Provider types |
+| --- | --- |
+| Cloudflare AI Gateway | `openai`, `anthropic`, `xai`, `gemini`, `perplexity` |
+| Vercel AI Gateway | `openai`, `anthropic`, `gemini`, `xai`, `perplexity`, `deepseek`, `moonshot` |
+
+Attaching any other type is refused with
+`400 provider_not_supported_by_gateway` rather than stored as a provider whose
+every request would fail. Connect those types with their own API key. The full
+list is in [Supported providers](/providers/supported-providers).
+
+## Paths on each route
+
+A direct provider uses the provider's own paths. A gateway-routed provider
+uses its gateway's paths, and the two gateways differ.
+
+**Cloudflare AI Gateway** forwards to each provider's own API under a
+per-provider slug, so every API that provider has survives the trip, native
+ones included. Use the provider's own paths from
+[Supported providers](/providers/supported-providers): Gemini's
+`v1beta/models/{model}:generateContent` works on a Cloudflare-routed Gemini
+provider. Requests go to
+`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<provider>/...`.
+
+**Vercel AI Gateway** publishes one URL space for every provider and names the
+provider in the model ID instead. Only three paths exist, whatever the
+provider type:
+
+| Client API | Path after the slug |
+| --- | --- |
+| OpenAI Responses | `v1/responses` (POST only) |
+| OpenAI Chat Completions | `v1/chat/completions` |
+| Anthropic Messages | `v1/messages` |
+
+Anything else on a Vercel-routed provider is refused with
+`403 api_style_not_supported` before the request leaves the gateway. In
+particular, Gemini's native `generateContent` is not available through Vercel
+(use a direct or Cloudflare-routed Gemini provider for that), and neither is
+transcription, so a `transcription`
+[named endpoint](/applications/endpoints) cannot use a Vercel-routed provider.
+The Responses entry means `POST v1/responses` only: retrieving, cancelling or
+deleting a stored response by ID is refused on a Vercel-routed provider,
+because Vercel does not document those operations. Keep that work on a direct
+or Cloudflare-routed provider.
+
+The gateway never translates between API formats. Calling OpenAI Chat
+Completions on a Gemini-via-Vercel provider sends an OpenAI body to Vercel, and
+Vercel translates it once.
+
+## Model IDs stay canonical
+
+Everywhere you can see a model, it is the provider's own ID, exactly as on a
+direct provider: an app's allowed models and fixed models, custom pricing,
+model rewrites, and recorded usage all say `gemini-2.5-flash`, never
+`google/gemini-2.5-flash`. On a Cloudflare route the ID is passed through
+unchanged. On a Vercel route the gateway adds Vercel's namespace on the way out
+and strips it from anything Vercel echoes back, so one price row covers a model
+on every route and moving an app between routes changes no configuration.
+
+| Provider type | Vercel namespace | Example wire model |
+| --- | --- | --- |
+| `openai` | `openai/` | `openai/gpt-5.6` |
+| `anthropic` | `anthropic/` | `anthropic/claude-opus-5` |
+| `gemini` | `google/` | `google/gemini-2.5-flash` |
+| `xai` | `spacexai/` | `spacexai/grok-4.5` |
+| `perplexity` | `perplexity/` | `perplexity/sonar-pro` |
+| `deepseek` | `deepseek/` | `deepseek/deepseek-v4-pro` |
+| `moonshot` | `moonshotai/` | `moonshotai/kimi-k3` |
+
+The app's [proxy policy](/applications/proxy-policy) page states the rule per
+provider, for example "Gemini model IDs with no `google/` prefix; the gateway
+adds it upstream."
+
+### Routing options for Vercel
+
+Two per-provider settings exist for Vercel-routed providers. Both are set
+through the API, on `gatewayRoute` at create time or on
+`PUT /v1/admin/providers/{id}` (a full replace; `null` clears it).
+
+- `modelPrefix` overrides the namespace from the table above. Use it if Vercel
+  names one of your models differently from the provider. It must end with
+  `/`.
+- `providerOnly` pins the serving provider. Vercel may serve one model from
+  several upstreams (Claude from Anthropic, Bedrock or Vertex). The values are
+  Vercel's own provider slugs, and the gateway sends them as
+  `providerOptions.gateway.only` in the outbound body. That is a routing
+  directive, not a translation: the payload the serving provider eventually
+  sees is the one your client sent.
+
+```json
+PUT /v1/admin/providers/{id}
+{ "gatewayRoute": { "providerOnly": ["vertex", "anthropic"] } }
+```
+
+Cloudflare AI Gateway takes no routing configuration. Sending `gatewayRoute`
+on a Cloudflare-routed provider is refused with `400 invalid_request`.
+
+## Whose key pays
+
+The two gateways treat provider keys differently, and the Add gateway dialog
+says so under the token field.
+
+**Cloudflare AI Gateway**: "Requests use the provider keys stored in your
+Cloudflare AI Gateway's own key store." The gateway sends only its token and
+metadata; no provider auth header travels on that route, because your
+Cloudflare gateway supplies it. Usage events record `credential_source: "byok"`.
+
+**Vercel AI Gateway**: "Your provider credential stored in Vercel is
+preferred. Vercel may fall back to system credentials." Vercel documents your
+own keys as preferred and documents falling back to its own when yours fail.
+Nothing at configuration time settles which one paid for a request, so usage
+events routed through Vercel record the credential source as unknown rather
+than claiming it was yours. Vercel charges provider list price with no token
+markup, so the shipped [price catalog](/providers/model-pricing) stays
+accurate.
+
+Cost on both routes is computed locally from the catalog or your custom
+prices. See [Usage](/applications/usage) for the route and credential-source
+breakdowns.
+
+## Update token
+
+One token authenticates every provider routed through a gateway. To rotate it,
+open **Update token** in the gateway's row. The dialog reads "One token
+authenticates every provider routed through this gateway, so all 3 of them
+pick the new one up within a minute." Paste the **New gateway token**, click
+**Test token** if you want it checked against the stored account and gateway
+IDs, then **Update token**.
+
+The **Update key** action on a routed provider's own row is greyed out for
+this reason, and the API answers `409 provider_gateway_managed` there.
+
+```json
+POST /v1/admin/provider-gateways/{id}/rotate
+{ "token": "..." }
+```
+
+## Rename and delete
+
+**Rename** changes the display name only. As the dialog says, nothing about
+the connection or the providers routed through it moves.
+
+```json
+PATCH /v1/admin/provider-gateways/{id}
+{ "name": "Prod CF gateway" }
+```
+
+**Delete gateway** destroys the stored token. It is only available once
+nothing routes through the gateway, and the confirm dialog says so: "Nothing
+routes through it, so no traffic changes." While any provider references the
+gateway, the action is greyed out with the reason. Disabled providers count,
+because a paused provider keeps its reference so it can be enabled again:
+
+- "Delete every active provider instance routed through this gateway first"
+- "Delete the active and disabled provider instances routed through this
+  gateway first"
+- "Disabled provider instances still reference this gateway; delete them to
+  release it"
+
+The API answers `409 gateway_in_use` with the same message. Each gateway in
+`GET /v1/admin/provider-gateways` carries `providerCount` (active providers
+routed through it) and `referencedCount` (every provider referencing it,
+disabled ones included). Deletion is governed by the second number.
+
+```text
+DELETE /v1/admin/provider-gateways/{id}
+```
+
+## Headers on each route
+
+Which headers travel upstream follows the route. Your apps never send a
+provider key or a gateway token; the gateway adds the right one.
+
+- **Direct to the provider.** The provider's own auth header and no gateway
+  control header of any kind.
+- **Through Cloudflare AI Gateway.** `cf-aig-authorization` and
+  `cf-aig-metadata` (the app ID and the end user ID), set by the gateway. A
+  client may set the documented `cf-aig-cache-ttl`, `cf-aig-skip-cache`,
+  `cf-aig-max-attempts`, `cf-aig-backoff` and `cf-aig-retry-delay` controls.
+  Every other `cf-aig-*` header is stripped.
+- **Through Vercel AI Gateway.** `Authorization: Bearer <your gateway token>`
+  plus Vercel's `ai-reporting-user` and `ai-reporting-tags`, set from the
+  end user and the app. A client value in any `ai-reporting-*` header is
+  stripped, since it would rewrite your Vercel-side spend attribution.
+  `x-api-key` is stripped too, because Vercel accepts a key there and would
+  let it outrank the gateway's own token.
+
+A gateway's own headers are reserved on every route, so a client value in
+`cf-aig-authorization`, `authorization`, `x-api-key` or `ai-reporting-*`
+never reaches an upstream. Upstream URLs are always built from the stored,
+non-secret gateway configuration; clients never supply one. The full list of
+forwarded and dropped headers is in [Calling the proxy](/integrate/proxy).

@@ -1,0 +1,84 @@
+---
+title: Usage and events
+description: Spend, tokens and requests over time, broken down any way you need, and every request with its outcome.
+---
+
+The **Usage** page shows what the app has done. The **Overview** page and the
+**Apps** list summarise the same numbers for the month.
+
+## Daily usage by provider
+
+A stacked daily chart for the last 7, 30 or 90 days, by **Cost**, **Requests**
+or **Tokens**, one colour per provider.
+
+## Breakdown
+
+A table over the same range, grouped by one dimension:
+
+| Dimension | Answers |
+| --- | --- |
+| **By model** | Which models cost what |
+| **By model author** | Spend on Google's, OpenAI's or Anthropic's models, on any route |
+| **By provider** | Which provider type served the traffic |
+| **By gateway** | Traffic through Cloudflare or Vercel AI Gateway versus direct |
+| **By credential source** | Your own key versus a gateway's key |
+| **By user** | Who spent what |
+| **By status** | Served, provider errors, and each kind of refusal |
+| **By cost source** | Whether cost was computed locally, reported by the provider, or unresolved |
+| **By route** | Provider slug and path |
+| **By endpoint** | Each named endpoint |
+| **By app version** | The `X-App-Version` header, so you can see whether a problem is one release |
+
+Columns are **Requests**, **Input**, **Cached input**, **Output** and **Cost**.
+
+Model, provider and status breakdowns reach back over the whole history. The
+other dimensions come from the raw event log, which is kept for a bounded
+period; totals are never lost.
+
+## Recent events
+
+Every proxied request, newest first, with **When**, **User · key**, **Model**,
+**Route**, **Tokens**, **Cost**, **Latency** and **Status**. The route shows
+the endpoint slug where one was used, the gateway it went through, and for
+OpenRouter the provider that actually served it.
+
+Filter by status:
+
+| Status | Meaning |
+| --- | --- |
+| `ok` | Served by the provider |
+| `provider_error` | The provider refused or failed the request |
+| `blocked_app_rate` | Refused by this app's own rate limit |
+| `blocked_app_budget` | Refused by this app's own monthly budget |
+| `blocked_user` | Refused because the user is blocked |
+| `blocked_billing` | Refused because your account's request allowance was spent |
+
+## Where a cost comes from
+
+Each event records how its cost was arrived at.
+
+- **computed**: priced locally from the catalog or the provider's custom
+  pricing. This is the normal case.
+- **reported**: the provider said what the request cost, and that figure is
+  used. OpenRouter does this.
+- **unresolved**: the provider answered successfully but reported no usage
+  the gateway could read, so the request consumed no budget. Shown as
+  **unresolved** rather than `$0.00`.
+
+The usual cause of an unresolved event is a client that disconnected from a
+stream before the final chunk carrying the usage arrived. The generation stops
+when the client disconnects, but what was generated up to then is unmetered.
+A sustained count of unresolved events on one app or user is worth a look, and
+per-user rate limits bound how much can go unmetered. See
+[Model pricing](/providers/model-pricing).
+
+## Through the API
+
+- `GET /v1/admin/apps/{app}/usage?month=YYYY-MM` for totals.
+- `GET /v1/admin/apps/{app}/usage/timeseries?from=&to=` for the daily chart.
+- `GET /v1/admin/apps/{app}/usage/breakdown?by=model&from=&to=` where `by` is
+  one of `model`, `model_author`, `provider`, `provider_slug`,
+  `provider_gateway`, `credential_source`, `user`, `status`, `cost_source`,
+  `route`, `endpoint`, `app_version`.
+- `GET /v1/admin/apps/{app}/events?limit=&status=&user=&model=&before_id=`
+  for the event list, paged by `next_before_id`.

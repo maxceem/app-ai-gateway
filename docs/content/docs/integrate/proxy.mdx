@@ -1,0 +1,142 @@
+---
+title: Calling the provider proxy
+description: The URL shape, the credential headers, what is forwarded to the provider, and how streaming works.
+---
+
+The proxy route forwards a provider-native request to one of your providers:
+
+```text
+{METHOD} https://api.appaigateway.com/v1/apps/{app}/proxy/{provider}/{provider_path}
+```
+
+- `{app}` is the app ID.
+- `{provider}` is a provider slug: `openai`, `anthropic`, `gemini`, `xai`,
+  or a custom slug such as `openai-dev`. It names one of your provider keys,
+  not a provider type.
+- `{provider_path}` is the provider's own API path, verbatim and without a
+  leading slash. Any method is forwarded, so `GET v1/models` works as well as
+  `POST v1/responses`.
+
+The body is the provider's body and the response is the provider's response.
+The provider's documentation is the reference for both.
+
+## Credentials
+
+| App | Header |
+| --- | --- |
+| iOS app, or server app with signed-in users | `Authorization: Bearer <gateway token>` and `X-App-Version: <your app's version>` |
+| Server app without signed-in users | `Authorization: Bearer agw_…` |
+
+`X-App-Version` is required whenever the credential is a gateway token. It is
+recorded on every request and is how the console's **By app version**
+breakdown tells one release from another. The Swift package sets it from the
+bundle's version.
+
+The credential may also be sent in the provider's own key header, such as
+`x-api-key` for Anthropic or `x-goog-api-key` for Gemini. That is what lets a
+provider SDK work with the gateway token in place of the provider key. The
+`Bearer` prefix is optional.
+
+## Paths by provider
+
+| Provider | Typical path |
+| --- | --- |
+| OpenAI | `v1/responses`, `v1/chat/completions`, `v1/audio/transcriptions` |
+| Anthropic | `v1/messages` |
+| Gemini | `v1beta/models/{model}:generateContent` or `v1beta/openai/chat/completions` |
+| xAI | `v1/responses`, `v1/chat/completions`, `v1/stt` |
+| Perplexity, DeepSeek, ByteDance | `chat/completions` |
+| Groq | `openai/v1/chat/completions` |
+| Fireworks AI | `inference/v1/chat/completions` |
+| Mistral, Together AI, Cerebras, Moonshot AI, Hugging Face, Baseten, OpenRouter | `v1/chat/completions` |
+
+A provider routed through Vercel AI Gateway accepts only `v1/responses`,
+`v1/chat/completions` and `v1/messages`. The full table with each provider's
+caveats is on [Supported providers](/providers/supported-providers).
+
+For an SDK, the base URL is the proxy URL up to the provider's version
+prefix, for example `…/proxy/openai/v1`; the SDK appends `responses` or
+`chat/completions` itself.
+
+## Model names
+
+Model names are the provider's own on every route: `gemini-2.5-flash`, never
+`google/gemini-2.5-flash`. If the app has a model rewrite, send the name the
+rewrite expects. If it has an allowlist, only listed names are accepted.
+
+## Streaming
+
+Set the provider's own streaming option, `"stream": true` for most providers
+or the `:streamGenerateContent` path for Gemini, and read the stream as the
+provider documents it. The gateway forwards it unbuffered and reads usage out
+of it as it passes. If your client disconnects mid-stream, the provider call
+is cancelled.
+
+## What reaches the provider
+
+The gateway adds your provider key and forwards a fixed set of request
+headers:
+
+- `content-type`, `accept`, `accept-language`, `user-agent`
+- `anthropic-version`, `anthropic-beta`,
+  `anthropic-dangerous-direct-browser-access`, `openai-beta`,
+  `x-goog-api-client`, `idempotency-key`
+- anything starting with `x-stainless-`, which the OpenAI and Anthropic SDKs
+  send
+
+Everything else is dropped, so a provider never sees your user's address,
+cookies or a header you did not intend to send. In particular
+`openai-organization`, `openai-project` and `x-goog-user-project` are dropped
+because they would redirect spend to another account, and any provider key
+your client sends is replaced.
+
+Through a Cloudflare AI Gateway, the documented `cf-aig-cache-ttl`,
+`cf-aig-skip-cache`, `cf-aig-max-attempts`, `cf-aig-backoff` and
+`cf-aig-retry-delay` controls are forwarded too.
+
+On the way back, `set-cookie`, `openai-organization` and `openai-project`
+are removed. `x-request-id` is kept, because provider support asks for it.
+The gateway adds a `Server-Timing` header with the time spent on
+authentication, limits and the provider's time to first byte.
+
+## Limits on a request
+
+- Request bodies are limited to 20 MB. Larger ones answer
+  `413 payload_too_large`.
+- If the provider sends nothing for 120 seconds, the request answers
+  `504 provider_error`. Once the first byte arrives, the stream is unbounded.
+- If the app sets **Max output tokens** for the provider, a request asking
+  for more is refused with `403 max_output_tokens_exceeded`, and one that
+  asks for nothing gets the cap injected.
+
+## Provider errors
+
+A provider's own error response, such as a `400` for a malformed body or a
+`429` from the provider's rate limit, is passed through with the provider's
+status and body, and recorded as a `provider_error` event. A request the
+gateway could not deliver at all answers `502 provider_error` in the gateway's
+own format.
+
+## Reading your own limits
+
+An app that identifies users can call `GET /v1/apps/{app}/me` with its
+gateway token:
+
+```json
+{
+  "user_id": "firebase-uid",
+  "limits": {
+    "requests_today": 12,
+    "requests_remaining": 288,
+    "requests_per_minute": 10,
+    "requests_per_day": 300,
+    "monthly_cost_usd": 0.41,
+    "monthly_budget_usd": null,
+    "blocked": false
+  }
+}
+```
+
+`requests_today` is `null` when the app sets no per-user limit, because
+requests are then not counted. An app with no user identity answers
+`404 auth_method_not_supported`.

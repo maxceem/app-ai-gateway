@@ -3,16 +3,12 @@
   "pages": [
     "index",
     "quickstart",
-    "agent-quickstart",
-    "deployment",
-    "cloud-billing",
+    "how-it-works",
     "providers",
-    "configuration",
-    "authentication",
-    "provider-proxy",
-    "named-endpoints",
-    "operations",
-    "agents",
+    "applications",
+    "integrate",
+    "automation",
+    "self-hosting",
     "api"
   ]
 }

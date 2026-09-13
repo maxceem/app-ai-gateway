@@ -1,0 +1,87 @@
+---
+title: Use with AI agents
+description: Hand your gateway to a coding agent so it can add providers, create apps and read usage for you.
+---
+
+The gateway is designed to be operated by an AI agent as much as by a person.
+Every action is a plain REST call, the configuration is one JSON document,
+and there is a manual written for agents that fits in one request. Give an
+agent a management key and the manual, and it can set up an app end to end.
+
+## 1. Create a management key
+
+In the console, open the user menu, choose **Management keys**, click
+**New key**, and name it after the agent or the project. Copy the key.
+
+## 2. Put the key in the environment
+
+Never paste the key into a chat or a prompt file. Set it where the agent's
+shell reads it:
+
+```sh
+export APP_AI_GATEWAY_MGMT_KEY="agw_mgmt_…"
+export APP_AI_GATEWAY_URL="https://api.appaigateway.com"
+```
+
+Use your project's usual
+mechanism for secrets, such as a `.env` file that is ignored by git.
+
+## 3. Tell the agent where the manual is
+
+Add this to your project's agent instructions file, such as `AGENTS.md` or
+`CLAUDE.md`:
+
+```markdown
+## App AI Gateway
+
+This project's AI provider access goes through App AI Gateway. Before
+touching it, read https://docs.appaigateway.com/agents.md and follow it.
+The management key is in $APP_AI_GATEWAY_MGMT_KEY and the gateway URL is
+in $APP_AI_GATEWAY_URL. Never print the key. Never send `id` when creating
+an app. Validate a configuration before saving it.
+```
+
+That is enough for a capable agent. From then on, requests like these work
+as you would expect:
+
+- "Add my Anthropic key from `$ANTHROPIC_API_KEY` to the gateway and test
+  it."
+- "Create an iOS app called Calorie Tracker for team `ABCDE12345` and bundle
+  `com.example.calorietracker`, signed-in users via Firebase project
+  `calorie-1a2b3`, RevenueCat entitlement `pro`, 20 requests a minute per
+  user."
+- "Show me yesterday's spend by model for the Calorie Tracker app and block
+  any user over ten dollars."
+- "Point the `chat` endpoint at `gpt-5.6-luna` with low reasoning effort and
+  fall back to `grok-4.5`."
+
+## What the manual contains
+
+[The agent manual](/automation/agent-manual) is one page, also served as
+plain markdown at `/agents.md`. It covers authentication, the application
+lifecycle, the full configuration reference, providers, reading usage, the
+error table, and the rules about secrets. It links to the OpenAPI document
+for exact response shapes. It is the same information as the rest of this
+documentation, arranged for an agent that has to act rather than read.
+
+## Machine-readable files
+
+- `/agents.md`: the agent manual as markdown.
+- `/llms.txt`: an index of every documentation page with a one-line summary.
+- `/llms-full.txt`: the whole documentation in one file.
+- `/openapi.json`: the API contract.
+- Any page as markdown by adding `.md` to its path, for example
+  `/applications/limits.md`.
+
+All are static files on the documentation site, so an agent can fetch them
+without a browser.
+
+## What to expect from the agent
+
+- It should list your providers and apps before changing anything, and
+  validate a configuration before saving it.
+- It should report where it stored a key, never the key itself.
+- It cannot create or revoke management keys. That takes a signed-in person
+  in the console.
+- Anything it does shows up in the console immediately, so you can check its
+  work on the app's pages.

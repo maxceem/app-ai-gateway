@@ -1,0 +1,89 @@
+---
+title: Named endpoints
+description: Keep the provider, model, parameters and fallbacks on the gateway behind a stable slug, so you can change them without an app release.
+---
+
+A named endpoint is a URL of your own whose provider and model live in the
+app's configuration instead of in the client:
+
+```text
+POST https://api.appaigateway.com/v1/apps/{app}/endpoints/{slug}
+```
+
+The client sends only the request body. You decide, and can change at any
+time, which provider and model serve it, which parameters are fixed, and
+what to fall back to when the provider fails. Endpoints ignore the proxy
+policy's allowlists: this configuration is the policy.
+
+## Adding one
+
+On the app's **Endpoints** page, click **Add endpoint**. It needs an OpenAI
+or xAI provider, because those are the request shapes the gateway composes.
+
+- **Slug**: 1 to 64 characters from `a-z`, `0-9` and `-`. This is the last
+  segment of the URL, so pick a name for what the endpoint does, such as
+  `chat` or `transcribe`, not for the model behind it.
+- **API style**:
+  - **responses**: clients send an OpenAI Responses body. The gateway
+    overwrites the model and deep-merges the parameters below.
+  - **transcription**: clients send an OpenAI audio-transcription multipart
+    body and may omit the model field entirely.
+- **Provider**: one of your OpenAI or xAI providers, by slug.
+- **Model**: swap it at any time; clients keep calling the same slug. Only
+  models with a price are accepted.
+- **Parameters** (responses only): JSON deep-merged over the client body,
+  with the server winning on conflicts. Leave `{}` for none.
+- **Max output tokens** (responses only): same rule as on the proxy policy.
+  A client value above it is refused, a missing value is injected.
+- **Fallback chain**: provider and model pairs tried in order when the
+  provider call fails, is rate limited upstream, or returns a server error,
+  and nothing has been streamed to the client yet. Usage is recorded against
+  the target that served the request.
+
+A transcription endpoint cannot use a provider routed through Vercel AI
+Gateway, because Vercel serves no transcription API. OpenAI endpoints call
+`v1/audio/transcriptions` and xAI endpoints call `v1/stt`.
+
+## What the client sees
+
+The request is authenticated exactly like a proxy request: a gateway token or
+an API key, plus `X-App-Version` for token holders. Limits, usage accounting
+and the error format are identical. The response keeps the serving provider's
+own format and streams unbuffered. An unknown slug answers
+`404 endpoint_not_found`. See [Calling named endpoints](/integrate/endpoints).
+
+## Fallback across keys
+
+Because targets are addressed by provider slug, a fallback chain can name two
+providers of the same type. `openai` falling back to `openai-dev` moves
+traffic to a second key without changing the request shape. A fallback target
+that cannot be resolved at request time, because the provider is gone,
+disabled or unpriced, is skipped rather than failing the request. Only the
+primary target must resolve.
+
+The **Usage** page's **By endpoint** breakdown shows what each endpoint cost,
+and the event list shows which target served each request.
+
+## In the configuration
+
+```json
+"endpoints": {
+  "chat": {
+    "api_style": "responses",
+    "provider": "openai",
+    "model": "gpt-5.6-luna",
+    "params": { "reasoning": { "effort": "low" } },
+    "max_output_tokens": 4096,
+    "fallback": [{ "provider": "xai", "model": "grok-4.5" }]
+  },
+  "transcribe": {
+    "api_style": "transcription",
+    "provider": "openai",
+    "model": "gpt-4o-mini-transcribe"
+  }
+}
+```
+
+Every model in the block, fallbacks included, must have a price in the
+catalog or in that provider's custom pricing, or the configuration is
+rejected on save.

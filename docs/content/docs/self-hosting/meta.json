@@ -1,0 +1,4 @@
+{
+  "title": "Self-hosting",
+  "pages": ["deploy-to-cloudflare", "deploy-with-wrangler", "configuration", "custom-domain", "updating", "operations", "local-development"]
+}

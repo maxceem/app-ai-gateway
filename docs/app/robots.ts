@@ -8,7 +8,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: "*",
-        allow: "/",
+        allow: ["/", "/llms.txt", "/llms-full.txt", "/agents.md", "/openapi.json"],
         disallow: ["/*.txt$", "/v1/", "/proxy/", "/auth/", "/dev/", "/secure/", "/me$", "/&"],
       },
     ],

@@ -1,0 +1,99 @@
+---
+title: Use the API
+description: Manage providers, apps, users and usage from scripts and CI with a management key.
+---
+
+Everything the console does, the API does. The console itself is a client
+of it. Use the API from a deployment script, a CI job, or an AI agent.
+
+## Management keys
+
+A management key authenticates API calls to the `/v1/admin/*` routes. Open
+the user menu in the console, choose **Management keys**, and click **New
+key**. The key is shown once in a dialog titled **Copy your new key now**.
+
+A management key acts with your own permissions over every app and provider
+in your account. Store it in a secret manager and read it from the
+environment. **Revoke key** stops it immediately.
+
+Management keys manage; they never call providers. An app's own API key is
+what calls providers, and a management key is refused on those routes.
+
+## Making a call
+
+Send the key as a bearer token:
+
+```sh
+export APP_AI_GATEWAY_MGMT_KEY="agw_mgmt_…"
+export GATEWAY_URL="https://api.appaigateway.com"
+
+curl "$GATEWAY_URL/v1/admin/apps" \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_MGMT_KEY"
+```
+
+The full reference with every
+request and response shape is under [API reference](/api), and the OpenAPI
+document is at [/openapi.json](/openapi.json).
+
+## What you can do
+
+| Area | Routes |
+| --- | --- |
+| Providers | `GET`, `POST /v1/admin/providers`, `POST /v1/admin/providers/test`, `PUT`, `DELETE /v1/admin/providers/{id}` |
+| Gateways | `GET`, `POST /v1/admin/provider-gateways`, `POST …/test`, `PATCH`, `DELETE …/{id}`, `POST …/{id}/rotate` |
+| Apps | `GET`, `POST /v1/admin/apps`, `GET`, `PUT`, `DELETE /v1/admin/apps/{app}`, `POST …/validate` |
+| App keys | `GET`, `POST /v1/admin/apps/{app}/keys`, `POST …/keys/{key}/revoke` |
+| Users | `GET /v1/admin/apps/{app}/users`, `GET …/users/{user}`, `POST …/block`, `POST …/unblock` |
+| Usage | `GET /v1/admin/apps/{app}/usage`, `…/usage/timeseries`, `…/usage/breakdown`, `…/events`, `POST …/usage/reprice` |
+| Auth events | `GET /v1/admin/apps/{app}/auth-events`, `…/auth-events/summary` |
+| Prices | `GET /v1/admin/prices` |
+
+## Validate before you write
+
+`POST /v1/admin/apps/{app}/validate` checks an application body without
+saving it and returns the same errors a write would. Run it before `PUT` in
+any automated flow, so a bad configuration is caught before it replaces a
+good one.
+
+## Rules worth knowing
+
+- Never send `id` when creating an app. The gateway assigns it and returns
+  it as `app.id`. A body with `id` is refused with `400`.
+- `PUT /v1/admin/apps/{app}` replaces the whole app: send `name`, the full
+  `config` and optionally `status`. Fetch first, change, then put.
+- An app's API key is returned once, as `api_key.key` on create or `key` on
+  `POST …/keys`. Nothing returns it again.
+- A provider key is never returned. Responses carry only `secretHint`, the
+  last characters.
+- Every write takes up to a minute to apply everywhere.
+
+## Example: create a server app and its first key
+
+```sh
+curl --fail-with-body "$GATEWAY_URL/v1/admin/apps" \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_MGMT_KEY" \
+  -H 'Content-Type: application/json' \
+  -d @- <<'JSON'
+{
+  "name": "Search service",
+  "config": {
+    "authentication": { "type": "api_key" },
+    "routing": {
+      "providers": {
+        "mode": "selected",
+        "selected": { "openai": { "allowed_paths": ["v1/responses"], "allowed_models": ["gpt-5.6"] } }
+      },
+      "model_rewrites": {}
+    },
+    "limits": {
+      "per_user": { "requests": { "per_minute": null, "per_day": null }, "spending": { "monthly_usd": null } },
+      "per_app": { "requests": { "per_minute": 300, "per_day": 10000 }, "spending": { "monthly_usd": 100 } }
+    }
+  }
+}
+JSON
+```
+
+The response carries `app.id`, which clients compile into their URLs, and
+`api_key.key`, which goes straight into the calling service's secret manager.
+Do not write the response to a file that outlives the step.

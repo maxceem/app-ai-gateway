@@ -36,6 +36,7 @@
     "typecheck:bindings": "wrangler types --check --env-file .dev.vars.example",
     "typecheck:tsc": "tsc --noEmit && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
     "test:worker": "vitest run --config vitest.suites.config.ts",
+    "test:swift-publish": "node --test test/swift-publish.node.mjs",
     "test:deploy-script": "node --test test/deploy-script.node.mjs",
     "pretest:worker": "pnpm run console:ensure"
   },

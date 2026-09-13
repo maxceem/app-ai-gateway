@@ -1,0 +1,62 @@
+# The monorepo is the source of truth. Bump app-ai-gateway-swift/VERSION
+# in a PR to publish a release when it merges; other changes only sync main.
+# SWIFT_PACKAGE_DEPLOY_KEY is a write deploy key for the destination repo.
+name: Publish Swift package
+
+on:
+  pull_request:
+    paths:
+      - "app-ai-gateway-swift/**"
+      - "scripts/publish-swift-package.sh"
+      - "test/swift-publish.node.mjs"
+      - ".github/workflows/swift-package.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app-ai-gateway-swift/**"
+      - "scripts/publish-swift-package.sh"
+      - "test/swift-publish.node.mjs"
+      - ".github/workflows/swift-package.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: swift test --package-path app-ai-gateway-swift
+      - run: node --test test/swift-publish.node.mjs
+
+  publish:
+    needs: test
+    if: github.repository == 'maxceem/app-ai-gateway' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: swift-package-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Publish package branch and version
+        env:
+          DEPLOY_KEY: ${{ secrets.SWIFT_PACKAGE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY" || { echo "SWIFT_PACKAGE_DEPLOY_KEY is missing" >&2; exit 1; }
+          key=$(mktemp)
+          hosts=$(mktemp)
+          trap 'rm -f "$key" "$hosts"' EXIT
+          chmod 600 "$key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          # Fetch GitHub's published host keys over authenticated HTTPS.
+          curl --fail --silent --show-error https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$hosts"
+          bash scripts/publish-swift-package.sh git@github.com:maxceem/app-ai-gateway-swift.git

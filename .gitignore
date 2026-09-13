@@ -26,3 +26,7 @@ app-ai-gateway-swift/.build/
 worker-startup.cpuprofile
 *.tgz
 *.tsbuildinfo
+docs/public/**/*.md
+docs/public/llms.txt
+docs/public/llms-full.txt
+docs/public/openapi.json

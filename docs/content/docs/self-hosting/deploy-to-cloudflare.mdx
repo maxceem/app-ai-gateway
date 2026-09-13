@@ -1,0 +1,120 @@
+---
+title: Deploy to Cloudflare
+description: Deploy your own gateway with the one-click button and sign in to its console.
+---
+
+This is the shortest path to your own gateway. You need a Cloudflare account
+and a GitHub account. No second service, no Cloudflare AI Gateway, and nothing
+to install on your machine.
+
+## 1. Make the vault key
+
+The deployment asks for one value: the key that encrypts the provider keys you
+add later in the console. Generate it now, on your own machine:
+
+```sh
+openssl rand -base64 32
+```
+
+Keep the output somewhere safe before you continue, for example in your
+password manager.
+
+<Callout type="warn" title="Back the vault key up">
+  Losing `SECRET_VAULT_LOCAL_KEK_V1` makes every stored provider key
+  permanently unreadable. There is no recovery path. The only fix is to add
+  each provider key again in the console.
+</Callout>
+
+## 2. Click the button
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/maxceem/app-ai-gateway)
+
+Cloudflare forks the repository into your GitHub account, creates the Worker,
+provisions the database and the other resources the Worker declares, and
+connects your fork to Workers Builds so that later pushes deploy on their own.
+See [Updating](/self-hosting/updating) for how that works after the first
+deployment.
+
+## 3. Fill in the form
+
+The form has one masked field and three plain ones.
+
+| Field | What to enter |
+| --- | --- |
+| `SECRET_VAULT_LOCAL_KEK_V1` | The key from step 1. It is masked as you type. |
+| `SECRET_VAULT_MODE` | Leave `local`. |
+| `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Leave `1`. |
+| `ALLOW_PUBLIC_REGISTRATION` | Leave `true` for now. You close sign-up in step 6. |
+
+The plain fields are pre-filled with the defaults a self-hosted gateway runs
+on. Each one is editable now and later in the Worker's
+**Settings → Variables**. Every setting is described in
+[Configuration](/self-hosting/configuration).
+
+Start the deployment. The build takes a few minutes. The first deployment also
+generates `JWT_SECRET` and `BETTER_AUTH_SECRET` for you, so there is nothing
+else to supply.
+
+## 4. Check the health endpoint
+
+When the deployment finishes, Cloudflare shows the Worker's URL. Call the
+health endpoint on it:
+
+```sh
+curl https://YOUR-WORKER.workers.dev/v1/healthz
+```
+
+```json
+{ "ok": true, "service": "app-ai-gateway", "vault": "ok" }
+```
+
+`"vault": "ok"` means the vault key was stored and the gateway can encrypt
+provider keys. If it says `"misconfigured"`, the vault variables are incomplete
+or contradictory. Open the Worker's **Settings → Variables**, check that
+`SECRET_VAULT_LOCAL_KEK_V1` exists as a secret and that the three plain values
+match the table above, then check again. Do not add provider keys until this
+field reads `ok`.
+
+## 5. Create the first account
+
+Open the Worker URL in a browser. The console loads and offers sign-up. Create
+your account with an email address and a password. The first account becomes
+the owner of the gateway.
+
+If you prefer the API, the same thing from a terminal:
+
+```sh
+export GATEWAY_URL="https://YOUR-WORKER.workers.dev"
+curl -i -c account.cookies \
+  -H 'content-type: application/json' \
+  -d '{"name":"Owner","email":"owner@example.com","password":"use-a-long-password"}' \
+  "$GATEWAY_URL/v1/auth/sign-up/email"
+```
+
+## 6. Close sign-up
+
+The gateway is on a public URL, so once your account exists, stop anyone else
+from creating one. In the Cloudflare dashboard open the Worker, go to
+**Settings → Variables**, and change `ALLOW_PUBLIC_REGISTRATION` to `false`.
+Saving deploys the change.
+
+Existing accounts still sign in. Only the sign-up form and the sign-up API are
+closed. Set it back to `true` for as long as it takes to add another account,
+then close it again.
+
+## What you have now
+
+- A gateway on `https://YOUR-WORKER.workers.dev`, serving both the console and
+  the API your apps call.
+- A fork of the repository in your GitHub account, wired to redeploy on push.
+- One secret to keep safe, `SECRET_VAULT_LOCAL_KEK_V1`, and two the deployment
+  generated for itself.
+
+The `workers.dev` address is fine to start with. When you want your own
+hostname, and the Cloudflare rate limiting rules that need one, follow
+[Custom domain and rate limiting](/self-hosting/custom-domain).
+
+## Next
+
+Sign in to the console and follow the [Quickstart](/quickstart): add a
+provider key, create an app, and send the first request.

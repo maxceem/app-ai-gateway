@@ -1,0 +1,126 @@
+---
+title: Server applications
+description: Call the gateway from a backend with an API key, point standard SDKs at it, and attribute requests to your users.
+---
+
+A server application authenticates with an API key. The key is created when
+the app is created and later on the app's **Auth policy** page, and it is
+shown once. Keep it in your backend's secret manager and read it from the
+environment.
+
+## Base URL
+
+Every request goes to:
+
+```text
+https://api.appaigateway.com/v1/apps/{app}/proxy/{provider}/{provider_path}
+```
+
+`{app}` is the app ID from the console, `{provider}` is a provider slug such
+as `openai` or `anthropic`, and `{provider_path}` is the provider's own API
+path. The app's **Overview**
+page shows this URL filled in for your app.
+
+## Without user identity
+
+Send the key as the bearer credential on every request:
+
+```sh
+curl https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/openai/v1/responses \
+  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5.6","input":"Say hello."}'
+```
+
+### Standard SDKs
+
+Set the SDK's base URL to the gateway, up to and including the provider's
+version prefix, and give it the gateway key where it expects the provider
+key. The SDK appends its own paths.
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APP_AI_GATEWAY_KEY"],
+    base_url="https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/openai/v1",
+)
+response = client.responses.create(model="gpt-5.6", input="Say hello.")
+```
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  apiKey: process.env.APP_AI_GATEWAY_KEY,
+  baseURL: "https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/anthropic",
+});
+const message = await client.messages.create({
+  model: "claude-sonnet-5",
+  max_tokens: 256,
+  messages: [{ role: "user", content: "Say hello." }],
+});
+```
+
+The gateway accepts the credential in the `Authorization` header and also in
+the provider's own key header (`x-api-key` for Anthropic, `x-goog-api-key`
+for Gemini), which is why the SDKs work unchanged. Any provider key the SDK
+would have sent is replaced with yours on the gateway.
+
+## Your backend sends the user id
+
+If the app's **User authentication** is **Your backend sends the user id**,
+add the configured header, `x-end-user-id` by default, with your own user
+identifier on every request:
+
+```http
+Authorization: Bearer agw_…
+X-End-User-ID: customer-123
+```
+
+The header is required once configured, so a request without it answers
+`400 invalid_request`. The gateway strips it before the request reaches the
+provider. Per-user limits, per-user usage and blocking then apply to that
+identifier. With an SDK, set it as a default header.
+
+## Signed-in users
+
+If the app's **User authentication** is **Signed-in users only**, the key
+alone is no longer accepted on requests. Exchange it together with the
+user's ID token for a gateway token, then send the gateway token with
+`X-App-Version`:
+
+```sh
+curl https://api.appaigateway.com/v1/apps/search-service-k3f9x1/auth/token \
+  -H 'Content-Type: application/json' \
+  -d "{\"api_key\":\"$APP_AI_GATEWAY_KEY\",\"issuer_token\":\"$ID_TOKEN\"}"
+# {"access_token":"…","expires_in":3600}
+
+curl https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/openai/v1/responses \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'X-App-Version: 2.3.0' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5.6","input":"Say hello."}'
+```
+
+The gateway token is valid for an hour and stands for one user. Cache it per
+user and exchange again before it expires. A refused exchange answers with
+one of the three codes described under
+[User authentication](/applications/auth-policy/user-authentication#what-the-app-sends).
+
+## Rotating a key
+
+Create a new key on the **Auth policy** page, move your backend to it, then
+revoke the old one. Revocation takes effect within a minute.
+
+## What to watch
+
+- `429 app_rate_limited` and `429 app_budget_exhausted` carry `Retry-After`
+  and `data.scope`. An `app` scope means the whole app's limit is spent and
+  backing off one user does not help.
+- `502 provider_not_configured` means the slug in your URL has no provider.
+- `400 pricing_not_configured` means the model has no price yet. Add one
+  under the provider's **Pricing** action.
+
+The full list is on [Errors and limits](/integrate/errors).

@@ -11,8 +11,4 @@ export const baseOptions: BaseLayoutProps = {
       </span>
     ),
   },
-  links: [
-    { text: "API Reference", url: "/api" },
-    { text: "GitHub", url: "https://github.com/maxceem/app-ai-gateway", external: true },
-  ],
 };

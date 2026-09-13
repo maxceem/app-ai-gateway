@@ -1,0 +1,4 @@
+{
+  "title": "Applications",
+  "pages": ["create", "auth-policy", "proxy-policy", "endpoints", "limits", "users", "usage", "auth-events", "settings"]
+}
