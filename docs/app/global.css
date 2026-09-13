@@ -103,3 +103,22 @@
   letter-spacing: 0.01em;
   line-height: 1;
 }
+
+/* The "Docs" half of the header lockup. The wordmark beside it leaves for the
+   marketing site, so this one has to read as a separate destination rather
+   than as part of the name: a hairline rule does that, and the flex gap the
+   layout already sets supplies the space on both sides of it. */
+.nav-docs {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  padding-inline-start: 0.6rem;
+  border-inline-start: 1px solid var(--color-fd-border);
+  color: var(--color-fd-muted-foreground);
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.nav-docs:hover {
+  color: var(--color-fd-foreground);
+}
