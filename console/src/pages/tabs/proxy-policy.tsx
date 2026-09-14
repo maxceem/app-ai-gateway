@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ArrowRight, CheckCircle2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -315,6 +315,121 @@ function policyRows(
   return [...known, ...orphans];
 }
 
+/** One editable line of the rewrite card, which a half-typed row can also be. */
+type RewriteRow = [source: string, target: string];
+
+/** The rows a rewrite map can actually hold: both sides filled in. */
+const completeRewrites = (rows: RewriteRow[]) =>
+  rows.filter(([source, target]) => source !== "" && target !== "");
+
+const asRewriteMap = (rows: RewriteRow[]) => Object.fromEntries(completeRewrites(rows));
+
+/**
+ * The rewrite editor, one row per remap.
+ *
+ * Rows are held here rather than in the draft because the draft stores a map,
+ * and a row being typed is not yet a map entry: it has no key until a source is
+ * given, and the Worker refuses an entry whose target is empty. Committing rows
+ * straight to the map is what used to make "Add rewrite" look broken — the new
+ * blank row was dropped on the way in, so the map never changed and no row
+ * appeared. So only complete rows are committed, and the incomplete one stays
+ * on screen until it is finished.
+ */
+function ModelRewrites({
+  rewrites,
+  onChange,
+}: {
+  rewrites: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const [rows, setRows] = useState<RewriteRow[]>(() => Object.entries(rewrites));
+
+  /*
+   * The draft can also change from outside this card: another app is opened, or
+   * the edits are discarded. Rebuild the rows when that happens, but not when
+   * the map is merely echoing back what these rows just committed — that would
+   * take away the row currently being filled in. Comparing the incoming map
+   * against a snapshot keeps the check to once per actual change.
+   */
+  const incoming = JSON.stringify(rewrites);
+  const [synced, setSynced] = useState(incoming);
+  if (incoming !== synced) {
+    setSynced(incoming);
+    if (incoming !== JSON.stringify(asRewriteMap(rows))) setRows(Object.entries(rewrites));
+  }
+
+  const update = (next: RewriteRow[]) => {
+    setRows(next);
+    onChange(asRewriteMap(next));
+  };
+
+  const editRow = (index: number, row: RewriteRow) =>
+    update(rows.map((entry, position) => (position === index ? row : entry)));
+
+  const incomplete = completeRewrites(rows).length < rows.length;
+
+  return (
+    <Card>
+      <CardHeader>
+        <SectionHeader
+          title="Model rewrites"
+          description="Server-side remap applied after the allowlist check, so a target need not be client-allowlisted. Usage records the rewritten model."
+          action={
+            <Button variant="outline" size="sm" onClick={() => update([...rows, ["", ""]])}>
+              <Plus className="size-3.5" />
+              Add rewrite
+            </Button>
+          }
+        />
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {rows.length === 0 ? (
+          <EmptyState>No rewrites. Clients get exactly the model they ask for.</EmptyState>
+        ) : (
+          rows.map(([source, target], index) => (
+            <div key={index} className="flex items-center gap-2">
+              {/*
+                Both sides carry flex-1 so the row splits evenly. The Input
+                primitive is w-full, which as a direct flex child resolves to a
+                full-width basis and takes the whole row — leaving a basis-0
+                sibling nothing to shrink into.
+              */}
+              <Input
+                value={source}
+                aria-label={`Rewrite ${index + 1} source model`}
+                placeholder="gpt-5.6-terra"
+                className="flex-1 font-mono text-xs"
+                onChange={(event) => editRow(index, [event.target.value, target])}
+              />
+              <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+              <Input
+                value={target}
+                aria-label={`Rewrite ${index + 1} target model`}
+                placeholder="gpt-5.7"
+                className="flex-1 font-mono text-xs"
+                onChange={(event) => editRow(index, [source, event.target.value])}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove rewrite ${index + 1}`}
+                onClick={() => update(rows.filter((_, position) => position !== index))}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
+          ))
+        )}
+        {incomplete ? (
+          <p className="text-xs text-muted-foreground">
+            A rewrite is saved once both sides are filled in. A row left half-finished is dropped.
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const proxy = state.draft!.config.routing;
   const mode = providerMode(proxy);
@@ -325,11 +440,7 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const gateways = gatewayList.data?.gateways ?? [];
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
-  const rewrites = Object.entries(proxy.model_rewrites ?? {});
   const rows = policyRows(instances, gateways, selected, providerPrices);
-
-  const setRewrites = (entries: [string, string][]) =>
-    state.updateProxy({ model_rewrites: Object.fromEntries(entries.filter(([key]) => key !== "")) });
 
   const setIndividualConfiguration = (enabled: boolean) => {
     state.updateProxy(
@@ -463,65 +574,10 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
           ))
         : null}
 
-      <Card>
-        <CardHeader>
-          <SectionHeader
-            title="Model rewrites"
-            description="Server-side remap applied after the allowlist check, so a target need not be client-allowlisted. Usage records the rewritten model."
-            action={
-              <Button variant="outline" size="sm" onClick={() => setRewrites([...rewrites, ["", ""]])}>
-                <Plus className="size-3.5" />
-                Add rewrite
-              </Button>
-            }
-          />
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {rewrites.length === 0 ? (
-            <EmptyState>No rewrites. Clients get exactly the model they ask for.</EmptyState>
-          ) : (
-            rewrites.map(([source, target], index) => (
-              <div key={index} className="flex items-center gap-2">
-                <Input
-                  value={source}
-                  placeholder="gpt-5.6-terra"
-                  className="font-mono text-xs"
-                  onChange={(event) =>
-                    setRewrites(
-                      rewrites.map((entry, position) =>
-                        position === index ? [event.target.value, entry[1]] : entry,
-                      ),
-                    )
-                  }
-                />
-                <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
-                <div className="flex-1">
-                  <Input
-                    value={target}
-                    placeholder="gpt-5.7"
-                    className="font-mono text-xs"
-                    onChange={(event) =>
-                      setRewrites(
-                        rewrites.map((entry, position) =>
-                          position === index ? [entry[0], event.target.value] : entry,
-                        ),
-                      )
-                    }
-                  />
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Remove rewrite"
-                  onClick={() => setRewrites(rewrites.filter((_, position) => position !== index))}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
+      <ModelRewrites
+        rewrites={proxy.model_rewrites ?? {}}
+        onChange={(model_rewrites) => state.updateProxy({ model_rewrites })}
+      />
     </div>
   );
 }
