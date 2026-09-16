@@ -24,15 +24,14 @@ not required.
 ## Human handoffs
 
 Run `agw account claim` to establish human ownership. The CLI prints a browser
-URL and a separate code. Open the URL in a browser outside the agent's visible
-session, enter the code, compare the account shown with the terminal, and sign
-in or create your human account. Approve ownership and choose whether the CLI
+URL. Open it in a browser outside the agent's visible session, compare the
+account shown with the terminal, and sign in or create your human account.
+Approve ownership and choose whether the CLI
 may retain access to your resources. Declining ongoing access retires its
 initial credential and disconnects it after successful claim.
 
 Provider commands offer a browser handoff for write-only secrets. Share the URL
-with the person supplying the credential; provider handoffs do not need the
-separate identity code. The page shows the provider, destination and proposed
+with the person supplying the credential. The page shows the provider, destination and proposed
 changes. Secrets never appear in CLI output or later reads. Poll with the
 operation command shown by the CLI; handoffs last 15 minutes.
 

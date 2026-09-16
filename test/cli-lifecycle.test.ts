@@ -273,7 +273,7 @@ describe("CLI account lifecycle", () => {
       ).status,
     ).toBe(403);
   });
-  it("requires the separate claim code, preserves account, retires bootstrap, and replays protected poll", async () => {
+  it("requires the submission proof, preserves account, retires bootstrap, and replays protected poll", async () => {
     const testEnv = runtime();
     const { input, data } = await start(testEnv);
     const human = await seedHuman();
@@ -285,11 +285,7 @@ describe("CLI account lifecycle", () => {
       { authorization: `Bearer ${data.credential.token}` },
     );
     expect(operationResponse.status).toBe(200);
-    const op = (await operationResponse.json()) as {
-      id: string;
-      url: string;
-      humanCode: string;
-    };
+    const op = (await operationResponse.json()) as { id: string; url: string };
     const submissionToken = new URL(op.url).hash.slice(1);
     const headers = { origin: "https://example.test", cookie: human.cookie };
     expect(
@@ -297,7 +293,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          { submissionToken, approve: true },
+          { submissionToken: random(), approve: true, allowServiceAccess: true },
           headers,
         )
       ).status,
@@ -307,9 +303,18 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
+          { approve: true, allowServiceAccess: true },
+          headers,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(
+          testEnv,
+          `/browser/${op.id}/submit`,
           {
             submissionToken,
-            humanCode: op.humanCode,
             approve: true,
             allowServiceAccess: true,
           },
@@ -378,13 +383,12 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     const response = await request(
       testEnv,
       `/browser/${op.id}/register`,
       {
         submissionToken: new URL(op.url).hash.slice(1),
-        humanCode: op.humanCode,
         email: "new-claim@example.test",
         password: "claim-password-for-test",
         name: "New person",
@@ -436,7 +440,6 @@ describe("CLI account lifecycle", () => {
           `/browser/${op.id}/submit`,
           {
             submissionToken: new URL(op.url).hash.slice(1),
-            humanCode: op.humanCode,
             approve: true,
             allowServiceAccess: false,
           },
@@ -461,7 +464,7 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     const batch = env.DB.batch.bind(env.DB);
     vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
       await env.DB.prepare("DELETE FROM mgmt_user_session WHERE user_id=?")
@@ -474,7 +477,6 @@ describe("CLI account lifecycle", () => {
       `/browser/${op.id}/submit`,
       {
         submissionToken: new URL(op.url).hash.slice(1),
-        humanCode: op.humanCode,
         approve: true,
         allowServiceAccess: true,
       },
@@ -559,13 +561,12 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     const response = await request(
       testEnv,
       `/browser/${op.id}/google`,
       {
         submissionToken: new URL(op.url).hash.slice(1),
-        humanCode: op.humanCode,
       },
       { origin: "https://example.test" },
     );
@@ -706,7 +707,7 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     expect(
       (
         await request(
@@ -714,7 +715,6 @@ describe("CLI account lifecycle", () => {
           `/browser/${op.id}/submit`,
           {
             submissionToken: new URL(op.url).hash.slice(1),
-            humanCode: op.humanCode,
             approve: true,
             allowServiceAccess: false,
           },
@@ -873,10 +873,9 @@ it("rejects every browser submission on the API host before registration or OAut
       { kind: "claim", payload: {}, pollToken: random() },
       { authorization: `Bearer ${data.credential.token}` },
     )
-  ).json()) as { id: string; url: string; humanCode: string };
+  ).json()) as { id: string; url: string };
   const input = {
     submissionToken: new URL(op.url).hash.slice(1),
-    humanCode: op.humanCode,
     email: "blocked-api@example.test",
     password: "test-password-with-length",
     name: "Blocked",

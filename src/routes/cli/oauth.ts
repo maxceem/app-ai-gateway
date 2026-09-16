@@ -37,7 +37,7 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
   }
 }
 export async function browserGoogle(c: CliContext): Promise<Response> {
-  const { row } = await verifiedSubmission(c, true);
+  const { row } = await verifiedSubmission(c);
   if (row.kind !== "claim" || row.consumed_at)
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
   const meta = deployment(c);

@@ -26,8 +26,6 @@ export function humanResult(
     return result.snippet;
   if ("state" in result && result.state === "pending" && "url" in result) {
     lines.push(`Waiting for browser handoff (${result.id}).`, result.url);
-    if (result.humanCode)
-      lines.push(`Human confirmation code: ${result.humanCode}`);
     lines.push(`Resume: agw operation wait ${result.id}`);
   } else if ("guidance" in result && "app" in result) {
     lines.push(

@@ -112,9 +112,6 @@ export async function createOperation(c: CliContext): Promise<Response> {
       "Operation proof is already bound to a different request",
     );
   const submissionToken = await derive(input.pollToken, `browser:${meta.id}`);
-  const humanCode = (await derive(input.pollToken, `human:${meta.id}`))
-    .slice(0, 12)
-    .toUpperCase();
   if (!row) {
     if (
       input.kind !== "claim" &&
@@ -180,8 +177,8 @@ export async function createOperation(c: CliContext): Promise<Response> {
     );
     const now = Date.now();
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO mgmt_handoff(id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,submission_proof_hash,poll_proof_hash,human_code_hash,expires_at,created_at,updated_at)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM mgmt_handoff WHERE organization_id = ? AND consumed_at IS NULL AND expires_at>?) < 10`,
+      `INSERT OR IGNORE INTO mgmt_handoff(id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM mgmt_handoff WHERE organization_id = ? AND consumed_at IS NULL AND expires_at>?) < 10`,
     )
       .bind(
         id,
@@ -192,7 +189,6 @@ export async function createOperation(c: CliContext): Promise<Response> {
         credentialId,
         await digest(submissionToken),
         pollHash,
-        await digest(humanCode),
         now + TTL,
         now,
         now,
@@ -221,7 +217,6 @@ export async function createOperation(c: CliContext): Promise<Response> {
       : row.expires_at <= Date.now()
         ? "expired"
         : "pending",
-    ...(input.kind === "claim" ? { humanCode } : {}),
     deployment: meta,
   });
 }

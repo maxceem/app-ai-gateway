@@ -174,7 +174,6 @@ CREATE TABLE `mgmt_handoff` (
 	`initiating_credential_id` text NOT NULL,
 	`submission_proof_hash` text NOT NULL,
 	`poll_proof_hash` text NOT NULL,
-	`human_code_hash` text,
 	`consumed_at` integer,
 	`outcome` text,
 	`expires_at` integer NOT NULL,

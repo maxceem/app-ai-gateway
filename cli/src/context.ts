@@ -691,7 +691,7 @@ export class Context {
     if (this.flags["no-open"] || this.flags.json || this.flags["no-input"])
       return data;
     process.stderr.write(
-      `Complete the browser handoff: ${data.url}\nOperation: ${data.id}\n${data.humanCode ? "Human confirmation code: " + data.humanCode + "\n" : ""}`,
+      `Complete the browser handoff: ${data.url}\nOperation: ${data.id}\n`,
     );
     return this.wait(data.id, 300);
   }

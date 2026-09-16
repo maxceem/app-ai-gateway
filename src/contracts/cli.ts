@@ -21,7 +21,6 @@ export const CliOperationRequestSchema = z
 export const CliSubmissionRequestSchema = z
   .object({
     submissionToken: CliProofSchema,
-    humanCode: z.string().max(40).optional(),
     approve: z.literal(true).optional(),
     allowServiceAccess: z.boolean().optional(),
     email: z.email().optional(),
@@ -59,7 +58,6 @@ export const CliOperationResponseSchema = z.object({
   url: z.url(),
   expiresAt: z.string(),
   state: z.enum(["pending", "completed", "failed", "expired"]),
-  humanCode: z.string().optional(),
   deployment: CliDeploymentSchema,
 });
 /**

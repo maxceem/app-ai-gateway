@@ -1219,13 +1219,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "human_code_hash": {
-          "name": "human_code_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "consumed_at": {
           "name": "consumed_at",
           "type": "integer",

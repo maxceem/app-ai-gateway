@@ -8771,7 +8771,7 @@
         ],
         "operationId": "createCliOperation",
         "summary": "Create or recover a browser handoff",
-        "description": "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require the separate humanCode, interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+        "description": "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
         "security": [
           {
             "ConsoleSession": []
@@ -8819,7 +8819,7 @@
         },
         "responses": {
           "200": {
-            "description": "Browser URL and separate identity code when required.",
+            "description": "Browser URL for the pending handoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8843,9 +8843,6 @@
                         "failed",
                         "expired"
                       ]
-                    },
-                    "humanCode": {
-                      "type": "string"
                     },
                     "deployment": {
                       "type": "object",
@@ -9701,7 +9698,7 @@
         ],
         "operationId": "cliBrowserDetails",
         "summary": "Browser handoff: details",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -9722,10 +9719,6 @@
                   "submissionToken": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
                   },
                   "approve": {
                     "type": "boolean",
@@ -9855,7 +9848,7 @@
         ],
         "operationId": "cliBrowserSubmit",
         "summary": "Browser handoff: submit",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -9876,10 +9869,6 @@
                   "submissionToken": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
                   },
                   "approve": {
                     "type": "boolean",
@@ -10009,7 +9998,7 @@
         ],
         "operationId": "cliBrowserRegister",
         "summary": "Browser handoff: register",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -10030,10 +10019,6 @@
                   "submissionToken": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
                   },
                   "approve": {
                     "type": "boolean",
@@ -10163,7 +10148,7 @@
         ],
         "operationId": "cliBrowserGoogle",
         "summary": "Browser handoff: google",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -10184,10 +10169,6 @@
                   "submissionToken": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
                   },
                   "approve": {
                     "type": "boolean",

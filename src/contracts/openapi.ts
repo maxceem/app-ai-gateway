@@ -988,9 +988,9 @@ register({ method: "post", path: "/v1/cli/bootstrap", tags: ["CLI"], operationId
   responses: { 200: response("Initial account and credential. Never print or log the credential.", CliBootstrapResponseSchema), ...cliErrors } });
 register({ method: "post", path: "/v1/cli/operations", tags: ["CLI"], operationId: "createCliOperation",
   summary: "Create or recover a browser handoff",
-  description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require the separate humanCode, interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+  description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
   security: managementSecurity, request: { body: { required: true, content: json(CliOperationRequestSchema) } },
-  responses: { 200: response("Browser URL and separate identity code when required.", CliOperationResponseSchema), ...cliErrors } });
+  responses: { 200: response("Browser URL for the pending handoff.", CliOperationResponseSchema), ...cliErrors } });
 register({ method: "get", path: "/v1/cli/operations/{id}", tags: ["CLI"], operationId: "pollCliOperation",
   summary: "Poll a browser handoff", security: [{ CliPollProof: [] }], request: { params: CliOperationPath },
   description: "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
@@ -1009,7 +1009,7 @@ register({ method: "get", path: "/v1/cli/browser/{id}", tags: ["CLI"], operation
   responses: { 200: { description: "No-store browser page. The submission proof arrives only in the URL fragment.", content: { "text/html": { schema: z.string() } } }, ...cliErrors } });
 for (const action of ["details", "submit", "register", "google"] as const) {
   register({ method: "post", path: `/v1/cli/browser/{id}/${action}`, tags: ["CLI"], operationId: `cliBrowser${action[0]!.toUpperCase()}${action.slice(1)}`,
-    summary: `Browser handoff: ${action}`, description: "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+    summary: `Browser handoff: ${action}`, description: "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
     request: { params: CliOperationPath, body: { required: true, content: json(CliSubmissionRequestSchema) } },
     responses: { 200: response("Nonsecret browser handoff result or authentication redirect metadata.", z.record(z.string(), z.unknown())), ...cliErrors } });
 }

@@ -16,7 +16,7 @@ agw provider add --type openai --browser --no-open --json
 agw operation wait <operation-id> --timeout 300 --json
 ```
 
-Share both the returned URL and human confirmation code where present. Hidden terminal input only prevents echo; an agent controlling that terminal can still observe it. The browser must be outside the agent's observable browser surface for credential isolation. Never pass credentials as command arguments. `--key-stdin` explicitly reads a single secret line. `--no-input` prohibits terminal prompts, and `--no-open` returns a browser operation without waiting.
+Share the returned URL. Hidden terminal input only prevents echo; an agent controlling that terminal can still observe it. The browser must be outside the agent's observable browser surface for credential isolation. Never pass credentials as command arguments. `--key-stdin` explicitly reads a single secret line. `--no-input` prohibits terminal prompts, and `--no-open` returns a browser operation without waiting.
 
 Run `agw --help` for the complete command surface and `agw <group> <command> --help` for its flags. Resource IDs and slugs are exact; display names are not selectors. File outputs never overwrite existing files. Server application keys are written with mode 0600 and never included in stdout. If persistence fails, the CLI attempts immediate revocation and reports the key ID for recovery.
 

@@ -56,13 +56,12 @@ on the next call without ever resurrecting what a claim retired.
 
 ## Claim
 
-Claim requires an interactive human session, a separate code displayed in the
-terminal, account review and explicit consent. The code is never embedded in the
-URL: possession of a link that someone pasted must not be enough. Browser
-submission proofs travel in the URL fragment, are removed from history on
-arrival and are held only in operation-scoped `sessionStorage`. This proves
-possession of the session and the code — it asserts nothing about mailbox
-ownership.
+Claim requires the submission proof from the handoff URL, an interactive human
+session, account review and explicit consent. Browser submission proofs travel
+in the URL fragment, are removed from history on arrival and are held only in
+operation-scoped `sessionStorage`, so the proof reaches the page without ever
+entering a server log or the browser's history. This proves possession of the
+link and of the session — it asserts nothing about mailbox ownership.
 
 Claim attaches a human owner to the existing account and clears its expiry. It
 never converts the service identity into a human one, and it never moves the

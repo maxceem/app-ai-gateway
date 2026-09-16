@@ -134,7 +134,6 @@ export const CliErrorDetailsSchema = z.object({
   state: z.string().optional(),
   expiresAt: z.string().optional(),
   url: z.string().optional(),
-  humanCode: z.string().optional(),
   /** The tail of a failed subprocess's own output, for failures it explains. */
   output: z.string().optional(),
 });
