@@ -15,32 +15,64 @@ import {
   organizationProviders,
   type OrganizationProviders,
 } from "../../core/provider-store";
-import { insertApp, updateApp, type StoredAppRow } from "../../core/app-writes";
+import { appInsertStatement, updateApp } from "../../core/app-writes";
+import { andCondition, planCap } from "../../core/plan-caps";
+import { databaseErrorMatches } from "./provider-shared";
+import { prepareResourceReceipt } from "../../core/resource-receipt";
 import { database } from "../../db";
 import {
   appApiKey,
   app,
   appAuthChallenge,
+  appAuthEvent,
   appUsageEvent,
   appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { APP_ID_IS_SERVER_ASSIGNED, AppWriteSchema } from "../../contracts/schemas";
+import type {
+  AppDeleteResponse,
+  AppListResponse,
+  AppResponse,
+  AppValidateResponse,
+} from "../../contracts/responses";
 import { assertMonth, currentMonth, organizationMonthUsage } from "./shared";
+
+/**
+ * The resolved configuration as it is published: a JSON object, which is all
+ * the contract says about it. TypeScript will not assign an interface to an
+ * index-signature type even when every one of its members is JSON, so this
+ * names the widening in one place instead of at each response.
+ */
+const asJsonObject = (value: object): Record<string, unknown> =>
+  value as Record<string, unknown>;
 
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const APP_ID_MAX_LENGTH = 63;
-const APP_ID_SUFFIX_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+/**
+ * Crockford's base32: the digits and letters that survive being read aloud or
+ * copied by hand, without `i`, `l`, `o` or `u`. Thirty-two divides 256, so
+ * {@link randomAppIdSuffix} can fold a random byte into a character without the
+ * modulo bias a 36-character alphabet would give its first four letters.
+ */
+const APP_ID_SUFFIX_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 /**
  * Every id carries one, so the readable stem is never the whole identifier.
- * Six characters is 36^6 — enough that a deployment can hold every app any
- * organization will ever create without a retry, and enough that the
- * unauthenticated `/v1/apps/{app}/auth/challenge` route cannot be found by
- * guessing an app's name. It also keeps every assigned id clear of the segments
- * the console and the gateway use themselves (`admin`, `new`, `v1`, …): none of
- * them ends in `-<six characters>`.
+ *
+ * Twelve characters is 32^12, about 10^18. The size is deliberate rather than
+ * merely sufficient: an app id outlives the app. Usage and authentication
+ * history are keyed by it and survive deletion on purpose, so an id that came
+ * round a second time would show one organization the history of another's
+ * deleted app. At this width that cannot happen — reproducing a specific
+ * retired id is a one-in-10^18 event, and ids are assigned here and never
+ * chosen by a caller, so there is nothing to aim at either.
+ *
+ * It also keeps every assigned id clear of the segments the console and the
+ * gateway use themselves (`admin`, `new`, `v1`, …): none of them ends in
+ * `-<twelve characters>`. And it leaves the unauthenticated
+ * `/v1/apps/{app}/auth/challenge` route unreachable by guessing an app's name.
  */
-const APP_ID_SUFFIX_LENGTH = 6;
+const APP_ID_SUFFIX_LENGTH = 12;
 
 interface AppWriteBody {
   name: string;
@@ -179,6 +211,7 @@ function serializeRow(row: typeof app.$inferSelect) {
     status: row.status,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
+    revision: row.revision,
   };
 }
 
@@ -187,9 +220,11 @@ type AppRouteEnv = { Bindings: Env; Variables: AdminVariables };
 export const appRoutes = new Hono<AppRouteEnv>();
 
 /**
- * Refuses the write unless the organization may currently use the product. The
- * plan carries no configuration ceilings: its only limit is the gateway-wide
- * monthly request allowance, which is spent on the data plane, never here.
+ * Refuses the write unless the organization may currently use the product.
+ *
+ * Entitlement only — whether the plan grants access at all. A ceiling on how
+ * much configuration the plan allows is a separate question, asked by the
+ * statement that would store the row; see `src/core/plan-caps.ts`.
  */
 async function requireEntitlement(c: Context<AppRouteEnv>): Promise<void> {
   requireActiveBilling(await getBillingAccess(
@@ -266,7 +301,7 @@ appRoutes.get("/apps", async (c) => {
     LIMIT 1
   `).bind(organizationId, organizationId).first();
 
-  return c.json({
+  const listed = {
     month,
     has_proxied_requests: proxied !== null,
     apps: rows.map((row) => {
@@ -311,7 +346,8 @@ appRoutes.get("/apps", async (c) => {
         },
       };
     }),
-  });
+  } satisfies AppListResponse;
+  return c.json(listed);
 });
 
 appRoutes.post("/apps", async (c) => {
@@ -321,6 +357,8 @@ appRoutes.post("/apps", async (c) => {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
   }
   const body = appBody(value);
+  const receipt = await prepareResourceReceipt(c, "app.add", body);
+  if (receipt?.result) return c.json(receipt.result, 201);
   const name = body.name.trim();
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
   const organizationId = c.get("admin").organizationId;
@@ -328,56 +366,62 @@ appRoutes.post("/apps", async (c) => {
     body.config,
     await organizationProviders(c.env, organizationId),
   );
-  const db = database(c.env.DB);
-  // The id is the gateway's to assign, so a collision is nobody's problem but
-  // its own: re-roll the suffix and insert again.
-  let created: StoredAppRow | null = null;
+  const cap = await planCap(c.env, "app", organizationId, c.get("billingRequestCache"));
   for (let attempt = 0; attempt < 16; attempt += 1) {
-    created = await insertApp(c.env.DB, {
-      id: generatedAppId(name),
-      organizationId,
-      name,
-      config,
-      status: body.status ?? "active",
-    });
-    if (created) break;
+  const appId = generatedAppId(name);
+  const now = new Date().toISOString();
+  const status = body.status ?? "active";
+  const generated = config.authentication.type === "api_key" ? await generateApiKey() : null;
+  const createdKey = generated ? {
+    id: generated.id, name: "Default key", key: generated.key,
+    key_prefix: generated.keyPrefix, created_at: now,
+  } : null;
+  const outcome = {
+    app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now },
+    resolved: { id: appId, organizationId, name, status, ...parseStoredAppConfig(config, null).resolved },
+    config_error: null,
+    api_key: createdKey,
+  };
+  const condition = receipt?.condition ?? { sql: "1", params: [] };
+  // The app cap guards the app row alone. The default key rides along with the
+  // app it belongs to, and by the time its statement runs the app is already
+  // counted, so sharing the guard would refuse the key of the very app that
+  // just filled the plan's last slot. Keys added later are capped in keys.ts.
+  const statements = [appInsertStatement(c.env.DB, { id: appId, organizationId, name, config,
+    status, createdAt: now, updatedAt: now }, andCondition(condition, cap.condition))];
+  if (generated) {
+    statements.push(c.env.DB.prepare(
+      `INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
+       SELECT ?,?,'Default key',?,?,'active',? WHERE ${condition.sql}
+       AND EXISTS (SELECT 1 FROM app WHERE id = ? AND organization_id = ?)`,
+    ).bind(generated.id, appId, generated.keyHash, generated.keyPrefix, now,
+      ...condition.params, appId, organizationId));
   }
-  if (!created) throw new GatewayError(409, "invalid_request", "Could not allocate a unique app id");
-  const appId = created.id;
-
-  let createdKey: { id: string; name: string; key: string; key_prefix: string; created_at: string } | null = null;
+  // The application, default key and retry receipt are all committed together.
+  // A response lost after this batch can redeliver the original ID and key.
   try {
-    if (config.authentication.type === "api_key") {
-      const generated = await generateApiKey();
-      const [row] = await db.insert(appApiKey).values({
-        id: generated.id,
-        appId,
-        name: "Default key",
-        keyHash: generated.keyHash,
-        keyPrefix: generated.keyPrefix,
-      }).returning();
-      createdKey = {
-        id: row!.id,
-        name: row!.name,
-        key: generated.key,
-        key_prefix: row!.keyPrefix,
-        created_at: row!.createdAt,
-      };
+    if (receipt) await receipt.commit(statements, outcome);
+    else {
+      const written = await c.env.DB.batch<unknown>(statements);
+      // The insert returns the row it stored, so an empty result is the guard
+      // refusing rather than a write that happened.
+      if (written[0]!.results.length === 0) {
+        throw new GatewayError(409, "conflict", "The application could not be created; retry the same request");
+      }
     }
   } catch (error) {
-    await db.delete(app).where(eq(app.id, appId));
+    if (receipt && await receipt.read()) return c.json(receipt.result!, 201);
+    if (databaseErrorMatches(error, /UNIQUE constraint failed: app\.id/u)) continue;
+    // Both guards refuse by matching no rows, so the failure above says nothing
+    // about which one did. Counting again, on this path alone, separates a
+    // reached plan ceiling from the concurrent write it otherwise looks like.
+    await cap.assertNotReached();
     throw error;
   }
   invalidateAppConfig(appId);
-  // The same body every other application route answers with, so a client reads
-  // one shape whether it just created the app or fetched it. `config_error` is
-  // null by construction here: the configuration was validated a moment ago.
-  return c.json({
-    app: serializeRow(created),
-    resolved: await loadAppConfig(c.env, appId),
-    config_error: null,
-    api_key: createdKey,
-  }, 201);
+  return c.json(receipt?.result ?? outcome, 201);
+  }
+  throw new GatewayError(409, "conflict", "Could not allocate a unique app ID; retry the same request");
 });
 
 appRoutes.get("/apps/:app", async (c) => {
@@ -389,15 +433,16 @@ appRoutes.get("/apps/:app", async (c) => {
     ),
   });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
-  let resolved: unknown = null;
+  let resolved: Record<string, unknown> | null = null;
   let configError: string | null = null;
   try {
     parseStoredAppConfig(row.config, null);
-    resolved = await loadAppConfig(c.env, appId);
+    resolved = asJsonObject(await loadAppConfig(c.env, appId));
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
   }
-  return c.json({ app: serializeRow(row), resolved, config_error: configError });
+  c.header("ETag", `"app-${row.revision}"`);
+  return c.json({ app: serializeRow(row), resolved, config_error: configError } satisfies AppResponse);
 });
 
 appRoutes.post("/apps/:app/validate", async (c) => {
@@ -415,7 +460,7 @@ appRoutes.post("/apps/:app/validate", async (c) => {
     await organizationProviders(c.env, c.get("admin").organizationId),
     existing ? referencedProviderSlugs(existing.config) : undefined,
   );
-  return c.json({ valid: true, app_id: appId, exists: existing !== undefined });
+  return c.json({ valid: true, app_id: appId, exists: existing !== undefined } satisfies AppValidateResponse);
 });
 
 /**
@@ -456,7 +501,7 @@ async function backfillAppLedger(
   await env.USER_LIMITER.getByName(appId).reconcileMonth(month, total?.microusd ?? 0);
 }
 
-appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
+appRoutes.put("/apps/:app", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
@@ -466,10 +511,15 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
   // is the sole place an id is minted; a path id nobody has ever been given is
   // simply an app that does not exist, whoever asked for it.
   const existing = await db.query.app.findFirst({
-    columns: { config: true },
+    columns: { config: true, revision: true },
     where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
+  const condition = c.req.header("If-Match");
+  if (condition === undefined) throw new GatewayError(428, "app_revision_required", "Supply the ETag from the application read in If-Match");
+  if (condition !== `"app-${existing.revision}"`) {
+    throw new GatewayError(412, "app_revision_conflict", "The application changed; reload it before saving your changes");
+  }
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
   const config = validatedConfig(
@@ -484,16 +534,21 @@ appRoutes.on(["PUT", "POST"], "/apps/:app", async (c) => {
     config,
     status: body.status ?? "active",
     updatedAt: new Date().toISOString(),
+    expectedRevision: existing.revision,
   };
   // Conditional on the row still being this organization's, so an app deleted
   // or handed over between the read above and this write is not resurrected
   // under the caller's name.
   const written = await updateApp(c.env.DB, values);
-  if (!written) throw new GatewayError(404, "app_not_found", "App is not registered");
+  if (!written) throw new GatewayError(412, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
   const resolved = await loadAppConfig(c.env, appId);
   await backfillAppLedger(c.env, appId, existing.config, resolved);
-  return c.json({ app: serializeRow(written), resolved, config_error: null }, 200);
+  c.header("ETag", `"app-${written.revision}"`);
+  return c.json(
+    { app: serializeRow(written), resolved: asJsonObject(resolved), config_error: null } satisfies AppResponse,
+    200,
+  );
 });
 
 appRoutes.delete("/apps/:app", async (c) => {
@@ -509,6 +564,10 @@ appRoutes.delete("/apps/:app", async (c) => {
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
   const removedUsers = await db.delete(appUser).where(eq(appUser.appId, appId)).returning({ id: appUser.id });
   await db.delete(appAuthChallenge).where(eq(appAuthChallenge.appId, appId));
+  // Authentication history is diagnostic and reachable only under `/apps/:app`,
+  // so it dies with the app it describes. Usage below is the exception: it is
+  // billing history, and it is deliberately kept.
+  await db.delete(appAuthEvent).where(eq(appAuthEvent.appId, appId));
   await db.delete(appApiKey).where(eq(appApiKey.appId, appId));
   await db.delete(app).where(and(
     eq(app.id, appId),
@@ -520,5 +579,5 @@ appRoutes.delete("/apps/:app", async (c) => {
     app_id: appId,
     removed_users: removedUsers.length,
     usage_events_retained: true,
-  });
+  } satisfies AppDeleteResponse);
 });

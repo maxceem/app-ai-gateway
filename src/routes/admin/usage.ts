@@ -4,6 +4,12 @@ import { GatewayError } from "../../core/errors";
 import type { ProviderType } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
+import type {
+  BreakdownResponse,
+  MonthlyUsageResponse,
+  TimeseriesResponse,
+  UsageEventList,
+} from "../../contracts/responses";
 import { database } from "../../db";
 import { appUsageEvent, provider as providerTable } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -62,14 +68,28 @@ function hasReadableCounts(row: {
   return row.inputTokens + row.cachedInputTokens + row.cacheWriteTokens + row.outputTokens > 0;
 }
 
+/** Six zeros, for the month an aggregate could somehow answer nothing for. */
+const EMPTY_MONTH_TOTALS = {
+  requests: 0,
+  input_tokens: 0,
+  cached_input_tokens: 0,
+  cache_write_tokens: 0,
+  output_tokens: 0,
+  cost_usd: 0,
+};
+
 usageRoutes.get("/apps/:app/usage", async (c) => {
   const appId = c.req.param("app");
   const month = c.req.query("month") ?? currentMonth();
   if (!/^\d{4}-\d{2}$/u.test(month)) {
     throw new GatewayError(400, "invalid_request", "month must use YYYY-MM format");
   }
-  const row = await usageMonthTotals(c.env.DB, appId, month);
-  return c.json({ app_id: appId, month, ...row });
+  // `.first()` is typed nullable, though an aggregate with no GROUP BY always
+  // answers with one row. Filled in rather than spread away, so the documented
+  // shape holds even if that ever stops being true: six zeros is the honest
+  // answer for a month with nothing in it.
+  const row = (await usageMonthTotals(c.env.DB, appId, month)) ?? EMPTY_MONTH_TOTALS;
+  return c.json({ app_id: appId, month, ...row } satisfies MonthlyUsageResponse);
 });
 
 usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
@@ -255,7 +275,7 @@ usageRoutes.get("/apps/:app/usage/timeseries", async (c) => {
   const appId = c.req.param("app");
   const range = parseRange(c.req.query("from"), c.req.query("to"));
   const { results } = await usageTimeseries(c.env.DB, appId, range);
-  return c.json({ app_id: appId, ...range, buckets: results });
+  return c.json({ app_id: appId, ...range, buckets: results } satisfies TimeseriesResponse);
 });
 
 usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
@@ -275,7 +295,7 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
   // only through the retention window.
   if (isRollupDimension(by)) {
     const { results } = await usageBreakdown(c.env.DB, appId, range, by, limit);
-    return c.json({ app_id: appId, by, ...range, rows: results });
+    return c.json({ app_id: appId, by, ...range, rows: results } satisfies BreakdownResponse);
   }
   const column = BREAKDOWN_COLUMNS[by as BreakdownKey];
   const rows = await database(c.env.DB)
@@ -285,7 +305,7 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
     .groupBy(column)
     .orderBy(desc(usageTotals.requests))
     .limit(limit);
-  return c.json({ app_id: appId, by, ...range, rows });
+  return c.json({ app_id: appId, by, ...range, rows } satisfies BreakdownResponse);
 });
 
 usageRoutes.get("/apps/:app/events", async (c) => {
@@ -356,5 +376,5 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       latency_ms: row.latencyMs,
       created_at: row.createdAt,
     })),
-  });
+  } satisfies UsageEventList);
 });

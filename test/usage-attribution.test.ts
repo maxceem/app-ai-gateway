@@ -3,9 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearAppConfigCache } from "../src/core/config";
 import prices from "../src/core/prices.json";
-import { clearProviderCaches } from "../src/core/provider-store";
 import { PROVIDER_REGISTRY, providerModelAuthor, reportsCost } from "../src/core/providers";
 import {
   isBillable,
@@ -16,7 +14,7 @@ import {
 } from "../src/core/usage";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
-import { gatewayToken, seedApp, seedProvider } from "./helpers";
+import { clearIsolateCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
 
 const APP_ID = "usage-attribution";
 const ORIGIN = "https://example.test";
@@ -153,8 +151,7 @@ afterAll(async () => {
   ]) {
     await db.delete(provider).where(eq(provider.id, id));
   }
-  clearProviderCaches();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 /**

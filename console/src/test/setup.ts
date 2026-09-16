@@ -10,6 +10,31 @@ import { afterEach, vi } from "vitest";
 // long enough that only a genuinely stuck query reaches it.
 configure({ asyncUtilTimeout: 5_000 });
 
+// Node 26 exposes an undefined experimental web-storage accessor unless a
+// persistence file is configured. It shadows happy-dom's working storage on
+// globalThis, so restore the DOM implementation used by the browser tests.
+if (typeof globalThis.localStorage === "undefined") {
+  const storage = (): Storage => {
+    const values = new Map<string, string>();
+    return {
+      get length() { return values.size; },
+      clear: () => values.clear(),
+      getItem: (key) => values.get(key) ?? null,
+      key: (index) => [...values.keys()][index] ?? null,
+      removeItem: (key) => { values.delete(key); },
+      setItem: (key, value) => { values.set(key, String(value)); },
+    };
+  };
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage(),
+  });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: storage(),
+  });
+}
+
 // Radix primitives probe these; the test DOM implements neither.
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

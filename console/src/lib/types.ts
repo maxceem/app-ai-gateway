@@ -1,241 +1,187 @@
+/**
+ * The API's types, under the names the console calls them by.
+ *
+ * This file used to describe every wire shape a second time, by hand, with
+ * nothing that noticed when the gateway's own answer moved. It is now a barrel
+ * over `src/contracts`, which is where those shapes are defined once and where
+ * the Worker's handlers are checked against them. Type-only, so the console
+ * bundle gains nothing at runtime.
+ *
+ * What is still written here is what has no API counterpart: the billing
+ * service's own contract, which the gateway passes through rather than owns,
+ * and the editor's view of an application, whose configuration model lives in
+ * `./config-types` because it is a form, not a wire format.
+ */
 import type { StoredAppConfig } from "./config-types";
+import type { AppResponse as WireAppResponse, CreatedApiKey } from "@contracts/responses";
+
+export type {
+  ApiKeyListResponse,
+  AppListResponse,
+  AppSummary,
+  AuthEvent,
+  AuthEventSummary,
+  BreakdownResponse,
+  BreakdownRow,
+  CreatedApiKey,
+  GatewayUser,
+  ManagementKeyListResponse,
+  ModelPrice,
+  OrganizationListResponse,
+  OrganizationMembership,
+  OrganizationSummary,
+  PricesResponse,
+  ProviderGatewayListResponse,
+  ProviderGatewayResponse,
+  ProviderListResponse,
+  ProviderResponse,
+  TimeseriesBucket,
+  TimeseriesResponse,
+  UsageEvent,
+  UsageTotals,
+  UserListResponse,
+} from "@contracts/responses";
+
+export type {
+  GatewayRouteConfigInput as GatewayRouteConfig,
+  OrganizationRole,
+  ProviderCreateRequest as ProviderCreateBody,
+  ProviderGatewayCreateRequest as ProviderGatewayCreateBody,
+  ProviderGatewayTestRequest as ProviderGatewayTestBody,
+  ProviderPricing,
+  ProviderTestRequest as ProviderTestBody,
+  ProviderUpdateRequest as ProviderUpdateBody,
+} from "@contracts/schemas";
+
+import type {
+  ApiKey,
+  AuthEvent,
+  AuthEventList,
+  AuthEventSummary,
+  ConsoleCapabilitiesResponse,
+  CreatedManagementKeyResponse,
+  IdentitySession,
+  ManagementKeySummary,
+  ProviderGatewayProbeReason,
+  ProviderGatewaySummary,
+  ProviderGatewayTestResponse,
+  ProviderSummary,
+  UsageEvent,
+  UsageEventList,
+} from "@contracts/responses";
 
 /** Optional deployment features, read once before the app renders. */
-export interface Capabilities {
-  billing: boolean;
-  registrationOpen: boolean;
-  googleAuth: boolean;
-  termsOfServiceUrl?: string;
-  privacyPolicyUrl?: string;
-  /** Origin application clients call, when it differs from the console's own. */
-  apiBaseUrl?: string;
-}
+export type Capabilities = ConsoleCapabilitiesResponse;
 
-export interface OperatorUser {
-  id: string;
-  name: string | null;
-  email: string;
-  emailVerified: boolean;
-  image: string | null;
-  createdAt: string;
-}
+export type Session = IdentitySession["session"];
+export type SessionResponse = IdentitySession;
+export type IdentityUser = NonNullable<Session["user"]>;
 
-export type OrganizationRole = "owner" | "admin" | "member";
-
-export interface OrganizationSummary {
-  id: string;
-  name: string;
-  createdAt: string;
-}
-
-export interface OrganizationMembership {
-  organization: OrganizationSummary;
-  role: OrganizationRole;
-  status: "active";
-  joinedAt: string;
-}
-
-/** The console's identity: who the operator is and what they may do here. */
-export interface Session {
-  user: OperatorUser | null;
-  organization: OrganizationSummary | null;
-  role: OrganizationRole;
-  memberships: OrganizationMembership[];
-  credentialType: "session" | "apiKey";
-}
-
-export interface SessionResponse {
-  session: Session;
-}
-
-export interface OrganizationListResponse {
-  organizations: OrganizationMembership[];
-}
-
-export interface ManagementKey {
-  id: string;
-  organizationId: string;
-  name: string;
-  /** Last characters of the token; null for keys created before hints existed. */
-  tokenHint: string | null;
-  createdAt: string;
-  revokedAt: string | null;
-}
-
-export interface ManagementKeyListResponse {
-  keys: ManagementKey[];
-}
-
+export type ManagementKey = ManagementKeySummary;
 /** The plaintext token is present exactly once, in the create response. */
-export interface CreatedManagementKey extends ManagementKey {
-  plaintext: string;
-}
+export type CreatedManagementKey = CreatedManagementKeyResponse["key"];
 
-/**
- * Provider credentials are write-only: `secretHint` is the only fragment of a
- * stored secret the API ever returns, so no type here carries a plaintext.
- */
-/**
- * Gateway types the API can return. Creation is narrower — see
- * {@link CREATABLE_GATEWAY_TYPES} — because a type is only creatable once the
- * Worker has an adapter for it.
- */
-export type ProviderGatewayType = "cf_aig" | "vercel";
-
-export interface CfAigConfig {
-  accountId: string;
-  gatewayId: string;
-}
-
+export type ProviderGateway = ProviderGatewaySummary;
+export type ProviderGatewayType = ProviderGatewaySummary["type"];
+export type CfAigConfig = Extract<ProviderGatewaySummary, { type: "cf_aig" }>["config"];
 /** Vercel's origin is fixed in adapter code, so its config is empty. */
-export type VercelGatewayConfig = Record<string, never>;
+export type VercelGatewayConfig = Extract<ProviderGatewaySummary, { type: "vercel" }>["config"];
 
-/** Discriminated by `type`: each gateway's configuration is its own shape. */
-export type ProviderGatewayConfig =
-  | { type: "cf_aig"; config: CfAigConfig }
-  | { type: "vercel"; config: VercelGatewayConfig };
+export type ProviderCredential = ProviderSummary;
 
 /**
- * A reusable connection to someone else's gateway. Its token is encrypted once
- * and shared by every provider instance routed through it.
+ * Why a probe did not confirm a credential. The gateway dry run is the wider of
+ * the two — only it reports `rejected` — and the console shows both through one
+ * component, so it reads the wider vocabulary.
  */
-export type ProviderGateway = ProviderGatewayConfig & {
+export type ProbeReason = ProviderGatewayProbeReason;
+export type ProviderTestResult = ProviderGatewayTestResponse;
+
+export type ApiKeyRow = ApiKey;
+export type UsageStatus = UsageEvent["status"];
+export type CostSource = NonNullable<UsageEvent["cost_source"]>;
+export type CredentialSource = NonNullable<UsageEvent["credential_source"]>;
+export type EventsResponse = UsageEventList;
+export type AuthEventName = AuthEvent["event"];
+export type AuthEventsResponse = AuthEventList;
+export type AuthOutcomeBucket = AuthEventSummary["daily"][number];
+export type UsageFailureBucket = AuthEventSummary["usage_failures"][number];
+
+/**
+ * An application as the editor holds it.
+ *
+ * Everything except `config` comes straight from the API's own `AppResponse`.
+ * `config` is the console's model — see `./config-types` — because the editor
+ * works on partially filled forms and named draft states the wire format has
+ * no vocabulary for. It is the one shape here that is deliberately not the
+ * contract's, and `client-api.ts` is where the two meet.
+ */
+export type AppRow = Omit<WireAppResponse["app"], "config"> & { config: StoredAppConfig };
+
+export interface ResolvedConfig {
   id: string;
   name: string;
-  secretHint: string;
-  /** Active provider instances routed through this gateway. */
-  providerCount: number;
-  /**
-   * Every row referencing the gateway, disabled ones included. Those are kept
-   * for re-enabling and still hold the foreign key, so this — not
-   * `providerCount` — is what decides whether the gateway can be deleted.
-   */
-  referencedCount: number;
-  status: "active" | "revoked";
-  createdAt: string;
-  updatedAt: string;
-  createdBy: string;
-};
-
-export interface ProviderGatewayListResponse {
-  gateways: ProviderGateway[];
-}
-
-/**
- * Discriminated the same way the API's create schema is: each gateway asks for
- * exactly the non-secret fields it needs to be reachable, and the API rejects
- * any it has no use for.
- */
-export type ProviderGatewayCreateBody =
-  | { type: "cf_aig"; name: string; accountId: string; gatewayId: string; token: string }
-  | { type: "vercel"; name: string; token: string };
-
-export interface ProviderGatewayResponse {
-  gateway: ProviderGateway;
-}
-
-/**
- * A gateway connection probed on its own, before any row exists: the create
- * body minus the operator's label, and discriminated the same way.
- */
-export type ProviderGatewayTestBody =
-  | { type: "cf_aig"; accountId: string; gatewayId: string; token: string }
-  | { type: "vercel"; token: string };
-
-/**
- * How one instance is routed inside its gateway. Null for a direct instance and
- * for gateways that take no routing configuration, Cloudflare's included.
- */
-export interface GatewayRouteConfig {
-  modelPrefix?: string;
-  providerOnly?: string[];
-}
-
-/** Per-1M-token overrides, keyed by model name. */
-export type ProviderPricing = Record<string, { input: number; output: number }>;
-
-export interface ProviderCredential {
-  id: string;
-  type: import("./config-types").Provider;
-  /** The `/proxy/{slug}/…` path segment; defaults to the provider type. */
-  slug: string;
-  name: string;
-  /** `null` on a gateway-routed row, which owns no secret of its own. */
-  secretHint: string | null;
-  /** `null` routes straight to the provider's native API. */
-  providerGatewayId: string | null;
-  gatewayRoute: GatewayRouteConfig | null;
-  /**
-   * The operator's own origin for this instance, canonicalized by the server.
-   * `null` means the provider type's own base URL; always `null` on a
-   * gateway-routed row, which cannot carry one.
-   */
-  baseUrl: string | null;
-  pricing: ProviderPricing | null;
-  /**
-   * `disabled` is a reversible pause: the row keeps its secret, its pricing and
-   * its slug, and requests to it fail with provider_disabled. Only deleting the
-   * row frees its slug, so enabling it again always works.
-   */
+  authentication: StoredAppConfig["authentication"];
+  routing: {
+    providerMode: "all" | "selected";
+    providers: StoredAppConfig["routing"]["providers"]["selected"];
+    modelRewrites: Record<string, string>;
+  };
+  endpoints: import("./config-types").EndpointsConfig;
+  /** Always present; an app with no `limits` block resolves to all-null. */
+  limits: {
+    perUser: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
+    perApp: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
+  };
   status: "active" | "disabled";
-  createdAt: string;
-  createdBy: string;
 }
 
-export interface ProviderListResponse {
-  providers: ProviderCredential[];
+export interface AppResponse {
+  app: AppRow;
+  resolved: ResolvedConfig | null;
+  config_error: string | null;
 }
 
-/** Exactly one of `secret` and `providerGatewayId`, mirroring the API. */
-export interface ProviderCreateBody {
-  type: import("./config-types").Provider;
+export interface AppUpsertBody {
   name: string;
-  slug?: string;
-  secret?: string;
-  providerGatewayId?: string;
-  /** Only ever sent with `secret`: a gateway-routed row owns no origin. */
-  baseUrl?: string;
-  pricing?: ProviderPricing;
-}
-
-/** A credential probed before it exists: the same secret, without the row. */
-export interface ProviderTestBody {
-  type: import("./config-types").Provider;
-  secret?: string;
-  providerGatewayId?: string;
-  baseUrl?: string;
-}
-
-/**
- * Why a probe did not confirm a credential. Only `rejected` is a verdict
- * against it, and only the gateway dry run reports one: the providers dry run
- * turns that same refusal into a `provider_key_invalid` error instead.
- */
-export type ProbeReason = "no_probe" | "unreachable" | "unexpected_status" | "rejected";
-
-/**
- * A probe's answer. `validated: false` is never "the credential is bad" — the
- * reason says what stopped the check, which is what the operator can act on.
- */
-export interface ProviderTestResult {
-  validated: boolean;
-  reason?: ProbeReason;
-  status?: number;
-}
-
-export interface ProviderUpdateBody {
-  name?: string;
-  secret?: string;
-  /** `null` returns the instance to its provider type's own base URL. */
-  baseUrl?: string | null;
-  pricing?: ProviderPricing | null;
-  /** Pause or resume the instance. The slug is held either way. */
+  config: StoredAppConfig;
   status?: "active" | "disabled";
 }
 
-export interface ProviderResponse {
-  provider: ProviderCredential;
+/**
+ * Creating an app carries no id: the gateway derives one from the name and
+ * answers with the created application, whose `app.id` holds it.
+ */
+export type AppCreateBody = AppUpsertBody;
+
+/**
+ * A create answers with the application itself, exactly as a read or an update
+ * does, plus the one-time key an API-key application is born with.
+ */
+export interface CreatedApp extends AppResponse {
+  api_key: CreatedApiKey | null;
 }
+
+export interface MonthlyUsage {
+  app_id: string;
+  month: string;
+  requests: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
+// ---------------------------------------------------------------------------
+// The optional billing service's contract.
+//
+// Not sourced from `src/contracts`: these are the shapes of a separate Worker
+// the gateway may be bound to, passed through unchanged. The gateway declares
+// them in `src/billing/`, which imports its own error and logging modules and
+// so cannot be read from a browser build without splitting it up — a change
+// that belongs with the billing system rather than with this one.
+// ---------------------------------------------------------------------------
 
 /** Raw LemonSqueezy subscription status, passed through unmapped. */
 export type BillingSubscriptionStatus =
@@ -312,8 +258,22 @@ export interface OrganizationQuota {
   resetAt: string;
 }
 
+/**
+ * The plan's ceilings, parsed by the gateway rather than read raw off
+ * `plan.limits`. Every key is optional and an absent one means unlimited, so an
+ * empty object is a plan with no ceilings at all.
+ */
+export interface PlanLimits {
+  maxRequestsPerMonth?: number;
+  maxApps?: number;
+  maxProviders?: number;
+  maxProviderGateways?: number;
+  maxActiveKeysPerApp?: number;
+}
+
 export interface BillingStatusResponse {
   access: BillingAccess;
+  limits: PlanLimits;
   quota: OrganizationQuota | null;
 }
 
@@ -334,340 +294,4 @@ export interface BillingPlan {
 
 export interface BillingPlansResponse {
   plans: BillingPlan[];
-}
-
-export interface UsageTotals {
-  requests: number;
-  input_tokens: number;
-  cached_input_tokens: number;
-  cache_write_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  errors: number;
-  blocked: number;
-}
-
-export interface AppSummary {
-  id: string;
-  name: string;
-  status: "active" | "disabled";
-  authentication_type: "apple_app_attest" | "api_key" | "invalid";
-  apple_bundle_id: string | null;
-  created_at: string;
-  providers: string[];
-  /**
-   * The slugs this app names outright: selected-mode policy keys, endpoint
-   * targets and endpoint fallbacks. Unlike `providers`, an all-mode app is not
-   * expanded here — it reaches every instance without referencing any, which is
-   * what makes this the right answer to "which apps use this provider?".
-   */
-  referenced_providers: string[];
-  allowed_model_count: number;
-  /** What the whole app may spend this month; `null` is unlimited. */
-  monthly_budget_usd: number | null;
-  users: { total: number; blocked: number };
-  usage: UsageTotals;
-}
-
-export interface AppListResponse {
-  month: string;
-  /**
-   * Whether the organization has ever had a request recorded, at any time.
-   * Month-independent, unlike every `usage` total on the rows below, and it
-   * never returns to false — which is what makes it safe to retire first-run
-   * guidance on.
-   */
-  has_proxied_requests: boolean;
-  apps: AppSummary[];
-}
-
-/** The editable row: exactly the body the upsert endpoint accepts. */
-export interface AppRow {
-  id: string;
-  name: string;
-  config: StoredAppConfig;
-  status: "active" | "disabled";
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ResolvedConfig {
-  id: string;
-  name: string;
-  authentication: StoredAppConfig["authentication"];
-  routing: {
-    providerMode: "all" | "selected";
-    providers: StoredAppConfig["routing"]["providers"]["selected"];
-    modelRewrites: Record<string, string>;
-  };
-  endpoints: import("./config-types").EndpointsConfig;
-  /** Always present; an app with no `limits` block resolves to all-null. */
-  limits: {
-    perUser: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
-    perApp: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
-  };
-  status: "active" | "disabled";
-}
-
-export interface AppResponse {
-  app: AppRow;
-  resolved: ResolvedConfig | null;
-  config_error: string | null;
-}
-
-export interface AppUpsertBody {
-  name: string;
-  config: StoredAppConfig;
-  status?: "active" | "disabled";
-}
-
-/**
- * Creating an app carries no id: the gateway derives one from the name and
- * answers with the created application, whose `app.id` holds it.
- */
-export type AppCreateBody = AppUpsertBody;
-
-/**
- * A create answers with the application itself, exactly as a read or an update
- * does, plus the one-time key an API-key application is born with.
- */
-export interface CreatedApp extends AppResponse {
-  api_key: CreatedApiKey | null;
-}
-
-export interface GatewayUser {
-  id: string;
-  status: "active" | "blocked";
-  attest_key_id: string | null;
-  attest_registered: boolean;
-  attest_counter: number;
-  created_at: string;
-  last_seen_at: string | null;
-  usage: UsageTotals;
-  is_virtual: boolean;
-}
-
-export interface UserListResponse {
-  app_id: string;
-  month: string;
-  total: number;
-  limit: number;
-  offset: number;
-  users: GatewayUser[];
-}
-
-export interface MonthlyUsage {
-  app_id: string;
-  month: string;
-  requests: number;
-  input_tokens: number;
-  cached_input_tokens: number;
-  cache_write_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-}
-
-export interface TimeseriesBucket extends UsageTotals {
-  date: string;
-  provider: string;
-}
-
-export interface TimeseriesResponse {
-  app_id: string;
-  from: string;
-  to: string;
-  buckets: TimeseriesBucket[];
-}
-
-export interface BreakdownRow extends UsageTotals {
-  key: string | null;
-}
-
-export interface BreakdownResponse {
-  app_id: string;
-  by: string;
-  from: string;
-  to: string;
-  rows: BreakdownRow[];
-}
-
-/**
- * How one proxied request ended. The `blocked_*` values name the system that
- * refused it: `blocked_app_*` is the organization's own app configuration
- * refusing its end user, `blocked_billing` is the plan allowance.
- */
-export type UsageStatus =
-  | "ok"
-  | "provider_error"
-  | "blocked_app_rate"
-  | "blocked_app_budget"
-  | "blocked_billing"
-  | "blocked_user";
-
-/**
- * How an event's cost was arrived at. `reported` is the upstream's own figure
- * for that request, which is what the operator was actually charged;
- * `computed` is the deployment's price catalog; `unresolved` is a successful
- * provider response whose cost neither source could establish, so its
- * `cost_usd` is zero because nothing was measurable, not because nothing was
- * spent.
- */
-export type CostSource = "computed" | "reported" | "unresolved";
-
-/**
- * Whose credential paid, where the configuration settles it. Never inferred
- * from a successful response: `null` means nothing settled it, which the UI has
- * to say plainly rather than dressing up as "your key".
- */
-export type CredentialSource = "direct" | "byok" | "gateway_system" | "unknown";
-
-export interface UsageEvent {
-  id: number;
-  /** Null for an application that identifies no end users. */
-  user_id: string | null;
-  /**
-   * Non-secret ID of the app API key that authenticated the request, including
-   * the client-proof key carried by an exchanged gateway token. Null when the
-   * request was not attributed to a key (for example attested traffic).
-   */
-  api_key_id: string | null;
-  provider: string;
-  /** The gateway that carried the request; null on a direct call. */
-  provider_gateway_id: string | null;
-  provider_gateway_type: ProviderGatewayType | null;
-  credential_source: CredentialSource | null;
-  /** Who made the model. Analytics only — it never affects allowlists or quota. */
-  model_author: string | null;
-  /** What the upstream said served the request. Null means unknown, not a guarantee. */
-  served_provider: string | null;
-  served_model: string | null;
-  model: string;
-  route: string;
-  /** Null for passthrough proxy traffic. */
-  endpoint_slug: string | null;
-  input_tokens: number;
-  cached_input_tokens: number;
-  cache_write_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  /** What the upstream said it cost, on routes that report one. */
-  reported_cost_usd: number | null;
-  /** Null on blocked traffic and on events recorded before the field existed. */
-  cost_source: CostSource | null;
-  app_version: string | null;
-  auth_method: "attest" | "api_key" | null;
-  status: UsageStatus;
-  latency_ms: number | null;
-  created_at: string;
-}
-
-export interface EventsResponse {
-  app_id: string;
-  limit: number;
-  next_before_id: number | null;
-  events: UsageEvent[];
-}
-
-/** Which authentication call an attempt was: a token exchange or a key registration. */
-export type AuthEventName = "token_exchange" | "register";
-
-export interface AuthEvent {
-  id: number;
-  /** Null where the attempt was refused before any identity was established. */
-  user_id: string | null;
-  event: AuthEventName;
-  auth_method: "attest" | "api_key" | null;
-  /** `ok`, or the error code the client was handed. Free-form: new codes appear here first. */
-  outcome: string;
-  /** The granular cause behind the outcome. Diagnostic only — clients never see it. */
-  reason: string | null;
-  app_version: string | null;
-  latency_ms: number | null;
-  /** Set only on the exchange that ended a claim-propagation window. */
-  claim_delay_ms: number | null;
-  created_at: string;
-}
-
-export interface AuthEventsResponse {
-  app_id: string;
-  limit: number;
-  next_before_id: number | null;
-  events: AuthEvent[];
-}
-
-export interface AuthOutcomeBucket {
-  date: string;
-  event: AuthEventName;
-  outcome: string;
-  reason: string | null;
-  count: number;
-}
-
-export interface UsageFailureBucket {
-  date: string;
-  status: string;
-  count: number;
-}
-
-export interface AuthEventSummary {
-  app_id: string;
-  days: number;
-  from: string;
-  to: string;
-  daily: AuthOutcomeBucket[];
-  usage_failures: UsageFailureBucket[];
-  token_exchange: {
-    total: number;
-    ok: number;
-    /** Null when the window holds no exchanges, which is not a perfect score. */
-    success_rate: number | null;
-  };
-  claim_delay: {
-    count: number;
-    avg_ms: number | null;
-    p50_ms: number | null;
-    p95_ms: number | null;
-  };
-  /** Users inside an unclosed claim-propagation window right now. */
-  pending_users: number;
-}
-
-export interface ModelPrice {
-  input?: number;
-  output?: number;
-  cached_input?: number;
-  cache_write?: number;
-  per_minute?: number;
-  per_hour?: number;
-  long_context_threshold?: number;
-  long_input?: number;
-  long_output?: number;
-  long_cached_input?: number;
-  long_cache_write?: number;
-}
-
-export interface PricesResponse {
-  prices: Record<import("./config-types").Provider, Record<string, ModelPrice>>;
-}
-
-export interface ApiKeyRow {
-  id: string;
-  name: string;
-  key_prefix: string;
-  status: "active" | "revoked";
-  created_at: string;
-  last_used_at: string | null;
-}
-
-export interface ApiKeyListResponse {
-  app_id: string;
-  keys: ApiKeyRow[];
-}
-
-export interface CreatedApiKey {
-  id: string;
-  name: string;
-  key: string;
-  key_prefix: string;
-  created_at: string;
 }

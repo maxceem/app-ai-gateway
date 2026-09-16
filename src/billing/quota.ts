@@ -1,3 +1,8 @@
+import {
+  ACCOUNT_TRIAL_MS,
+  accountLifecycle,
+  accountOnTrial,
+} from "../core/account-lifecycle";
 import { GatewayError } from "../core/errors";
 import {
   billingPlanLimits,
@@ -28,12 +33,6 @@ export type BillingQuotaResolution =
   | ResolvedBillingQuota
   | { access: GatewayBillingAccess; limit?: never; period?: never };
 
-const organizationCreatedAt = new Map<string, string>();
-
-export function clearOrganizationQuotaAnchorCache(): void {
-  organizationCreatedAt.clear();
-}
-
 function invalidSchedule(field: string): GatewayError {
   return new GatewayError(502, "billing_unavailable", `Invalid ${field} from billing data`);
 }
@@ -48,18 +47,6 @@ function normalizedInstant(value: unknown, field: string): number {
 
 function optionalInstant(value: unknown, field: string): number | null {
   return value === null ? null : normalizedInstant(value, field);
-}
-
-async function freeAnchor(env: Env, organizationId: string): Promise<string> {
-  const cached = organizationCreatedAt.get(organizationId);
-  if (cached) return cached;
-  const row = await env.DB.prepare(
-    "SELECT created_at AS createdAt FROM console_organization WHERE id = ?",
-  ).bind(organizationId).first<{ createdAt: string }>();
-  if (!row) throw invalidSchedule("organization creation time");
-  const value = new Date(normalizedInstant(row.createdAt, "organization creation time")).toISOString();
-  organizationCreatedAt.set(organizationId, value);
-  return value;
 }
 
 function daysInUtcMonth(year: number, month: number): number {
@@ -133,12 +120,27 @@ export async function getBillingQuotaResolution(
   let anchorDay: number;
   let kind: "free" | "paid";
   let publicScheduleOrigin: string;
+  /**
+   * Set while nobody has claimed the account. The trial is not a schedule of its
+   * own: it is the free schedule's first period with an early end, so the same
+   * `scheduleId` and revision survive the claim and the quota object keeps its
+   * counter instead of refusing the switch as a superseded schedule.
+   */
+  let trialEnd: number | null = null;
 
   if (access.plan.isDefault) {
-    const createdAt = await freeAnchor(env, organizationId);
+    // Billing only chooses the entitlement. Gateway D1 owns ownership and the
+    // free-access clock, and one lifecycle row answers both: the account's
+    // creation instant is the free schedule's anchor, and whether a human owns
+    // it is what decides the trial. It is the same read the account gate on the
+    // request already made, so it costs a warm isolate nothing.
+    const account = await accountLifecycle(env, organizationId);
     now ??= Date.now();
     kind = "free";
-    anchorAt = normalizedInstant(createdAt, "organization creation time");
+    anchorAt = normalizedInstant(account.createdAt, "organization creation time");
+    // D1 may hold the instant in either shape; the schedule is identified by the
+    // normalized one, so a rewritten row cannot rename an existing schedule.
+    const createdAt = new Date(anchorAt).toISOString();
     anchorDay = new Date(anchorAt).getUTCDate();
     scheduleId = `free:${organizationId}:${createdAt}`;
     publicScheduleOrigin = createdAt;
@@ -155,6 +157,11 @@ export async function getBillingQuotaResolution(
         ? trialEndsAt
         : null,
     );
+    // One allowance that never renews, so an account nobody has claimed cannot
+    // draw a second month. Claiming it resumes the ordinary monthly renewals.
+    // Measured from the schedule's own anchor, so the window can never close
+    // before the period it belongs to opens.
+    if (accountOnTrial(account)) trialEnd = anchorAt + ACCOUNT_TRIAL_MS;
   } else {
     now ??= Date.now();
     const subscription = access.subscription;
@@ -189,8 +196,10 @@ export async function getBillingQuotaResolution(
     throw invalidSchedule("future billing anchor");
   }
   const { start, end } = anniversaryPeriod(anchorAt, anchorDay, now);
-  const periodStart = new Date(start).toISOString();
-  const periodEnd = new Date(end).toISOString();
+  // An unclaimed account stays on the first period however long the trial runs:
+  // it opens on the anchor and closes when the trial does, never renewing.
+  const periodStart = new Date(trialEnd === null ? start : anchorAt).toISOString();
+  const periodEnd = new Date(trialEnd ?? end).toISOString();
   return {
     access,
     limit: billingPlanLimits(access).maxRequestsPerMonth,

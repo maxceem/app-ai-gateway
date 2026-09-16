@@ -1,18 +1,55 @@
-import {
-  createCfAuth,
-  type CfAuth,
-  type CfAuthError,
-  isCfAuthError,
-} from "@maxceem/cf-auth";
-import { consoleAuthTables } from "../db/schema";
+import { createCfAuth, type CfAuth, type CfAuthError, isCfAuthError } from "@maxceem/cf-auth";
+import { APIError } from "better-auth/api";
+import { billingBinding } from "../billing/gateway";
+import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 
-export const OPERATOR_AUTH_BASE_PATH = "/v1/auth";
+export const IDENTITY_AUTH_BASE_PATH = "/v1/auth";
 export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
 export const CONSOLE_REQUEST_HEADER = "x-console-request";
 
-export function registrationOpen(env: Env): boolean {
-  return env.ALLOW_PUBLIC_REGISTRATION?.trim().toLowerCase() !== "false";
+function additionalRegistrationsAllowed(env: Env): boolean {
+  return env.ALLOW_ADDITIONAL_REGISTRATIONS?.trim().toLowerCase() === "true";
+}
+
+async function selfHostedRegistrationState(env: Env): Promise<{
+  humanExists: boolean;
+  accountExists: boolean;
+}> {
+  const row = await env.DB.prepare(
+    `SELECT
+      EXISTS(SELECT 1 FROM mgmt_user WHERE kind='human') AS human_exists,
+      EXISTS(SELECT 1 FROM mgmt_organization) AS account_exists`,
+  ).first<{ human_exists: number; account_exists: number }>();
+  return {
+    humanExists: Boolean(row?.human_exists),
+    accountExists: Boolean(row?.account_exists),
+  };
+}
+
+export async function registrationOpen(env: Env): Promise<boolean> {
+  return registrationAllowed(env, false);
+}
+
+async function registrationAllowed(env: Env, claimRegistration: boolean): Promise<boolean> {
+  if (billingBinding(env)) return true;
+  const state = await selfHostedRegistrationState(env);
+  if (state.humanExists) return additionalRegistrationsAllowed(env);
+  return claimRegistration || !state.accountExists;
+}
+
+async function assertRegistrationAllowed(
+  env: Env,
+  claimRegistration: boolean,
+  onDenied?: () => void,
+): Promise<void> {
+  if (!(await registrationAllowed(env, claimRegistration))) {
+    onDenied?.();
+    throw APIError.from("FORBIDDEN", {
+      code: "REGISTRATION_DISABLED",
+      message: "signup disabled",
+    });
+  }
 }
 
 export function googleAuthEnabled(env: Env): boolean {
@@ -48,34 +85,76 @@ export function googleRelayRedirectUri(env: Env): string | undefined {
   return relay === undefined ? undefined : `${relay}/callback/google`;
 }
 
-export function createOperatorAuth(env: Env, requestUrl: string): CfAuth {
+function identityAuth(
+  env: Env,
+  requestUrl: string,
+  claimRegistration: boolean,
+  suppressDefaultOrganization = false,
+  provisionRegistration = false,
+  onRegistrationDenied?: () => void,
+): CfAuth {
   const origin = new URL(requestUrl).origin;
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
   return createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
-    tables: consoleAuthTables,
+    tables: mgmtAuthTables,
     secret: env.BETTER_AUTH_SECRET,
     baseUrl: origin,
-    basePath: OPERATOR_AUTH_BASE_PATH,
+    basePath: IDENTITY_AUTH_BASE_PATH,
     trustedOrigins: [origin],
-    disableSignUp: !registrationOpen(env),
+    userHooks: {
+      beforeCreate: () =>
+        assertRegistrationAllowed(env, claimRegistration, onRegistrationDenied),
+    },
     emailAndPassword: { enabled: true },
-    organizations: { autoProvisionDefaultOrganization: true },
+    organizations: {
+      autoProvisionDefaultOrganization:
+        !claimRegistration &&
+        !suppressDefaultOrganization &&
+        (Boolean(billingBinding(env)) || provisionRegistration),
+    },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
-    cookies: { prefix: "agw_operator" },
+    cookies: { prefix: "agw_identity" },
     ...(googleEnabled
       ? {
           google: {
             clientId: env.GOOGLE_CLIENT_ID!,
             clientSecret: env.GOOGLE_CLIENT_SECRET!,
-            disableSignUp: !registrationOpen(env),
             ...(googleRedirectUri ? { redirectURI: googleRedirectUri } : {}),
           },
         }
       : {}),
   });
+}
+
+export function createIdentityAuth(
+  env: Env,
+  requestUrl: string,
+  options: {
+    suppressDefaultOrganization?: boolean;
+    provisionRegistration?: boolean;
+    onRegistrationDenied?: () => void;
+  } = {},
+): CfAuth {
+  return identityAuth(
+    env,
+    requestUrl,
+    false,
+    options.suppressDefaultOrganization,
+    options.provisionRegistration,
+    options.onRegistrationDenied,
+  );
+}
+
+/** Trusted claim route only: invoke after validating the handoff proofs. Never mount its handler. */
+export function createClaimRegistrationAuth(
+  env: Env,
+  requestUrl: string,
+  options: { onRegistrationDenied?: () => void } = {},
+): CfAuth {
+  return identityAuth(env, requestUrl, true, false, false, options.onRegistrationDenied);
 }
 
 /** Google's authorization host, and the only URL the relay is put in front of. */
@@ -104,9 +183,10 @@ export async function relaySocialSignIn(
   if (relay === undefined) return response;
   if (!response.headers.get("content-type")?.includes("application/json")) return response;
 
-  const body = await response.clone().json().catch(() => undefined) as
-    | Record<string, unknown>
-    | undefined;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => undefined)) as Record<string, unknown> | undefined;
   if (typeof body?.url !== "string") return response;
 
   let providerUrl: URL;
@@ -120,7 +200,7 @@ export async function relaySocialSignIn(
   const start = new URL(`${relay}/start`);
   start.searchParams.set(
     "return",
-    new URL(`${OPERATOR_AUTH_BASE_PATH}/callback/google`, requestUrl).toString(),
+    new URL(`${IDENTITY_AUTH_BASE_PATH}/callback/google`, requestUrl).toString(),
   );
   start.searchParams.set("next", providerUrl.toString());
 
@@ -142,6 +222,8 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
     not_found: "not_found",
     not_a_member: "not_a_member",
     last_owner: "last_owner",
+    organization_expired: "account_expired",
+    not_claimable: "conflict",
   };
   const code = mappedCodes[error.code] ?? "invalid_request";
   return new GatewayError(error.status, code, error.message);

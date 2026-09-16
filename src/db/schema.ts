@@ -95,25 +95,74 @@ export type UsageStatus =
  * measurement.
  */
 export type CostSource = "computed" | "reported" | "unresolved";
-/**
- * Whose credential paid for a request, recorded only where the configuration
- * settles it. `direct` is the organization's own provider key; `byok` is that
- * same key held in a gateway's own key store; `gateway_system` is the gateway's
- * pooled credential. Never inferred from a successful response.
- */
-export type CredentialSource = "direct" | "byok" | "gateway_system" | "unknown";
+/** Re-exported for the tables below; defined in `src/shared/capabilities.ts`. */
+export type { CredentialSource } from "../shared/capabilities.ts";
+import type { CredentialSource } from "../shared/capabilities.ts";
 
-/** Console-plane auth tables are namespaced away from end-user gateway data. */
-export const consoleAuthTables = createCfAuthTables({ tablePrefix: "console_" });
+// Table naming rule: `mgmt_` is who administers the gateway, their credentials
+// and their unfinished administrative acts; a bare noun (`app`, `provider`,
+// `provider_gateway`) is a resource the account configures and the proxy reads;
+// `app_` is a row owned by an app.
+
+/** Management-plane auth tables, namespaced away from end-user gateway data. */
+export const mgmtAuthTables = createCfAuthTables({ tablePrefix: "mgmt_" });
 export const {
-  user: consoleUser,
-  session: consoleUserSession,
-  account: consoleUserAccount,
-  verification: consoleVerification,
-  organization: consoleOrganization,
-  organizationUser: consoleOrganizationUser,
-  apiKey: consoleApiKey,
-} = consoleAuthTables;
+  user: mgmtUser,
+  session: mgmtUserSession,
+  account: mgmtUserAccount,
+  verification: mgmtVerification,
+  organization: mgmtOrganization,
+  organizationUser: mgmtOrganizationUser,
+  apiKey: mgmtApiKey,
+} = mgmtAuthTables;
+
+/** Durable, proof-bound recovery for create operations and bootstrap. */
+export const mgmtResourceReceipt = sqliteTable(
+  "mgmt_resource_receipt",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    organizationId: text("organization_id").references(() => mgmtOrganization.id, {
+      onDelete: "set null",
+    }),
+    initiatingUserId: text("initiating_user_id"),
+    initiatingCredentialId: text("initiating_credential_id"),
+    proofHash: text("proof_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    outcome: text("outcome"),
+    protectedCredential: text("protected_credential"),
+    protectedCredentialExpiresAt: integer("protected_credential_expires_at"),
+    consumedAt: integer("consumed_at"),
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_mgmt_resource_receipt_organization").on(table.organizationId)],
+);
+
+/** An unfinished administrative act: human claim approval, or a provider-secret browser handoff. */
+export const mgmtHandoff = sqliteTable(
+  "mgmt_handoff",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    request: text("request_json").notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
+    initiatingUserId: text("initiating_user_id").notNull(),
+    initiatingCredentialId: text("initiating_credential_id").notNull(),
+    submissionProofHash: text("submission_proof_hash").notNull(),
+    pollProofHash: text("poll_proof_hash").notNull(),
+    humanCodeHash: text("human_code_hash"),
+    consumedAt: integer("consumed_at"),
+    outcome: text("outcome"),
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_mgmt_handoff_pending").on(table.organizationId, table.expiresAt)],
+);
 
 export const app = sqliteTable(
   "app",
@@ -121,11 +170,12 @@ export const app = sqliteTable(
     id: text("id").primaryKey(),
     organizationId: text("organization_id")
       .notNull()
-      .references(() => consoleOrganization.id),
+      .references(() => mgmtOrganization.id),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" })
       .$type<StoredAppConfig>()
       .notNull(),
+    revision: integer("revision").notNull().default(1),
     status: text("status").$type<AppStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
     updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
@@ -143,7 +193,7 @@ export const providerGateway = sqliteTable(
     id: text("id").primaryKey(),
     organizationId: text("organization_id")
       .notNull()
-      .references(() => consoleOrganization.id),
+      .references(() => mgmtOrganization.id),
     type: text("type").$type<ProviderGatewayTypeName>().notNull(),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" }).$type<ProviderGatewayConfig>().notNull(),
@@ -174,7 +224,7 @@ export const provider = sqliteTable(
     id: text("id").primaryKey(),
     organizationId: text("organization_id")
       .notNull()
-      .references(() => consoleOrganization.id),
+      .references(() => mgmtOrganization.id),
     type: text("type").$type<ProviderType>().notNull(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
@@ -320,6 +370,8 @@ export const appUsageEvent = sqliteTable(
      */
     eventId: text("event_id"),
     appId: text("app_id").notNull(),
+    /** Durable ownership; empty only for historical rows that cannot be attributed. */
+    organizationId: text("organization_id").notNull().default(""),
     /**
      * Null for an application that identifies no end users, where the request
      * was made by the API key itself and there is nobody else to name. The
@@ -398,6 +450,7 @@ export const appUsageEvent = sqliteTable(
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
   },
   (table) => [
+    index("idx_usage_event_account_created").on(table.organizationId, table.createdAt),
     index("idx_usage_user_month").on(table.appId, table.userId, table.createdAt),
     index("idx_usage_app_month").on(table.appId, table.createdAt),
     uniqueIndex("usage_events_event_id_unique").on(table.eventId),
@@ -441,6 +494,8 @@ export const appUsageRollup = sqliteTable(
     /** `YYYY-MM-DD` at day grain, `YYYY-MM` at month grain. Compares lexically. */
     bucket: text("bucket").notNull(),
     appId: text("app_id").notNull(),
+    /** Durable ownership; empty only for historical rows that cannot be attributed. */
+    organizationId: text("organization_id").notNull().default(""),
     model: text("model").notNull(),
     providerType: text("provider_type").notNull(),
     status: text("status").$type<UsageStatus>().notNull(),
@@ -459,6 +514,7 @@ export const appUsageRollup = sqliteTable(
      * rather than the exception.
      */
     uniqueIndex("usage_rollup_key").on(
+      table.organizationId,
       table.grain,
       table.bucket,
       table.appId,
@@ -467,6 +523,7 @@ export const appUsageRollup = sqliteTable(
       table.status,
     ),
     /** Serves the admin reads, which are always scoped to one app and a range. */
+    index("idx_usage_rollup_account_bucket").on(table.organizationId, table.grain, table.bucket),
     index("idx_usage_rollup_app_bucket").on(table.appId, table.grain, table.bucket),
   ],
 );
@@ -492,8 +549,12 @@ export const appAuthEvent = sqliteTable(
     /** Recording identity, so a retried insert converges instead of duplicating. */
     eventId: text("event_id"),
     /**
-     * No foreign key, for the same reason usage has none: deleting an app is a
-     * hard delete and its authentication history has to survive it.
+     * No foreign key, but for a different reason than usage's. Usage outlives
+     * the app it belongs to because it is billing history; this table is
+     * diagnostic and is deleted along with the app. What it cannot tolerate is
+     * a constraint: rows are written from `waitUntil` after the response has
+     * gone, so an app deleted in that window would turn a diagnostic write into
+     * a foreign-key failure. It is emptied explicitly instead.
      */
     appId: text("app_id").notNull(),
     /**

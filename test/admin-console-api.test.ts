@@ -13,7 +13,7 @@ import {
 
 const ORIGIN = "https://example.test";
 const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
-const JSON_AUTH = { ...AUTH, "content-type": "application/json" };
+const JSON_AUTH = { ...AUTH, "content-type": "application/json", "if-match": '"app-1"' };
 
 async function get(path: string) {
   const response = await exports.default.fetch(`${ORIGIN}${path}`, { headers: AUTH });
@@ -251,10 +251,13 @@ describe("admin console API", () => {
         ...extra,
       },
     });
-    const put = (name: string, body: Record<string, unknown>) => exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/${appId}`,
-      { method: "PUT", headers: JSON_AUTH, body: JSON.stringify({ name, config: body }) },
-    );
+    const put = async (name: string, body: Record<string, unknown>) => {
+      const current = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, { headers: AUTH });
+      return exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
+        method: "PUT", headers: { ...JSON_AUTH, "if-match": current.headers.get("etag")! },
+        body: JSON.stringify({ name, config: body }),
+      });
+    };
 
     expect((await put("Grandfathered", config())).status).toBe(200);
     await env.DB.prepare("DELETE FROM provider WHERE id = 'grandfathered-openai-dev'").run();
@@ -299,7 +302,7 @@ describe("admin console API", () => {
     const appId = createdApp.id;
     // Nothing held `unclaimed-name`, and it is still not what was created: the
     // suffix is the format, not a collision repair.
-    expect(appId).toMatch(/^unclaimed-name-[a-z0-9]{6}$/u);
+    expect(appId).toMatch(/^unclaimed-name-[0-9abcdefghjkmnpqrstvwxyz]{12}$/u);
     expect((await get(`/v1/admin/apps/${appId}`)).status).toBe(200);
     expect((await get("/v1/admin/apps/unclaimed-name")).status).toBe(404);
   });
@@ -374,7 +377,7 @@ describe("admin console API", () => {
       config_error: string | null;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
-    expect(body.app.id).toMatch(/^calorie-tracker-[a-z0-9]{6}$/u);
+    expect(body.app.id).toMatch(/^calorie-tracker-[0-9abcdefghjkmnpqrstvwxyz]{12}$/u);
     expect(body.api_key.key).toMatch(/^agw_[0-9A-Za-z]{40,}$/u);
     expect(body.api_key.key_prefix).toBe(body.api_key.key.slice(0, 12));
 
@@ -413,7 +416,7 @@ describe("admin console API", () => {
     });
     expect(created.status).toBe(201);
     const body = await created.json<{ app: { id: string }; api_key: null }>();
-    expect(body.app.id).toMatch(/^cafe-companion-ios-[a-z0-9]{6}$/u);
+    expect(body.app.id).toMatch(/^cafe-companion-ios-[0-9abcdefghjkmnpqrstvwxyz]{12}$/u);
     expect(body.api_key).toBeNull();
   });
 
@@ -431,10 +434,15 @@ describe("admin console API", () => {
     expect(body.app.name).toBe("Broken");
   });
 
-  it("deletes an app only with confirmation and keeps its usage history", async () => {
+  it("deletes an app only with confirmation, keeping usage but not auth history", async () => {
     await seedApp("delete-me");
     await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
       .bind("delete-me", "user-1", "active")
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO app_auth_event(app_id, event, outcome) VALUES (?, 'token_exchange', 'ok')",
+    )
+      .bind("delete-me")
       .run();
     await recordUsage("delete-me");
 
@@ -457,12 +465,15 @@ describe("admin console API", () => {
     });
     expect((await get("/v1/admin/apps/delete-me")).status).toBe(404);
 
-    const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM app_usage_event WHERE app_id = ?",
-    )
-      .bind("delete-me")
-      .first<{ count: number }>();
-    expect(remaining?.count).toBe(1);
+    // Usage is billing history and is kept; authentication history is
+    // diagnostic, unreachable once the app is gone, and goes with it. Leaving
+    // it behind would strand rows that no account purge could ever find.
+    const counted = async (table: string) =>
+      (await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE app_id = ?`)
+        .bind("delete-me")
+        .first<{ count: number }>())?.count;
+    expect(await counted("app_usage_event")).toBe(1);
+    expect(await counted("app_auth_event")).toBe(0);
   });
 
   it("lists users with month-to-date usage and supports search", async () => {
@@ -607,5 +618,29 @@ describe("admin console API", () => {
     expect(body.prices.anthropic["claude-opus-5"]).toMatchObject({
       input: expect.any(Number),
     });
+  });
+});
+
+
+describe("application conditional writes", () => {
+  it("requires the original ETag and rejects stale edits without overwriting", async () => {
+    const appId = "conditional-edit";
+    await seedServerApp(appId);
+    const read = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, { headers: AUTH });
+    const etag = read.headers.get("etag");
+    expect(etag).toBe('"app-1"');
+    const update = (condition?: string) => exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
+      method: "PUT",
+      headers: { ...AUTH, "content-type": "application/json", ...(condition ? { "if-match": condition } : {}) },
+      body: JSON.stringify({ name: "Edited", config: serverConfig() }),
+    });
+    expect((await update()).status).toBe(428);
+    const written = await update(etag!);
+    expect(written.status).toBe(200);
+    expect(written.headers.get("etag")).toBe('"app-2"');
+    expect((await update(etag!)).status).toBe(412);
+    const latest = await get(`/v1/admin/apps/${appId}`);
+    expect(latest.body.app.revision).toBe(2);
+    expect(latest.body.app.name).toBe("Edited");
   });
 });

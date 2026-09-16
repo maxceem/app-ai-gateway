@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0c969852-9b13-4456-933e-e43300d62fbc",
+  "id": "560d3313-2ab2-4fd1-8136-0ff3e57b1968",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "app": {
@@ -34,6 +34,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
         },
         "status": {
           "name": "status",
@@ -70,10 +78,10 @@
         }
       },
       "foreignKeys": {
-        "app_organization_id_console_organization_id_fk": {
-          "name": "app_organization_id_console_organization_id_fk",
+        "app_organization_id_mgmt_organization_id_fk": {
+          "name": "app_organization_id_mgmt_organization_id_fk",
           "tableFrom": "app",
-          "tableTo": "console_organization",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
@@ -392,6 +400,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
         "user_id": {
           "name": "user_id",
           "type": "text",
@@ -589,6 +605,14 @@
         }
       },
       "indexes": {
+        "idx_usage_event_account_created": {
+          "name": "idx_usage_event_account_created",
+          "columns": [
+            "organization_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
         "idx_usage_user_month": {
           "name": "idx_usage_user_month",
           "columns": [
@@ -654,6 +678,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
         },
         "model": {
           "name": "model",
@@ -723,6 +755,7 @@
         "usage_rollup_key": {
           "name": "usage_rollup_key",
           "columns": [
+            "organization_id",
             "grain",
             "bucket",
             "app_id",
@@ -731,6 +764,15 @@
             "status"
           ],
           "isUnique": true
+        },
+        "idx_usage_rollup_account_bucket": {
+          "name": "idx_usage_rollup_account_bucket",
+          "columns": [
+            "organization_id",
+            "grain",
+            "bucket"
+          ],
+          "isUnique": false
         },
         "idx_usage_rollup_app_bucket": {
           "name": "idx_usage_rollup_app_bucket",
@@ -857,334 +899,8 @@
         }
       }
     },
-    "console_api_key": {
-      "name": "console_api_key",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "token_hash": {
-          "name": "token_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "token_hint": {
-          "name": "token_hint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "console_api_key_token_hash_unique": {
-          "name": "console_api_key_token_hash_unique",
-          "columns": [
-            "token_hash"
-          ],
-          "isUnique": true
-        },
-        "console_idx_api_key_organization_id": {
-          "name": "console_idx_api_key_organization_id",
-          "columns": [
-            "organization_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "console_api_key_organization_id_console_organization_id_fk": {
-          "name": "console_api_key_organization_id_console_organization_id_fk",
-          "tableFrom": "console_api_key",
-          "tableTo": "console_organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "console_organization": {
-      "name": "console_organization",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_by_user_id": {
-          "name": "created_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "console_organization_created_by_user_id_console_user_id_fk": {
-          "name": "console_organization_created_by_user_id_console_user_id_fk",
-          "tableFrom": "console_organization",
-          "tableTo": "console_user",
-          "columnsFrom": [
-            "created_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "console_organization_user": {
-      "name": "console_organization_user",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "joined_at": {
-          "name": "joined_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "console_organization_user_organization_id_user_id_unique": {
-          "name": "console_organization_user_organization_id_user_id_unique",
-          "columns": [
-            "organization_id",
-            "user_id"
-          ],
-          "isUnique": true
-        },
-        "console_idx_organization_user_user_id": {
-          "name": "console_idx_organization_user_user_id",
-          "columns": [
-            "user_id"
-          ],
-          "isUnique": false
-        },
-        "console_idx_organization_user_organization_id": {
-          "name": "console_idx_organization_user_organization_id",
-          "columns": [
-            "organization_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "console_organization_user_organization_id_console_organization_id_fk": {
-          "name": "console_organization_user_organization_id_console_organization_id_fk",
-          "tableFrom": "console_organization_user",
-          "tableTo": "console_organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "console_organization_user_user_id_console_user_id_fk": {
-          "name": "console_organization_user_user_id_console_user_id_fk",
-          "tableFrom": "console_organization_user",
-          "tableTo": "console_user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "console_organization_user_role_check": {
-          "name": "console_organization_user_role_check",
-          "value": "\"console_organization_user\".\"role\" in ('owner', 'admin', 'member')"
-        },
-        "console_organization_user_status_check": {
-          "name": "console_organization_user_status_check",
-          "value": "\"console_organization_user\".\"status\" in ('active')"
-        }
-      }
-    },
-    "console_user": {
-      "name": "console_user",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "email": {
-          "name": "email",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "email_verified": {
-          "name": "email_verified",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
-        },
-        "image": {
-          "name": "image",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "console_idx_user_email": {
-          "name": "console_idx_user_email",
-          "columns": [
-            "\"email\" COLLATE NOCASE"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "console_user_account": {
-      "name": "console_user_account",
+    "mgmt_user_account": {
+      "name": "mgmt_user_account",
       "columns": {
         "id": {
           "name": "id",
@@ -1279,15 +995,15 @@
         }
       },
       "indexes": {
-        "console_idx_account_user_id": {
-          "name": "console_idx_account_user_id",
+        "mgmt_idx_account_user_id": {
+          "name": "mgmt_idx_account_user_id",
           "columns": [
             "user_id"
           ],
           "isUnique": false
         },
-        "console_idx_account_provider_account": {
-          "name": "console_idx_account_provider_account",
+        "mgmt_idx_account_provider_account": {
+          "name": "mgmt_idx_account_provider_account",
           "columns": [
             "provider_id",
             "account_id"
@@ -1296,10 +1012,10 @@
         }
       },
       "foreignKeys": {
-        "console_user_account_user_id_console_user_id_fk": {
-          "name": "console_user_account_user_id_console_user_id_fk",
-          "tableFrom": "console_user_account",
-          "tableTo": "console_user",
+        "mgmt_user_account_user_id_mgmt_user_id_fk": {
+          "name": "mgmt_user_account_user_id_mgmt_user_id_fk",
+          "tableFrom": "mgmt_user_account",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "user_id"
           ],
@@ -1314,8 +1030,576 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "console_user_session": {
-      "name": "console_user_session",
+    "mgmt_api_key": {
+      "name": "mgmt_api_key",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_hint": {
+          "name": "token_hint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mgmt_api_key_token_hash_unique": {
+          "name": "mgmt_api_key_token_hash_unique",
+          "columns": [
+            "token_hash"
+          ],
+          "isUnique": true
+        },
+        "mgmt_idx_api_key_user_id": {
+          "name": "mgmt_idx_api_key_user_id",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": false
+        },
+        "mgmt_idx_api_key_organization_id": {
+          "name": "mgmt_idx_api_key_organization_id",
+          "columns": [
+            "organization_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "mgmt_api_key_user_id_mgmt_user_id_fk": {
+          "name": "mgmt_api_key_user_id_mgmt_user_id_fk",
+          "tableFrom": "mgmt_api_key",
+          "tableTo": "mgmt_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "mgmt_api_key_organization_id_mgmt_organization_id_fk": {
+          "name": "mgmt_api_key_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "mgmt_api_key",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "mgmt_handoff": {
+      "name": "mgmt_handoff",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "request_json": {
+          "name": "request_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initiating_user_id": {
+          "name": "initiating_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "initiating_credential_id": {
+          "name": "initiating_credential_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "submission_proof_hash": {
+          "name": "submission_proof_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "poll_proof_hash": {
+          "name": "poll_proof_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "human_code_hash": {
+          "name": "human_code_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_mgmt_handoff_pending": {
+          "name": "idx_mgmt_handoff_pending",
+          "columns": [
+            "organization_id",
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "mgmt_handoff_organization_id_mgmt_organization_id_fk": {
+          "name": "mgmt_handoff_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "mgmt_handoff",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "mgmt_organization": {
+      "name": "mgmt_organization",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "mgmt_organization_created_by_user_id_mgmt_user_id_fk": {
+          "name": "mgmt_organization_created_by_user_id_mgmt_user_id_fk",
+          "tableFrom": "mgmt_organization",
+          "tableTo": "mgmt_user",
+          "columnsFrom": [
+            "created_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "mgmt_organization_user": {
+      "name": "mgmt_organization_user",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "joined_at": {
+          "name": "joined_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mgmt_organization_user_organization_id_user_id_unique": {
+          "name": "mgmt_organization_user_organization_id_user_id_unique",
+          "columns": [
+            "organization_id",
+            "user_id"
+          ],
+          "isUnique": true
+        },
+        "mgmt_idx_organization_user_user_id": {
+          "name": "mgmt_idx_organization_user_user_id",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": false
+        },
+        "mgmt_idx_organization_user_organization_id": {
+          "name": "mgmt_idx_organization_user_organization_id",
+          "columns": [
+            "organization_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "mgmt_organization_user_organization_id_mgmt_organization_id_fk": {
+          "name": "mgmt_organization_user_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "mgmt_organization_user",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "mgmt_organization_user_user_id_mgmt_user_id_fk": {
+          "name": "mgmt_organization_user_user_id_mgmt_user_id_fk",
+          "tableFrom": "mgmt_organization_user",
+          "tableTo": "mgmt_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mgmt_organization_user_role_check": {
+          "name": "mgmt_organization_user_role_check",
+          "value": "\"mgmt_organization_user\".\"role\" in ('owner', 'admin', 'member')"
+        },
+        "mgmt_organization_user_status_check": {
+          "name": "mgmt_organization_user_status_check",
+          "value": "\"mgmt_organization_user\".\"status\" in ('active')"
+        }
+      }
+    },
+    "mgmt_resource_receipt": {
+      "name": "mgmt_resource_receipt",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "initiating_user_id": {
+          "name": "initiating_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "initiating_credential_id": {
+          "name": "initiating_credential_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "proof_hash": {
+          "name": "proof_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "protected_credential": {
+          "name": "protected_credential",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "protected_credential_expires_at": {
+          "name": "protected_credential_expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_mgmt_resource_receipt_organization": {
+          "name": "idx_mgmt_resource_receipt_organization",
+          "columns": [
+            "organization_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "mgmt_resource_receipt_organization_id_mgmt_organization_id_fk": {
+          "name": "mgmt_resource_receipt_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "mgmt_resource_receipt",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "mgmt_user_session": {
+      "name": "mgmt_user_session",
       "columns": {
         "id": {
           "name": "id",
@@ -1375,15 +1659,15 @@
         }
       },
       "indexes": {
-        "console_idx_session_token": {
-          "name": "console_idx_session_token",
+        "mgmt_idx_session_token": {
+          "name": "mgmt_idx_session_token",
           "columns": [
             "token"
           ],
           "isUnique": true
         },
-        "console_idx_session_user_id": {
-          "name": "console_idx_session_user_id",
+        "mgmt_idx_session_user_id": {
+          "name": "mgmt_idx_session_user_id",
           "columns": [
             "user_id"
           ],
@@ -1391,10 +1675,10 @@
         }
       },
       "foreignKeys": {
-        "console_user_session_user_id_console_user_id_fk": {
-          "name": "console_user_session_user_id_console_user_id_fk",
-          "tableFrom": "console_user_session",
-          "tableTo": "console_user",
+        "mgmt_user_session_user_id_mgmt_user_id_fk": {
+          "name": "mgmt_user_session_user_id_mgmt_user_id_fk",
+          "tableFrom": "mgmt_user_session",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
             "user_id"
           ],
@@ -1409,8 +1693,89 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "console_verification": {
-      "name": "console_verification",
+    "mgmt_user": {
+      "name": "mgmt_user",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'human'"
+        },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "image": {
+          "name": "image",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mgmt_idx_user_email": {
+          "name": "mgmt_idx_user_email",
+          "columns": [
+            "\"email\" COLLATE NOCASE"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mgmt_user_kind_email_check": {
+          "name": "mgmt_user_kind_email_check",
+          "value": "(\"mgmt_user\".\"kind\" = 'human' and \"mgmt_user\".\"email\" is not null) or (\"mgmt_user\".\"kind\" = 'service' and \"mgmt_user\".\"email\" is null)"
+        }
+      }
+    },
+    "mgmt_verification": {
+      "name": "mgmt_verification",
       "columns": {
         "id": {
           "name": "id",
@@ -1456,8 +1821,8 @@
         }
       },
       "indexes": {
-        "console_idx_verification_identifier": {
-          "name": "console_idx_verification_identifier",
+        "mgmt_idx_verification_identifier": {
+          "name": "mgmt_idx_verification_identifier",
           "columns": [
             "identifier"
           ],
@@ -1599,10 +1964,10 @@
         }
       },
       "foreignKeys": {
-        "provider_organization_id_console_organization_id_fk": {
-          "name": "provider_organization_id_console_organization_id_fk",
+        "provider_organization_id_mgmt_organization_id_fk": {
+          "name": "provider_organization_id_mgmt_organization_id_fk",
           "tableFrom": "provider",
-          "tableTo": "console_organization",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
@@ -1737,10 +2102,10 @@
         }
       },
       "foreignKeys": {
-        "provider_gateway_organization_id_console_organization_id_fk": {
-          "name": "provider_gateway_organization_id_console_organization_id_fk",
+        "provider_gateway_organization_id_mgmt_organization_id_fk": {
+          "name": "provider_gateway_organization_id_mgmt_organization_id_fk",
           "tableFrom": "provider_gateway",
-          "tableTo": "console_organization",
+          "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
           ],
@@ -1774,7 +2139,7 @@
   },
   "internal": {
     "indexes": {
-      "console_idx_user_email": {
+      "mgmt_idx_user_email": {
         "columns": {
           "\"email\" COLLATE NOCASE": {
             "isExpression": true

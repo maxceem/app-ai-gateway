@@ -56,7 +56,7 @@ describe("whether an organization has ever proxied a request", () => {
   it("ignores another organization's traffic", async () => {
     // `app.organization_id` is a foreign key, so the neighbour has to exist.
     await env.DB.prepare(
-      `INSERT OR IGNORE INTO console_organization(
+      `INSERT OR IGNORE INTO mgmt_organization(
          id, name, created_by_user_id, created_at, updated_at
        ) VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
     ).bind("other-organization", "Neighbour", "operator-test-owner").run();

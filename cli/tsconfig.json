@@ -1,0 +1,28 @@
+{
+  // Node ESM, not a bundler: the CLI runs from source under Node's own type
+  // stripping (`node --test test/*.test.ts`, `node src/bin.ts`) as well as from
+  // the esbuild bundle, so every relative import carries its real `.ts`
+  // extension and TypeScript is told to resolve them the way Node does.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    // Nothing here may need a transform to run: no enums, no namespaces, no
+    // parameter properties. Node strips types, it does not compile them.
+    "erasableSyntaxOnly": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"],
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

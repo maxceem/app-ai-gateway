@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { invalidateAccountLifecycle } from "../core/account-lifecycle";
 import {
   billingBinding,
   invalidateBillingRequestAccess,
@@ -55,6 +56,11 @@ export function invalidateBlockedCache(appId: string, userId: string): void {
   blockedCache.delete(`${appId}:${userId}`);
 }
 
+/** Drops every cached flag at once. Tests share one isolate across a suite. */
+export function clearBlockedCache(): void {
+  blockedCache.clear();
+}
+
 async function isUserBlocked(env: Env, name: string): Promise<boolean> {
   const cached = blockedCache.get(name);
   if (cached && cached.expiresAt > Date.now()) return cached.blocked;
@@ -94,6 +100,7 @@ export const quotaGate: MiddlewareHandler<{
   ) =>
     c.executionCtx.waitUntil(
       recordBlockedUsageEvent({
+        organizationId: app.organizationId,
         env: c.env,
         appId: identity.appId,
         userId: identity.userId,
@@ -166,8 +173,8 @@ export const quotaGate: MiddlewareHandler<{
    *
    * A self-hosted deployment pays nothing for this: `monthlyRequestAllowance`
    * returns without awaiting anything when there is no billing binding. In a
-   * hosted one the entitlement gate has already read billing into the
-   * request cache, so this is a cache hit, not a second RPC.
+   * hosted one a warm isolate answers the plan out of its own TTL cache, so
+   * this is not an RPC per request either.
    */
   const [blockedResult, allowanceResult] = await Promise.allSettled([
     // Blocking names a user, so an application with none has nobody to block
@@ -259,6 +266,11 @@ export const quotaGate: MiddlewareHandler<{
       }
     }
     if (retry) {
+      // Re-resolve from nothing this isolate already believed. Only billing can
+      // supersede a schedule today, but the resolver reads the lifecycle row
+      // too, and a retry that kept a cached copy of one of its two inputs would
+      // be a retry that could return the same superseded answer.
+      invalidateAccountLifecycle(app.organizationId);
       invalidateBillingRequestAccess(app.organizationId, c.get("billingRequestCache"));
       const refreshed = await resolveBillingQuota(
         c.env,

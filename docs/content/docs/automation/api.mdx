@@ -4,7 +4,9 @@ description: Manage providers, apps, users and usage from scripts and CI with a 
 ---
 
 Everything the console does, the API does. The console itself is a client
-of it. Use the API from a deployment script, a CI job, or an AI agent.
+of it. For a terminal or coding agent, start with the [CLI](/automation/cli),
+which handles protected state, browser handoffs and creation retries. Direct
+integrations can use the same API from a deployment script or CI job.
 
 ## Management keys
 
@@ -12,23 +14,27 @@ A management key authenticates API calls to the `/v1/admin/*` routes. Open
 the user menu in the console, choose **Management keys**, and click **New
 key**. The key is shown once in a dialog titled **Copy your new key now**.
 
-A management key acts with your own permissions over every app and provider
-in your account. Store it in a secret manager and read it from the
+A management key acts within its owning identity's current account membership
+and role. It does not expire. Store it in a secret manager and read it from the
 environment. **Revoke key** stops it immediately.
+
+Keys are created, listed and revoked from the console only. A management key
+cannot do any of the three, so a key you hand to another system cannot issue
+itself a second key, and revoking the one you handed out ends that access for
+good.
 
 Management keys manage; they never call providers. An app's own API key is
 what calls providers, and a management key is refused on those routes.
 
 ## Making a call
 
-Send the key as a bearer token:
+Send the management credential as an `Authorization: Bearer` header from your
+HTTP client's protected credential store. Do not put it in shell arguments or
+logs. The CLI can read an existing key through stdin:
 
 ```sh
-export APP_AI_GATEWAY_MGMT_KEY="agw_mgmt_…"
-export GATEWAY_URL="https://api.appaigateway.com"
-
-curl "$GATEWAY_URL/v1/admin/apps" \
-  -H "Authorization: Bearer $APP_AI_GATEWAY_MGMT_KEY"
+agw deployment connect --url https://api.appaigateway.com --key-stdin < /private/path/management-key
+agw app list --json
 ```
 
 The full reference with every
@@ -97,3 +103,14 @@ JSON
 The response carries `app.id`, which clients compile into their URLs, and
 `api_key.key`, which goes straight into the calling service's secret manager.
 Do not write the response to a file that outlives the step.
+
+## Revisions and retry proofs
+
+Read the app's ETag before a full `PUT` and send it as `If-Match`. Missing or
+stale revisions return 428 or 412; reread and merge before retrying.
+
+Creation of apps, app keys, providers and provider gateways accepts paired
+`Idempotency-Key` and `X-Idempotency-Proof` headers. Persist both random proofs
+before sending. Retry with the same body and proofs to recover the existing
+resource. Protected key replay expires after 15 minutes; an expired response
+identifies the resource and never creates another key automatically.

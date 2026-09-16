@@ -30,3 +30,8 @@ docs/public/**/*.md
 docs/public/llms.txt
 docs/public/llms-full.txt
 docs/public/openapi.json
+
+cli/dist/
+
+# Protected manual initialization state and credential file.
+.agw-bootstrap/

@@ -165,6 +165,19 @@ export class OrgQuota extends DurableObject<Env> {
     return { allowed: true, ...state(admitted[0]!.used) };
   }
 
+  /** Read a completed period without changing the live schedule or its watermark. */
+  pastUsage(input: Omit<QuotaPeriodInput, "limit">): QuotaUsage {
+    const start = Date.parse(input.periodStart);
+    if (Date.parse(input.periodEnd) > Date.now() || !this.valid(input, start)) return { superseded: true };
+    return {
+      periodId: input.periodId,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      resetAt: input.resetAt,
+      used: this.used(input.scheduleId, input.periodStart),
+    };
+  }
+
   usage(input: Omit<QuotaPeriodInput, "limit">): QuotaUsage {
     if (!this.valid(input, Date.now()) || !this.adopt(input)) return { superseded: true };
     return {

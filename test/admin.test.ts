@@ -70,6 +70,7 @@ describe("admin API", () => {
       {
         method: "PUT",
         headers: {
+          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
@@ -483,8 +484,9 @@ describe("admin API", () => {
   it("rejects an insecure issuer URL when updating an app", async () => {
     await seedApp("insecure-issuer");
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/insecure-issuer", {
-      method: "POST",
+      method: "PUT",
       headers: {
+          "if-match": '"app-1"',
         authorization: "Bearer agw_mgmt_test-admin-secret",
         "content-type": "application/json",
       },
@@ -506,8 +508,9 @@ describe("admin API", () => {
     delete config.authentication.end_user.issuer.audience;
     await seedApp("unscoped-issuer");
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/unscoped-issuer", {
-      method: "POST",
+      method: "PUT",
       headers: {
+          "if-match": '"app-1"',
         authorization: "Bearer agw_mgmt_test-admin-secret",
         "content-type": "application/json",
       },
@@ -550,8 +553,9 @@ describe("admin API", () => {
     const response = await exports.default.fetch(
       "https://example.test/v1/admin/apps/invalid-api-key-issuer",
       {
-        method: "POST",
+        method: "PUT",
         headers: {
+          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
@@ -574,8 +578,9 @@ describe("admin API", () => {
     const response = await exports.default.fetch(
       `https://example.test/v1/admin/apps/${appId}`,
       {
-        method: "POST",
+        method: "PUT",
         headers: {
+          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
@@ -595,8 +600,9 @@ describe("admin API", () => {
     const created = await exports.default.fetch(
       "https://example.test/v1/admin/apps/attest-environments",
       {
-        method: "POST",
+        method: "PUT",
         headers: {
+          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
@@ -628,8 +634,9 @@ describe("admin API", () => {
     const response = await exports.default.fetch(
       "https://example.test/v1/admin/apps/attest-environments-invalid",
       {
-        method: "POST",
+        method: "PUT",
         headers: {
+          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
@@ -726,8 +733,9 @@ describe("admin API", () => {
       const response = await exports.default.fetch(
         `https://example.test/v1/admin/apps/${appId}`,
         {
-          method: "POST",
+          method: "PUT",
           headers: {
+          "if-match": '"app-1"',
             authorization: "Bearer agw_mgmt_test-admin-secret",
             "content-type": "application/json",
           },

@@ -5,11 +5,11 @@ import { describe, expect, it } from "vitest";
 async function seedProviderOrganization(): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT OR IGNORE INTO console_user(id, name, email, email_verified, created_at, updated_at)
+      `INSERT OR IGNORE INTO mgmt_user(id, name, email, email_verified, created_at, updated_at)
        VALUES ('provider-owner', 'Owner', 'owner@providers.test', 1, 0, 0)`,
     ),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+      `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
        VALUES ('org-providers', 'Providers', 'provider-owner', datetime('now'), datetime('now'))`,
     ),
   ]);
@@ -32,6 +32,8 @@ describe("initial database migration", () => {
       name: string;
       unique: number;
     }>();
+    const managementKeyColumns = await env.DB.prepare("PRAGMA table_info(mgmt_api_key)")
+      .all<{ name: string }>();
 
     expect(usageColumns.results.map((column) => column.name)).toContain("auth_method");
     expect(usageColumns.results.map((column) => column.name)).toContain("api_key_id");
@@ -70,6 +72,7 @@ describe("initial database migration", () => {
       "organization_id",
       "name",
       "config_json",
+      "revision",
       "status",
       "created_at",
       "updated_at",
@@ -155,17 +158,60 @@ describe("initial database migration", () => {
       "created_at",
       "updated_at",
     ]);
-    const consoleTables = await env.DB.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'console_%' ORDER BY name",
+    const mgmtTables = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'mgmt_%' ORDER BY name",
     ).all<{ name: string }>();
-    expect(consoleTables.results.map((row) => row.name)).toEqual([
-      "console_api_key",
-      "console_organization",
-      "console_organization_user",
-      "console_user",
-      "console_user_account",
-      "console_user_session",
-      "console_verification",
+    expect(mgmtTables.results.map((row) => row.name)).toEqual([
+      "mgmt_api_key",
+      "mgmt_handoff",
+      "mgmt_organization",
+      "mgmt_organization_user",
+      "mgmt_resource_receipt",
+      "mgmt_user",
+      "mgmt_user_account",
+      "mgmt_user_session",
+      "mgmt_verification",
+    ]);
+    const organizationColumns = await env.DB.prepare(
+      "PRAGMA table_info(mgmt_organization)",
+    ).all<{ name: string }>();
+    expect(organizationColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "name",
+      "expires_at",
+      "created_by_user_id",
+      "created_at",
+      "updated_at",
+    ]);
+    const verificationColumns = await env.DB.prepare(
+      "PRAGMA table_info(mgmt_verification)",
+    ).all<{ name: string }>();
+    expect(verificationColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "identifier",
+      "value",
+      "expires_at",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(managementKeyColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "user_id",
+      "organization_id",
+      "name",
+      "token_hash",
+      "token_hint",
+      "enabled",
+      "expires_at",
+      "created_at",
+      "revoked_at",
+    ]);
+    const gatewayStateTables = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mgmt_handoff','cli_rate_limit','mgmt_resource_receipt') ORDER BY name",
+    ).all<{ name: string }>();
+    expect(gatewayStateTables.results.map((row) => row.name)).toEqual([
+      "mgmt_handoff",
+      "mgmt_resource_receipt",
     ]);
     expect(apiKeyColumns.results.map((column) => column.name)).toEqual([
       "id",

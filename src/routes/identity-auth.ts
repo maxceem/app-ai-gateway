@@ -1,18 +1,20 @@
+import { claimOAuthAuthorized, CLAIM_OAUTH_COOKIE } from "./cli/oauth";
 import { Hono } from "hono";
 import {
-  createOperatorAuth,
-  OPERATOR_AUTH_BASE_PATH,
+  createIdentityAuth,
+  createClaimRegistrationAuth,
+  IDENTITY_AUTH_BASE_PATH,
   registrationOpen,
   relaySocialSignIn,
-} from "../auth/operator";
+} from "../auth/identity";
 
-export const operatorAuthRoutes = new Hono<{ Bindings: Env }>();
+export const identityAuthRoutes = new Hono<{ Bindings: Env }>();
 
 /** Where the console serves its sign-in screen. */
 const CONSOLE_LOGIN_PATH = "/login";
 
 /** The Better Auth route that answers with a provider authorization URL. */
-const SOCIAL_SIGN_IN_PATH = `${OPERATOR_AUTH_BASE_PATH}/sign-in/social`;
+const SOCIAL_SIGN_IN_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-in/social`;
 
 function registrationDisabled() {
   return {
@@ -38,7 +40,7 @@ function isTopLevelNavigation(request: Request): boolean {
   return accept.includes("text/html") && !accept.includes("application/json");
 }
 
-async function isDisabledSocialSignup(response: Response): Promise<boolean> {
+async function isDisabledSignup(response: Response): Promise<boolean> {
   const location = response.headers.get("location");
   if (location) {
     const error = new URL(location, "https://auth.invalid").searchParams.get("error");
@@ -46,12 +48,15 @@ async function isDisabledSocialSignup(response: Response): Promise<boolean> {
   }
 
   if (!response.headers.get("content-type")?.includes("application/json")) return false;
-  const body = await response.clone().json().catch(() => undefined) as
-    | { code?: unknown; message?: unknown }
-    | undefined;
-  return body?.code === "OAUTH_LINK_ERROR"
-    && typeof body.message === "string"
-    && body.message.toLowerCase() === "signup disabled";
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => undefined)) as { code?: unknown; message?: unknown } | undefined;
+  return (
+    (body?.code === "REGISTRATION_DISABLED" || body?.code === "OAUTH_LINK_ERROR") &&
+    typeof body.message === "string" &&
+    body.message.toLowerCase() === "signup disabled"
+  );
 }
 
 /**
@@ -82,22 +87,45 @@ export function registrationDisabledRedirect(rejected: Response): Response {
   return redirect;
 }
 
-operatorAuthRoutes.all("/*", async (c) => {
+identityAuthRoutes.all("/*", async (c) => {
   if (
-    c.req.method === "POST"
-    && c.req.path === "/v1/auth/sign-up/email"
-    && !registrationOpen(c.env)
+    c.req.method === "POST" &&
+    c.req.path === "/v1/auth/sign-up/email" &&
+    !(await registrationOpen(c.env))
   ) {
     return c.json(registrationDisabled(), 403);
   }
 
-  const handled = await createOperatorAuth(c.env, c.req.url).handler(c.req.raw);
+  const callback = c.req.path === `${IDENTITY_AUTH_BASE_PATH}/callback/google`;
+  const claim = callback && (await claimOAuthAuthorized(c.env, c.req.raw));
+  let registrationDenied = false;
+  const markRegistrationDenied = () => {
+    registrationDenied = true;
+  };
+  const auth = claim
+    ? createClaimRegistrationAuth(c.env, c.req.url, {
+        onRegistrationDenied: markRegistrationDenied,
+      })
+    : createIdentityAuth(c.env, c.req.url, {
+        provisionRegistration: true,
+        onRegistrationDenied: markRegistrationDenied,
+      });
+  let handled = await auth.handler(c.req.raw);
+  if (callback) {
+    const headers = new Headers(handled.headers);
+    headers.append(
+      "Set-Cookie",
+      `${CLAIM_OAUTH_COOKIE}=; Path=/v1/auth/callback/google; HttpOnly; SameSite=Lax; Max-Age=0${new URL(c.req.url).protocol === "https:" ? "; Secure" : ""}`,
+    );
+    handled = new Response(handled.body, { status: handled.status, headers });
+  }
   // Only the one response that hands the browser a provider URL is rewritten,
   // and only when an OAuth relay is configured; everything else is untouched.
-  const response = c.req.method === "POST" && c.req.path === SOCIAL_SIGN_IN_PATH
-    ? await relaySocialSignIn(c.env, c.req.url, handled)
-    : handled;
-  if (!registrationOpen(c.env) && await isDisabledSocialSignup(response)) {
+  const response =
+    c.req.method === "POST" && c.req.path === SOCIAL_SIGN_IN_PATH
+      ? await relaySocialSignIn(c.env, c.req.url, handled)
+      : handled;
+  if ((await isDisabledSignup(response)) || registrationDenied) {
     // The OAuth callback is a top-level navigation, so the rejection has to be
     // delivered as one. Returning JSON here would leave the operator looking at
     // an error document with no way back into the console.

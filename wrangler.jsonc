@@ -13,9 +13,11 @@
   "vars": {
     "SECRET_VAULT_MODE": "local",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1",
-    "ALLOW_PUBLIC_REGISTRATION": "true"
+    "ALLOW_ADDITIONAL_REGISTRATIONS": "false",
+    // Set once per deployment to a UUID; preserve it across updates and domains.
+    "DEPLOYMENT_ID": ""
   },
-  // Nightly retention for `app_auth_event` only.
+  // Nightly authentication retention, usage compaction and expired-account cleanup.
   "triggers": { "crons": ["17 3 * * *"] },
   "observability": {
     "enabled": true,
@@ -36,14 +38,16 @@
   "durable_objects": {
     "bindings": [
       { "name": "USER_LIMITER", "class_name": "UserLimiter" },
-      { "name": "ORG_QUOTA", "class_name": "OrgQuota" }
+      { "name": "ORG_QUOTA", "class_name": "OrgQuota" },
+      { "name": "ENDPOINT_RATE_LIMITER", "class_name": "EndpointRateLimiter" }
     ]
   },
   // Append-only: every tag below has already been applied to deployed
   // installations, so entries are added and never edited or removed.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserLimiter"] },
-    { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] }
+    { "tag": "v2", "new_sqlite_classes": ["OrgQuota"] },
+    { "tag": "v3", "new_sqlite_classes": ["EndpointRateLimiter"] }
   ]
   // This file is the complete self-hosted configuration and what the Deploy to
   // Cloudflare button uses. Deployment-specific additions (a custom domain, a

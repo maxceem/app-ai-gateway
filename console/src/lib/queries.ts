@@ -1,5 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, query } from "./api";
+import { operations } from "@contracts/operations";
+import type { AppResponse as WireAppResponse } from "@contracts/responses";
+import type { AppWrite } from "@contracts/schemas";
+import { api, call } from "./api";
 import {
   changePassword,
   signInWithPassword,
@@ -11,39 +14,31 @@ import {
 import { analytics, captureAppCreated, captureProviderAdded, noteAuthMethod } from "./analytics";
 import { checkoutReturnPathFor } from "./auth-redirect";
 import type {
-  AppListResponse,
   AppCreateBody,
   AppResponse,
   AppUpsertBody,
-  ApiKeyListResponse,
   BillingPlansResponse,
   BillingStatusResponse,
-  Capabilities,
-  CreatedApiKey,
   CreatedApp,
-  CreatedManagementKey,
-  AuthEventsResponse,
-  AuthEventSummary,
-  BreakdownResponse,
-  EventsResponse,
-  ManagementKeyListResponse,
-  MonthlyUsage,
-  OrganizationListResponse,
-  PricesResponse,
   ProviderCreateBody,
-  ProviderTestBody,
-  ProviderTestResult,
   ProviderGatewayCreateBody,
-  ProviderGatewayListResponse,
-  ProviderGatewayResponse,
   ProviderGatewayTestBody,
-  ProviderListResponse,
-  ProviderResponse,
+  ProviderTestBody,
   ProviderUpdateBody,
-  SessionResponse,
-  TimeseriesResponse,
-  UserListResponse,
 } from "./types";
+
+/**
+ * The editor's view of an application, and the wire body it writes back.
+ *
+ * The API describes `config` as the stored `AppConfig`; the console describes
+ * it as the form model in `lib/config-types`, which carries draft states a wire
+ * format has no vocabulary for. Everything else about an application read is
+ * the contract's own type, and these two functions are the only place the two
+ * descriptions meet — deliberately named, so the seam is visible.
+ */
+const asEditorApp = (response: WireAppResponse): AppResponse =>
+  response as unknown as AppResponse;
+const asWriteBody = (body: AppUpsertBody): AppWrite => body as unknown as AppWrite;
 
 export const keys = {
   capabilities: ["capabilities"] as const,
@@ -75,7 +70,7 @@ export const keys = {
 export function useCapabilities() {
   return useQuery({
     queryKey: keys.capabilities,
-    queryFn: () => api.get<Capabilities>("/v1/console/capabilities"),
+    queryFn: () => call(operations.getConsoleCapabilities, []),
     staleTime: Number.POSITIVE_INFINITY,
     retry: 1,
   });
@@ -90,7 +85,7 @@ export function useCapabilities() {
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: async () => (await api.get<SessionResponse>("/v1/admin/session")).session,
+    queryFn: async () => (await call(operations.getAdminSession, [])).session,
     retry: false,
     staleTime: 60_000,
   });
@@ -143,7 +138,7 @@ export function useChangePassword() {
 export function useOrganizations(enabled = true) {
   return useQuery({
     queryKey: keys.organizations,
-    queryFn: () => api.get<OrganizationListResponse>("/v1/admin/organizations"),
+    queryFn: () => call(operations.listOrganizations, []),
     enabled,
   });
 }
@@ -152,7 +147,7 @@ export function useSelectOrganization() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (organizationId: string) =>
-      api.post<SessionResponse>("/v1/admin/organizations/select", { organizationId }),
+      call(operations.selectOrganization, [], { organizationId }),
     onSuccess: (result) => {
       // Every cached list is scoped to the previous organization.
       client.clear();
@@ -164,14 +159,14 @@ export function useSelectOrganization() {
 export function useManagementKeys() {
   return useQuery({
     queryKey: keys.managementKeys,
-    queryFn: () => api.get<ManagementKeyListResponse>("/v1/admin/keys"),
+    queryFn: () => call(operations.listManagementKeys, []),
   });
 }
 
 export function useCreateManagementKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => api.post<{ key: CreatedManagementKey }>("/v1/admin/keys", { name }),
+    mutationFn: (name: string) => call(operations.createManagementKey, [], { name }),
     // The result holds the only copy of a live credential. Without this the
     // cached mutation outlives `reset()` and keeps the plaintext in memory.
     gcTime: 0,
@@ -182,8 +177,7 @@ export function useCreateManagementKey() {
 export function useRevokeManagementKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (keyId: string) =>
-      api.post(`/v1/admin/keys/${encodeURIComponent(keyId)}/revoke`),
+    mutationFn: (keyId: string) => call(operations.revokeManagementKey, [keyId]),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
   });
 }
@@ -191,7 +185,7 @@ export function useRevokeManagementKey() {
 export function useProviders() {
   return useQuery({
     queryKey: keys.providers,
-    queryFn: () => api.get<ProviderListResponse>("/v1/admin/providers"),
+    queryFn: () => call(operations.listProviders, []),
   });
 }
 
@@ -207,7 +201,7 @@ export function useProviders() {
 export function useProviderInstances() {
   return useQuery({
     queryKey: keys.providers,
-    queryFn: () => api.get<ProviderListResponse>("/v1/admin/providers"),
+    queryFn: () => call(operations.listProviders, []),
     select: (data) => data.providers,
   });
 }
@@ -230,8 +224,7 @@ function invalidateProviderLists(client: ReturnType<typeof useQueryClient>): voi
 export function useCreateProvider() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: ProviderCreateBody) =>
-      api.post<ProviderResponse>("/v1/admin/providers", body),
+    mutationFn: (body: ProviderCreateBody) => call(operations.createProvider, [], body),
     gcTime: 0,
     onSuccess: (_result, body) => {
       // The provider type and the route it takes; `body.secret` stays here.
@@ -248,16 +241,14 @@ export function useCreateProvider() {
  */
 export function useTestProvider() {
   return useMutation({
-    mutationFn: (body: ProviderTestBody) =>
-      api.post<ProviderTestResult>("/v1/admin/providers/test", body),
+    mutationFn: (body: ProviderTestBody) => call(operations.testProvider, [], body),
     gcTime: 0,
   });
 }
 
 export function useTestProviderGateway() {
   return useMutation({
-    mutationFn: (body: ProviderGatewayTestBody) =>
-      api.post<ProviderTestResult>("/v1/admin/provider-gateways/test", body),
+    mutationFn: (body: ProviderGatewayTestBody) => call(operations.testProviderGateway, [], body),
     gcTime: 0,
   });
 }
@@ -270,7 +261,7 @@ export function useTestProviderGateway() {
 export function useProviderGateways(enabled = true) {
   return useQuery({
     queryKey: keys.providerGateways,
-    queryFn: () => api.get<ProviderGatewayListResponse>("/v1/admin/provider-gateways"),
+    queryFn: () => call(operations.listProviderGateways, []),
     enabled,
   });
 }
@@ -293,35 +284,25 @@ function useGatewayMutation<TVariables, TData>(
 
 export function useCreateProviderGateway() {
   return useGatewayMutation((body: ProviderGatewayCreateBody) =>
-    api.post<ProviderGatewayResponse>("/v1/admin/provider-gateways", body),
+    call(operations.createProviderGateway, [], body),
   );
 }
 
 export function useRenameProviderGateway() {
   return useGatewayMutation(({ id, name }: { id: string; name: string }) =>
-    api.patch<ProviderGatewayResponse>(
-      `/v1/admin/provider-gateways/${encodeURIComponent(id)}`,
-      { name },
-    ),
+    call(operations.updateProviderGateway, [id], { name }),
   );
 }
 
 /** A single re-encryption, shared by every provider behind the gateway. */
 export function useRotateProviderGateway() {
   return useGatewayMutation(({ id, token }: { id: string; token: string }) =>
-    api.post<ProviderGatewayResponse>(
-      `/v1/admin/provider-gateways/${encodeURIComponent(id)}/rotate`,
-      { token },
-    ),
+    call(operations.rotateProviderGateway, [id], { token }),
   );
 }
 
 export function useDeleteProviderGateway() {
-  return useGatewayMutation((id: string) =>
-    api.delete<{ deleted: true; provider_gateway_id: string }>(
-      `/v1/admin/provider-gateways/${encodeURIComponent(id)}`,
-    ),
-  );
+  return useGatewayMutation((id: string) => call(operations.deleteProviderGateway, [id]));
 }
 
 /**
@@ -334,7 +315,7 @@ export function useUpdateProvider() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: ProviderUpdateBody }) =>
-      api.put<ProviderResponse>(`/v1/admin/providers/${encodeURIComponent(id)}`, body),
+      call(operations.updateProvider, [id], body),
     gcTime: 0,
     onSuccess: (_result, variables) => {
       void client.invalidateQueries({ queryKey: keys.providers });
@@ -348,16 +329,19 @@ export function useUpdateProvider() {
 export function useDeleteProvider() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      api.delete<{ deleted: true; provider_id: string }>(
-        `/v1/admin/providers/${encodeURIComponent(id)}`,
-      ),
+    mutationFn: (id: string) => call(operations.deleteProvider, [id]),
     onSuccess: () => invalidateProviderLists(client),
   });
 }
 
 /**
  * Billing hooks stay disabled unless the deployment reports the capability.
+ *
+ * These are the only hooks here that still name a path. Their shapes belong to
+ * the optional billing Worker this gateway may be bound to, which declares them
+ * in `src/billing/` alongside its own error and logging modules — not something
+ * a browser build can import, and not something to move while the two quota
+ * systems are as easy to conflate as they are. See `lib/types.ts`.
  *
  * A subscription can lapse while the console is open — a card expires, a trial
  * ends — and the data plane starts answering 402. Polling and refetching on
@@ -441,7 +425,7 @@ export function useResumeSubscription() {
 export function useApps(month: string, refetchInterval?: number) {
   return useQuery({
     queryKey: keys.apps(month),
-    queryFn: () => api.get<AppListResponse>(`/v1/admin/apps${query({ month })}`),
+    queryFn: () => call(operations.listApps, [{ month }]),
     ...(refetchInterval === undefined ? {} : { refetchInterval }),
   });
 }
@@ -449,15 +433,19 @@ export function useApps(month: string, refetchInterval?: number) {
 export function useApp(appId: string) {
   return useQuery({
     queryKey: keys.app(appId),
-    queryFn: () => api.get<AppResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}`),
+    queryFn: async () => asEditorApp(await call(operations.getApp, [appId])),
   });
 }
 
 export function useSaveApp(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: AppUpsertBody) =>
-      api.put<AppResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}`, body),
+    mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) =>
+      asEditorApp(
+        await call(operations.updateApp, [appId], asWriteBody(body), {
+          "If-Match": `"app-${revision}"`,
+        }),
+      ),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });
       void client.invalidateQueries({ queryKey: ["apps"] });
@@ -468,7 +456,12 @@ export function useSaveApp(appId: string) {
 export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: AppCreateBody) => api.post<CreatedApp>("/v1/admin/apps", body),
+    mutationFn: async (body: AppCreateBody): Promise<CreatedApp> => {
+      const created = await call(operations.createApp, [], asWriteBody(body));
+      // The one-time initial key an API-key application is born with, which is
+      // the one field a create carries beyond an ordinary application read.
+      return { ...asEditorApp(created), api_key: created.api_key };
+    },
     onSuccess: (created, body) => {
       // Which of the two ways in the application was born with, since App
       // Attest rather than an API key is what this product is built for.
@@ -482,15 +475,7 @@ export function useCreateApp() {
 export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (appId: string) =>
-      api.delete<{
-        deleted: true;
-        app_id: string;
-        removed_users: number;
-        usage_events_retained: true;
-      }>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}${query({ confirm: appId })}`,
-      ),
+    mutationFn: (appId: string) => call(operations.deleteApp, [appId]),
     onSuccess: () => client.invalidateQueries({ queryKey: ["apps"] }),
   });
 }
@@ -499,16 +484,14 @@ export function useApiKeys(appId: string, enabled = true) {
   return useQuery({
     enabled,
     queryKey: keys.apiKeys(appId),
-    queryFn: () =>
-      api.get<ApiKeyListResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}/keys`),
+    queryFn: () => call(operations.listAppKeys, [appId]),
   });
 }
 
 export function useCreateApiKey(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      api.post<CreatedApiKey>(`/v1/admin/apps/${encodeURIComponent(appId)}/keys`, { name }),
+    mutationFn: (name: string) => call(operations.createAppKey, [appId], { name }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.apiKeys(appId) }),
   });
 }
@@ -516,8 +499,7 @@ export function useCreateApiKey(appId: string) {
 export function useRevokeApiKey(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (keyId: string) =>
-      api.post(`/v1/admin/apps/${encodeURIComponent(appId)}/keys/${encodeURIComponent(keyId)}/revoke`),
+    mutationFn: (keyId: string) => call(operations.revokeAppKey, [appId, keyId]),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.apiKeys(appId) }),
   });
 }
@@ -533,8 +515,7 @@ export interface UserQuery {
 export function useUsers(appId: string, params: UserQuery) {
   return useQuery({
     queryKey: keys.users(appId, params),
-    queryFn: () =>
-      api.get<UserListResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}/users${query({ ...params })}`),
+    queryFn: () => call(operations.listAppUsers, [appId, params]),
     placeholderData: (previous) => previous,
   });
 }
@@ -543,11 +524,7 @@ export function useUserAction(appId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ userId, blocked }: { userId: string; blocked: boolean }) =>
-      api.post<{ blocked: boolean }>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}/users/${encodeURIComponent(userId)}/${
-          blocked ? "block" : "unblock"
-        }`,
-      ),
+      call(operations.setAppUserBlocked, [appId, userId, blocked]),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["users", appId] });
       void client.invalidateQueries({ queryKey: ["apps"] });
@@ -558,28 +535,21 @@ export function useUserAction(appId: string) {
 export function useMonthlyUsage(appId: string, month: string) {
   return useQuery({
     queryKey: keys.usage(appId, month),
-    queryFn: () =>
-      api.get<MonthlyUsage>(`/v1/admin/apps/${encodeURIComponent(appId)}/usage${query({ month })}`),
+    queryFn: () => call(operations.getAppUsage, [appId, { month }]),
   });
 }
 
 export function useTimeseries(appId: string, from: string, to: string) {
   return useQuery({
     queryKey: keys.timeseries(appId, from, to),
-    queryFn: () =>
-      api.get<TimeseriesResponse>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}/usage/timeseries${query({ from, to })}`,
-      ),
+    queryFn: () => call(operations.getAppUsageTimeseries, [appId, { from, to }]),
   });
 }
 
 export function useBreakdown(appId: string, by: string, from: string, to: string) {
   return useQuery({
     queryKey: keys.breakdown(appId, by, from, to),
-    queryFn: () =>
-      api.get<BreakdownResponse>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}/usage/breakdown${query({ by, from, to })}`,
-      ),
+    queryFn: () => call(operations.getAppUsageBreakdown, [appId, { by, from, to }]),
   });
 }
 
@@ -595,8 +565,7 @@ export interface EventQuery {
 export function useEvents(appId: string, params: EventQuery) {
   return useQuery({
     queryKey: keys.events(appId, params),
-    queryFn: () =>
-      api.get<EventsResponse>(`/v1/admin/apps/${encodeURIComponent(appId)}/events${query({ ...params })}`),
+    queryFn: () => call(operations.listAppEvents, [appId, { ...params }]),
     placeholderData: (previous) => previous,
   });
 }
@@ -609,10 +578,7 @@ export function useEvents(appId: string, params: EventQuery) {
 export function useAuthEventSummary(appId: string, days: number) {
   return useQuery({
     queryKey: keys.authEventSummary(appId, days),
-    queryFn: () =>
-      api.get<AuthEventSummary>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}/auth-events/summary${query({ days })}`,
-      ),
+    queryFn: () => call(operations.getAppAuthEventSummary, [appId, { days }]),
     staleTime: 30_000,
   });
 }
@@ -628,10 +594,7 @@ export interface AuthEventQuery {
 export function useAuthEvents(appId: string, params: AuthEventQuery) {
   return useQuery({
     queryKey: keys.authEvents(appId, params),
-    queryFn: () =>
-      api.get<AuthEventsResponse>(
-        `/v1/admin/apps/${encodeURIComponent(appId)}/auth-events${query({ ...params })}`,
-      ),
+    queryFn: () => call(operations.listAppAuthEvents, [appId, { ...params }]),
     placeholderData: (previous) => previous,
   });
 }
@@ -639,7 +602,7 @@ export function useAuthEvents(appId: string, params: AuthEventQuery) {
 export function usePrices() {
   return useQuery({
     queryKey: keys.prices,
-    queryFn: () => api.get<PricesResponse>("/v1/admin/prices"),
+    queryFn: () => call(operations.listModelPrices, []),
     staleTime: Number.POSITIVE_INFINITY,
   });
 }

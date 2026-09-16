@@ -21,6 +21,8 @@ const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 // `verify` is every step rather than a third list, so a step added here reaches
 // it without being named twice.
 const steps = [
+  { name: "cli:check", tier: "check" },
+  { name: "cli:test", tier: "test" },
   { name: "test:worker", tier: "test" },
   { name: "console:test", tier: "test" },
   { name: "docs:typecheck", tier: "check" },

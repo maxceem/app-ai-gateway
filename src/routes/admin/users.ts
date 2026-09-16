@@ -3,6 +3,11 @@ import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { appUsageEvent, appUser } from "../../db/schema";
+import type {
+  UserBlockResponse,
+  UserListResponse,
+  UserResponse,
+} from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
 import { invalidateBlockedCache } from "../../middleware/gate";
 import { currentMonth, eventDay, monthBounds, parseLimit, parseOffset, usageTotals } from "./shared";
@@ -133,7 +138,7 @@ userRoutes.get("/apps/:app/users", async (c) => {
       ...serializeUser(row),
       usage: usageByUser.get(row.id) ?? EMPTY_USAGE,
     })),
-  });
+  } satisfies UserListResponse);
 });
 
 userRoutes.get("/apps/:app/users/:user", async (c) => {
@@ -188,7 +193,9 @@ userRoutes.get("/apps/:app/users/:user", async (c) => {
     )
     .get();
 
-  return c.json({ app_id: appId, month, user: { ...serializeUser(row), usage: usage ?? EMPTY_USAGE } });
+  return c.json(
+    { app_id: appId, month, user: { ...serializeUser(row), usage: usage ?? EMPTY_USAGE } } satisfies UserResponse,
+  );
 });
 
 /**
@@ -218,5 +225,5 @@ userRoutes.post("/apps/:app/users/:user/:action", async (c) => {
   if (updated.length !== 1) throw new GatewayError(404, "invalid_request", "User was not found");
   await c.env.USER_LIMITER.getByName(`${appId}:${userId}`).setBlocked(blocked);
   invalidateBlockedCache(appId, userId);
-  return c.json({ app_id: appId, user_id: userId, blocked });
+  return c.json({ app_id: appId, user_id: userId, blocked } satisfies UserBlockResponse);
 });

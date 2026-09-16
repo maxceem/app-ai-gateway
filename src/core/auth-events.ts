@@ -79,6 +79,9 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
   });
 }
 
+/** Statements the two sweeps below issue between them, one each. */
+export const AUTH_SWEEP_QUERIES = 2;
+
 /**
  * Drops authentication attempts past the retention window.
  *

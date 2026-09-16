@@ -2,11 +2,8 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearApiKeyCache } from "../src/core/apikeys";
-import { clearAppConfigCache } from "../src/core/config";
-import { clearJwksCache } from "../src/core/issuer";
 import app from "../src/index";
-import { TEST_AUDIENCE, TEST_ISSUER, seedServerApp } from "./helpers";
+import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
 
 interface Line {
   level: string;
@@ -68,9 +65,7 @@ async function signingFixture(kid: string): Promise<{ publicJwk: JWK; token: () 
 }
 
 beforeEach(() => {
-  clearApiKeyCache();
-  clearJwksCache();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 afterEach(() => vi.restoreAllMocks());

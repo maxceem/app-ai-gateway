@@ -13,6 +13,10 @@
   ],
   "tags": [
     {
+      "name": "CLI",
+      "description": "CLI discovery, protected initialization and human browser handoffs."
+    },
+    {
       "name": "Operations",
       "description": "Unauthenticated service health."
     },
@@ -46,7 +50,7 @@
     },
     {
       "name": "Admin management keys",
-      "description": "agw_mgmt_ credentials for scripts, CI and agents."
+      "description": "agw_mgmt_ credentials for scripts, CI and agents. They never expire, and are created and revoked from the console only."
     },
     {
       "name": "Admin providers",
@@ -75,13 +79,18 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "agw_mgmt_…",
-        "description": "A management API key. It acts with its creator's permissions across all your apps and providers."
+        "description": "A management API key. It acts with its owning identity's current role for one account."
       },
       "ConsoleSession": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "agw_operator_auth.session_token",
+        "name": "agw_identity_auth.session_token",
         "description": "The console's session cookie. Admin requests from the console also send x-console-request: 1."
+      },
+      "CliPollProof": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The initiating CLI's private pollToken, distinct from the browser submission proof."
       },
       "GatewayBearer": {
         "type": "http",
@@ -865,6 +874,10 @@
           "app": {
             "type": "object",
             "properties": {
+              "revision": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
               "id": {
                 "type": "string",
                 "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
@@ -873,7 +886,15 @@
                 "type": "string"
               },
               "config": {
-                "$ref": "#/components/schemas/AppConfig"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AppConfig"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                ]
               },
               "status": {
                 "type": "string",
@@ -890,6 +911,7 @@
               }
             },
             "required": [
+              "revision",
               "id",
               "name",
               "config",
@@ -3404,13 +3426,33 @@
         ],
         "operationId": "createApp",
         "summary": "Create an application",
-        "description": "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response.",
+        "description": "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response. Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
         "security": [
           {
             "ConsoleSession": []
           },
           {
             "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "Idempotency-Key",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "X-Idempotency-Proof",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -3434,6 +3476,10 @@
                     "app": {
                       "type": "object",
                       "properties": {
+                        "revision": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        },
                         "id": {
                           "type": "string",
                           "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
@@ -3442,7 +3488,15 @@
                           "type": "string"
                         },
                         "config": {
-                          "$ref": "#/components/schemas/AppConfig"
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/AppConfig"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            }
+                          ]
                         },
                         "status": {
                           "type": "string",
@@ -3459,6 +3513,7 @@
                         }
                       },
                       "required": [
+                        "revision",
                         "id",
                         "name",
                         "config",
@@ -3534,7 +3589,17 @@
             }
           },
           "409": {
-            "description": "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
+            "description": "A request proof was reused with different content or resource creation conflicted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3637,6 +3702,32 @@
                   "type": "object",
                   "properties": {
                     "access": {},
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "maxRequestsPerMonth": {
+                          "type": "integer",
+                          "description": "Requests the account may dispatch per allowance period."
+                        },
+                        "maxApps": {
+                          "type": "integer",
+                          "description": "Applications the account may own."
+                        },
+                        "maxProviders": {
+                          "type": "integer",
+                          "description": "Providers the account may own."
+                        },
+                        "maxProviderGateways": {
+                          "type": "integer",
+                          "description": "Provider gateways the account may own."
+                        },
+                        "maxActiveKeysPerApp": {
+                          "type": "integer",
+                          "description": "Active API keys each of the account's applications may hold."
+                        }
+                      },
+                      "description": "The plan's ceilings, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings. A write that would exceed one is refused with billing_plan_limit_reached."
+                    },
                     "quota": {
                       "type": [
                         "object",
@@ -3679,6 +3770,7 @@
                     }
                   },
                   "required": [
+                    "limits",
                     "quota"
                   ]
                 }
@@ -3752,6 +3844,32 @@
                   "type": "object",
                   "properties": {
                     "access": {},
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "maxRequestsPerMonth": {
+                          "type": "integer",
+                          "description": "Requests the account may dispatch per allowance period."
+                        },
+                        "maxApps": {
+                          "type": "integer",
+                          "description": "Applications the account may own."
+                        },
+                        "maxProviders": {
+                          "type": "integer",
+                          "description": "Providers the account may own."
+                        },
+                        "maxProviderGateways": {
+                          "type": "integer",
+                          "description": "Provider gateways the account may own."
+                        },
+                        "maxActiveKeysPerApp": {
+                          "type": "integer",
+                          "description": "Active API keys each of the account's applications may hold."
+                        }
+                      },
+                      "description": "The plan's ceilings, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings. A write that would exceed one is refused with billing_plan_limit_reached."
+                    },
                     "quota": {
                       "type": [
                         "object",
@@ -3794,6 +3912,7 @@
                     }
                   },
                   "required": [
+                    "limits",
                     "quota"
                   ]
                 }
@@ -4338,6 +4457,14 @@
         "responses": {
           "200": {
             "description": "Application state.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current application revision; send it in If-Match on update."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4394,7 +4521,7 @@
         ],
         "operationId": "updateApp",
         "summary": "Update an application",
-        "description": "Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+        "description": "Requires If-Match containing the ETag from the original application read. Missing preconditions return 428; stale revisions return 412. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
         "security": [
           {
             "ConsoleSession": []
@@ -4412,6 +4539,15 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "If-Match",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -4427,6 +4563,14 @@
         "responses": {
           "200": {
             "description": "Application state.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current application revision; send it in If-Match on update."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4467,6 +4611,26 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The application changed since it was read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "If-Match is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4685,6 +4849,7 @@
         ],
         "operationId": "listManagementKeys",
         "summary": "List management keys",
+        "description": "Console session only. Management keys cannot administer management keys.",
         "security": [
           {
             "ConsoleSession": []
@@ -4709,16 +4874,26 @@
                           "organizationId": {
                             "type": "string"
                           },
+                          "userId": {
+                            "type": "string"
+                          },
                           "name": {
                             "type": "string"
                           },
                           "tokenHint": {
+                            "type": "string",
+                            "description": "Last four characters of the token for display.",
+                            "example": "x9Qb"
+                          },
+                          "enabled": {
+                            "type": "boolean",
+                            "description": "Whether the key may authenticate. False for a revoked key, and for one issued by a trusted exchange that has not committed yet."
+                          },
+                          "expiresAt": {
                             "type": [
                               "string",
                               "null"
-                            ],
-                            "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
-                            "example": "x9Qb"
+                            ]
                           },
                           "createdAt": {
                             "type": "string"
@@ -4733,8 +4908,11 @@
                         "required": [
                           "id",
                           "organizationId",
+                          "userId",
                           "name",
                           "tokenHint",
+                          "enabled",
+                          "expiresAt",
                           "createdAt",
                           "revokedAt"
                         ]
@@ -4796,7 +4974,7 @@
         ],
         "operationId": "createManagementKey",
         "summary": "Create a management key",
-        "description": "Requires a signed-in console session with the owner or admin role; a management key cannot mint another. The plaintext agw_mgmt_ token is returned once.",
+        "description": "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one.",
         "security": [
           {
             "ConsoleSession": []
@@ -4839,16 +5017,26 @@
                         "organizationId": {
                           "type": "string"
                         },
+                        "userId": {
+                          "type": "string"
+                        },
                         "name": {
                           "type": "string"
                         },
                         "tokenHint": {
+                          "type": "string",
+                          "description": "Last four characters of the token for display.",
+                          "example": "x9Qb"
+                        },
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Whether the key may authenticate. False for a revoked key, and for one issued by a trusted exchange that has not committed yet."
+                        },
+                        "expiresAt": {
                           "type": [
                             "string",
                             "null"
-                          ],
-                          "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
-                          "example": "x9Qb"
+                          ]
                         },
                         "createdAt": {
                           "type": "string"
@@ -4866,8 +5054,11 @@
                       "required": [
                         "id",
                         "organizationId",
+                        "userId",
                         "name",
                         "tokenHint",
+                        "enabled",
+                        "expiresAt",
                         "createdAt",
                         "revokedAt",
                         "plaintext"
@@ -4931,7 +5122,7 @@
         ],
         "operationId": "revokeManagementKey",
         "summary": "Revoke a management key",
-        "description": "Requires an owner/admin user session.",
+        "description": "Console session only, and requires the owner or admin role.",
         "security": [
           {
             "ConsoleSession": []
@@ -4965,16 +5156,26 @@
                         "organizationId": {
                           "type": "string"
                         },
+                        "userId": {
+                          "type": "string"
+                        },
                         "name": {
                           "type": "string"
                         },
                         "tokenHint": {
+                          "type": "string",
+                          "description": "Last four characters of the token for display.",
+                          "example": "x9Qb"
+                        },
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Whether the key may authenticate. False for a revoked key, and for one issued by a trusted exchange that has not committed yet."
+                        },
+                        "expiresAt": {
                           "type": [
                             "string",
                             "null"
-                          ],
-                          "description": "Last characters of the token for display. Null for keys created before hints were recorded.",
-                          "example": "x9Qb"
+                          ]
                         },
                         "createdAt": {
                           "type": "string"
@@ -4989,8 +5190,11 @@
                       "required": [
                         "id",
                         "organizationId",
+                        "userId",
                         "name",
                         "tokenHint",
+                        "enabled",
+                        "expiresAt",
                         "createdAt",
                         "revokedAt"
                       ]
@@ -5131,13 +5335,33 @@
         ],
         "operationId": "createProvider",
         "summary": "Store a provider credential",
-        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug.",
+        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug. Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
         "security": [
           {
             "ConsoleSession": []
           },
           {
             "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "Idempotency-Key",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "X-Idempotency-Proof",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -5210,7 +5434,17 @@
             }
           },
           "409": {
-            "description": "The requested active provider slug is already in use.",
+            "description": "A request proof was reused with different content or resource creation conflicted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5602,13 +5836,33 @@
         ],
         "operationId": "createProviderGateway",
         "summary": "Create a reusable provider gateway connection",
-        "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. The token is encrypted and stored as given, never probed: check a connection first with POST /v1/admin/provider-gateways/test. Provider instances are attached separately through the providers API.",
+        "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. The token is encrypted and stored as given, never probed: check a connection first with POST /v1/admin/provider-gateways/test. Provider instances are attached separately through the providers API. Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
         "security": [
           {
             "ConsoleSession": []
           },
           {
             "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "Idempotency-Key",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "X-Idempotency-Proof",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -5672,6 +5926,26 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request proof was reused with different content or resource creation conflicted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6129,7 +6403,17 @@
                               ]
                             },
                             "email": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "human",
+                                "service"
+                              ]
                             },
                             "emailVerified": {
                               "type": "boolean"
@@ -6148,6 +6432,7 @@
                             "id",
                             "name",
                             "email",
+                            "kind",
                             "emailVerified",
                             "image",
                             "createdAt"
@@ -6167,12 +6452,23 @@
                             },
                             "createdAt": {
                               "type": "string"
+                            },
+                            "claimed": {
+                              "type": "boolean"
+                            },
+                            "expiresAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
                             "id",
                             "name",
-                            "createdAt"
+                            "createdAt",
+                            "claimed",
+                            "expiresAt"
                           ]
                         },
                         "role": {
@@ -6199,12 +6495,23 @@
                                   },
                                   "createdAt": {
                                     "type": "string"
+                                  },
+                                  "claimed": {
+                                    "type": "boolean"
+                                  },
+                                  "expiresAt": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   }
                                 },
                                 "required": [
                                   "id",
                                   "name",
-                                  "createdAt"
+                                  "createdAt",
+                                  "claimed",
+                                  "expiresAt"
                                 ]
                               },
                               "role": {
@@ -6239,6 +6546,57 @@
                             "session",
                             "apiKey"
                           ]
+                        },
+                        "assurance": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "interactive",
+                            "credential",
+                            null
+                          ]
+                        },
+                        "actor": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "user"
+                              ]
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "human",
+                                "service"
+                              ]
+                            },
+                            "credentialId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "actionSource": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "id",
+                            "kind",
+                            "credentialId",
+                            "actionSource"
+                          ]
                         }
                       },
                       "required": [
@@ -6246,7 +6604,9 @@
                         "organization",
                         "role",
                         "memberships",
-                        "credentialType"
+                        "credentialType",
+                        "assurance",
+                        "actor"
                       ]
                     }
                   },
@@ -6336,12 +6696,23 @@
                               },
                               "createdAt": {
                                 "type": "string"
+                              },
+                              "claimed": {
+                                "type": "boolean"
+                              },
+                              "expiresAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               }
                             },
                             "required": [
                               "id",
                               "name",
-                              "createdAt"
+                              "createdAt",
+                              "claimed",
+                              "expiresAt"
                             ]
                           },
                           "role": {
@@ -6471,7 +6842,17 @@
                               ]
                             },
                             "email": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "human",
+                                "service"
+                              ]
                             },
                             "emailVerified": {
                               "type": "boolean"
@@ -6490,6 +6871,7 @@
                             "id",
                             "name",
                             "email",
+                            "kind",
                             "emailVerified",
                             "image",
                             "createdAt"
@@ -6509,12 +6891,23 @@
                             },
                             "createdAt": {
                               "type": "string"
+                            },
+                            "claimed": {
+                              "type": "boolean"
+                            },
+                            "expiresAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
                             "id",
                             "name",
-                            "createdAt"
+                            "createdAt",
+                            "claimed",
+                            "expiresAt"
                           ]
                         },
                         "role": {
@@ -6541,12 +6934,23 @@
                                   },
                                   "createdAt": {
                                     "type": "string"
+                                  },
+                                  "claimed": {
+                                    "type": "boolean"
+                                  },
+                                  "expiresAt": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   }
                                 },
                                 "required": [
                                   "id",
                                   "name",
-                                  "createdAt"
+                                  "createdAt",
+                                  "claimed",
+                                  "expiresAt"
                                 ]
                               },
                               "role": {
@@ -6581,6 +6985,57 @@
                             "session",
                             "apiKey"
                           ]
+                        },
+                        "assurance": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "interactive",
+                            "credential",
+                            null
+                          ]
+                        },
+                        "actor": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "user"
+                              ]
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "human",
+                                "service"
+                              ]
+                            },
+                            "credentialId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "actionSource": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "id",
+                            "kind",
+                            "credentialId",
+                            "actionSource"
+                          ]
                         }
                       },
                       "required": [
@@ -6588,7 +7043,9 @@
                         "organization",
                         "role",
                         "memberships",
-                        "credentialType"
+                        "credentialType",
+                        "assurance",
+                        "actor"
                       ]
                     }
                   },
@@ -7038,6 +7495,7 @@
             "ManagementBearer": []
           }
         ],
+        "description": " Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
         "parameters": [
           {
             "schema": {
@@ -7047,6 +7505,24 @@
             "required": true,
             "name": "app",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "Idempotency-Key",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{32,256}$"
+            },
+            "required": false,
+            "name": "X-Idempotency-Proof",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -7105,6 +7581,26 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request proof was reused with different content or resource creation conflicted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7920,6 +8416,1894 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/capabilities": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "getCliCapabilities",
+        "summary": "Discover deployment identity and provider capabilities",
+        "responses": {
+          "200": {
+            "description": "Public deployment capabilities. No credentials or inference calls.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "protocolVersion": {
+                      "type": "number",
+                      "enum": [
+                        1
+                      ]
+                    },
+                    "serverVersion": {
+                      "type": "string"
+                    },
+                    "deployment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "cloud",
+                            "self_hosted"
+                          ]
+                        },
+                        "apiUrl": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "consoleOrigin": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "mode",
+                        "apiUrl",
+                        "consoleOrigin"
+                      ]
+                    },
+                    "consoleOrigin": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "baseUrl": {
+                            "type": "string"
+                          },
+                          "defaultPath": {
+                            "type": "string"
+                          },
+                          "apiStyles": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "endpointStyles": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "name",
+                          "baseUrl",
+                          "apiStyles",
+                          "endpointStyles"
+                        ]
+                      }
+                    },
+                    "providerGateways": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "name"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "protocolVersion",
+                    "serverVersion",
+                    "deployment",
+                    "consoleOrigin",
+                    "providers",
+                    "providerGateways"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/bootstrap": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "bootstrapCliAccount",
+        "summary": "Initialize a recoverable CLI account",
+        "description": "Persist both random proofs before sending. An identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does. All responses are no-store.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  },
+                  "pollToken": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "pollToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Initial account and credential. Never print or log the credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deployment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "cloud",
+                            "self_hosted"
+                          ]
+                        },
+                        "apiUrl": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "consoleOrigin": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "mode",
+                        "apiUrl",
+                        "consoleOrigin"
+                      ]
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
+                    },
+                    "credential": {
+                      "type": "object",
+                      "properties": {
+                        "token": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "token"
+                      ]
+                    },
+                    "trial": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "endsAt": {
+                          "type": "string"
+                        },
+                        "limit": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "endsAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "account",
+                    "credential",
+                    "trial"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/operations": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "createCliOperation",
+        "summary": "Create or recover a browser handoff",
+        "description": "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require the separate humanCode, interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "claim",
+                      "provider.add",
+                      "provider.rotate-key",
+                      "provider.update",
+                      "provider-gateway.add",
+                      "provider-gateway.rotate-key"
+                    ]
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "default": {}
+                  },
+                  "pollToken": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "pollToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Browser URL and separate identity code when required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "completed",
+                        "failed",
+                        "expired"
+                      ]
+                    },
+                    "humanCode": {
+                      "type": "string"
+                    },
+                    "deployment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "cloud",
+                            "self_hosted"
+                          ]
+                        },
+                        "apiUrl": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "consoleOrigin": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "mode",
+                        "apiUrl",
+                        "consoleOrigin"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "url",
+                    "expiresAt",
+                    "state",
+                    "deployment"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/operations/{id}": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "pollCliOperation",
+        "summary": "Poll a browser handoff",
+        "security": [
+          {
+            "CliPollProof": []
+          }
+        ],
+        "description": "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current operation state and nonsecret result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    },
+                    "deployment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "cloud",
+                            "self_hosted"
+                          ]
+                        },
+                        "apiUrl": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "consoleOrigin": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "mode",
+                        "apiUrl",
+                        "consoleOrigin"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "completed",
+                        "failed",
+                        "expired"
+                      ]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "accountId": {
+                          "type": "string"
+                        },
+                        "accessGranted": {
+                          "type": "boolean"
+                        },
+                        "provider": {
+                          "$ref": "#/components/schemas/Provider"
+                        },
+                        "gateway": {
+                          "$ref": "#/components/schemas/ProviderGateway"
+                        }
+                      }
+                    },
+                    "account": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "expiresAt",
+                    "deployment",
+                    "state"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/account": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "getCliAccount",
+        "summary": "Read account lifecycle and current access",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account deadlines, effective access and current request count.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deployment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "cloud",
+                            "self_hosted"
+                          ]
+                        },
+                        "apiUrl": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "consoleOrigin": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "mode",
+                        "apiUrl",
+                        "consoleOrigin"
+                      ]
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
+                    },
+                    "billing": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "usage": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "account",
+                    "billing",
+                    "usage"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/usage": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "getCliUsage",
+        "summary": "Read retained account usage for a UTC month",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "description": "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-(0[1-9]|1[0-2])$",
+              "description": "YYYY-MM; defaults to the current UTC month."
+            },
+            "required": false,
+            "description": "YYYY-MM; defaults to the current UTC month.",
+            "name": "month",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account totals, per-app totals and attribution coverage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accountId": {
+                      "type": "string"
+                    },
+                    "month": {
+                      "type": "string"
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "requests": {
+                          "type": "number"
+                        },
+                        "input_tokens": {
+                          "type": "number"
+                        },
+                        "cached_input_tokens": {
+                          "type": "number"
+                        },
+                        "cache_write_tokens": {
+                          "type": "number"
+                        },
+                        "output_tokens": {
+                          "type": "number"
+                        },
+                        "cost_usd": {
+                          "type": "number"
+                        },
+                        "errors": {
+                          "type": "number"
+                        },
+                        "blocked": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "requests",
+                        "input_tokens",
+                        "cached_input_tokens",
+                        "cache_write_tokens",
+                        "output_tokens",
+                        "cost_usd",
+                        "errors",
+                        "blocked"
+                      ]
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "requests": {
+                            "type": "number"
+                          },
+                          "input_tokens": {
+                            "type": "number"
+                          },
+                          "cached_input_tokens": {
+                            "type": "number"
+                          },
+                          "cache_write_tokens": {
+                            "type": "number"
+                          },
+                          "output_tokens": {
+                            "type": "number"
+                          },
+                          "cost_usd": {
+                            "type": "number"
+                          },
+                          "errors": {
+                            "type": "number"
+                          },
+                          "blocked": {
+                            "type": "number"
+                          },
+                          "appId": {
+                            "type": "string"
+                          },
+                          "deleted": {
+                            "type": "boolean"
+                          },
+                          "firstRecord": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "requests",
+                          "input_tokens",
+                          "cached_input_tokens",
+                          "cache_write_tokens",
+                          "output_tokens",
+                          "cost_usd",
+                          "errors",
+                          "blocked",
+                          "appId",
+                          "deleted",
+                          "firstRecord"
+                        ]
+                      }
+                    },
+                    "coverage": {
+                      "type": "object",
+                      "properties": {
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "retained_account_usage"
+                          ]
+                        },
+                        "firstRecord": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "historicalAttribution": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "scope",
+                        "firstRecord",
+                        "historicalAttribution"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "accountId",
+                    "month",
+                    "totals",
+                    "apps",
+                    "coverage"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/{id}": {
+      "get": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "getCliHandoffPage",
+        "summary": "Open the first-party human handoff page",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store browser page. The submission proof arrives only in the URL fragment.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/{id}/details": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "cliBrowserDetails",
+        "summary": "Browser handoff: details",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "submissionToken": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  },
+                  "humanCode": {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  "approve": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "allowServiceAccess": {
+                    "type": "boolean"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 256
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "secret": {
+                    "type": "string",
+                    "maxLength": 16384
+                  }
+                },
+                "required": [
+                  "submissionToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/{id}/submit": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "cliBrowserSubmit",
+        "summary": "Browser handoff: submit",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "submissionToken": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  },
+                  "humanCode": {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  "approve": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "allowServiceAccess": {
+                    "type": "boolean"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 256
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "secret": {
+                    "type": "string",
+                    "maxLength": 16384
+                  }
+                },
+                "required": [
+                  "submissionToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/{id}/register": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "cliBrowserRegister",
+        "summary": "Browser handoff: register",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "submissionToken": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  },
+                  "humanCode": {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  "approve": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "allowServiceAccess": {
+                    "type": "boolean"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 256
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "secret": {
+                    "type": "string",
+                    "maxLength": 16384
+                  }
+                },
+                "required": [
+                  "submissionToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/{id}/google": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "cliBrowserGoogle",
+        "summary": "Browser handoff: google",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "submissionToken": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  },
+                  "humanCode": {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  "approve": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "allowServiceAccess": {
+                    "type": "boolean"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 256
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "secret": {
+                    "type": "string",
+                    "maxLength": 16384
+                  }
+                },
+                "required": [
+                  "submissionToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
             "content": {
               "application/json": {
                 "schema": {

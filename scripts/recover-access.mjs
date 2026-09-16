@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveWranglerConfig, wranglerBin } from "./wrangler-config.mjs";
 import { hashPassword } from "better-auth/crypto";
 
@@ -52,29 +54,47 @@ const statements = [];
 if (password) {
   const passwordHash = await hashPassword(password);
   statements.push(
-    `UPDATE console_user_account
+    `UPDATE mgmt_user_account
         SET password = ${sqlString(passwordHash)}, updated_at = ${Date.now()}
       WHERE provider_id = 'credential'
         AND user_id = (
-          SELECT id FROM console_user WHERE email = ${sqlString(email)} COLLATE NOCASE
+          SELECT id FROM mgmt_user WHERE kind = 'human' AND email = ${sqlString(email)} COLLATE NOCASE
         );`,
   );
 }
 if (promoteOwner) {
   statements.push(
-    `UPDATE console_organization_user
+    `UPDATE mgmt_organization_user
         SET role = 'owner'
       WHERE organization_id = ${sqlString(organizationId)}
         AND user_id = (
-          SELECT id FROM console_user WHERE email = ${sqlString(email)} COLLATE NOCASE
+          SELECT id FROM mgmt_user WHERE kind = 'human' AND email = ${sqlString(email)} COLLATE NOCASE
+        );`,
+    // Promoting a person is a claim, so it ends the account's recovery
+    // deadline the same way the CLI claim does. Leaving the deadline behind
+    // would hand them an account no credential — theirs included — can act in
+    // once it passed.
+    `UPDATE mgmt_organization
+        SET expires_at = NULL, updated_at = ${sqlString(new Date().toISOString())}
+      WHERE id = ${sqlString(organizationId)}
+        AND EXISTS (
+          SELECT 1 FROM mgmt_organization_user m
+          JOIN mgmt_user u ON u.id = m.user_id
+          WHERE m.organization_id = mgmt_organization.id AND m.role = 'owner' AND u.kind = 'human'
         );`,
   );
 }
 
-const wranglerArgs = ["d1", "execute", "DB", target, "--command", statements.join("\n")];
-wranglerArgs.push(...resolveWranglerConfig(value("--profile")).configArgs);
-
-const result = spawnSync(wranglerBin, wranglerArgs, { stdio: "inherit" });
-if (result.error) throw result.error;
-if (result.status !== 0) process.exit(result.status ?? 1);
-console.log("Access recovery SQL completed. Sign in and verify ownership before closing this shell.");
+const recoveryDirectory = mkdtempSync(join(tmpdir(), "agw-recovery-"));
+const recoveryFile = join(recoveryDirectory, "recovery.sql");
+try {
+  writeFileSync(recoveryFile, statements.join("\n"), { mode: 0o600 });
+  const wranglerArgs = ["d1", "execute", "DB", target, "--file", recoveryFile];
+  wranglerArgs.push(...resolveWranglerConfig(value("--profile")).configArgs);
+  const result = spawnSync(wranglerBin, wranglerArgs, { stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exitCode = result.status ?? 1;
+  else console.log("Access recovery completed. Sign in and verify ownership before closing this shell.");
+} finally {
+  rmSync(recoveryDirectory, { recursive: true, force: true });
+}

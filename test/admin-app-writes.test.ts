@@ -9,27 +9,28 @@ async function seedOrganization(id: string): Promise<void> {
   const now = new Date();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO console_user(id, name, email, email_verified, created_at, updated_at)
+      `INSERT INTO mgmt_user(id, name, email, email_verified, created_at, updated_at)
        VALUES (?, ?, ?, 1, ?, ?)`,
     ).bind(userId, `${id} owner`, `${id}@example.test`, now.getTime(), now.getTime()),
     env.DB.prepare(
-      `INSERT INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+      `INSERT INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?)`,
     ).bind(id, id, userId, now.toISOString(), now.toISOString()),
     env.DB.prepare(
-      `INSERT INTO console_organization_user(id, organization_id, user_id, role, status, joined_at)
+      `INSERT INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at)
        VALUES (?, ?, ?, 'owner', 'active', ?)`,
     ).bind(`${id}-membership`, id, userId, now.toISOString()),
   ]);
 }
 
-function appWrite(id: string, organizationId: string, name = id): AtomicAppWrite {
+function appWrite(id: string, organizationId: string, name = id): AtomicAppWrite & { expectedRevision: number } {
   return {
     id,
     organizationId,
     name,
     config: serverConfig() as unknown as StoredAppConfig,
     status: "active",
+    expectedRevision: 1,
   };
 }
 
@@ -103,6 +104,19 @@ describe("atomic organization app writes", () => {
       "SELECT COUNT(*) AS count FROM app WHERE organization_id = ?",
     ).bind("atomic-insert-org").first<{ count: number }>();
     expect(count?.count).toBe(1);
+  });
+
+  it("allows only one concurrent writer with the original revision", async () => {
+    await seedOrganization("revision-race-org");
+    const initial = appWrite("revision-race-app", "revision-race-org", "Original");
+    await insertApp(env.DB, initial);
+    const writes = await Promise.all([
+      updateApp(env.DB, { ...initial, name: "First", expectedRevision: 1 }),
+      updateApp(env.DB, { ...initial, name: "Second", expectedRevision: 1 }),
+    ]);
+    expect(writes.filter(Boolean)).toHaveLength(1);
+    expect(writes.find(Boolean)?.revision).toBe(2);
+    expect(await updateApp(env.DB, { ...initial, name: "Stale", expectedRevision: 1 })).toBeNull();
   });
 
   it("no longer caps how many apps an organization may hold", async () => {

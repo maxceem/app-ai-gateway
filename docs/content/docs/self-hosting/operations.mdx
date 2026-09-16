@@ -89,12 +89,15 @@ A cron trigger runs nightly and keeps the database bounded:
 | Authentication events | Deleted after 90 days. |
 | App Attest challenges | Deleted once their five-minute window has passed. An expired challenge cannot be redeemed, so nothing a client sees changes. |
 | Usage events | Raw per-request rows older than 90 days are summed into daily totals per app, model, provider and status, then deleted. Daily totals older than 400 days are folded into monthly totals. |
+| CLI authorizations | A finished browser handoff is deleted, and the short-lived copy of a one-time CLI response is cleared once its recovery window has passed. |
 
 No usage total ever disappears. The **Usage** tab keeps answering for any
 period; what it loses past 90 days is the per-request and per-user detail.
 The nightly run is sized for the D1 limits of Cloudflare's Free plan and
 clears about 55,000 events a night, which comfortably exceeds what a million
-requests a month produces.
+requests a month produces. A backlog larger than one night is continued the
+next one; on the Workers Paid plan,
+[`MAINTENANCE_QUERY_BUDGET`](/self-hosting/configuration) lets one run do more.
 
 ## Reprice stored usage
 

@@ -1,176 +1,132 @@
 # Cloud billing service binding
 
-This note is for the hosted deployment only. The open-source gateway has no `BILLING` binding and never reads a plan.
+For the hosted deployment only. The open-source gateway has no `BILLING`
+binding, marks access as self-hosted and never reads a plan.
 
+This note covers what the code cannot state for itself: the contract with an
+external billing service, and the policy behind the gateway's side of it.
 
-The open-source default has no `BILLING` binding. In that mode the gateway marks
-access as self-hosted and does not impose subscription entitlements.
+## Adding the binding
 
-## Add the service binding
-
-Hosted operators can bind a billing Worker's entrypoint in the
-[deployment profile](../../docs/content/docs/self-hosting/deploy-with-wrangler.mdx) of the deployment that
-needs billing. Any Worker satisfying `BillingRuntime` in
-`src/billing/contract.ts` will do:
+Bind a billing Worker's entrypoint in the [deployment
+profile](../../docs/content/docs/self-hosting/deploy-with-wrangler.mdx) of the
+deployment that needs it. Any Worker satisfying `BillingRuntime` in
+`contract.ts` will do:
 
 ```jsonc
 {
   "services": [
-    {
-      "binding": "BILLING",
-      "service": "YOUR-BILLING-WORKER",
-      "entrypoint": "BillingWorker"
-    }
+    { "binding": "BILLING", "service": "YOUR-BILLING-WORKER", "entrypoint": "BillingWorker" }
   ]
 }
 ```
 
-Do not add this binding to `wrangler.jsonc` or to a self-hosted deployment
-unless it has a corresponding billing service. The console discovers availability from
+Never add it to the tracked `wrangler.jsonc`, and never to a deployment without
+a billing service behind it. The console discovers availability from
 `GET /v1/console/capabilities`.
 
-The gateway always calls billing with service ID `app-ai-gateway` and the current
-operator organization ID as the tenant ID. Create matching service and plan data
-in the billing worker before enabling the binding.
+The gateway always calls with service ID `app-ai-gateway` and the account ID as
+the tenant ID. Matching service and plan data must exist in the billing worker
+before the binding is enabled.
 
-## Plans, subscriptions and the default plan
+## Plans and the default plan
 
-A tenant's plan is the plan of its access-granting subscription. Without
-one, it is the billing service's **default plan** — the free tier configured as
-the billing service's default plan. There are no exceptions: a
-tenant that never subscribed, whose subscription expired, or whose payment
-went unpaid, all land on the same default plan and keep serving traffic against
-its allowance.
+A tenant's plan is the plan of its access-granting subscription; without one it
+is the billing service's configured **default plan**. There are no exceptions —
+never subscribed, expired, and unpaid all land on the default plan and keep
+serving traffic against its allowance. A `plan` of `null` means nothing
+resolved at all: no default plan is configured, or the service is deactivated.
 
-`GET /v1/admin/billing/status` reports both halves separately, because they
-answer different questions:
+Status reports the resolved plan and the raw subscription separately because
+they answer different questions: the plan is what the tenant may do, the
+subscription is what it is paying for, reported verbatim even when it entitles
+nothing. That separation is what lets the console say "your subscription has
+ended" rather than only "you are on Free".
 
-```json
-{
-  "access": {
-    "state": "billed",
-    "plan": { "planKey": "free", "planName": "Free", "limits": { "maxRequestsPerMonth": 1000 }, "isDefault": true },
-    "subscription": {
-      "subscriptionId": "123456",
-      "status": "expired",
-      "planKey": "growth",
-      "planName": "Growth",
-      "billingPeriod": "month",
-      "renewsAt": null,
-      "endsAt": "2026-09-01T00:00:00.000Z",
-      "trialEndsAt": null,
-      "source": "lemon_squeezy",
-      "createdAt": "2026-05-18T09:30:00.000Z",
-      "updatedAt": "2026-09-01T00:00:00.000Z",
-      "billingAnchorDay": 18,
-      "billingAnchorAt": "2026-05-18T09:30:00.000Z",
-      "billingScheduleUpdatedAt": "2026-05-18T09:30:00.000Z"
-    }
-  }
-}
-```
+A link into the console may carry `?plan=<planKey>` on `/signup` or `/login`, as
+the hosted pricing page's buttons do, and the visitor continues to checkout for
+that plan after authenticating. It is a preference and never an entitlement:
+an unknown key, the default plan, a plan already held, or a member without
+permission to buy all fall back to the ordinary landing page.
 
-`plan` is what the tenant may do — `isDefault` says whether it came from
-the default plan rather than from a subscription. `subscription` is what it is
-paying for, reported verbatim whether or not it still entitles anything, which is
-what lets the console say "your subscription has ended" rather than only "you are
-on Free". `state` is the gateway's own wrapper: `self_hosted` for a deployment
-with no `BILLING` binding, `unavailable` when the billing service could not be
-reached, and `billed` for the billing service's answer.
+## Plan limits
 
-A `plan` of `null` means nothing resolved: the billing service has no default
-plan configured, or the service has been deactivated.
+`limits` is opaque to the billing service and interpreted only by the gateway,
+which reads the keys defined by `PlanLimits` in `contract.ts`. Every key is
+optional: an omitted key means that resource is unlimited, and a plan with no
+`limits` at all is unlimited in every respect. A value may be a number or a
+numeric string; anything else — a fraction, a negative, `null` — is a plan
+misconfiguration, and the gateway answers `502` rather than guess a ceiling.
 
-### Preselecting a plan from outside the console
+No plan is named anywhere in gateway code. Putting a ceiling on a tier is plan
+data alone; adding a *new kind* of ceiling is one key plus one enforcement
+point.
 
-A link into the console may name the plan the visitor already chose, as
-`?plan=<planKey>` on `/signup` or `/login` — this is what the hosted pricing
-page's buttons do. The key is the billing catalog's own `planKey`. Once
-authenticated, the operator is sent to `/checkout?plan=<planKey>`, which starts
-the checkout for that plan instead of landing them on the apps page.
+### The request allowance
 
-The parameter is a preference, never an entitlement: an unknown key, the
-default free plan, a plan the organization already holds, or a member without
-permission to buy all fall back to the billing page or the console landing page.
-A deployment with no `BILLING` binding ignores it entirely.
+`maxRequestsPerMonth` counts requests dispatched during the current allowance
+period, shared by every application, credential and end user the account owns,
+and spent on the data plane only. The period follows the tenant, not the
+calendar:
 
-## The plan's request allowance
-
-A plan carries exactly one limit, and it is the gateway's only quota:
-
-```json
-{ "maxRequestsPerMonth": 100000 }
-```
-
-It is a whole, non-negative count of requests the tenant may dispatch
-during its current monthly allowance period, shared by every application,
-credential and end user it owns. A plan that omits the key leaves the
-tenant unlimited. The value may be written as a number or as a JSON
-string; anything else — a fraction, a negative, `null` — is a plan
-misconfiguration, and the gateway answers `502 billing_unavailable` rather than
-guess an allowance.
-
-The period follows the tenant rather than the calendar:
-
-- The default Free plan starts a period at the exact UTC date and time the
-  tenant was created, then repeats monthly from that anniversary.
+- The default Free plan anchors on the exact UTC instant the account was
+  created and repeats monthly from that anniversary.
 - A subscription uses its normalized billing schedule. Annual subscriptions
-  still receive a new request allowance every month.
-- An anniversary on day 29, 30, or 31 clamps to the last day of a shorter
-  month, then returns to the original day when a later month has it. The UTC
-  time of day stays the same.
+  still receive a fresh monthly allowance.
+- An anniversary on day 29, 30 or 31 clamps to the last day of a shorter month
+  and returns to the original day when a later month has it. The time of day is
+  preserved.
 
-Changing plans within the same subscription schedule retains the current
-period's usage. Canceling and resuming also retain it. A new paid subscription
-or a provider-confirmed change to the billing cadence or anchor starts a new
-schedule. When a tenant returns to Free, it returns to the original
-tenant-anniversary schedule and to the count already recorded in that
-Free period.
+Changing plans within the same schedule retains the current period's count, and
+so does cancelling and resuming. A new paid subscription, or a
+provider-confirmed change of cadence or anchor, starts a new schedule. Returning
+to Free resumes the original account-anniversary schedule and the count already
+recorded in that Free period — claim time, plan changes and cancellations never
+become anchors.
 
-Nothing about a stored application configuration is capped by a plan. Creating,
-validating, and updating apps are entitlement checks only.
+### Unclaimed accounts
 
-See the self-hosting operations guide for what a client sees when the allowance runs
-out.
+An unclaimed cloud account draws the ordinary Free default plan, not a trial or
+onboarding plan of its own. This is the reason the gateway needs no trial plan,
+subscription row, claim RPC or account-lifecycle policy in the billing service:
+entitlement stays entirely on the billing side, and ownership and the free-access
+clock stay entirely in gateway D1.
 
-The allowance is not a per-user limit and does not cap what a tenant may
-grant its own users. Those are set separately, per app, and they
-are checked before the allowance; see
-the application limits guide.
+Nothing records the free window. The account's `created_at` dates it, and
+`mgmt_organization.expires_at` — written only by a cloud bootstrap, cleared only
+by a claim — is the whole test for "never had a human owner". While unclaimed
+the account holds exactly one period that never renews, so nobody can draw a
+second allowance without attaching a human identity; past its end the period
+stays readable but admits nothing. That window is the free schedule's own first
+period cut short, not a schedule of its own, so claiming only lifts the early
+end: the schedule identity and revision are unchanged, the count already
+recorded carries over, and the ordinary anniversary renewals resume without
+inventing a subscription.
 
-A tenant with no plan at all — `access.plan` is `null` — receives
-`402 billing_payment_required` on its apps' data-plane routes. With a default plan
-configured that is rare: a lapsed subscription drops to the free tier rather than
-to a paywall, so `402` is left for the two cases where nothing resolves, namely a
-billing service with no default plan and a deactivated service. Billing RPC
-failures also fail closed, but under a different code: an unreachable billing
-service says nothing about the subscription, so the gateway answers
-`503 billing_unavailable` with a short `Retry-After` instead. Clients should
-treat the first as something the customer has to act on and the second as worth
-retrying. Neither condition deletes or disables application records, so access
-resumes when billing becomes readable again.
+Ownership changes must invalidate both the request-scoped and the last-known
+billing caches. The console reads the free window from the account summary it
+already holds — `createdAt` plus a non-null `expiresAt` — rather than from
+billing data.
 
-`GET /v1/admin/billing/status` also reports the current allowance period beside
-the access state, as `quota`:
+## Failure and enforcement policy
 
-```json
-{
-  "periodId": "paid:2026-05-18T09:30:00.000Z:2026-09-18T09:30:00.000Z",
-  "periodStart": "2026-09-18T09:30:00.000Z",
-  "periodEnd": "2026-10-18T09:30:00.000Z",
-  "used": 41288,
-  "limit": 100000,
-  "resetAt": "2026-10-18T09:30:00.000Z"
-}
-```
+Both failure modes fail closed, under codes that mean different things to a
+client. No resolved plan answers `402 billing_payment_required`, which the
+customer has to act on; with a default plan configured this is rare, since a
+lapsed subscription drops to the free tier rather than to a paywall. An
+unreachable billing service says nothing about the subscription, so it answers
+`503 billing_unavailable` with a short `Retry-After` and is worth retrying.
+Neither deletes or disables application records, so access resumes when billing
+becomes readable again.
 
-`periodId` is opaque; use it for correlation rather than deriving dates from
-it. `resetAt` is the same instant as `periodEnd`. `limit` is absent on a
-plan that sets no ceiling. `quota` is `null` when no plan resolves or billing
-is temporarily unavailable; self-hosted consoles do not fetch billing status.
-The console renders the exact period and reset time in the viewer's time zone
-and warns above every page once four fifths of the allowance is spent.
+Configuration ceilings count stored rows rather than traffic, so nothing resets
+them on a schedule. Each is enforced inside the statement that inserts the row,
+as an extra condition on its `WHERE`, alongside whatever receipt or handoff
+already guards that write — count and write are one statement, so two concurrent
+creates cannot both read a count below the ceiling and then both succeed. A
+refused write answers `409 billing_plan_limit_reached` and never succeeds on
+retry. No ceiling ever removes or disables an existing row: an account that
+drops to a lower plan keeps what it has and simply cannot add more.
 
-Owners and admins use `/v1/admin/billing/*` for plan listing, checkout, plan
-changes, cancellation, resume, trials, and status. Members retain read-only
-access to status and plan information.
+The allowance is not a per-user limit and never caps what an account grants its
+own users. Those are set per app and checked first.

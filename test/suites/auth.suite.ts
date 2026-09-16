@@ -3,6 +3,5 @@ import "../auth.test";
 import "../auth-events.test";
 import "../issuer.test";
 import "../apikeys.test";
-import "../operator-registration.test";
-import "../operator-oauth-relay.test";
+import "../identity-oauth-relay.test";
 import "../origin-guard.test";

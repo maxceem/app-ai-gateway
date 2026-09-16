@@ -1,4 +1,9 @@
 {
   "title": "Automation and agents",
-  "pages": ["api", "agents", "agent-manual"]
+  "pages": [
+    "cli",
+    "api",
+    "agents",
+    "agent-manual"
+  ]
 }

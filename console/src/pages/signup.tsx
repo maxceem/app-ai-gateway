@@ -174,7 +174,7 @@ export function SignupPage() {
 }
 
 /**
- * Self-hosted deployments commonly run with `ALLOW_PUBLIC_REGISTRATION=false`.
+ * Self-hosted deployments commonly keep additional registration disabled.
  * The screen states that plainly rather than 404-ing, because operators arrive
  * here from bookmarks and shared links.
  */
@@ -192,7 +192,8 @@ function RegistrationClosed({ googleAuth }: { googleAuth: boolean }) {
           <Alert>
             <AlertTitle>This gateway does not accept public sign-ups</AlertTitle>
             <AlertDescription>
-              Ask an owner or admin to add your account, then sign in.
+              Sign in with an existing account. If this gateway was initialized
+              from the CLI, finish its protected account claim from that CLI.
             </AlertDescription>
           </Alert>
           {googleAuth ? <GoogleButton label="Continue with Google" /> : null}

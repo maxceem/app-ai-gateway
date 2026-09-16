@@ -132,8 +132,12 @@ export function ManagementKeysPage() {
                       <span className="text-muted-foreground">
                         Revoked {formatDateTime(key.revokedAt)}
                       </span>
-                    ) : (
+                    ) : key.enabled ? (
                       <span className="text-foreground">Active</span>
+                    ) : (
+                      // Issued by an approval flow that has not handed it over
+                      // yet, so it cannot sign a request even though it is here.
+                      <span className="text-muted-foreground">Not yet active</span>
                     )}
                   </TableCell>
                   <TableCell className="text-right">

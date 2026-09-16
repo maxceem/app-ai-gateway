@@ -28,6 +28,7 @@ const APPLE_AUTH: AuthenticationConfig = {
 function appRow(authentication: AuthenticationConfig) {
   return {
     id: APP_ID,
+    revision: 1,
     name: "My app",
     status: "active",
     created_at: "2026-01-01T00:00:00.000Z",
@@ -301,5 +302,30 @@ describe("the end-user source on an App Attest draft", () => {
         },
       },
     });
+  });
+});
+
+
+describe("application revision protection", () => {
+  it("retains a dirty draft and its original revision across background refresh", async () => {
+    const initial = appRow(SERVER_AUTH);
+    let writtenHeaders: Headers | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        writtenHeaders = new Headers(init.headers);
+        return new Response(JSON.stringify({ error: { code: "app_revision_conflict", message: "Reload before saving" } }), { status: 412 });
+      }
+      return new Response(JSON.stringify({ app: initial, resolved: null, config_error: null }));
+    }));
+    const client = testQueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
+    await waitFor(() => expect(view.result.current.draft).not.toBeNull());
+    act(() => view.result.current.update({ name: "My unsaved edit" }));
+    act(() => client.setQueryData(["app", APP_ID], { app: { ...initial, name: "Other editor", revision: 2 }, resolved: null, config_error: null }));
+    expect(view.result.current.draft?.name).toBe("My unsaved edit");
+    await act(async () => { expect(await view.result.current.save()).toBe(false); });
+    expect(writtenHeaders?.get("if-match")).toBe('"app-1"');
+    expect(view.result.current.dirty).toBe(true);
   });
 });

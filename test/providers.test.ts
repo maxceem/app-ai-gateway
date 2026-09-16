@@ -3,7 +3,6 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearAppConfigCache } from "../src/core/config";
 import { clearProviderCaches } from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import type { ProviderType } from "../src/core/types";
@@ -11,6 +10,7 @@ import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import {
   TEST_ORGANIZATION_ID,
+  clearIsolateCaches,
   gatewayToken,
   seedApp,
   seedProvider,
@@ -138,14 +138,13 @@ beforeAll(async () => {
   // and cross-organization isolation can be exercised without disturbing the
   // fully provisioned default fixture.
   await env.DB.prepare(
-    `INSERT OR IGNORE INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+    `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
      VALUES (?, 'Scope Test', 'operator-test-owner', datetime('now'), datetime('now'))`,
   ).bind(OTHER_ORGANIZATION_ID).run();
 });
 
 beforeEach(() => {
-  clearProviderCaches();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 afterEach(async () => {
@@ -153,8 +152,7 @@ afterEach(async () => {
   pending = [];
   vi.restoreAllMocks();
   vi.useRealTimers();
-  clearProviderCaches();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 describe("provider resolution on the hot path", () => {

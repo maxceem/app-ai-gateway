@@ -82,13 +82,13 @@ const NAV_ITEMS: NavItem[] = [
  * — mid-flight, or unreachable — rather than guessing at a plan name.
  */
 function PlanSummary({ onNavigate }: { onNavigate?: () => void }) {
-  const { capabilities, billing, quota, canManage } = useConsoleSession();
+  const { capabilities, billing, quota, canManage, organization } = useConsoleSession();
   const location = useLocation();
 
   if (!capabilities.billing) return null;
 
   const plan = entitledPlan(billing);
-  const meter = quotaMeter(quota);
+  const meter = quotaMeter(quota, organization);
   if (!plan && !meter) return null;
 
   const current = location.pathname === "/billing";

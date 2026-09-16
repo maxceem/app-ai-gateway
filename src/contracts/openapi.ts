@@ -1,20 +1,21 @@
 import { OpenAPIHono, z, type RouteConfig } from "@hono/zod-openapi";
-import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
+import { PROVIDER_SLUG_PATTERN } from "../core/providers.ts";
+import {
+  CliBootstrapRequestSchema, CliOperationRequestSchema, CliSubmissionRequestSchema,
+  CliBootstrapResponseSchema, CliOperationResponseSchema, CliPollResponseSchema,
+  CliUsageResponseSchema, CliCapabilitiesResponseSchema, CliDeploymentSchema, CliAccountSchema,
+} from "./cli.ts";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
-  AppConfigSchema,
   AppWriteSchema,
-  GatewayRouteConfigSchema,
-  OrganizationRoleSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
   ProviderGatewayCreateRequestSchema,
   ProviderGatewayRotateRequestSchema,
   ProviderGatewayTestRequestSchema,
   ProviderGatewayUpdateRequestSchema,
-  ProviderPricingSchema,
   ProviderTestRequestSchema,
   ProviderUpdateRequestSchema,
   UsageRepriceRequestSchema,
@@ -41,15 +42,33 @@ export {
   UsageRepriceRequestSchema,
 } from "./schemas.ts";
 
-export const ErrorResponseSchema = z.object({
-  error: z.object({
-    code: z.string(),
-    message: z.string(),
-    data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().openapi({
-      description: "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; an app_rate_limited or app_budget_exhausted rejection carries scope, either user or app.",
-    }),
-  }),
-}).openapi("ErrorResponse");
+import {
+  AppAttestChallengeResponseSchema,
+  AppAttestRegisterResponseSchema,
+  AppDeleteResponseSchema,
+  AppResponseSchema,
+  AuthEventListSchema,
+  AuthEventSummarySchema,
+  ConsoleCapabilitiesResponseSchema,
+  CreatedManagementKeyResponseSchema,
+  ErrorResponseSchema,
+  HealthResponseSchema,
+  IdentitySessionSchema,
+  ManagementKeyListResponseSchema,
+  ManagementKeyResponseSchema,
+  OrganizationListResponseSchema,
+  ProviderDeleteResponseSchema,
+  ProviderGatewayDeleteResponseSchema,
+  ProviderGatewayListResponseSchema,
+  ProviderGatewayResponseSchema,
+  ProviderGatewayTestResponseSchema,
+  ProviderListResponseSchema,
+  ProviderResponseSchema,
+  ProviderTestResponseSchema,
+  UsageEventListSchema,
+} from "./responses.ts";
+
+export * from "./responses.ts";
 
 const AppPath = z.object({
   app: z.string().openapi({ param: { name: "app", in: "path" }, example: "my-app" }),
@@ -116,127 +135,6 @@ const issuerErrorResponses = {
   ),
 };
 
-const UsageEventSchema = z.object({
-  id: z.number().int(),
-  /** Null for an application that identifies no end users. */
-  user_id: z.string().nullable(),
-  api_key_id: z.string().nullable().openapi({
-    description: "Non-secret ID of the application API key that authenticated the request, including the client-proof key carried by an exchanged gateway token.",
-  }),
-  provider: z.string(),
-  provider_slug: z.string().nullable(),
-  provider_gateway_id: z.string().nullable().openapi({
-    description: "The gateway connection that carried the request, or null for a direct call. Recorded for every routed request; the id is kept even after the gateway row is deleted.",
-  }),
-  provider_gateway_type: z.string().nullable().openapi({
-    description: "That gateway's type at request time, for example cf_aig.",
-  }),
-  credential_source: z.enum(["direct", "byok", "gateway_system", "unknown"]).nullable().openapi({
-    description: "Whose credential paid, where something settles it: `direct` for an instance holding its own key, `byok` when a gateway serves it from your own key store or when a reporting upstream says your own key paid for the inference. Never inferred from a successful response; null when nothing settles it.",
-  }),
-  model_author: z.string().nullable().openapi({
-    description: "Who made the model, resolved when the event was recorded. An analytics dimension only — it never affects budgets or allowlists.",
-  }),
-  served_provider: z.string().nullable().openapi({
-    description: "The serving provider the upstream named, when it names one — the host OpenRouter routed to, for instance. Null means unknown, never a guarantee.",
-  }),
-  served_model: z.string().nullable().openapi({
-    description: "The serving model the upstream named, canonicalized back to the provider's own model ID.",
-  }),
-  model: z.string(),
-  route: z.string(),
-  endpoint_slug: z.string().nullable(),
-  input_tokens: z.number().int(),
-  cached_input_tokens: z.number().int(),
-  cache_write_tokens: z.number().int(),
-  output_tokens: z.number().int(),
-  cost_usd: z.number(),
-  reported_cost_usd: z.number().nullable().openapi({
-    description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
-  }),
-  cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().openapi({
-    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
-  }),
-  app_version: z.string().nullable(),
-  auth_method: z.enum(["attest", "api_key"]).nullable(),
-  status: z.enum(["ok", "provider_error", "blocked_app_rate", "blocked_app_budget", "blocked_billing", "blocked_user"]),
-  client_aborted: z.number().int().nullable().openapi({
-    description: "1 when the client disconnected before the upstream finished streaming, which cancelled the provider call; null otherwise. Not a failure — the request was served as far as the caller wanted it — but an aborted stream often takes the provider's end-of-response usage with it, which is why such an event may carry cost_source unresolved.",
-  }),
-  latency_ms: z.number().int().nullable(),
-  created_at: z.string(),
-}).openapi("UsageEvent");
-
-const UsageEventListSchema = z.object({
-  app_id: z.string(),
-  limit: z.number().int(),
-  next_before_id: z.number().int().nullable(),
-  events: z.array(UsageEventSchema),
-});
-
-const AuthEventSchema = z.object({
-  id: z.number().int(),
-  user_id: z.string().nullable().openapi({
-    description: "The verified issuer identity, where the attempt got far enough to establish one. Null for attempts refused before any identity was trusted.",
-  }),
-  event: z.enum(["token_exchange", "register"]),
-  auth_method: z.enum(["attest", "api_key"]).nullable(),
-  outcome: z.string().openapi({
-    description: "`ok`, or the error code the client was handed — for example issuer_claims_missing, issuer_token_rejected, attest_failed.",
-  }),
-  reason: z.string().nullable().openapi({
-    description: "The granular cause behind the outcome, for example claims_missing, bad_signature, jwks_unreachable. Diagnostic only: clients never see it.",
-  }),
-  app_version: z.string().nullable(),
-  latency_ms: z.number().int().nullable(),
-  claim_delay_ms: z.number().int().nullable().openapi({
-    description: "Set only on the exchange that ended a claim-propagation window: how long the user waited from their first issuer_claims_missing rejection.",
-  }),
-  created_at: z.string(),
-}).openapi("AuthEvent");
-
-const AuthEventListSchema = z.object({
-  app_id: z.string(),
-  limit: z.number().int(),
-  next_before_id: z.number().int().nullable(),
-  events: z.array(AuthEventSchema),
-});
-
-const AuthEventSummarySchema = z.object({
-  app_id: z.string(),
-  days: z.number().int(),
-  from: z.string(),
-  to: z.string(),
-  daily: z.array(z.object({
-    date: z.string(),
-    event: z.enum(["token_exchange", "register"]),
-    outcome: z.string(),
-    reason: z.string().nullable(),
-    count: z.number().int(),
-  })).openapi({ description: "Authentication attempts per day, grouped by outcome and granular reason." }),
-  usage_failures: z.array(z.object({
-    date: z.string(),
-    status: z.string(),
-    count: z.number().int(),
-  })).openapi({ description: "Non-ok proxied requests per day, so proxy-path failures appear in the same view." }),
-  token_exchange: z.object({
-    total: z.number().int(),
-    ok: z.number().int(),
-    success_rate: z.number().nullable().openapi({
-      description: "Null when the window contains no exchanges at all, which is not the same as a perfect score.",
-    }),
-  }),
-  claim_delay: z.object({
-    count: z.number().int(),
-    avg_ms: z.number().nullable(),
-    p50_ms: z.number().nullable(),
-    p95_ms: z.number().nullable(),
-  }).openapi({ description: "How long users waited for a required entitlement claim to propagate, over the window." }),
-  pending_users: z.number().int().openapi({
-    description: "Users currently inside an unclosed claim-propagation window — stuck mid-activation right now.",
-  }),
-}).openapi("AuthEventSummary");
-
 const registry = new OpenAPIHono();
 const documentationRegistry = new OpenAPIHono();
 for (const target of [registry, documentationRegistry]) {
@@ -244,13 +142,16 @@ for (const target of [registry, documentationRegistry]) {
     type: "http",
     scheme: "bearer",
     bearerFormat: "agw_mgmt_…",
-    description: "A management API key. It acts with its creator's permissions across all your apps and providers.",
+    description: "A management API key. It acts with its owning identity's current role for one account.",
   });
   target.openAPIRegistry.registerComponent("securitySchemes", "ConsoleSession", {
     type: "apiKey",
     in: "cookie",
-    name: "agw_operator_auth.session_token",
+    name: "agw_identity_auth.session_token",
     description: "The console's session cookie. Admin requests from the console also send x-console-request: 1.",
+  });
+  target.openAPIRegistry.registerComponent("securitySchemes", "CliPollProof", {
+    type: "http", scheme: "bearer", description: "The initiating CLI's private pollToken, distinct from the browser submission proof.",
   });
   target.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
     type: "http",
@@ -259,12 +160,26 @@ for (const target of [registry, documentationRegistry]) {
   });
 }
 
+const receiptPaths = new Set(["/v1/admin/apps", "/v1/admin/apps/{app}/keys", "/v1/admin/providers", "/v1/admin/provider-gateways"]);
 function register({ hide, ...route }: RouteConfig): void {
+  if (route.method === "post" && receiptPaths.has(route.path)) {
+    route = { ...route,
+      description: `${route.description ?? ""} Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.`,
+      request: { ...route.request, headers: z.object({
+        "Idempotency-Key": z.string().regex(/^[A-Za-z0-9_-]{32,256}$/).optional(),
+        "X-Idempotency-Proof": z.string().regex(/^[A-Za-z0-9_-]{32,256}$/).optional(),
+      }) },
+      responses: { ...route.responses,
+        409: response("A request proof was reused with different content or resource creation conflicted.", ErrorResponseSchema),
+        410: response("resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.", ErrorResponseSchema),
+      },
+    };
+  }
   registry.openAPIRegistry.registerPath(route);
   if (!hide) documentationRegistry.openAPIRegistry.registerPath(route);
 }
 
-const operatorSecurity: RouteConfig["security"] = [
+const managementSecurity: RouteConfig["security"] = [
   { ConsoleSession: [] },
   { ManagementBearer: [] },
 ];
@@ -276,11 +191,7 @@ register({
   operationId: "getHealth",
   summary: "Check gateway health",
   responses: {
-    200: response("The Worker is accepting requests.", z.object({
-      ok: z.literal(true),
-      service: z.literal("app-ai-gateway"),
-      vault: z.enum(["ok", "misconfigured"]),
-    })),
+    200: response("The Worker is accepting requests.", HealthResponseSchema),
   },
 });
 
@@ -291,14 +202,7 @@ register({
   operationId: "getConsoleCapabilities",
   summary: "Discover optional deployment capabilities",
   responses: {
-    200: response("Capabilities the console adapts to.", z.object({
-      billing: z.boolean(),
-      registrationOpen: z.boolean(),
-      googleAuth: z.boolean(),
-      termsOfServiceUrl: z.string().url().optional(),
-      privacyPolicyUrl: z.string().url().optional(),
-      apiBaseUrl: z.string().url().optional(),
-    })),
+    200: response("Capabilities the console adapts to.", ConsoleCapabilitiesResponseSchema),
   },
 });
 
@@ -371,7 +275,7 @@ register({
   summary: "Create an App Attest challenge",
   request: { params: AppPath },
   responses: {
-    200: response("A five-minute, single-use challenge.", z.object({ challenge: z.string(), expires_in: z.number() })),
+    200: response("A five-minute, single-use challenge.", AppAttestChallengeResponseSchema),
     ...errorResponses,
     402: response("No billing plan resolves for the account.", ErrorResponseSchema),
     404: response(
@@ -392,7 +296,7 @@ register({
     body: { required: true, content: json(AppAttestRegisterRequestSchema) },
   },
   responses: {
-    200: response("The key was registered for the verified issuer identity.", z.object({ user_id: z.string() })),
+    200: response("The key was registered for the verified issuer identity.", AppAttestRegisterResponseSchema),
     ...errorResponses,
     ...issuerErrorResponses,
     402: response("No billing plan resolves for the account.", ErrorResponseSchema),
@@ -531,7 +435,7 @@ register({
   tags: ["Admin applications"],
   operationId: "listApps",
   summary: "List applications",
-  security: operatorSecurity,
+  security: managementSecurity,
   responses: {
     200: response(
       "Applications and current usage summaries.",
@@ -548,24 +452,6 @@ register({
   },
 });
 
-/**
- * The one shape every single-application route answers with. Reading an app,
- * creating one and updating one all return the same object, so a client parses
- * one type and never has to ask which route produced it.
- */
-const AppResponseSchema = z.object({
-  app: z.object({
-    id: z.string().openapi({ description: "The gateway-assigned id, and the `{app}` segment of every URL for this application." }),
-    name: z.string(),
-    config: AppConfigSchema,
-    status: z.enum(["active", "disabled"]),
-    created_at: z.string(),
-    updated_at: z.string(),
-  }),
-  resolved: z.record(z.string(), z.unknown()).nullable().openapi({ description: "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig." }),
-  config_error: z.string().nullable().openapi({ description: "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write." }),
-}).meta({ id: "AppResponse" });
-
 register({
   method: "post",
   path: "/v1/admin/apps",
@@ -573,7 +459,7 @@ register({
   operationId: "createApp",
   summary: "Create an application",
   description: "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(AppWriteSchema) } },
   responses: {
     201: response(
@@ -597,7 +483,7 @@ register({
   tags: ["Admin billing"],
   operationId: "listBillingPlans",
   summary: "List billing plans",
-  security: operatorSecurity,
+  security: managementSecurity,
   responses: { 200: response("Billing service response.", z.unknown()), ...errorResponses },
 });
 
@@ -606,6 +492,16 @@ register({
  * Only the dispatch path writes this count, so a status read is the only place
  * an operator can see it before the allowance runs out.
  */
+const BillingPlanLimitsSchema = z.object({
+  maxRequestsPerMonth: z.number().int().optional().describe("Requests the account may dispatch per allowance period."),
+  maxApps: z.number().int().optional().describe("Applications the account may own."),
+  maxProviders: z.number().int().optional().describe("Providers the account may own."),
+  maxProviderGateways: z.number().int().optional().describe("Provider gateways the account may own."),
+  maxActiveKeysPerApp: z.number().int().optional().describe("Active API keys each of the account's applications may hold."),
+}).describe(
+  "The plan's ceilings, as this gateway enforces them. Every key is optional and an absent key means unlimited, so an empty object is a plan with no ceilings. A write that would exceed one is refused with billing_plan_limit_reached.",
+);
+
 const BillingQuotaSchema = z.object({
   periodId: z.string().describe("Opaque identifier for the allowance period being reported."),
   periodStart: z.string().describe("Inclusive UTC instant at which this allowance period began."),
@@ -626,12 +522,13 @@ for (const route of [
     hide: true,
     operationId: route.operationId,
     summary: route.summary,
-    security: operatorSecurity,
+    security: managementSecurity,
     responses: {
       200: response(
         "Billing access, and the current period against the plan's request allowance when an entitlement resolves.",
         z.object({
           access: z.unknown(),
+          limits: BillingPlanLimitsSchema,
           quota: BillingQuotaSchema.nullable().describe(
             "Null when billing is unavailable or no plan entitlement resolves.",
           ),
@@ -649,7 +546,7 @@ register({
   tags: ["Admin billing"],
   operationId: "createBillingCheckout",
   summary: "Create a hosted checkout",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(BillingPlanSelectionSchema.extend({
     successUrl: z.url().optional(),
     cancelUrl: z.url().optional(),
@@ -668,7 +565,7 @@ for (const route of [
     hide: true,
     operationId: route.operationId,
     summary: route.summary,
-    security: operatorSecurity,
+    security: managementSecurity,
     request: { body: { required: true, content: json(BillingPlanSelectionSchema) } },
     responses: { 200: response("Billing service response.", z.unknown()), ...errorResponses },
   });
@@ -681,7 +578,7 @@ register({
   tags: ["Admin billing"],
   operationId: "cancelBillingSubscription",
   summary: "Cancel the subscription at period end",
-  security: operatorSecurity,
+  security: managementSecurity,
   responses: { 200: response("Cancellation accepted.", z.object({ ok: z.literal(true) })), ...errorResponses },
 });
 
@@ -692,7 +589,7 @@ register({
   tags: ["Admin billing"],
   operationId: "startBillingTrial",
   summary: "Start a no-card trial",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(z.object({ planKey: z.string().min(1) })) } },
   responses: { 200: response("Trial access state.", z.unknown()), ...errorResponses },
 });
@@ -703,7 +600,7 @@ for (const definition of [
     method: "put",
     operationId: "updateApp",
     summary: "Update an application",
-    description: "Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+    description: "Requires If-Match containing the ETag from the original application read. Missing preconditions return 428; stale revisions return 412. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
   },
 ] as const) {
   register({
@@ -713,12 +610,12 @@ for (const definition of [
     operationId: definition.operationId,
     summary: definition.summary,
     ...("description" in definition ? { description: definition.description } : {}),
-    security: operatorSecurity,
+    security: managementSecurity,
     request: {
       params: AppPath,
-      ...(definition.method === "put" ? { body: { required: true, content: json(AppWriteSchema) } } : {}),
+      ...(definition.method === "put" ? { headers: z.object({ "If-Match": z.string().min(1) }), body: { required: true, content: json(AppWriteSchema) } } : {}),
     },
-    responses: { 200: response("Application state.", AppResponseSchema), ...errorResponses },
+    responses: { 200: { ...response("Application state.", AppResponseSchema), headers: { ETag: { schema: { type: "string" }, description: "Current application revision; send it in If-Match on update." } } }, ...(definition.method === "put" ? { 412: response("The application changed since it was read.", ErrorResponseSchema), 428: response("If-Match is required.", ErrorResponseSchema) } : {}), ...errorResponses },
   });
 }
 
@@ -728,7 +625,7 @@ register({
   tags: ["Admin applications"],
   operationId: "validateApp",
   summary: "Validate an application configuration without saving it",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { params: AppPath, body: { required: true, content: json(AppWriteSchema) } },
   responses: { 200: response("Resolved valid configuration.", z.unknown()), ...errorResponses },
 });
@@ -739,29 +636,12 @@ register({
   tags: ["Admin applications"],
   operationId: "deleteApp",
   summary: "Delete an application and its associated operational data",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { params: AppPath, query: z.object({ confirm: z.string() }) },
   responses: {
-    200: response("Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.", z.object({
-      deleted: z.literal(true),
-      app_id: z.string(),
-      removed_users: z.number().int(),
-      usage_events_retained: z.literal(true),
-    })),
+    200: response("Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.", AppDeleteResponseSchema),
     ...errorResponses,
   },
-});
-
-const ManagementKeySummarySchema = z.object({
-  id: z.string(),
-  organizationId: z.string(),
-  name: z.string(),
-  tokenHint: z.string().nullable().openapi({
-    description: "Last characters of the token for display. Null for keys created before hints were recorded.",
-    example: "x9Qb",
-  }),
-  createdAt: z.string(),
-  revokedAt: z.string().nullable(),
 });
 
 register({
@@ -770,11 +650,10 @@ register({
   tags: ["Admin management keys"],
   operationId: "listManagementKeys",
   summary: "List management keys",
+  description: "Console session only. Management keys cannot administer management keys.",
   security: [{ ConsoleSession: [] }],
   responses: {
-    200: response("Management key metadata without plaintext tokens.", z.object({
-      keys: z.array(ManagementKeySummarySchema),
-    })),
+    200: response("Management key metadata without plaintext tokens.", ManagementKeyListResponseSchema),
     ...errorResponses,
   },
 });
@@ -785,13 +664,11 @@ register({
   tags: ["Admin management keys"],
   operationId: "createManagementKey",
   summary: "Create a management key",
-  description: "Requires a signed-in console session with the owner or admin role; a management key cannot mint another. The plaintext agw_mgmt_ token is returned once.",
+  description: "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one.",
   security: [{ ConsoleSession: [] }],
   request: { body: { required: true, content: json(z.object({ name: z.string().min(1).max(100) })) } },
   responses: {
-    201: response("One-time plaintext management key.", z.object({
-      key: ManagementKeySummarySchema.extend({ plaintext: z.string() }),
-    })),
+    201: response("One-time plaintext management key.", CreatedManagementKeyResponseSchema),
     ...errorResponses,
   },
 });
@@ -802,11 +679,11 @@ register({
   tags: ["Admin management keys"],
   operationId: "revokeManagementKey",
   summary: "Revoke a management key",
-  description: "Requires an owner/admin user session.",
+  description: "Console session only, and requires the owner or admin role.",
   security: [{ ConsoleSession: [] }],
   request: { params: ManagementKeyPath },
   responses: {
-    200: response("Revoked management key metadata.", z.object({ key: ManagementKeySummarySchema })),
+    200: response("Revoked management key metadata.", ManagementKeyResponseSchema),
     ...errorResponses,
   },
 });
@@ -815,53 +692,15 @@ const ProviderIdPath = z.object({
   id: z.string().openapi({ param: { name: "id", in: "path" }, example: "b0a1…" }),
 });
 
-const ProviderSummarySchema = z.object({
-  id: z.string(),
-  type: z.enum(PROVIDER_TYPES),
-  slug: ProviderSlugSchema.openapi({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
-  name: z.string(),
-  secretHint: z.string().nullable().openapi({
-    description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
-  }),
-  providerGatewayId: z.string().nullable(),
-  gatewayRoute: GatewayRouteConfigSchema.nullable().openapi({
-    description: "How this instance is routed inside its gateway. Always null for a direct instance and for gateways that take no routing configuration, such as Cloudflare AI Gateway.",
-  }),
-  baseUrl: z.string().nullable().openapi({
-    description: "Your own origin replacing the provider type's own base URL, stored canonicalized (https, public host, default port, trailing slash). Null means the provider type's own base URL is used. Always null on a gateway-routed instance, which cannot carry one.",
-    example: "https://my-resource.openai.azure.com/openai/v1/",
-  }),
-  pricing: ProviderPricingSchema.nullable(),
-  status: z.enum(["active", "disabled"]).openapi({
-    description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",
-  }),
-  createdAt: z.string(),
-  createdBy: z.string(),
-}).openapi("Provider");
-
-const ProviderValidatedSchema = z.boolean().openapi({
-  description: "Whether the live probe confirmed the credential. false means the probe was inconclusive (provider outage, or no probe exists for this provider), not that the credential is bad — a credential the provider refuses fails this request with provider_key_invalid.",
-});
-
-const ProbeReasonSchema = z.enum(["no_probe", "unreachable", "unexpected_status"]).openapi({
-  description: "Why an unvalidated probe proved nothing. Absent when validated is true.",
-});
-
-const ProbeStatusSchema = z.number().int().openapi({
-  description: "The upstream status behind an unexpected_status or rejected reason.",
-});
-
 register({
   method: "get",
   path: "/v1/admin/providers",
   tags: ["Admin providers"],
   operationId: "listProviders",
   summary: "List provider credentials",
-  security: operatorSecurity,
+  security: managementSecurity,
   responses: {
-    200: response("Provider metadata without credentials.", z.object({
-      providers: z.array(ProviderSummarySchema),
-    })),
+    200: response("Provider metadata without credentials.", ProviderListResponseSchema),
     ...errorResponses,
   },
 });
@@ -874,12 +713,10 @@ register({
   summary: "Store a provider credential",
   description:
     "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(ProviderCreateRequestSchema) } },
   responses: {
-    201: response("Stored provider.", z.object({
-      provider: ProviderSummarySchema,
-    })),
+    201: response("Stored provider.", ProviderResponseSchema),
     409: response("The requested active provider slug is already in use.", ErrorResponseSchema),
     ...errorResponses,
   },
@@ -893,14 +730,10 @@ register({
   summary: "Probe a provider credential without storing it",
   description:
     "Calls the provider with a credential, and reports what it answered. Nothing is stored, and no other endpoint runs this check: a write stores what it is given. Supply exactly one direct provider secret or an existing providerGatewayId.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(ProviderTestRequestSchema) } },
   responses: {
-    200: response("Probe outcome.", z.object({
-      validated: ProviderValidatedSchema,
-      reason: ProbeReasonSchema.optional(),
-      status: ProbeStatusSchema.optional(),
-    })),
+    200: response("Probe outcome.", ProviderTestResponseSchema),
     ...errorResponses,
   },
 });
@@ -913,15 +746,13 @@ register({
   summary: "Rotate a credential, rename it, move it to another origin, replace its custom pricing, or disable it",
   description:
     "Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling therefore always succeeds. Sending a non-null baseUrl also requires secret in the same request: the stored key is write-only and is never decrypted to be sent to an origin it has not been sent to before, so a move carries the key it is to be used with. Sending baseUrl: null returns the instance to its provider type's own origin and needs nothing else.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: {
     params: ProviderIdPath,
     body: { required: true, content: json(ProviderUpdateRequestSchema) },
   },
   responses: {
-    200: response("Updated provider.", z.object({
-      provider: ProviderSummarySchema,
-    })),
+    200: response("Updated provider.", ProviderResponseSchema),
     ...errorResponses,
   },
 });
@@ -934,56 +765,13 @@ register({
   summary: "Delete a provider credential and its custom pricing",
   description:
     "A hard delete, secret and pricing included. Applications using this provider start failing with provider_not_configured within a minute. To pause an instance reversibly instead, send status: \"disabled\" to PUT /v1/admin/providers/{id}.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { params: ProviderIdPath },
   responses: {
-    200: response("Provider deleted.", z.object({
-      deleted: z.literal(true),
-      provider_id: z.string(),
-    })),
+    200: response("Provider deleted.", ProviderDeleteResponseSchema),
     ...errorResponses,
   },
 });
-
-/** Everything about a gateway that does not depend on which gateway it is. */
-const providerGatewayFields = {
-  id: z.string(),
-  name: z.string(),
-  secretHint: z.string().openapi({
-    description: "The last characters of the gateway token. The token itself is never returned.",
-  }),
-  providerCount: z.number().int().nonnegative().openapi({
-    description: "Active provider instances routed through this gateway.",
-  }),
-  referencedCount: z.number().int().nonnegative().openapi({
-    description:
-      "All provider instances referencing this gateway, including disabled rows retained for re-enabling. Deletion is refused while this is above zero.",
-  }),
-  status: z.enum(["active", "revoked"]),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  createdBy: z.string(),
-};
-
-/**
- * Discriminated by `type`, because each gateway's `config` is its own shape:
- * Cloudflare's account and gateway pair, and nothing at all for Vercel, whose
- * origin is fixed in adapter code and whose team is named by the token.
- */
-const ProviderGatewaySummarySchema = z.discriminatedUnion("type", [
-  z.object({
-    ...providerGatewayFields,
-    type: z.literal("cf_aig"),
-    config: z.object({ accountId: z.string(), gatewayId: z.string() }),
-  }),
-  z.object({
-    ...providerGatewayFields,
-    type: z.literal("vercel"),
-    config: z.object({}).openapi({
-      description: "Vercel's origin is fixed in adapter code, so it has no configuration of its own.",
-    }),
-  }),
-]).openapi("ProviderGateway");
 
 register({
   method: "get",
@@ -991,24 +779,12 @@ register({
   tags: ["Admin provider gateways"],
   operationId: "listProviderGateways",
   summary: "List reusable provider gateways",
-  security: operatorSecurity,
+  security: managementSecurity,
   responses: {
-    200: response("Provider gateway metadata without tokens.", z.object({
-      gateways: z.array(ProviderGatewaySummarySchema),
-    })),
+    200: response("Provider gateway metadata without tokens.", ProviderGatewayListResponseSchema),
     ...errorResponses,
   },
 });
-
-const GatewayValidatedSchema = z.boolean().openapi({
-  description: "Whether the live probe confirmed the connection. Unlike the providers API, a refused token is not an error here: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported as reason: rejected and the caller decides what it means.",
-});
-
-const GatewayProbeReasonSchema = z
-  .enum(["no_probe", "unreachable", "unexpected_status", "rejected"])
-  .openapi({
-    description: "Why the probe did not confirm the connection. Absent when validated is true. rejected means the gateway refused the token.",
-  });
 
 register({
   method: "post",
@@ -1017,12 +793,10 @@ register({
   operationId: "createProviderGateway",
   summary: "Create a reusable provider gateway connection",
   description: "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. The token is encrypted and stored as given, never probed: check a connection first with POST /v1/admin/provider-gateways/test. Provider instances are attached separately through the providers API.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(ProviderGatewayCreateRequestSchema) } },
   responses: {
-    201: response("Created provider gateway.", z.object({
-      gateway: ProviderGatewaySummarySchema,
-    })),
+    201: response("Created provider gateway.", ProviderGatewayResponseSchema),
     ...errorResponses,
   },
 });
@@ -1035,14 +809,10 @@ register({
   summary: "Probe a gateway connection without storing it",
   description:
     "Calls the gateway with a token, and reports what it answered. Nothing is stored, and no other endpoint runs this check: a write stores what it is given. Unlike the providers API, a refused token is reported as reason: rejected rather than raised as provider_key_invalid, because the same 401 means both a wrong token and a gateway that is not finished being set up.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { body: { required: true, content: json(ProviderGatewayTestRequestSchema) } },
   responses: {
-    200: response("Probe outcome.", z.object({
-      validated: GatewayValidatedSchema,
-      reason: GatewayProbeReasonSchema.optional(),
-      status: ProbeStatusSchema.optional(),
-    })),
+    200: response("Probe outcome.", ProviderGatewayTestResponseSchema),
     ...errorResponses,
   },
 });
@@ -1053,13 +823,13 @@ register({
   tags: ["Admin provider gateways"],
   operationId: "updateProviderGateway",
   summary: "Rename a provider gateway",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: {
     params: ProviderIdPath,
     body: { required: true, content: json(ProviderGatewayUpdateRequestSchema) },
   },
   responses: {
-    200: response("Updated provider gateway.", z.object({ gateway: ProviderGatewaySummarySchema })),
+    200: response("Updated provider gateway.", ProviderGatewayResponseSchema),
     ...errorResponses,
   },
 });
@@ -1071,15 +841,13 @@ register({
   operationId: "rotateProviderGateway",
   summary: "Rotate a shared provider gateway token",
   description: "Re-encrypts the token once for every provider instance referencing this gateway. The new token is stored as given, never probed.",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: {
     params: ProviderIdPath,
     body: { required: true, content: json(ProviderGatewayRotateRequestSchema) },
   },
   responses: {
-    200: response("Rotated provider gateway.", z.object({
-      gateway: ProviderGatewaySummarySchema,
-    })),
+    200: response("Rotated provider gateway.", ProviderGatewayResponseSchema),
     ...errorResponses,
   },
 });
@@ -1090,49 +858,16 @@ register({
   tags: ["Admin provider gateways"],
   operationId: "deleteProviderGateway",
   summary: "Delete an unused provider gateway",
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { params: ProviderIdPath },
   responses: {
-    200: response("Provider gateway deleted.", z.object({
-      deleted: z.literal(true),
-      provider_gateway_id: z.string(),
-    })),
+    200: response("Provider gateway deleted.", ProviderGatewayDeleteResponseSchema),
     409: response(
       "Provider instances still reference this gateway. Disabled rows are retained for re-enabling and block deletion too; see referencedCount.",
       ErrorResponseSchema,
     ),
     ...errorResponses,
   },
-});
-
-const OrganizationSummarySchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  createdAt: z.string(),
-});
-
-const OrganizationMembershipSchema = z.object({
-  organization: OrganizationSummarySchema,
-  role: OrganizationRoleSchema,
-  status: z.literal("active"),
-  joinedAt: z.string(),
-});
-
-const OperatorSessionSchema = z.object({
-  session: z.object({
-    user: z.object({
-      id: z.string(),
-      name: z.string().nullable(),
-      email: z.string(),
-      emailVerified: z.boolean(),
-      image: z.string().nullable(),
-      createdAt: z.string(),
-    }).nullable(),
-    organization: OrganizationSummarySchema.nullable(),
-    role: OrganizationRoleSchema,
-    memberships: z.array(OrganizationMembershipSchema),
-    credentialType: z.enum(["session", "apiKey"]),
-  }),
 });
 
 register({
@@ -1143,8 +878,8 @@ register({
   summary: "Get the caller's identity, current organization and role",
   description:
     "The console needs the caller's role and active organization to gate its UI; the sign-in session endpoint reports neither.",
-  security: operatorSecurity,
-  responses: { 200: response("Resolved session.", OperatorSessionSchema), ...errorResponses },
+  security: managementSecurity,
+  responses: { 200: response("Resolved session.", IdentitySessionSchema), ...errorResponses },
 });
 
 register({
@@ -1155,9 +890,7 @@ register({
   summary: "List the organizations the caller belongs to",
   security: [{ ConsoleSession: [] }],
   responses: {
-    200: response("Memberships ordered by organization creation time.", z.object({
-      organizations: z.array(OrganizationMembershipSchema),
-    })),
+    200: response("Memberships ordered by organization creation time.", OrganizationListResponseSchema),
     ...errorResponses,
   },
 });
@@ -1171,7 +904,7 @@ register({
   description: "Available to every member, including read-only members, of the target organization.",
   security: [{ ConsoleSession: [] }],
   request: { body: { required: true, content: json(OrganizationSelectRequestSchema) } },
-  responses: { 200: response("Session rescoped to the selected organization.", OperatorSessionSchema), ...errorResponses },
+  responses: { 200: response("Session rescoped to the selected organization.", IdentitySessionSchema), ...errorResponses },
 });
 
 const adminRoutes: Omit<RouteConfig, "responses">[] = [
@@ -1195,7 +928,7 @@ register({
   operationId: "listAppEvents",
   summary: "List application usage events",
   tags: ["Admin operations"],
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { params: AppPath },
   responses: { 200: response("Paginated application usage events.", UsageEventListSchema), ...errorResponses },
 });
@@ -1207,7 +940,7 @@ register({
   summary: "Summarize application authentication outcomes",
   description: "Daily authentication outcomes and reasons, non-ok proxied requests, token-exchange success rate, entitlement-claim propagation delays, and how many users are waiting on a claim right now.",
   tags: ["Admin operations"],
-  security: operatorSecurity,
+  security: managementSecurity,
   request: {
     params: AppPath,
     query: z.object({
@@ -1224,7 +957,7 @@ register({
   operationId: "listAppAuthEvents",
   summary: "List application authentication events",
   tags: ["Admin operations"],
-  security: operatorSecurity,
+  security: managementSecurity,
   request: { params: AppPath },
   responses: { 200: response("Paginated authentication attempts, newest first.", AuthEventListSchema), ...errorResponses },
 });
@@ -1233,9 +966,50 @@ for (const route of adminRoutes) {
   register({
     ...route,
     tags: [route.path === "/v1/admin/prices" ? "Admin models" : "Admin operations"],
-    security: operatorSecurity,
+    security: managementSecurity,
     responses: { 200: response("Successful operation.", z.unknown()), ...errorResponses },
   });
+}
+
+const CliOperationPath = z.object({ id: z.string().openapi({ param: { name: "id", in: "path" } }) });
+const cliErrors = { ...errorResponses,
+  409: response("A conflicting transition or setup cap prevents this operation.", ErrorResponseSchema),
+  410: response("The protected credential exchange has expired; no replacement is minted.", ErrorResponseSchema),
+  429: response("The durable initiation or submission rate limit was reached.", ErrorResponseSchema),
+};
+register({ method: "get", path: "/v1/cli/capabilities", tags: ["CLI"], operationId: "getCliCapabilities",
+  summary: "Discover deployment identity and provider capabilities", responses: { 200: response("Public deployment capabilities. No credentials or inference calls.", CliCapabilitiesResponseSchema) } });
+register({ method: "post", path: "/v1/cli/bootstrap", tags: ["CLI"], operationId: "bootstrapCliAccount",
+  summary: "Initialize a recoverable CLI account",
+  description: "Persist both random proofs before sending. An identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does. All responses are no-store.",
+  request: { body: { required: true, content: json(CliBootstrapRequestSchema) } },
+  responses: { 200: response("Initial account and credential. Never print or log the credential.", CliBootstrapResponseSchema), ...cliErrors } });
+register({ method: "post", path: "/v1/cli/operations", tags: ["CLI"], operationId: "createCliOperation",
+  summary: "Create or recover a browser handoff",
+  description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require the separate humanCode, interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+  security: managementSecurity, request: { body: { required: true, content: json(CliOperationRequestSchema) } },
+  responses: { 200: response("Browser URL and separate identity code when required.", CliOperationResponseSchema), ...cliErrors } });
+register({ method: "get", path: "/v1/cli/operations/{id}", tags: ["CLI"], operationId: "pollCliOperation",
+  summary: "Poll a browser handoff", security: [{ CliPollProof: [] }], request: { params: CliOperationPath },
+  description: "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
+  responses: { 200: response("Current operation state and nonsecret result.", CliPollResponseSchema), ...cliErrors } });
+register({ method: "get", path: "/v1/cli/account", tags: ["CLI"], operationId: "getCliAccount",
+  summary: "Read account lifecycle and current access", security: managementSecurity,
+  responses: { 200: response("Account deadlines, effective access and current request count.", z.object({ deployment: CliDeploymentSchema, account: CliAccountSchema,
+    billing: z.record(z.string(), z.unknown()), usage: z.record(z.string(), z.unknown()).nullable() })), ...cliErrors } });
+register({ method: "get", path: "/v1/cli/usage", tags: ["CLI"], operationId: "getCliUsage",
+  summary: "Read retained account usage for a UTC month", security: managementSecurity,
+  description: "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
+  request: { query: z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("YYYY-MM; defaults to the current UTC month.") }) },
+  responses: { 200: response("Account totals, per-app totals and attribution coverage.", CliUsageResponseSchema), ...cliErrors } });
+register({ method: "get", path: "/v1/cli/browser/{id}", tags: ["CLI"], operationId: "getCliHandoffPage",
+  summary: "Open the first-party human handoff page", request: { params: CliOperationPath },
+  responses: { 200: { description: "No-store browser page. The submission proof arrives only in the URL fragment.", content: { "text/html": { schema: z.string() } } }, ...cliErrors } });
+for (const action of ["details", "submit", "register", "google"] as const) {
+  register({ method: "post", path: `/v1/cli/browser/{id}/${action}`, tags: ["CLI"], operationId: `cliBrowser${action[0]!.toUpperCase()}${action.slice(1)}`,
+    summary: `Browser handoff: ${action}`, description: "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+    request: { params: CliOperationPath, body: { required: true, content: json(CliSubmissionRequestSchema) } },
+    responses: { 200: response("Nonsecret browser handoff result or authentication redirect metadata.", z.record(z.string(), z.unknown())), ...cliErrors } });
 }
 
 export function createOpenAPIDocument({ includeHidden = true } = {}) {
@@ -1249,6 +1023,7 @@ export function createOpenAPIDocument({ includeHidden = true } = {}) {
     },
     servers: [{ url: "https://api.appaigateway.com", description: "The cloud API host. On a self-hosted gateway, use your own origin." }],
     tags: [
+      { name: "CLI", description: "CLI discovery, protected initialization and human browser handoffs." },
       { name: "Operations", description: "Unauthenticated service health." },
       { name: "Console authentication", description: "Sign-up, sign-in and session lifecycle for the console." },
       { name: "Application authentication", description: "Issuer identity plus App Attest or API-key client proof." },
@@ -1257,7 +1032,7 @@ export function createOpenAPIDocument({ includeHidden = true } = {}) {
       { name: "Named endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, and usage." },
-      { name: "Admin management keys", description: "agw_mgmt_ credentials for scripts, CI and agents." },
+      { name: "Admin management keys", description: "agw_mgmt_ credentials for scripts, CI and agents. They never expire, and are created and revoked from the console only." },
       { name: "Admin providers", description: "Named provider instances and their credentials." },
       { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },
       { name: "Admin organizations", description: "Caller identity and organization switching." },

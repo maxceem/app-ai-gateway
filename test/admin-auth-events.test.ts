@@ -170,7 +170,7 @@ describe("application auth event summary", () => {
 
   it("answers only for apps the caller's organization owns", async () => {
     await env.DB.prepare(
-      `INSERT OR IGNORE INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+      `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
        VALUES ('auth-events-other-org', 'Other', 'operator-test-owner', datetime('now'), datetime('now'))`,
     ).run();
     await seedApp("auth-events-foreign", { organizationId: "auth-events-other-org" });

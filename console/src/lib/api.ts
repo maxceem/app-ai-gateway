@@ -1,3 +1,8 @@
+import {
+  searchSuffix,
+  type ApiOperation,
+} from "@contracts/operations";
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -65,22 +70,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
+/**
+ * One documented operation, sent the console's way.
+ *
+ * The descriptor supplies the method, the URL and both types, so no caller
+ * writes a path or names a response type: changing a schema in
+ * `src/contracts` produces an error at the call site instead of a surprise at
+ * runtime. The transport itself — the cookie and `x-console-request` — is
+ * unchanged, and the console still parses nothing, because its bundle carries
+ * no zod.
+ */
+export function call<Params extends readonly unknown[], Body, Response>(
+  operation: ApiOperation<Params, Body, Response>,
+  params: Params,
+  body?: Body,
+  headers?: HeadersInit,
+): Promise<Response> {
+  return request<Response>(operation.path(...params), {
+    method: operation.method,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(headers === undefined ? {} : { headers }),
+  });
+}
+
 export const api = {
   get: <T,>(path: string) => request<T>(path),
   post: <T,>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) }),
-  put: <T,>(path: string, body: unknown) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
+  put: <T,>(path: string, body: unknown, headers?: HeadersInit) =>
+    request<T>(path, { method: "PUT", body: JSON.stringify(body), headers }),
   patch: <T,>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
-export function query(params: Record<string, string | number | undefined | null>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
-  }
-  const encoded = search.toString();
-  return encoded ? `?${encoded}` : "";
-}
+/** The same query-string builder the path descriptors use. */
+export const query = searchSuffix;

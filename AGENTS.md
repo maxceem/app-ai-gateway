@@ -15,8 +15,18 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 ## API contract changes
 
-- Treat `src/contracts/schemas.ts` as the source for public request schemas and
+- Treat `src/contracts/schemas.ts` as the source for public request schemas,
+  `src/contracts/responses.ts` for response bodies, and
   `src/contracts/openapi.ts` as the source for documented operations.
+- `src/contracts/operations.ts` is the descriptor table the console and the CLI
+  both call through: method, path builder, request and response types. It is
+  runtime-light and imports every schema with `import type`, because the console
+  bundle must not gain zod; the runtime schemas the CLI parses with live in
+  `src/contracts/operation-schemas.ts`, which only the CLI loads. Adding an
+  endpoint either client uses means adding an entry to both.
+- Answer a documented response with `satisfies` on its inferred type, so the
+  handler fails `pnpm run check` when it drifts from its own document. Never add
+  runtime parsing to a server response.
 - Never edit `openapi/openapi.json` manually.
 - Run `pnpm run openapi:generate` after changing a route contract.
 - Run `pnpm run openapi:check` to detect generated-document drift.
@@ -78,7 +88,7 @@ test file has to be imported by one of them, and `pnpm run check` fails while it
 is not. A barrel's members share one database, so a file that needs a clean one
 belongs in a barrel of its own.
 
-A test that needs an authenticated operator should call `seedOperator` from
+A test that needs an authenticated human should call `seedHuman` from
 `test/helpers.ts`, not sign one up: signing up hashes a password with a pure-JS
 scrypt and costs about two and a half seconds. Sign up only where registering is
 what the test is about.

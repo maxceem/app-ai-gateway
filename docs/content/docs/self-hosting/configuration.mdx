@@ -93,12 +93,31 @@ supply a value for either.
 
 ## Sign-in
 
-### `ALLOW_PUBLIC_REGISTRATION`
+### `ALLOW_ADDITIONAL_REGISTRATIONS`
 
-Plain variable, default `true`, so the console can create the first account on
-a fresh deployment. Once that account exists, set it to `false`. The sign-up
-form and the sign-up API are then closed, and existing accounts still sign in.
-Set it back to `true` for as long as it takes to add another account.
+Plain variable, default `false`. An empty deployment allows its first person to
+register and creates an account they own. Once a person exists, `false` keeps
+new registration closed while existing people can sign in. Set it to `true` to
+let additional people register; each receives a separate account and no access
+to anyone else's account.
+
+If you initialize with the CLI first, the deployment already has an account, so
+the first person must register through that CLI's protected claim flow. This
+variable never lets an unknown visitor take that account.
+
+### `DEPLOYMENT_ID`
+
+An immutable public UUID in plain Wrangler `vars`, generated once for the
+deployment. Keep it across updates and domain changes. The CLI compares this
+identity with Cloudflare settings before adopting an existing Worker. Do not
+upload it as a secret. Local setup stores its development value in ignored
+`.dev.vars`; the deployment helpers pass it as a plain binding.
+
+### `CLI_CONSOLE_ORIGIN`
+
+Optional secure first-party origin for browser handoffs. It must serve the same
+Worker's `/v1/cli/browser/` routes. HTTPS is required outside local development.
+Leave it unset when the API and console share an origin.
 
 ### `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
 
@@ -110,8 +129,10 @@ Cloud with the authorised redirect URI:
 https://YOUR-HOST/v1/auth/callback/google
 ```
 
-`ALLOW_PUBLIC_REGISTRATION` applies to Google sign-in as well: with it closed,
-a Google account that has no gateway account yet cannot create one.
+Google follows the same registration policy as email and password: it can create
+the first account on an empty deployment, or separate additional accounts when
+additional registration is enabled. A verified pending claim can create the
+human owner of its existing account through the scoped Google flow.
 
 ### `OAUTH_RELAY_URL`
 
@@ -139,6 +160,26 @@ response headers before the gateway gives up and answers `504`. Once headers
 arrive the body streams for as long as the model needs; only the first byte is
 bounded. Reasoning models can think for a minute before that first byte, which
 is why the default is generous.
+
+## Nightly maintenance
+
+### `MAINTENANCE_QUERY_BUDGET`
+
+Plain variable, default `50`. How many D1 queries the nightly maintenance cron
+may issue in one run: it prunes sign-in history and spent challenges, expires
+finished CLI authorizations, and compacts usage history into its rollups.
+
+Every D1 query is a subrequest, and a Worker invocation may issue 50 of them on
+the Cloudflare Free plan and 1,000 on the Workers Paid plan. The default is the
+Free number, so a gateway installed with one click stays inside it without
+being asked anything. The run stops at the budget and continues the next night,
+which is why exceeding it is never necessary: nothing is lost, only deferred.
+
+Raise it only if you are on the Workers Paid plan and have a backlog worth
+draining faster — after a long period of heavy traffic, or after restoring an
+old database. Values below `20` are ignored, and so is anything that is not a
+whole number. Set it in the dashboard under **Settings → Variables**, or in a
+profile overlay; it is deliberately not part of the one-click form.
 
 ## Legal links
 
@@ -179,10 +220,13 @@ so changing either means deploying again.
 | `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Variable | `1` |
 | `SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN` | Secret | Required in `kms` mode |
 | `JWT_SECRET`, `BETTER_AUTH_SECRET` | Secret | Generated |
-| `ALLOW_PUBLIC_REGISTRATION` | Variable | `true` |
+| `ALLOW_ADDITIONAL_REGISTRATIONS` | Variable | `false` |
+| `DEPLOYMENT_ID` | Variable | Required immutable UUID |
+| `CLI_CONSOLE_ORIGIN` | Variable | Current origin |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |
 | `OAUTH_RELAY_URL` | Variable | Unset |
 | `PUBLIC_API_URL` | Variable | Unset |
 | `PROVIDER_TTFB_TIMEOUT_SECONDS` | Variable | `120` |
+| `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |
 | `VITE_POSTHOG_KEY`, `VITE_POSTHOG_HOST` | Console build | Unset |

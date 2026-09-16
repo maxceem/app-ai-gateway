@@ -35,7 +35,9 @@ export type BillingPeriod = (typeof billingPeriods)[number];
  * The plan an organization is entitled to right now.
  *
  * `limits` is opaque to the billing side and interpreted only here — see
- * `billingPlanLimits`, which reads `maxRequestsPerMonth` out of it.
+ * `PlanLimits` and `billingPlanLimits`, which read the gateway's whole
+ * vocabulary of plan limits out of it. A new ceiling is a new key there and
+ * plan data on the billing side; this contract never changes for one.
  */
 export interface EntitledPlan {
   planKey: string;

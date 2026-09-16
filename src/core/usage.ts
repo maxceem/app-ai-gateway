@@ -137,6 +137,7 @@ export function resolveModelAuthor(provider: ProviderType, model: string): strin
 
 interface UsageEventInput {
   env: Env;
+  organizationId: string;
   /**
    * What the usage observer read off the response body, settled once the client
    * has the whole body or has walked away from it. Null when there was no body
@@ -185,6 +186,7 @@ interface UsageEventInput {
 
 interface BlockedUsageEventInput {
   env: Env;
+  organizationId: string;
   appId: string;
   /** Null when the application identifies no end users; see {@link GatewayIdentity}. */
   userId: string | null;
@@ -999,6 +1001,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     row: {
       eventId,
       appId: input.appId,
+      organizationId: input.organizationId,
       userId: input.userId,
       apiKeyId: input.apiKeyId ?? null,
       providerType: input.provider,
@@ -1049,6 +1052,7 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
     row: {
       eventId,
       appId: input.appId,
+      organizationId: input.organizationId,
       userId: input.userId,
       apiKeyId: input.apiKeyId ?? null,
       providerType: input.provider,

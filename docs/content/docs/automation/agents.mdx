@@ -1,87 +1,49 @@
 ---
 title: Use with AI agents
-description: Hand your gateway to a coding agent so it can add providers, create apps and read usage for you.
+description: Let a coding agent configure your apps while you supply credentials privately.
 ---
 
-The gateway is designed to be operated by an AI agent as much as by a person.
-Every action is a plain REST call, the configuration is one JSON document,
-and there is a manual written for agents that fits in one request. Give an
-agent a management key and the manual, and it can set up an app end to end.
+Install the [CLI](/automation/cli), then give your coding agent this instruction:
 
-## 1. Create a management key
+```text
+Read https://docs.appaigateway.com/agents.md. Use agw to configure my gateway.
+Read before changing resources, use JSON output, and validate app configuration.
+Give me browser handoff URLs for provider secrets and account claim. I will open
+those outside your browser session. Never print credentials or run inference
+unless I explicitly ask.
+```
 
-In the console, open the user menu, choose **Management keys**, click
-**New key**, and name it after the agent or the project. Copy the key.
+The first provider or app creation can initialize a new hosted account. Existing
+accounts use `agw account login`; your own deployment can be installed with
+`agw deployment setup`. Help, lists and status do not create accounts.
 
-## 2. Put the key in the environment
-
-Never paste the key into a chat or a prompt file. Set it where the agent's
-shell reads it:
+For a provider credential, the agent can run:
 
 ```sh
-export APP_AI_GATEWAY_MGMT_KEY="agw_mgmt_…"
-export APP_AI_GATEWAY_URL="https://api.appaigateway.com"
+agw provider add --type openai --browser --no-open --json
 ```
 
-Use your project's usual
-mechanism for secrets, such as a `.env` file that is ignored by git.
+Open the returned URL in your own browser, check the provider and destination,
+and enter the credential. The agent polls the operation and receives only its
+nonsecret result. Hidden terminal prompts prevent echo, but do not isolate a
+credential from an agent controlling that terminal.
 
-## 3. Tell the agent where the manual is
+Account login and claim also display a separate confirmation code. Compare the
+account in the browser with the terminal before approving. You can claim human
+ownership without allowing the CLI to retain access. Approved service access can
+configure resources and read usage; human-only administration still needs you.
 
-Add this to your project's agent instructions file, such as `AGENTS.md` or
-`CLAUDE.md`:
+Application keys go to private files, never standard output. The CLI preserves
+retry proofs and credentials in protected local state. Keep that state after an
+interrupted request so retries recover the same operation or resource.
 
-```markdown
-## App AI Gateway
+## Machine-readable instructions
 
-This project's AI provider access goes through App AI Gateway. Before
-touching it, read https://docs.appaigateway.com/agents.md and follow it.
-The management key is in $APP_AI_GATEWAY_MGMT_KEY and the gateway URL is
-in $APP_AI_GATEWAY_URL. Never print the key. Never send `id` when creating
-an app. Validate a configuration before saving it.
-```
-
-That is enough for a capable agent. From then on, requests like these work
-as you would expect:
-
-- "Add my Anthropic key from `$ANTHROPIC_API_KEY` to the gateway and test
-  it."
-- "Create an iOS app called Calorie Tracker for team `ABCDE12345` and bundle
-  `com.example.calorietracker`, signed-in users via Firebase project
-  `calorie-1a2b3`, RevenueCat entitlement `pro`, 20 requests a minute per
-  user."
-- "Show me yesterday's spend by model for the Calorie Tracker app and block
-  any user over ten dollars."
-- "Point the `chat` endpoint at `gpt-5.6-luna` with low reasoning effort and
-  fall back to `grok-4.5`."
-
-## What the manual contains
-
-[The agent manual](/automation/agent-manual) is one page, also served as
-plain markdown at `/agents.md`. It covers authentication, the application
-lifecycle, the full configuration reference, providers, reading usage, the
-error table, and the rules about secrets. It links to the OpenAPI document
-for exact response shapes. It is the same information as the rest of this
-documentation, arranged for an agent that has to act rather than read.
-
-## Machine-readable files
-
-- `/agents.md`: the agent manual as markdown.
-- `/llms.txt`: an index of every documentation page with a one-line summary.
-- `/llms-full.txt`: the whole documentation in one file.
+- `/agents.md`: the complete agent manual as plain markdown.
+- `/llms.txt`: an index of the documentation.
+- `/llms-full.txt`: the complete documentation in one file.
 - `/openapi.json`: the API contract.
-- Any page as markdown by adding `.md` to its path, for example
-  `/applications/limits.md`.
+- Each guide as markdown by appending `.md` to its path.
 
-All are static files on the documentation site, so an agent can fetch them
-without a browser.
-
-## What to expect from the agent
-
-- It should list your providers and apps before changing anything, and
-  validate a configuration before saving it.
-- It should report where it stored a key, never the key itself.
-- It cannot create or revoke management keys. That takes a signed-in person
-  in the console.
-- Anything it does shows up in the console immediately, so you can check its
-  work on the app's pages.
+These are static files. Reading a guide does not install a skill or change your
+project instructions. You may link the manual from your own `AGENTS.md` if useful.

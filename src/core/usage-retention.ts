@@ -17,6 +17,13 @@
  * stops growing.
  */
 import { log } from "./log";
+import { AUTHORIZATION_SWEEP_QUERIES } from "./account-lifecycle";
+import { AUTH_SWEEP_QUERIES } from "./auth-events";
+import {
+  DEFAULT_MAINTENANCE_QUERY_BUDGET,
+  MAINTENANCE_SLACK_QUERIES,
+  type QueryBudget,
+} from "./query-budget";
 
 /** How long a raw, per-event row survives. */
 export const USAGE_EVENT_RETENTION_DAYS = 90;
@@ -45,24 +52,23 @@ export const USAGE_ROLLUP_DAY_RETENTION_DAYS = 400;
 export const CHUNK_ROWS = 5_000;
 
 /**
- * Queries one nightly run may issue, across both passes.
+ * Queries retention may issue when no run-wide budget is handed to it.
  *
- * D1 allows 1,000 queries per Worker invocation on the Workers Paid plan but
- * only **50** on the Free plan, and this project is meant to be easy to
- * self-host. So the budget is the Free one, less the two the authentication
- * sweeps in `prune()` spend before this runs and a little slack. Exceeding it
- * would not corrupt anything — every chunk is its own committed transaction —
- * but it would throw on a query every night, and take the fold pass down with
- * it, which is a bad way to discover a limit.
+ * This is what the nightly run leaves for retention on a deployment with no
+ * expired accounts to collect — the default allowance, less the two
+ * authentication sweeps, the authorization sweep and the run's slack. A hosted
+ * deployment also runs account cleanup, so there {@link runUsageRetention} is
+ * given whatever that left instead of this number.
  *
- * At {@link CHUNK_ROWS} this clears 55,000 events a night — eleven chunks, the
- * twelfth being one query short — against the 33,000 a day that a million
- * requests a month produces. A deployment on the
- * Paid plan serving more than roughly 1.8 million requests a month should raise
- * this toward 1,000; a Free one cannot reach that volume at all, since D1 caps a
- * Free database at 500 MB, or about 900,000 events.
+ * Each compaction chunk commits independently, so a backlog that does not fit
+ * is simply continued the following night. A deployment on the Workers Paid
+ * plan can raise the whole run's allowance with `MAINTENANCE_QUERY_BUDGET`.
  */
-const QUERY_BUDGET = 44;
+export const USAGE_RETENTION_QUERY_BUDGET =
+  DEFAULT_MAINTENANCE_QUERY_BUDGET -
+  AUTH_SWEEP_QUERIES -
+  AUTHORIZATION_SWEEP_QUERIES -
+  MAINTENANCE_SLACK_QUERIES;
 
 /** Held back so a large compaction backlog can never starve the fold entirely. */
 const FOLD_RESERVE = 9;
@@ -79,10 +85,10 @@ const SUMMED_COLUMNS = [
 /** `requests = requests + excluded.requests, ...` for every summed column. */
 const ACCUMULATE = SUMMED_COLUMNS.map((column) => `${column} = ${column} + excluded.${column}`).join(",\n    ");
 
-const CONFLICT_KEY = "(grain, bucket, app_id, model, provider_type, status)";
+const CONFLICT_KEY = "(organization_id, grain, bucket, app_id, model, provider_type, status)";
 
 const ROLLUP_COLUMNS =
-  "(grain, bucket, app_id, model, provider_type, status, requests, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd)";
+  "(organization_id, grain, bucket, app_id, model, provider_type, status, requests, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd)";
 
 /**
  * Sums one id range into day buckets.
@@ -99,6 +105,7 @@ const ROLLUP_COLUMNS =
 const ROLLUP_CHUNK = `
 INSERT INTO app_usage_rollup ${ROLLUP_COLUMNS}
 SELECT
+  organization_id,
   'day',
   substr(created_at, 1, 10),
   app_id,
@@ -113,7 +120,7 @@ SELECT
   COALESCE(SUM(cost_usd), 0)
 FROM app_usage_event
 WHERE id >= ? AND id < ? AND created_at < ?
-GROUP BY substr(created_at, 1, 10), app_id, model, provider_type, status
+GROUP BY organization_id, substr(created_at, 1, 10), app_id, model, provider_type, status
 ON CONFLICT ${CONFLICT_KEY} DO UPDATE SET
     ${ACCUMULATE}`;
 
@@ -130,6 +137,7 @@ const DELETE_CHUNK = "DELETE FROM app_usage_event WHERE id >= ? AND id < ? AND c
 const FOLD_MONTH = `
 INSERT INTO app_usage_rollup ${ROLLUP_COLUMNS}
 SELECT
+  organization_id,
   'month',
   ?,
   app_id,
@@ -144,21 +152,11 @@ SELECT
   SUM(cost_usd)
 FROM app_usage_rollup
 WHERE grain = 'day' AND substr(bucket, 1, 7) = ?
-GROUP BY app_id, model, provider_type, status
+GROUP BY organization_id, app_id, model, provider_type, status
 ON CONFLICT ${CONFLICT_KEY} DO UPDATE SET
     ${ACCUMULATE}`;
 
 const DROP_FOLDED_DAYS = "DELETE FROM app_usage_rollup WHERE grain = 'day' AND substr(bucket, 1, 7) = ?";
-
-/**
- * A run's remaining query allowance, decremented as statements are issued.
- *
- * Mutable and shared rather than returned, so that a pass which throws partway
- * still leaves an accurate count behind for the pass after it.
- */
-export interface QueryBudget {
-  remaining: number;
-}
 
 /** The UTC day `days` before `now`, as `YYYY-MM-DD`. */
 function dayBefore(now: number, days: number): string {
@@ -205,7 +203,7 @@ const QUERIES_PER_MONTH = 3;
 export async function compactUsageEvents(
   env: Env,
   now: number = Date.now(),
-  budget: QueryBudget = { remaining: QUERY_BUDGET - FOLD_RESERVE },
+  budget: QueryBudget = { remaining: USAGE_RETENTION_QUERY_BUDGET - FOLD_RESERVE },
 ): Promise<CompactionResult> {
   const cutoff = dayBefore(now, USAGE_EVENT_RETENTION_DAYS);
   let cursor = await oldestEventId(env, budget);
@@ -296,12 +294,20 @@ export async function foldUsageRollupMonths(
  *
  * The fold runs even when compaction failed: they touch different rows, and a
  * compaction that cannot keep up is no reason to let the rollup grow unbounded
- * as well. It is given its own reserved share of {@link QUERY_BUDGET} for the
+ * as well. It is given its own reserved share of the run's allowance for the
  * same reason — a compaction backlog must not be able to spend the whole night's
  * allowance and starve it.
+ *
+ * `budget` is the nightly run's shared allowance, already debited by the sweeps
+ * that ran before this one; whatever retention does not spend is left in it.
  */
-export async function runUsageRetention(env: Env, now: number = Date.now()): Promise<void> {
-  const budget: QueryBudget = { remaining: QUERY_BUDGET - FOLD_RESERVE };
+export async function runUsageRetention(
+  env: Env,
+  now: number = Date.now(),
+  budget: QueryBudget = { remaining: USAGE_RETENTION_QUERY_BUDGET },
+): Promise<void> {
+  const fold = Math.min(FOLD_RESERVE, Math.max(0, budget.remaining));
+  budget.remaining -= fold;
   try {
     const result = await compactUsageEvents(env, now, budget);
     log("info", "usage_events_compacted", { ...result, retentionDays: USAGE_EVENT_RETENTION_DAYS });
@@ -311,7 +317,7 @@ export async function runUsageRetention(env: Env, now: number = Date.now()): Pro
     });
   }
   // Whatever compaction left, plus the reserve held back for exactly this.
-  budget.remaining = Math.max(0, budget.remaining) + FOLD_RESERVE;
+  budget.remaining = Math.max(0, budget.remaining) + fold;
   try {
     const result = await foldUsageRollupMonths(env, now, budget);
     if (result.months > 0) {

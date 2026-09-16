@@ -8,7 +8,7 @@ import { SidebarContent } from "@/components/app-sidebar";
 import { Brand } from "@/components/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConsoleSession } from "@/lib/console-session";
-import { billingNotice, quotaNotice } from "@/lib/billing";
+import { accountTrialNotice, billingNotice, quotaNotice } from "@/lib/billing";
 
 /**
  * Warns about billing state above every page so an inactive subscription — or
@@ -20,9 +20,9 @@ import { billingNotice, quotaNotice } from "@/lib/billing";
  * not serve traffic at all has no allowance worth discussing.
  */
 function BillingBanner() {
-  const { capabilities, billing, quota } = useConsoleSession();
+  const { capabilities, billing, quota, organization } = useConsoleSession();
   const location = useLocation();
-  const notice = capabilities.billing ? billingNotice(billing) ?? quotaNotice(quota) : null;
+  const notice = capabilities.billing ? accountTrialNotice(organization) ?? billingNotice(billing) ?? quotaNotice(quota, organization) : null;
   // The billing page states all of this itself, right next to the controls
   // that act on it; repeating it above would show the same words twice.
   if (!notice || location.pathname === "/billing") return null;

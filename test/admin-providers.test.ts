@@ -748,7 +748,7 @@ describe("admin provider gateway API", () => {
 
   it("scopes gateway and provider operations to the current organization", async () => {
     await env.DB.prepare(
-      `INSERT OR IGNORE INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+      `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
        VALUES ('admin-other-org', 'Other', 'operator-test-owner', datetime('now'), datetime('now'))`,
     ).run();
     await seedProvider({

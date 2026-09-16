@@ -11,6 +11,19 @@ Sign up at [console.appaigateway.com](https://console.appaigateway.com). You lan
 **Apps** page, which shows the same three steps as this guide until your first
 request goes through.
 
+Prefer a terminal or coding agent? Install Node.js 22.19 or later and run:
+
+```sh
+npx @maxceem/agw provider add --type openai --browser --no-open
+npx @maxceem/agw app add --type ios --team-id ABCDE12345 --bundle-id com.example.app
+```
+
+The first creation initializes your hosted account. The browser handoff lets a
+person provide the credential privately. Run `agw account claim` after installing
+the CLI globally to establish human ownership. See [CLI](/automation/cli) for
+installation, complete workflows and recovery. Self-hosted gateways use
+[protected initialization](/self-hosting/deploy-to-cloudflare) before sign-in.
+
 ## 1. Add a provider key
 
 Open **Providers** and click **Add provider**.

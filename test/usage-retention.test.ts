@@ -1,8 +1,21 @@
+import {
+  ACCOUNT_CLEANUP_BATCH,
+  ACCOUNT_CLEANUP_PASS_QUERIES,
+  AUTHORIZATION_SWEEP_QUERIES,
+  pruneExpiredAccounts,
+} from "../src/core/account-lifecycle";
+import { AUTH_SWEEP_QUERIES } from "../src/core/auth-events";
+import {
+  DEFAULT_MAINTENANCE_QUERY_BUDGET,
+  MAINTENANCE_SLACK_QUERIES,
+  maintenanceQueryBudget,
+} from "../src/core/query-budget";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { timeOrderedId } from "../src/core/ids";
 import {
   CHUNK_ROWS,
+  USAGE_RETENTION_QUERY_BUDGET,
   compactUsageEvents,
   foldUsageRollupMonths,
   USAGE_EVENT_RETENTION_DAYS,
@@ -45,15 +58,17 @@ interface EventInput {
 }
 
 async function insertEvent(input: EventInput): Promise<void> {
-  await env.DB
-    .prepare(`
+  await env.DB.prepare(
+    `
       INSERT INTO app_usage_event
-        (event_id, app_id, user_id, provider_type, model, route, input_tokens,
+        (event_id, app_id, organization_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at)
-      VALUES (?, ?, NULL, ?, ?, '/v1/chat/completions', ?, 0, 0, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, NULL, ?, ?, '/v1/chat/completions', ?, 0, 0, ?, ?, ?, ?)`,
+  )
     .bind(
       timeOrderedId(),
       input.appId ?? APP,
+      (input.appId ?? APP) === APP ? TEST_ORGANIZATION_ID : "",
       input.provider ?? "openai",
       input.model ?? "gpt-4o-mini",
       input.inputTokens ?? 10,
@@ -67,21 +82,24 @@ async function insertEvent(input: EventInput): Promise<void> {
 
 /** Many identical events in one statement, for the chunk-boundary cases. */
 async function insertEvents(count: number, day: string): Promise<void> {
-  await env.DB
-    .prepare(`
+  await env.DB.prepare(
+    `
       INSERT INTO app_usage_event
-        (event_id, app_id, user_id, provider_type, model, route, input_tokens,
+        (event_id, app_id, organization_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at)
       WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
-      SELECT lower(hex(randomblob(16))), ?, NULL, 'openai', 'gpt-4o-mini',
+      SELECT lower(hex(randomblob(16))), ?, ?, NULL, 'openai', 'gpt-4o-mini',
              '/v1/chat/completions', 1, 0, 0, 1, 0.01, 'ok', ?
-      FROM seq`)
-    .bind(count, APP, `${day} 12:00:00`)
+      FROM seq`,
+  )
+    .bind(count, APP, TEST_ORGANIZATION_ID, `${day} 12:00:00`)
     .run();
 }
 
 async function eventCount(): Promise<number> {
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM app_usage_event").first<{ n: number }>();
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM app_usage_event",
+  ).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
@@ -99,16 +117,16 @@ interface RollupRow {
 }
 
 async function rollupRows(): Promise<RollupRow[]> {
-  const { results } = await env.DB
-    .prepare("SELECT * FROM app_usage_rollup ORDER BY grain, bucket, model, provider_type, status")
-    .all<RollupRow>();
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM app_usage_rollup ORDER BY grain, bucket, model, provider_type, status",
+  ).all<RollupRow>();
   return results;
 }
 
 async function remainingEventDays(): Promise<string[]> {
-  const { results } = await env.DB
-    .prepare("SELECT substr(created_at, 1, 10) AS day FROM app_usage_event ORDER BY id")
-    .all<{ day: string }>();
+  const { results } = await env.DB.prepare(
+    "SELECT substr(created_at, 1, 10) AS day FROM app_usage_event ORDER BY id",
+  ).all<{ day: string }>();
   return results.map((row) => row.day);
 }
 
@@ -121,7 +139,11 @@ beforeEach(async () => {
 
 describe("timeOrderedId", () => {
   it("sorts lexically in the order it was minted", () => {
-    const ids = [timeOrderedId(1), timeOrderedId(1_000), timeOrderedId(1_700_000_000_000)];
+    const ids = [
+      timeOrderedId(1),
+      timeOrderedId(1_000),
+      timeOrderedId(1_700_000_000_000),
+    ];
     expect([...ids].sort()).toEqual(ids);
   });
 
@@ -133,7 +155,9 @@ describe("timeOrderedId", () => {
   });
 
   it("does not repeat itself", () => {
-    const minted = new Set(Array.from({ length: 2_000 }, () => timeOrderedId()));
+    const minted = new Set(
+      Array.from({ length: 2_000 }, () => timeOrderedId()),
+    );
     expect(minted.size).toBe(2_000);
   });
 });
@@ -161,7 +185,11 @@ describe("compactUsageEvents", () => {
       output_tokens: 10,
       cost_usd: 0.5,
     });
-    expect(rows[1]).toMatchObject({ bucket: OTHER_EXPIRED_DAY, model: "gpt-4o", requests: 1 });
+    expect(rows[1]).toMatchObject({
+      bucket: OTHER_EXPIRED_DAY,
+      model: "gpt-4o",
+      requests: 1,
+    });
   });
 
   it("leaves events inside the retention window alone", async () => {
@@ -175,9 +203,24 @@ describe("compactUsageEvents", () => {
   });
 
   it("splits one day across dimensions rather than collapsing them", async () => {
-    await insertEvent({ day: EXPIRED_DAY, model: "a", provider: "openai", status: "ok" });
-    await insertEvent({ day: EXPIRED_DAY, model: "a", provider: "openai", status: "provider_error" });
-    await insertEvent({ day: EXPIRED_DAY, model: "b", provider: "anthropic", status: "ok" });
+    await insertEvent({
+      day: EXPIRED_DAY,
+      model: "a",
+      provider: "openai",
+      status: "ok",
+    });
+    await insertEvent({
+      day: EXPIRED_DAY,
+      model: "a",
+      provider: "openai",
+      status: "provider_error",
+    });
+    await insertEvent({
+      day: EXPIRED_DAY,
+      model: "b",
+      provider: "anthropic",
+      status: "ok",
+    });
 
     await compactUsageEvents(env, NOW);
 
@@ -213,7 +256,12 @@ describe("compactUsageEvents", () => {
 
   it("reports nothing to do for an empty table without opening a transaction", async () => {
     const result = await compactUsageEvents(env, NOW);
-    expect(result).toEqual({ chunks: 0, rolledUp: 0, deleted: 0, caughtUp: true });
+    expect(result).toEqual({
+      chunks: 0,
+      rolledUp: 0,
+      deleted: 0,
+      caughtUp: true,
+    });
   });
 
   it("collects an expired row behind a live one in the same chunk", async () => {
@@ -225,7 +273,10 @@ describe("compactUsageEvents", () => {
     await compactUsageEvents(env, NOW);
 
     expect(await remainingEventDays()).toEqual([LIVE_DAY]);
-    expect((await rollupRows())[0]).toMatchObject({ bucket: EXPIRED_DAY, requests: 1 });
+    expect((await rollupRows())[0]).toMatchObject({
+      bucket: EXPIRED_DAY,
+      requests: 1,
+    });
   });
 
   it("defers an expired row that a live chunk boundary hides, then collects it", async () => {
@@ -276,20 +327,36 @@ describe("compactUsageEvents", () => {
     // One bucket, summed across both runs rather than duplicated by them.
     const rows = await rollupRows();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ bucket: EXPIRED_DAY, requests: CHUNK_ROWS + 1 });
+    expect(rows[0]).toMatchObject({
+      bucket: EXPIRED_DAY,
+      requests: CHUNK_ROWS + 1,
+    });
   });
 });
 
 describe("foldUsageRollupMonths", () => {
   /** Writes a day bucket directly, standing in for an earlier compaction. */
-  async function seedDayBucket(bucket: string, requests: number, model = "gpt-4o-mini"): Promise<void> {
-    await env.DB
-      .prepare(`
+  async function seedDayBucket(
+    bucket: string,
+    requests: number,
+    model = "gpt-4o-mini",
+  ): Promise<void> {
+    await env.DB.prepare(
+      `
         INSERT INTO app_usage_rollup
-          (grain, bucket, app_id, model, provider_type, status, requests,
+          (grain, bucket, app_id, organization_id, model, provider_type, status, requests,
            input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd)
-        VALUES ('day', ?, ?, ?, 'openai', 'ok', ?, ?, 0, 0, 0, ?)`)
-      .bind(bucket, APP, model, requests, requests * 10, requests * 0.5)
+        VALUES ('day', ?, ?, ?, ?, 'openai', 'ok', ?, ?, 0, 0, 0, ?)`,
+    )
+      .bind(
+        bucket,
+        APP,
+        TEST_ORGANIZATION_ID,
+        model,
+        requests,
+        requests * 10,
+        requests * 0.5,
+      )
       .run();
   }
 
@@ -323,7 +390,9 @@ describe("foldUsageRollupMonths", () => {
   });
 
   it("leaves a month that is not yet entirely past the day window", async () => {
-    const inside = new Date(NOW - (USAGE_ROLLUP_DAY_RETENTION_DAYS - 14) * 86_400_000)
+    const inside = new Date(
+      NOW - (USAGE_ROLLUP_DAY_RETENTION_DAYS - 14) * 86_400_000,
+    )
       .toISOString()
       .slice(0, 10);
     await seedDayBucket(inside, 4);
@@ -331,7 +400,10 @@ describe("foldUsageRollupMonths", () => {
     const result = await foldUsageRollupMonths(env, NOW);
 
     expect(result.months).toBe(0);
-    expect((await rollupRows())[0]).toMatchObject({ grain: "day", bucket: inside });
+    expect((await rollupRows())[0]).toMatchObject({
+      grain: "day",
+      bucket: inside,
+    });
   });
 
   it("holds back the whole month the window falls inside, not just its tail", async () => {
@@ -343,9 +415,15 @@ describe("foldUsageRollupMonths", () => {
      */
     // The window lands on 2025-04-27, so these sit either side of it inside one
     // April: the first has aged out, the second has not.
-    const straddled = dayString(NOW - (USAGE_ROLLUP_DAY_RETENTION_DAYS + 5) * 86_400_000);
-    const stillInside = dayString(NOW - (USAGE_ROLLUP_DAY_RETENTION_DAYS - 3) * 86_400_000);
-    const cutoffDay = dayString(NOW - USAGE_ROLLUP_DAY_RETENTION_DAYS * 86_400_000);
+    const straddled = dayString(
+      NOW - (USAGE_ROLLUP_DAY_RETENTION_DAYS + 5) * 86_400_000,
+    );
+    const stillInside = dayString(
+      NOW - (USAGE_ROLLUP_DAY_RETENTION_DAYS - 3) * 86_400_000,
+    );
+    const cutoffDay = dayString(
+      NOW - USAGE_ROLLUP_DAY_RETENTION_DAYS * 86_400_000,
+    );
     expect(straddled.slice(0, 7)).toBe(stillInside.slice(0, 7));
     expect(straddled < cutoffDay).toBe(true);
     expect(stillInside > cutoffDay).toBe(true);
@@ -366,7 +444,11 @@ describe("foldUsageRollupMonths", () => {
 
     const rows = await rollupRows();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ grain: "month", bucket: "2024-03", requests: 7 });
+    expect(rows[0]).toMatchObject({
+      grain: "month",
+      bucket: "2024-03",
+      requests: 7,
+    });
   });
 
   it("does not read back the month rows it writes", async () => {
@@ -396,10 +478,16 @@ describe("reading across both tables", () => {
     await insertEvent({ day: "2026-05-03", costUsd: 2 });
     // Compact only the first of the two, by asking from a `now` that has just
     // aged it out.
-    await compactUsageEvents(env, Date.parse("2026-05-03T00:00:00Z") + USAGE_EVENT_RETENTION_DAYS * 86_400_000);
+    await compactUsageEvents(
+      env,
+      Date.parse("2026-05-03T00:00:00Z") +
+        USAGE_EVENT_RETENTION_DAYS * 86_400_000,
+    );
 
     expect(await remainingEventDays()).toEqual(["2026-05-03"]);
-    expect((await rollupRows()).map((row) => row.bucket)).toEqual(["2026-05-02"]);
+    expect((await rollupRows()).map((row) => row.bucket)).toEqual([
+      "2026-05-02",
+    ]);
 
     const totals = await usageMonthTotals(env.DB, APP, "2026-05");
     expect(totals).toMatchObject({ requests: 2, cost_usd: 3 });
@@ -412,9 +500,17 @@ describe("reading across both tables", () => {
     // rollup row and the raw row back together rather than report two buckets.
     await insertEvent({ day: EXPIRED_DAY, time: "02:00:00", costUsd: 2 });
 
-    const { results } = await usageTimeseries(env.DB, APP, { from: "2026-01-01", to: "2026-01-31" });
+    const { results } = await usageTimeseries(env.DB, APP, {
+      from: "2026-01-01",
+      to: "2026-01-31",
+    });
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ date: EXPIRED_DAY, provider: "openai", requests: 2, cost_usd: 3 });
+    expect(results[0]).toMatchObject({
+      date: EXPIRED_DAY,
+      provider: "openai",
+      requests: 2,
+      cost_usd: 3,
+    });
   });
 
   it("weighs the rollup's status counters by requests, not by rows", async () => {
@@ -425,7 +521,10 @@ describe("reading across both tables", () => {
     await insertEvent({ day: EXPIRED_DAY, status: "blocked_app_rate" });
     await compactUsageEvents(env, NOW);
 
-    const { results } = await usageTimeseries(env.DB, APP, { from: "2026-01-01", to: "2026-01-31" });
+    const { results } = await usageTimeseries(env.DB, APP, {
+      from: "2026-01-01",
+      to: "2026-01-31",
+    });
     /*
      * Five events compacted into two rows. Both counters have to weigh by
      * `requests`: counting rows instead would report one error and one blocked,
@@ -452,10 +551,16 @@ describe("reading across both tables", () => {
 
     const range = { from: EXPIRED_DAY, to: "2026-01-15" };
     const series = await usageTimeseries(env.DB, APP, range);
-    expect(series.results.map((row) => row.date)).toEqual([EXPIRED_DAY, "2026-01-12"]);
+    expect(series.results.map((row) => row.date)).toEqual([
+      EXPIRED_DAY,
+      "2026-01-12",
+    ]);
 
     const breakdown = await usageBreakdown(env.DB, APP, range, "model", 50);
-    expect(breakdown.results.map((row) => row.key).sort()).toEqual(["raw-inside", "rollup-inside"]);
+    expect(breakdown.results.map((row) => row.key).sort()).toEqual([
+      "raw-inside",
+      "rollup-inside",
+    ]);
   });
 
   it("breaks down by model across the boundary", async () => {
@@ -482,12 +587,18 @@ describe("reading across both tables", () => {
     await insertEvent({ day: "2024-03-05" });
     await compactUsageEvents(env, NOW);
     await foldUsageRollupMonths(env, NOW);
-    expect((await rollupRows())[0]).toMatchObject({ grain: "month", bucket: "2024-03" });
+    expect((await rollupRows())[0]).toMatchObject({
+      grain: "month",
+      bucket: "2024-03",
+    });
 
     // The range deliberately opens in the previous month: `'2024-03'` sorts
     // inside `'2024-02-15' .. '2024-03-31'`, so only the grain filter keeps a
     // month bucket from being served as if it were a date.
-    const { results } = await usageTimeseries(env.DB, APP, { from: "2024-02-15", to: "2024-03-31" });
+    const { results } = await usageTimeseries(env.DB, APP, {
+      from: "2024-02-15",
+      to: "2024-03-31",
+    });
     expect(results).toEqual([]);
     // The breakdown carries its own grain filter and needs its own guard: without
     // one, a ten-day range would be answered with a whole folded month.
@@ -501,16 +612,28 @@ describe("reading across both tables", () => {
     expect(breakdown.results).toEqual([]);
     // The month total still finds it, because that query matches on the prefix
     // and so reads whichever grain currently holds the month.
-    expect(await usageMonthTotals(env.DB, APP, "2024-03")).toMatchObject({ requests: 1 });
+    expect(await usageMonthTotals(env.DB, APP, "2024-03")).toMatchObject({
+      requests: 1,
+    });
   });
 
   it("reports an organization's apps from both tables", async () => {
     await insertEvent({ day: "2026-05-02", costUsd: 1 });
     await insertEvent({ day: "2026-05-03", costUsd: 2 });
-    await compactUsageEvents(env, Date.parse("2026-05-03T00:00:00Z") + USAGE_EVENT_RETENTION_DAYS * 86_400_000);
+    await compactUsageEvents(
+      env,
+      Date.parse("2026-05-03T00:00:00Z") +
+        USAGE_EVENT_RETENTION_DAYS * 86_400_000,
+    );
 
-    const { results } = await organizationMonthUsage(env.DB, TEST_ORGANIZATION_ID, "2026-05");
-    expect(results).toEqual([expect.objectContaining({ app_id: APP, requests: 2, cost_usd: 3 })]);
+    const { results } = await organizationMonthUsage(
+      env.DB,
+      TEST_ORGANIZATION_ID,
+      "2026-05",
+    );
+    expect(results).toEqual([
+      expect.objectContaining({ app_id: APP, requests: 2, cost_usd: 3 }),
+    ]);
   });
 
   it("finds a folded month for an organization too", async () => {
@@ -518,15 +641,118 @@ describe("reading across both tables", () => {
     await compactUsageEvents(env, NOW);
     await foldUsageRollupMonths(env, NOW);
 
-    const { results } = await organizationMonthUsage(env.DB, TEST_ORGANIZATION_ID, "2024-03");
-    expect(results).toEqual([expect.objectContaining({ app_id: APP, requests: 1 })]);
+    const { results } = await organizationMonthUsage(
+      env.DB,
+      TEST_ORGANIZATION_ID,
+      "2024-03",
+    );
+    expect(results).toEqual([
+      expect.objectContaining({ app_id: APP, requests: 1 }),
+    ]);
   });
 
   it("keeps another organization's traffic out", async () => {
     await insertEvent({ day: EXPIRED_DAY, appId: "someone-elses-app" });
     await compactUsageEvents(env, NOW);
 
-    const { results } = await organizationMonthUsage(env.DB, TEST_ORGANIZATION_ID, "2026-01");
+    const { results } = await organizationMonthUsage(
+      env.DB,
+      TEST_ORGANIZATION_ID,
+      "2026-01",
+    );
     expect(results).toEqual([]);
   });
+});
+
+/**
+ * A database that only counts what it is asked to run.
+ *
+ * `collected` is what the batch's account delete reports, which is how the
+ * cleanup loop decides whether a full batch means there is more behind it.
+ */
+function countingDatabase(collected: number) {
+  const counts = { statements: 0, batches: 0 };
+  const statement = {
+    bind() {
+      return this;
+    },
+    async run() {
+      counts.statements++;
+    },
+  };
+  const db = {
+    prepare() {
+      return statement;
+    },
+    async batch(batch: unknown[]) {
+      counts.statements += batch.length;
+      counts.batches++;
+      return batch.map(() => ({ meta: { changes: collected } }));
+    },
+  };
+  return { env: { DB: db } as unknown as Env, counts };
+}
+
+it("spends one nightly allowance across every sweep, and reserves nothing a self-host cannot use", async () => {
+  const { env: counting, counts } = countingDatabase(0);
+  await pruneExpiredAccounts(counting);
+  expect(counts.statements).toBe(ACCOUNT_CLEANUP_PASS_QUERIES);
+
+  // What a self-host actually issues: the two authentication sweeps, the
+  // authorization sweep, and retention with all of the rest. Account cleanup is
+  // not among them, so none of its statements may be held back from retention.
+  expect(
+    AUTH_SWEEP_QUERIES +
+      AUTHORIZATION_SWEEP_QUERIES +
+      USAGE_RETENTION_QUERY_BUDGET +
+      MAINTENANCE_SLACK_QUERIES,
+  ).toBe(DEFAULT_MAINTENANCE_QUERY_BUDGET);
+
+  // And a hosted night, where cleanup is offered half of what the fixed sweeps
+  // leave, still fits under the same ceiling.
+  const hosted =
+    DEFAULT_MAINTENANCE_QUERY_BUDGET - AUTH_SWEEP_QUERIES - MAINTENANCE_SLACK_QUERIES;
+  expect(
+    AUTH_SWEEP_QUERIES +
+      AUTHORIZATION_SWEEP_QUERIES +
+      Math.floor((hosted - AUTHORIZATION_SWEEP_QUERIES) / 2) +
+      MAINTENANCE_SLACK_QUERIES,
+  ).toBeLessThanOrEqual(DEFAULT_MAINTENANCE_QUERY_BUDGET);
+});
+
+it("keeps collecting expired accounts while a full batch says more are behind it", async () => {
+  const { env: counting, counts } = countingDatabase(ACCOUNT_CLEANUP_BATCH);
+  const budget = { remaining: ACCOUNT_CLEANUP_PASS_QUERIES * 3 + 4 };
+  const deleted = await pruneExpiredAccounts(counting, budget);
+
+  expect(counts.batches).toBe(3);
+  expect(deleted).toBe(ACCOUNT_CLEANUP_BATCH * 3);
+  // Stops on the allowance, not on an arbitrary cap, and leaves the remainder
+  // for the retention pass that runs after it.
+  expect(budget.remaining).toBe(4);
+});
+
+it("stops after the pass that did not fill its batch", async () => {
+  const { env: counting, counts } = countingDatabase(ACCOUNT_CLEANUP_BATCH - 1);
+  const budget = { remaining: ACCOUNT_CLEANUP_PASS_QUERIES * 5 };
+  const deleted = await pruneExpiredAccounts(counting, budget);
+
+  expect(counts.batches).toBe(1);
+  expect(deleted).toBe(ACCOUNT_CLEANUP_BATCH - 1);
+  expect(budget.remaining).toBe(ACCOUNT_CLEANUP_PASS_QUERIES * 4);
+});
+
+it("raises the nightly allowance only for a deployment that configured a usable one", () => {
+  expect(maintenanceQueryBudget({} as Env).remaining).toBe(
+    DEFAULT_MAINTENANCE_QUERY_BUDGET,
+  );
+  expect(
+    maintenanceQueryBudget({ MAINTENANCE_QUERY_BUDGET: "1000" } as Env).remaining,
+  ).toBe(1000);
+  for (const configured of ["", "  ", "not a number", "12", "-100", "7.5"]) {
+    expect(
+      maintenanceQueryBudget({ MAINTENANCE_QUERY_BUDGET: configured } as Env)
+        .remaining,
+    ).toBe(DEFAULT_MAINTENANCE_QUERY_BUDGET);
+  }
 });

@@ -5,6 +5,7 @@ import type {
   BillingPrice,
   EntitledPlan,
   OrganizationQuota,
+  OrganizationSummary,
   SubscriptionState,
 } from "./types";
 
@@ -92,6 +93,7 @@ export function billingNotice(access: BillingAccess | undefined | null): Billing
     };
   }
 
+
   if (access.plan === null) {
     return {
       tone: "destructive",
@@ -103,7 +105,7 @@ export function billingNotice(access: BillingAccess | undefined | null): Billing
 
   // A subscription that no longer entitles anything: traffic still flows, on
   // the default plan, so this is a change of allowance rather than an outage.
-  if (access.subscription && access.plan.isDefault) {
+  if (access.subscription?.subscriptionId && access.plan.isDefault) {
     return {
       tone: "warning",
       title: "Your subscription has ended",
@@ -122,6 +124,27 @@ export function billingNotice(access: BillingAccess | undefined | null): Billing
   }
 
   return null;
+}
+
+/**
+ * Whether the account is still the anonymous one the CLI created, which holds a
+ * single free allowance instead of a renewing one. `expiresAt` is the recovery
+ * deadline the gateway sets at bootstrap and clears the moment a human claims.
+ */
+export function isUnclaimedAccount(account: OrganizationSummary | null | undefined): boolean {
+  return Boolean(account && !account.claimed && account.expiresAt);
+}
+
+/** The gateway limits unclaimed free access independently of provider subscriptions. */
+export function accountTrialNotice(account: OrganizationSummary | null | undefined): BillingNotice | null {
+  if (!account || !isUnclaimedAccount(account)) return null;
+  const endsAt = new Date(new Date(account.createdAt).getTime() + 30 * 86_400_000).toISOString();
+  return {
+    tone: "warning",
+    title: "Unclaimed free access",
+    description: `Your free access does not renew until you claim your account. Claim your account for free to keep your apps and usage. Free access ends ${formatBillingDateTime(endsAt)}.`,
+    actionable: false,
+  };
 }
 
 /**
@@ -153,10 +176,11 @@ export interface QuotaMeter {
  * `null` when there is no allowance to report — a self-hosted deployment, or
  * a status response from before this field existed.
  */
-export function quotaMeter(quota: OrganizationQuota | undefined | null): QuotaMeter | null {
+export function quotaMeter(quota: OrganizationQuota | undefined | null, account?: OrganizationSummary | null): QuotaMeter | null {
   if (!quota) return null;
   const resets = formatBillingDateTime(quota.resetAt);
-  const caption = resets ? `Resets ${resets}` : "Reset time unavailable";
+  const nonrenewing = isUnclaimedAccount(account);
+  const caption = resets ? `${nonrenewing ? "Ends" : "Resets"} ${resets}` : nonrenewing ? "Free access end unavailable" : "Reset time unavailable";
   if (quota.limit === undefined || quota.limit === null) {
     return {
       used: quota.used,
@@ -187,19 +211,19 @@ export function quotaMeter(quota: OrganizationQuota | undefined | null): QuotaMe
  * a spent allowance is usually a client behaving unexpectedly, and the whole
  * value of saying so is saying it before every request starts being refused.
  */
-export function quotaNotice(quota: OrganizationQuota | undefined | null): BillingNotice | null {
-  const meter = quotaMeter(quota);
+export function quotaNotice(quota: OrganizationQuota | undefined | null, account?: OrganizationSummary | null): BillingNotice | null {
+  const meter = quotaMeter(quota, account);
   if (!meter || meter.ratio === null || meter.tone === "normal") return null;
   return meter.ratio >= 1
     ? {
         tone: "destructive",
-        title: "Monthly request allowance spent",
-        description: `Gateway requests are being refused until the allowance resets. ${meter.caption}.`,
+        title: isUnclaimedAccount(account) ? "Free request allowance spent" : "Monthly request allowance spent",
+        description: isUnclaimedAccount(account) ? `This free allowance does not renew until you claim your account. Claim it to move onto a renewing monthly allowance. ${meter.caption}.` : `Gateway requests are being refused until the allowance resets. ${meter.caption}.`,
         actionable: true,
       }
     : {
         tone: "warning",
-        title: "Monthly request allowance almost spent",
+        title: isUnclaimedAccount(account) ? "Free request allowance almost spent" : "Monthly request allowance almost spent",
         description: `${meter.label} used in the current period. ${meter.caption}.`,
         actionable: true,
       };
@@ -276,6 +300,7 @@ export function canCancel(subscription: SubscriptionState | null): boolean {
   return Boolean(
     subscription
       // Manual grants are not LemonSqueezy's to cancel.
+      && Boolean(subscription.subscriptionId)
       && subscription.source === "lemon_squeezy"
       && CANCELLABLE.has(subscription.status),
   );
@@ -283,7 +308,7 @@ export function canCancel(subscription: SubscriptionState | null): boolean {
 
 /** A canceled subscription can be un-canceled, whether or not it still entitles. */
 export function canResume(subscription: SubscriptionState | null): boolean {
-  return subscription?.status === "cancelled";
+  return Boolean(subscription?.subscriptionId && subscription.source === "lemon_squeezy" && subscription.status === "cancelled");
 }
 
 /**

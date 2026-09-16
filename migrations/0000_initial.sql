@@ -3,10 +3,11 @@ CREATE TABLE `app` (
 	`organization_id` text NOT NULL,
 	`name` text NOT NULL,
 	`config_json` text NOT NULL,
+	`revision` integer DEFAULT 1 NOT NULL,
 	`status` text DEFAULT 'active' NOT NULL,
 	`created_at` text DEFAULT (datetime('now')) NOT NULL,
 	`updated_at` text DEFAULT (datetime('now')) NOT NULL,
-	FOREIGN KEY (`organization_id`) REFERENCES `console_organization`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "apps_status_check" CHECK("app"."status" IN ('active', 'disabled'))
 );
 --> statement-breakpoint
@@ -56,6 +57,7 @@ CREATE TABLE `app_usage_event` (
 	`id` integer PRIMARY KEY NOT NULL,
 	`event_id` text,
 	`app_id` text NOT NULL,
+	`organization_id` text DEFAULT '' NOT NULL,
 	`user_id` text,
 	`api_key_id` text,
 	`provider_type` text NOT NULL,
@@ -86,6 +88,7 @@ CREATE TABLE `app_usage_event` (
 	CONSTRAINT "usage_events_status_check" CHECK("app_usage_event"."status" IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user'))
 );
 --> statement-breakpoint
+CREATE INDEX `idx_usage_event_account_created` ON `app_usage_event` (`organization_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `idx_usage_user_month` ON `app_usage_event` (`app_id`,`user_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `idx_usage_app_month` ON `app_usage_event` (`app_id`,`created_at`);--> statement-breakpoint
 CREATE UNIQUE INDEX `usage_events_event_id_unique` ON `app_usage_event` (`event_id`);--> statement-breakpoint
@@ -94,6 +97,7 @@ CREATE TABLE `app_usage_rollup` (
 	`grain` text NOT NULL,
 	`bucket` text NOT NULL,
 	`app_id` text NOT NULL,
+	`organization_id` text DEFAULT '' NOT NULL,
 	`model` text NOT NULL,
 	`provider_type` text NOT NULL,
 	`status` text NOT NULL,
@@ -105,7 +109,8 @@ CREATE TABLE `app_usage_rollup` (
 	`cost_usd` real NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `usage_rollup_key` ON `app_usage_rollup` (`grain`,`bucket`,`app_id`,`model`,`provider_type`,`status`);--> statement-breakpoint
+CREATE UNIQUE INDEX `usage_rollup_key` ON `app_usage_rollup` (`organization_id`,`grain`,`bucket`,`app_id`,`model`,`provider_type`,`status`);--> statement-breakpoint
+CREATE INDEX `idx_usage_rollup_account_bucket` ON `app_usage_rollup` (`organization_id`,`grain`,`bucket`);--> statement-breakpoint
 CREATE INDEX `idx_usage_rollup_app_bucket` ON `app_usage_rollup` (`app_id`,`grain`,`bucket`);--> statement-breakpoint
 CREATE TABLE `app_user` (
 	`app_id` text NOT NULL,
@@ -123,56 +128,7 @@ CREATE TABLE `app_user` (
 	CONSTRAINT "users_status_check" CHECK("app_user"."status" IN ('active', 'blocked'))
 );
 --> statement-breakpoint
-CREATE TABLE `console_api_key` (
-	`id` text PRIMARY KEY NOT NULL,
-	`organization_id` text NOT NULL,
-	`name` text NOT NULL,
-	`token_hash` text NOT NULL,
-	`token_hint` text,
-	`created_at` text NOT NULL,
-	`revoked_at` text,
-	FOREIGN KEY (`organization_id`) REFERENCES `console_organization`(`id`) ON UPDATE no action ON DELETE cascade
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX `console_api_key_token_hash_unique` ON `console_api_key` (`token_hash`);--> statement-breakpoint
-CREATE INDEX `console_idx_api_key_organization_id` ON `console_api_key` (`organization_id`);--> statement-breakpoint
-CREATE TABLE `console_organization` (
-	`id` text PRIMARY KEY NOT NULL,
-	`name` text NOT NULL,
-	`created_by_user_id` text NOT NULL,
-	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL,
-	FOREIGN KEY (`created_by_user_id`) REFERENCES `console_user`(`id`) ON UPDATE no action ON DELETE no action
-);
---> statement-breakpoint
-CREATE TABLE `console_organization_user` (
-	`id` text PRIMARY KEY NOT NULL,
-	`organization_id` text NOT NULL,
-	`user_id` text NOT NULL,
-	`role` text NOT NULL,
-	`status` text NOT NULL,
-	`joined_at` text NOT NULL,
-	FOREIGN KEY (`organization_id`) REFERENCES `console_organization`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`user_id`) REFERENCES `console_user`(`id`) ON UPDATE no action ON DELETE cascade,
-	CONSTRAINT "console_organization_user_role_check" CHECK("console_organization_user"."role" in ('owner', 'admin', 'member')),
-	CONSTRAINT "console_organization_user_status_check" CHECK("console_organization_user"."status" in ('active'))
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX `console_organization_user_organization_id_user_id_unique` ON `console_organization_user` (`organization_id`,`user_id`);--> statement-breakpoint
-CREATE INDEX `console_idx_organization_user_user_id` ON `console_organization_user` (`user_id`);--> statement-breakpoint
-CREATE INDEX `console_idx_organization_user_organization_id` ON `console_organization_user` (`organization_id`);--> statement-breakpoint
-CREATE TABLE `console_user` (
-	`id` text PRIMARY KEY NOT NULL,
-	`name` text NOT NULL,
-	`email` text NOT NULL,
-	`email_verified` integer DEFAULT false NOT NULL,
-	`image` text,
-	`created_at` integer NOT NULL,
-	`updated_at` integer NOT NULL
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX `console_idx_user_email` ON `console_user` ("email" COLLATE NOCASE);--> statement-breakpoint
-CREATE TABLE `console_user_account` (
+CREATE TABLE `mgmt_user_account` (
 	`id` text PRIMARY KEY NOT NULL,
 	`account_id` text NOT NULL,
 	`provider_id` text NOT NULL,
@@ -186,12 +142,94 @@ CREATE TABLE `console_user_account` (
 	`password` text,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL,
-	FOREIGN KEY (`user_id`) REFERENCES `console_user`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`user_id`) REFERENCES `mgmt_user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `console_idx_account_user_id` ON `console_user_account` (`user_id`);--> statement-breakpoint
-CREATE UNIQUE INDEX `console_idx_account_provider_account` ON `console_user_account` (`provider_id`,`account_id`);--> statement-breakpoint
-CREATE TABLE `console_user_session` (
+CREATE INDEX `mgmt_idx_account_user_id` ON `mgmt_user_account` (`user_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `mgmt_idx_account_provider_account` ON `mgmt_user_account` (`provider_id`,`account_id`);--> statement-breakpoint
+CREATE TABLE `mgmt_api_key` (
+	`id` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`organization_id` text NOT NULL,
+	`name` text NOT NULL,
+	`token_hash` text NOT NULL,
+	`token_hint` text NOT NULL,
+	`enabled` integer DEFAULT true NOT NULL,
+	`expires_at` integer,
+	`created_at` integer NOT NULL,
+	`revoked_at` integer,
+	FOREIGN KEY (`user_id`) REFERENCES `mgmt_user`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `mgmt_api_key_token_hash_unique` ON `mgmt_api_key` (`token_hash`);--> statement-breakpoint
+CREATE INDEX `mgmt_idx_api_key_user_id` ON `mgmt_api_key` (`user_id`);--> statement-breakpoint
+CREATE INDEX `mgmt_idx_api_key_organization_id` ON `mgmt_api_key` (`organization_id`);--> statement-breakpoint
+CREATE TABLE `mgmt_handoff` (
+	`id` text PRIMARY KEY NOT NULL,
+	`kind` text NOT NULL,
+	`request_json` text NOT NULL,
+	`organization_id` text NOT NULL,
+	`initiating_user_id` text NOT NULL,
+	`initiating_credential_id` text NOT NULL,
+	`submission_proof_hash` text NOT NULL,
+	`poll_proof_hash` text NOT NULL,
+	`human_code_hash` text,
+	`consumed_at` integer,
+	`outcome` text,
+	`expires_at` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `idx_mgmt_handoff_pending` ON `mgmt_handoff` (`organization_id`,`expires_at`);--> statement-breakpoint
+CREATE TABLE `mgmt_organization` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`expires_at` text,
+	`created_by_user_id` text NOT NULL,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	FOREIGN KEY (`created_by_user_id`) REFERENCES `mgmt_user`(`id`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE TABLE `mgmt_organization_user` (
+	`id` text PRIMARY KEY NOT NULL,
+	`organization_id` text NOT NULL,
+	`user_id` text NOT NULL,
+	`role` text NOT NULL,
+	`status` text NOT NULL,
+	`joined_at` text NOT NULL,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`user_id`) REFERENCES `mgmt_user`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "mgmt_organization_user_role_check" CHECK("mgmt_organization_user"."role" in ('owner', 'admin', 'member')),
+	CONSTRAINT "mgmt_organization_user_status_check" CHECK("mgmt_organization_user"."status" in ('active'))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `mgmt_organization_user_organization_id_user_id_unique` ON `mgmt_organization_user` (`organization_id`,`user_id`);--> statement-breakpoint
+CREATE INDEX `mgmt_idx_organization_user_user_id` ON `mgmt_organization_user` (`user_id`);--> statement-breakpoint
+CREATE INDEX `mgmt_idx_organization_user_organization_id` ON `mgmt_organization_user` (`organization_id`);--> statement-breakpoint
+CREATE TABLE `mgmt_resource_receipt` (
+	`id` text PRIMARY KEY NOT NULL,
+	`kind` text NOT NULL,
+	`organization_id` text,
+	`initiating_user_id` text,
+	`initiating_credential_id` text,
+	`proof_hash` text NOT NULL,
+	`request_hash` text NOT NULL,
+	`outcome` text,
+	`protected_credential` text,
+	`protected_credential_expires_at` integer,
+	`consumed_at` integer,
+	`expires_at` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE INDEX `idx_mgmt_resource_receipt_organization` ON `mgmt_resource_receipt` (`organization_id`);--> statement-breakpoint
+CREATE TABLE `mgmt_user_session` (
 	`id` text PRIMARY KEY NOT NULL,
 	`expires_at` integer NOT NULL,
 	`token` text NOT NULL,
@@ -200,12 +238,25 @@ CREATE TABLE `console_user_session` (
 	`ip_address` text,
 	`user_agent` text,
 	`user_id` text NOT NULL,
-	FOREIGN KEY (`user_id`) REFERENCES `console_user`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`user_id`) REFERENCES `mgmt_user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `console_idx_session_token` ON `console_user_session` (`token`);--> statement-breakpoint
-CREATE INDEX `console_idx_session_user_id` ON `console_user_session` (`user_id`);--> statement-breakpoint
-CREATE TABLE `console_verification` (
+CREATE UNIQUE INDEX `mgmt_idx_session_token` ON `mgmt_user_session` (`token`);--> statement-breakpoint
+CREATE INDEX `mgmt_idx_session_user_id` ON `mgmt_user_session` (`user_id`);--> statement-breakpoint
+CREATE TABLE `mgmt_user` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`email` text,
+	`kind` text DEFAULT 'human' NOT NULL,
+	`email_verified` integer DEFAULT false NOT NULL,
+	`image` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL,
+	CONSTRAINT "mgmt_user_kind_email_check" CHECK(("mgmt_user"."kind" = 'human' and "mgmt_user"."email" is not null) or ("mgmt_user"."kind" = 'service' and "mgmt_user"."email" is null))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `mgmt_idx_user_email` ON `mgmt_user` ("email" COLLATE NOCASE);--> statement-breakpoint
+CREATE TABLE `mgmt_verification` (
 	`id` text PRIMARY KEY NOT NULL,
 	`identifier` text NOT NULL,
 	`value` text NOT NULL,
@@ -214,7 +265,7 @@ CREATE TABLE `console_verification` (
 	`updated_at` integer
 );
 --> statement-breakpoint
-CREATE INDEX `console_idx_verification_identifier` ON `console_verification` (`identifier`);--> statement-breakpoint
+CREATE INDEX `mgmt_idx_verification_identifier` ON `mgmt_verification` (`identifier`);--> statement-breakpoint
 CREATE TABLE `provider` (
 	`id` text PRIMARY KEY NOT NULL,
 	`organization_id` text NOT NULL,
@@ -231,7 +282,7 @@ CREATE TABLE `provider` (
 	`created_by` text NOT NULL,
 	`created_at` text DEFAULT (datetime('now')) NOT NULL,
 	`updated_at` text DEFAULT (datetime('now')) NOT NULL,
-	FOREIGN KEY (`organization_id`) REFERENCES `console_organization`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`provider_gateway_id`) REFERENCES `provider_gateway`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "providers_status_check" CHECK("provider"."status" IN ('active', 'disabled')),
 	CONSTRAINT "providers_type_check" CHECK("provider"."type" IN (
@@ -256,7 +307,7 @@ CREATE TABLE `provider_gateway` (
 	`created_by` text NOT NULL,
 	`created_at` text DEFAULT (datetime('now')) NOT NULL,
 	`updated_at` text DEFAULT (datetime('now')) NOT NULL,
-	FOREIGN KEY (`organization_id`) REFERENCES `console_organization`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "provider_gateways_type_check" CHECK("provider_gateway"."type" IN ('cf_aig', 'vercel')),
 	CONSTRAINT "provider_gateways_status_check" CHECK("provider_gateway"."status" IN ('active', 'revoked'))
 );

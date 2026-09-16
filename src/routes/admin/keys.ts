@@ -3,8 +3,16 @@ import { Hono } from "hono";
 import { generateApiKey } from "../../core/apikeys";
 import { loadAppConfig } from "../../core/config";
 import { GatewayError } from "../../core/errors";
+import { andCondition, planCap } from "../../core/plan-caps";
+import { prepareResourceReceipt } from "../../core/resource-receipt";
 import { database } from "../../db";
 import { appApiKey } from "../../db/schema";
+import type {
+  ApiKey,
+  ApiKeyListResponse,
+  ApiKeyRevokeResponse,
+  CreatedApiKey,
+} from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
 
 function keyName(value: unknown): string {
@@ -25,7 +33,7 @@ async function assertApiKeyApp(env: Env, appId: string): Promise<void> {
   }
 }
 
-function serialized(row: typeof appApiKey.$inferSelect) {
+function serialized(row: typeof appApiKey.$inferSelect): ApiKey {
   return {
     id: row.id,
     name: row.name,
@@ -42,24 +50,41 @@ keyRoutes.post("/apps/:app/keys", async (c) => {
   const appId = c.req.param("app");
   await assertApiKeyApp(c.env, appId);
   const name = keyName(await c.req.json());
+  const receipt = await prepareResourceReceipt(c, "app.key.add", { name });
+  if (receipt?.result) return c.json(receipt.result, 201);
   const generated = await generateApiKey();
-  const [row] = await database(c.env.DB)
-    .insert(appApiKey)
-    .values({
-      id: generated.id,
-      appId,
-      name,
-      keyHash: generated.keyHash,
-      keyPrefix: generated.keyPrefix,
-    })
-    .returning();
-  return c.json({
-    id: row!.id,
-    name: row!.name,
-    key: generated.key,
-    key_prefix: row!.keyPrefix,
-    created_at: row!.createdAt,
-  }, 201);
+  const now = new Date().toISOString();
+  const outcome: CreatedApiKey = {
+    id: generated.id, name, key: generated.key,
+    key_prefix: generated.keyPrefix, created_at: now,
+  };
+  const organizationId = c.get("admin").organizationId;
+  const cap = await planCap(c.env, "appKey", organizationId, c.get("billingRequestCache"), appId);
+  const condition = andCondition(receipt?.condition, cap.condition);
+  const statement = c.env.DB.prepare(
+    `INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
+     SELECT ?,?,?,?,?,'active',? WHERE ${condition.sql}
+     AND EXISTS (SELECT 1 FROM app WHERE id = ? AND organization_id = ?
+       AND json_extract(config_json,'$.authentication.type') = 'api_key')`,
+  ).bind(generated.id, appId, name, generated.keyHash, generated.keyPrefix, now,
+    ...condition.params, appId, organizationId);
+  // Every guard on this statement refuses the same way — no rows changed — so
+  // the cap is asked whether it is the one that did before the generic answer.
+  if (receipt) {
+    try {
+      await receipt.commit(statement, outcome);
+    } catch (error) {
+      await cap.assertNotReached();
+      throw error;
+    }
+  } else {
+    const result = await statement.run();
+    if (result.meta.changes !== 1) {
+      await cap.assertNotReached();
+      throw new GatewayError(409, "conflict", "The application changed before key creation");
+    }
+  }
+  return c.json(receipt?.result ?? outcome, 201);
 });
 
 keyRoutes.get("/apps/:app/keys", async (c) => {
@@ -70,7 +95,7 @@ keyRoutes.get("/apps/:app/keys", async (c) => {
     .from(appApiKey)
     .where(eq(appApiKey.appId, appId))
     .orderBy(desc(appApiKey.createdAt));
-  return c.json({ app_id: appId, keys: rows.map(serialized) });
+  return c.json({ app_id: appId, keys: rows.map(serialized) } satisfies ApiKeyListResponse);
 });
 
 keyRoutes.post("/apps/:app/keys/:id/revoke", async (c) => {
@@ -82,5 +107,5 @@ keyRoutes.post("/apps/:app/keys/:id/revoke", async (c) => {
     .where(and(eq(appApiKey.appId, appId), eq(appApiKey.id, c.req.param("id"))))
     .returning();
   if (!row) throw new GatewayError(404, "invalid_request", "API key was not found");
-  return c.json({ app_id: appId, key: serialized(row) });
+  return c.json({ app_id: appId, key: serialized(row) } satisfies ApiKeyRevokeResponse);
 });

@@ -176,6 +176,7 @@ endpointRoutes.post("/:slug", async (c) => {
   }) =>
     c.executionCtx.waitUntil(
       recordUsageEvent({
+        organizationId: app.organizationId,
         appLevelLimitsEnabled: hasAppLevelLimits(app),
         env: c.env,
         observed: input.observed,

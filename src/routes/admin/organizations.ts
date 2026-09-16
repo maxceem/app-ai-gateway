@@ -1,32 +1,21 @@
 import type { AuthState } from "@maxceem/cf-auth";
 import { Hono, type Context } from "hono";
-import { rethrowCfAuthError } from "../../auth/operator";
+import { rethrowCfAuthError } from "../../auth/identity";
 import { OrganizationSelectRequestSchema } from "../../contracts/schemas";
+import type { IdentitySession, OrganizationListResponse } from "../../contracts/responses";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
 
 type OrganizationEnv = { Bindings: Env; Variables: AdminVariables };
 
 /**
- * Identity and organization membership for operator clients.
+ * Identity and organization membership for management clients.
  *
  * These are thin wrappers over `cfAuth.service.*`: every authorization rule
  * already lives in the service, so the routes only translate HTTP into service
  * calls and cf-auth errors into the gateway error envelope.
  */
 export const organizationRoutes = new Hono<OrganizationEnv>();
-
-/** Session-only surface: a management key has no user identity to administer. */
-function sessionActor(admin: AdminVariables["admin"]): string {
-  if (admin.credentialType !== "session") {
-    throw new GatewayError(
-      403,
-      "session_required",
-      "Organization membership can only be administered from a user session",
-    );
-  }
-  return admin.userId;
-}
 
 async function requestBody(c: Context<OrganizationEnv>): Promise<unknown> {
   try {
@@ -59,24 +48,27 @@ function schemaBody<T>(
  * better-auth's user record, which leaves a client unable to tell an owner from
  * a read-only member or to name the organization it is acting in.
  */
-function sessionPayload(state: AuthState, admin: AdminVariables["admin"]) {
+function sessionPayload(state: AuthState, admin: AdminVariables["admin"]): IdentitySession["session"] {
   return {
     user: state.user,
     organization: state.organization,
     role: admin.role,
     memberships: state.memberships,
     credentialType: admin.credentialType,
+    assurance: state.assurance,
+    actor: state.actor,
   };
 }
 
 organizationRoutes.get("/session", (c) =>
-  c.json({ session: sessionPayload(c.get("authState"), c.get("admin")) }));
+  c.json({ session: sessionPayload(c.get("authState"), c.get("admin")) } satisfies IdentitySession));
 
 organizationRoutes.get("/organizations", async (c) => {
-  const actorUserId = sessionActor(c.get("admin"));
   try {
-    const organizations = await c.get("operatorAuth").service.listOrganizations(actorUserId);
-    return c.json({ organizations });
+    const organizations = await c
+      .get("identityAuth")
+      .service.listOrganizations(c.get("authState"));
+    return c.json({ organizations } satisfies OrganizationListResponse);
   } catch (error) {
     rethrowCfAuthError(error);
   }
@@ -87,26 +79,33 @@ organizationRoutes.get("/organizations", async (c) => {
  * cookie. Deliberately exempt from the owner/admin mutation gate in
  * `adminAuth`: a read-only member still has to be able to move between the
  * organizations they belong to.
+ *
+ * Both this and the listing above hand the whole `authState` to cf-auth rather
+ * than a user id: an API key is scoped to one organization, and it is the
+ * library's own rule that such a credential may not read or move between the
+ * others its owner belongs to.
  */
 organizationRoutes.post("/organizations/select", async (c) => {
   const admin = c.get("admin");
-  const actorUserId = sessionActor(admin);
   const { organizationId } = schemaBody(
     OrganizationSelectRequestSchema,
     await requestBody(c),
   );
 
-  const operatorAuth = c.get("operatorAuth");
+  const identityAuth = c.get("identityAuth");
   try {
-    const state = await operatorAuth.service.selectOrganization(actorUserId, organizationId);
-    await operatorAuth.currentOrganizationCookie.write(c, organizationId);
+    const state = await identityAuth.service.selectOrganization(
+      c.get("authState"),
+      organizationId,
+    );
+    await identityAuth.currentOrganizationCookie.write(c, organizationId);
     return c.json({
       session: sessionPayload(state, {
         ...admin,
         organizationId: state.organization?.id ?? admin.organizationId,
         role: state.role ?? admin.role,
       }),
-    });
+    } satisfies IdentitySession);
   } catch (error) {
     rethrowCfAuthError(error);
   }

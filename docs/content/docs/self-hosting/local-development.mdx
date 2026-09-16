@@ -33,16 +33,26 @@ Each step does one thing:
 | Command | What it does |
 | --- | --- |
 | `cp .dev.vars.example .dev.vars` | Creates the gitignored secrets file. Locally it only needs a vault key; any value from `openssl rand -base64 32` will do. |
-| `pnpm run secrets:setup-local` | Generates `JWT_SECRET` and `BETTER_AUTH_SECRET` into `.dev.vars` and leaves existing values alone. Deployed gateways get these from the deploy script; locally this script stands in for it. |
+| `pnpm run secrets:setup-local` | Generates signing secrets and a stable local `DEPLOYMENT_ID` into `.dev.vars` and leaves existing values alone. Deployed gateways get these from the deploy script; locally this script stands in for it. |
 | `pnpm run db:migrate:local` | Applies the migrations to the local database under `.wrangler/`. Run it again after pulling a release that adds one. |
 | `pnpm run dev` | Serves the console and the Worker together. |
 
 Open `http://localhost:5173`. Vite serves the console with hot reloading and
 runs the Worker beside it on the same origin, so an edit to either is live
-without a rebuild. Sign up to create the first account, which becomes the
-owner of this local gateway, then follow the [Quickstart](/quickstart) as you
-would on a deployed one. The local gateway calls real providers with the keys
-you add, so use a key with a low spend cap.
+without a rebuild. You can register the first account in the console. To test
+the CLI initialization path instead, initialize locally, connect, then complete
+the browser claim:
+
+```sh
+node scripts/bootstrap-account.mjs http://localhost:5173
+agw deployment connect --url http://localhost:5173 --key-stdin < .agw-bootstrap/management-key
+agw account claim
+```
+
+Install `@maxceem/agw` if needed. The helper never prints the returned
+credential. The claim needs the separate terminal code and a human browser
+session. The local gateway calls real providers
+when you make inference requests, so use credentials with an appropriate spend cap.
 
 `.dev.vars` is read by `pnpm run dev` and also by `pnpm run secrets:upload`,
 so the same file can feed a deployment. If you would rather keep the two apart,

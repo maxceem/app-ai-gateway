@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import {
   BILLING_SERVICE_ID,
   billingBinding,
+  billingPlanLimits,
   billingRpcError,
   invalidateBillingAccess,
   invalidateBillingRequestAccess,
@@ -94,20 +95,32 @@ async function status(c: Context<BillingRouteEnv>) {
     organizationId,
     c.get("billingRequestCache"),
   );
-  if (!resolved.period) return c.json({ access: resolved.access, quota: null });
+  /*
+   * The plan's ceilings, parsed. `access.plan.limits` is in the response
+   * already, but it is whatever JSON the plan was authored with; this is the
+   * subset this gateway actually enforces, with every value checked to be a
+   * whole count. A client comparing what it owns against a ceiling should read
+   * this, so that it is reading the same numbers the write path will apply.
+   *
+   * Absent keys mean unlimited, so an empty object is the honest answer for a
+   * plan with no ceilings and for a self-hosted deployment alike.
+   */
+  const limits = billingPlanLimits(resolved.access);
+  if (!resolved.period) return c.json({ access: resolved.access, limits, quota: null });
   const quota = c.env.ORG_QUOTA.getByName(organizationId);
-  let usage = await quota.usage({ ...resolved.period });
+  let usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   if ("superseded" in usage && usage.superseded) {
     invalidateBillingRequestAccess(organizationId, c.get("billingRequestCache"));
     resolved = await getBillingQuotaResolution(c.env, organizationId, c.get("billingRequestCache"));
-    if (!resolved.period) return c.json({ access: resolved.access, quota: null });
-    usage = await quota.usage({ ...resolved.period });
+    if (!resolved.period) return c.json({ access: resolved.access, limits, quota: null });
+    usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   }
   if ("superseded" in usage && usage.superseded) {
     throw new GatewayError(503, "billing_unavailable", "Billing changed while status was being read");
   }
   return c.json({
     access: resolved.access,
+    limits,
     quota: { ...usage, ...(resolved.limit === undefined ? {} : { limit: resolved.limit }) },
   });
 }

@@ -9,7 +9,7 @@ express: a custom domain, a fixed database, or the `kms` vault mode.
 
 ## Requirements
 
-- Node.js 22 or newer and pnpm 11.
+- Node.js 22.19 or newer and the pnpm version declared in `package.json`.
 - A Cloudflare account. `pnpm install` brings Wrangler 4 with it; run
   `pnpm exec wrangler login` once so it can act on your account.
 - `openssl`, to generate the vault key.
@@ -24,24 +24,30 @@ cp .dev.vars.example .dev.vars
 openssl rand -base64 32   # paste the output into SECRET_VAULT_LOCAL_KEK_V1 in .dev.vars
 ```
 
-`.dev.vars` is gitignored. It holds the one secret the deployment needs,
-`SECRET_VAULT_LOCAL_KEK_V1`, which encrypts the provider keys you add later in
-the console. Back it up: losing it makes every stored provider key unreadable,
-and the only fix is to add them again.
+`.dev.vars` is gitignored. Its `SECRET_VAULT_LOCAL_KEK_V1` encrypts provider
+credentials; back it up because losing it makes stored credentials unreadable.
 
-Then upload the secret and deploy:
+Then generate the initialization values, upload the secrets and deploy:
 
 ```sh
+pnpm run secrets:setup-local
 pnpm run secrets:upload
 pnpm run deploy
 ```
 
+Run `pnpm run secrets:setup-local` to generate the immutable public
+`DEPLOYMENT_ID` and the internal signing secrets in ignored `.dev.vars`.
+For a profile, put its own ID in `.dev.vars.<profile>` or set it in that
+profile's plain `vars`. Preserve the ID on every deployment.
+The upload helper excludes it from secrets; deployment supplies a plain binding.
+Do not reuse a local development identity for a separate production deployment.
+
 The deploy script does the following, in order:
 
 1. Builds the console.
-2. Checks that the secret the vault mode requires exists on the Worker. If it
-   is missing and `.dev.vars` is present, it uploads the file, so the explicit
-   `secrets:upload` above is a convenience rather than a requirement.
+2. Checks the required vault secrets. If one is missing and `.dev.vars` is
+   present, it uploads only missing names, so the explicit `secrets:upload`
+   above is a convenience rather than a requirement.
 3. Creates `JWT_SECRET` and `BETTER_AUTH_SECRET` if they do not exist yet.
    Existing secrets are never overwritten.
 4. Applies the database migrations. On the first run the database does not
@@ -58,11 +64,30 @@ see [Updating](/self-hosting/updating).
 curl https://YOUR-WORKER.workers.dev/v1/healthz
 ```
 
-Expect `"vault": "ok"`. Then open the Worker URL in a browser and create the
-first account, which becomes the owner. Once it exists, set
-`ALLOW_PUBLIC_REGISTRATION` to `false`, either in the Worker's
-**Settings → Variables** or in a profile overlay as shown below. Existing
-accounts still sign in.
+Expect `"vault": "ok"`. An empty deployment lets its first person register in
+the console. To initialize with the CLI instead, create and claim its account privately:
+
+```sh
+node scripts/bootstrap-account.mjs https://YOUR-WORKER.workers.dev
+agw deployment connect --url https://YOUR-WORKER.workers.dev --key-stdin < .agw-bootstrap/management-key
+agw account claim
+```
+
+Install `@maxceem/agw` first if necessary. The helper saves recovery proofs
+before requesting an account and stores its credential privately. Keep its state
+when retrying a lost response. Complete the browser claim using the separate
+terminal code and choose whether the CLI retains access. Once CLI initialization
+creates the account, ordinary registration cannot take it; its first person must
+use this protected claim.
+
+<Callout type="warn" title="Initialize straight after deploying">
+  A deployment with no account yet belongs to whoever takes it first, whether by
+  registering in the console or by running the helper above. Do that yourself as
+  soon as the health check passes. A deployment nobody has taken holds no
+  provider credentials, so nothing of yours is exposed; if someone else does get
+  there first, delete its D1 database, create it again, apply the migrations and
+  deploy once more to start from empty.
+</Callout>
 
 ## Deployment profiles
 
@@ -85,7 +110,7 @@ cannot drift. The merge rules are small:
   "workers_dev": false,
   "routes": [{ "pattern": "console.example.com", "custom_domain": true }],
   "vars": {
-    "ALLOW_PUBLIC_REGISTRATION": "false",
+    "ALLOW_ADDITIONAL_REGISTRATIONS": "false",
     "SECRET_VAULT_MODE": "kms",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": null
   },
@@ -119,7 +144,7 @@ gitignored, and handed to Wrangler with `--config`. Do not edit it; change the
 overlay instead.
 
 A profile reads its secrets from `.dev.vars.<profile>` instead of `.dev.vars`.
-On a profile's first deployment the script uploads that file when it exists,
+On a profile's first deployment the script uploads missing secret values from that file when it exists,
 so put the secrets the profile's vault mode requires there: in `kms` mode that
 is `SECRET_VAULT_KMS_URL` and `SECRET_VAULT_KMS_TOKEN`, in `local` mode it is
 `SECRET_VAULT_LOCAL_KEK_V1`.

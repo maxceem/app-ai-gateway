@@ -1,12 +1,17 @@
 import { env } from "cloudflare:workers";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
 import { issueGatewayToken } from "../src/core/jwt";
-import { hashApiKey } from "../src/core/apikeys";
+import { clearApiKeyCache, hashApiKey } from "../src/core/apikeys";
 import {
   clearProviderCaches,
   encryptionContext,
   gatewayEncryptionContext,
 } from "../src/core/provider-store";
+import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
+import { clearJwksCache } from "../src/core/issuer";
+import { clearAppConfigCache } from "../src/core/config";
+import { clearBillingAccessCache } from "../src/billing/gateway";
+import { clearBlockedCache } from "../src/middleware/gate";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import {
@@ -21,10 +26,30 @@ import {
 } from "../src/db/schema";
 import type { ProviderType, StoredAppConfig } from "../src/core/types";
 import { secretVault } from "../src/vault";
-import { createOperatorAuth } from "../src/auth/operator";
+import { createCfAuth } from "@maxceem/cf-auth";
+import { mgmtAuthTables } from "../src/db/schema";
+
+/**
+ * Every cache the Worker keeps in its isolate, emptied in one call.
+ *
+ * A suite shares one isolate with the rest of its barrel, so a row this file
+ * rewrites straight in D1 is otherwise still answered from whatever an earlier
+ * file left warm. Clearing them together is what keeps a new test from having
+ * to know which of them the path it exercises happens to read: forgetting one
+ * shows up as a test that passes alone and fails in its barrel.
+ */
+export function clearIsolateCaches(): void {
+  clearAppConfigCache();
+  clearProviderCaches();
+  clearApiKeyCache();
+  clearJwksCache();
+  clearBillingAccessCache();
+  clearAccountLifecycleCache();
+  clearBlockedCache();
+}
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
-export const TEST_OPERATOR_USER_ID = "operator-test-owner";
+export const TEST_SERVICE_USER_ID = "operator-test-owner";
 
 /**
  * The tenant every seeded issuer block is scoped to. Issuer tokens minted in
@@ -80,7 +105,7 @@ export async function seedProvider(input: {
         gatewayEncryptionContext(organizationId, providerGatewayId),
       ),
       secretHint: secret.slice(-4),
-      createdBy: TEST_OPERATOR_USER_ID,
+      createdBy: TEST_SERVICE_USER_ID,
     }).onConflictDoNothing();
   }
   await database(env.DB).insert(provider).values({
@@ -98,7 +123,7 @@ export async function seedProvider(input: {
     baseUrl: input.baseUrl ?? null,
     pricing: input.pricing ?? null,
     status: input.status ?? "active",
-    createdBy: TEST_OPERATOR_USER_ID,
+    createdBy: TEST_SERVICE_USER_ID,
   });
   clearProviderCaches();
   return id;
@@ -342,7 +367,7 @@ export async function gatewayToken(appId: string, userId = "user-1"): Promise<st
 }
 
 /** An operator with their own organization, and a session to act as them. */
-export interface SeededOperator {
+export interface SeededHuman {
   userId: string;
   organizationId: string;
   /** Ready for a request's `cookie` header. */
@@ -363,13 +388,13 @@ export interface SeededOperator {
  * Tests whose subject *is* signing up should still sign up. Nothing here
  * exercises the password path, so something has to.
  */
-export async function seedOperator(email?: string): Promise<SeededOperator> {
-  const sessions = createTestSessions(createOperatorAuth(env, "https://example.test"));
-  const operator = await sessions.operator(email === undefined ? {} : { email });
+export async function seedHuman(email?: string): Promise<SeededHuman> {
+  const sessions = createTestSessions(createCfAuth({ appName: "App AI Gateway", d1: env.DB, tables: mgmtAuthTables, secret: env.BETTER_AUTH_SECRET, baseUrl: "https://example.test", basePath: "/v1/auth", cookies: { prefix: "agw_identity" }, apiKeys: { enabled: true, tokenPrefix: "agw_mgmt_" } }));
+  const operator = await sessions.human(email === undefined ? {} : { email });
   return {
     userId: operator.userId,
     organizationId: operator.organizationId,
     cookie: operator.cookie,
-    email: operator.user.email,
+    email: operator.user.email!,
   };
 }

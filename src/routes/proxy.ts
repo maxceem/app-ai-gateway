@@ -112,6 +112,7 @@ proxyRoutes.all("/:provider/*", async (c) => {
     const latencyMs = timedOut ? timeoutMs : Math.round(performance.now() - providerStart);
     c.executionCtx.waitUntil(
       recordUsageEvent({
+        organizationId: app.organizationId,
         appLevelLimitsEnabled: hasAppLevelLimits(app),
         env: c.env,
         observed: null,
@@ -153,6 +154,7 @@ proxyRoutes.all("/:provider/*", async (c) => {
   }
   c.executionCtx.waitUntil(
     recordUsageEvent({
+        organizationId: app.organizationId,
       appLevelLimitsEnabled: hasAppLevelLimits(app),
       env: c.env,
       observed,

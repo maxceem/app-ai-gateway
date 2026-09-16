@@ -75,6 +75,19 @@ export interface ProviderSpec {
    * provider type.
    */
   probeHeaders?: Readonly<Record<string, string>>;
+  /**
+   * The path a first request to this provider goes to, relative to
+   * {@link directBaseUrl}. Published in the CLI's deployment capabilities and
+   * used to write the Swift example an application is created with, so it names
+   * the chat-completions surface each type actually exposes — Groq's under
+   * `openai/v1/`, Fireworks' under `inference/v1/`, and so on.
+   *
+   * Absent means there is no single obvious first call, which is Gemini's
+   * position: its native surface needs the model in the path. A provider with
+   * none is answered with `provider_path_required`, and the operator names an
+   * endpoint instead.
+   */
+  defaultPath?: string;
 }
 
 /**
@@ -86,11 +99,13 @@ export const PROVIDER_REGISTRY = {
   openai: {
     directBaseUrl: "https://api.openai.com/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
     modelAuthor: "OpenAI",
   },
   anthropic: {
     directBaseUrl: "https://api.anthropic.com/",
     auth: { header: "x-api-key" },
+    defaultPath: "v1/messages",
     modelAuthor: "Anthropic",
     // Anthropic refuses any request without a version header, probe included —
     // and a probe has no client to send one for it. Deliberately not a
@@ -102,6 +117,7 @@ export const PROVIDER_REGISTRY = {
   xai: {
     directBaseUrl: "https://api.x.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
     modelAuthor: "xAI",
   },
   gemini: {
@@ -112,6 +128,7 @@ export const PROVIDER_REGISTRY = {
   perplexity: {
     directBaseUrl: "https://api.perplexity.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "chat/completions",
     modelAuthor: "Perplexity",
   },
 
@@ -125,6 +142,7 @@ export const PROVIDER_REGISTRY = {
     // URL, and `https://api.deepseek.com/anthropic` for the Anthropic format.
     directBaseUrl: "https://api.deepseek.com/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "chat/completions",
     modelAuthor: "DeepSeek",
   },
   groq: {
@@ -132,10 +150,12 @@ export const PROVIDER_REGISTRY = {
     // path is `openai/v1/chat/completions` rather than `v1/chat/completions`.
     directBaseUrl: "https://api.groq.com/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "openai/v1/chat/completions",
   },
   mistral: {
     directBaseUrl: "https://api.mistral.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
     modelAuthor: "Mistral",
   },
   together: {
@@ -143,22 +163,26 @@ export const PROVIDER_REGISTRY = {
     // OpenAI-compatibility guide names this one and warns against the other.
     directBaseUrl: "https://api.together.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
   },
   fireworks: {
     // The inference plane is `/inference/v1`; `/v1` on the same host is the
     // control plane, so the client path is `inference/v1/chat/completions`.
     directBaseUrl: "https://api.fireworks.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "inference/v1/chat/completions",
   },
   cerebras: {
     directBaseUrl: "https://api.cerebras.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
   },
   moonshot: {
     // The international host. `api.moonshot.cn` is the separate China platform
     // and is not reachable with a key issued for this one.
     directBaseUrl: "https://api.moonshot.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
     modelAuthor: "Moonshot AI",
   },
   huggingface: {
@@ -169,12 +193,14 @@ export const PROVIDER_REGISTRY = {
     // catalog section for that reason; see `catalogPrice` in usage.ts.
     directBaseUrl: "https://router.huggingface.co/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
   },
   baseten: {
     // The Model APIs inference host. `api.baseten.co` is the management plane
     // for dedicated deployments and answers to different paths entirely.
     directBaseUrl: "https://inference.baseten.co/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
   },
   bytedance: {
     // BytePlus ModelArk, the international edition: `/api/v3` is its version
@@ -184,6 +210,7 @@ export const PROVIDER_REGISTRY = {
     // the per-row base URL override that Stage 6 introduces.
     directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "chat/completions",
   },
 
   openrouter: {
@@ -194,6 +221,7 @@ export const PROVIDER_REGISTRY = {
     // `v1/chat/completions` under this origin.
     directBaseUrl: "https://openrouter.ai/api/",
     auth: { header: "authorization", scheme: "Bearer " },
+    defaultPath: "v1/chat/completions",
     // Every chat-completions response carries `usage.cost`: what OpenRouter
     // actually charged for that request, which beats any local estimate of a
     // catalog this deployment does not track. It is also the only way to bill

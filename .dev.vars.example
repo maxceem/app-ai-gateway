@@ -1,14 +1,17 @@
-# The only secret the Deploy to Cloudflare form asks for, and the template for a
+# Secrets the Deploy to Cloudflare form asks for, and the template for a
 # local .dev.vars. Never commit real values. Provider credentials themselves are
 # added per organization in the console and encrypted with the key below.
 # Generate with `openssl rand -base64 32`.
 SECRET_VAULT_LOCAL_KEK_V1=
 
 # JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
+# DEPLOYMENT_ID is an immutable public UUID set in Wrangler vars. Local setup
+# stores it here for development; deployment passes it as a plain binding.
+# CLI_CONSOLE_ORIGIN optionally selects the secure first-party browser origin.
 # For local development, run `pnpm run secrets:setup-local` to generate them.
 
 # SECRET_VAULT_MODE, SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION and
-# ALLOW_PUBLIC_REGISTRATION are not secrets and are not repeated here: they are
+# ALLOW_ADDITIONAL_REGISTRATIONS are not secrets and are not repeated here: they are
 # plain `vars` in wrangler.jsonc, where a deployment reads and edits them in
 # clear text. A name uncommented in this file becomes a masked field in the
 # deploy form, which is right for a key and wrong for a setting.

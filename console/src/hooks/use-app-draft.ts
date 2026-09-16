@@ -33,6 +33,7 @@ export function useAppDraft(appId: string) {
   const saveMutation = useSaveApp(appId);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
+  const [revision, setRevision] = useState<number | null>(null);
   const [draftAppId, setDraftAppId] = useState<string | null>(null);
   /**
    * What the issuer held the last time one was configured, so switching the
@@ -44,10 +45,13 @@ export function useAppDraft(appId: string) {
   const row = query.data?.app;
   useEffect(() => {
     if (!row) return;
+    // Background refetches cannot replace an unsaved draft or its original revision.
+    if (draftAppId === appId && draft !== null && baseline !== null && JSON.stringify(draft) !== baseline) return;
     const next = toDraft(row);
     lastIssuer.current = authIssuer(next.config.authentication) ?? null;
     setDraft(next);
     setBaseline(JSON.stringify(next));
+    setRevision(row.revision);
     setDraftAppId(appId);
   }, [appId, row]);
 
@@ -201,9 +205,10 @@ export function useAppDraft(appId: string) {
   }, [activeBaseline]);
 
   const save = useCallback(async () => {
-    if (!activeDraft) return false;
+    if (!activeDraft || revision === null) return false;
     try {
-      await saveMutation.mutateAsync(asBody(activeDraft));
+      const saved = await saveMutation.mutateAsync({ body: asBody(activeDraft), revision });
+      setRevision(saved.app.revision);
       setBaseline(JSON.stringify(activeDraft));
       toast.success("Configuration saved", {
         description: "The gateway picks it up within the 60 second config cache TTL.",
@@ -213,7 +218,7 @@ export function useAppDraft(appId: string) {
       toast.error("Save rejected", { description: error instanceof Error ? error.message : "Unknown error" });
       return false;
     }
-  }, [activeDraft, saveMutation]);
+  }, [activeDraft, revision, saveMutation]);
 
   return {
     query,

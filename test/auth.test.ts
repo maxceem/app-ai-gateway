@@ -8,12 +8,11 @@ import { clearApiKeyCache } from "../src/core/apikeys";
 import { appAttestEnvironment } from "../src/core/appattest";
 import { pruneAuthChallenges } from "../src/core/auth-events";
 import { clearAppConfigCache } from "../src/core/config";
-import { clearJwksCache } from "../src/core/issuer";
 import { verifyGatewayToken } from "../src/core/jwt";
 import { database } from "../src/db";
 import { appApiKey, appUser } from "../src/db/schema";
 import app from "../src/index";
-import { TEST_AUDIENCE, TEST_ISSUER, seedApp, seedServerApp } from "./helpers";
+import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedApp, seedServerApp } from "./helpers";
 
 interface SigningFixture {
   publicJwk: JWK;
@@ -75,9 +74,7 @@ function authDataWithAaguid(aaguid: Uint8Array): Uint8Array {
 }
 
 beforeEach(() => {
-  clearApiKeyCache();
-  clearJwksCache();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 afterEach(() => vi.restoreAllMocks());

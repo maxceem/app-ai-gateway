@@ -444,3 +444,19 @@ export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 export const OrganizationSelectRequestSchema = z.object({
   organizationId: z.string().trim().min(1),
 }).meta({ id: "OrganizationSelectRequest" });
+
+/** Inferred request bodies, so a consumer never re-describes one by hand. */
+export type AppConfig = z.infer<typeof AppConfigSchema>;
+export type AppWrite = z.infer<typeof AppWriteSchema>;
+export type GatewayRouteConfigInput = z.infer<typeof GatewayRouteConfigSchema>;
+export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;
+export type OrganizationSelectRequest = z.infer<typeof OrganizationSelectRequestSchema>;
+export type ProviderPricing = z.infer<typeof ProviderPricingSchema>;
+export type ProviderCreateRequest = z.infer<typeof ProviderCreateRequestSchema>;
+export type ProviderUpdateRequest = z.infer<typeof ProviderUpdateRequestSchema>;
+export type ProviderTestRequest = z.infer<typeof ProviderTestRequestSchema>;
+export type ProviderGatewayCreateRequest = z.infer<typeof ProviderGatewayCreateRequestSchema>;
+export type ProviderGatewayTestRequest = z.infer<typeof ProviderGatewayTestRequestSchema>;
+export type ProviderGatewayUpdateRequest = z.infer<typeof ProviderGatewayUpdateRequestSchema>;
+export type ProviderGatewayRotateRequest = z.infer<typeof ProviderGatewayRotateRequestSchema>;
+export type UsageRepriceRequest = z.infer<typeof UsageRepriceRequestSchema>;

@@ -1,0 +1,242 @@
+import type { Context } from "hono";
+import type { AdminVariables } from "../middleware/admin";
+import { secretVault } from "../vault";
+import { hashApiKey } from "./apikeys";
+import { GatewayError } from "./errors";
+import type { ProviderWriteBoundary } from "./provider-writes";
+
+const PROOF = /^[A-Za-z0-9_-]{32,256}$/;
+/** Plaintext keys can be redelivered only briefly; the non-secret receipt remains. */
+export const RESOURCE_RECEIPT_SECRET_TTL = 15 * 60_000;
+const RECEIPT_TTL = 90 * 24 * 60 * 60_000;
+
+type ReceiptContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
+interface ReceiptRow {
+  id: string;
+  request_hash: string;
+  kind: string;
+  organization_id: string | null;
+  initiating_user_id: string | null;
+  proof_hash: string;
+  outcome: string | null;
+  protected_credential: string | null;
+  protected_credential_expires_at: number | null;
+}
+
+/** Keep request binding stable across JSON object property ordering. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** A durable, non-secret recovery reference; never persist a plaintext response here. */
+function recovery(outcome: Record<string, unknown>): Record<string, string> {
+  const app = outcome.app as { id?: string } | undefined;
+  const key = outcome.api_key as { id?: string } | null | undefined;
+  const provider = outcome.provider as { id?: string } | undefined;
+  const gateway = outcome.gateway as { id?: string } | undefined;
+  return {
+    ...(app?.id ? { appId: app.id } : {}),
+    ...(key?.id ? { keyId: key.id } : {}),
+    ...(typeof outcome.id === "string" ? { keyId: outcome.id } : {}),
+    ...(provider?.id ? { providerId: provider.id } : {}),
+    ...(gateway?.id ? { providerGatewayId: gateway.id } : {}),
+  };
+}
+
+/**
+ * The first statement(s) and the encrypted receipt share one D1 transaction.
+ * There is no separately claimed lease that a crashed request can strand.
+ * Every mutation statement must use `condition`; concurrent losers then make
+ * no changes and read the winning response, including its original one-time key.
+ */
+export class ResourceReceipt implements ProviderWriteBoundary {
+  readonly condition: { sql: string; params: unknown[] };
+  result: Record<string, unknown> | undefined;
+
+  constructor(
+    private readonly env: Env,
+    readonly id: string,
+    private readonly purpose: string,
+    private readonly accountId: string,
+    private readonly userId: string,
+    private readonly credentialId: string,
+    private readonly proofHash: string,
+    private readonly requestHash: string,
+  ) {
+    this.condition = {
+      sql: "NOT EXISTS (SELECT 1 FROM mgmt_resource_receipt WHERE id = ?)",
+      params: [id],
+    };
+  }
+
+  async read(): Promise<Record<string, unknown> | undefined> {
+    const row = await this.env.DB.prepare(
+      "SELECT * FROM mgmt_resource_receipt WHERE id = ?",
+    )
+      .bind(this.id)
+      .first<ReceiptRow>();
+    if (!row) return undefined;
+    if (
+      row.kind !== this.purpose ||
+      row.organization_id !== this.accountId ||
+      row.initiating_user_id !== this.userId ||
+      row.proof_hash !== this.proofHash
+    ) {
+      throw new GatewayError(
+        403,
+        "forbidden",
+        "The resource retry authorization does not match",
+      );
+    }
+    if (row.request_hash !== this.requestHash) {
+      throw new GatewayError(
+        409,
+        "conflict",
+        "This idempotency key is already bound to a different request",
+      );
+    }
+    if (!row.outcome) throw new GatewayError(409, "conflict", "Resource receipt is incomplete");
+    const saved = JSON.parse(row.outcome) as {
+      recovery: Record<string, string>;
+      publicResult?: Record<string, unknown>;
+    };
+    if (saved.publicResult) {
+      this.result = saved.publicResult;
+      return this.result;
+    }
+    if (saved.recovery.keyId) {
+      const key = await this.env.DB.prepare(
+        "SELECT status FROM app_api_key WHERE id = ?",
+      )
+        .bind(saved.recovery.keyId)
+        .first<{ status: string }>();
+      if (!key || key.status !== "active")
+        throw new GatewayError(
+          410,
+          "resource_key_unavailable",
+          "This resource was created, but its generated key was revoked or removed. Create a replacement key intentionally.",
+          undefined,
+          { data: saved.recovery },
+        );
+    }
+    if (
+      !row.protected_credential ||
+      (row.protected_credential_expires_at ?? 0) <= Date.now()
+    ) {
+      throw new GatewayError(
+        410,
+        "resource_receipt_expired",
+        "This resource was already created, but its one-time response recovery window ended. Inspect the resource and revoke or replace its key explicitly.",
+        undefined,
+        { data: saved.recovery },
+      );
+    }
+    this.result = JSON.parse(
+      await secretVault(this.env).decryptSecret(row.protected_credential, {
+        purpose: "resource-create-receipt",
+        receiptId: this.id,
+        proofHash: this.proofHash,
+      }),
+    ) as Record<string, unknown>;
+    return this.result;
+  }
+
+  async commit(
+    statement: D1PreparedStatement | D1PreparedStatement[],
+    outcome: Record<string, unknown>,
+  ): Promise<void> {
+    const now = Date.now();
+    const protectedOutcome = await secretVault(this.env).encryptSecret(
+      JSON.stringify(outcome),
+      {
+        purpose: "resource-create-receipt",
+        receiptId: this.id,
+        proofHash: this.proofHash,
+      },
+    );
+    const complete = this.env.DB.prepare(
+      `INSERT INTO mgmt_resource_receipt(
+         id,kind,organization_id,initiating_user_id,initiating_credential_id,
+         proof_hash,request_hash,outcome,protected_credential,protected_credential_expires_at,
+         consumed_at,expires_at,created_at,updated_at)
+       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE changes() = 1
+       ON CONFLICT(id) DO NOTHING`,
+    ).bind(
+      this.id,
+      this.purpose,
+      this.accountId,
+      this.userId,
+      this.credentialId,
+      this.proofHash,
+      this.requestHash,
+      JSON.stringify({
+        recovery: recovery(outcome),
+        ...(typeof outcome.key === "string" ||
+        typeof (outcome.api_key as { key?: unknown } | null)?.key === "string"
+          ? {}
+          : { publicResult: outcome }),
+      }),
+      protectedOutcome,
+      now + RESOURCE_RECEIPT_SECRET_TTL,
+      now,
+      now + RECEIPT_TTL,
+      now,
+      now,
+    );
+    await this.env.DB.batch([
+      ...(Array.isArray(statement) ? statement : [statement]),
+      complete,
+    ]);
+    // A competing transaction may have won. Always return its recorded values,
+    // never the losing request's generated app ID or key.
+    if (!(await this.read())) {
+      throw new GatewayError(
+        409,
+        "conflict",
+        "The resource changed before creation could commit; retry the same request",
+      );
+    }
+  }
+}
+
+/** Headerless callers retain ordinary console creation; partial proof input is invalid. */
+export async function prepareResourceReceipt(
+  c: ReceiptContext,
+  kind: string,
+  body: unknown,
+): Promise<ResourceReceipt | undefined> {
+  const key = c.req.header("Idempotency-Key");
+  const proof = c.req.header("X-Idempotency-Proof");
+  if (key === undefined && proof === undefined) return undefined;
+  if (!key || !proof || !PROOF.test(key) || !PROOF.test(proof)) {
+    throw new GatewayError(
+      400,
+      "invalid_request",
+      "Supply both random Idempotency-Key and X-Idempotency-Proof headers (32–256 characters)",
+    );
+  }
+  const admin = c.get("admin");
+  const id = `cli-resource:${await hashApiKey(canonical([admin.organizationId, admin.userId, kind, key]))}`;
+  const requestHash = await hashApiKey(
+    canonical({ method: c.req.method, path: c.req.path, body }),
+  );
+  const receipt = new ResourceReceipt(
+    c.env,
+    id,
+    `cli.resource.${kind}`,
+    admin.organizationId,
+    admin.userId,
+    admin.credentialId,
+    await hashApiKey(proof),
+    requestHash,
+  );
+  await receipt.read();
+  return receipt;
+}

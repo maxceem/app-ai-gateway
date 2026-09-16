@@ -1,120 +1,81 @@
 ---
 title: Deploy to Cloudflare
-description: Deploy your own gateway with the one-click button and sign in to its console.
+description: Deploy from the Cloudflare form and initialize your account privately.
 ---
 
-This is the shortest path to your own gateway. You need a Cloudflare account
-and a GitHub account. No second service, no Cloudflare AI Gateway, and nothing
-to install on your machine.
+For the simplest terminal setup, install `@maxceem/agw` and run
+`agw deployment setup --name my-gateway --no-domain`. It creates the resources,
+saves its recovery journal and connects the new gateway. See [CLI](/automation/cli).
+The button below is an alternative for a deployment maintained through a GitHub fork.
 
-## 1. Make the vault key
+## Prepare the deployment values
 
-The deployment asks for one value: the key that encrypts the provider keys you
-add later in the console. Generate it now, on your own machine:
+Generate a vault key with `openssl rand -base64 32` and a public deployment ID
+with `node -p "crypto.randomUUID()"`. Save the vault key privately. Preserve the
+same deployment ID across updates and custom domains.
 
-```sh
-openssl rand -base64 32
-```
-
-Keep the output somewhere safe before you continue, for example in your
-password manager.
-
-<Callout type="warn" title="Back the vault key up">
-  Losing `SECRET_VAULT_LOCAL_KEK_V1` makes every stored provider key
-  permanently unreadable. There is no recovery path. The only fix is to add
-  each provider key again in the console.
+<Callout type="warn" title="Back up the vault key">
+  Losing `SECRET_VAULT_LOCAL_KEK_V1` makes stored provider credentials unreadable.
+  Keep it in a password manager or another protected backup.
 </Callout>
 
-## 2. Click the button
+## Deploy your fork
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/maxceem/app-ai-gateway)
 
-Cloudflare forks the repository into your GitHub account, creates the Worker,
-provisions the database and the other resources the Worker declares, and
-connects your fork to Workers Builds so that later pushes deploy on their own.
-See [Updating](/self-hosting/updating) for how that works after the first
-deployment.
+The form creates your fork and Worker and connects later pushes to Workers Builds.
+Fill in these values:
 
-## 3. Fill in the form
-
-The form has one masked field and three plain ones.
-
-| Field | What to enter |
+| Field | Value |
 | --- | --- |
-| `SECRET_VAULT_LOCAL_KEK_V1` | The key from step 1. It is masked as you type. |
-| `SECRET_VAULT_MODE` | Leave `local`. |
-| `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Leave `1`. |
-| `ALLOW_PUBLIC_REGISTRATION` | Leave `true` for now. You close sign-up in step 6. |
+| `SECRET_VAULT_LOCAL_KEK_V1` | Your private vault key. |
+| `DEPLOYMENT_ID` | Your public UUID; keep it unchanged. |
+| `SECRET_VAULT_MODE` | `local` |
+| `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | `1` |
+| `ALLOW_ADDITIONAL_REGISTRATIONS` | `false` |
 
-The plain fields are pre-filled with the defaults a self-hosted gateway runs
-on. Each one is editable now and later in the Worker's
-**Settings → Variables**. Every setting is described in
-[Configuration](/self-hosting/configuration).
+The deploy script generates internal signing secrets once, applies migrations
+and deploys the console and Worker. Your saved plain `DEPLOYMENT_ID` must remain
+in the build configuration or build environment on later builds; do not generate
+a new one. The script refuses deployment when this value is absent.
 
-Start the deployment. The build takes a few minutes. The first deployment also
-generates `JWT_SECRET` and `BETTER_AUTH_SECRET` for you, so there is nothing
-else to supply.
+Check `https://YOUR-WORKER.workers.dev/v1/healthz` and confirm `"vault":"ok"`.
+Then check `/v1/cli/capabilities` and confirm the expected deployment ID.
 
-## 4. Check the health endpoint
+## Initialize and claim privately
 
-When the deployment finishes, Cloudflare shows the Worker's URL. Call the
-health endpoint on it:
-
-```sh
-curl https://YOUR-WORKER.workers.dev/v1/healthz
-```
-
-```json
-{ "ok": true, "service": "app-ai-gateway", "vault": "ok" }
-```
-
-`"vault": "ok"` means the vault key was stored and the gateway can encrypt
-provider keys. If it says `"misconfigured"`, the vault variables are incomplete
-or contradictory. Open the Worker's **Settings → Variables**, check that
-`SECRET_VAULT_LOCAL_KEK_V1` exists as a secret and that the three plain values
-match the table above, then check again. Do not add provider keys until this
-field reads `ok`.
-
-## 5. Create the first account
-
-Open the Worker URL in a browser. The console loads and offers sign-up. Create
-your account with an email address and a password. The first account becomes
-the owner of the gateway.
-
-If you prefer the API, the same thing from a terminal:
+An empty deployment lets its first person register in the console. To initialize
+through the CLI instead, clone your fork locally, install Node.js 22.19 or later,
+and run the helper from that checkout. Once the helper creates its account,
+ordinary registration cannot take ownership of it:
 
 ```sh
-export GATEWAY_URL="https://YOUR-WORKER.workers.dev"
-curl -i -c account.cookies \
-  -H 'content-type: application/json' \
-  -d '{"name":"Owner","email":"owner@example.com","password":"use-a-long-password"}' \
-  "$GATEWAY_URL/v1/auth/sign-up/email"
+node scripts/bootstrap-account.mjs https://YOUR-WORKER.workers.dev
+npm install -g @maxceem/agw
+agw deployment connect --url https://YOUR-WORKER.workers.dev --key-stdin < .agw-bootstrap/management-key
+agw account claim
 ```
 
-## 6. Close sign-up
+The helper saves retry proofs before its request and writes the management
+credential to `.agw-bootstrap/management-key` with private permissions. It never
+prints the credential. Keep that directory if a response is lost and repeat the
+same command. Complete initialization promptly because protected remote key
+recovery lasts 15 minutes.
 
-The gateway is on a public URL, so once your account exists, stop anyone else
-from creating one. In the Cloudflare dashboard open the Worker, go to
-**Settings → Variables**, and change `ALLOW_PUBLIC_REGISTRATION` to `false`.
-Saving deploys the change.
+Open the claim URL in your own browser, enter the separate terminal code, compare
+the account, and create or sign into your human account. Choose whether to keep
+CLI access. Existing accounts continue to sign in normally. If you enable
+additional registration, each new person receives a separate account and no
+access to this claimed one.
 
-Existing accounts still sign in. Only the sign-up form and the sign-up API are
-closed. Set it back to `true` for as long as it takes to add another account,
-then close it again.
+<Callout type="warn" title="Initialize straight after deploying">
+  A deployment with no account yet belongs to whoever takes it first, whether by
+  registering in the console or by running the helper above. Do that yourself as
+  soon as the health check passes. A deployment nobody has taken holds no
+  provider credentials, so nothing of yours is exposed; if someone else does get
+  there first, delete its D1 database, create it again, apply the migrations and
+  deploy once more to start from empty.
+</Callout>
 
-## What you have now
-
-- A gateway on `https://YOUR-WORKER.workers.dev`, serving both the console and
-  the API your apps call.
-- A fork of the repository in your GitHub account, wired to redeploy on push.
-- One secret to keep safe, `SECRET_VAULT_LOCAL_KEK_V1`, and two the deployment
-  generated for itself.
-
-The `workers.dev` address is fine to start with. When you want your own
-hostname, and the Cloudflare rate limiting rules that need one, follow
-[Custom domain and rate limiting](/self-hosting/custom-domain).
-
-## Next
-
-Sign in to the console and follow the [Quickstart](/quickstart): add a
-provider key, create an app, and send the first request.
+Follow [Quickstart](/quickstart) to add a provider and an app, or
+[Custom domain and rate limiting](/self-hosting/custom-domain) to add a hostname.

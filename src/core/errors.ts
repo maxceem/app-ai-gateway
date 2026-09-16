@@ -4,11 +4,14 @@ export type ErrorCode =
   | "session_required"
   | "registration_disabled"
   | "validation_error"
+  | "rate_limited"
   | "conflict"
   | "not_found"
   | "not_a_member"
   | "last_owner"
   /** The organization has no active subscription. */
+  | "billing_trial_expired"
+  | "account_expired"
   | "billing_payment_required"
   | "billing_unavailable"
   | "billing_not_found"
@@ -47,6 +50,17 @@ export type ErrorCode =
    */
   | "billing_request_quota_exceeded"
   /**
+   * The organization's plan caps how much configuration it may store, and this
+   * write would have gone past that ceiling. `data` carries `limit` and the
+   * `used` count that met it.
+   *
+   * Billing again, not app configuration, and a different remedy from
+   * `billing_request_quota_exceeded`: nothing resets on a schedule, so the
+   * caller either deletes something it already owns or moves to a plan whose
+   * limits are higher. Retrying the same request unchanged never succeeds.
+   */
+  | "billing_plan_limit_reached"
+  /**
    * An app's per-minute or per-day request limit refused this call. Set by the
    * organization on its own app, applied to that app's end users, and unrelated
    * to the plan allowance above. `data.scope` says whether the per-user or the
@@ -78,6 +92,10 @@ export type ErrorCode =
   | "provider_key_invalid"
   | "invalid_request"
   | "app_not_found"
+  | "resource_key_unavailable"
+  | "resource_receipt_expired"
+  | "app_revision_required"
+  | "app_revision_conflict"
   | "app_disabled"
   | "endpoint_not_found"
   | "internal_error";

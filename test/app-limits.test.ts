@@ -3,9 +3,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearBillingAccessCache } from "../src/billing/gateway";
-import { clearAppConfigCache } from "../src/core/config";
-import { seedProvider, seedServerApp } from "./helpers";
+import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
 
 /**
  * The limits an organization sets on its own application, applied to that
@@ -25,15 +23,15 @@ async function seedOrganization(id: string): Promise<void> {
   const now = new Date();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT OR IGNORE INTO console_user(id, name, email, email_verified, created_at, updated_at)
+      `INSERT OR IGNORE INTO mgmt_user(id, name, email, email_verified, created_at, updated_at)
        VALUES (?, ?, ?, 1, ?, ?)`,
     ).bind(userId, `${id} owner`, `${id}@example.test`, now.getTime(), now.getTime()),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+      `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?)`,
     ).bind(id, id, userId, now.toISOString(), now.toISOString()),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO console_organization_user(id, organization_id, user_id, role, status, joined_at)
+      `INSERT OR IGNORE INTO mgmt_organization_user(id, organization_id, user_id, role, status, joined_at)
        VALUES (?, ?, ?, 'owner', 'active', ?)`,
     ).bind(`${id}-membership`, id, userId, now.toISOString()),
   ]);
@@ -122,8 +120,7 @@ function mockUpstream(): void {
 }
 
 beforeEach(() => {
-  clearBillingAccessCache();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 afterEach(async () => {

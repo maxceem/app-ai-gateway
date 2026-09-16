@@ -25,7 +25,7 @@
     "db:check": "drizzle-kit check",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate": "node scripts/wrangler.mjs d1 migrations apply DB --remote",
-    "secrets:upload": "wrangler secret bulk .dev.vars",
+    "secrets:upload": "node scripts/upload-local-secrets.mjs",
     "secrets:setup-local": "node scripts/setup-local-secrets.mjs",
     "recover-access": "node scripts/recover-access.mjs",
     "deploy:dry-run": "pnpm run console:build && node scripts/wrangler.mjs deploy --dry-run",
@@ -34,16 +34,20 @@
     "console:ensure": "node -e \"require('node:fs').mkdirSync('console/dist',{recursive:true})\"",
     "typecheck:worker": "tsgo --noEmit",
     "typecheck:bindings": "wrangler types --check --env-file .dev.vars.example",
-    "typecheck:tsc": "tsc --noEmit && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
+    "typecheck:tsc": "tsc --noEmit && pnpm --filter @maxceem/agw typecheck:tsc && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
     "test:worker": "vitest run --config vitest.suites.config.ts",
     "test:swift-publish": "node --test test/swift-publish.node.mjs",
-    "test:deploy-script": "node --test test/deploy-script.node.mjs",
-    "pretest:worker": "pnpm run console:ensure"
+    "test:deploy-script": "node --test test/deploy-script.node.mjs test/bootstrap-account.node.mjs",
+    "pretest:worker": "pnpm run console:ensure",
+    "cli:build": "pnpm --filter @maxceem/agw build",
+    "cli:check": "pnpm --filter @maxceem/agw check",
+    "cli:test": "pnpm --filter @maxceem/agw test",
+    "account:bootstrap": "node scripts/bootstrap-account.mjs"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.6.9",
     "@hono/zod-openapi": "^1.5.1",
-    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.2.0/maxceem-cf-auth-0.2.0.tgz",
+    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.4.0/maxceem-cf-auth-0.4.0.tgz",
     "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
     "asn1js": "^3.0.7",
     "better-auth": "1.6.9",
@@ -79,8 +83,11 @@
       "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": {
         "description": "Which local vault key new credentials are encrypted under. Leave this as `1`; it only changes when you rotate to a second key."
       },
-      "ALLOW_PUBLIC_REGISTRATION": {
-        "description": "`true` lets anyone sign up, and the first account created becomes the owner. Set it to `false` afterwards to close registration on a private deployment."
+      "ALLOW_ADDITIONAL_REGISTRATIONS": {
+        "description": "Set true to let more people create separate accounts after the first person registers on a self-hosted deployment."
+      },
+      "DEPLOYMENT_ID": {
+        "description": "Generate a UUID with `node -p \"crypto.randomUUID()\"`. This public deployment identity must remain unchanged across updates and custom domains."
       }
     }
   }

@@ -12,7 +12,7 @@ import {
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { secretVault } from "../src/vault";
-import { TEST_OPERATOR_USER_ID } from "./helpers";
+import { TEST_SERVICE_USER_ID } from "./helpers";
 
 const ORGANIZATION_ID = "provider-store-organization";
 const PROVIDER_ID = "provider-store-openai";
@@ -78,14 +78,14 @@ async function seedKmsProvider(): Promise<void> {
     name: "Provider store openai",
     secretBlob: blob,
     secretHint: SECRET.slice(-4),
-    createdBy: TEST_OPERATOR_USER_ID,
+    createdBy: TEST_SERVICE_USER_ID,
   });
   clearProviderCaches();
 }
 
 beforeAll(async () => {
   await env.DB.prepare(
-    `INSERT OR IGNORE INTO console_organization(id, name, created_by_user_id, created_at, updated_at)
+    `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
      VALUES (?, 'Provider Store Test', 'operator-test-owner', datetime('now'), datetime('now'))`,
   ).bind(ORGANIZATION_ID).run();
 });

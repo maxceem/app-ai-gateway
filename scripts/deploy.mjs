@@ -4,7 +4,8 @@
 //   pnpm run deploy --profile <name>   # wrangler.jsonc merged with wrangler.<name>.overlay.jsonc
 //
 // See scripts/wrangler-config.mjs for how profiles are resolved.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
@@ -31,6 +32,7 @@ function parseArguments(argv) {
 let profile;
 let config;
 let configArgs = [];
+let deploymentId;
 let localSecretsFile = ".dev.vars";
 let localSecretsPath = join(projectRoot, localSecretsFile);
 
@@ -39,10 +41,15 @@ function prepare(argv) {
   ({ config, configArgs } = resolveWranglerConfig(profile));
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
   localSecretsPath = join(projectRoot, localSecretsFile);
+  const local = existsSync(localSecretsPath) ? parseEnv(readFileSync(localSecretsPath, "utf8")) : {};
+  deploymentId = process.env.DEPLOYMENT_ID || config.vars?.DEPLOYMENT_ID || local.DEPLOYMENT_ID;
+  if (!deploymentId || !/^[A-Za-z0-9_-]{8,128}$/.test(deploymentId)) {
+    throw new Error("Set an immutable DEPLOYMENT_ID UUID in Wrangler vars, the build environment, or your ignored local secrets file before deploying. Preserve the same value on every update.");
+  }
 }
 
 function wrangler(args, options = {}) {
-  const result = spawnSync(wranglerBin, [...args, ...configArgs], {
+  const result = spawnSync(wranglerBin, [...args, ...configArgs, ...(args[0] === "deploy" ? ["--var", `DEPLOYMENT_ID:${deploymentId}`] : [])], {
     cwd: projectRoot,
     encoding: "utf8",
     env: process.env,
@@ -66,9 +73,11 @@ function workerDoesNotExist(result) {
   return output.includes("not found") && output.includes("wrangler deploy");
 }
 
-function uploadLocalSecretsFile() {
+function uploadLocalSecretsFile(allowedNames) {
   console.log(`Uploading the values from ${localSecretsFile}.`);
-  wrangler(["secret", "bulk", localSecretsFile]);
+  const values = parseEnv(readFileSync(localSecretsPath, "utf8"));
+  delete values.DEPLOYMENT_ID;
+  uploadSecrets(allowedNames ? Object.fromEntries(Object.entries(values).filter(([name]) => allowedNames.has(name))) : values);
 }
 
 function listSecrets() {
@@ -117,7 +126,7 @@ function ensureDeploymentSecrets() {
   let existingNames = listSecrets();
   let missing = missingRequiredSecrets(existingNames, required);
   if (missing.length > 0 && existsSync(localSecretsPath)) {
-    uploadLocalSecretsFile();
+    uploadLocalSecretsFile(new Set(missing));
     existingNames = listSecrets();
     missing = missingRequiredSecrets(existingNames, required);
   }

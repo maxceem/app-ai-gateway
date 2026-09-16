@@ -154,6 +154,7 @@ describe("usage recording idempotency", () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await recordUsageEvent({
+      organizationId: "operator-test-organization",
 
       appLevelLimitsEnabled: false,
       env,
@@ -219,6 +220,7 @@ describe("usage recording idempotency", () => {
     const logs = vi.spyOn(console, "log").mockImplementation(() => {});
 
     await recordUsageEvent({
+      organizationId: "operator-test-organization",
 
       appLevelLimitsEnabled: false,
       env,
@@ -263,6 +265,7 @@ describe("usage recording idempotency", () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await recordUsageEvent({
+      organizationId: "operator-test-organization",
 
       appLevelLimitsEnabled: false,
       env,
@@ -321,6 +324,7 @@ describe("usage recording idempotency", () => {
     const appId = "usage-record-reported-zero";
 
     await recordUsageEvent({
+      organizationId: "operator-test-organization",
 
       appLevelLimitsEnabled: false,
       env,
@@ -350,6 +354,7 @@ describe("usage recording idempotency", () => {
     const usage = '"usage":{"prompt_tokens":11,"completion_tokens":3}';
     const record = (appId: string, body: string) =>
       recordUsageEvent({
+      organizationId: "operator-test-organization",
         appLevelLimitsEnabled: false,
         env,
         observed: observedBody(body),
@@ -393,6 +398,7 @@ describe("usage recording idempotency", () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await recordUsageEvent({
+      organizationId: "operator-test-organization",
 
       appLevelLimitsEnabled: false,
       env,
@@ -421,6 +427,7 @@ describe("usage recording idempotency", () => {
   it("leaves a blocked event without a cost source, having metered nothing", async () => {
     const appId = "usage-record-blocked-source";
     await recordBlockedUsageEvent({
+      organizationId: "operator-test-organization",
       env,
       appId,
       userId: "user-1",
@@ -444,6 +451,7 @@ describe("usage recording idempotency", () => {
   it("gives blocked events an identity that makes a replay a no-op", async () => {
     const appId = "usage-record-blocked";
     await recordBlockedUsageEvent({
+      organizationId: "operator-test-organization",
       env,
       appId,
       userId: "user-1",

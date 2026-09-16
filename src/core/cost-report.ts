@@ -1,6 +1,6 @@
-import type { ApiStyle } from "./api-styles";
+import type { ApiStyle } from "./api-styles.ts";
 import { asRecord } from "./records.ts";
-import type { CredentialSource } from "../db/schema";
+import type { CredentialSource } from "../shared/capabilities.ts";
 
 /**
  * What a response said about the request that produced it, on a route that

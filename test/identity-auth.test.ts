@@ -1,14 +1,14 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { seedOperator, serverConfig } from "./helpers";
+import { seedHuman, serverConfig } from "./helpers";
 
 // Signing up hashes a password with scrypt in pure JS (workerd has no
 // node:crypto scrypt), which costs about two and a half seconds on an idle
 // machine and several times that while the other test workers, and the
 // console's suite beside them, compete for the CPU. Only the two tests whose
 // subject is registration do it; everything else needs an authenticated
-// operator rather than a sign-up, and `seedOperator` mints one. The timeout is
+// operator rather than a sign-up, and `seedHuman` mints one. The timeout is
 // sized for the two that remain.
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -22,17 +22,17 @@ function cookieFrom(response: Response): string {
 
 /** A real registration, for the one test that is about registering. */
 async function signup(email: string): Promise<{ cookie: string; organizationId: string }> {
-  const response = await exports.default.fetch(`${ORIGIN}/v1/auth/sign-up/email`, {
+  const response = await worker.request(`${ORIGIN}/v1/auth/sign-up/email`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: ORIGIN },
     body: JSON.stringify({ name: email.split("@")[0], email, password: "correct-horse-42" }),
-  });
+  }, new Proxy(env, { get(target, key) { return key === "BILLING" ? {} : key === "ALLOW_ADDITIONAL_REGISTRATIONS" ? "true" : Reflect.get(target, key); } }) as Env);
   expect(response.status, await response.clone().text()).toBe(200);
-  const user = await env.DB.prepare("SELECT id FROM console_user WHERE email = ?")
+  const user = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ?")
     .bind(email)
     .first<{ id: string }>();
   const membership = await env.DB.prepare(
-    "SELECT organization_id FROM console_organization_user WHERE user_id = ?",
+    "SELECT organization_id FROM mgmt_organization_user WHERE user_id = ?",
   ).bind(user!.id).first<{ organization_id: string }>();
   return { cookie: cookieFrom(response), organizationId: membership!.organization_id };
 }
@@ -46,7 +46,7 @@ function sessionHeaders(cookie: string, json = false): Record<string, string> {
 }
 
 async function userIdFor(email: string): Promise<string> {
-  const row = await env.DB.prepare("SELECT id FROM console_user WHERE email = ?")
+  const row = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ?")
     .bind(email)
     .first<{ id: string }>();
   return row!.id;
@@ -57,10 +57,10 @@ async function seedOrganization(name: string, userId: string, role = "owner"): P
   const now = new Date().toISOString();
   const organizationId = `org-${name}`;
   await env.DB.prepare(
-    "INSERT INTO console_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO mgmt_organization (id, name, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
   ).bind(organizationId, name, userId, now, now).run();
   await env.DB.prepare(
-    "INSERT INTO console_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, ?, 'active', ?)",
+    "INSERT INTO mgmt_organization_user (id, organization_id, user_id, role, status, joined_at) VALUES (?, ?, ?, ?, 'active', ?)",
   ).bind(`membership-${name}`, organizationId, userId, role, now).run();
   return organizationId;
 }
@@ -80,6 +80,13 @@ async function createdAppId(response: Response): Promise<string> {
 }
 
 describe("operator authentication", () => {
+  it("accepts the case-insensitive bearer scheme for management keys", async () => {
+    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
+      headers: { authorization: "bearer agw_mgmt_test-admin-secret" },
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+  });
+
   it("does not accept data-plane keys on the operator plane", async () => {
     const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
       headers: { authorization: "Bearer agw_not-a-management-key" },
@@ -111,6 +118,8 @@ describe("operator authentication", () => {
     });
     expect(keyAccess.status).toBe(200);
 
+    // A key that could mint a key would outlive being revoked, so the whole
+    // surface is session-only: reading the list is refused the same way.
     const keyCannotMintKeys = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
       method: "POST",
       headers: {
@@ -123,6 +132,17 @@ describe("operator authentication", () => {
     await expect(keyCannotMintKeys.json()).resolves.toMatchObject({
       error: { code: "session_required" },
     });
+
+    const keyCannotListKeys = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
+      headers: { authorization: `Bearer ${body.key.plaintext}` },
+    });
+    expect(keyCannotListKeys.status).toBe(403);
+
+    const keyCannotRevokeKeys = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/keys/${body.key.id}/revoke`,
+      { method: "POST", headers: { authorization: `Bearer ${body.key.plaintext}` } },
+    );
+    expect(keyCannotRevokeKeys.status).toBe(403);
 
     const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
       headers: sessionHeaders(cookie),
@@ -146,7 +166,7 @@ describe("operator authentication", () => {
   it("returns the stable registration-disabled error when public signup is off", async () => {
     const closedEnv = new Proxy(env, {
       get(target, property, receiver) {
-        if (property === "ALLOW_PUBLIC_REGISTRATION") return "false";
+        if (property === "ALLOW_ADDITIONAL_REGISTRATIONS") return "false";
         return Reflect.get(target, property, receiver);
       },
     }) as Env;
@@ -170,9 +190,9 @@ describe("operator authentication", () => {
   });
 
   it("lets members read their organization but rejects mutations", async () => {
-    const { cookie, organizationId } = await seedOperator("member@example.test");
+    const { cookie, organizationId } = await seedHuman("member@example.test");
     await env.DB.prepare(
-      "UPDATE console_organization_user SET role = 'member' WHERE organization_id = ?",
+      "UPDATE mgmt_organization_user SET role = 'member' WHERE organization_id = ?",
     ).bind(organizationId).run();
 
     const read = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
@@ -185,13 +205,13 @@ describe("operator authentication", () => {
     await expect(write.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
 
     await env.DB.prepare(
-      "UPDATE console_organization_user SET role = 'admin' WHERE organization_id = ?",
+      "UPDATE mgmt_organization_user SET role = 'admin' WHERE organization_id = ?",
     ).bind(organizationId).run();
     expect((await createApp(cookie, "admin-can-create")).status).toBe(201);
   });
 
   it("reports the caller's identity, organization and role to operator clients", async () => {
-    const { cookie, organizationId } = await seedOperator("session-shape@example.test");
+    const { cookie, organizationId } = await seedHuman("session-shape@example.test");
 
     const response = await exports.default.fetch(`${ORIGIN}/v1/admin/session`, {
       headers: sessionHeaders(cookie),
@@ -214,9 +234,14 @@ describe("operator authentication", () => {
   });
 
   it("lets a read-only member switch between the organizations they belong to", async () => {
-    const { cookie, organizationId } = await seedOperator("switcher@example.test");
+    const { cookie, organizationId } = await seedHuman("switcher@example.test");
     const userId = await userIdFor("switcher@example.test");
     const secondOrganizationId = await seedOrganization("second-tenant", userId, "member");
+    // Selection replaces the console's cached session, so its account metadata
+    // must be identical to the regular session endpoint's response.
+    const expiresAt = "2026-12-14T00:00:00.000Z";
+    await env.DB.prepare("UPDATE mgmt_organization SET expires_at = ? WHERE id = ?")
+      .bind(expiresAt, secondOrganizationId).run();
 
     const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations`, {
       headers: sessionHeaders(cookie),
@@ -228,7 +253,7 @@ describe("operator authentication", () => {
     );
 
     // Demote the caller everywhere: switching must not require mutation rights.
-    await env.DB.prepare("UPDATE console_organization_user SET role = 'member' WHERE user_id = ?")
+    await env.DB.prepare("UPDATE mgmt_organization_user SET role = 'member' WHERE user_id = ?")
       .bind(userId).run();
 
     const wrongVerb = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
@@ -246,9 +271,9 @@ describe("operator authentication", () => {
     });
     expect(selected.status, await selected.clone().text()).toBe(200);
     await expect(selected.json()).resolves.toMatchObject({
-      session: { organization: { id: secondOrganizationId }, role: "member" },
+      session: { organization: { id: secondOrganizationId, expiresAt }, role: "member" },
     });
-    expect(selected.headers.get("set-cookie")).toContain("agw_operator_current_organization");
+    expect(selected.headers.get("set-cookie")).toContain("agw_identity_current_organization");
 
     const foreign = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
       method: "POST",
@@ -259,8 +284,48 @@ describe("operator authentication", () => {
     await expect(foreign.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
   });
 
+  it("keeps a session out of an organization whose deadline has passed", async () => {
+    const { cookie, organizationId } = await seedHuman("deadline-seat@example.test");
+    const userId = await userIdFor("deadline-seat@example.test");
+    const expired = await seedOrganization("expired-tenant", userId);
+    await env.DB.prepare("UPDATE mgmt_organization SET expires_at = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 1000).toISOString(), expired)
+      .run();
+
+    // The library refuses it, so the console never gets a session pointed there.
+    const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
+      method: "POST",
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ organizationId: expired }),
+    });
+    expect(selected.status).toBe(403);
+    await expect(selected.json()).resolves.toMatchObject({
+      error: { code: "account_expired" },
+    });
+
+    // Naming it in the cookie is no way in either: the live organization wins.
+    const session = await exports.default.fetch(`${ORIGIN}/v1/admin/session`, {
+      headers: {
+        ...sessionHeaders(cookie),
+        cookie: `${cookie}; agw_identity_current_organization=${expired}`,
+      },
+    });
+    expect(session.status).toBe(200);
+    await expect(session.json()).resolves.toMatchObject({
+      session: { organization: { id: organizationId } },
+    });
+    // Still listed, so the console can say which organization is unavailable.
+    const listed = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations`, {
+      headers: sessionHeaders(cookie),
+    });
+    const organizations = await listed.json<{
+      organizations: Array<{ organization: { id: string } }>;
+    }>();
+    expect(organizations.organizations.map((entry) => entry.organization.id)).toContain(expired);
+  });
+
   it("keeps management-key callers out of organization switching", async () => {
-    const { cookie, organizationId } = await seedOperator("machine-seat@example.test");
+    const { cookie, organizationId } = await seedHuman("machine-seat@example.test");
     const created = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
       method: "POST",
       headers: sessionHeaders(cookie, true),
@@ -290,8 +355,8 @@ describe("operator authentication", () => {
   });
 
   it("keeps applications and every nested admin surface invisible across organizations", async () => {
-    const first = await seedOperator("isolation-one@example.test");
-    const second = await seedOperator("isolation-two@example.test");
+    const first = await seedHuman("isolation-one@example.test");
+    const second = await seedHuman("isolation-two@example.test");
     const firstApp = await createdAppId(await createApp(first.cookie, "org one app"));
     const secondApp = await createdAppId(await createApp(second.cookie, "org two app"));
 

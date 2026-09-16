@@ -18,6 +18,7 @@ import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
 import {
+  accountTrialNotice,
   billingNotice,
   canCancel,
   canResume,
@@ -45,7 +46,7 @@ import type { BillingAccess, BillingPlan, OrganizationQuota } from "@/lib/types"
 type Period = "month" | "year";
 
 export function BillingPage() {
-  const { capabilities } = useConsoleSession();
+  const { capabilities, organization } = useConsoleSession();
   const [period, setPeriod] = useState<Period>("month");
   const [confirmCancel, setConfirmCancel] = useState(false);
   // The plan a change was asked for, held until it is confirmed: unlike a
@@ -132,7 +133,7 @@ export function BillingPage() {
 
   // The page already renders the allowance in full below, so a banner repeating
   // it would be noise; only a subscription problem is worth restating here.
-  const notice = billingNotice(access);
+  const notice = accountTrialNotice(organization) ?? billingNotice(access);
 
   return (
     <div className="space-y-6">
@@ -259,7 +260,8 @@ function SubscriptionCard({
   const plan = entitledPlan(access);
   const subscription = subscriptionOf(access);
   const timeline = subscription ? subscriptionTimeline(subscription) : null;
-  const meter = quotaMeter(quota);
+  const { organization } = useConsoleSession();
+  const meter = quotaMeter(quota, organization);
 
   return (
     <Card>

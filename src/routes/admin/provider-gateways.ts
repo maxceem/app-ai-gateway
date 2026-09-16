@@ -1,3 +1,10 @@
+import { prepareResourceReceipt } from "../../core/resource-receipt";
+import {
+  commitProviderWrite,
+  nextUpdatedAt,
+  type ProviderWriteActor,
+  type ProviderWriteBoundary,
+} from "../../core/provider-writes";
 import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import {
@@ -6,15 +13,23 @@ import {
   ProviderGatewayTestRequestSchema,
   ProviderGatewayUpdateRequestSchema,
 } from "../../contracts/schemas";
+import type {
+  ProviderGatewayDeleteResponse,
+  ProviderGatewayListResponse,
+  ProviderGatewayResponse,
+  ProviderGatewaySummary,
+  ProviderGatewayTestResponse,
+} from "../../contracts/responses";
 import { GatewayError } from "../../core/errors";
 import { requireGatewayAdapter, type ResolvedGateway } from "../../core/gateways";
+import { planCap } from "../../core/plan-caps";
 import { probeGatewayPreset, type ProbeResult } from "../../core/provider-probe";
 import {
   gatewayEncryptionContext,
   invalidateOrganizationProviders,
 } from "../../core/provider-store";
 import { database } from "../../db";
-import { provider, providerGateway } from "../../db/schema";
+import { provider, providerGateway, type CfAigConfig } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { secretVault } from "../../vault";
 import {
@@ -38,12 +53,14 @@ interface GatewayCounts {
   total: number;
 }
 
-function serialize(row: ProviderGatewayRow, counts: GatewayCounts): Record<string, unknown> {
-  return {
+/**
+ * The documented return type, so a column added here that the contract has not
+ * been told about fails `pnpm run check` rather than a client that reads it.
+ */
+function serialize(row: ProviderGatewayRow, counts: GatewayCounts): ProviderGatewaySummary {
+  const common = {
     id: row.id,
-    type: row.type,
     name: row.name,
-    config: row.config,
     secretHint: row.secretHint,
     providerCount: counts.active,
     referencedCount: counts.total,
@@ -52,6 +69,14 @@ function serialize(row: ProviderGatewayRow, counts: GatewayCounts): Record<strin
     updatedAt: row.updatedAt,
     createdBy: row.createdBy,
   };
+  // The published shape is discriminated by `type`, because each gateway's
+  // `config` is its own. The stored columns are not correlated — `type` and
+  // `config_json` are separate columns holding separate unions — so the pair is
+  // joined here, exactly as `resolveGateway` joins it for the request path, and
+  // the create path above is the only writer of either.
+  return row.type === "cf_aig"
+    ? { ...common, type: "cf_aig", config: row.config as CfAigConfig }
+    : { ...common, type: "vercel", config: {} };
 }
 
 const NO_REFERENCES: GatewayCounts = { active: 0, total: 0 };
@@ -65,7 +90,7 @@ const NO_REFERENCES: GatewayCounts = { active: 0, total: 0 };
  * question the operator asked: writes store what they are given without
  * probing anything, and this endpoint says what a live call would find.
  */
-function probeReport(probe: ProbeResult): Record<string, unknown> {
+function probeReport(probe: ProbeResult): ProviderGatewayTestResponse {
   return {
     validated: probe.validated,
     ...(probe.reason === undefined ? {} : { reason: probe.reason }),
@@ -79,9 +104,7 @@ function probeReport(probe: ProbeResult): Record<string, unknown> {
  * and a dry run probes the same connection a create would store.
  */
 function requestedGateway(
-  body:
-    | { type: "cf_aig"; accountId: string; gatewayId: string }
-    | { type: "vercel" },
+  body: { type: "cf_aig"; accountId: string; gatewayId: string } | { type: "vercel" },
 ): ResolvedGateway {
   return body.type === "cf_aig"
     ? { type: "cf_aig", config: { accountId: body.accountId, gatewayId: body.gatewayId } }
@@ -101,10 +124,7 @@ export const providerGatewayRoutes = new Hono<ProviderGatewayEnv>();
  * the operator can tell those apart.
  */
 providerGatewayRoutes.post("/provider-gateways/test", async (c) => {
-  const body = providerSchemaBody(
-    ProviderGatewayTestRequestSchema,
-    await providerRequestBody(c),
-  );
+  const body = providerSchemaBody(ProviderGatewayTestRequestSchema, await providerRequestBody(c));
   return c.json(probeReport(await probeGatewayPreset(requestedGateway(body), body.token)));
 });
 
@@ -112,39 +132,44 @@ providerGatewayRoutes.get("/provider-gateways", async (c) => {
   const organizationId = c.get("admin").organizationId;
   const db = database(c.env.DB);
   const [gateways, counts] = await Promise.all([
-    db.select().from(providerGateway)
-      .where(eq(providerGateway.organizationId, organizationId)),
-    db.select({
-      providerGatewayId: provider.providerGatewayId,
-      active: sql<number>`SUM(CASE WHEN ${provider.status} = 'active' THEN 1 ELSE 0 END)`,
-      total: sql<number>`COUNT(*)`,
-    }).from(provider).where(
-      eq(provider.organizationId, organizationId),
-    ).groupBy(provider.providerGatewayId),
+    db.select().from(providerGateway).where(eq(providerGateway.organizationId, organizationId)),
+    db
+      .select({
+        providerGatewayId: provider.providerGatewayId,
+        active: sql<number>`SUM(CASE WHEN ${provider.status} = 'active' THEN 1 ELSE 0 END)`,
+        total: sql<number>`COUNT(*)`,
+      })
+      .from(provider)
+      .where(eq(provider.organizationId, organizationId))
+      .groupBy(provider.providerGatewayId),
   ]);
-  const countById = new Map(counts.flatMap((row) =>
-    row.providerGatewayId === null
-      ? []
-      : [[row.providerGatewayId, { active: row.active, total: row.total }] as const]
-  ));
+  const countById = new Map(
+    counts.flatMap((row) =>
+      row.providerGatewayId === null
+        ? []
+        : [[row.providerGatewayId, { active: row.active, total: row.total }] as const],
+    ),
+  );
   return c.json({
     gateways: gateways.map((row) => serialize(row, countById.get(row.id) ?? NO_REFERENCES)),
-  });
+  } satisfies ProviderGatewayListResponse);
 });
 
-providerGatewayRoutes.post("/provider-gateways", async (c) => {
-  const admin = c.get("admin");
-  const body = providerSchemaBody(
-    ProviderGatewayCreateRequestSchema,
-    await providerRequestBody(c),
-  );
+export async function createProviderGateway(
+  env: Env,
+  admin: ProviderWriteActor,
+  input: unknown,
+  boundary?: ProviderWriteBoundary,
+): Promise<ProviderGatewayResponse> {
+  const body = providerSchemaBody(ProviderGatewayCreateRequestSchema, input);
   const gateway = requestedGateway(body);
   const id = crypto.randomUUID();
-  const secretBlob = await secretVault(c.env).encryptSecret(
+  const secretBlob = await secretVault(env).encryptSecret(
     body.token,
     gatewayEncryptionContext(admin.organizationId, id),
   );
-  const [row] = await database(c.env.DB).insert(providerGateway).values({
+  const now = nextUpdatedAt();
+  const row: ProviderGatewayRow = {
     id,
     organizationId: admin.organizationId,
     type: gateway.type,
@@ -153,39 +178,53 @@ providerGatewayRoutes.post("/provider-gateways", async (c) => {
     secretBlob,
     secretHint: secretHint(body.token),
     createdBy: admin.userId,
-  }).returning();
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const cap = await planCap(env, "providerGateway", admin.organizationId);
+  await commitProviderWrite(
+    env,
+    `INSERT INTO provider_gateway(id,organization_id,type,name,config_json,secret_blob,secret_hint,created_by,status,created_at,updated_at)
+     SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE /* authorization */`,
+    [
+      row.id,
+      row.organizationId,
+      row.type,
+      row.name,
+      JSON.stringify(row.config),
+      row.secretBlob,
+      row.secretHint,
+      row.createdBy,
+      row.status,
+      row.createdAt,
+      row.updatedAt,
+    ],
+    { gateway: serialize(row, NO_REFERENCES) },
+    boundary,
+    cap,
+  );
   invalidateOrganizationProviders(admin.organizationId);
-  return c.json({ gateway: serialize(row!, NO_REFERENCES) }, 201);
+  return { gateway: serialize(row, NO_REFERENCES) };
+}
+
+providerGatewayRoutes.post("/provider-gateways", async (c) => {
+  const body = await providerRequestBody(c);
+  const receipt = await prepareResourceReceipt(c, "provider-gateway.add", body);
+  if (receipt?.result) return c.json(receipt.result, 201);
+  try {
+    const outcome = await createProviderGateway(c.env, c.get("admin"), body, receipt);
+    return c.json(receipt?.result ?? outcome, 201);
+  } catch (error) {
+    if (receipt && (await receipt.read())) return c.json(receipt.result!, 201);
+    throw error;
+  }
 });
 
 providerGatewayRoutes.patch("/provider-gateways/:id", async (c) => {
   const admin = c.get("admin");
   const id = c.req.param("id");
-  const body = providerSchemaBody(
-    ProviderGatewayUpdateRequestSchema,
-    await providerRequestBody(c),
-  );
-  const [row] = await database(c.env.DB).update(providerGateway).set({
-    name: body.name,
-    updatedAt: new Date().toISOString(),
-  }).where(and(
-    eq(providerGateway.id, id),
-    eq(providerGateway.organizationId, admin.organizationId),
-    eq(providerGateway.status, "active"),
-  )).returning();
-  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  invalidateOrganizationProviders(admin.organizationId);
-  const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
-  return c.json({ gateway: serialize(row, counts) });
-});
-
-providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) => {
-  const admin = c.get("admin");
-  const id = c.req.param("id");
-  const body = providerSchemaBody(
-    ProviderGatewayRotateRequestSchema,
-    await providerRequestBody(c),
-  );
+  const body = providerSchemaBody(ProviderGatewayUpdateRequestSchema, await providerRequestBody(c));
   const existing = await database(c.env.DB).query.providerGateway.findFirst({
     where: and(
       eq(providerGateway.id, id),
@@ -194,26 +233,85 @@ providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) => {
     ),
   });
   if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  const [row] = await database(c.env.DB)
+    .update(providerGateway)
+    .set({
+      name: body.name,
+      updatedAt: nextUpdatedAt(existing.updatedAt),
+    })
+    .where(
+      and(
+        eq(providerGateway.id, id),
+        eq(providerGateway.organizationId, admin.organizationId),
+        eq(providerGateway.status, "active"),
+        eq(providerGateway.updatedAt, existing.updatedAt),
+      ),
+    )
+    .returning();
+  if (!row) throw new GatewayError(409, "conflict", "Provider gateway changed during this request");
+  invalidateOrganizationProviders(admin.organizationId);
+  const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
+  return c.json({ gateway: serialize(row, counts) } satisfies ProviderGatewayResponse);
+});
+
+export async function rotateProviderGateway(
+  env: Env,
+  admin: ProviderWriteActor,
+  id: string,
+  input: unknown,
+  boundary?: ProviderWriteBoundary,
+  expectedUpdatedAt?: string,
+): Promise<ProviderGatewayResponse> {
+  const body = providerSchemaBody(ProviderGatewayRotateRequestSchema, input);
+  const existing = await database(env.DB).query.providerGateway.findFirst({
+    where: and(
+      eq(providerGateway.id, id),
+      eq(providerGateway.organizationId, admin.organizationId),
+      eq(providerGateway.status, "active"),
+    ),
+  });
+  if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  if (expectedUpdatedAt !== undefined && existing.updatedAt !== expectedUpdatedAt)
+    throw new GatewayError(
+      409,
+      "conflict",
+      "The provider gateway changed since this request was prepared",
+    );
   // A stored type the CHECK admits but no adapter implements can carry no
   // traffic, so rotating a token onto it would be a silent no-op.
   requireGatewayAdapter(existing.type);
-  const secretBlob = await secretVault(c.env).encryptSecret(
+  const secretBlob = await secretVault(env).encryptSecret(
     body.token,
     gatewayEncryptionContext(admin.organizationId, id),
   );
-  const [row] = await database(c.env.DB).update(providerGateway).set({
+  const row: ProviderGatewayRow = {
+    ...existing,
     secretBlob,
     secretHint: secretHint(body.token),
-    updatedAt: new Date().toISOString(),
-  }).where(and(
-    eq(providerGateway.id, id),
-    eq(providerGateway.organizationId, admin.organizationId),
-  )).returning();
-  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
+    updatedAt: nextUpdatedAt(existing.updatedAt),
+  };
+  const counts = await gatewayCounts(env.DB, admin.organizationId, id);
+  await commitProviderWrite(
+    env,
+    `UPDATE provider_gateway SET secret_blob=?,secret_hint=?,updated_at=? WHERE id=? AND organization_id=? AND updated_at=? AND status='active' AND /* authorization */`,
+    [row.secretBlob, row.secretHint, row.updatedAt, row.id, row.organizationId, existing.updatedAt],
+    { gateway: serialize(row, counts) },
+    boundary,
+  );
   invalidateOrganizationProviders(admin.organizationId);
-  const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
-  return c.json({ gateway: serialize(row, counts) });
-});
+  return { gateway: serialize(row, counts) };
+}
+
+providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) =>
+  c.json(
+    await rotateProviderGateway(
+      c.env,
+      c.get("admin"),
+      c.req.param("id"),
+      await providerRequestBody(c),
+    ),
+  ),
+);
 
 providerGatewayRoutes.delete("/provider-gateways/:id", async (c) => {
   const admin = c.get("admin");
@@ -231,16 +329,17 @@ providerGatewayRoutes.delete("/provider-gateways/:id", async (c) => {
   const counts = await gatewayCounts(c.env.DB, admin.organizationId, id);
   if (counts.total > 0) throw gatewayInUse(counts);
   try {
-    await database(c.env.DB).delete(providerGateway).where(and(
-      eq(providerGateway.id, id),
-      eq(providerGateway.organizationId, admin.organizationId),
-    ));
+    await database(c.env.DB)
+      .delete(providerGateway)
+      .where(
+        and(eq(providerGateway.id, id), eq(providerGateway.organizationId, admin.organizationId)),
+      );
   } catch (error) {
     if (databaseErrorMatches(error, /FOREIGN KEY constraint failed/u)) throw gatewayInUse();
     throw error;
   }
   invalidateOrganizationProviders(admin.organizationId);
-  return c.json({ deleted: true, provider_gateway_id: id });
+  return c.json({ deleted: true, provider_gateway_id: id } satisfies ProviderGatewayDeleteResponse);
 });
 
 async function gatewayCounts(
@@ -248,15 +347,18 @@ async function gatewayCounts(
   organizationId: string,
   providerGatewayId: string,
 ): Promise<GatewayCounts> {
-  const row = await database(d1).select({
-    active: sql<number>`SUM(CASE WHEN ${provider.status} = 'active' THEN 1 ELSE 0 END)`,
-    total: sql<number>`COUNT(*)`,
-  })
+  const row = await database(d1)
+    .select({
+      active: sql<number>`SUM(CASE WHEN ${provider.status} = 'active' THEN 1 ELSE 0 END)`,
+      total: sql<number>`COUNT(*)`,
+    })
     .from(provider)
-    .where(and(
-      eq(provider.organizationId, organizationId),
-      eq(provider.providerGatewayId, providerGatewayId),
-    ))
+    .where(
+      and(
+        eq(provider.organizationId, organizationId),
+        eq(provider.providerGatewayId, providerGatewayId),
+      ),
+    )
     .get();
   return { active: row?.active ?? 0, total: row?.total ?? 0 };
 }
@@ -268,10 +370,11 @@ async function gatewayCounts(
  */
 function gatewayInUse(counts: GatewayCounts = { active: 1, total: 1 }): GatewayError {
   const disabled = counts.total - counts.active;
-  const message = counts.active > 0
-    ? disabled > 0
-      ? "Delete the active and disabled provider instances routed through this gateway first"
-      : "Delete every active provider instance routed through this gateway first"
-    : "Disabled provider instances still reference this gateway; delete them to release it";
+  const message =
+    counts.active > 0
+      ? disabled > 0
+        ? "Delete the active and disabled provider instances routed through this gateway first"
+        : "Delete every active provider instance routed through this gateway first"
+      : "Disabled provider instances still reference this gateway; delete them to release it";
   return new GatewayError(409, "gateway_in_use", message);
 }

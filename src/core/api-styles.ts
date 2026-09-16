@@ -1,9 +1,9 @@
-import type { OutputClampStyle, ProviderType } from "./types";
+import type { OutputClampStyle, ProviderType } from "./types.ts";
 
 // Shared with the console, which lists these styles in its capability panels.
-export { API_STYLES, type ApiStyle } from "../shared/capabilities";
+export { API_STYLES, type ApiStyle } from "../shared/capabilities.ts";
 
-import type { ApiStyle } from "../shared/capabilities";
+import type { ApiStyle } from "../shared/capabilities.ts";
 
 /**
  * Classifies the requested operation from the provider path alone. Provider

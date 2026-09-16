@@ -38,14 +38,42 @@ export const BILLING_STALE_MAX_MS = 60 * 60_000;
 export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
 /**
- * The gateway has exactly one enforceable quota, so a plan carries exactly one
- * limit. Absent means unlimited, which is what every self-hosted deployment and
- * every plan that does not mention the key gets.
+ * What a plan allows, read out of its opaque `limits` JSON.
+ *
+ * Every limit is a whole count and every one is optional; absent means
+ * unlimited, which is what a self-hosted deployment, a plan with no `limits`
+ * block, and a plan that simply does not mention the key all get. Adding a
+ * ceiling to a plan is therefore plan data alone — nothing here knows which
+ * plan carries which number, and no plan is named anywhere in this Worker.
+ *
+ * `maxRequestsPerMonth` is spent on the data plane. The rest are ceilings on
+ * stored configuration, enforced by the write that would exceed them; see
+ * `src/core/plan-caps.ts`.
+ *
+ * All of these are the plan allowance an organization is metered against, never
+ * the limits an organization sets on its own app's end users — those are
+ * `app_*` codes and `src/do/UserLimiter.ts`, and no value here may cap them.
  */
-export interface BillingPlanLimits {
-  /** Requests admitted for provider dispatch per calendar month, per organization. */
+export interface PlanLimits {
+  /** Requests admitted for provider dispatch per allowance period, per organization. */
   maxRequestsPerMonth?: number;
+  /** Applications the organization may own, in any status. */
+  maxApps?: number;
+  /** Providers the organization may own, in any status. */
+  maxProviders?: number;
+  /** Provider gateways the organization may own, in any status. */
+  maxProviderGateways?: number;
+  /** Counted per application, over its `active` keys alone. */
+  maxActiveKeysPerApp?: number;
 }
+
+const PLAN_LIMIT_KEYS = [
+  "maxRequestsPerMonth",
+  "maxApps",
+  "maxProviders",
+  "maxProviderGateways",
+  "maxActiveKeysPerApp",
+] as const satisfies readonly (keyof PlanLimits)[];
 
 /**
  * the billing service's answer, plus the two states only the gateway can be in.
@@ -104,6 +132,7 @@ const lastKnownAccess = new Map<string, { value: GatewayBillingAccess & { state:
 
 export function invalidateBillingAccess(organizationId: string): void {
   billingAccessCache.delete(organizationId);
+  lastKnownAccess.delete(organizationId);
 }
 
 export function invalidateBillingRequestAccess(
@@ -111,6 +140,7 @@ export function invalidateBillingRequestAccess(
   cache?: BillingRequestCache,
 ): void {
   billingAccessCache.delete(organizationId);
+  lastKnownAccess.delete(organizationId);
   cache?.delete(organizationId);
 }
 
@@ -286,12 +316,12 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
  *
  * The value is authored by whoever configured the plan, and JSON has no integer
  * type, so a count may arrive as `10000`, `10000.0`, or `"10000"` and all three
- * mean the same allowance. Anything that is not one of those — a fraction, a
+ * mean the same number. Anything that is not one of those — a fraction, a
  * negative, a boolean, `null`, an object — is a misconfiguration this gateway
- * cannot resolve into an allowance, and it refuses the request rather than
- * guessing an allowance in either direction.
+ * cannot resolve into a limit, and it refuses the request rather than guessing
+ * one in either direction.
  */
-function requestAllowance(value: unknown): number | undefined {
+function countLimit(value: unknown, key: string): number | undefined {
   if (value === undefined) return undefined;
   const numeric = typeof value === "string" && value.trim().length > 0
     ? Number(value)
@@ -306,13 +336,13 @@ function requestAllowance(value: unknown): number | undefined {
     throw new GatewayError(
       502,
       "billing_unavailable",
-      "Billing plan limit maxRequestsPerMonth is invalid",
+      `Billing plan limit ${key} is invalid`,
     );
   }
   return numeric;
 }
 
-export function billingPlanLimits(access: GatewayBillingAccess): BillingPlanLimits {
+export function billingPlanLimits(access: GatewayBillingAccess): PlanLimits {
   if (access.state !== "billed" || access.plan === null) return {};
   const planLimits = access.plan.limits;
   if (planLimits === undefined) return {};
@@ -320,8 +350,12 @@ export function billingPlanLimits(access: GatewayBillingAccess): BillingPlanLimi
     throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
   }
   const limits = planLimits as Record<string, unknown>;
-  const maxRequestsPerMonth = requestAllowance(limits.maxRequestsPerMonth);
-  return maxRequestsPerMonth === undefined ? {} : { maxRequestsPerMonth };
+  const resolved: PlanLimits = {};
+  for (const key of PLAN_LIMIT_KEYS) {
+    const value = countLimit(limits[key], key);
+    if (value !== undefined) resolved[key] = value;
+  }
+  return resolved;
 }
 
 export function billingRpcError(error: unknown): GatewayError {

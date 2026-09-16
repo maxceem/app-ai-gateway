@@ -67,6 +67,16 @@ export interface ProbeResult {
 }
 
 /**
+ * What is left of a {@link ProbeResult} once {@link assertNotRejected} has had
+ * it: the same shape without the one verdict that raises instead of returning.
+ * Named because it is what the providers dry run answers with, and its
+ * published contract says so.
+ */
+export type InconclusiveProbeResult = Omit<ProbeResult, "reason"> & {
+  reason?: Exclude<ProbeReason, "rejected">;
+};
+
+/**
  * A probe has exactly two outcomes worth acting on: the upstream said the
  * credential is wrong, or it did not. Which of those blocks a write is the
  * caller's decision — see {@link assertNotRejected} — because a provider
@@ -113,8 +123,8 @@ async function runProbe(
  * must not swallow. Everything else passes through: an inconclusive probe is
  * not evidence against a credential the operator has reason to trust.
  */
-export function assertNotRejected(result: ProbeResult): ProbeResult {
-  if (result.reason !== "rejected") return result;
+export function assertNotRejected(result: ProbeResult): InconclusiveProbeResult {
+  if (result.reason !== "rejected") return result as InconclusiveProbeResult;
   throw new GatewayError(
     400,
     "provider_key_invalid",

@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const path = ".dev.vars";
 let contents = existsSync(path) ? readFileSync(path, "utf8") : readFileSync(".dev.vars.example", "utf8");
@@ -32,10 +32,15 @@ if (!hasUsableValue("BETTER_AUTH_SECRET")) {
   generated.push("BETTER_AUTH_SECRET");
 }
 
+if (!hasUsableValue("DEPLOYMENT_ID")) {
+  setValue("DEPLOYMENT_ID", randomUUID());
+  generated.push("DEPLOYMENT_ID");
+}
 writeFileSync(path, contents, { mode: 0o600 });
+chmodSync(path, 0o600);
 
 if (generated.length === 0) {
-  console.log(".dev.vars already contains JWT_SECRET and BETTER_AUTH_SECRET; nothing changed.");
+  console.log(".dev.vars already contains the internal signing secrets and deployment initialization values; nothing changed.");
 } else {
   console.log(`Generated ${generated.join(" and ")} in .dev.vars.`);
 }

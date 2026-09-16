@@ -2,12 +2,9 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearApiKeyCache } from "../src/core/apikeys";
-import { clearAppConfigCache } from "../src/core/config";
-import { clearJwksCache } from "../src/core/issuer";
 import { pruneAuthEvents, recordAuthEvent } from "../src/core/auth-events";
 import app from "../src/index";
-import { TEST_AUDIENCE, TEST_ISSUER, seedServerApp } from "./helpers";
+import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
 
 interface AuthEventRow {
   event_id: string | null;
@@ -152,9 +149,7 @@ async function exchange(
 }
 
 beforeEach(() => {
-  clearApiKeyCache();
-  clearJwksCache();
-  clearAppConfigCache();
+  clearIsolateCaches();
 });
 
 afterEach(() => vi.restoreAllMocks());

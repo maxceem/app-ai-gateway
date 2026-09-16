@@ -1,0 +1,408 @@
+import { env } from "cloudflare:workers";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createClaimRegistrationAuth } from "../src/auth/identity";
+import worker from "../src/index";
+import { registrationDisabledRedirect } from "../src/routes/identity-auth";
+import { derive } from "../src/routes/cli/security";
+import { seedHuman } from "./helpers";
+
+vi.setConfig({ testTimeout: 30_000 });
+
+const ORIGIN = "https://example.test";
+const GOOGLE_CLIENT_ID = "test-google-client";
+
+function runtime(options: { additional?: boolean; cloud?: boolean; google?: boolean } = {}): Env {
+  return new Proxy(env, {
+    get(target, property, receiver) {
+      if (property === "BILLING") return options.cloud ? {} : undefined;
+      if (property === "ALLOW_ADDITIONAL_REGISTRATIONS") {
+        return options.additional ? "true" : "false";
+      }
+      if (property === "GOOGLE_CLIENT_ID") {
+        return options.google ? GOOGLE_CLIENT_ID : undefined;
+      }
+      if (property === "GOOGLE_CLIENT_SECRET") {
+        return options.google ? "test-google-secret" : undefined;
+      }
+      if (property === "OAUTH_RELAY_URL") return undefined;
+      return Reflect.get(target, property, receiver);
+    },
+  }) as Env;
+}
+
+async function authRequest(testEnv: Env, path: string, body: Record<string, unknown>) {
+  return worker.request(`${ORIGIN}/v1/auth/${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: ORIGIN },
+    body: JSON.stringify(body),
+  }, testEnv);
+}
+
+async function signUp(testEnv: Env, email: string) {
+  return authRequest(testEnv, "sign-up/email", {
+    name: email.split("@")[0],
+    email,
+    password: "correct-horse-42",
+  });
+}
+
+async function googleIdToken(email: string, subject: string): Promise<string> {
+  const pair = await generateKeyPair("RS256", { extractable: true });
+  const publicJwk = await exportJWK(pair.publicKey);
+  publicJwk.kid = `google-${subject}`;
+  publicJwk.alg = "RS256";
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [publicJwk] }));
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({
+    email,
+    email_verified: true,
+    name: "Google User",
+  })
+    .setProtectedHeader({ alg: "RS256", kid: publicJwk.kid })
+    .setSubject(subject)
+    .setIssuer("https://accounts.google.com")
+    .setAudience(GOOGLE_CLIENT_ID)
+    .setIssuedAt(now)
+    .setExpirationTime(now + 300)
+    .sign(pair.privateKey);
+}
+
+async function googleSignIn(testEnv: Env, email: string, subject: string) {
+  return authRequest(testEnv, "sign-in/social", {
+    provider: "google",
+    callbackURL: ORIGIN,
+    idToken: { token: await googleIdToken(email, subject) },
+  });
+}
+
+function mockGoogleTokenExchange(email: string, subject: string) {
+  const jwt = [
+    btoa(JSON.stringify({ alg: "RS256" })),
+    btoa(JSON.stringify({
+      sub: subject,
+      email,
+      email_verified: true,
+      name: "Google User",
+    })),
+    "test-signature",
+  ].join(".");
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+    access_token: "test-google-access",
+    token_type: "Bearer",
+    expires_in: 3600,
+    id_token: jwt,
+  }));
+}
+
+async function startGoogleRedirect(testEnv: Env) {
+  const started = await authRequest(testEnv, "sign-in/social", {
+    provider: "google",
+    callbackURL: `${ORIGIN}/after-google`,
+  });
+  expect(started.status).toBe(200);
+  const authorization = new URL(((await started.clone().json()) as { url: string }).url);
+  return {
+    response: started,
+    state: authorization.searchParams.get("state")!,
+  };
+}
+
+async function googleCallback(testEnv: Env, started: Response, state: string, extraCookie = "") {
+  const cookie = [
+    ...started.headers.getSetCookie().map((value) => value.split(";")[0]),
+    extraCookie,
+  ].filter(Boolean).join("; ");
+  return worker.request(
+    `${ORIGIN}/v1/auth/callback/google?code=mock-code&state=${encodeURIComponent(state)}`,
+    {
+      headers: {
+        cookie,
+        "sec-fetch-mode": "navigate",
+        accept: "text/html,application/xhtml+xml",
+      },
+    },
+    testEnv,
+  );
+}
+
+beforeEach(async () => {
+  await env.DB.batch(
+    [
+      "app_auth_challenge",
+      "app_auth_event",
+      "app_usage_event",
+      "app_usage_rollup",
+      "app_api_key",
+      "app_user",
+      "app",
+      "provider",
+      "provider_gateway",
+      "mgmt_handoff",
+      "mgmt_resource_receipt",
+      "mgmt_verification",
+      "mgmt_user_account",
+      "mgmt_user_session",
+      "mgmt_api_key",
+      "mgmt_organization_user",
+      "mgmt_organization",
+      "mgmt_user",
+    ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)),
+  );
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("self-hosted registration policy", () => {
+  it("lets the first person register as an account owner, then blocks new people but preserves sign-in", async () => {
+    const testEnv = runtime();
+    const before = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
+    await expect(before.json()).resolves.toMatchObject({ registrationOpen: true });
+
+    const first = await signUp(testEnv, "first@example.test");
+    expect(first.status, await first.clone().text()).toBe(200);
+    const ownership = await env.DB.prepare(
+      `SELECT m.organization_id, m.role FROM mgmt_organization_user m
+       JOIN mgmt_user u ON u.id=m.user_id WHERE u.email=?`,
+    ).bind("first@example.test").first<{ organization_id: string; role: string }>();
+    expect(ownership).toMatchObject({ role: "owner" });
+
+    const after = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
+    await expect(after.json()).resolves.toMatchObject({ registrationOpen: false });
+    const blocked = await signUp(testEnv, "second@example.test");
+    expect(blocked.status).toBe(403);
+    await expect(blocked.json()).resolves.toEqual({
+      error: {
+        code: "registration_disabled",
+        message: "Public registration is disabled for this deployment",
+      },
+    });
+
+    const login = await authRequest(testEnv, "sign-in/email", {
+      email: "first@example.test",
+      password: "correct-horse-42",
+    });
+    expect(login.status, await login.clone().text()).toBe(200);
+  });
+
+  it("gives an enabled additional registration its own isolated account", async () => {
+    const existing = await seedHuman("existing@example.test");
+    const testEnv = runtime({ additional: true });
+    const response = await signUp(testEnv, "additional@example.test");
+    expect(response.status, await response.clone().text()).toBe(200);
+
+    const newUser = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email=?")
+      .bind("additional@example.test")
+      .first<{ id: string }>();
+    const memberships = await env.DB.prepare(
+      "SELECT organization_id,role FROM mgmt_organization_user WHERE user_id=?",
+    ).bind(newUser!.id).all<{ organization_id: string; role: string }>();
+    expect(memberships.results).toHaveLength(1);
+    expect(memberships.results[0]).toMatchObject({ role: "owner" });
+    expect(memberships.results[0]!.organization_id).not.toBe(existing.organizationId);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mgmt_organization_user WHERE organization_id=? AND user_id=?",
+      ).bind(existing.organizationId, newUser!.id).first("n"),
+    ).toBe(0);
+  });
+
+  it("keeps a machine-initialized deployment claim-only even when additional registration is enabled", async () => {
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at) VALUES ('service-owner','CLI service',NULL,0,'service',?,?)",
+      ).bind(Date.now(), Date.now()),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization(id,name,created_by_user_id,created_at,updated_at) VALUES ('machine-account','My account','service-owner',?,?)",
+      ).bind(now, now),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization_user(id,organization_id,user_id,role,status,joined_at) VALUES ('machine-owner','machine-account','service-owner','owner','active',?)",
+      ).bind(now),
+    ]);
+    const testEnv = runtime({ additional: true });
+
+    const capabilities = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
+    await expect(capabilities.json()).resolves.toMatchObject({ registrationOpen: false });
+    expect((await signUp(testEnv, "visitor@example.test")).status).toBe(403);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE kind='human'").first("n"))
+      .toBe(0);
+  });
+
+  it("applies the fresh human gate to trusted claim registration after a human exists", async () => {
+    await seedHuman("owner@example.test");
+    const response = await createClaimRegistrationAuth(runtime(), ORIGIN).auth.api.signUpEmail({
+      body: {
+        name: "Second claimant",
+        email: "second-claimant@example.test",
+        password: "claim-password-42",
+      },
+      asResponse: true,
+    });
+    expect(response.status).toBe(403);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
+        .bind("second-claimant@example.test")
+        .first("n"),
+    ).toBe(0);
+  });
+});
+
+describe("Google registration policy", () => {
+  it("lets Google create the first owner, blocks a second new person, and still signs the owner in", async () => {
+    const testEnv = runtime({ google: true });
+    const first = await googleSignIn(testEnv, "google-owner@example.test", "google-owner");
+    expect(first.status, await first.clone().text()).toBe(200);
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
+         WHERE u.email='google-owner@example.test' AND m.role='owner'`,
+      ).first("n"),
+    ).toBe(1);
+
+    const blocked = await googleSignIn(testEnv, "new-google@example.test", "new-google");
+    expect(blocked.status, await blocked.clone().text()).toBe(403);
+    await expect(blocked.json()).resolves.toMatchObject({
+      error: { code: "registration_disabled" },
+    });
+    const existing = await googleSignIn(testEnv, "google-owner@example.test", "google-owner");
+    expect(existing.status, await existing.clone().text()).toBe(200);
+  });
+
+  it("keeps successful HTTPS redirect callbacks open for the first and existing Google user", async () => {
+    const testEnv = runtime({ google: true });
+    const exchange = mockGoogleTokenExchange("redirect-owner@example.test", "redirect-owner");
+    const firstStart = await startGoogleRedirect(testEnv);
+    const first = await googleCallback(testEnv, firstStart.response, firstStart.state);
+    expect(first.status).toBe(302);
+    expect(first.headers.get("location")).toBe(`${ORIGIN}/after-google`);
+    expect(first.headers.getSetCookie().some((cookie) => cookie.includes("session_token="))).toBe(true);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
+        .bind("redirect-owner@example.test")
+        .first("n"),
+    ).toBe(1);
+
+    exchange.mockResolvedValue(Response.json({
+      access_token: "test-google-access-2",
+      token_type: "Bearer",
+      expires_in: 3600,
+      id_token: [
+        btoa(JSON.stringify({ alg: "RS256" })),
+        btoa(JSON.stringify({
+          sub: "redirect-owner",
+          email: "redirect-owner@example.test",
+          email_verified: true,
+          name: "Google User",
+        })),
+        "test-signature",
+      ].join("."),
+    }));
+    const existingStart = await startGoogleRedirect(testEnv);
+    const existing = await googleCallback(testEnv, existingStart.response, existingStart.state);
+    expect(existing.status).toBe(302);
+    expect(existing.headers.get("location")).toBe(`${ORIGIN}/after-google`);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
+        .bind("redirect-owner@example.test")
+        .first("n"),
+    ).toBe(1);
+  });
+
+  it("rechecks the database at a redirect callback after registration closes", async () => {
+    const testEnv = runtime({ google: true });
+    const started = await startGoogleRedirect(testEnv);
+
+    const first = await signUp(testEnv, "password-owner@example.test");
+    expect(first.status, await first.clone().text()).toBe(200);
+    mockGoogleTokenExchange("stale-google@example.test", "stale-google-user");
+    const callback = await googleCallback(testEnv, started.response, started.state);
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/login?error=registration_disabled");
+    expect(callback.headers.getSetCookie().some((value) => value.includes("Max-Age=0"))).toBe(true);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
+        .bind("stale-google@example.test")
+        .first("n"),
+    ).toBe(0);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_organization").first("n"))
+      .toBe(1);
+  });
+
+  it("normalizes a denied Google claim callback after another human registers", async () => {
+    const testEnv = runtime({ google: true });
+    const operationId = "claim-google-policy-test";
+    const expires = Date.now() + 10 * 60_000;
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at) VALUES ('claim-service','CLI',NULL,0,'service',?,?)",
+      ).bind(now, now),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization(id,name,created_by_user_id,created_at,updated_at) VALUES ('claim-account','Claim account','claim-service',?,?)",
+      ).bind(iso, iso),
+    ]);
+    await env.DB.prepare(
+      `INSERT INTO mgmt_handoff(
+        id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,
+        submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
+       VALUES (?, 'claim', '{}', 'claim-account', 'claim-service', 'claim-key', 'proof', 'poll', ?, ?, ?)`,
+    ).bind(operationId, expires, now, now).run();
+    const claimAuth = createClaimRegistrationAuth(testEnv, ORIGIN);
+    const started = await claimAuth.auth.api.signInSocial({
+      body: { provider: "google", callbackURL: `${ORIGIN}/after-claim` },
+      headers: new Headers({ origin: ORIGIN }),
+      asResponse: true,
+    });
+    const authorization = new URL(((await started.clone().json()) as { url: string }).url);
+    const encoded = btoa(JSON.stringify({ id: operationId, expires }));
+    const signature = await derive(testEnv.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
+
+    await seedHuman("other-owner@example.test");
+    mockGoogleTokenExchange("denied-claim@example.test", "denied-claim");
+    const callback = await googleCallback(
+      testEnv,
+      started,
+      authorization.searchParams.get("state")!,
+      `cli_claim_oauth=${encoded}.${signature}`,
+    );
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/login?error=registration_disabled");
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
+        .bind("denied-claim@example.test")
+        .first("n"),
+    ).toBe(0);
+  });
+
+  it("carries rejected navigation cookies and destination onto the sign-in redirect", () => {
+    const rejected = new Response(null, {
+      status: 302,
+      headers: { location: "/login?error=signup_disabled&from=%2Fapps%2Fmy-app" },
+    });
+    rejected.headers.append("set-cookie", "agw_identity_auth.state=; Max-Age=0; Path=/");
+    rejected.headers.append("set-cookie", "agw_identity_auth.pkce=; Max-Age=0; Path=/");
+
+    const redirect = registrationDisabledRedirect(rejected);
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get("location")).toBe(
+      "/login?from=%2Fapps%2Fmy-app&error=registration_disabled",
+    );
+    expect(redirect.headers.getSetCookie()).toEqual([
+      "agw_identity_auth.state=; Max-Age=0; Path=/",
+      "agw_identity_auth.pkce=; Max-Age=0; Path=/",
+    ]);
+  });
+});
+
+describe("cloud registration", () => {
+  it("stays open independently of the self-host additional-registration flag", async () => {
+    const response = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, runtime({ cloud: true }));
+    await expect(response.json()).resolves.toMatchObject({
+      billing: true,
+      registrationOpen: true,
+    });
+  });
+});

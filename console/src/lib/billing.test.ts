@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  accountTrialNotice,
   billingNotice,
   canCancel,
   canResume,
@@ -8,6 +9,7 @@ import {
   priceFor,
   quotaMeter,
   quotaNotice,
+  subscriptionOf,
   subscriptionTimeline,
 } from "./billing";
 import type {
@@ -21,6 +23,8 @@ import type {
 
 const RESETS = "2026-10-08T03:15:00.000Z";
 const STARTS = "2026-09-08T03:15:00.000Z";
+/** The recovery deadline a cloud bootstrap sets; its presence is what marks an account unclaimed. */
+const EXPIRES = "2026-12-07T03:15:00.000Z";
 
 const quota = (overrides: Partial<OrganizationQuota> = {}): OrganizationQuota => ({
   periodId: `free:${STARTS}`,
@@ -348,5 +352,24 @@ describe("planAction", () => {
 
   it("has nothing to leave when the free plan is already the one held", () => {
     expect(on(FREE, held("free"))).toMatchObject({ intent: "current" });
+  });
+});
+
+
+describe("unclaimed free access presentation", () => {
+  const account = { id: "account", name: "Account", createdAt: STARTS, claimed: false, expiresAt: EXPIRES };
+  it("shows temporary free access without manufacturing a subscription", () => {
+    expect(quotaMeter(quota(), account)?.caption).toMatch(/^Ends /);
+    expect(quotaNotice(quota({ used: 10000 }), account)?.description).toContain("does not renew");
+    expect(accountTrialNotice(account)?.description).toContain("Claim your account for free");
+    expect(subscriptionOf(billed(freePlan))).toBeNull();
+  });
+  it("shows normal resets after claim and preserves provider controls", () => {
+    // Claiming clears the recovery deadline, which is what ends the single free window.
+    const claimed = { ...account, claimed: true, expiresAt: null };
+    expect(accountTrialNotice(claimed)).toBeNull();
+    expect(quotaMeter(quota(), claimed)?.caption).toMatch(/^Resets /);
+    expect(canCancel(subscription())).toBe(true);
+    expect(canCancel(subscription({ source: "manual" }))).toBe(false);
   });
 });

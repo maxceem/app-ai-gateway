@@ -11,6 +11,7 @@ const EXISTING = {
   organizationId: "org-1",
   name: "CI deploy",
   tokenHint: "6789",
+  enabled: true,
   createdAt: "2026-02-01T00:00:00.000Z",
   revokedAt: null,
 };
@@ -52,6 +53,15 @@ describe("ManagementKeysPage", () => {
     expect(await screen.findByText("CI deploy")).toBeTruthy();
     expect(screen.getByText("…6789")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
+  });
+
+  it("does not call a key that has not been handed over active", async () => {
+    stubKeys(undefined, [{ ...EXISTING, enabled: false }]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await screen.findByText("CI deploy");
+    expect(screen.getByText("Not yet active")).toBeTruthy();
+    expect(screen.queryByText("Active")).toBeNull();
   });
 
   it("shows a placeholder for keys created before hints were recorded", async () => {

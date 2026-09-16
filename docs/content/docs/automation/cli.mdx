@@ -1,0 +1,93 @@
+---
+title: CLI
+description: Set up and manage your gateway from a terminal or coding agent.
+---
+
+Install Node.js 22.19 or later, then install the CLI:
+
+```sh
+npm install -g @maxceem/agw
+agw --help
+agw deployment status --json
+```
+
+The default destination is the hosted API. The first provider, provider-gateway
+or application creation initializes a recoverable account and saves its credential
+privately. For example, run `agw provider add --type openai --browser --no-open`.
+Help, status, lists and validation never create an account. For an
+existing account, run `agw account login` and enter a management key through
+the hidden prompt, or pipe it with `--key-stdin`.
+For your own deployment, run `agw deployment setup --name my-gateway --no-domain`.
+It includes the Worker, console, migrations and Wrangler; a source checkout is
+not required.
+
+## Human handoffs
+
+Run `agw account claim` to establish human ownership. The CLI prints a browser
+URL and a separate code. Open the URL in a browser outside the agent's visible
+session, enter the code, compare the account shown with the terminal, and sign
+in or create your human account. Approve ownership and choose whether the CLI
+may retain access to your resources. Declining ongoing access retires its
+initial credential and disconnects it after successful claim.
+
+Provider commands offer a browser handoff for write-only secrets. Share the URL
+with the person supplying the credential; provider handoffs do not need the
+separate identity code. The page shows the provider, destination and proposed
+changes. Secrets never appear in CLI output or later reads. Poll with the
+operation command shown by the CLI; handoffs last 15 minutes.
+
+## Daily workflow
+
+```sh
+agw account status --json
+agw provider list --json
+agw app list --json
+agw usage show --month 2026-09 --json
+agw app --help
+agw provider --help
+```
+
+Use the command's `--help` for its exact flags. Read an app before editing it.
+Application updates carry the revision read from the server and reject a
+concurrent change; reread and merge deliberately. Add and update with `--file`
+preserve the complete validated configuration, including native endpoint
+parameters. They do not transfer credentials or usage
+to another deployment. Build that file from `agw app show <app-id> --json`,
+keeping `name`, `config` and `status` from `result.app`.
+
+Application keys are written only to a private file. Select a path with
+`--key-output`, or use the default managed private file.
+Use hidden prompts or `--key-stdin` when connecting with an existing management
+key. Never put secrets in command arguments, source control, chat or logs.
+The CLI does not make inference requests as a setup check. Provider inference
+must be requested explicitly.
+
+## Output and recovery
+
+`--json` writes one JSON document to stdout with `schemaVersion`, `ok` and either
+`result` or `error`. Progress goes to stderr. Exit codes are 0 for success, 2 for
+input errors, 3 for remote failures, 4 for state or authentication recovery, and
+5 for a wait timeout. A timeout leaves the operation pending.
+
+The CLI keeps one active connection. Its private state lives in
+`$XDG_STATE_HOME/agw` or `~/.local/state/agw`, and `%LOCALAPPDATA%/agw` on Windows.
+It saves initiation proofs before requests and credentials before reporting
+success. Repeat a failed command with the same state to recover a lost response;
+do not delete state or invent a new request proof. A recovered application key
+can finish writing to a new unused output file without issuing another key.
+
+A short lock guards each write to that state rather than the command around it,
+so other commands still run beside an `agw operation wait` that is polling. A
+deployment installed with `agw deployment setup` keeps its vault key in a file
+of its own under `vault-keys/` in the same directory, and keeps nothing else
+from the install. Back that directory up privately: losing the vault key makes
+stored provider credentials unreadable.
+
+Remote key replay lasts 15 minutes. After it expires, recovery identifies the
+existing resource; inspect it and replace its key intentionally. Durable receipts
+prevent duplicate creation. Account usage includes retained records from deleted
+apps; the response describes any historical attribution limitation.
+
+`agw deployment update --dry-run` and `agw deployment domain --hostname
+ai.example.com --dry-run` inspect changes without deploying. Updating a mobile
+app's embedded gateway URL remains a separate application release.

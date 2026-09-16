@@ -440,9 +440,17 @@ export function UsageTab({ appId }: { appId: string }) {
                       {event.endpoint_slug ? `${event.endpoint_slug} → ${event.route}` : event.route}
                       {/* The configured route, which is known with certainty;
                           a direct call has no gateway to name. */}
+                      {/* The stored type is the one that carried the request,
+                          which may be one this console has no mark for: the
+                          event records what was true then, not what is
+                          configurable now. Named either way; illustrated only
+                          when it is a gateway this build knows. */}
                       {event.provider_gateway_type ? (
                         <span className="flex items-center gap-1">
-                          via <GatewayIcon type={event.provider_gateway_type} />
+                          via{" "}
+                          {isGatewayType(event.provider_gateway_type) ? (
+                            <GatewayIcon type={event.provider_gateway_type} />
+                          ) : null}
                           {event.provider_gateway_type}
                         </span>
                       ) : null}

@@ -1,6 +1,7 @@
 import {
   canManageOrganization,
   requireOrganization,
+  requireUser,
   type AuthState,
   type CfAuth,
   type OrganizationRole,
@@ -8,16 +9,19 @@ import {
 import type { MiddlewareHandler } from "hono";
 import {
   CONSOLE_REQUEST_HEADER,
-  createOperatorAuth,
+  createIdentityAuth,
   MANAGEMENT_KEY_PREFIX,
   rethrowCfAuthError,
-} from "../auth/operator";
+} from "../auth/identity";
+import { assertAccountAccess } from "../core/account-lifecycle";
 import { GatewayError } from "../core/errors";
 import type { app } from "../db/schema";
 import type { BillingVariables } from "../billing/gateway";
 
 export interface AdminContext {
   userId: string;
+  identityKind: "human" | "service";
+  credentialId: string;
   organizationId: string;
   role: OrganizationRole;
   credentialType: "session" | "apiKey";
@@ -25,7 +29,7 @@ export interface AdminContext {
 
 export interface AdminVariables extends BillingVariables {
   authState: AuthState;
-  operatorAuth: CfAuth;
+  identityAuth: CfAuth;
   admin: AdminContext;
   adminApp?: typeof app.$inferSelect;
 }
@@ -60,11 +64,11 @@ export const adminAuth: MiddlewareHandler<{
     }
   }
 
-  const operatorAuth = createOperatorAuth(c.env, c.req.url);
-  c.set("operatorAuth", operatorAuth);
+  const identityAuth = createIdentityAuth(c.env, c.req.url);
+  c.set("identityAuth", identityAuth);
 
   try {
-    await operatorAuth.middleware<{
+    await identityAuth.middleware<{
       Bindings: Env;
       Variables: AdminVariables;
     }>()(c, async () => {
@@ -90,7 +94,13 @@ export const adminAuth: MiddlewareHandler<{
         );
       }
 
-      const actorId = state.user?.id ?? state.actor?.id;
+      const path = c.req.path;
+      if (path.startsWith("/v1/admin/billing")) requireUser(state);
+      const mutation = isMutation(c.req.method, path);
+      requireOrganization(state, mutation ? "admin" : "member");
+      await assertAccountAccess(c.env, resolved.organization.id, mutation ? "setup" : "read");
+
+      const actorId = state.user?.id;
       if (
         !actorId
         || (state.credentialType !== "session" && state.credentialType !== "apiKey")
@@ -100,6 +110,8 @@ export const adminAuth: MiddlewareHandler<{
 
       c.set("admin", {
         userId: actorId,
+        identityKind: state.user!.kind,
+        credentialId: state.actor?.credentialId ?? "",
         organizationId: resolved.organization.id,
         role: resolved.role,
         credentialType: state.credentialType,

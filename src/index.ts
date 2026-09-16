@@ -1,19 +1,39 @@
+import { isCfAuthError } from "@maxceem/cf-auth";
+import { asGatewayAuthError } from "./auth/identity";
+import { cliRoutes } from "./routes/cli";
+import {
+  AUTHORIZATION_SWEEP_QUERIES,
+  pruneExpiredAccounts,
+  pruneExpiredAuthorizations,
+} from "./core/account-lifecycle";
 import { Hono, type MiddlewareHandler } from "hono";
-import type { BillingVariables } from "./billing/gateway";
-import { AUTH_EVENT_RETENTION_DAYS, pruneAuthChallenges, pruneAuthEvents } from "./core/auth-events";
+import type { HealthResponse } from "./contracts/responses";
+import { billingBinding, type BillingVariables } from "./billing/gateway";
+import {
+  AUTH_EVENT_RETENTION_DAYS,
+  AUTH_SWEEP_QUERIES,
+  pruneAuthChallenges,
+  pruneAuthEvents,
+} from "./core/auth-events";
+import {
+  MAINTENANCE_SLACK_QUERIES,
+  maintenanceQueryBudget,
+  type QueryBudget,
+} from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
 import { GatewayError } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
+import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
 import { adminAuth, type AdminVariables } from "./middleware/admin";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { quotaGate } from "./middleware/gate";
 import { billingEntitlementGate } from "./middleware/billing";
 import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
-import { operatorAuthRoutes } from "./routes/operator-auth";
+import { identityAuthRoutes } from "./routes/identity-auth";
 import { consoleRoutes } from "./routes/console";
 import {
   endpointPrepare,
@@ -24,7 +44,7 @@ import { meRoutes } from "./routes/me";
 import { proxyPrepare, proxyRoutes, type ProxyVariables } from "./routes/proxy";
 import { vaultStatus } from "./vault";
 
-export { OrgQuota, UserLimiter };
+export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
 const ROUTE_NOT_FOUND = { error: { code: "invalid_request", message: "Route not found" } } as const;
 
@@ -42,7 +62,7 @@ app.get("/v1/healthz", (c) => c.json({
   ok: true,
   service: "app-ai-gateway",
   vault: vaultStatus(c.env),
-}));
+} satisfies HealthResponse));
 
 /**
  * Keeps the operator surface off the host application clients call.
@@ -65,7 +85,8 @@ const consoleHostOnly: MiddlewareHandler<{ Bindings: Env }> = async (c, next) =>
 app.use("/v1/auth/*", consoleHostOnly);
 app.use("/v1/console/*", consoleHostOnly);
 
-app.route("/v1/auth", operatorAuthRoutes);
+app.route("/v1/cli", cliRoutes);
+app.route("/v1/auth", identityAuthRoutes);
 app.route("/v1/console", consoleRoutes);
 
 app.use("/v1/apps/:app/*", billingEntitlementGate);
@@ -86,6 +107,7 @@ app.route("/v1/admin", adminRoutes);
 app.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 
 app.onError((error, c) => {
+  if (isCfAuthError(error)) error = asGatewayAuthError(error);
   const headers = new Headers();
   headers.set("content-type", "application/json; charset=UTF-8");
   if (c.req.path.includes("/proxy/") || c.req.path.includes("/endpoints/")) {
@@ -142,14 +164,24 @@ app.onError((error, c) => {
 
 /**
  * Nightly retention: the authentication event log, spent App Attest challenges,
- * and the usage history.
+ * expired CLI authorizations, expired unclaimed accounts, and the usage history.
  *
  * Usage events are accounting history, so they are summed into
  * `app_usage_rollup` before they are dropped and no total ever disappears —
- * unlike the two diagnostic sweeps beside them, which simply delete. Every sweep
+ * unlike the diagnostic sweeps beside them, which simply delete. Every sweep
  * gets its own try/catch so a failure in one still leaves the others to run.
+ *
+ * All of them draw on one allowance, because what bounds them is not their own
+ * cost but D1's shared per-invocation subrequest ceiling. It is spent in the
+ * order written: the fixed-cost sweeps first, then account cleanup, then usage
+ * retention with everything that is left. Account cleanup is offered at most
+ * half of what remains at that point, so a large expired backlog cannot starve
+ * compaction, and whatever it declines returns to the budget rather than being
+ * wasted.
  */
 async function prune(env: Env): Promise<void> {
+  const budget = maintenanceQueryBudget(env);
+  budget.remaining -= AUTH_SWEEP_QUERIES + MAINTENANCE_SLACK_QUERIES;
   try {
     const deleted = await pruneAuthEvents(env);
     log("info", "auth_events_pruned", { deleted, retentionDays: AUTH_EVENT_RETENTION_DAYS });
@@ -166,9 +198,34 @@ async function prune(env: Env): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  budget.remaining -= AUTHORIZATION_SWEEP_QUERIES;
+  try {
+    await pruneExpiredAuthorizations(env);
+  } catch (error) {
+    log("error", "authorizations_prune_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  // Only a hosted deployment writes an account deadline, and only a hosted
+  // deployment can have one to collect: a self-host's single account has no
+  // `expires_at` at all, so running this there would spend a sixth of a Free
+  // plan's nightly queries on a sweep that cannot match a row.
+  if (billingBinding(env)) {
+    const share: QueryBudget = { remaining: Math.floor(budget.remaining / 2) };
+    const offered = share.remaining;
+    try {
+      const deleted = await pruneExpiredAccounts(env, share);
+      if (deleted > 0) log("info", "expired_accounts_pruned", { deleted });
+    } catch (error) {
+      log("error", "expired_accounts_prune_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    budget.remaining -= offered - share.remaining;
+  }
   // Reports under its own codes, and swallows its own failures for the same
   // reason the sweeps above do.
-  await runUsageRetention(env);
+  await runUsageRetention(env, Date.now(), budget);
 }
 
 /**

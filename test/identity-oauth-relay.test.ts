@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
-import { createOperatorAuth, relaySocialSignIn } from "../src/auth/operator";
+import { createIdentityAuth, relaySocialSignIn } from "../src/auth/identity";
 
 // A local instance answers on whatever host the worktree or port gives it,
 // which is exactly what Google will not let anyone register.
@@ -67,14 +67,14 @@ describe("operator OAuth relay", () => {
   });
 
   it("configures the redirect URI only when a relay is set", () => {
-    const withRelay = createOperatorAuth(operatorEnv({
+    const withRelay = createIdentityAuth(operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: RELAY,
     }), `${ORIGIN}/v1/auth/sign-in/social`);
     expect(withRelay.config.google?.redirectURI).toBe(`${RELAY}/callback/google`);
 
-    const without = createOperatorAuth(operatorEnv({
+    const without = createIdentityAuth(operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: undefined,
@@ -87,8 +87,8 @@ describe("operator OAuth relay", () => {
     // with PKCE, the verifier) attached. Rebuilding the body must not drop
     // them: the callback that comes back through the relay is verified against
     // exactly these, on this origin.
-    const stateCookie = "agw_operator_auth.state=state-value; Path=/; HttpOnly; SameSite=Lax";
-    const verifierCookie = "agw_operator_auth.pkce_verifier=verifier-value; Path=/; HttpOnly";
+    const stateCookie = "agw_identity_auth.state=state-value; Path=/; HttpOnly; SameSite=Lax";
+    const verifierCookie = "agw_identity_auth.pkce_verifier=verifier-value; Path=/; HttpOnly";
     const googleUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=test&state=state-value";
     const headers = new Headers({ "content-type": "application/json", "content-length": "1234" });
     headers.append("set-cookie", stateCookie);
@@ -114,7 +114,7 @@ describe("operator OAuth relay", () => {
   });
 
   it("rejects a relay URL that is not an absolute http(s) URL", () => {
-    expect(() => createOperatorAuth(operatorEnv({
+    expect(() => createIdentityAuth(operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: "dev-oauth.example.test",

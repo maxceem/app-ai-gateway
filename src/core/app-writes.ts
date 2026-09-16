@@ -7,13 +7,15 @@ export interface AtomicAppWrite {
   name: string;
   config: StoredAppConfig;
   status: "active" | "disabled";
+  createdAt?: string;
   updatedAt?: string;
+  expectedRevision?: number;
 }
 
 /** The stored app, as the writing statement itself returned it. */
 export type StoredAppRow = typeof app.$inferSelect;
 
-const RETURNED_COLUMNS = "id, organization_id, name, config_json, status, created_at, updated_at";
+const RETURNED_COLUMNS = "id, organization_id, name, config_json, status, created_at, updated_at, revision";
 
 interface ReturnedRow {
   id: string;
@@ -23,6 +25,7 @@ interface ReturnedRow {
   status: string;
   created_at: string;
   updated_at: string;
+  revision: number;
 }
 
 /**
@@ -39,6 +42,7 @@ function hydrate(row: ReturnedRow): StoredAppRow {
     status: row.status as StoredAppRow["status"],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    revision: row.revision,
   };
 }
 
@@ -52,21 +56,26 @@ export async function insertApp(
   d1: D1Database,
   values: AtomicAppWrite,
 ): Promise<StoredAppRow | null> {
-  const result = await d1.prepare(
-    `INSERT INTO app(id, organization_id, name, config_json, status, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO NOTHING
-     RETURNING ${RETURNED_COLUMNS}`,
-  ).bind(
-    values.id,
-    values.organizationId,
-    values.name,
-    JSON.stringify(values.config),
-    values.status,
-    values.updatedAt ?? new Date().toISOString(),
-  ).all<ReturnedRow>();
+  const result = await appInsertStatement(d1, values, undefined, true).all<ReturnedRow>();
   const row = result.results[0];
   return row ? hydrate(row) : null;
+}
+
+/** Shared app insert used by ordinary writes and transactional create receipts. */
+export function appInsertStatement(
+  d1: D1Database,
+  values: AtomicAppWrite,
+  condition: { sql: string; params: unknown[] } = { sql: "1", params: [] },
+  ignoreCollision = false,
+): D1PreparedStatement {
+  const now = new Date().toISOString();
+  return d1.prepare(
+    `INSERT INTO app(id,organization_id,name,config_json,status,created_at,updated_at,revision)
+     SELECT ?,?,?,?,?,?,?,1 WHERE ${condition.sql}
+     ${ignoreCollision ? "ON CONFLICT(id) DO NOTHING" : ""}
+     RETURNING ${RETURNED_COLUMNS}`,
+  ).bind(values.id, values.organizationId, values.name, JSON.stringify(values.config), values.status,
+    values.createdAt ?? now, values.updatedAt ?? now, ...condition.params);
 }
 
 /**
@@ -78,15 +87,16 @@ export async function insertApp(
  */
 export async function updateApp(
   d1: D1Database,
-  values: AtomicAppWrite,
+  values: AtomicAppWrite & { expectedRevision: number },
 ): Promise<StoredAppRow | null> {
   const result = await d1.prepare(
     `UPDATE app SET
        name = ?,
        config_json = ?,
        status = ?,
-       updated_at = ?
-     WHERE id = ? AND organization_id = ?
+       updated_at = ?,
+       revision = revision + 1
+     WHERE id = ? AND organization_id = ? AND revision = ?
      RETURNING ${RETURNED_COLUMNS}`,
   ).bind(
     values.name,
@@ -95,6 +105,7 @@ export async function updateApp(
     values.updatedAt ?? new Date().toISOString(),
     values.id,
     values.organizationId,
+    values.expectedRevision,
   ).all<ReturnedRow>();
   const row = result.results[0];
   return row ? hydrate(row) : null;

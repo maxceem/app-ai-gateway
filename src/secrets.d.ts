@@ -4,13 +4,21 @@
 interface Env {
   JWT_SECRET: string;
   BETTER_AUTH_SECRET: string;
+  DEPLOYMENT_ID?: string;
+  CLI_CONSOLE_ORIGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
-  ALLOW_PUBLIC_REGISTRATION?: string;
+  ALLOW_ADDITIONAL_REGISTRATIONS?: string;
   // How long an upstream provider may take to send its response headers, in
   // seconds. Unset means 120 s: reasoning models can think for a minute before
   // the first byte. The body streams for as long as it needs once headers land.
   PROVIDER_TTFB_TIMEOUT_SECONDS?: string;
+  // Queries the nightly maintenance cron may issue, as a whole number. Unset
+  // means 50, the D1 subrequest ceiling on the Cloudflare Free plan. A
+  // deployment on the Workers Paid plan may raise it towards 1,000 to drain a
+  // retention or expired-account backlog faster. Deliberately absent from
+  // wrangler.jsonc, so the Deploy to Cloudflare form does not ask about it.
+  MAINTENANCE_QUERY_BUDGET?: string;
   // Optional links shown on the sign-up screen, set as plain vars by a
   // deployment profile. Both must be present for the consent line to appear.
   TERMS_OF_SERVICE_URL?: string;
@@ -42,10 +50,13 @@ declare namespace Cloudflare {
   interface Env {
     JWT_SECRET: string;
     BETTER_AUTH_SECRET: string;
+  DEPLOYMENT_ID?: string;
+  CLI_CONSOLE_ORIGIN?: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
-    ALLOW_PUBLIC_REGISTRATION?: string;
+    ALLOW_ADDITIONAL_REGISTRATIONS?: string;
     PROVIDER_TTFB_TIMEOUT_SECONDS?: string;
+    MAINTENANCE_QUERY_BUDGET?: string;
     TERMS_OF_SERVICE_URL?: string;
     PRIVACY_POLICY_URL?: string;
     PUBLIC_API_URL?: string;

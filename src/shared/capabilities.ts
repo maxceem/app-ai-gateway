@@ -14,6 +14,20 @@
  * a console that offers a combination the server refuses is a bug report.
  */
 
+/**
+ * Whose credential paid for a request, recorded only where the configuration
+ * settles it. `direct` is the organization's own provider key; `byok` is that
+ * same key held in a gateway's own key store; `gateway_system` is the gateway's
+ * pooled credential. Never inferred from a successful response.
+ *
+ * It lives here, rather than beside the column that stores it, because the
+ * contracts layer reaches it through `src/core/cost-report.ts` and the console
+ * reads it off a usage event. Sourcing it from `src/db/schema.ts` would put
+ * Drizzle and the Worker's table definitions in the console's type graph for
+ * the sake of a four-member string union.
+ */
+export type CredentialSource = "direct" | "byok" | "gateway_system" | "unknown";
+
 export const PROVIDER_TYPES = [
   "openai",
   "anthropic",

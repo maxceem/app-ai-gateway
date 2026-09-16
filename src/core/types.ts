@@ -1,6 +1,6 @@
-import type { EndpointApiStyle } from "./providers";
+import type { EndpointApiStyle } from "./providers.ts";
 
-export type { EndpointApiStyle, ProviderType } from "./providers";
+export type { EndpointApiStyle, ProviderType } from "./providers.ts";
 
 export interface ClaimRequirement {
   path: string;

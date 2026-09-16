@@ -70,7 +70,8 @@ test("deploy button masks the vault key and shows every setting in clear text", 
   assert.deepEqual(wranglerConfig.vars, {
     SECRET_VAULT_MODE: "local",
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
-    ALLOW_PUBLIC_REGISTRATION: "true",
+    ALLOW_ADDITIONAL_REGISTRATIONS: "false",
+    DEPLOYMENT_ID: "",
   });
 
   // Both halves of the form carry an explanation, and nothing in it is blank.
@@ -139,6 +140,7 @@ if (
         ...process.env,
         APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler,
         FAKE_WRANGLER_LOG: callLog,
+        DEPLOYMENT_ID: "deployment-fixture-identity",
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -154,7 +156,7 @@ if (
         ["secret", "list", "--format", "json"],
         ["secret", "bulk"],
         ["d1", "migrations", "apply", "DB", "--remote"],
-        ["deploy"],
+        ["deploy", "--var", "DEPLOYMENT_ID:deployment-fixture-identity"],
         ["d1", "migrations", "apply", "DB", "--remote"],
       ],
     );
@@ -298,7 +300,7 @@ if (args[0] === "secret" && args[1] === "list") {
     const result = spawnSync(process.execPath, ["scripts/deploy.mjs", "--profile", profile], {
       cwd: projectRoot,
       encoding: "utf8",
-      env: { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler, FAKE_WRANGLER_LOG: callLog },
+      env: { ...process.env, APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler, FAKE_WRANGLER_LOG: callLog, DEPLOYMENT_ID: "deployment-fixture-identity" },
     });
     assert.equal(result.status, 0, result.stderr);
 
@@ -307,7 +309,7 @@ if (args[0] === "secret" && args[1] === "list") {
     assert.deepEqual(calls, [
       ["secret", "list", "--format", "json", ...configArgs],
       ["d1", "migrations", "apply", "DB", "--remote", ...configArgs],
-      ["deploy", ...configArgs],
+      ["deploy", ...configArgs, "--var", "DEPLOYMENT_ID:deployment-fixture-identity"],
     ]);
 
     const generated = JSON.parse(readFileSync(generatedPath, "utf8").replace(/^\/\/.*$/gmu, ""));
@@ -317,5 +319,40 @@ if (args[0] === "secret" && args[1] === "list") {
     rmSync(directory, { recursive: true, force: true });
     rmSync(overlayPath, { force: true });
     rmSync(generatedPath, { force: true });
+  }
+});
+
+
+test("filling a missing deployment secret never overwrites established signing material", () => {
+  const projectRoot = new URL("..", import.meta.url);
+  const profile = `zz-missing-${process.pid}`;
+  const overlayPath = new URL(`wrangler.${profile}.overlay.jsonc`, projectRoot);
+  const generatedPath = new URL(`wrangler.${profile}.generated.jsonc`, projectRoot);
+  const varsPath = new URL(`.dev.vars.${profile}`, projectRoot);
+  const directory = mkdtempSync(join(tmpdir(), "agw-missing-secret-"));
+  const fakeWrangler = join(directory, "wrangler.mjs"), callLog = join(directory, "calls.ndjson");
+  writeFileSync(fakeWrangler, `#!/usr/bin/env node
+import { appendFileSync, readFileSync, existsSync } from "node:fs";
+const args=process.argv.slice(2), log=process.env.FAKE_WRANGLER_LOG;
+const previous=existsSync(log)?readFileSync(log,"utf8"):"";
+const input=args[0]==="secret"&&args[1]==="bulk"?readFileSync(0,"utf8"):undefined;
+appendFileSync(log,JSON.stringify({args,input})+"\\n");
+if(args[0]==="secret"&&args[1]==="list")console.log(JSON.stringify([
+ {name:"JWT_SECRET"},{name:"BETTER_AUTH_SECRET"},...(previous.includes('"bulk"')?[{name:"SECRET_VAULT_LOCAL_KEK_V1"}]:[])
+]));
+`, { mode: 0o700 });
+  writeFileSync(overlayPath, JSON.stringify({ vars: { DEPLOYMENT_ID: "stable-deployment-fixture" } }));
+  writeFileSync(varsPath, "JWT_SECRET=must-not-replace\nBETTER_AUTH_SECRET=must-not-replace\nSECRET_VAULT_LOCAL_KEK_V1=fixture-vault\nDEPLOYMENT_ID=local-development-id\n");
+  try {
+    const result=spawnSync(process.execPath,["scripts/deploy.mjs","--profile",profile],{
+      cwd:projectRoot,encoding:"utf8",env:{...process.env,DEPLOYMENT_ID:"stable-deployment-fixture",APP_AI_GATEWAY_WRANGLER_BIN:fakeWrangler,FAKE_WRANGLER_LOG:callLog},
+    });
+    assert.equal(result.status,0,result.stderr);
+    const calls=readFileSync(callLog,"utf8").trim().split("\n").map(line=>JSON.parse(line));
+    assert.deepEqual(calls.filter(call=>call.input).map(call=>JSON.parse(call.input)),[{SECRET_VAULT_LOCAL_KEK_V1:"fixture-vault"}]);
+    assert.doesNotMatch(result.stdout,/must-not-replace|fixture-vault/);
+  } finally {
+    for(const path of [overlayPath,generatedPath,varsPath])rmSync(path,{force:true});
+    rmSync(directory,{recursive:true,force:true});
   }
 });

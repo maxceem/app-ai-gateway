@@ -85,7 +85,7 @@ export function membership(
   role: OrganizationRole = "owner",
 ): OrganizationMembership {
   return {
-    organization: { id, name, createdAt: "2026-01-01T00:00:00.000Z" },
+    organization: { id, name, claimed: true, expiresAt: null, createdAt: "2026-01-01T00:00:00.000Z" },
     role,
     status: "active",
     joinedAt: "2026-01-01T00:00:00.000Z",
@@ -99,14 +99,23 @@ export function testSession(overrides: Partial<Session> = {}): Session {
       id: "user-1",
       name: "Ada Lovelace",
       email: "ada@example.test",
+      kind: "human",
       emailVerified: true,
       image: null,
       createdAt: "2026-01-01T00:00:00.000Z",
     },
-    organization: { id: "org-1", name: "Acme", createdAt: "2026-01-01T00:00:00.000Z" },
+    organization: { id: "org-1", name: "Acme", claimed: true, expiresAt: null, createdAt: "2026-01-01T00:00:00.000Z" },
     role,
     memberships: [membership("org-1", "Acme", role)],
     credentialType: "session",
+    assurance: "interactive",
+    actor: {
+      type: "user",
+      id: "user-1",
+      kind: "human",
+      credentialId: null,
+      actionSource: "console",
+    },
     ...overrides,
   };
 }
