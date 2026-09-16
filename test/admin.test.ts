@@ -481,6 +481,36 @@ describe("admin API", () => {
     await env.DB.prepare("DELETE FROM provider WHERE id = 'admin-reprice-custom'").run();
   });
 
+  it("accepts an If-Match a proxy weakened, and still refuses a stale one", async () => {
+    // Cloudflare weakens a strong ETag whenever it compresses the response it
+    // came on, and Node's fetch asks for compression by default. A client that
+    // echoes back what it read therefore presents `W/"app-1"` for revision 1.
+    await seedApp("weak-etag");
+    const update = (ifMatch: string) =>
+      exports.default.fetch("https://example.test/v1/admin/apps/weak-etag", {
+        method: "PUT",
+        headers: {
+          "if-match": ifMatch,
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "Weak etag",
+          config: appleConfig({ jwks_url: "https://issuer.test/jwks" }),
+        }),
+      });
+
+    const accepted = await update('W/"app-1"');
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("etag")).toBe('"app-2"');
+
+    // Weakness is dropped, never the revision: the tag that just became stale
+    // is refused in both forms.
+    expect((await update('W/"app-1"')).status).toBe(412);
+    expect((await update('"app-1"')).status).toBe(412);
+    expect((await update('W/"app-2"')).status).toBe(200);
+  });
+
   it("rejects an insecure issuer URL when updating an app", async () => {
     await seedApp("insecure-issuer");
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/insecure-issuer", {

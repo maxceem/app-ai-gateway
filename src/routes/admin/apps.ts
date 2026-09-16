@@ -445,6 +445,26 @@ appRoutes.get("/apps/:app", async (c) => {
   return c.json({ app: serializeRow(row), resolved, config_error: configError } satisfies AppResponse);
 });
 
+/**
+ * The revision an `If-Match` names, whether or not something weakened the tag.
+ *
+ * This ETag is a revision counter, not a digest of the bytes sent: the write it
+ * guards is a compare-and-swap on that number. Cloudflare rewrites a strong tag
+ * to its weak form whenever it compresses a response, so a client that reads an
+ * application and echoes the header back — which is what the CLI does, and what
+ * the documented contract asks for — presents `W/"app-1"` for revision 1 and is
+ * refused on every attempt. Node's fetch requests compression by default, so
+ * this was every CLI update against a deployment behind Cloudflare.
+ *
+ * `W/` is therefore dropped rather than honoured. A weak comparison would be
+ * wrong for a validator that stands for a byte range; here it would only ever
+ * reject a revision that is genuinely current, having been transformed in
+ * transit by something neither end controls.
+ */
+function strongTag(condition: string): string {
+  return condition.startsWith("W/") ? condition.slice(2) : condition;
+}
+
 appRoutes.post("/apps/:app/validate", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
@@ -517,7 +537,7 @@ appRoutes.put("/apps/:app", async (c) => {
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
   const condition = c.req.header("If-Match");
   if (condition === undefined) throw new GatewayError(428, "app_revision_required", "Supply the ETag from the application read in If-Match");
-  if (condition !== `"app-${existing.revision}"`) {
+  if (strongTag(condition) !== `"app-${existing.revision}"`) {
     throw new GatewayError(412, "app_revision_conflict", "The application changed; reload it before saving your changes");
   }
   // The slugs the stored row already names stay writable even if their provider
