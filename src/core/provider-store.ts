@@ -10,7 +10,8 @@ import {
   type ProviderPricing,
   type ProviderStatus,
 } from "../db/schema";
-import { isVaultTransportFailure, secretVault } from "../vault";
+import { isVaultTransportFailure } from "../vault";
+import { openSecret } from "../vault/secrets";
 import type { ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
 import { isGatewayType, resolveGateway, type ResolvedGateway } from "./gateways";
@@ -159,20 +160,6 @@ function staleSecret(key: string, error: unknown): { secret: string; ageMs: numb
   return { secret: cached.secret, ageMs: now - (cached.expiresAt - CACHE_TTL_MS) };
 }
 
-export function encryptionContext(
-  organizationId: string,
-  providerId: string,
-): Record<string, string> {
-  return { service: "app-ai-gateway", organizationId, providerId };
-}
-
-export function gatewayEncryptionContext(
-  organizationId: string,
-  providerGatewayId: string,
-): Record<string, string> {
-  return { service: "app-ai-gateway", organizationId, providerGatewayId };
-}
-
 export function invalidateOrganizationProviders(organizationId: string): void {
   rowsCache.delete(organizationId);
 }
@@ -252,10 +239,7 @@ async function plaintextSecret(
   const cached = secretCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.secret;
   try {
-    const secret = await secretVault(env).decryptSecret(
-      blob,
-      encryptionContext(organizationId, ownerId),
-    );
+    const secret = await openSecret(env, "providerKey", [organizationId, ownerId], blob);
     rememberSecret(key, secret);
     return secret;
   } catch (error) {
@@ -293,9 +277,11 @@ export async function decryptProviderGatewaySecret(
   const cached = secretCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.secret;
   try {
-    const secret = await secretVault(env).decryptSecret(
+    const secret = await openSecret(
+      env,
+      "providerGatewayToken",
+      [organizationId, providerGatewayId],
       secretBlob,
-      gatewayEncryptionContext(organizationId, providerGatewayId),
     );
     rememberSecret(key, secret);
     return secret;

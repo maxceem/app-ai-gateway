@@ -12,9 +12,13 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 // carries. The CLI refuses to deploy any other gateway version, so a release
 // built while they disagree could never be installed.
 const version = await assertVersionsAgree();
-const { wrangler } = await cliManifest();
+const { wrangler, upgradeFrom } = await cliManifest();
+// The whole directory, not just this version's: `files` in `cli/package.json`
+// publishes `dist` wholesale, so a release left behind by an earlier build
+// would ship inside the package — several megabytes of a gateway this CLI
+// refuses to deploy anyway, carrying whatever that version got wrong.
 const out = resolve(root, "cli/dist/release", version);
-await rm(out, { recursive: true, force: true });
+await rm(resolve(root, "cli/dist/release"), { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -68,7 +72,7 @@ const manifest = {
   node: "22.19.0",
   wrangler,
   schema: 1,
-  upgradeFrom: [version],
+  upgradeFrom,
   files,
 };
 const serialized = JSON.stringify(manifest, null, 2) + "\n";

@@ -6,6 +6,7 @@ import {
   SecretVaultBlobError,
   SecretVaultConfigurationError,
   secretVault,
+  type SecretVaultContext,
 } from "../src/vault";
 
 const TEST_KEK_V1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -15,7 +16,7 @@ const CONTEXT = {
   service: "app-ai-gateway",
   organizationId: "org_test",
   providerId: "provider_test",
-};
+} satisfies SecretVaultContext;
 
 afterEach(() => vi.restoreAllMocks());
 

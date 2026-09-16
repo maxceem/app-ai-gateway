@@ -24,14 +24,11 @@ import { GatewayError } from "../../core/errors";
 import { requireGatewayAdapter, type ResolvedGateway } from "../../core/gateways";
 import { planCap } from "../../core/plan-caps";
 import { probeGatewayPreset, type ProbeResult } from "../../core/provider-probe";
-import {
-  gatewayEncryptionContext,
-  invalidateOrganizationProviders,
-} from "../../core/provider-store";
+import { invalidateOrganizationProviders } from "../../core/provider-store";
 import { database } from "../../db";
 import { provider, providerGateway, type CfAigConfig } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { secretVault } from "../../vault";
+import { sealSecret } from "../../vault/secrets";
 import {
   databaseErrorMatches,
   providerRequestBody,
@@ -164,9 +161,11 @@ export async function createProviderGateway(
   const body = providerSchemaBody(ProviderGatewayCreateRequestSchema, input);
   const gateway = requestedGateway(body);
   const id = crypto.randomUUID();
-  const secretBlob = await secretVault(env).encryptSecret(
+  const secretBlob = await sealSecret(
+    env,
+    "providerGatewayToken",
+    [admin.organizationId, id],
     body.token,
-    gatewayEncryptionContext(admin.organizationId, id),
   );
   const now = nextUpdatedAt();
   const row: ProviderGatewayRow = {
@@ -280,9 +279,11 @@ export async function rotateProviderGateway(
   // A stored type the CHECK admits but no adapter implements can carry no
   // traffic, so rotating a token onto it would be a silent no-op.
   requireGatewayAdapter(existing.type);
-  const secretBlob = await secretVault(env).encryptSecret(
+  const secretBlob = await sealSecret(
+    env,
+    "providerGatewayToken",
+    [admin.organizationId, id],
     body.token,
-    gatewayEncryptionContext(admin.organizationId, id),
   );
   const row: ProviderGatewayRow = {
     ...existing,

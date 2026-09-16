@@ -4,7 +4,7 @@ import worker from "../src/index";
 import { createIdentityAuth } from "../src/auth/identity";
 import { TEST_ORGANIZATION_ID } from "./helpers";
 import { secretVault } from "../src/vault";
-import { encryptionContext } from "../src/core/provider-store";
+import { secretContext } from "../src/vault/secrets";
 
 const origin = "https://example.test";
 const runtime = new Proxy(env, {
@@ -95,7 +95,7 @@ describe("provider browser submissions", () => {
     expect(
       await secretVault(env).decryptSecret(
         rows.results[0]!.secret_blob,
-        encryptionContext(TEST_ORGANIZATION_ID, rows.results[0]!.id),
+        secretContext("providerKey", [TEST_ORGANIZATION_ID, rows.results[0]!.id]),
       ),
     ).toBe("browser-provider-secret");
     const polled = await op.poll();

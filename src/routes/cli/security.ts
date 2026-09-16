@@ -1,5 +1,5 @@
 import { GatewayError } from "../../core/errors";
-import { secretVault } from "../../vault";
+import { openSecret, sealSecret } from "../../vault/secrets";
 
 export const TTL = 15 * 60_000;
 const encoder = new TextEncoder();
@@ -51,19 +51,13 @@ export function proof(value: unknown): string {
     );
   return value;
 }
-export function credentialContext(id: string, pollProofHash: string) {
-  return { purpose: "cli-credential-exchange", operationId: id, pollProofHash };
-}
 export async function protectCredential(
   env: Env,
   id: string,
   pollHash: string,
   value: unknown,
 ): Promise<string> {
-  return secretVault(env).encryptSecret(
-    JSON.stringify(value),
-    credentialContext(id, pollHash),
-  );
+  return sealSecret(env, "cliCredential", [id, pollHash], JSON.stringify(value));
 }
 export async function openCredential(
   env: Env,
@@ -71,12 +65,7 @@ export async function openCredential(
   pollHash: string,
   ciphertext: string,
 ): Promise<unknown> {
-  return JSON.parse(
-    await secretVault(env).decryptSecret(
-      ciphertext,
-      credentialContext(id, pollHash),
-    ),
-  );
+  return JSON.parse(await openSecret(env, "cliCredential", [id, pollHash], ciphertext));
 }
 
 export async function cliJson(request: Request): Promise<unknown> {

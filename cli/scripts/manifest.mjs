@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 /**
- * The two fields the CLI bundle is built with, read from `cli/package.json`.
+ * The fields the CLI bundle is built with, read from `cli/package.json`.
  *
  * One source, shared by the build, the release build and the CLI itself: the
  * version `agw --version` prints and the Wrangler a packaged release must be
@@ -20,7 +20,41 @@ export async function cliManifest() {
       `cli/package.json must pin wrangler to an exact version; found "${wrangler}"`,
     );
   }
-  return { version: packaged.version, wrangler };
+  return {
+    version: packaged.version,
+    wrangler,
+    upgradeFrom: upgradeFrom(packaged),
+  };
+}
+
+/**
+ * The earlier releases this one may update a deployment from.
+ *
+ * A release refuses to run migrations over a database it was not told it can
+ * upgrade (`unsupported_upgrade` in `cli/src/deployment.ts`), and it always
+ * accepts its own version. Anything earlier is a claim about schema
+ * compatibility that only a person can make, so it is declared in
+ * `cli/package.json` — a release that omits a predecessor simply cannot update
+ * it, which is the safe direction to fail in.
+ */
+function upgradeFrom(packaged) {
+  const declared = packaged.upgradeFrom ?? [];
+  if (!Array.isArray(declared)) {
+    throw new Error("cli/package.json upgradeFrom must be an array of released versions");
+  }
+  for (const version of declared) {
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+      throw new Error(
+        `cli/package.json upgradeFrom must list exact released versions; found ${JSON.stringify(version)}`,
+      );
+    }
+    if (version === packaged.version) {
+      throw new Error(
+        "cli/package.json upgradeFrom must not repeat this release's own version, which is always accepted",
+      );
+    }
+  }
+  return [packaged.version, ...declared];
 }
 
 /**

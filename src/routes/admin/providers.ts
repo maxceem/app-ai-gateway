@@ -38,7 +38,6 @@ import {
 } from "../../core/provider-probe";
 import {
   decryptProviderGatewaySecret,
-  encryptionContext,
   invalidateOrganizationProviders,
 } from "../../core/provider-store";
 import { PROVIDER_TYPES } from "../../core/providers";
@@ -52,7 +51,7 @@ import {
   type ProviderStatus,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { secretVault } from "../../vault";
+import { sealSecret } from "../../vault/secrets";
 import {
   databaseErrorMatches,
   providerRequestBody,
@@ -306,7 +305,7 @@ export async function createProvider(
     secretBlob:
       secret === undefined
         ? null
-        : await secretVault(env).encryptSecret(secret, encryptionContext(admin.organizationId, id)),
+        : await sealSecret(env, "providerKey", [admin.organizationId, id], secret),
     secretHint: secret === undefined ? null : secretHint(secret),
     providerGatewayId: providerGatewayId ?? null,
     gatewayRoute,
@@ -440,9 +439,11 @@ export async function updateProvider(
         `This provider uses a shared gateway token; rotate it at /v1/admin/provider-gateways/${row.providerGatewayId}/rotate`,
       );
     }
-    updates.secretBlob = await secretVault(env).encryptSecret(
+    updates.secretBlob = await sealSecret(
+      env,
+      "providerKey",
+      [admin.organizationId, row.id],
       body.secret,
-      encryptionContext(admin.organizationId, row.id),
     );
     updates.secretHint = secretHint(body.secret);
   }
