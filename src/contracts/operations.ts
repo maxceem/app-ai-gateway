@@ -185,6 +185,22 @@ export const operations = {
     "GET", () => "/v1/cli/account"),
   getCliUsage: operation<undefined, Cli.CliUsageResponse>()(
     "GET", (query: { month?: string } = {}) => `/v1/cli/usage${searchSuffix(query)}`),
+
+  /*
+   * The browser half of a handoff, called by the console's approval page rather
+   * than by the CLI. Every one of them carries the submission proof from the
+   * URL fragment in its body, so they are POSTs with no readable URL of their
+   * own; routing them through here is what keeps the page from writing those
+   * paths by hand.
+   */
+  cliBrowserDetails: operation<Cli.CliSubmissionRequest, Cli.CliBrowserDetailsResponse>()(
+    "POST", (id: string) => `/v1/cli/browser/${seg(id)}/details`),
+  cliBrowserSubmit: operation<Cli.CliSubmissionRequest, Cli.CliBrowserSubmitResponse>()(
+    "POST", (id: string) => `/v1/cli/browser/${seg(id)}/submit`),
+  cliBrowserRegister: operation<Cli.CliSubmissionRequest, Cli.CliBrowserRegisterResponse>()(
+    "POST", (id: string) => `/v1/cli/browser/${seg(id)}/register`),
+  cliBrowserGoogle: operation<Cli.CliSubmissionRequest, Cli.CliBrowserGoogleResponse>()(
+    "POST", (id: string) => `/v1/cli/browser/${seg(id)}/google`),
 } as const;
 
 export type OperationName = keyof typeof operations;

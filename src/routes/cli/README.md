@@ -10,7 +10,10 @@ triggers and is not repeated here.
 Cloudflare Worker it is about to adopt, which is what makes a custom-domain move
 or an update safe: the URL may change, the identity may not. Set
 `CLI_CONSOLE_ORIGIN` only when browser handoffs are served from a second
-first-party host bound to this same Worker.
+first-party host bound to this same Worker. That host serves both halves of a
+handoff — the console bundle that renders the approval screen and the
+`/v1/cli/browser/` endpoints it calls — because the endpoints refuse any request
+whose URL origin or `Origin` header is not exactly it.
 
 ## Who owns a fresh deployment
 
@@ -62,6 +65,15 @@ in the URL fragment, are removed from history on arrival and are held only in
 operation-scoped `sessionStorage`, so the proof reaches the page without ever
 entering a server log or the browser's history. This proves possession of the
 link and of the session — it asserts nothing about mailbox ownership.
+
+The page itself is a console route, `/cli/approve/:id`, served from the console
+bundle like every other screen; this package renders no HTML. That is why the
+URL handed to the CLI names it, and why Google consent for a claim returns to it
+rather than to an endpoint — the fragment does not survive that redirect, which
+is exactly what the `sessionStorage` copy is for. Claim registration keeps its
+own endpoint rather than using the console's public sign-up, because a
+deployment that refuses public registration must still be able to admit the one
+human who is claiming it.
 
 Claim attaches a human owner to the existing account and clears its expiry. It
 never converts the service identity into a human one, and it never moves the

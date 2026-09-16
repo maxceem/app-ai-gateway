@@ -116,8 +116,9 @@ upload it as a secret. Local setup stores its development value in ignored
 ### `CLI_CONSOLE_ORIGIN`
 
 Optional secure first-party origin for browser handoffs. It must serve the same
-Worker's `/v1/cli/browser/` routes. HTTPS is required outside local development.
-Leave it unset when the API and console share an origin.
+Worker: both the console, which renders the approval page the CLI links to, and
+the `/v1/cli/browser/` routes that page calls. HTTPS is required outside local
+development. Leave it unset when the API and console share an origin.
 
 ### `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
 

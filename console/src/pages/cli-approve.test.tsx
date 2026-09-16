@@ -1,0 +1,246 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { CliApprovePage } from "./cli-approve";
+import { renderPublic, stubApi } from "@/test/render";
+
+const OPERATION_ID = "cli-operation:abc123";
+const ENCODED = encodeURIComponent(OPERATION_ID);
+const PATH = `/cli/approve/${ENCODED}`;
+const TOKEN = "a".repeat(48);
+const DETAILS_URL = `/v1/cli/browser/${ENCODED}/details`;
+const SUBMIT_URL = `/v1/cli/browser/${ENCODED}/submit`;
+const REGISTER_URL = `/v1/cli/browser/${ENCODED}/register`;
+const GOOGLE_URL = `/v1/cli/browser/${ENCODED}/google`;
+
+const account = {
+  id: "org-abcdef-0123456789",
+  name: "Acme",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  claimed: false,
+  expiresAt: null,
+};
+
+function details(overrides: Record<string, unknown> = {}) {
+  return {
+    body: {
+      kind: "claim",
+      payload: {},
+      account,
+      signedIn: false,
+      googleEnabled: false,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      ...overrides,
+    },
+  };
+}
+
+/** Every case starts on the link the CLI printed: path plus proof fragment. */
+function renderApprove(route = `${PATH}#${TOKEN}`) {
+  return renderPublic(<CliApprovePage />, { route, path: "/cli/approve/:id" });
+}
+
+beforeEach(() => {
+  sessionStorage.clear();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  sessionStorage.clear();
+});
+
+describe("CliApprovePage proof handling", () => {
+  it("reads the proof from the fragment, sends it, and strips it from the URL", async () => {
+    const fetchMock = stubApi({ [DETAILS_URL]: details() });
+
+    const { router } = renderApprove();
+
+    await screen.findByText(/claim your account/i);
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/details"));
+    expect(JSON.parse(String(call![1]!.body))).toEqual({ submissionToken: TOKEN });
+    await waitFor(() => expect(router.location.hash).toBe(""));
+    expect(router.location.pathname).toBe(PATH);
+    expect(router.location.search).toBe("");
+  });
+
+  it("recovers the proof from session storage when the fragment is gone", async () => {
+    sessionStorage.setItem(
+      `app-ai-gateway:cli-approve:${PATH}`,
+      JSON.stringify({ token: TOKEN, expiresAt: Date.now() + 600_000 }),
+    );
+    const fetchMock = stubApi({ [DETAILS_URL]: details() });
+
+    renderApprove(PATH);
+
+    await screen.findByText(/claim your account/i);
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/details"));
+    expect(JSON.parse(String(call![1]!.body))).toEqual({ submissionToken: TOKEN });
+  });
+
+  it("refuses a stored proof that has already expired", async () => {
+    sessionStorage.setItem(
+      `app-ai-gateway:cli-approve:${PATH}`,
+      JSON.stringify({ token: TOKEN, expiresAt: Date.now() - 1 }),
+    );
+    stubApi({ [DETAILS_URL]: details() });
+
+    renderApprove(PATH);
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/missing its proof/i);
+  });
+
+  it("explains an expired operation instead of showing a form", async () => {
+    stubApi({
+      [DETAILS_URL]: {
+        status: 410,
+        body: { error: { code: "invalid_request", message: "Operation has expired" } },
+      },
+    });
+
+    renderApprove();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/can no longer be approved/i);
+    expect(alert.textContent).toMatch(/rerun the command/i);
+  });
+});
+
+describe("CliApprovePage claim", () => {
+  it("offers both sign-in and account creation while signed out", async () => {
+    stubApi({ [DETAILS_URL]: details() });
+
+    renderApprove();
+
+    await screen.findByText(/claim your account/i);
+    expect(screen.getByRole("button", { name: /^sign in$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /create one/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /approve request/i })).toBeNull();
+  });
+
+  it("registers through the handoff endpoint rather than public sign-up", async () => {
+    const fetchMock = stubApi({
+      [DETAILS_URL]: details(),
+      [REGISTER_URL]: { body: { token: "t" } },
+    });
+
+    renderApprove();
+
+    await screen.findByText(/claim your account/i);
+    await userEvent.click(screen.getByRole("button", { name: /create one/i }));
+    await userEvent.type(screen.getByLabelText(/^name$/i), "Ada Lovelace");
+    await userEvent.type(screen.getByLabelText(/^email$/i), "ada@example.test");
+    await userEvent.type(screen.getByLabelText(/^password$/i), "correct-horse-42");
+    await userEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/register"));
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call![1]!.body))).toEqual({
+        submissionToken: TOKEN,
+        name: "Ada Lovelace",
+        email: "ada@example.test",
+        password: "correct-horse-42",
+      });
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/auth/sign-up")),
+    ).toBe(false);
+  });
+
+  it("starts Google consent through the claim endpoint", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    const fetchMock = stubApi({
+      [DETAILS_URL]: details({ googleEnabled: true }),
+      [GOOGLE_URL]: { body: { url: "https://accounts.example.test/consent" } },
+    });
+
+    renderApprove();
+
+    await userEvent.click(await screen.findByRole("button", { name: /continue with google/i }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://accounts.example.test/consent"));
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/auth/sign-in/social")),
+    ).toBe(false);
+  });
+
+  it("approves with the service-access choice once a human is signed in", async () => {
+    const fetchMock = stubApi({
+      [DETAILS_URL]: details({ signedIn: true }),
+      [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
+    });
+
+    renderApprove();
+
+    const approve = await screen.findByRole("button", { name: /approve request/i });
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByLabelText(/i approve this action/i));
+    await userEvent.click(screen.getByLabelText(/keep this service identity/i));
+    await userEvent.click(approve);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/submit"));
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call![1]!.body))).toEqual({
+        submissionToken: TOKEN,
+        approve: true,
+        allowServiceAccess: false,
+      });
+    });
+    expect(await screen.findByText(/return to your cli/i)).toBeTruthy();
+    expect(sessionStorage.getItem(`app-ai-gateway:cli-approve:${PATH}`)).toBeNull();
+  });
+});
+
+describe("CliApprovePage provider handoffs", () => {
+  it("asks for the credential and never for a sign-in", async () => {
+    const fetchMock = stubApi({
+      [DETAILS_URL]: details({
+        kind: "provider.add",
+        payload: { type: "openai", name: "OpenAI" },
+        signedIn: false,
+      }),
+      [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
+    });
+
+    renderApprove();
+
+    expect(await screen.findByText(/add a provider/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^sign in$/i })).toBeNull();
+    // The configuration is shown so it can be compared with the terminal.
+    expect(screen.getByText(/"type": "openai"/)).toBeTruthy();
+
+    const secret = screen.getByLabelText(/provider credential/i);
+    expect(secret.getAttribute("type")).toBe("password");
+    await userEvent.type(secret, "sk-test-value");
+    await userEvent.click(screen.getByLabelText(/i approve this action/i));
+    await userEvent.click(screen.getByRole("button", { name: /approve request/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/submit"));
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call![1]!.body))).toEqual({
+        submissionToken: TOKEN,
+        approve: true,
+        secret: "sk-test-value",
+      });
+    });
+    expect(await screen.findByText(/return to your cli/i)).toBeTruthy();
+  });
+
+  it("omits the credential field when the provider is routed through a gateway", async () => {
+    stubApi({
+      [DETAILS_URL]: details({
+        kind: "provider.add",
+        payload: { type: "openai", providerGatewayId: "pg-1" },
+        signedIn: false,
+      }),
+    });
+
+    renderApprove();
+
+    await screen.findByText(/add a provider/i);
+    expect(screen.queryByLabelText(/provider credential/i)).toBeNull();
+  });
+});

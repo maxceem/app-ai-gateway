@@ -78,6 +78,9 @@ function readList(key: string): string[] {
 export function maskPath(pathname: string): string {
   const segments = pathname.split("/");
   if (segments[1] === "apps" && segments[2]) segments[2] = ":appId";
+  // A CLI handoff names the operation it is approving, which is nobody's
+  // business but that terminal's.
+  if (segments[1] === "cli" && segments[2] === "approve" && segments[3]) segments[3] = ":operationId";
   return segments.join("/");
 }
 

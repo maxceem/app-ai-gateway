@@ -286,6 +286,13 @@ describe("CLI account lifecycle", () => {
     );
     expect(operationResponse.status).toBe(200);
     const op = (await operationResponse.json()) as { id: string; url: string };
+    // The human half is a console route, and the proof reaches it only as a
+    // fragment: a query string would be in the request line and in every log.
+    const handoffUrl = new URL(op.url);
+    expect(handoffUrl.origin).toBe("https://example.test");
+    expect(handoffUrl.pathname).toBe(`/cli/approve/${encodeURIComponent(op.id)}`);
+    expect(handoffUrl.search).toBe("");
+    expect(handoffUrl.hash.length).toBeGreaterThan(1);
     const submissionToken = new URL(op.url).hash.slice(1);
     const headers = { origin: "https://example.test", cookie: human.cookie };
     expect(
@@ -661,7 +668,7 @@ describe("CLI account lifecycle", () => {
     );
     expect(complete.status).toBe(302);
     expect(complete.headers.get("location")).toBe(
-      `https://example.test/v1/cli/browser/${encodeURIComponent(op.id)}`,
+      `https://example.test/cli/approve/${encodeURIComponent(op.id)}`,
     );
     expect(
       complete.headers

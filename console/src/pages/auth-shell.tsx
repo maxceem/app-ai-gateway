@@ -20,13 +20,22 @@ export function AuthLayout({ children }: { children: ReactNode }) {
   );
 }
 
-/** Rendered only when the deployment reports the `googleAuth` capability. */
+/**
+ * Rendered only when the deployment reports the `googleAuth` capability.
+ *
+ * `onStart` exists for the one screen that must not use the console's ordinary
+ * Google sign-in: a CLI account claim registers its human through the handoff's
+ * own endpoint, which a deployment with public registration closed still
+ * allows. Everything visible about the button stays the same either way.
+ */
 export function GoogleButton({
   label = "Continue with Google",
   returnPath,
+  onStart,
 }: {
   label?: string;
   returnPath?: string;
+  onStart?: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
 
@@ -34,7 +43,7 @@ export function GoogleButton({
     setPending(true);
     try {
       // Navigates away on success, so `pending` intentionally stays true.
-      await startGoogleSignIn(returnPath);
+      await (onStart ? onStart() : startGoogleSignIn(returnPath));
     } catch (error) {
       setPending(false);
       toast.error(authErrorMessage(error, "Could not start Google sign-in"));

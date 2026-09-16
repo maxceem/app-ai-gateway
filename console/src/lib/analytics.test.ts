@@ -111,6 +111,8 @@ test("application identifiers are masked out of paths and URLs", async () => {
   expect(maskPath("/apps/0198f2c1a0d3/usage")).toBe("/apps/:appId/usage");
   expect(maskPath("/apps/0198f2c1a0d3/auth/identity")).toBe("/apps/:appId/auth/identity");
   expect(maskPath("/settings/account")).toBe("/settings/account");
+  // The CLI handoff names the operation it approves; that is the terminal's business.
+  expect(maskPath("/cli/approve/cli-operation%3Aabc")).toBe("/cli/approve/:operationId");
 
   const properties: Record<string, unknown> = {
     $current_url: "https://console.appaigateway.com/apps/0198f2c1a0d3/usage?from=%2Fbilling&utm_source=reddit#tab",

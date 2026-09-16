@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { render } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConsoleSessionProvider } from "@/lib/console-session";
@@ -51,27 +51,42 @@ export function testQueryClient() {
 }
 
 export interface RouterProbe {
-  location: { pathname: string; search: string };
+  location: { pathname: string; search: string; hash: string };
 }
 
 /** Mirrors the router's location out of the tree so assertions can read it. */
 function LocationProbe({ probe }: { probe: RouterProbe }) {
   const location = useLocation();
-  probe.location = { pathname: location.pathname, search: location.search };
+  probe.location = {
+    pathname: location.pathname,
+    search: location.search,
+    hash: location.hash,
+  };
   return null;
 }
 
-/** Renders a tree with routing and query context but no session. */
-export function renderPublic(ui: ReactNode, { route = "/" }: { route?: string } = {}) {
+/**
+ * Renders a tree with routing and query context but no session.
+ *
+ * `path` mounts the tree behind a route pattern, for a screen that reads its
+ * own `useParams`; without one the tree is rendered directly, which is what
+ * every screen driven purely by its props needs.
+ */
+export function renderPublic(
+  ui: ReactNode,
+  { route = "/", path }: { route?: string; path?: string } = {},
+) {
   const client = testQueryClient();
-  const router: RouterProbe = { location: { pathname: route, search: "" } };
+  const router: RouterProbe = { location: { pathname: route, search: "", hash: "" } };
   return {
     client,
     router,
     ...render(
       <QueryClientProvider client={client}>
         <MemoryRouter initialEntries={[route]}>
-          <TooltipProvider>{ui}</TooltipProvider>
+          <TooltipProvider>
+            {path === undefined ? ui : <Routes><Route path={path} element={ui} /></Routes>}
+          </TooltipProvider>
           <LocationProbe probe={router} />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -138,7 +153,9 @@ export function renderAuthenticated(
   } = {},
 ) {
   const client = testQueryClient();
-  const router: RouterProbe = { location: { pathname: options.route ?? "/", search: "" } };
+  const router: RouterProbe = {
+    location: { pathname: options.route ?? "/", search: "", hash: "" },
+  };
   return {
     client,
     router,

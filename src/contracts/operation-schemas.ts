@@ -20,6 +20,10 @@ import { z } from "zod";
 import {
   CliAccountResponseSchema,
   CliBootstrapResponseSchema,
+  CliBrowserDetailsResponseSchema,
+  CliBrowserGoogleResponseSchema,
+  CliBrowserRegisterResponseSchema,
+  CliBrowserSubmitResponseSchema,
   CliCapabilitiesResponseSchema,
   CliOperationResponseSchema,
   CliPollResponseSchema,
@@ -111,6 +115,11 @@ export const responseSchemas = {
   pollCliOperation: CliPollResponseSchema,
   getCliAccount: CliAccountResponseSchema,
   getCliUsage: CliUsageResponseSchema,
+
+  cliBrowserDetails: CliBrowserDetailsResponseSchema,
+  cliBrowserSubmit: CliBrowserSubmitResponseSchema,
+  cliBrowserRegister: CliBrowserRegisterResponseSchema,
+  cliBrowserGoogle: CliBrowserGoogleResponseSchema,
 } as const satisfies ResponseSchemaMap;
 
 /**

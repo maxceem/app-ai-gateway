@@ -13,7 +13,6 @@ import { currentMonth } from "../admin/shared";
 import { bootstrap, deployment } from "./bootstrap";
 import { authState, createOperation, pollOperation } from "./operations";
 import {
-  browserPage,
   browserDetails,
   browserSubmit,
   browserRegister,
@@ -61,7 +60,6 @@ cliRoutes.get("/capabilities", (c) => {
 cliRoutes.post("/bootstrap", bootstrap);
 cliRoutes.post("/operations", createOperation);
 cliRoutes.get("/operations/:id", pollOperation);
-cliRoutes.get("/browser/:id", browserPage);
 cliRoutes.post("/browser/:id/details", browserDetails);
 cliRoutes.post("/browser/:id/submit", browserSubmit);
 cliRoutes.post("/browser/:id/register", browserRegister);

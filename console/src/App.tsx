@@ -9,6 +9,7 @@ import { AppDetailPage } from "@/pages/app-detail";
 import { AppsPage } from "@/pages/apps";
 import { BillingPage } from "@/pages/billing";
 import { CheckoutPage } from "@/pages/checkout";
+import { CliApprovePage } from "@/pages/cli-approve";
 import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
 import { ProvidersPage } from "@/pages/providers";
@@ -170,6 +171,13 @@ export default function App() {
             </PublicOnly>
           }
         />
+        {/*
+          The human half of a CLI browser handoff. Outside both the
+          authenticated shell and `PublicOnly`: an account claim starts with
+          nobody signed in, and an already-signed-in person approving a provider
+          secret must not be redirected away from the link their CLI printed.
+        */}
+        <Route path="/cli/approve/:id" element={<CliApprovePage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

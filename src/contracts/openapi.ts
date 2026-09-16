@@ -4,6 +4,8 @@ import {
   CliBootstrapRequestSchema, CliOperationRequestSchema, CliSubmissionRequestSchema,
   CliBootstrapResponseSchema, CliOperationResponseSchema, CliPollResponseSchema,
   CliUsageResponseSchema, CliCapabilitiesResponseSchema, CliDeploymentSchema, CliAccountSchema,
+  CliBrowserDetailsResponseSchema, CliBrowserSubmitResponseSchema,
+  CliBrowserRegisterResponseSchema, CliBrowserGoogleResponseSchema,
 } from "./cli.ts";
 import {
   AppAttestRegisterRequestSchema,
@@ -1004,14 +1006,22 @@ register({ method: "get", path: "/v1/cli/usage", tags: ["CLI"], operationId: "ge
   description: "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
   request: { query: z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("YYYY-MM; defaults to the current UTC month.") }) },
   responses: { 200: response("Account totals, per-app totals and attribution coverage.", CliUsageResponseSchema), ...cliErrors } });
-register({ method: "get", path: "/v1/cli/browser/{id}", tags: ["CLI"], operationId: "getCliHandoffPage",
-  summary: "Open the first-party human handoff page", request: { params: CliOperationPath },
-  responses: { 200: { description: "No-store browser page. The submission proof arrives only in the URL fragment.", content: { "text/html": { schema: z.string() } } }, ...cliErrors } });
-for (const action of ["details", "submit", "register", "google"] as const) {
+/*
+ * The human half of a handoff. There is no page to fetch here: the console
+ * renders the approval screen at `/cli/approve/{id}` from its own bundle, and
+ * these four are the API it calls with the proof it read from the URL fragment.
+ */
+const browserActions = {
+  details: response("The pending action, its configuration, the account it lands on, and whether an interactive human is signed in.", CliBrowserDetailsResponseSchema),
+  submit: response("The handoff is approved and consumed. No submitted secret is ever echoed.", CliBrowserSubmitResponseSchema),
+  register: response("A new human identity for a pending claim, with its session set as a cookie.", CliBrowserRegisterResponseSchema),
+  google: response("Where to send the browser to start Google consent for a pending claim.", CliBrowserGoogleResponseSchema),
+} as const;
+for (const [action, ok] of Object.entries(browserActions)) {
   register({ method: "post", path: `/v1/cli/browser/{id}/${action}`, tags: ["CLI"], operationId: `cliBrowser${action[0]!.toUpperCase()}${action.slice(1)}`,
     summary: `Browser handoff: ${action}`, description: "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
     request: { params: CliOperationPath, body: { required: true, content: json(CliSubmissionRequestSchema) } },
-    responses: { 200: response("Nonsecret browser handoff result or authentication redirect metadata.", z.record(z.string(), z.unknown())), ...cliErrors } });
+    responses: { 200: ok, ...cliErrors } });
 }
 
 export function createOpenAPIDocument({ includeHidden = true } = {}) {

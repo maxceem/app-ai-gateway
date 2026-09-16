@@ -9590,107 +9590,6 @@
         }
       }
     },
-    "/v1/cli/browser/{id}": {
-      "get": {
-        "tags": [
-          "CLI"
-        ],
-        "operationId": "getCliHandoffPage",
-        "summary": "Open the first-party human handoff page",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "No-store browser page. The submission proof arrives only in the URL fragment.",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A conflicting transition or setup cap prevents this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "The protected credential exchange has expired; no replacement is minted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "The durable initiation or submission rate limit was reached.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/cli/browser/{id}/details": {
       "post": {
         "tags": [
@@ -9758,12 +9657,75 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "The pending action, its configuration, the account it lands on, and whether an interactive human is signed in.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "claim",
+                        "provider.add",
+                        "provider.rotate-key",
+                        "provider.update",
+                        "provider-gateway.add",
+                        "provider-gateway.rotate-key"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
+                    },
+                    "signedIn": {
+                      "type": "boolean"
+                    },
+                    "googleEnabled": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "payload",
+                    "account",
+                    "signedIn",
+                    "googleEnabled",
+                    "expiresAt"
+                  ]
                 }
               }
             }
@@ -9908,12 +9870,26 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "The handoff is approved and consumed. No submitted secret is ever echoed.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "completed"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "message"
+                  ]
                 }
               }
             }
@@ -10058,12 +10034,22 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "A new human identity for a pending claim, with its session set as a cookie.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "token": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "redirect": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
@@ -10208,12 +10194,22 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "Where to send the browser to start Google consent for a pending claim.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "redirect": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ]
                 }
               }
             }

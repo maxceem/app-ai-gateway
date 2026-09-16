@@ -43,6 +43,43 @@ export const CliAccountSchema = z.object({
   claimed: z.boolean(),
   expiresAt: z.string().nullable(),
 });
+/**
+ * What the console's approval page reads before it shows anything.
+ *
+ * The page is the human half of a browser handoff, so it is told only what a
+ * person needs in order to recognize the request they started in a terminal:
+ * the action, the resource configuration the CLI sent, the account it lands on,
+ * and whether this browser already holds an interactive human session. No
+ * secret, submitted or stored, is ever part of it.
+ */
+export const CliBrowserDetailsResponseSchema = z.object({
+  kind: CliOperationRequestSchema.shape.kind,
+  payload: z.record(z.string(), z.unknown()),
+  account: CliAccountSchema,
+  signedIn: z.boolean(),
+  googleEnabled: z.boolean(),
+  expiresAt: z.string(),
+});
+/** The terminal state a completed approval leaves the page in. */
+export const CliBrowserSubmitResponseSchema = z.object({
+  state: z.literal("completed"),
+  message: z.string(),
+});
+/**
+ * Better Auth's own sign-up answer, relayed verbatim by the claim-registration
+ * endpoint. Only the fields the page could act on are named; the session it
+ * really returns is a cookie, not a body.
+ */
+export const CliBrowserRegisterResponseSchema = z.object({
+  token: z.string().nullable().optional(),
+  redirect: z.boolean().optional(),
+});
+/** Where to send the browser to start Google consent for a claim. */
+export const CliBrowserGoogleResponseSchema = z.object({
+  url: z.string(),
+  redirect: z.boolean().optional(),
+});
+
 /** Management keys never expire; the account's own deadline is the only one. */
 export const CliCredentialSchema = z.object({
   token: z.string(),
@@ -207,4 +244,9 @@ export type CliCapabilitiesResponse = z.infer<typeof CliCapabilitiesResponseSche
 export type CliAccountResponse = z.infer<typeof CliAccountResponseSchema>;
 export type CliBootstrapRequest = z.infer<typeof CliBootstrapRequestSchema>;
 export type CliOperationRequest = z.infer<typeof CliOperationRequestSchema>;
+export type CliSubmissionRequest = z.infer<typeof CliSubmissionRequestSchema>;
+export type CliBrowserDetailsResponse = z.infer<typeof CliBrowserDetailsResponseSchema>;
+export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
+export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;
+export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
 export type CliOperationKind = CliOperationRequest["kind"];

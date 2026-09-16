@@ -18,6 +18,15 @@ import {
 } from "./security";
 import type { HandoffRow, CliContext, CliEnv } from "./types";
 
+/**
+ * Where a human finishes a handoff: a console route, not a Worker-rendered
+ * page. The proof is appended as a fragment by the only caller that has one,
+ * because a fragment never reaches the server, a log or the browser's history.
+ */
+export function browserPath(id: string): string {
+  return `/cli/approve/${encodeURIComponent(id)}`;
+}
+
 export async function authState(c: CliContext, interactive = false) {
   const auth = createIdentityAuth(c.env, c.req.url, {
     suppressDefaultOrganization: true,
@@ -210,7 +219,7 @@ export async function createOperation(c: CliContext): Promise<Response> {
   }
   return c.json({
     id,
-    url: `${meta.consoleOrigin}/v1/cli/browser/${encodeURIComponent(id)}#${submissionToken}`,
+    url: `${meta.consoleOrigin}${browserPath(id)}#${submissionToken}`,
     expiresAt: new Date(row.expires_at).toISOString(),
     state: row.consumed_at
       ? "completed"
