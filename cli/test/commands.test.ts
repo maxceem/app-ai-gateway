@@ -62,9 +62,11 @@ test("quickstart and JSON defaults remain distinct, and retained provider polici
     updated.config.routing.providers.selected?.["openai"],
     previous.config.routing.providers.selected?.["openai"],
   );
+  // Unrestricted is the empty list: the gateway has no wildcard, and a literal
+  // "*" both fails the save-time price check and matches no request.
   assert.deepEqual(
-    updated.config.routing.providers.selected?.["other"]?.allowed_models,
-    ["*"],
+    updated.config.routing.providers.selected?.["other"],
+    { allowed_paths: [], allowed_models: [] },
   );
   await assert.rejects(() =>
     appDocument({
