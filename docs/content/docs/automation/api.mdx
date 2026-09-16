@@ -106,8 +106,11 @@ Do not write the response to a file that outlives the step.
 
 ## Revisions and retry proofs
 
-Read the app's ETag before a full `PUT` and send it as `If-Match`. Missing or
-stale revisions return 428 or 412; reread and merge before retrying.
+Read the app before a full `PUT` and send back the `revision` it answered with.
+A missing revision returns 400 and a stale one 409; reread and merge before
+retrying. The revision is a field of the app and travels only in the body — no
+`ETag` is published, because anything that compresses a response rewrites that
+header and a browser cannot read it cross-origin.
 
 Creation of apps, app keys, providers and provider gateways accepts paired
 `Idempotency-Key` and `X-Idempotency-Proof` headers. Persist both random proofs

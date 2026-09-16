@@ -10,7 +10,6 @@ export interface RequestOptions {
 
 export interface WireResponse {
   data: unknown;
-  etag: string | null;
 }
 
 /** The HTTP surface a `Transport` is built on; swapped out wholesale in tests. */
@@ -138,6 +137,6 @@ export class Transport {
         details,
       );
     }
-    return { data, etag: response.headers.get("etag") };
+    return { data };
   }
 }

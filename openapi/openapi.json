@@ -942,6 +942,36 @@
           "config_error"
         ]
       },
+      "AppUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "config": {
+            "$ref": "#/components/schemas/AppConfig"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "name",
+          "config",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
       "Provider": {
         "type": "object",
         "properties": {
@@ -4457,14 +4487,6 @@
         "responses": {
           "200": {
             "description": "Application state.",
-            "headers": {
-              "ETag": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Current application revision; send it in If-Match on update."
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4521,7 +4543,7 @@
         ],
         "operationId": "updateApp",
         "summary": "Update an application",
-        "description": "Requires If-Match containing the ETag from the original application read. Missing preconditions return 428; stale revisions return 412. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+        "description": "Requires `revision` in the body, the one the application was read at; a stale revision answers `409 app_revision_conflict` and an absent one `400 app_revision_required`. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
         "security": [
           {
             "ConsoleSession": []
@@ -4539,15 +4561,6 @@
             "required": true,
             "name": "app",
             "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            },
-            "required": true,
-            "name": "If-Match",
-            "in": "header"
           }
         ],
         "requestBody": {
@@ -4555,7 +4568,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AppWrite"
+                "$ref": "#/components/schemas/AppUpdate"
               }
             }
           }
@@ -4563,14 +4576,6 @@
         "responses": {
           "200": {
             "description": "Application state.",
-            "headers": {
-              "ETag": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Current application revision; send it in If-Match on update."
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4619,18 +4624,8 @@
               }
             }
           },
-          "412": {
+          "409": {
             "description": "The application changed since it was read.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "428": {
-            "description": "If-Match is required.",
             "content": {
               "application/json": {
                 "schema": {

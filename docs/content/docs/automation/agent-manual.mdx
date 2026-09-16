@@ -82,8 +82,8 @@ provider's own request format. You manage all of this through the admin API.
    before creating or updating it.
 4. `PUT /v1/admin/apps/{app}` replaces the whole application. Always `GET`
    first, modify the returned `app.name`, `app.config` and `app.status`, and
-   send all three back with `If-Match` set to the ETag from that read. A missing
-   revision returns 428; a stale revision returns 412. Reread and merge.
+   send all three back together with the `app.revision` from that read. A
+   missing revision returns 400; a stale revision returns 409. Reread and merge.
 5. Read before you write. List providers and apps before changing anything,
    so you use slugs and IDs that exist.
 6. Changes take up to one minute to apply to live traffic. Blocking a user is
@@ -188,10 +188,10 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | Call | Body | Notes |
 | --- | --- | --- |
 | `GET /v1/admin/apps` | | `apps[]` with each app's month-to-date usage |
-| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, created_at, updated_at }, resolved, config_error }` |
+| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at }, resolved, config_error }` |
 | `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id, exists }` or a 400 naming the problem. Works for an ID that does not exist yet |
 | `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
-| `PUT /v1/admin/apps/{app}` | `{ name, config, status? }` | Full replace; requires the current `If-Match` ETag |
+| `PUT /v1/admin/apps/{app}` | `{ name, config, status?, revision }` | Full replace; `revision` must be the one the last read returned |
 | `DELETE /v1/admin/apps/{app}` | | Removes users and keys, keeps usage history |
 | `GET /v1/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v1/admin/apps/{app}/keys` | `{ name }` | Returns `key` once |

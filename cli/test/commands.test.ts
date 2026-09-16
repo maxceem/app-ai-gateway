@@ -96,13 +96,12 @@ test("file mode honors omission of environments and refuses type conversion", as
   );
 });
 
-test("app remove supplies required confirmation query and full writes supply ETag", async () => {
+test("app remove supplies required confirmation query and full writes supply the revision", async () => {
   const calls: { name: string; params: unknown[]; options?: Record<string, unknown> }[] = [];
   const ctx = stubContext({
     call: async (name: string, params: unknown[], options?: Record<string, unknown>) => {
       calls.push({ name, params, ...(options ? { options } : {}) });
       return {
-        etag: '"revision-1"',
         data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null },
       };
     },
@@ -114,11 +113,10 @@ test("app remove supplies required confirmation query and full writes supply ETa
   calls.length = 0;
   await appCommand(ctx, "app update", ["app-1"], { name: "Renamed" });
   assert.equal(calls[1]?.name, "updateApp");
-  const options = calls[1]?.options as {
-    headers: Record<string, string>;
-    body: AppWrite;
-  };
-  assert.equal(options.headers["if-match"], '"revision-1"');
+  const options = calls[1]?.options as { body: AppWrite & { revision: number } };
+  // The revision the edit was made against, read from the application and sent
+  // back in the body — no header is involved.
+  assert.equal(options.body.revision, 1);
   assert.equal(options.body.name, "Renamed");
 });
 
@@ -128,8 +126,8 @@ test("app key failures revoke one-time credential before returning error", async
     call: async (name: string) => {
       calls.push(name);
       if (name === "getApp")
-        return { data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null }, etag: null };
-      return { data: {}, etag: null };
+        return { data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+      return { data: {} };
     },
     keyOutput: async () => ({
       path: "/key",
@@ -174,8 +172,7 @@ test("provider canonical-origin reset can initiate a narrowly bound browser resu
             createdBy: "me",
           },
         ],
-      },
-      etag: null,
+      }
     }),
     operation: async (kind: string, payload: Record<string, unknown>) => {
       operation = { kind, payload };
@@ -308,7 +305,7 @@ test("ready setup does not replay secrets or retired bootstrap credentials", asy
       publicCalls++;
       assert.equal(name, "getCliCapabilities");
       assert.equal(options.url, journal.url);
-      return { data: { deployment: { id: journal.id } }, etag: null };
+      return { data: { deployment: { id: journal.id } } };
     },
   });
   const result = await deploymentCommand(
@@ -397,8 +394,7 @@ test("domain changes cannot implicitly upgrade or downgrade the gateway code", a
     url: active.url,
     state: { active, installations: { "deployment-1": journal } },
     publicCall: async () => ({
-      data: { deployment: { id: "deployment-1" }, serverVersion: "0.2.0" },
-      etag: null,
+      data: { deployment: { id: "deployment-1" }, serverVersion: "0.2.0" }
     }),
   });
   await assert.rejects(
@@ -451,8 +447,7 @@ test("explicit key output resumes after durable response and disk failure withou
             name: "CI",
             key_prefix: "agw_",
             created_at: "now",
-          },
-          etag: null,
+          }
         };
       }
       if (path.endsWith("/keys"))
@@ -469,16 +464,14 @@ test("explicit key output resumes after durable response and disk failure withou
                 last_used_at: null,
               },
             ],
-          },
-          etag: null,
+          }
         };
       return {
         data: {
           app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
           resolved: null,
           config_error: null,
-        },
-        etag: null,
+        }
       };
     },
   };
@@ -563,8 +556,7 @@ test("a refused key creation releases both its receipt and its reserved output",
             name: "CI",
             key_prefix: "agw_",
             created_at: "now",
-          },
-          etag: null,
+          }
         };
       }
       return {
@@ -572,8 +564,7 @@ test("a refused key creation releases both its receipt and its reserved output",
           app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
           resolved: null,
           config_error: null,
-        },
-        etag: null,
+        }
       };
     },
   };
@@ -667,8 +658,7 @@ test("journal inventory refuses D1 rebinding and unsupported new resources", asy
         },
       },
       publicCall: async () => ({
-        data: { deployment: { id: "deployment-1" }, serverVersion: "0.1.0" },
-        etag: null,
+        data: { deployment: { id: "deployment-1" }, serverVersion: "0.1.0" }
       }),
     });
     await assert.rejects(
@@ -752,8 +742,7 @@ test("pending setup domain resumes without bootstrap and preserves current inven
     publicCall: async (name: string) => {
       assert.equal(name, "getCliCapabilities");
       return {
-        data: { deployment: { id: journal.id }, serverVersion: "0.1.0" },
-        etag: null,
+        data: { deployment: { id: journal.id }, serverVersion: "0.1.0" }
       };
     },
   });

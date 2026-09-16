@@ -442,9 +442,7 @@ export function useSaveApp(appId: string) {
   return useMutation({
     mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) =>
       asEditorApp(
-        await call(operations.updateApp, [appId], asWriteBody(body), {
-          "If-Match": `"app-${revision}"`,
-        }),
+        await call(operations.updateApp, [appId], { ...asWriteBody(body), revision }),
       ),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });

@@ -662,23 +662,12 @@ describe("billing gateway", () => {
 
     const updateId = "billing-update-uncapped";
     await seedServerApp(updateId);
-    const current = await worker.request(
-      `${ORIGIN}/v1/admin/apps/${updateId}`,
-      {
-        headers: MANAGEMENT_HEADERS,
-      },
-      legacyCeilingEnv,
-    );
     const updated = await worker.request(
       `${ORIGIN}/v1/admin/apps/${updateId}`,
       {
         method: "PUT",
-        headers: {
-          ...MANAGEMENT_HEADERS,
-          "content-type": "application/json",
-          "if-match": current.headers.get("etag")!,
-        },
-        body: JSON.stringify({ name: "Updated", config: serverConfig() }),
+        headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Updated", config: serverConfig(), revision: 1 }),
       },
       legacyCeilingEnv,
     );

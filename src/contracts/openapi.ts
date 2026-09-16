@@ -9,6 +9,7 @@ import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
+  AppUpdateSchema,
   AppWriteSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -26,6 +27,7 @@ export {
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
   AppConfigSchema,
+  AppUpdateSchema,
   AppWriteSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
@@ -600,7 +602,7 @@ for (const definition of [
     method: "put",
     operationId: "updateApp",
     summary: "Update an application",
-    description: "Requires If-Match containing the ETag from the original application read. Missing preconditions return 428; stale revisions return 412. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+    description: "Requires `revision` in the body, the one the application was read at; a stale revision answers `409 app_revision_conflict` and an absent one `400 app_revision_required`. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
   },
 ] as const) {
   register({
@@ -613,9 +615,9 @@ for (const definition of [
     security: managementSecurity,
     request: {
       params: AppPath,
-      ...(definition.method === "put" ? { headers: z.object({ "If-Match": z.string().min(1) }), body: { required: true, content: json(AppWriteSchema) } } : {}),
+      ...(definition.method === "put" ? { body: { required: true, content: json(AppUpdateSchema) } } : {}),
     },
-    responses: { 200: { ...response("Application state.", AppResponseSchema), headers: { ETag: { schema: { type: "string" }, description: "Current application revision; send it in If-Match on update." } } }, ...(definition.method === "put" ? { 412: response("The application changed since it was read.", ErrorResponseSchema), 428: response("If-Match is required.", ErrorResponseSchema) } : {}), ...errorResponses },
+    responses: { 200: response("Application state.", AppResponseSchema), ...(definition.method === "put" ? { 409: response("The application changed since it was read.", ErrorResponseSchema) } : {}), ...errorResponses },
   });
 }
 

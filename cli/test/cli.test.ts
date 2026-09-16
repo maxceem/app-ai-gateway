@@ -148,7 +148,7 @@ test("lost bootstrap response reuses proofs, and logout never bootstraps again",
           failing = false;
           throw new Error("lost response");
         }
-        return { data: credential, etag: null };
+        return { data: credential };
       },
     },
     {},
@@ -195,8 +195,7 @@ test("operation initiation retries persisted proof, then completed polling canno
             consoleOrigin: "https://console.example",
             providers: [],
             providerGateways: [],
-          },
-          etag: null,
+          }
         };
       if (path.endsWith("/operations")) {
         proofs.push((options.body as { pollToken?: string } | undefined)?.pollToken);
@@ -211,13 +210,11 @@ test("operation initiation retries persisted proof, then completed polling canno
             url: "https://console.example/handoff",
             expiresAt: "2030-01-01T00:00:00.000Z",
             deployment: credential.deployment,
-          },
-          etag: null,
+          }
         };
       }
       return {
-        data: pollResponse({ account: credential.account, result: { accessGranted: true } }),
-        etag: null,
+        data: pollResponse({ account: credential.account, result: { accessGranted: true } })
       };
     },
   };
@@ -250,7 +247,7 @@ test("stale authentication operation refuses activating account after connection
   const ctx = new Context(
     makeStore(),
     state,
-    { request: async () => ({ data: pollResponse(), etag: null }) },
+    { request: async () => ({ data: pollResponse() }) },
     {},
   );
   await assert.rejects(() => ctx.poll("op"), hasCode("operation_context"));
@@ -326,7 +323,7 @@ test("a completed key creation leaves no plaintext in protected state, and repla
   const transport = {
     request: async (_url: string, _path: string, options: { method?: string } = {}) =>
       options.method === "POST"
-        ? { data: minted, etag: null }
+        ? { data: minted }
         : {
             data: {
               app_id: "app-1",
@@ -340,8 +337,7 @@ test("a completed key creation leaves no plaintext in protected state, and repla
                   last_used_at: null,
                 },
               ],
-            },
-            etag: null,
+            }
           },
   };
   const ctx = new Context(store, state, transport, {});
@@ -414,8 +410,7 @@ test("a completed handoff reports only declared outcome fields", async () => {
             approvedBy: "user-SENTINEL",
             transition: "b2f0e6c4-SENTINEL",
           },
-        }),
-        etag: null,
+        })
       }),
     },
     {},
@@ -466,8 +461,7 @@ test("resource creates reuse pre-persisted idempotency authorization after a los
             resolved: null,
             config_error: null,
             api_key: null,
-          },
-          etag: null,
+          }
         };
       },
     },
@@ -636,8 +630,7 @@ test("claim completion with declined service access clears retired bootstrap aut
           id: "claim",
           result: { accessGranted: false },
           account: { ...credential.account, claimed: true },
-        }),
-        etag: null,
+        })
       }),
     },
     {},
@@ -694,7 +687,7 @@ test("fresh onboarding output includes exact free access dates without managemen
       transport: {
         request: async (_url, path) => {
           if (path.endsWith("/bootstrap"))
-            return { data: { ...credential, account, trial }, etag: null };
+            return { data: { ...credential, account, trial } };
           if (path.endsWith("/apps"))
             return {
               data: {
@@ -710,10 +703,9 @@ test("fresh onboarding output includes exact free access dates without managemen
                 resolved: null,
                 config_error: null,
                 api_key: null,
-              },
-              etag: null,
+              }
             };
-          return { data: { providers: [] }, etag: null };
+          return { data: { providers: [] } };
         },
       },
     },
@@ -826,7 +818,7 @@ test("successful stdout acknowledges creation so delete and re-add makes a new r
         const id = `app-${proofs.length}`;
         proofs.push(options.headers?.["Idempotency-Key"]);
         created.add(id);
-        return { data: appResponse(id), etag: null };
+        return { data: appResponse(id) };
       }
       if (options.method === "DELETE") {
         created.clear();
@@ -836,11 +828,10 @@ test("successful stdout acknowledges creation so delete and re-add makes a new r
             app_id: "app-0",
             removed_users: 0,
             usage_events_retained: true,
-          },
-          etag: null,
+          }
         };
       }
-      return { data: { ...appResponse([...created][0] ?? "app"), providers: [] }, etag: null };
+      return { data: { ...appResponse([...created][0] ?? "app"), providers: [] } };
     },
   };
   const args = [
@@ -893,7 +884,7 @@ test("pre-output crash replays completed creation once, then acknowledgment perm
   const transport = {
     request: async () => {
       posts++;
-      return { data: { provider: providerRow(`provider-${posts}`) }, etag: null };
+      return { data: { provider: providerRow(`provider-${posts}`) } };
     },
   };
   const first = new Context(makeStore(), state, transport, {});
@@ -948,7 +939,7 @@ test("failed stdout acknowledgment retains the completed receipt without failing
   const ctx = new Context(
     store,
     state,
-    { request: async () => ({ data: { provider: providerRow("provider") }, etag: null }) },
+    { request: async () => ({ data: { provider: providerRow("provider") } }) },
     {},
   );
   await (await ctx.create("createProvider", [], providerBody())).complete();
@@ -1071,7 +1062,7 @@ test("commands started side by side reserve one account and one creation receipt
       {
         request: async (_url, _path, options = {}) => {
           proofs.add((options.body as { idempotencyKey?: unknown }).idempotencyKey);
-          return { data: credential, etag: null };
+          return { data: credential };
         },
       },
       {},

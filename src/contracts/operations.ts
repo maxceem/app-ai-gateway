@@ -124,7 +124,7 @@ export const operations = {
     "POST", () => "/v1/admin/apps"),
   getApp: operation<undefined, Responses.AppResponse>()(
     "GET", (appId: string) => `/v1/admin/apps/${seg(appId)}`),
-  updateApp: operation<Requests.AppWrite, Responses.AppResponse>()(
+  updateApp: operation<Requests.AppUpdate, Responses.AppResponse>()(
     "PUT", (appId: string) => `/v1/admin/apps/${seg(appId)}`),
   deleteApp: operation<undefined, Responses.AppDeleteResponse>()(
     "DELETE", (appId: string) => `/v1/admin/apps/${seg(appId)}${searchSuffix({ confirm: appId })}`),

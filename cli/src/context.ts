@@ -65,7 +65,6 @@ export interface CallOptions<K extends OperationName> {
 
 export interface CallResult<T> {
   data: T;
-  etag: string | null;
 }
 
 /** The subset of a state store the context writes through; real one in `state.ts`. */
@@ -117,7 +116,6 @@ const recordedResultFor: { [K in CreateOperationName]: z.ZodType<RecordedResult<
  */
 export interface CreateOutcome<Live, Recorded> {
   data: Live | Recorded;
-  etag?: string | null;
   /** Present exactly when `data` is the replayed copy. */
   keyMetadata?: StoredKeyMetadata | undefined;
   keyStored?: (metadata: StoredKeyMetadata) => Promise<void>;
@@ -243,7 +241,7 @@ export class Context {
         ...(headers === undefined ? {} : { headers }),
       },
     );
-    return { data: this.parse(name, wire.data), etag: wire.etag };
+    return { data: this.parse(name, wire.data) };
   }
 
   private parse<K extends OperationName>(
@@ -450,7 +448,6 @@ export class Context {
         4,
       );
     let data: OperationResponse<Descriptor<K>>;
-    let etag: string | null = null;
     if (mutation.response !== undefined) {
       const recovered = this.parse(name, mutation.response);
       const keyRecord = recoveredKey(name, recovered);
@@ -487,7 +484,6 @@ export class Context {
         throw error;
       });
       data = response.data;
-      etag = response.etag;
       // Persist the original one-time response before writing the chosen output.
       // This protected recovery copy makes a disk-write retry independent of HTTP.
       mutation.response = data;
@@ -495,7 +491,6 @@ export class Context {
     }
     return {
       data,
-      etag,
       keyStored: async (metadata: StoredKeyMetadata) => {
         mutation.keyMetadata = metadata;
         await this.save();
