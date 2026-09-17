@@ -9732,8 +9732,8 @@
                         "null"
                       ],
                       "enum": [
-                        "session_required",
-                        "account_exists",
+                        "registration_required",
+                        "sign_out_required",
                         null
                       ]
                     },

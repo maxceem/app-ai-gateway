@@ -477,7 +477,7 @@ describe("CLI account lifecycle", () => {
     );
     expect(details.status).toBe(200);
     // The page is told the verdict rather than left to offer a button that fails.
-    await expect(details.json()).resolves.toMatchObject({ blockedBy: "account_exists" });
+    await expect(details.json()).resolves.toMatchObject({ blockedBy: "sign_out_required" });
     const refused = await request(
       testEnv,
       `/browser/${op.id}/submit`,

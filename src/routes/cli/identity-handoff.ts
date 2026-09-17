@@ -11,15 +11,21 @@ import type { AuthState } from "@maxceem/cf-auth";
 import type { CliContext, HandoffRow } from "./types";
 
 /**
- * Why this browser cannot approve a claim on `organizationId`, or null when it
- * can.
+ * What has to happen before this browser may claim `organizationId`, or null
+ * when nothing does.
  *
  * Asked of memberships rather than of the session, because the three cases that
- * decide it are all about what a human already owns: Google consent can sign
- * someone in as a human who exists already, a human with no membership at all
- * (registered for a claim that then expired) may legitimately sign in and
- * claim, and a claim that already landed has to stay re-approvable, which is
- * why the account being claimed is excluded from the count.
+ * decide it are all about what a person already owns: Google consent can sign
+ * someone in as a person who exists already, a person with no membership at all
+ * (registered for a claim that then expired) may legitimately go on and claim,
+ * and a claim that already landed has to stay re-approvable, which is why the
+ * account being claimed is excluded from the count.
+ *
+ * The answer names a remedy rather than a cause, because it is the whole of
+ * what the approval page is told. Registering is the remedy for having no
+ * session here, not signing in: a claim is taken by a person who does not have
+ * an account yet, so the door that admits people who already have one is the
+ * door this rule exists to shut.
  */
 export function claimRefusal(
   state: AuthState,
@@ -30,9 +36,9 @@ export function claimRefusal(
     state.user?.kind !== "human" ||
     !state.actor?.credentialId
   )
-    return "session_required";
+    return "registration_required";
   if (state.memberships.some((member) => member.organization.id !== organizationId))
-    return "account_exists";
+    return "sign_out_required";
   return null;
 }
 
@@ -46,13 +52,15 @@ export async function completeIdentity(
   const state = await authState(c, true);
   const refusal = claimRefusal(state, row.organization_id);
   const approver = state.user;
-  if (refusal === "session_required" || !approver)
+  // The refusal names what a person must do; the status names why the request
+  // failed. Two audiences, one decision, translated in this one place.
+  if (refusal === "registration_required" || !approver)
     throw new GatewayError(
       401,
       "session_required",
-      "Sign in as a person before approving this request",
+      "Create a sign-in on the approval page before approving this request",
     );
-  if (refusal === "account_exists")
+  if (refusal === "sign_out_required")
     throw new GatewayError(
       403,
       "account_exists",

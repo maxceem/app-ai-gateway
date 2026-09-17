@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
-import { authErrorMessage } from "@/lib/auth-errors";
+import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
 
 /**
@@ -203,14 +203,14 @@ export function CliApprovePage() {
     <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
       <Summary details={data} />
 
-      {data.blockedBy === "session_required" ? (
-        <ClaimSignIn
+      {data.blockedBy === "registration_required" ? (
+        <ClaimRegister
           id={id}
           token={token}
           googleEnabled={data.googleEnabled}
           onDone={() => void details.refetch()}
         />
-      ) : data.blockedBy === "account_exists" ? (
+      ) : data.blockedBy === "sign_out_required" ? (
         <SignOutFirst viewer={data.viewer} onDone={() => void details.refetch()} />
       ) : (
         <ApprovalForm
@@ -314,17 +314,23 @@ function Footnote({ id, expiresAt }: { id: string; expiresAt?: string }) {
 }
 
 /**
- * Create a sign-in — or use one made for this same claim — for a claim only.
+ * How a person becomes the owner a claim is waiting for.
  *
- * Creation leads, because a claim is how a person gets their first account and
- * the gateway refuses one taken by a person who already has another. Signing in
- * stays on offer for the narrower case that produced a sign-in with no account
- * at all: someone who registered here for a claim that then expired.
- * Registration goes through the handoff's own endpoint rather than public
- * sign-up, since a deployment that refuses public registration still has to let
- * its first person in.
+ * Registration is the only thing offered, because it is the only thing that
+ * ends in an approvable claim. Someone who signs in arrives with an account
+ * already, and that is exactly what the sign-out screen next door refuses, so
+ * a standing "sign in instead" here would reopen the door this whole rule
+ * exists to shut. It goes through the handoff's own endpoint rather than
+ * public sign-up, since a deployment that refuses public registration still
+ * has to let its first person in.
+ *
+ * Signing in appears exactly once, as the answer to a question a person has
+ * already been asked: a registration refused because that email is taken.
+ * Whoever registered here for a claim that then expired owns a sign-in
+ * attached to nothing, and this is the only screen that can tell them so. It
+ * is reached by failing, never by choosing.
  */
-function ClaimSignIn({
+function ClaimRegister({
   id,
   token,
   googleEnabled,
@@ -335,30 +341,32 @@ function ClaimSignIn({
   googleEnabled: boolean;
   onDone: () => void;
 }) {
-  const [creating, setCreating] = useState(true);
   const signIn = useSignIn();
   const register = useMutation({
     mutationFn: (input: { name: string; email: string; password: string }) =>
       call(operations.cliBrowserRegister, [id], { submissionToken: token, ...input }),
   });
+  /* Entered only from the refusal below, which is why nothing sets it back. */
+  const [recovering, setRecovering] = useState(false);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const active = creating ? register : signIn;
+  const active = recovering ? signIn : register;
+  const taken = !recovering && register.isError && isSignInTaken(register.error);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      if (creating) {
+      if (recovering) {
+        await signIn.mutateAsync({ email: email.trim(), password });
+      } else {
         await register.mutateAsync({
           name: name.trim(),
           email: email.trim(),
           password,
         });
-      } else {
-        await signIn.mutateAsync({ email: email.trim(), password });
       }
       setPassword("");
       onDone();
@@ -376,19 +384,20 @@ function ClaimSignIn({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Claim this account as a new person. Create your sign-in here, or sign in if you already
-        created one for this claim.
+        {recovering
+          ? "Sign in to the sign-in you already created for this claim."
+          : "Claiming settles this account on a new person. Create your sign-in to continue."}
       </p>
 
       {googleEnabled ? (
         <GoogleButton
-          label={creating ? "Sign up with Google" : "Continue with Google"}
+          label={recovering ? "Continue with Google" : "Sign up with Google"}
           onStart={startGoogle}
         />
       ) : null}
 
       <form onSubmit={(event) => void submit(event)} className="space-y-4">
-        {creating ? (
+        {recovering ? null : (
           <div className="space-y-2">
             <Label htmlFor="claim-name">Name</Label>
             <Input
@@ -400,7 +409,7 @@ function ClaimSignIn({
               onChange={(event) => setName(event.target.value)}
             />
           </div>
-        ) : null}
+        )}
         <div className="space-y-2">
           <Label htmlFor="claim-email">Email</Label>
           <Input
@@ -420,32 +429,39 @@ function ClaimSignIn({
             type="password"
             value={password}
             required
-            autoComplete={creating ? "new-password" : "current-password"}
+            autoComplete={recovering ? "current-password" : "new-password"}
             placeholder="••••••••••••"
             onChange={(event) => setPassword(event.target.value)}
           />
         </div>
-        {active.isError ? (
+        {taken ? (
+          <Alert role="alert">
+            <AlertTitle>That email already has a sign-in</AlertTitle>
+            <AlertDescription className="space-y-3">
+              <span>
+                If you created it here for a claim you never finished, sign in to carry on.
+                Otherwise use another email.
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => setRecovering(true)}
+              >
+                Sign in to it instead
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : active.isError ? (
           <p role="alert" className="text-sm text-destructive">
-            {authErrorMessage(active.error, creating ? "Sign-up failed" : "Sign-in failed")}
+            {authErrorMessage(active.error, recovering ? "Sign-in failed" : "Sign-up failed")}
           </p>
         ) : null}
         <Button type="submit" className="w-full" disabled={active.isPending}>
           {active.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-          {creating ? "Create account" : "Sign in"}
+          {recovering ? "Sign in" : "Create account"}
         </Button>
       </form>
-
-      <p className="text-center text-sm text-muted-foreground">
-        {creating ? "Already created a sign-in for this claim? " : "No sign-in yet? "}
-        <button
-          type="button"
-          className="text-primary-ink underline underline-offset-4"
-          onClick={() => setCreating((value) => !value)}
-        >
-          {creating ? "Sign in" : "Create one"}
-        </button>
-      </p>
     </div>
   );
 }

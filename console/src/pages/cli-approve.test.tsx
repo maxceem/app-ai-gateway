@@ -29,7 +29,7 @@ function details(overrides: Record<string, unknown> = {}) {
       payload: {},
       account,
       viewer: null,
-      blockedBy: "session_required",
+      blockedBy: "registration_required",
       googleEnabled: false,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
       ...overrides,
@@ -112,23 +112,54 @@ describe("CliApprovePage proof handling", () => {
 });
 
 describe("CliApprovePage claim", () => {
-  it("leads with account creation and keeps sign-in as the second door", async () => {
+  it("offers creating a sign-in and no way at all to use an existing one", async () => {
     stubApi({ [DETAILS_URL]: details() });
 
     renderApprove();
 
     await screen.findByText(/claim your account/i);
-    // Creating is the path a claim is normally taken by, so it is the one shown.
     expect(screen.getByRole("button", { name: /create account/i })).toBeTruthy();
     expect(screen.getByLabelText(/^name$/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^sign in$/i })).toBeTruthy();
+    // Signing in would arrive with an account, which is what a claim refuses,
+    // so the page never puts that door on screen unprompted.
+    expect(screen.queryByRole("button", { name: /^sign in$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /sign in to it instead/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /approve request/i })).toBeNull();
+  });
+
+  it("answers a taken email with the one sign-in door, reached by failing", async () => {
+    const fetchMock = stubApi({
+      [DETAILS_URL]: details(),
+      [REGISTER_URL]: { status: 422, body: { error: { code: "USER_ALREADY_EXISTS" } } },
+      "/v1/auth/sign-in": { body: { token: "session" } },
+    });
+
+    renderApprove();
+
+    await screen.findByText(/claim your account/i);
+    await userEvent.type(screen.getByLabelText(/^name$/i), "Ada Lovelace");
+    await userEvent.type(screen.getByLabelText(/^email$/i), "ada@example.test");
+    await userEvent.type(screen.getByLabelText(/^password$/i), "correct-horse-42");
+    await userEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    const recover = await screen.findByRole("button", { name: /sign in to it instead/i });
+    await userEvent.click(recover);
+
+    // The recovery form asks only what signing in needs, and keeps the email.
+    expect(screen.queryByLabelText(/^name$/i)).toBeNull();
+    expect((screen.getByLabelText(/^email$/i) as HTMLInputElement).value).toBe("ada@example.test");
+    await userEvent.type(screen.getByLabelText(/^password$/i), "correct-horse-42");
+    await userEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/auth/sign-in"))).toBe(true),
+    );
   });
 
   it("sends a human who already has an account to sign out, then back to creating one", async () => {
     const routes: Record<string, { status?: number; body: unknown }> = {
       [DETAILS_URL]: details({
-        blockedBy: "account_exists",
+        blockedBy: "sign_out_required",
         viewer: { name: "Ada Lovelace", email: "ada@example.test" },
       }),
       [SIGN_OUT_URL]: { body: { success: true } },

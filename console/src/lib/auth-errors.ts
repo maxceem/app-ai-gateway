@@ -18,11 +18,21 @@ const AUTH_MESSAGES: Record<string, string> = {
   SESSION_EXPIRED: "Your session expired. Sign in again.",
   // Surfaced by the gateway rather than Better Auth, but shown on the same screens.
   registration_disabled: "Public registration is disabled for this deployment.",
-  session_required: "Sign in as a person before approving this request.",
+  session_required: "Create a sign-in on this page before approving this request.",
   account_exists: "This sign-in already has an account. Sign out, then create a new sign-in to claim this one.",
 };
 
 export const SIGN_UP_DISABLED_CODE = "registration_disabled";
+
+/**
+ * True when registration was refused because that email already has a sign-in.
+ *
+ * The one refusal the claim page answers with a door rather than a sentence,
+ * so it is named here beside the messages rather than matched inline there.
+ */
+export function isSignInTaken(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "USER_ALREADY_EXISTS";
+}
 
 /** True when the gateway refused a signup because registration is closed. */
 export function isRegistrationDisabled(error: unknown): boolean {

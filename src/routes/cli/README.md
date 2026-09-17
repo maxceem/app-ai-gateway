@@ -85,15 +85,25 @@ of it would cost more than it protects. Ending that access is an ordinary key
 revocation in the console afterwards, not a decision taken under time pressure
 on the approval page.
 
-A claim may only be approved by a human who belongs to no account other than
-the one being claimed; anyone else is told to sign out and create a new one.
-The test is memberships rather than the session, for three reasons: Google
-consent can sign the browser in as a human who already exists, a human with no
-membership at all — someone who registered here for a claim that then expired —
-must still be able to sign in and claim, and the account being claimed is
-excluded from the count so a claim that already landed stays re-approvable. The
-details endpoint answers with the same verdict the submission endpoint would
-reach, so the approval page never offers a button that would be refused.
+A claim may only be approved by a person who belongs to no account other than
+the one being claimed. The test is memberships rather than the session, for
+three reasons: Google consent can sign the browser in as a person who already
+exists, someone who registered here for a claim that then expired holds a
+sign-in attached to nothing and must still be able to finish, and the account
+being claimed is excluded from the count so a claim that already landed stays
+re-approvable.
+
+One field carries that decision to the browser. The details endpoint answers
+with the same verdict the submission endpoint would reach — register first,
+sign out first, or nothing in the way — so the approval page never offers a
+button that would be refused, and never has to ask what kind of handoff it is
+showing. The two verdicts name remedies rather than causes because they are the
+whole of what the page is told, and neither of them is signing in: arriving
+with a sign-in that already has an account is exactly what a claim refuses, so
+a page that offered that door would reopen the one this rule exists to shut.
+Signing in is reachable on that page from one place only, the refusal of a
+registration whose email is already taken, which is the lapsed-claim case above
+and nothing else.
 
 That page asks for nothing but the approval itself. It names the account and the
 signed-in human side by side — the two identities a person has to tell apart

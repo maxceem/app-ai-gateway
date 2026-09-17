@@ -43,13 +43,24 @@ export const CliAccountSchema = z.object({
   expiresAt: z.string().nullable(),
 });
 /**
- * Why a claim cannot be approved from this browser.
+ * What has to happen before this handoff can be approved.
  *
- * `session_required` means nobody interactive is signed in; `account_exists`
- * means the signed-in human already belongs to another account, and a claim
- * may only be taken by someone whose only account is the claimed one.
+ * Only a claim ever reports one. Every other handoff is authorised by the
+ * proof in the URL and the CLI credential that opened it, so it asks nothing
+ * at all of whoever is holding the browser. A claim is the exception because
+ * it settles an unowned account on its first person, and these are the two
+ * things such a person may have to do first.
+ *
+ * Neither of them is signing in, and that is the point rather than an
+ * omission: arriving with a sign-in that already has an account is precisely
+ * what a claim refuses, so this field never asks for one. A page that offered
+ * one anyway would be offering the way in that `sign_out_required` exists to
+ * close.
  */
-export const CliApprovalRefusalSchema = z.enum(["session_required", "account_exists"]);
+export const CliApprovalRefusalSchema = z.enum([
+  "registration_required",
+  "sign_out_required",
+]);
 /** Who this browser would approve as: the interactive human holding the session. */
 export const CliViewerSchema = z.object({
   name: z.string().nullable(),
@@ -72,7 +83,9 @@ export const CliBrowserDetailsResponseSchema = z.object({
   /**
    * What stands between this browser and the Approve button, or null when
    * nothing does — which is every non-claim kind, since only a claim asks who
-   * is holding the browser.
+   * is holding the browser. One field decides the whole screen: each value
+   * names the single thing the page may offer, so the page never has to
+   * consult the handoff kind to know what to put in front of a person.
    */
   blockedBy: CliApprovalRefusalSchema.nullable(),
   googleEnabled: z.boolean(),
