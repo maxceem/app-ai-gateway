@@ -1,9 +1,9 @@
 {
   "name": "@maxceem/agw",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "App AI Gateway CLI",
-  "upgradeFrom": ["0.1.4", "0.1.3", "0.1.2", "0.1.1", "0.1.0"],
+  "upgradeFrom": ["0.1.5", "0.1.4", "0.1.3", "0.1.2", "0.1.1", "0.1.0"],
   "license": "Apache-2.0",
   "bin": {
     "agw": "dist/agw.mjs"
