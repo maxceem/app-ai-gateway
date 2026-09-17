@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { stripVTControlCharacters } from "node:util";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { cp, writeFile, unlink } from "node:fs/promises";
@@ -19,12 +20,6 @@ export interface WranglerOptions {
   cwd?: string;
   input?: string;
   interactive?: boolean;
-  /**
-   * Whether this run's stdout is read rather than only awaited. Wrangler
-   * prints its machine-readable answers at the ordinary log level, so a run
-   * that is parsed cannot be quietened the way a deploy can.
-   */
-  parse?: boolean;
   /** Secret values that must never appear in a reported failure. */
   redact?: string[];
 }
@@ -32,7 +27,7 @@ export interface WranglerOptions {
 export type WranglerRunner = (args: string[], options?: WranglerOptions) => Promise<string>;
 
 /** How much of a failed run's output is repeated; enough to name the cause. */
-const OUTPUT_TAIL = 2000;
+const OUTPUT_TAIL = 5000;
 
 /**
  * What a failed wrangler run has to say, as the error envelope reports it.
@@ -49,9 +44,13 @@ export function wranglerFailure(
   redact: string[] = [],
 ): CliError {
   // Redacted before it is cut down, so a trimmed tail cannot end mid-secret.
-  const tail = redact
-    .filter((value) => value.length >= 8)
-    .reduce((text, value) => text.split(value).join("[redacted]"), output)
+  // Wrangler colours its output for a terminal and this is reported inside a
+  // JSON envelope, so the escapes come out: same text, without the noise.
+  const tail = stripVTControlCharacters(
+    redact
+      .filter((value) => value.length >= 8)
+      .reduce((text, value) => text.split(value).join("[redacted]"), output),
+  )
     .trim()
     .slice(-OUTPUT_TAIL);
   return new CliError(
@@ -67,31 +66,35 @@ export function wranglerFailure(
  * The environment a wrangler run is given.
  *
  * `WRANGLER_LOG` is set rather than inherited, so a caller's `debug` cannot
- * leak into a run this CLI has to read, and the long runs stay quiet. A parsed
- * run has to stay at `log`: that is the level wrangler prints its `--json`
- * answers at, and quietening one silences the answer while still exiting 0,
- * which is indistinguishable from not being logged in.
+ * leak into a run this CLI has to read. It is `log` — everything wrangler has
+ * to say short of debug — for two reasons. A run whose stdout is read needs it,
+ * because that is the level wrangler prints its `--json` answers at, and
+ * quietening one silences the answer while still exiting 0, which is
+ * indistinguishable from not being logged in. Every other run needs it because
+ * its output is what a failure is reported with: wrangler explains itself in
+ * warnings and notices as much as in the error it ends on, and a deployment
+ * that fails against somebody's own Cloudflare account can only be diagnosed
+ * from what wrangler said about it.
  */
 export function wranglerEnvironment({
   interactive = false,
-  parse = false,
-}: Pick<WranglerOptions, "interactive" | "parse"> = {}): NodeJS.ProcessEnv {
+}: Pick<WranglerOptions, "interactive"> = {}): NodeJS.ProcessEnv {
   return {
     ...process.env,
     WRANGLER_SEND_METRICS: "false",
-    WRANGLER_LOG: parse ? "log" : "error",
+    WRANGLER_LOG: "log",
     CI: interactive ? "" : "true",
   };
 }
 
 export async function runWrangler(
   args: string[],
-  { cwd, input, interactive = false, parse = false, redact }: WranglerOptions = {},
+  { cwd, input, interactive = false, redact }: WranglerOptions = {},
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [require.resolve("wrangler/bin/wrangler.js"), ...args], {
       ...(cwd === undefined ? {} : { cwd }),
-      env: wranglerEnvironment({ interactive, parse }),
+      env: wranglerEnvironment({ interactive }),
       stdio: [input ? "pipe" : interactive ? "inherit" : "ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -158,6 +161,29 @@ interface CloudflareEnvelope<T> {
   success: boolean;
   result: T;
   result_info?: { total_pages?: number };
+  errors?: { code?: number; message?: string }[];
+}
+
+/** How much of Cloudflare's own account of a refusal is repeated. */
+const API_ERROR_TAIL = 500;
+
+/**
+ * What the v4 envelope says went wrong, as one line.
+ *
+ * The status alone does not distinguish a ceiling from a permission or a name
+ * already taken, and these messages are where Cloudflare says which — so a
+ * refusal is reported with them rather than as its number.
+ */
+function apiErrors(data: CloudflareEnvelope<unknown>): string {
+  return (data.errors ?? [])
+    .map((error) =>
+      [error.message, error.code === undefined ? "" : `[code: ${error.code}]`]
+        .filter(Boolean)
+        .join(" "),
+    )
+    .filter(Boolean)
+    .join("; ")
+    .slice(0, API_ERROR_TAIL);
 }
 
 interface WorkerBinding {
@@ -229,7 +255,6 @@ export class Cloudflare {
       // if one sits beside it, and an unrelated project's config must not
       // decide whether Cloudflare is authorized.
       reported = await this.run(["auth", "token", "--json"], {
-        parse: true,
         cwd: tmpdir(),
         redact: credentials,
       });
@@ -322,13 +347,16 @@ export class Cloudflare {
     } catch {
       fail("cloudflare_error", "Cloudflare returned an invalid response.");
     }
-    if (!response.ok || !data.success)
+    if (!response.ok || !data.success) {
+      const reported = apiErrors(data);
       fail(
         "cloudflare_error",
-        `Cloudflare rejected the request (HTTP ${response.status}).`,
+        `Cloudflare rejected the request (HTTP ${response.status})${reported ? `: ${reported}` : ""}`,
         "Check Cloudflare permissions and the deployment resource IDs; retry the same command.",
         3,
+        reported ? { apiErrors: reported } : undefined,
       );
+    }
     return data;
   }
 

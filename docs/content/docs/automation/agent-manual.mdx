@@ -28,6 +28,12 @@ plain markdown at `/agents.md`; the API contract is at `/openapi.json`.
    Validate and update apps through the CLI, which preserves the whole config
    and uses revisions to reject concurrent changes.
 
+`agw app snippet <app-id> --json` returns the request that app can send — curl
+for a server app, Swift for an iOS one — with named placeholders such as
+`PROVIDER_SLUG` and `MODEL` where its configuration does not supply a value, and
+one note per placeholder in `result.notes`. Creating an app returns the same
+example in `result.snippet`.
+
 The CLI saves proofs before sending a request and credentials before reporting
 success. Retry with the same private state after a lost response. Do not delete
 state, repeat with a new proof, or print a credential to diagnose a failure.

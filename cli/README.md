@@ -27,17 +27,25 @@ Add a provider. Paste its API key into the hidden prompt.
 agw provider add --type openai
 ```
 
-Add an app. It uses every provider you have added.
+Add an app. It uses every provider you have added. A server app is created with
+an application key, written to a private file; an iOS app authenticates with
+App Attest instead and ships no key.
 
 ```sh
+agw app add --type server --name "My backend"
 agw app add --type ios --team-id ABCDE12345 --bundle-id com.example.app
 ```
 
-Print the Swift code that calls the gateway from that app.
+Creating an app prints the request it can send. To print it again — as curl for
+a server app, as Swift for an iOS one:
 
 ```sh
-agw app snippet <app-id> --provider openai
+agw app snippet <app-id>
+agw app snippet <app-id> --provider openai   # when several could serve it
 ```
+
+The example is written from the app's own providers and models, and uses named
+placeholders such as `PROVIDER_SLUG` for anything not configured yet.
 
 ## Self-host on Cloudflare
 
