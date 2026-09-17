@@ -9,7 +9,7 @@
     "agw": "dist/agw.mjs"
   },
   "files": [
-    "dist",
+    "dist/agw.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -20,7 +20,7 @@
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.ts",
-    "prepack": "node scripts/release.mjs",
+    "prepack": "node scripts/prepack.mjs",
     "release:build": "node scripts/release.mjs",
     "typecheck:tsc": "tsc --noEmit"
   },

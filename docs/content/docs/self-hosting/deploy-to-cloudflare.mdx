@@ -8,6 +8,24 @@ For the simplest terminal setup, install `@maxceem/agw` and run
 saves its recovery journal and connects the new gateway. See [CLI](/automation/cli).
 The button below is an alternative for a deployment maintained through a GitHub fork.
 
+The first deployment command downloads the gateway build belonging to that CLI
+version: one archive, published with the project's GitHub release. It is checked
+against a SHA-256 built into the CLI before anything is unpacked, and kept under
+`$XDG_CACHE_HOME/agw` (`~/.cache/agw`, or `%LOCALAPPDATA%\agw` on Windows), so
+later commands reuse it. An archive that does not match that hash is refused.
+
+On a machine with no route to GitHub, download `gateway-<version>.tar.gz` from
+the release matching `agw --version` elsewhere, copy it over, and name it:
+
+```sh
+agw deployment setup --name my-gateway --no-domain \
+  --release-archive ./gateway-0.1.5.tar.gz
+```
+
+The same hash is checked, so a file that travelled by hand is trusted no further
+than one that arrived over the network. `AGW_RELEASE_ARCHIVE` sets the same path
+for every deployment command.
+
 ## Prepare the deployment values
 
 Generate a vault key with `openssl rand -base64 32` and a public deployment ID

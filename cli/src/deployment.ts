@@ -674,7 +674,12 @@ export async function deploymentCommand(
   cf: CloudflareClient = new Cloudflare(),
   loadRelease: typeof release = release,
 ): Promise<DeploymentResult> {
-  const artifact = await loadRelease(flags.version);
+  // The release is downloaded once and cached; `--release-archive` names a copy
+  // obtained some other way, which is the whole story for an install with no
+  // route to github.com.
+  const artifact = await loadRelease(flags.version, undefined, {
+    archive: flags["release-archive"],
+  });
   await cf.authenticate(flags);
   if (command !== "deployment setup") {
     const journal = await matchExisting(ctx, cf, flags);

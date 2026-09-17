@@ -24,7 +24,39 @@ export async function cliManifest() {
     version: packaged.version,
     wrangler,
     upgradeFrom: upgradeFrom(packaged),
+    release: await releaseIntegrity(packaged.version),
   };
+}
+
+/**
+ * Where the built bundle expects its gateway release, and what it must hash to.
+ *
+ * The release is published as a GitHub asset rather than inside the npm
+ * package, so the download needs an expectation that GitHub cannot influence.
+ * `cli/scripts/release.mjs` writes it here and then builds the bundle, which
+ * inlines it through `define` — the digests therefore travel inside the signed
+ * npm package, and a bundle built without a release build carries none and
+ * falls back to the release tree a contributor built locally.
+ */
+async function releaseIntegrity(version) {
+  let recorded;
+  try {
+    recorded = JSON.parse(
+      await readFile(new URL("../dist/release-integrity.json", import.meta.url), "utf8"),
+    );
+  } catch {
+    return null;
+  }
+  // Anything but a complete record for this exact version is treated as no
+  // release at all: a file left behind by an earlier version's build, or by a
+  // build that wrote a different shape, describes an archive this CLI would
+  // refuse anyway. The release build writes a correct one immediately before
+  // the bundle, so the only thing ignored here is something already stale.
+  const { url, sha256, manifest } = recorded;
+  const sha = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  if (recorded.version !== version || typeof url !== "string" || !sha(sha256) || !sha(manifest))
+    return null;
+  return { url, sha256, manifest };
 }
 
 /**
