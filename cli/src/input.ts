@@ -3,6 +3,27 @@ import { stdin, stderr } from "node:process";
 import { fail } from "./common.ts";
 import type { Flags } from "./parser.ts";
 
+/**
+ * How many characters of a hidden value are acknowledged on screen.
+ *
+ * One asterisk per character, so a paste is visibly received rather than
+ * leaving somebody staring at a prompt that looks dead. The mask stops here
+ * because a pasted key is often hundreds of characters: past a line's worth,
+ * more asterisks only wrap the terminal and scroll the prompt away, and they
+ * say nothing the first sixty-four have not already said. The value itself is
+ * never echoed.
+ */
+const MASK_LIMIT = 64;
+
+/**
+ * What to write so that the mask on screen matches a value of this length:
+ * asterisks for what has arrived, `\b \b` for what a backspace removed.
+ */
+export function maskDelta(shown: number, length: number): string {
+  const target = Math.min(length, MASK_LIMIT);
+  return target > shown ? "*".repeat(target - shown) : "\b \b".repeat(shown - target);
+}
+
 export async function prompt(
   label: string,
   flags: Flags,
@@ -36,6 +57,12 @@ export async function prompt(
   stdin.resume();
   return new Promise<string>((resolve, reject) => {
     let value = "";
+    let shown = 0;
+    function mask(): void {
+      const delta = maskDelta(shown, value.length);
+      if (delta) stderr.write(delta);
+      shown = Math.min(value.length, MASK_LIMIT);
+    }
     function done(error?: Error): void {
       stdin.off("data", onData);
       stdin.setRawMode(wasRaw);
@@ -56,9 +83,13 @@ export async function prompt(
         }
         if (char === "" || char === "\b") {
           value = value.slice(0, -1);
+          mask();
           continue;
         }
-        if (char >= " ") value += char;
+        if (char >= " ") {
+          value += char;
+          mask();
+        }
         if (value.length > 16384) {
           done(new Error("input too long"));
           return;

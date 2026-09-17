@@ -74,9 +74,11 @@ must be requested explicitly.
 ## Output and recovery
 
 `--json` writes one JSON document to stdout with `schemaVersion`, `ok` and either
-`result` or `error`. Progress goes to stderr. Exit codes are 0 for success, 2 for
-input errors, 3 for remote failures, 4 for state or authentication recovery, and
-5 for a wait timeout. A timeout leaves the operation pending.
+`result` or `error`. Progress goes to stderr. Without `--json` the same result is
+printed as plain text to read, and a failure is printed to stderr instead of
+stdout. Exit codes are 0 for success, 2 for input errors, 3 for remote failures,
+4 for state or authentication recovery, and 5 for a wait timeout. A timeout
+leaves the operation pending.
 
 A request refused by a limit says which one: `error.message` names the limit, its
 ceiling and what the count is shared across, and `error.details` carries `scope`,
