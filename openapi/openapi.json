@@ -9651,7 +9651,7 @@
         },
         "responses": {
           "200": {
-            "description": "The pending action, its configuration, the account it lands on, and the signed-in human who would approve it, if any.",
+            "description": "The pending action, its configuration, the account it lands on, the signed-in human who would approve it, if any, and what stands between this browser and approving it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9726,6 +9726,17 @@
                         "email"
                       ]
                     },
+                    "blockedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "session_required",
+                        "account_exists",
+                        null
+                      ]
+                    },
                     "googleEnabled": {
                       "type": "boolean"
                     },
@@ -9738,6 +9749,7 @@
                     "payload",
                     "account",
                     "viewer",
+                    "blockedBy",
                     "googleEnabled",
                     "expiresAt"
                   ]

@@ -18,6 +18,8 @@ const AUTH_MESSAGES: Record<string, string> = {
   SESSION_EXPIRED: "Your session expired. Sign in again.",
   // Surfaced by the gateway rather than Better Auth, but shown on the same screens.
   registration_disabled: "Public registration is disabled for this deployment.",
+  session_required: "Sign in as a person before approving this request.",
+  account_exists: "This sign-in already has an account. Sign out, then create a new sign-in to claim this one.",
 };
 
 export const SIGN_UP_DISABLED_CODE = "registration_disabled";

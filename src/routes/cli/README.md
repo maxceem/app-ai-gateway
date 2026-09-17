@@ -85,6 +85,16 @@ of it would cost more than it protects. Ending that access is an ordinary key
 revocation in the console afterwards, not a decision taken under time pressure
 on the approval page.
 
+A claim may only be approved by a human who belongs to no account other than
+the one being claimed; anyone else is told to sign out and create a new one.
+The test is memberships rather than the session, for three reasons: Google
+consent can sign the browser in as a human who already exists, a human with no
+membership at all — someone who registered here for a claim that then expired —
+must still be able to sign in and claim, and the account being claimed is
+excluded from the count so a claim that already landed stays re-approvable. The
+details endpoint answers with the same verdict the submission endpoint would
+reach, so the approval page never offers a button that would be refused.
+
 That page asks for nothing but the approval itself. It names the account and the
 signed-in human side by side — the two identities a person has to tell apart
 before approving — and the button is the consent; a checkbox in front of it

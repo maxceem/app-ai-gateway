@@ -42,6 +42,14 @@ export const CliAccountSchema = z.object({
   claimed: z.boolean(),
   expiresAt: z.string().nullable(),
 });
+/**
+ * Why a claim cannot be approved from this browser.
+ *
+ * `session_required` means nobody interactive is signed in; `account_exists`
+ * means the signed-in human already belongs to another account, and a claim
+ * may only be taken by someone whose only account is the claimed one.
+ */
+export const CliApprovalRefusalSchema = z.enum(["session_required", "account_exists"]);
 /** Who this browser would approve as: the interactive human holding the session. */
 export const CliViewerSchema = z.object({
   name: z.string().nullable(),
@@ -61,6 +69,12 @@ export const CliBrowserDetailsResponseSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
   account: CliAccountSchema,
   viewer: CliViewerSchema.nullable(),
+  /**
+   * What stands between this browser and the Approve button, or null when
+   * nothing does — which is every non-claim kind, since only a claim asks who
+   * is holding the browser.
+   */
+  blockedBy: CliApprovalRefusalSchema.nullable(),
   googleEnabled: z.boolean(),
   expiresAt: z.string(),
 });
@@ -247,6 +261,7 @@ export type CliAccountResponse = z.infer<typeof CliAccountResponseSchema>;
 export type CliBootstrapRequest = z.infer<typeof CliBootstrapRequestSchema>;
 export type CliOperationRequest = z.infer<typeof CliOperationRequestSchema>;
 export type CliSubmissionRequest = z.infer<typeof CliSubmissionRequestSchema>;
+export type CliApprovalRefusal = z.infer<typeof CliApprovalRefusalSchema>;
 export type CliBrowserDetailsResponse = z.infer<typeof CliBrowserDetailsResponseSchema>;
 export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
 export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;

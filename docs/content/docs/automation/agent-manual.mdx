@@ -16,8 +16,10 @@ plain markdown at `/agents.md`; the API contract is at `/openapi.json`.
    `agw deployment connect --url URL --key-stdin`, never an argument.
 3. Run `agw account claim` when human ownership is needed. Give the person the
    URL. They must use a browser outside the agent's visible surface, compare the
-   account, sign in and approve. The page names the account and the signed-in
-   person. Do not open that URL yourself or impersonate that human.
+   account, create their sign-in on that page and approve; if that browser is
+   already signed in as someone with an account, they sign out first. The page
+   names the account and the signed-in person. Do not open that URL yourself or
+   impersonate that human.
 4. Read providers and apps before changing them. Use each command's `--help`
    to choose flags, and `--json` for one stable machine-readable result.
 5. Use provider browser handoffs for unknown secrets. Their URL is sufficient.

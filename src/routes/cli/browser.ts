@@ -4,6 +4,7 @@ import { GatewayError } from "../../core/errors";
 import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { CliSubmissionRequestSchema } from "../../contracts/cli";
 import type {
+  CliApprovalRefusal,
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
   CliOperationKind,
@@ -19,9 +20,20 @@ import {
 } from "../../auth/identity";
 import { deployment } from "./bootstrap";
 import { authState, challenge } from "./operations";
-import { completeIdentity } from "./identity-handoff";
+import { claimRefusal, completeIdentity } from "./identity-handoff";
 import { proofMatches } from "./security";
-import type { CliContext } from "./types";
+import type { AuthState } from "@maxceem/cf-auth";
+import type { CliContext, HandoffRow } from "./types";
+
+/**
+ * The page's copy of the verdict the submission endpoint will reach.
+ *
+ * Kept on the same kind dispatch `browserSubmit` uses, so the button a person
+ * is offered and the answer they would get from pressing it can never disagree.
+ */
+function refusalFor(row: HandoffRow, state: AuthState): CliApprovalRefusal | null {
+  return row.kind === "claim" ? claimRefusal(state, row.organization_id) : null;
+}
 
 export async function verifiedSubmission(c: CliContext) {
   const meta = deployment(c);
@@ -66,6 +78,7 @@ export async function browserDetails(c: CliContext): Promise<Response> {
       state.assurance === "interactive" && state.user?.kind === "human"
         ? { name: state.user.name, email: state.user.email }
         : null,
+    blockedBy: refusalFor(row, state),
     googleEnabled: googleAuthEnabled(c.env),
     expiresAt: new Date(row.expires_at).toISOString(),
   } satisfies CliBrowserDetailsResponse);

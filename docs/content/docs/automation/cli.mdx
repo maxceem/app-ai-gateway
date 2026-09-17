@@ -25,9 +25,11 @@ not required.
 
 Run `agw account claim` to establish human ownership. The CLI prints a browser
 URL. Open it in a browser outside the agent's visible session, compare the
-account shown with the terminal, and sign in or create your human account. The
-page shows the account being claimed and the person approving, and one button
-completes it. The CLI stays connected afterwards, so an interrupted command can
+account shown with the terminal, and create your sign-in on that page. This
+account must be claimed by a new person, so if the browser is already signed in
+as someone with an account, the page asks you to sign out first. The page shows
+the account being claimed and the person approving, and one button completes
+it. The CLI stays connected afterwards, so an interrupted command can
 simply continue; to end that access later, revoke its key from the console.
 
 Provider commands offer a browser handoff for write-only secrets. Share the URL

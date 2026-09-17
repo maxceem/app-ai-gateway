@@ -396,3 +396,21 @@ export async function seedHuman(email?: string): Promise<SeededHuman> {
     email: operator.user.email!,
   };
 }
+
+/**
+ * A human who belongs to no account at all.
+ *
+ * The state the claim registration endpoint leaves someone in, and the only one
+ * a claim may be approved from. Seeding goes through {@link seedHuman} and then
+ * drops the account it provisions, because cf-auth gives every new human one.
+ */
+export async function seedUnaffiliatedHuman(
+  email?: string,
+): Promise<Omit<SeededHuman, "organizationId">> {
+  const human = await seedHuman(email);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM mgmt_organization_user WHERE user_id=?").bind(human.userId),
+    env.DB.prepare("DELETE FROM mgmt_organization WHERE id=?").bind(human.organizationId),
+  ]);
+  return { userId: human.userId, cookie: human.cookie, email: human.email };
+}

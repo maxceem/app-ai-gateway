@@ -1012,7 +1012,7 @@ register({ method: "get", path: "/v1/cli/usage", tags: ["CLI"], operationId: "ge
  * these four are the API it calls with the proof it read from the URL fragment.
  */
 const browserActions = {
-  details: response("The pending action, its configuration, the account it lands on, and the signed-in human who would approve it, if any.", CliBrowserDetailsResponseSchema),
+  details: response("The pending action, its configuration, the account it lands on, the signed-in human who would approve it, if any, and what stands between this browser and approving it.", CliBrowserDetailsResponseSchema),
   submit: response("The handoff is approved and consumed. No submitted secret is ever echoed.", CliBrowserSubmitResponseSchema),
   register: response("A new human identity for a pending claim, with its session set as a cookie.", CliBrowserRegisterResponseSchema),
   google: response("Where to send the browser to start Google consent for a pending claim.", CliBrowserGoogleResponseSchema),

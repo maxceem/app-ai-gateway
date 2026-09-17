@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
 import { authErrorMessage } from "@/lib/auth-errors";
-import { useSignIn } from "@/lib/queries";
+import { useSignIn, useSignOut } from "@/lib/queries";
 
 /**
  * The human half of a CLI browser handoff.
@@ -21,6 +21,11 @@ import { useSignIn } from "@/lib/queries";
  * sent to from their terminal is the same screen they would sign in on. It is
  * deliberately outside the authenticated shell: an account claim is the one
  * handoff whose whole point is that nobody is signed in yet.
+ *
+ * What the page offers for a claim is not decided here. The gateway answers
+ * every details request with `blockedBy`, the same verdict its submission
+ * endpoint would reach, so the button this page shows and the answer pressing
+ * it would get can never disagree.
  *
  * The submission proof arrives in the URL fragment, which never leaves the
  * browser. This page strips it from the address bar on arrival, keeps it in
@@ -194,19 +199,19 @@ export function CliApprovePage() {
     );
   }
 
-  const identity = data.kind === "claim";
-
   return (
     <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
       <Summary details={data} />
 
-      {identity && !data.viewer ? (
+      {data.blockedBy === "session_required" ? (
         <ClaimSignIn
           id={id}
           token={token}
           googleEnabled={data.googleEnabled}
           onDone={() => void details.refetch()}
         />
+      ) : data.blockedBy === "account_exists" ? (
+        <SignOutFirst viewer={data.viewer} onDone={() => void details.refetch()} />
       ) : (
         <ApprovalForm
           details={data}
@@ -257,7 +262,9 @@ function ApproveShell({
  *
  * Both identities are named, because they are not the same one and a claim is
  * where confusing them costs most: the account is what the CLI is acting on,
- * the viewer is whichever human this browser happens to be signed in as.
+ * the viewer is whichever human this browser happens to be signed in as — and
+ * for a claim, the wrong one there is what sends this page to `SignOutFirst`
+ * instead of the approval button.
  */
 function Summary({ details }: { details: CliBrowserDetailsResponse }) {
   const configuration =
@@ -307,12 +314,15 @@ function Footnote({ id, expiresAt }: { id: string; expiresAt?: string }) {
 }
 
 /**
- * Sign in or create an account, for a claim only.
+ * Create a sign-in — or use one made for this same claim — for a claim only.
  *
- * Both doors are offered because either can claim: an account someone already
- * has, or the first one this deployment gets. Registration goes through the
- * handoff's own endpoint rather than public sign-up, since a deployment that
- * refuses public registration still has to let its first person in.
+ * Creation leads, because a claim is how a person gets their first account and
+ * the gateway refuses one taken by a person who already has another. Signing in
+ * stays on offer for the narrower case that produced a sign-in with no account
+ * at all: someone who registered here for a claim that then expired.
+ * Registration goes through the handoff's own endpoint rather than public
+ * sign-up, since a deployment that refuses public registration still has to let
+ * its first person in.
  */
 function ClaimSignIn({
   id,
@@ -325,7 +335,7 @@ function ClaimSignIn({
   googleEnabled: boolean;
   onDone: () => void;
 }) {
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(true);
   const signIn = useSignIn();
   const register = useMutation({
     mutationFn: (input: { name: string; email: string; password: string }) =>
@@ -366,7 +376,8 @@ function ClaimSignIn({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Sign in to confirm who is claiming this account.
+        Claim this account as a new person. Create your sign-in here, or sign in if you already
+        created one for this claim.
       </p>
 
       {googleEnabled ? (
@@ -426,7 +437,7 @@ function ClaimSignIn({
       </form>
 
       <p className="text-center text-sm text-muted-foreground">
-        {creating ? "Already have an account? " : "No account? "}
+        {creating ? "Already created a sign-in for this claim? " : "No sign-in yet? "}
         <button
           type="button"
           className="text-primary-ink underline underline-offset-4"
@@ -435,6 +446,44 @@ function ClaimSignIn({
           {creating ? "Sign in" : "Create one"}
         </button>
       </p>
+    </div>
+  );
+}
+
+/**
+ * The one way out for a browser already signed in as somebody with an account.
+ *
+ * A claim settles this account on a person who has no other, so there is
+ * nothing to decide here beyond leaving the current session: signing out
+ * returns the page to the sign-in creation form, without a navigation that
+ * would drop the proof this tab is holding.
+ */
+function SignOutFirst({
+  viewer,
+  onDone,
+}: {
+  viewer: CliBrowserDetailsResponse["viewer"];
+  onDone: () => void;
+}) {
+  const signOut = useSignOut();
+  // The gateway only reaches this verdict from a signed-in human, so there is
+  // always a name or an address to put in front of them.
+  const who = viewer?.name ?? viewer?.email;
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        {who} is signed in and already has an account. This one must be claimed by a new
+        person, so sign out first, then create a sign-in on this page.
+      </p>
+      <Button
+        type="button"
+        className="w-full"
+        disabled={signOut.isPending}
+        onClick={() => signOut.mutate(undefined, { onSettled: onDone })}
+      >
+        {signOut.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+        Sign out
+      </Button>
     </div>
   );
 }

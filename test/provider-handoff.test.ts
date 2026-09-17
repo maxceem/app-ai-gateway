@@ -57,13 +57,23 @@ async function operation(kind: string, payload: Record<string, unknown>) {
       },
       runtime,
     );
+  const details = () =>
+    worker.request(
+      `${origin}/v1/cli/browser/${encodeURIComponent(data.id)}/details`,
+      {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ submissionToken: new URL(data.url).hash.slice(1) }),
+      },
+      runtime,
+    );
   const poll = () =>
     worker.request(
       `${origin}/v1/cli/operations/${encodeURIComponent(data.id)}`,
       { headers: { authorization: `Bearer ${pollToken}` } },
       runtime,
     );
-  return { ...data, submit, poll, user, key };
+  return { ...data, submit, details, poll, user, key };
 }
 
 const providerBody = () => ({
@@ -76,6 +86,9 @@ describe("provider browser submissions", () => {
   it("creates once under replay/concurrency and never exposes the submitted secret in polling", async () => {
     const body = providerBody();
     const op = await operation("provider.add", body);
+    // A provider handoff asks nothing of whoever holds the browser, so the page
+    // is never told to wait for a session.
+    await expect((await op.details()).json()).resolves.toMatchObject({ blockedBy: null });
     const upstream = vi.spyOn(globalThis, "fetch");
     try {
       const responses = await Promise.all([

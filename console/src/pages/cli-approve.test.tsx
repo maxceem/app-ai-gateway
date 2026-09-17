@@ -12,6 +12,7 @@ const DETAILS_URL = `/v1/cli/browser/${ENCODED}/details`;
 const SUBMIT_URL = `/v1/cli/browser/${ENCODED}/submit`;
 const REGISTER_URL = `/v1/cli/browser/${ENCODED}/register`;
 const GOOGLE_URL = `/v1/cli/browser/${ENCODED}/google`;
+const SIGN_OUT_URL = "/v1/auth/sign-out";
 
 const account = {
   id: "org-abcdef-0123456789",
@@ -28,6 +29,7 @@ function details(overrides: Record<string, unknown> = {}) {
       payload: {},
       account,
       viewer: null,
+      blockedBy: "session_required",
       googleEnabled: false,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
       ...overrides,
@@ -110,15 +112,47 @@ describe("CliApprovePage proof handling", () => {
 });
 
 describe("CliApprovePage claim", () => {
-  it("offers both sign-in and account creation while signed out", async () => {
+  it("leads with account creation and keeps sign-in as the second door", async () => {
     stubApi({ [DETAILS_URL]: details() });
 
     renderApprove();
 
     await screen.findByText(/claim your account/i);
+    // Creating is the path a claim is normally taken by, so it is the one shown.
+    expect(screen.getByRole("button", { name: /create account/i })).toBeTruthy();
+    expect(screen.getByLabelText(/^name$/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^sign in$/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /create one/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /approve request/i })).toBeNull();
+  });
+
+  it("sends a human who already has an account to sign out, then back to creating one", async () => {
+    const routes: Record<string, { status?: number; body: unknown }> = {
+      [DETAILS_URL]: details({
+        blockedBy: "account_exists",
+        viewer: { name: "Ada Lovelace", email: "ada@example.test" },
+      }),
+      [SIGN_OUT_URL]: { body: { success: true } },
+    };
+    const fetchMock = stubApi(routes);
+
+    renderApprove();
+
+    const signOut = await screen.findByRole("button", { name: /^sign out$/i });
+    // The person being asked to leave is named, since it may not be who they expect.
+    expect(screen.getAllByText("Ada Lovelace").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /approve request/i })).toBeNull();
+
+    routes[DETAILS_URL] = details();
+    await userEvent.click(signOut);
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/auth/sign-out"))).toBe(
+        true,
+      ),
+    );
+    // The refetch is what moves the page on: no navigation, so the proof stays.
+    expect(await screen.findByRole("button", { name: /create account/i })).toBeTruthy();
+    expect(screen.queryByText(/missing its proof/i)).toBeNull();
   });
 
   it("registers through the handoff endpoint rather than public sign-up", async () => {
@@ -130,7 +164,6 @@ describe("CliApprovePage claim", () => {
     renderApprove();
 
     await screen.findByText(/claim your account/i);
-    await userEvent.click(screen.getByRole("button", { name: /create one/i }));
     await userEvent.type(screen.getByLabelText(/^name$/i), "Ada Lovelace");
     await userEvent.type(screen.getByLabelText(/^email$/i), "ada@example.test");
     await userEvent.type(screen.getByLabelText(/^password$/i), "correct-horse-42");
@@ -161,7 +194,7 @@ describe("CliApprovePage claim", () => {
 
     renderApprove();
 
-    await userEvent.click(await screen.findByRole("button", { name: /continue with google/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /sign up with google/i }));
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://accounts.example.test/consent"));
     expect(
@@ -173,6 +206,7 @@ describe("CliApprovePage claim", () => {
     const fetchMock = stubApi({
       [DETAILS_URL]: details({
         viewer: { name: "Ada Lovelace", email: "ada@example.test" },
+        blockedBy: null,
       }),
       [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
     });
@@ -207,6 +241,7 @@ describe("CliApprovePage provider handoffs", () => {
       [DETAILS_URL]: details({
         kind: "provider.add",
         payload: { type: "openai", name: "OpenAI" },
+        blockedBy: null,
       }),
       [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
     });
@@ -242,6 +277,7 @@ describe("CliApprovePage provider handoffs", () => {
       [DETAILS_URL]: details({
         kind: "provider.add",
         payload: { type: "openai", providerGatewayId: "pg-1" },
+        blockedBy: null,
       }),
     });
 

@@ -8,7 +8,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearIsolateCaches, seedHuman } from "./helpers";
+import { clearIsolateCaches, seedHuman, seedUnaffiliatedHuman } from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
   assertAccountAccess,
@@ -276,7 +276,7 @@ describe("CLI account lifecycle", () => {
   it("requires the submission proof, preserves account, retires bootstrap, and replays protected poll", async () => {
     const testEnv = runtime();
     const { input, data } = await start(testEnv);
-    const human = await seedHuman();
+    const human = await seedUnaffiliatedHuman();
     const pollToken = random();
     const operationResponse = await request(
       testEnv,
@@ -428,9 +428,11 @@ describe("CLI account lifecycle", () => {
       { origin: "https://example.test", cookie },
     );
     expect(details.status).toBe(200);
-    // The page shows who would approve, so the registered human is named back.
+    // The page shows who would approve, so the registered human is named back —
+    // and nothing stands in their way, since this claim is their only account.
     expect((await details.json()) as { viewer: unknown }).toMatchObject({
       viewer: { name: "New person", email: "new-claim@example.test" },
+      blockedBy: null,
     });
     expect(
       await env.DB.prepare(
@@ -453,10 +455,78 @@ describe("CLI account lifecycle", () => {
       ).first("n"),
     ).toBe(1);
   }, 15_000);
-  it("checks the approving session again inside the claim transaction", async () => {
+  it("refuses a claim from a human who already belongs to another account", async () => {
     const testEnv = runtime();
     const { data } = await start(testEnv);
     const human = await seedHuman();
+    const op = (await (
+      await request(
+        testEnv,
+        "/operations",
+        { kind: "claim", payload: {}, pollToken: random() },
+        { authorization: `Bearer ${data.credential.token}` },
+      )
+    ).json()) as { id: string; url: string };
+    const submissionToken = new URL(op.url).hash.slice(1);
+    const headers = { origin: "https://example.test", cookie: human.cookie };
+    const details = await request(
+      testEnv,
+      `/browser/${op.id}/details`,
+      { submissionToken },
+      headers,
+    );
+    expect(details.status).toBe(200);
+    // The page is told the verdict rather than left to offer a button that fails.
+    await expect(details.json()).resolves.toMatchObject({ blockedBy: "account_exists" });
+    const refused = await request(
+      testEnv,
+      `/browser/${op.id}/submit`,
+      { submissionToken, approve: true },
+      headers,
+    );
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { code: "account_exists" },
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
+         WHERE m.organization_id=? AND u.kind='human'`,
+      )
+        .bind(data.account.id)
+        .first("n"),
+    ).toBe(0);
+  });
+  it("still approves a claim that already landed, for the owner it landed on", async () => {
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const human = await seedUnaffiliatedHuman();
+    const op = (await (
+      await request(
+        testEnv,
+        "/operations",
+        { kind: "claim", payload: {}, pollToken: random() },
+        { authorization: `Bearer ${data.credential.token}` },
+      )
+    ).json()) as { id: string; url: string };
+    const submissionToken = new URL(op.url).hash.slice(1);
+    const headers = { origin: "https://example.test", cookie: human.cookie };
+    const approve = () =>
+      request(testEnv, `/browser/${op.id}/submit`, { submissionToken, approve: true }, headers);
+    expect((await approve()).status).toBe(200);
+    // The account the claim landed on is excluded from what counts as another
+    // one, so the retry a dropped connection provokes still works.
+    await expect(
+      (
+        await request(testEnv, `/browser/${op.id}/details`, { submissionToken }, headers)
+      ).json(),
+    ).resolves.toMatchObject({ blockedBy: null });
+    expect((await approve()).status).toBe(200);
+  });
+  it("checks the approving session again inside the claim transaction", async () => {
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const human = await seedUnaffiliatedHuman();
     const op = (await (
       await request(
         testEnv,
@@ -697,7 +767,7 @@ describe("CLI account lifecycle", () => {
   it("leaves the CLI's own access in place and mints no replacement credential", async () => {
     const testEnv = runtime();
     const { data } = await start(testEnv);
-    const human = await seedHuman();
+    const human = await seedUnaffiliatedHuman();
     const pollToken = random();
     const op = (await (
       await request(

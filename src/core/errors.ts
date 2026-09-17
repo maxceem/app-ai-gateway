@@ -2,6 +2,12 @@ export type ErrorCode =
   | "auth_required"
   | "forbidden"
   | "session_required"
+  /**
+   * A claim was refused because the signed-in human already belongs to another
+   * account. Claiming is how a person gets their first account, so it is taken
+   * from a browser that owns none but the one being claimed.
+   */
+  | "account_exists"
   | "registration_disabled"
   | "validation_error"
   | "rate_limited"
