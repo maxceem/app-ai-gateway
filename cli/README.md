@@ -1,6 +1,6 @@
 # App AI Gateway CLI
 
-`agw` sets up and manages [App AI Gateway](https://github.com/maxceem/app-ai-gateway)
+`agw` sets up and manages [App AI Gateway](https://appaigateway.com/)
 from a terminal or a coding agent: providers, apps, usage, and your own
 deployment. Requires Node.js 22.19+.
 
@@ -10,31 +10,34 @@ npm install -g @maxceem/agw
 
 ## Quick start
 
+Sign in with a management key. Create one in the console at
+[appaigateway.com](https://appaigateway.com/): user menu, then **Management keys**.
+
 ```sh
-# 1. Sign in. Create a management key in the console: user menu -> Management keys.
 agw account login
+```
 
-# 2. Add a provider. Paste the API key into the hidden prompt.
+No account yet? Skip login. A free anonymous account is created for you
+automatically as soon as you add your first provider or app below. You can
+claim it later with `agw account claim`.
+
+Add a provider. Paste its API key into the hidden prompt.
+
+```sh
 agw provider add --type openai
+```
 
-# 3. Add an app. It uses every provider you have added.
+Add an app. It uses every provider you have added.
+
+```sh
 agw app add --type ios --team-id ABCDE12345 --bundle-id com.example.app
+```
 
-# 4. Print the Swift code that calls the gateway from that app.
+Print the Swift code that calls the gateway from that app.
+
+```sh
 agw app snippet <app-id> --provider openai
 ```
-
-Self-hosted? Replace step 1 with a connect to your gateway. It asks for the
-same kind of key:
-
-```sh
-agw deployment connect --url https://ai.example.com
-```
-
-> **No account yet?** Skip step 1. The first `add` creates a free account on
-> the hosted gateway for you. Attach a sign-in to it later with
-> `agw account claim`. Help, status, lists, validation and dry runs never
-> create an account.
 
 ## Self-host on Cloudflare
 
