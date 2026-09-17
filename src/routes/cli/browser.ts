@@ -50,7 +50,7 @@ function outcomeFor(kind: CliOperationKind): CliBrowserSubmitResponse {
   return kind === "claim"
     ? {
         state: "completed",
-        message: "This account is yours. Open the console to set up your first app.",
+        message: "This account is yours.",
         continueTo: "console",
       }
     : {
