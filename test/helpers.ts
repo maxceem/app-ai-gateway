@@ -2,11 +2,8 @@ import { env } from "cloudflare:workers";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
 import { issueGatewayToken } from "../src/core/jwt";
 import { clearApiKeyCache, hashApiKey } from "../src/core/apikeys";
-import {
-  clearProviderCaches,
-  encryptionContext,
-  gatewayEncryptionContext,
-} from "../src/core/provider-store";
+import { clearProviderCaches } from "../src/core/provider-store";
+import { sealSecret } from "../src/vault/secrets";
 import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
 import { clearJwksCache } from "../src/core/issuer";
 import { clearAppConfigCache } from "../src/core/config";
@@ -25,7 +22,6 @@ import {
   type ProviderPricing,
 } from "../src/db/schema";
 import type { ProviderType, StoredAppConfig } from "../src/core/types";
-import { secretVault } from "../src/vault";
 import { createCfAuth } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../src/db/schema";
 
@@ -100,9 +96,11 @@ export async function seedProvider(input: {
       type: input.gateway,
       name: `Test gateway for ${slug}`,
       config,
-      secretBlob: await secretVault(env).encryptSecret(
+      secretBlob: await sealSecret(
+        env,
+        "providerGatewayToken",
+        [organizationId, providerGatewayId],
         secret,
-        gatewayEncryptionContext(organizationId, providerGatewayId),
       ),
       secretHint: secret.slice(-4),
       createdBy: TEST_SERVICE_USER_ID,
@@ -115,7 +113,7 @@ export async function seedProvider(input: {
     slug,
     name: input.name ?? `Test ${input.type}`,
     secretBlob: providerGatewayId === null
-      ? await secretVault(env).encryptSecret(secret, encryptionContext(organizationId, id))
+      ? await sealSecret(env, "providerKey", [organizationId, id], secret)
       : null,
     secretHint: providerGatewayId === null ? secret.slice(-4) : null,
     providerGatewayId,
@@ -397,4 +395,22 @@ export async function seedHuman(email?: string): Promise<SeededHuman> {
     cookie: operator.cookie,
     email: operator.user.email!,
   };
+}
+
+/**
+ * A human who belongs to no account at all.
+ *
+ * The state the claim registration endpoint leaves someone in, and the only one
+ * a claim may be approved from. Seeding goes through {@link seedHuman} and then
+ * drops the account it provisions, because cf-auth gives every new human one.
+ */
+export async function seedUnaffiliatedHuman(
+  email?: string,
+): Promise<Omit<SeededHuman, "organizationId">> {
+  const human = await seedHuman(email);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM mgmt_organization_user WHERE user_id=?").bind(human.userId),
+    env.DB.prepare("DELETE FROM mgmt_organization WHERE id=?").bind(human.organizationId),
+  ]);
+  return { userId: human.userId, cookie: human.cookie, email: human.email };
 }

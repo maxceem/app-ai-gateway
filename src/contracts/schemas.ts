@@ -200,6 +200,22 @@ export const AppWriteSchema = z.object({
   status: z.enum(["active", "disabled"]).optional(),
 }).strict().meta({ id: "AppWrite" });
 
+/**
+ * An update, which is a write plus the revision it is made against.
+ *
+ * The revision travels in the body and nowhere else. It is a field of the
+ * resource — every read already answers with it — and a body is the one channel
+ * neither a CDN nor a browser's CORS rules interfere with: an `ETag` is
+ * rewritten to its weak form by anything that compresses the response, and is
+ * unreadable to a cross-origin client unless the server exposes it. Requiring
+ * it here rather than accepting its absence means a client that has not read
+ * the application cannot overwrite it blind.
+ */
+export const AppUpdateSchema = AppWriteSchema.extend({
+  revision: z.number().int().positive(),
+}).meta({ id: "AppUpdate" });
+export type AppUpdate = z.infer<typeof AppUpdateSchema>;
+
 /** The answer to a body that still names an id, wherever one is rejected. */
 export const APP_ID_IS_SERVER_ASSIGNED =
   "id is assigned by the server: omit it and read app.id from the response";

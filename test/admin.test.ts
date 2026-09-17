@@ -70,11 +70,11 @@ describe("admin API", () => {
       {
         method: "PUT",
         headers: {
-          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
         body: JSON.stringify({
+          revision: 1,
           name: `Test ${appId}`,
           config: {
             ...appleConfig({ jwks_url: "https://issuer.test/.well-known/jwks.json" }),
@@ -486,11 +486,11 @@ describe("admin API", () => {
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/insecure-issuer", {
       method: "PUT",
       headers: {
-          "if-match": '"app-1"',
         authorization: "Bearer agw_mgmt_test-admin-secret",
         "content-type": "application/json",
       },
       body: JSON.stringify({
+        revision: 1,
         name: "Insecure issuer",
         config: appleConfig({ jwks_url: "http://issuer.test/jwks" }),
       }),
@@ -510,11 +510,10 @@ describe("admin API", () => {
     const response = await exports.default.fetch("https://example.test/v1/admin/apps/unscoped-issuer", {
       method: "PUT",
       headers: {
-          "if-match": '"app-1"',
         authorization: "Bearer agw_mgmt_test-admin-secret",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ name: "Unscoped issuer", config }),
+      body: JSON.stringify({ revision: 1, name: "Unscoped issuer", config }),
     });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
@@ -555,11 +554,10 @@ describe("admin API", () => {
       {
         method: "PUT",
         headers: {
-          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ name: "Invalid API key issuer", config }),
+        body: JSON.stringify({ revision: 1, name: "Invalid API key issuer", config }),
       },
     );
     expect(response.status).toBe(400);
@@ -580,11 +578,10 @@ describe("admin API", () => {
       {
         method: "PUT",
         headers: {
-          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ name: "Removed auth field", config: config() }),
+        body: JSON.stringify({ revision: 1, name: "Removed auth field", config: config() }),
       },
     );
     expect(response.status).toBe(400);
@@ -602,11 +599,10 @@ describe("admin API", () => {
       {
         method: "PUT",
         headers: {
-          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ name: "Attest environments", config }),
+        body: JSON.stringify({ revision: 1, name: "Attest environments", config }),
       },
     );
     expect(created.status).toBe(200);
@@ -636,11 +632,10 @@ describe("admin API", () => {
       {
         method: "PUT",
         headers: {
-          "if-match": '"app-1"',
           authorization: "Bearer agw_mgmt_test-admin-secret",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ name: "Attest environments invalid", config }),
+        body: JSON.stringify({ revision: 1, name: "Attest environments invalid", config }),
       },
     );
     expect(response.status).toBe(400);
@@ -735,11 +730,10 @@ describe("admin API", () => {
         {
           method: "PUT",
           headers: {
-          "if-match": '"app-1"',
             authorization: "Bearer agw_mgmt_test-admin-secret",
             "content-type": "application/json",
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, revision: 1 }),
         },
       );
       expect(response.status).toBe(400);

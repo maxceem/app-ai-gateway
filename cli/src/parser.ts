@@ -15,15 +15,22 @@ export interface CommandSpec {
 export const commands = {
   "deployment setup": {
     args: 0,
-    flags: "name cloudflare-account-id domain no-domain! version dry-run! yes!",
+    flags:
+      "name cloudflare-account-id domain no-domain! version release-archive dry-run! yes!",
   },
   "deployment connect": {
     args: 0,
     flags: `url cloud! ${managementKey}`,
   },
   "deployment status": { args: 0, flags: "" },
-  "deployment update": { args: 0, flags: "version dry-run! yes!" },
-  "deployment domain": { args: 0, flags: "hostname dry-run! yes!" },
+  "deployment update": {
+    args: 0,
+    flags: "version release-archive dry-run! yes!",
+  },
+  "deployment domain": {
+    args: 0,
+    flags: "hostname release-archive dry-run! yes!",
+  },
   "account status": { args: 0, flags: "" },
   "account claim": { args: 0, flags: browser },
   "account login": { args: 0, flags: managementKey },
@@ -108,6 +115,7 @@ export interface Flags {
   status?: string;
   url?: string;
   version?: string;
+  "release-archive"?: string;
   hostname?: string;
   domain?: string;
   "cloudflare-account-id"?: string;

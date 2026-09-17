@@ -29,7 +29,7 @@ import {
   appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { APP_ID_IS_SERVER_ASSIGNED, AppWriteSchema } from "../../contracts/schemas";
+import { APP_ID_IS_SERVER_ASSIGNED, AppUpdateSchema, AppWriteSchema } from "../../contracts/schemas";
 import type {
   AppDeleteResponse,
   AppListResponse,
@@ -79,6 +79,35 @@ interface AppWriteBody {
   config: Record<string, unknown>;
   status?: "active" | "disabled";
 }
+
+/**
+ * An update body, whose `revision` is the one the caller read.
+ *
+ * Required rather than optional: a client that cannot name the revision it is
+ * editing has not read the application, and letting it through would make a
+ * blind overwrite the easiest thing to write.
+ */
+/**
+ * An update body: a write, plus the revision it is made against.
+ *
+ * The revision is only shape-checked here. Whether one is *present* is settled
+ * by the route after it has looked the application up, so that an id nobody
+ * holds still answers `404` rather than being told what a well-formed body
+ * would have looked like.
+ */
+function appUpdateBody(value: unknown): AppWriteBody & { revision: number | undefined } {
+  const { revision, ...write } = (value ?? {}) as { revision?: unknown } & Record<string, unknown>;
+  if (revision !== undefined && AppUpdateSchema.shape.revision.safeParse(revision).error) {
+    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
+  }
+  // The rest is reported exactly as it is on create, by the one parser that
+  // knows how to name the field at fault — `revision` is lifted out first
+  // because the write body admits no key it does not define.
+  return { ...appBody(write), revision: revision as number | undefined };
+}
+
+const APP_REVISION_REQUIRED =
+  "Send the revision the application was read at as revision";
 
 function appBody(value: unknown): AppWriteBody {
   const parsed = AppWriteSchema.safeParse(value);
@@ -441,7 +470,6 @@ appRoutes.get("/apps/:app", async (c) => {
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
   }
-  c.header("ETag", `"app-${row.revision}"`);
   return c.json({ app: serializeRow(row), resolved, config_error: configError } satisfies AppResponse);
 });
 
@@ -504,7 +532,7 @@ async function backfillAppLedger(
 appRoutes.put("/apps/:app", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
-  const body = appBody(await c.req.json());
+  const body = appUpdateBody(await c.req.json());
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
   // Update only. Applications are created through `POST /v1/admin/apps`, which
@@ -515,10 +543,11 @@ appRoutes.put("/apps/:app", async (c) => {
     where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const condition = c.req.header("If-Match");
-  if (condition === undefined) throw new GatewayError(428, "app_revision_required", "Supply the ETag from the application read in If-Match");
-  if (condition !== `"app-${existing.revision}"`) {
-    throw new GatewayError(412, "app_revision_conflict", "The application changed; reload it before saving your changes");
+  if (body.revision === undefined) {
+    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
+  }
+  if (body.revision !== existing.revision) {
+    throw new GatewayError(409, "app_revision_conflict", "The application changed; reload it before saving your changes");
   }
   // The slugs the stored row already names stay writable even if their provider
   // rows were deleted in the meantime.
@@ -540,11 +569,10 @@ appRoutes.put("/apps/:app", async (c) => {
   // or handed over between the read above and this write is not resurrected
   // under the caller's name.
   const written = await updateApp(c.env.DB, values);
-  if (!written) throw new GatewayError(412, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
+  if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
   const resolved = await loadAppConfig(c.env, appId);
   await backfillAppLedger(c.env, appId, existing.config, resolved);
-  c.header("ETag", `"app-${written.revision}"`);
   return c.json(
     { app: serializeRow(written), resolved: asJsonObject(resolved), config_error: null } satisfies AppResponse,
     200,

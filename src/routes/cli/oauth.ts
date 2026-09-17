@@ -2,6 +2,7 @@ import { createClaimRegistrationAuth, relaySocialSignIn } from "../../auth/ident
 import { GatewayError } from "../../core/errors";
 import { derive, digest, proofMatches } from "./security";
 import { deployment } from "./bootstrap";
+import { browserPath } from "./operations";
 import { verifiedSubmission } from "./browser";
 import type { CliContext } from "./types";
 export const CLAIM_OAUTH_COOKIE = "cli_claim_oauth";
@@ -37,7 +38,7 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
   }
 }
 export async function browserGoogle(c: CliContext): Promise<Response> {
-  const { row } = await verifiedSubmission(c, true);
+  const { row } = await verifiedSubmission(c);
   if (row.kind !== "claim" || row.consumed_at)
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
   const meta = deployment(c);
@@ -46,7 +47,7 @@ export async function browserGoogle(c: CliContext): Promise<Response> {
   const rawResult = await createClaimRegistrationAuth(c.env, c.req.url).auth.api.signInSocial({
     body: {
       provider: "google",
-      callbackURL: `${meta.consoleOrigin}/v1/cli/browser/${encodeURIComponent(row.id)}`,
+      callbackURL: `${meta.consoleOrigin}${browserPath(row.id)}`,
     },
     headers: c.req.raw.headers,
     asResponse: true,

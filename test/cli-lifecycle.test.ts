@@ -8,7 +8,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearIsolateCaches, seedHuman } from "./helpers";
+import { clearIsolateCaches, seedHuman, seedUnaffiliatedHuman } from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
   assertAccountAccess,
@@ -273,10 +273,10 @@ describe("CLI account lifecycle", () => {
       ).status,
     ).toBe(403);
   });
-  it("requires the separate claim code, preserves account, retires bootstrap, and replays protected poll", async () => {
+  it("requires the submission proof, preserves account, retires bootstrap, and replays protected poll", async () => {
     const testEnv = runtime();
     const { input, data } = await start(testEnv);
-    const human = await seedHuman();
+    const human = await seedUnaffiliatedHuman();
     const pollToken = random();
     const operationResponse = await request(
       testEnv,
@@ -285,11 +285,14 @@ describe("CLI account lifecycle", () => {
       { authorization: `Bearer ${data.credential.token}` },
     );
     expect(operationResponse.status).toBe(200);
-    const op = (await operationResponse.json()) as {
-      id: string;
-      url: string;
-      humanCode: string;
-    };
+    const op = (await operationResponse.json()) as { id: string; url: string };
+    // The human half is a console route, and the proof reaches it only as a
+    // fragment: a query string would be in the request line and in every log.
+    const handoffUrl = new URL(op.url);
+    expect(handoffUrl.origin).toBe("https://example.test");
+    expect(handoffUrl.pathname).toBe(`/cli/approve/${encodeURIComponent(op.id)}`);
+    expect(handoffUrl.search).toBe("");
+    expect(handoffUrl.hash.length).toBeGreaterThan(1);
     const submissionToken = new URL(op.url).hash.slice(1);
     const headers = { origin: "https://example.test", cookie: human.cookie };
     expect(
@@ -297,7 +300,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          { submissionToken, approve: true },
+          { submissionToken: random(), approve: true },
           headers,
         )
       ).status,
@@ -307,12 +310,17 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          {
-            submissionToken,
-            humanCode: op.humanCode,
-            approve: true,
-            allowServiceAccess: true,
-          },
+          { approve: true },
+          headers,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(
+          testEnv,
+          `/browser/${op.id}/submit`,
+          { submissionToken, approve: true },
           headers,
         )
       ).status,
@@ -324,11 +332,11 @@ describe("CLI account lifecycle", () => {
     const result = (await first.json()) as {
       state: string;
       account: { id: string };
-      result: { accessGranted: boolean };
+      result: { accountId: string };
     };
     expect(result.state).toBe("completed");
     expect(result.account.id).toBe(data.account.id);
-    expect(result.result.accessGranted).toBe(true);
+    expect(result.result.accountId).toBe(data.account.id);
     expect(
       await (
         await request(testEnv, `/operations/${op.id}`, undefined, {
@@ -378,13 +386,12 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     const response = await request(
       testEnv,
       `/browser/${op.id}/register`,
       {
         submissionToken: new URL(op.url).hash.slice(1),
-        humanCode: op.humanCode,
         email: "new-claim@example.test",
         password: "claim-password-for-test",
         name: "New person",
@@ -414,16 +421,19 @@ describe("CLI account lifecycle", () => {
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_organization").first("n"),
     ).toBe(1);
-    expect(
-      (
-        await request(
-          testEnv,
-          `/browser/${op.id}/details`,
-          { submissionToken: new URL(op.url).hash.slice(1) },
-          { origin: "https://example.test", cookie },
-        )
-      ).status,
-    ).toBe(200);
+    const details = await request(
+      testEnv,
+      `/browser/${op.id}/details`,
+      { submissionToken: new URL(op.url).hash.slice(1) },
+      { origin: "https://example.test", cookie },
+    );
+    expect(details.status).toBe(200);
+    // The page shows who would approve, so the registered human is named back —
+    // and nothing stands in their way, since this claim is their only account.
+    expect((await details.json()) as { viewer: unknown }).toMatchObject({
+      viewer: { name: "New person", email: "new-claim@example.test" },
+      blockedBy: null,
+    });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM mgmt_organization",
@@ -434,12 +444,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          {
-            submissionToken: new URL(op.url).hash.slice(1),
-            humanCode: op.humanCode,
-            approve: true,
-            allowServiceAccess: false,
-          },
+          { submissionToken: new URL(op.url).hash.slice(1), approve: true },
           { origin: "https://example.test", cookie },
         )
       ).status,
@@ -450,7 +455,7 @@ describe("CLI account lifecycle", () => {
       ).first("n"),
     ).toBe(1);
   }, 15_000);
-  it("checks the approving session again inside the claim transaction", async () => {
+  it("refuses a claim from a human who already belongs to another account", async () => {
     const testEnv = runtime();
     const { data } = await start(testEnv);
     const human = await seedHuman();
@@ -461,7 +466,75 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
+    const submissionToken = new URL(op.url).hash.slice(1);
+    const headers = { origin: "https://example.test", cookie: human.cookie };
+    const details = await request(
+      testEnv,
+      `/browser/${op.id}/details`,
+      { submissionToken },
+      headers,
+    );
+    expect(details.status).toBe(200);
+    // The page is told the verdict rather than left to offer a button that fails.
+    await expect(details.json()).resolves.toMatchObject({ blockedBy: "sign_out_required" });
+    const refused = await request(
+      testEnv,
+      `/browser/${op.id}/submit`,
+      { submissionToken, approve: true },
+      headers,
+    );
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { code: "account_exists" },
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
+         WHERE m.organization_id=? AND u.kind='human'`,
+      )
+        .bind(data.account.id)
+        .first("n"),
+    ).toBe(0);
+  });
+  it("still approves a claim that already landed, for the owner it landed on", async () => {
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const human = await seedUnaffiliatedHuman();
+    const op = (await (
+      await request(
+        testEnv,
+        "/operations",
+        { kind: "claim", payload: {}, pollToken: random() },
+        { authorization: `Bearer ${data.credential.token}` },
+      )
+    ).json()) as { id: string; url: string };
+    const submissionToken = new URL(op.url).hash.slice(1);
+    const headers = { origin: "https://example.test", cookie: human.cookie };
+    const approve = () =>
+      request(testEnv, `/browser/${op.id}/submit`, { submissionToken, approve: true }, headers);
+    expect((await approve()).status).toBe(200);
+    // The account the claim landed on is excluded from what counts as another
+    // one, so the retry a dropped connection provokes still works.
+    await expect(
+      (
+        await request(testEnv, `/browser/${op.id}/details`, { submissionToken }, headers)
+      ).json(),
+    ).resolves.toMatchObject({ blockedBy: null });
+    expect((await approve()).status).toBe(200);
+  });
+  it("checks the approving session again inside the claim transaction", async () => {
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const human = await seedUnaffiliatedHuman();
+    const op = (await (
+      await request(
+        testEnv,
+        "/operations",
+        { kind: "claim", payload: {}, pollToken: random() },
+        { authorization: `Bearer ${data.credential.token}` },
+      )
+    ).json()) as { id: string; url: string };
     const batch = env.DB.batch.bind(env.DB);
     vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
       await env.DB.prepare("DELETE FROM mgmt_user_session WHERE user_id=?")
@@ -474,9 +547,7 @@ describe("CLI account lifecycle", () => {
       `/browser/${op.id}/submit`,
       {
         submissionToken: new URL(op.url).hash.slice(1),
-        humanCode: op.humanCode,
         approve: true,
-        allowServiceAccess: true,
       },
       { origin: "https://example.test", cookie: human.cookie },
     );
@@ -559,13 +630,12 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     const response = await request(
       testEnv,
       `/browser/${op.id}/google`,
       {
         submissionToken: new URL(op.url).hash.slice(1),
-        humanCode: op.humanCode,
       },
       { origin: "https://example.test" },
     );
@@ -660,7 +730,7 @@ describe("CLI account lifecycle", () => {
     );
     expect(complete.status).toBe(302);
     expect(complete.headers.get("location")).toBe(
-      `https://example.test/v1/cli/browser/${encodeURIComponent(op.id)}`,
+      `https://example.test/cli/approve/${encodeURIComponent(op.id)}`,
     );
     expect(
       complete.headers
@@ -694,10 +764,10 @@ describe("CLI account lifecycle", () => {
       .run();
     expect(await claimOAuthAuthorized(testEnv, callback)).toBe(false);
   });
-  it("claims without ongoing service access and returns no replacement credential", async () => {
+  it("leaves the CLI's own access in place and mints no replacement credential", async () => {
     const testEnv = runtime();
     const { data } = await start(testEnv);
-    const human = await seedHuman();
+    const human = await seedUnaffiliatedHuman();
     const pollToken = random();
     const op = (await (
       await request(
@@ -706,18 +776,13 @@ describe("CLI account lifecycle", () => {
         { kind: "claim", payload: {}, pollToken },
         { authorization: `Bearer ${data.credential.token}` },
       )
-    ).json()) as { id: string; url: string; humanCode: string };
+    ).json()) as { id: string; url: string };
     expect(
       (
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          {
-            submissionToken: new URL(op.url).hash.slice(1),
-            humanCode: op.humanCode,
-            approve: true,
-            allowServiceAccess: false,
-          },
+          { submissionToken: new URL(op.url).hash.slice(1), approve: true },
           { origin: "https://example.test", cookie: human.cookie },
         )
       ).status,
@@ -726,16 +791,24 @@ describe("CLI account lifecycle", () => {
       await request(testEnv, `/operations/${op.id}`, undefined, {
         authorization: `Bearer ${pollToken}`,
       })
-    ).json()) as { credential?: unknown; result: { accessGranted: boolean } };
+    ).json()) as { credential?: unknown };
+    // No second credential is handed out, and the one the CLI already holds is
+    // exactly the one that still works afterwards.
     expect(result.credential).toBeUndefined();
-    expect(result.result.accessGranted).toBe(false);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM mgmt_api_key WHERE enabled=1 AND organization_id=?",
       )
         .bind(data.account.id)
         .first("n"),
-    ).toBe(0);
+    ).toBe(1);
+    expect(
+      (
+        await request(testEnv, "/account", undefined, {
+          authorization: `Bearer ${data.credential.token}`,
+        })
+      ).status,
+    ).toBe(200);
   });
   it("enforces exact account deadlines and never deletes a claimed account", async () => {
     const testEnv = runtime();
@@ -873,15 +946,13 @@ it("rejects every browser submission on the API host before registration or OAut
       { kind: "claim", payload: {}, pollToken: random() },
       { authorization: `Bearer ${data.credential.token}` },
     )
-  ).json()) as { id: string; url: string; humanCode: string };
+  ).json()) as { id: string; url: string };
   const input = {
     submissionToken: new URL(op.url).hash.slice(1),
-    humanCode: op.humanCode,
     email: "blocked-api@example.test",
     password: "test-password-with-length",
     name: "Blocked",
     approve: true,
-    allowServiceAccess: true,
   };
   for (const action of ["details", "submit", "register", "google"]) {
     const response = await worker.request(

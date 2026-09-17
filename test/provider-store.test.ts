@@ -4,14 +4,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import {
   clearProviderCaches,
   decryptProviderGatewaySecret,
-  encryptionContext,
-  gatewayEncryptionContext,
   resolveProvider,
   secretCacheKeys,
 } from "../src/core/provider-store";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { secretVault } from "../src/vault";
+import { secretContext } from "../src/vault/secrets";
 import { TEST_SERVICE_USER_ID } from "./helpers";
 
 const ORGANIZATION_ID = "provider-store-organization";
@@ -67,7 +66,7 @@ function stubKms(): void {
 async function seedKmsProvider(): Promise<void> {
   const blob = await secretVault(kmsEnv()).encryptSecret(
     SECRET,
-    encryptionContext(ORGANIZATION_ID, PROVIDER_ID),
+    secretContext("providerKey", [ORGANIZATION_ID, PROVIDER_ID]),
   );
   await database(env.DB).delete(provider).where(eq(provider.id, PROVIDER_ID));
   await database(env.DB).insert(provider).values({
@@ -197,7 +196,7 @@ it("bounds the secret cache and evicts the oldest entry first", async () => {
 
   for (let index = 0; index < 5_001; index += 1) {
     const gatewayId = `provider-store-gateway-${index}`;
-    const context = gatewayEncryptionContext(ORGANIZATION_ID, gatewayId);
+    const context = secretContext("providerGatewayToken", [ORGANIZATION_ID, gatewayId]);
     const blob = await vault.encryptSecret(SECRET, context);
     keys.push(`${gatewayId}\0${blob}`);
     await expect(decryptProviderGatewaySecret(env, ORGANIZATION_ID, gatewayId, blob))

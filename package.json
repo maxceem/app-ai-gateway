@@ -1,6 +1,6 @@
 {
   "name": "app-ai-gateway",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "private": true,
   "packageManager": "pnpm@12.3.4",
   "type": "module",
@@ -42,6 +42,7 @@
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:check": "pnpm --filter @maxceem/agw check",
     "cli:test": "pnpm --filter @maxceem/agw test",
+    "cli:release:github": "node cli/scripts/publish-release.mjs",
     "account:bootstrap": "node scripts/bootstrap-account.mjs"
   },
   "dependencies": {

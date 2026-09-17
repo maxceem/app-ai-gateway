@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 /**
- * The two fields the CLI bundle is built with, read from `cli/package.json`.
+ * The fields the CLI bundle is built with, read from `cli/package.json`.
  *
  * One source, shared by the build, the release build and the CLI itself: the
  * version `agw --version` prints and the Wrangler a packaged release must be
@@ -20,7 +20,73 @@ export async function cliManifest() {
       `cli/package.json must pin wrangler to an exact version; found "${wrangler}"`,
     );
   }
-  return { version: packaged.version, wrangler };
+  return {
+    version: packaged.version,
+    wrangler,
+    upgradeFrom: upgradeFrom(packaged),
+    release: await releaseIntegrity(packaged.version),
+  };
+}
+
+/**
+ * Where the built bundle expects its gateway release, and what it must hash to.
+ *
+ * The release is published as a GitHub asset rather than inside the npm
+ * package, so the download needs an expectation that GitHub cannot influence.
+ * `cli/scripts/release.mjs` writes it here and then builds the bundle, which
+ * inlines it through `define` — the digests therefore travel inside the signed
+ * npm package, and a bundle built without a release build carries none and
+ * falls back to the release tree a contributor built locally.
+ */
+async function releaseIntegrity(version) {
+  let recorded;
+  try {
+    recorded = JSON.parse(
+      await readFile(new URL("../dist/release-integrity.json", import.meta.url), "utf8"),
+    );
+  } catch {
+    return null;
+  }
+  // Anything but a complete record for this exact version is treated as no
+  // release at all: a file left behind by an earlier version's build, or by a
+  // build that wrote a different shape, describes an archive this CLI would
+  // refuse anyway. The release build writes a correct one immediately before
+  // the bundle, so the only thing ignored here is something already stale.
+  const { url, sha256, manifest } = recorded;
+  const sha = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  if (recorded.version !== version || typeof url !== "string" || !sha(sha256) || !sha(manifest))
+    return null;
+  return { url, sha256, manifest };
+}
+
+/**
+ * The earlier releases this one may update a deployment from.
+ *
+ * A release refuses to run migrations over a database it was not told it can
+ * upgrade (`unsupported_upgrade` in `cli/src/deployment.ts`), and it always
+ * accepts its own version. Anything earlier is a claim about schema
+ * compatibility that only a person can make, so it is declared in
+ * `cli/package.json` — a release that omits a predecessor simply cannot update
+ * it, which is the safe direction to fail in.
+ */
+function upgradeFrom(packaged) {
+  const declared = packaged.upgradeFrom ?? [];
+  if (!Array.isArray(declared)) {
+    throw new Error("cli/package.json upgradeFrom must be an array of released versions");
+  }
+  for (const version of declared) {
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+      throw new Error(
+        `cli/package.json upgradeFrom must list exact released versions; found ${JSON.stringify(version)}`,
+      );
+    }
+    if (version === packaged.version) {
+      throw new Error(
+        "cli/package.json upgradeFrom must not repeat this release's own version, which is always accepted",
+      );
+    }
+  }
+  return [packaged.version, ...declared];
 }
 
 /**

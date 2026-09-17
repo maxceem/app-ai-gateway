@@ -13,7 +13,7 @@ import {
 
 const ORIGIN = "https://example.test";
 const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
-const JSON_AUTH = { ...AUTH, "content-type": "application/json", "if-match": '"app-1"' };
+const JSON_AUTH = { ...AUTH, "content-type": "application/json" };
 
 async function get(path: string) {
   const response = await exports.default.fetch(`${ORIGIN}${path}`, { headers: AUTH });
@@ -252,10 +252,10 @@ describe("admin console API", () => {
       },
     });
     const put = async (name: string, body: Record<string, unknown>) => {
-      const current = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, { headers: AUTH });
+      const current = await get(`/v1/admin/apps/${appId}`);
       return exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
-        method: "PUT", headers: { ...JSON_AUTH, "if-match": current.headers.get("etag")! },
-        body: JSON.stringify({ name, config: body }),
+        method: "PUT", headers: JSON_AUTH,
+        body: JSON.stringify({ name, config: body, revision: current.body.app.revision }),
       });
     };
 
@@ -348,7 +348,7 @@ describe("admin console API", () => {
     const updated = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/put-updates-me`, {
       method: "PUT",
       headers: JSON_AUTH,
-      body: JSON.stringify({ name: "Renamed", config: serverConfig() }),
+      body: JSON.stringify({ name: "Renamed", config: serverConfig(), revision: 1 }),
     });
     expect(updated.status, await updated.clone().text()).toBe(200);
     // An update answers with the same object a read does, already renamed.
@@ -623,22 +623,28 @@ describe("admin console API", () => {
 
 
 describe("application conditional writes", () => {
-  it("requires the original ETag and rejects stale edits without overwriting", async () => {
+  it("requires the revision it was read at and rejects a stale edit without overwriting", async () => {
     const appId = "conditional-edit";
     await seedServerApp(appId);
-    const read = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, { headers: AUTH });
-    const etag = read.headers.get("etag");
-    expect(etag).toBe('"app-1"');
-    const update = (condition?: string) => exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
+    const read = await get(`/v1/admin/apps/${appId}`);
+    expect(read.body.app.revision).toBe(1);
+    // The revision travels in the resource and nowhere else. No ETag is
+    // published: a CDN rewrites that header when it compresses, and a browser
+    // cannot read it cross-origin unless the server exposes it.
+    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, { headers: AUTH });
+    expect(response.headers.get("etag")).toBeNull();
+    const update = (revision?: number) => exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
       method: "PUT",
-      headers: { ...AUTH, "content-type": "application/json", ...(condition ? { "if-match": condition } : {}) },
-      body: JSON.stringify({ name: "Edited", config: serverConfig() }),
+      headers: { ...AUTH, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Edited", config: serverConfig(), ...(revision === undefined ? {} : { revision }) }),
     });
-    expect((await update()).status).toBe(428);
-    const written = await update(etag!);
-    expect(written.status).toBe(200);
-    expect(written.headers.get("etag")).toBe('"app-2"');
-    expect((await update(etag!)).status).toBe(412);
+    const blind = await update();
+    expect(blind.status).toBe(400);
+    await expect(blind.json()).resolves.toMatchObject({ error: { code: "app_revision_required" } });
+    expect((await update(1)).status).toBe(200);
+    const stale = await update(1);
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: { code: "app_revision_conflict" } });
     const latest = await get(`/v1/admin/apps/${appId}`);
     expect(latest.body.app.revision).toBe(2);
     expect(latest.body.app.name).toBe("Edited");

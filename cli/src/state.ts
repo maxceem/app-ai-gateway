@@ -123,6 +123,23 @@ export function stateDirectory(): string {
   );
 }
 
+/**
+ * Where downloaded, verified copies of things live.
+ *
+ * Separate from the state directory because the contents are reproducible: the
+ * gateway release cached under `releases/<version>` can be deleted at any time
+ * and the next deployment command fetches and verifies it again, while nothing
+ * in the state directory can be recovered that way.
+ */
+export function cacheDirectory(): string {
+  if (platform() === "win32")
+    return join(
+      process.env["LOCALAPPDATA"] || join(homedir(), "AppData", "Local"),
+      "agw",
+    );
+  return join(process.env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "agw");
+}
+
 export async function protectedDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const s = await lstat(path);

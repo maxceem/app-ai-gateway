@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import type { AdminVariables } from "../middleware/admin";
-import { secretVault } from "../vault";
+import { openSecret, sealSecret } from "../vault/secrets";
 import { hashApiKey } from "./apikeys";
 import { GatewayError } from "./errors";
 import type { ProviderWriteBoundary } from "./provider-writes";
@@ -139,11 +139,12 @@ export class ResourceReceipt implements ProviderWriteBoundary {
       );
     }
     this.result = JSON.parse(
-      await secretVault(this.env).decryptSecret(row.protected_credential, {
-        purpose: "resource-create-receipt",
-        receiptId: this.id,
-        proofHash: this.proofHash,
-      }),
+      await openSecret(
+        this.env,
+        "resourceReceipt",
+        [this.id, this.proofHash],
+        row.protected_credential,
+      ),
     ) as Record<string, unknown>;
     return this.result;
   }
@@ -153,13 +154,11 @@ export class ResourceReceipt implements ProviderWriteBoundary {
     outcome: Record<string, unknown>,
   ): Promise<void> {
     const now = Date.now();
-    const protectedOutcome = await secretVault(this.env).encryptSecret(
+    const protectedOutcome = await sealSecret(
+      this.env,
+      "resourceReceipt",
+      [this.id, this.proofHash],
       JSON.stringify(outcome),
-      {
-        purpose: "resource-create-receipt",
-        receiptId: this.id,
-        proofHash: this.proofHash,
-      },
     );
     const complete = this.env.DB.prepare(
       `INSERT INTO mgmt_resource_receipt(

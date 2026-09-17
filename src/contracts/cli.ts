@@ -21,9 +21,7 @@ export const CliOperationRequestSchema = z
 export const CliSubmissionRequestSchema = z
   .object({
     submissionToken: CliProofSchema,
-    humanCode: z.string().max(40).optional(),
     approve: z.literal(true).optional(),
-    allowServiceAccess: z.boolean().optional(),
     email: z.email().optional(),
     password: z.string().min(8).max(256).optional(),
     name: z.string().min(1).max(100).optional(),
@@ -44,6 +42,75 @@ export const CliAccountSchema = z.object({
   claimed: z.boolean(),
   expiresAt: z.string().nullable(),
 });
+/**
+ * What has to happen before this handoff can be approved.
+ *
+ * Only a claim ever reports one. Every other handoff is authorised by the
+ * proof in the URL and the CLI credential that opened it, so it asks nothing
+ * at all of whoever is holding the browser. A claim is the exception because
+ * it settles an unowned account on its first person, and these are the two
+ * things such a person may have to do first.
+ *
+ * Neither of them is signing in, and that is the point rather than an
+ * omission: arriving with a sign-in that already has an account is precisely
+ * what a claim refuses, so this field never asks for one. A page that offered
+ * one anyway would be offering the way in that `sign_out_required` exists to
+ * close.
+ */
+export const CliApprovalRefusalSchema = z.enum([
+  "registration_required",
+  "sign_out_required",
+]);
+/** Who this browser would approve as: the interactive human holding the session. */
+export const CliViewerSchema = z.object({
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+});
+/**
+ * What the console's approval page reads before it shows anything.
+ *
+ * The page is the human half of a browser handoff, so it is told only what a
+ * person needs in order to recognize the request they started in a terminal:
+ * the action, the resource configuration the CLI sent, the account it lands on,
+ * and the human this browser would approve as, which is null when nobody is
+ * signed in. No secret, submitted or stored, is ever part of it.
+ */
+export const CliBrowserDetailsResponseSchema = z.object({
+  kind: CliOperationRequestSchema.shape.kind,
+  payload: z.record(z.string(), z.unknown()),
+  account: CliAccountSchema,
+  viewer: CliViewerSchema.nullable(),
+  /**
+   * What stands between this browser and the Approve button, or null when
+   * nothing does — which is every non-claim kind, since only a claim asks who
+   * is holding the browser. One field decides the whole screen: each value
+   * names the single thing the page may offer, so the page never has to
+   * consult the handoff kind to know what to put in front of a person.
+   */
+  blockedBy: CliApprovalRefusalSchema.nullable(),
+  googleEnabled: z.boolean(),
+  expiresAt: z.string(),
+});
+/** The terminal state a completed approval leaves the page in. */
+export const CliBrowserSubmitResponseSchema = z.object({
+  state: z.literal("completed"),
+  message: z.string(),
+});
+/**
+ * Better Auth's own sign-up answer, relayed verbatim by the claim-registration
+ * endpoint. Only the fields the page could act on are named; the session it
+ * really returns is a cookie, not a body.
+ */
+export const CliBrowserRegisterResponseSchema = z.object({
+  token: z.string().nullable().optional(),
+  redirect: z.boolean().optional(),
+});
+/** Where to send the browser to start Google consent for a claim. */
+export const CliBrowserGoogleResponseSchema = z.object({
+  url: z.string(),
+  redirect: z.boolean().optional(),
+});
+
 /** Management keys never expire; the account's own deadline is the only one. */
 export const CliCredentialSchema = z.object({
   token: z.string(),
@@ -59,7 +126,6 @@ export const CliOperationResponseSchema = z.object({
   url: z.url(),
   expiresAt: z.string(),
   state: z.enum(["pending", "completed", "failed", "expired"]),
-  humanCode: z.string().optional(),
   deployment: CliDeploymentSchema,
 });
 /**
@@ -76,8 +142,6 @@ export const CliOperationResponseSchema = z.object({
 export const CliOperationResultSchema = z.object({
   /** The account a claim acted on. */
   accountId: z.string().optional(),
-  /** Whether the claiming human left the CLI's service access in place. */
-  accessGranted: z.boolean().optional(),
   /** The stored row a provider submission created or rotated. */
   provider: ProviderSummarySchema.optional(),
   gateway: ProviderGatewaySummarySchema.optional(),
@@ -209,4 +273,10 @@ export type CliCapabilitiesResponse = z.infer<typeof CliCapabilitiesResponseSche
 export type CliAccountResponse = z.infer<typeof CliAccountResponseSchema>;
 export type CliBootstrapRequest = z.infer<typeof CliBootstrapRequestSchema>;
 export type CliOperationRequest = z.infer<typeof CliOperationRequestSchema>;
+export type CliSubmissionRequest = z.infer<typeof CliSubmissionRequestSchema>;
+export type CliApprovalRefusal = z.infer<typeof CliApprovalRefusalSchema>;
+export type CliBrowserDetailsResponse = z.infer<typeof CliBrowserDetailsResponseSchema>;
+export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
+export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;
+export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
 export type CliOperationKind = CliOperationRequest["kind"];

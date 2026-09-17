@@ -18,6 +18,15 @@ import {
 } from "./security";
 import type { HandoffRow, CliContext, CliEnv } from "./types";
 
+/**
+ * Where a human finishes a handoff: a console route, not a Worker-rendered
+ * page. The proof is appended as a fragment by the only caller that has one,
+ * because a fragment never reaches the server, a log or the browser's history.
+ */
+export function browserPath(id: string): string {
+  return `/cli/approve/${encodeURIComponent(id)}`;
+}
+
 export async function authState(c: CliContext, interactive = false) {
   const auth = createIdentityAuth(c.env, c.req.url, {
     suppressDefaultOrganization: true,
@@ -112,9 +121,6 @@ export async function createOperation(c: CliContext): Promise<Response> {
       "Operation proof is already bound to a different request",
     );
   const submissionToken = await derive(input.pollToken, `browser:${meta.id}`);
-  const humanCode = (await derive(input.pollToken, `human:${meta.id}`))
-    .slice(0, 12)
-    .toUpperCase();
   if (!row) {
     if (
       input.kind !== "claim" &&
@@ -180,8 +186,8 @@ export async function createOperation(c: CliContext): Promise<Response> {
     );
     const now = Date.now();
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO mgmt_handoff(id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,submission_proof_hash,poll_proof_hash,human_code_hash,expires_at,created_at,updated_at)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM mgmt_handoff WHERE organization_id = ? AND consumed_at IS NULL AND expires_at>?) < 10`,
+      `INSERT OR IGNORE INTO mgmt_handoff(id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM mgmt_handoff WHERE organization_id = ? AND consumed_at IS NULL AND expires_at>?) < 10`,
     )
       .bind(
         id,
@@ -192,7 +198,6 @@ export async function createOperation(c: CliContext): Promise<Response> {
         credentialId,
         await digest(submissionToken),
         pollHash,
-        await digest(humanCode),
         now + TTL,
         now,
         now,
@@ -214,14 +219,13 @@ export async function createOperation(c: CliContext): Promise<Response> {
   }
   return c.json({
     id,
-    url: `${meta.consoleOrigin}/v1/cli/browser/${encodeURIComponent(id)}#${submissionToken}`,
+    url: `${meta.consoleOrigin}${browserPath(id)}#${submissionToken}`,
     expiresAt: new Date(row.expires_at).toISOString(),
     state: row.consumed_at
       ? "completed"
       : row.expires_at <= Date.now()
         ? "expired"
         : "pending",
-    ...(input.kind === "claim" ? { humanCode } : {}),
     deployment: meta,
   });
 }

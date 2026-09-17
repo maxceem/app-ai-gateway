@@ -11,7 +11,6 @@ export interface HandoffRow {
   initiating_credential_id: string;
   submission_proof_hash: string;
   poll_proof_hash: string;
-  human_code_hash: string | null;
   consumed_at: number | null;
   outcome: string | null;
   expires_at: number;

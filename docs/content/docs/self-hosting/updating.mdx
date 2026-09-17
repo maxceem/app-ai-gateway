@@ -3,9 +3,27 @@ title: Updating
 description: Pick up new releases, understand what a deployment changes, and handle database migrations safely.
 ---
 
-How you update depends on how you deployed. Either way the deploy script
-preserves your secrets, applies any new database migrations, and redeploys
-the Worker with a freshly built console.
+How you update depends on how you deployed. Every route preserves your secrets,
+applies any new database migrations, and redeploys the Worker together with its
+console.
+
+## CLI deployments
+
+A gateway installed with `agw deployment setup` is updated by the CLI itself:
+
+```sh
+npm install -g @maxceem/agw
+agw deployment update --dry-run
+agw deployment update
+```
+
+Each CLI version installs exactly one gateway build, so picking up a new release
+means installing the newer CLI. It downloads that build once from the project's
+GitHub release, checks it against a SHA-256 built into the CLI, and caches it
+under `~/.cache/agw`; `--release-archive <path>` uses a copy you downloaded
+yourself instead, for a machine with no route to GitHub. The dry run reports the
+version it would move to and changes nothing. The update applies any new
+migrations and then deploys.
 
 ## Button deployments
 

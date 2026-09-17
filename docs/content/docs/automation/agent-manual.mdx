@@ -15,14 +15,15 @@ plain markdown at `/agents.md`; the API contract is at `/openapi.json`.
    account or `agw deployment setup --name NAME --no-domain` for self-hosting. Existing management keys enter through
    `agw deployment connect --url URL --key-stdin`, never an argument.
 3. Run `agw account claim` when human ownership is needed. Give the person the
-   URL and separate code. They must use a browser outside the agent's visible
-   surface, compare the account, sign in and choose whether to grant ongoing
-   service access. Do not submit the code or impersonate that human.
+   URL. They must use a browser outside the agent's visible surface, compare the
+   account, create their sign-in on that page and approve; if that browser is
+   already signed in as someone with an account, they sign out first. The page
+   names the account and the signed-in person. Do not open that URL yourself or
+   impersonate that human.
 4. Read providers and apps before changing them. Use each command's `--help`
    to choose flags, and `--json` for one stable machine-readable result.
-5. Use provider browser handoffs for unknown secrets. Their URL is sufficient;
-   the separate code is required only for identity handoffs. Poll the saved
-   operation after the person finishes.
+5. Use provider browser handoffs for unknown secrets. Their URL is sufficient.
+   Poll the saved operation after the person finishes.
 6. Write application keys only through `--key-output` to an unused private file.
    Validate and update apps through the CLI, which preserves the whole config
    and uses revisions to reject concurrent changes.
@@ -82,8 +83,8 @@ provider's own request format. You manage all of this through the admin API.
    before creating or updating it.
 4. `PUT /v1/admin/apps/{app}` replaces the whole application. Always `GET`
    first, modify the returned `app.name`, `app.config` and `app.status`, and
-   send all three back with `If-Match` set to the ETag from that read. A missing
-   revision returns 428; a stale revision returns 412. Reread and merge.
+   send all three back together with the `app.revision` from that read. A
+   missing revision returns 400; a stale revision returns 409. Reread and merge.
 5. Read before you write. List providers and apps before changing anything,
    so you use slugs and IDs that exist.
 6. Changes take up to one minute to apply to live traffic. Blocking a user is
@@ -188,10 +189,10 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | Call | Body | Notes |
 | --- | --- | --- |
 | `GET /v1/admin/apps` | | `apps[]` with each app's month-to-date usage |
-| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, created_at, updated_at }, resolved, config_error }` |
+| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at }, resolved, config_error }` |
 | `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id, exists }` or a 400 naming the problem. Works for an ID that does not exist yet |
 | `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
-| `PUT /v1/admin/apps/{app}` | `{ name, config, status? }` | Full replace; requires the current `If-Match` ETag |
+| `PUT /v1/admin/apps/{app}` | `{ name, config, status?, revision }` | Full replace; `revision` must be the one the last read returned |
 | `DELETE /v1/admin/apps/{app}` | | Removes users and keys, keeps usage history |
 | `GET /v1/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v1/admin/apps/{app}/keys` | `{ name }` | Returns `key` once |

@@ -4,11 +4,14 @@ import {
   CliBootstrapRequestSchema, CliOperationRequestSchema, CliSubmissionRequestSchema,
   CliBootstrapResponseSchema, CliOperationResponseSchema, CliPollResponseSchema,
   CliUsageResponseSchema, CliCapabilitiesResponseSchema, CliDeploymentSchema, CliAccountSchema,
+  CliBrowserDetailsResponseSchema, CliBrowserSubmitResponseSchema,
+  CliBrowserRegisterResponseSchema, CliBrowserGoogleResponseSchema,
 } from "./cli.ts";
 import {
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
+  AppUpdateSchema,
   AppWriteSchema,
   OrganizationSelectRequestSchema,
   ProviderCreateRequestSchema,
@@ -26,6 +29,7 @@ export {
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
   AppConfigSchema,
+  AppUpdateSchema,
   AppWriteSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
@@ -600,7 +604,7 @@ for (const definition of [
     method: "put",
     operationId: "updateApp",
     summary: "Update an application",
-    description: "Requires If-Match containing the ETag from the original application read. Missing preconditions return 428; stale revisions return 412. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+    description: "Requires `revision` in the body, the one the application was read at; a stale revision answers `409 app_revision_conflict` and an absent one `400 app_revision_required`. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
   },
 ] as const) {
   register({
@@ -613,9 +617,9 @@ for (const definition of [
     security: managementSecurity,
     request: {
       params: AppPath,
-      ...(definition.method === "put" ? { headers: z.object({ "If-Match": z.string().min(1) }), body: { required: true, content: json(AppWriteSchema) } } : {}),
+      ...(definition.method === "put" ? { body: { required: true, content: json(AppUpdateSchema) } } : {}),
     },
-    responses: { 200: { ...response("Application state.", AppResponseSchema), headers: { ETag: { schema: { type: "string" }, description: "Current application revision; send it in If-Match on update." } } }, ...(definition.method === "put" ? { 412: response("The application changed since it was read.", ErrorResponseSchema), 428: response("If-Match is required.", ErrorResponseSchema) } : {}), ...errorResponses },
+    responses: { 200: response("Application state.", AppResponseSchema), ...(definition.method === "put" ? { 409: response("The application changed since it was read.", ErrorResponseSchema) } : {}), ...errorResponses },
   });
 }
 
@@ -986,12 +990,12 @@ register({ method: "post", path: "/v1/cli/bootstrap", tags: ["CLI"], operationId
   responses: { 200: response("Initial account and credential. Never print or log the credential.", CliBootstrapResponseSchema), ...cliErrors } });
 register({ method: "post", path: "/v1/cli/operations", tags: ["CLI"], operationId: "createCliOperation",
   summary: "Create or recover a browser handoff",
-  description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require the separate humanCode, interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+  description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
   security: managementSecurity, request: { body: { required: true, content: json(CliOperationRequestSchema) } },
-  responses: { 200: response("Browser URL and separate identity code when required.", CliOperationResponseSchema), ...cliErrors } });
+  responses: { 200: response("Browser URL for the pending handoff.", CliOperationResponseSchema), ...cliErrors } });
 register({ method: "get", path: "/v1/cli/operations/{id}", tags: ["CLI"], operationId: "pollCliOperation",
   summary: "Poll a browser handoff", security: [{ CliPollProof: [] }], request: { params: CliOperationPath },
-  description: "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
+  description: "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
   responses: { 200: response("Current operation state and nonsecret result.", CliPollResponseSchema), ...cliErrors } });
 register({ method: "get", path: "/v1/cli/account", tags: ["CLI"], operationId: "getCliAccount",
   summary: "Read account lifecycle and current access", security: managementSecurity,
@@ -1002,14 +1006,22 @@ register({ method: "get", path: "/v1/cli/usage", tags: ["CLI"], operationId: "ge
   description: "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
   request: { query: z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("YYYY-MM; defaults to the current UTC month.") }) },
   responses: { 200: response("Account totals, per-app totals and attribution coverage.", CliUsageResponseSchema), ...cliErrors } });
-register({ method: "get", path: "/v1/cli/browser/{id}", tags: ["CLI"], operationId: "getCliHandoffPage",
-  summary: "Open the first-party human handoff page", request: { params: CliOperationPath },
-  responses: { 200: { description: "No-store browser page. The submission proof arrives only in the URL fragment.", content: { "text/html": { schema: z.string() } } }, ...cliErrors } });
-for (const action of ["details", "submit", "register", "google"] as const) {
+/*
+ * The human half of a handoff. There is no page to fetch here: the console
+ * renders the approval screen at `/cli/approve/{id}` from its own bundle, and
+ * these four are the API it calls with the proof it read from the URL fragment.
+ */
+const browserActions = {
+  details: response("The pending action, its configuration, the account it lands on, the signed-in human who would approve it, if any, and what stands between this browser and approving it.", CliBrowserDetailsResponseSchema),
+  submit: response("The handoff is approved and consumed. No submitted secret is ever echoed.", CliBrowserSubmitResponseSchema),
+  register: response("A new human identity for a pending claim, with its session set as a cookie.", CliBrowserRegisterResponseSchema),
+  google: response("Where to send the browser to start Google consent for a pending claim.", CliBrowserGoogleResponseSchema),
+} as const;
+for (const [action, ok] of Object.entries(browserActions)) {
   register({ method: "post", path: `/v1/cli/browser/{id}/${action}`, tags: ["CLI"], operationId: `cliBrowser${action[0]!.toUpperCase()}${action.slice(1)}`,
-    summary: `Browser handoff: ${action}`, description: "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+    summary: `Browser handoff: ${action}`, description: "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
     request: { params: CliOperationPath, body: { required: true, content: json(CliSubmissionRequestSchema) } },
-    responses: { 200: response("Nonsecret browser handoff result or authentication redirect metadata.", z.record(z.string(), z.unknown())), ...cliErrors } });
+    responses: { 200: ok, ...cliErrors } });
 }
 
 export function createOpenAPIDocument({ includeHidden = true } = {}) {

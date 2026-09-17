@@ -942,6 +942,36 @@
           "config_error"
         ]
       },
+      "AppUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "config": {
+            "$ref": "#/components/schemas/AppConfig"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "name",
+          "config",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
       "Provider": {
         "type": "object",
         "properties": {
@@ -4457,14 +4487,6 @@
         "responses": {
           "200": {
             "description": "Application state.",
-            "headers": {
-              "ETag": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Current application revision; send it in If-Match on update."
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4521,7 +4543,7 @@
         ],
         "operationId": "updateApp",
         "summary": "Update an application",
-        "description": "Requires If-Match containing the ETag from the original application read. Missing preconditions return 428; stale revisions return 412. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
+        "description": "Requires `revision` in the body, the one the application was read at; a stale revision answers `409 app_revision_conflict` and an absent one `400 app_revision_required`. Updates an existing application in place. It never creates one: an id none of your applications holds answers `404 app_not_found`, and nothing is written. Applications are created only by `POST /v1/admin/apps`, which assigns the id.",
         "security": [
           {
             "ConsoleSession": []
@@ -4539,15 +4561,6 @@
             "required": true,
             "name": "app",
             "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            },
-            "required": true,
-            "name": "If-Match",
-            "in": "header"
           }
         ],
         "requestBody": {
@@ -4555,7 +4568,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AppWrite"
+                "$ref": "#/components/schemas/AppUpdate"
               }
             }
           }
@@ -4563,14 +4576,6 @@
         "responses": {
           "200": {
             "description": "Application state.",
-            "headers": {
-              "ETag": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Current application revision; send it in If-Match on update."
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -4619,18 +4624,8 @@
               }
             }
           },
-          "412": {
+          "409": {
             "description": "The application changed since it was read.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "428": {
-            "description": "If-Match is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8776,7 +8771,7 @@
         ],
         "operationId": "createCliOperation",
         "summary": "Create or recover a browser handoff",
-        "description": "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require the separate humanCode, interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+        "description": "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
         "security": [
           {
             "ConsoleSession": []
@@ -8824,7 +8819,7 @@
         },
         "responses": {
           "200": {
-            "description": "Browser URL and separate identity code when required.",
+            "description": "Browser URL for the pending handoff.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8848,9 +8843,6 @@
                         "failed",
                         "expired"
                       ]
-                    },
-                    "humanCode": {
-                      "type": "string"
                     },
                     "deployment": {
                       "type": "object",
@@ -8978,7 +8970,7 @@
             "CliPollProof": []
           }
         ],
-        "description": "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
+        "description": "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
         "parameters": [
           {
             "schema": {
@@ -9046,9 +9038,6 @@
                       "properties": {
                         "accountId": {
                           "type": "string"
-                        },
-                        "accessGranted": {
-                          "type": "boolean"
                         },
                         "provider": {
                           "$ref": "#/components/schemas/Provider"
@@ -9598,107 +9587,6 @@
         }
       }
     },
-    "/v1/cli/browser/{id}": {
-      "get": {
-        "tags": [
-          "CLI"
-        ],
-        "operationId": "getCliHandoffPage",
-        "summary": "Open the first-party human handoff page",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "No-store browser page. The submission proof arrives only in the URL fragment.",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The request is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication is required or invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The authenticated identity is not allowed to perform this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A conflicting transition or setup cap prevents this operation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "The protected credential exchange has expired; no replacement is minted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "The durable initiation or submission rate limit was reached.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/cli/browser/{id}/details": {
       "post": {
         "tags": [
@@ -9706,7 +9594,7 @@
         ],
         "operationId": "cliBrowserDetails",
         "summary": "Browser handoff: details",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -9728,18 +9616,11 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
                   },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
-                  },
                   "approve": {
                     "type": "boolean",
                     "enum": [
                       true
                     ]
-                  },
-                  "allowServiceAccess": {
-                    "type": "boolean"
                   },
                   "email": {
                     "type": "string",
@@ -9770,12 +9651,108 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "The pending action, its configuration, the account it lands on, the signed-in human who would approve it, if any, and what stands between this browser and approving it.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "claim",
+                        "provider.add",
+                        "provider.rotate-key",
+                        "provider.update",
+                        "provider-gateway.add",
+                        "provider-gateway.rotate-key"
+                      ]
+                    },
+                    "payload": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
+                    },
+                    "viewer": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "email": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "email"
+                      ]
+                    },
+                    "blockedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "registration_required",
+                        "sign_out_required",
+                        null
+                      ]
+                    },
+                    "googleEnabled": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "payload",
+                    "account",
+                    "viewer",
+                    "blockedBy",
+                    "googleEnabled",
+                    "expiresAt"
+                  ]
                 }
               }
             }
@@ -9860,7 +9837,7 @@
         ],
         "operationId": "cliBrowserSubmit",
         "summary": "Browser handoff: submit",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -9882,18 +9859,11 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
                   },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
-                  },
                   "approve": {
                     "type": "boolean",
                     "enum": [
                       true
                     ]
-                  },
-                  "allowServiceAccess": {
-                    "type": "boolean"
                   },
                   "email": {
                     "type": "string",
@@ -9924,12 +9894,26 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "The handoff is approved and consumed. No submitted secret is ever echoed.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "completed"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "message"
+                  ]
                 }
               }
             }
@@ -10014,7 +9998,7 @@
         ],
         "operationId": "cliBrowserRegister",
         "summary": "Browser handoff: register",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -10036,18 +10020,11 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
                   },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
-                  },
                   "approve": {
                     "type": "boolean",
                     "enum": [
                       true
                     ]
-                  },
-                  "allowServiceAccess": {
-                    "type": "boolean"
                   },
                   "email": {
                     "type": "string",
@@ -10078,12 +10055,22 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "A new human identity for a pending claim, with its session set as a cookie.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "token": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "redirect": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
@@ -10168,7 +10155,7 @@
         ],
         "operationId": "cliBrowserGoogle",
         "summary": "Browser handoff: google",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires humanCode and an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -10190,18 +10177,11 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
                   },
-                  "humanCode": {
-                    "type": "string",
-                    "maxLength": 40
-                  },
                   "approve": {
                     "type": "boolean",
                     "enum": [
                       true
                     ]
-                  },
-                  "allowServiceAccess": {
-                    "type": "boolean"
                   },
                   "email": {
                     "type": "string",
@@ -10232,12 +10212,22 @@
         },
         "responses": {
           "200": {
-            "description": "Nonsecret browser handoff result or authentication redirect metadata.",
+            "description": "Where to send the browser to start Google consent for a pending claim.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "redirect": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ]
                 }
               }
             }

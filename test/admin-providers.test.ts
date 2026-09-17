@@ -4,8 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { supportsEndpointStyle } from "../src/core/capabilities";
 import {
   clearProviderCaches,
-  encryptionContext,
-  gatewayEncryptionContext,
   organizationProviders,
   resolveProvider,
 } from "../src/core/provider-store";
@@ -13,6 +11,7 @@ import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import { provider, providerGateway } from "../src/db/schema";
 import { secretVault } from "../src/vault";
+import { secretContext } from "../src/vault/secrets";
 import {
   TEST_ORGANIZATION_ID,
   seedAllProviders,
@@ -135,7 +134,7 @@ describe("admin provider instances", () => {
     expect(row?.secretBlob).not.toBeNull();
     await expect(secretVault(env).decryptSecret(
       row!.secretBlob!,
-      encryptionContext(TEST_ORGANIZATION_ID, summary.id),
+      secretContext("providerKey", [TEST_ORGANIZATION_ID, summary.id]),
     )).resolves.toBe("sk-live-super-secret-value");
   });
 
@@ -499,7 +498,7 @@ describe("admin provider gateway API", () => {
     });
     await expect(secretVault(env).decryptSecret(
       row!.secretBlob,
-      gatewayEncryptionContext(TEST_ORGANIZATION_ID, gateway.id),
+      secretContext("providerGatewayToken", [TEST_ORGANIZATION_ID, gateway.id]),
     )).resolves.toBe("cf-aig-original-token");
 
     const renamed = await call("PATCH", `/v1/admin/provider-gateways/${gateway.id}`, {

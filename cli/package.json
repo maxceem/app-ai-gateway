@@ -1,14 +1,37 @@
 {
   "name": "@maxceem/agw",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "type": "module",
-  "description": "App AI Gateway CLI",
+  "description": "Manage App AI Gateway from a terminal or coding agent: providers, iOS and server apps, usage, and self-hosted deployment on Cloudflare",
+  "keywords": [
+    "ai-gateway",
+    "llm-gateway",
+    "ai-proxy",
+    "llm-proxy",
+    "openai",
+    "anthropic",
+    "gemini",
+    "ios",
+    "swift",
+    "app-attest",
+    "cloudflare-workers",
+    "self-hosted",
+    "cli"
+  ],
+  "homepage": "https://appaigateway.com/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxceem/app-ai-gateway.git",
+    "directory": "cli"
+  },
+  "bugs": "https://github.com/maxceem/app-ai-gateway/issues",
+  "upgradeFrom": ["0.1.6", "0.1.5", "0.1.4", "0.1.3", "0.1.2", "0.1.1", "0.1.0"],
   "license": "Apache-2.0",
   "bin": {
     "agw": "dist/agw.mjs"
   },
   "files": [
-    "dist",
+    "dist/agw.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -19,7 +42,7 @@
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.ts",
-    "prepack": "node scripts/release.mjs",
+    "prepack": "node scripts/prepack.mjs",
     "release:build": "node scripts/release.mjs",
     "typecheck:tsc": "tsc --noEmit"
   },

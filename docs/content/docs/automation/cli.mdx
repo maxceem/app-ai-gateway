@@ -18,21 +18,24 @@ Help, status, lists and validation never create an account. For an
 existing account, run `agw account login` and enter a management key through
 the hidden prompt, or pipe it with `--key-stdin`.
 For your own deployment, run `agw deployment setup --name my-gateway --no-domain`.
-It includes the Worker, console, migrations and Wrangler; a source checkout is
-not required.
+It drives Wrangler itself and fetches the Worker, console and migrations it
+installs: one archive from the project's GitHub release, checked against a hash
+built into the CLI and then cached, so a source checkout is not required. See
+[Deploy to Cloudflare](/self-hosting/deploy-to-cloudflare) for the offline route.
 
 ## Human handoffs
 
 Run `agw account claim` to establish human ownership. The CLI prints a browser
-URL and a separate code. Open the URL in a browser outside the agent's visible
-session, enter the code, compare the account shown with the terminal, and sign
-in or create your human account. Approve ownership and choose whether the CLI
-may retain access to your resources. Declining ongoing access retires its
-initial credential and disconnects it after successful claim.
+URL. Open it in a browser outside the agent's visible session, compare the
+account shown with the terminal, and create your sign-in on that page. This
+account must be claimed by a new person, so if the browser is already signed in
+as someone with an account, the page asks you to sign out first. The page shows
+the account being claimed and the person approving, and one button completes
+it. The CLI stays connected afterwards, so an interrupted command can
+simply continue; to end that access later, revoke its key from the console.
 
 Provider commands offer a browser handoff for write-only secrets. Share the URL
-with the person supplying the credential; provider handoffs do not need the
-separate identity code. The page shows the provider, destination and proposed
+with the person supplying the credential. The page shows the provider, destination and proposed
 changes. Secrets never appear in CLI output or later reads. Poll with the
 operation command shown by the CLI; handoffs last 15 minutes.
 

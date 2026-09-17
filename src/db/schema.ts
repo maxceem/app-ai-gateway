@@ -154,7 +154,6 @@ export const mgmtHandoff = sqliteTable(
     initiatingCredentialId: text("initiating_credential_id").notNull(),
     submissionProofHash: text("submission_proof_hash").notNull(),
     pollProofHash: text("poll_proof_hash").notNull(),
-    humanCodeHash: text("human_code_hash"),
     consumedAt: integer("consumed_at"),
     outcome: text("outcome"),
     expiresAt: integer("expires_at").notNull(),

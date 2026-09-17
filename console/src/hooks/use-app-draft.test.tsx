@@ -309,11 +309,11 @@ describe("the end-user source on an App Attest draft", () => {
 describe("application revision protection", () => {
   it("retains a dirty draft and its original revision across background refresh", async () => {
     const initial = appRow(SERVER_AUTH);
-    let writtenHeaders: Headers | undefined;
+    let writtenBody: Record<string, unknown> | undefined;
     vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
-        writtenHeaders = new Headers(init.headers);
-        return new Response(JSON.stringify({ error: { code: "app_revision_conflict", message: "Reload before saving" } }), { status: 412 });
+        writtenBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ error: { code: "app_revision_conflict", message: "Reload before saving" } }), { status: 409 });
       }
       return new Response(JSON.stringify({ app: initial, resolved: null, config_error: null }));
     }));
@@ -325,7 +325,8 @@ describe("application revision protection", () => {
     act(() => client.setQueryData(["app", APP_ID], { app: { ...initial, name: "Other editor", revision: 2 }, resolved: null, config_error: null }));
     expect(view.result.current.draft?.name).toBe("My unsaved edit");
     await act(async () => { expect(await view.result.current.save()).toBe(false); });
-    expect(writtenHeaders?.get("if-match")).toBe('"app-1"');
+    // The revision the draft was opened at, carried in the resource itself.
+    expect(writtenBody?.revision).toBe(1);
     expect(view.result.current.dirty).toBe(true);
   });
 });

@@ -65,7 +65,6 @@ export interface CallOptions<K extends OperationName> {
 
 export interface CallResult<T> {
   data: T;
-  etag: string | null;
 }
 
 /** The subset of a state store the context writes through; real one in `state.ts`. */
@@ -117,7 +116,6 @@ const recordedResultFor: { [K in CreateOperationName]: z.ZodType<RecordedResult<
  */
 export interface CreateOutcome<Live, Recorded> {
   data: Live | Recorded;
-  etag?: string | null;
   /** Present exactly when `data` is the replayed copy. */
   keyMetadata?: StoredKeyMetadata | undefined;
   keyStored?: (metadata: StoredKeyMetadata) => Promise<void>;
@@ -243,7 +241,7 @@ export class Context {
         ...(headers === undefined ? {} : { headers }),
       },
     );
-    return { data: this.parse(name, wire.data), etag: wire.etag };
+    return { data: this.parse(name, wire.data) };
   }
 
   private parse<K extends OperationName>(
@@ -450,7 +448,6 @@ export class Context {
         4,
       );
     let data: OperationResponse<Descriptor<K>>;
-    let etag: string | null = null;
     if (mutation.response !== undefined) {
       const recovered = this.parse(name, mutation.response);
       const keyRecord = recoveredKey(name, recovered);
@@ -487,7 +484,6 @@ export class Context {
         throw error;
       });
       data = response.data;
-      etag = response.etag;
       // Persist the original one-time response before writing the chosen output.
       // This protected recovery copy makes a disk-write retry independent of HTTP.
       mutation.response = data;
@@ -495,7 +491,6 @@ export class Context {
     }
     return {
       data,
-      etag,
       keyStored: async (metadata: StoredKeyMetadata) => {
         mutation.keyMetadata = metadata;
         await this.save();
@@ -696,7 +691,7 @@ export class Context {
     if (this.flags["no-open"] || this.flags.json || this.flags["no-input"])
       return data;
     process.stderr.write(
-      `Complete the browser handoff: ${data.url}\nOperation: ${data.id}\n${data.humanCode ? "Human confirmation code: " + data.humanCode + "\n" : ""}`,
+      `Complete the browser handoff: ${data.url}\nOperation: ${data.id}\n`,
     );
     return this.wait(data.id, 300);
   }
@@ -734,14 +729,9 @@ export class Context {
           4,
         );
       operation.completed = true;
-      if (this.active) {
-        if (data.account) this.active.account = data.account;
-        if (data.result?.accessGranted === false) {
-          delete this.active.credential;
-          this.active.authenticated = false;
-          this.state.generation = (this.state.generation ?? 0) + 1;
-        }
-      }
+      // A claim only ever adds a human owner: this connection keeps the
+      // credential it polled with, so nothing here is invalidated by it.
+      if (this.active && data.account) this.active.account = data.account;
       await this.save();
     }
     return data;

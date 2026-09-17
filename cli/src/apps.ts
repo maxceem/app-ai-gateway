@@ -23,7 +23,17 @@ const unlimited = () => ({
   requests: { per_minute: null, per_day: null },
   spending: { monthly_usd: null },
 });
-const policy = () => ({ allowed_paths: ["*"], allowed_models: ["*"] });
+/**
+ * The policy a newly selected provider starts with: unrestricted.
+ *
+ * Empty, never `["*"]`. Neither field takes a wildcard — `allowed_paths`
+ * compiles each entry to an anchored pattern whose only placeholder is
+ * `{model}`, and `allowed_models` is matched with `includes`, so a literal
+ * `"*"` matches nothing and an empty list is what means "allow everything".
+ * A saved `"*"` is also refused outright, because the gateway prices every
+ * model an application names and no catalog prices a model called `*`.
+ */
+const policy = () => ({ allowed_paths: [] as string[], allowed_models: [] as string[] });
 
 /** What a local or remote configuration check was able to establish. */
 export type ValidationResult =
@@ -298,16 +308,20 @@ export async function appCommand(
   }
   if (action === "add" || action === "update") {
     let current: AppWrite | undefined;
-    let etag: string | null = null;
+    // The revision the edit is made against, read from the application itself.
+    // It travels back in the write body: a deployment sits behind a CDN that
+    // rewrites response headers, so the resource is the only channel that
+    // carries it intact.
+    let revision = 0;
     const appId = args[0] ?? "";
     if (action === "update") {
       const r = await ctx.call("getApp", [appId]);
       current = documentOf(r.data.app);
-      etag = r.etag;
-      if (!etag && !flags["dry-run"])
+      revision = r.data.app.revision;
+      if (!revision && !flags["dry-run"])
         fail(
           "concurrency_unavailable",
-          "The deployment does not return application revisions.",
+          "The deployment does not report application revisions.",
           "Update the deployment before modifying an application.",
           3,
         );
@@ -358,8 +372,7 @@ export async function appCommand(
         await created.complete();
       } else {
         const updated = await ctx.call("updateApp", [appId], {
-          body: doc,
-          headers: { "if-match": etag ?? "" },
+          body: { ...doc, revision },
         });
         ({ app, resolved, config_error: configError } = updated.data);
       }
