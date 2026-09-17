@@ -28,10 +28,11 @@ and enter the credential. The agent polls the operation and receives only its
 nonsecret result. Hidden terminal prompts prevent echo, but do not isolate a
 credential from an agent controlling that terminal.
 
-Account login and claim open in your own browser too. Compare the account shown
-there with the terminal before approving. You can claim human
-ownership without allowing the CLI to retain access. Approved service access can
-configure resources and read usage; human-only administration still needs you.
+Account login and claim open in your own browser too. The page names both the
+account being claimed and the person signed in to approve it; compare them with
+the terminal before approving. Claiming keeps the CLI connected, so it can go on
+configuring resources and reading usage; human-only administration still needs
+you. Revoke its key from the console whenever you want that access to end.
 
 Application keys go to private files, never standard output. The CLI preserves
 retry proofs and credentials in protected local state. Keep that state after an

@@ -8970,7 +8970,7 @@
             "CliPollProof": []
           }
         ],
-        "description": "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
+        "description": "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
         "parameters": [
           {
             "schema": {
@@ -9038,9 +9038,6 @@
                       "properties": {
                         "accountId": {
                           "type": "string"
-                        },
-                        "accessGranted": {
-                          "type": "boolean"
                         },
                         "provider": {
                           "$ref": "#/components/schemas/Provider"
@@ -9625,9 +9622,6 @@
                       true
                     ]
                   },
-                  "allowServiceAccess": {
-                    "type": "boolean"
-                  },
                   "email": {
                     "type": "string",
                     "format": "email"
@@ -9657,7 +9651,7 @@
         },
         "responses": {
           "200": {
-            "description": "The pending action, its configuration, the account it lands on, and whether an interactive human is signed in.",
+            "description": "The pending action, its configuration, the account it lands on, and the signed-in human who would approve it, if any.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9708,8 +9702,29 @@
                         "expiresAt"
                       ]
                     },
-                    "signedIn": {
-                      "type": "boolean"
+                    "viewer": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "email": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "email"
+                      ]
                     },
                     "googleEnabled": {
                       "type": "boolean"
@@ -9722,7 +9737,7 @@
                     "kind",
                     "payload",
                     "account",
-                    "signedIn",
+                    "viewer",
                     "googleEnabled",
                     "expiresAt"
                   ]
@@ -9837,9 +9852,6 @@
                     "enum": [
                       true
                     ]
-                  },
-                  "allowServiceAccess": {
-                    "type": "boolean"
                   },
                   "email": {
                     "type": "string",
@@ -10002,9 +10014,6 @@
                       true
                     ]
                   },
-                  "allowServiceAccess": {
-                    "type": "boolean"
-                  },
                   "email": {
                     "type": "string",
                     "format": "email"
@@ -10161,9 +10170,6 @@
                     "enum": [
                       true
                     ]
-                  },
-                  "allowServiceAccess": {
-                    "type": "boolean"
                   },
                   "email": {
                     "type": "string",

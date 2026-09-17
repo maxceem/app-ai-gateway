@@ -60,7 +60,12 @@ export async function browserDetails(c: CliContext): Promise<Response> {
     kind: row.kind as CliOperationKind,
     payload: visiblePayload,
     account: await accountLifecycle(c.env, row.organization_id),
-    signedIn: state.assurance === "interactive",
+    // Named rather than reduced to a flag: the page shows who is about to
+    // approve, so a person who is signed in as the wrong human can see it.
+    viewer:
+      state.assurance === "interactive" && state.user?.kind === "human"
+        ? { name: state.user.name, email: state.user.email }
+        : null,
     googleEnabled: googleAuthEnabled(c.env),
     expiresAt: new Date(row.expires_at).toISOString(),
   } satisfies CliBrowserDetailsResponse);
@@ -99,13 +104,7 @@ export async function browserSubmit(c: CliContext): Promise<Response> {
       "Explicit approval is required",
     );
   if (row.kind === "claim") {
-    if (typeof input.allowServiceAccess !== "boolean")
-      throw new GatewayError(
-        400,
-        "invalid_request",
-        "Choose whether to allow ongoing CLI access",
-      );
-    await completeIdentity(c, row, input.allowServiceAccess);
+    await completeIdentity(c, row);
   } else {
     await completeProviderSubmission(c, row, input.secret);
   }

@@ -300,7 +300,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          { submissionToken: random(), approve: true, allowServiceAccess: true },
+          { submissionToken: random(), approve: true },
           headers,
         )
       ).status,
@@ -310,7 +310,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          { approve: true, allowServiceAccess: true },
+          { approve: true },
           headers,
         )
       ).status,
@@ -320,11 +320,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          {
-            submissionToken,
-            approve: true,
-            allowServiceAccess: true,
-          },
+          { submissionToken, approve: true },
           headers,
         )
       ).status,
@@ -336,11 +332,11 @@ describe("CLI account lifecycle", () => {
     const result = (await first.json()) as {
       state: string;
       account: { id: string };
-      result: { accessGranted: boolean };
+      result: { accountId: string };
     };
     expect(result.state).toBe("completed");
     expect(result.account.id).toBe(data.account.id);
-    expect(result.result.accessGranted).toBe(true);
+    expect(result.result.accountId).toBe(data.account.id);
     expect(
       await (
         await request(testEnv, `/operations/${op.id}`, undefined, {
@@ -425,16 +421,17 @@ describe("CLI account lifecycle", () => {
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_organization").first("n"),
     ).toBe(1);
-    expect(
-      (
-        await request(
-          testEnv,
-          `/browser/${op.id}/details`,
-          { submissionToken: new URL(op.url).hash.slice(1) },
-          { origin: "https://example.test", cookie },
-        )
-      ).status,
-    ).toBe(200);
+    const details = await request(
+      testEnv,
+      `/browser/${op.id}/details`,
+      { submissionToken: new URL(op.url).hash.slice(1) },
+      { origin: "https://example.test", cookie },
+    );
+    expect(details.status).toBe(200);
+    // The page shows who would approve, so the registered human is named back.
+    expect((await details.json()) as { viewer: unknown }).toMatchObject({
+      viewer: { name: "New person", email: "new-claim@example.test" },
+    });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM mgmt_organization",
@@ -445,11 +442,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          {
-            submissionToken: new URL(op.url).hash.slice(1),
-            approve: true,
-            allowServiceAccess: false,
-          },
+          { submissionToken: new URL(op.url).hash.slice(1), approve: true },
           { origin: "https://example.test", cookie },
         )
       ).status,
@@ -485,7 +478,6 @@ describe("CLI account lifecycle", () => {
       {
         submissionToken: new URL(op.url).hash.slice(1),
         approve: true,
-        allowServiceAccess: true,
       },
       { origin: "https://example.test", cookie: human.cookie },
     );
@@ -702,7 +694,7 @@ describe("CLI account lifecycle", () => {
       .run();
     expect(await claimOAuthAuthorized(testEnv, callback)).toBe(false);
   });
-  it("claims without ongoing service access and returns no replacement credential", async () => {
+  it("leaves the CLI's own access in place and mints no replacement credential", async () => {
     const testEnv = runtime();
     const { data } = await start(testEnv);
     const human = await seedHuman();
@@ -720,11 +712,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           `/browser/${op.id}/submit`,
-          {
-            submissionToken: new URL(op.url).hash.slice(1),
-            approve: true,
-            allowServiceAccess: false,
-          },
+          { submissionToken: new URL(op.url).hash.slice(1), approve: true },
           { origin: "https://example.test", cookie: human.cookie },
         )
       ).status,
@@ -733,16 +721,24 @@ describe("CLI account lifecycle", () => {
       await request(testEnv, `/operations/${op.id}`, undefined, {
         authorization: `Bearer ${pollToken}`,
       })
-    ).json()) as { credential?: unknown; result: { accessGranted: boolean } };
+    ).json()) as { credential?: unknown };
+    // No second credential is handed out, and the one the CLI already holds is
+    // exactly the one that still works afterwards.
     expect(result.credential).toBeUndefined();
-    expect(result.result.accessGranted).toBe(false);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM mgmt_api_key WHERE enabled=1 AND organization_id=?",
       )
         .bind(data.account.id)
         .first("n"),
-    ).toBe(0);
+    ).toBe(1);
+    expect(
+      (
+        await request(testEnv, "/account", undefined, {
+          authorization: `Bearer ${data.credential.token}`,
+        })
+      ).status,
+    ).toBe(200);
   });
   it("enforces exact account deadlines and never deletes a claimed account", async () => {
     const testEnv = runtime();
@@ -887,7 +883,6 @@ it("rejects every browser submission on the API host before registration or OAut
     password: "test-password-with-length",
     name: "Blocked",
     approve: true,
-    allowServiceAccess: true,
   };
   for (const action of ["details", "submit", "register", "google"]) {
     const response = await worker.request(

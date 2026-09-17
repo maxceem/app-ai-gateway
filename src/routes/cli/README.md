@@ -79,9 +79,16 @@ Claim attaches a human owner to the existing account and clears its expiry. It
 never converts the service identity into a human one, and it never moves the
 account to a different ID: the account ID is the vault encryption context and
 the billing tenant, so moving it would strand encrypted provider credentials and
-reset quota state. The person claiming decides whether the CLI keeps access;
-declining revokes that service identity's keys and removes its membership while
-preserving its audit history.
+reset quota state. The CLI that asked for the claim keeps its access: the person
+approving is at their terminal mid-command, and an approval that logged them out
+of it would cost more than it protects. Ending that access is an ordinary key
+revocation in the console afterwards, not a decision taken under time pressure
+on the approval page.
+
+That page asks for nothing but the approval itself. It names the account and the
+signed-in human side by side — the two identities a person has to tell apart
+before approving — and the button is the consent; a checkbox in front of it
+would only ask the same question twice.
 
 All of that is one cf-auth transaction, guarded by its own re-read of the
 approving session and of the CLI credential that asked. It runs *before* the

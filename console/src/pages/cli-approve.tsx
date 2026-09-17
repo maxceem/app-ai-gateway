@@ -7,7 +7,6 @@ import type { CliBrowserDetailsResponse, CliOperationKind } from "@contracts/cli
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
@@ -138,7 +137,7 @@ export function CliApprovePage() {
 
   const [approved, setApproved] = useState(false);
   const submit = useMutation({
-    mutationFn: (body: { approve: true; allowServiceAccess?: boolean; secret?: string }) =>
+    mutationFn: (body: { approve: true; secret?: string }) =>
       call(operations.cliBrowserSubmit, [id], { submissionToken: token, ...body }),
     onSuccess: () => {
       clearStoredProof(storageKey);
@@ -148,7 +147,7 @@ export function CliApprovePage() {
 
   if (!token) {
     return (
-      <ApproveShell>
+      <ApproveShell id={id}>
         <Alert variant="destructive" role="alert">
           <AlertTitle>This link is missing its proof</AlertTitle>
           <AlertDescription>
@@ -161,7 +160,7 @@ export function CliApprovePage() {
 
   if (details.isPending) {
     return (
-      <ApproveShell>
+      <ApproveShell id={id}>
         <div className="flex justify-center py-6">
           <Loader2 className="size-5 animate-spin text-muted-foreground" />
         </div>
@@ -171,7 +170,7 @@ export function CliApprovePage() {
 
   if (details.isError || !data) {
     return (
-      <ApproveShell>
+      <ApproveShell id={id}>
         <Alert variant="destructive" role="alert">
           <AlertTitle>This request can no longer be approved</AlertTitle>
           <AlertDescription>
@@ -185,7 +184,7 @@ export function CliApprovePage() {
 
   if (approved) {
     return (
-      <ApproveShell title={headingFor(data.kind)}>
+      <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
         <Alert role="status">
           <CheckCircle2 className="size-4" />
           <AlertTitle>Approved</AlertTitle>
@@ -198,10 +197,10 @@ export function CliApprovePage() {
   const identity = data.kind === "claim";
 
   return (
-    <ApproveShell title={headingFor(data.kind)}>
+    <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
       <Summary details={data} />
 
-      {identity && !data.signedIn ? (
+      {identity && !data.viewer ? (
         <ClaimSignIn
           id={id}
           token={token}
@@ -216,26 +215,50 @@ export function CliApprovePage() {
           onSubmit={(body) => submit.mutate(body)}
         />
       )}
-
-      <Footnote details={data} id={id} />
     </ApproveShell>
   );
 }
 
-function ApproveShell({ title, children }: { title?: string; children: React.ReactNode }) {
+/**
+ * The card, and under it what identifies the request rather than describes it.
+ *
+ * The operation id and its deadline sit outside the card on every state, so the
+ * card holds only what a person acts on. The id is known from the URL even when
+ * nothing else loaded, which is exactly when someone needs to read it out.
+ */
+function ApproveShell({
+  title,
+  id,
+  expiresAt,
+  children,
+}: {
+  title?: string;
+  id: string;
+  expiresAt?: string;
+  children: React.ReactNode;
+}) {
   return (
     <AuthLayout>
-      <Card className="w-full max-w-sm">
-        <CardHeader className="grid-rows-[auto] gap-0">
-          <CardTitle>{title ?? "Approve a CLI request"}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">{children}</CardContent>
-      </Card>
+      <div className="w-full max-w-sm space-y-3">
+        <Card className="w-full">
+          <CardHeader className="grid-rows-[auto] gap-0">
+            <CardTitle>{title ?? "Approve a CLI request"}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">{children}</CardContent>
+        </Card>
+        <Footnote id={id} expiresAt={expiresAt} />
+      </div>
     </AuthLayout>
   );
 }
 
-/** The account and configuration a person compares against their terminal. */
+/**
+ * The account, the person and the configuration, as a terminal can confirm them.
+ *
+ * Both identities are named, because they are not the same one and a claim is
+ * where confusing them costs most: the account is what the CLI is acting on,
+ * the viewer is whichever human this browser happens to be signed in as.
+ */
 function Summary({ details }: { details: CliBrowserDetailsResponse }) {
   const configuration =
     details.kind === "claim" || Object.keys(details.payload).length === 0
@@ -243,10 +266,18 @@ function Summary({ details }: { details: CliBrowserDetailsResponse }) {
       : JSON.stringify(details.payload, null, 2);
   return (
     <div className="space-y-3">
-      <div className="rounded-md border bg-muted/40 px-3 py-2">
+      <Field label="Account">
         <p className="text-sm font-medium">{details.account.name}</p>
         <p className="font-mono text-xs text-muted-foreground">{shortId(details.account.id)}</p>
-      </div>
+      </Field>
+      {details.viewer ? (
+        <Field label="Approving as">
+          <p className="text-sm font-medium">{details.viewer.name ?? "Signed-in user"}</p>
+          {details.viewer.email ? (
+            <p className="text-xs text-muted-foreground">{details.viewer.email}</p>
+          ) : null}
+        </Field>
+      ) : null}
       {configuration ? (
         <pre className="max-h-56 overflow-auto rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs whitespace-pre-wrap">
           {configuration}
@@ -256,15 +287,21 @@ function Summary({ details }: { details: CliBrowserDetailsResponse }) {
   );
 }
 
-function Footnote({ details, id }: { details: CliBrowserDetailsResponse; id: string }) {
+/** A labelled read-only box; the label is what tells two identities apart. */
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-1 text-xs text-muted-foreground">
+    <div className="rounded-md border bg-muted/40 px-3 py-2">
+      <p className="text-[11px] tracking-wide text-muted-foreground uppercase">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+function Footnote({ id, expiresAt }: { id: string; expiresAt?: string }) {
+  return (
+    <div className="space-y-0.5 px-1 text-xs text-muted-foreground">
       <p className="font-mono break-all">{id}</p>
-      <p>Expires {new Date(details.expiresAt).toLocaleString()}.</p>
-      <p>
-        This page never displays management credentials. Provider credentials are submitted
-        directly to your gateway.
-      </p>
+      {expiresAt ? <p>Expires {new Date(expiresAt).toLocaleString()}.</p> : null}
     </div>
   );
 }
@@ -402,6 +439,14 @@ function ClaimSignIn({
   );
 }
 
+/**
+ * The approval itself.
+ *
+ * Pressing the button is the consent: a checkbox in front of it would only ask
+ * the same question twice, and the summary above already names what is being
+ * approved and who is approving it. A claim keeps the CLI's access, so there is
+ * nothing else to decide here either.
+ */
 function ApprovalForm({
   details,
   pending,
@@ -411,22 +456,15 @@ function ApprovalForm({
   details: CliBrowserDetailsResponse;
   pending: boolean;
   error: string | null;
-  onSubmit: (body: { approve: true; allowServiceAccess?: boolean; secret?: string }) => void;
+  onSubmit: (body: { approve: true; secret?: string }) => void;
 }) {
-  const identity = details.kind === "claim";
   const secretRequired = needsSecret(details);
   const [secret, setSecret] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
-  const [keepAccess, setKeepAccess] = useState(true);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!confirmed || (secretRequired && !secret)) return;
-    onSubmit({
-      approve: true,
-      ...(identity ? { allowServiceAccess: keepAccess } : {}),
-      ...(secretRequired ? { secret } : {}),
-    });
+    if (secretRequired && !secret) return;
+    onSubmit({ approve: true, ...(secretRequired ? { secret } : {}) });
     // Nothing on this page needs the value again, whatever the answer is.
     setSecret("");
   };
@@ -446,30 +484,10 @@ function ApprovalForm({
             placeholder="••••••••••••"
             onChange={(event) => setSecret(event.target.value)}
           />
-        </div>
-      ) : null}
-
-      <div className="flex items-start gap-2">
-        <Checkbox
-          id="approve-confirm"
-          checked={confirmed}
-          onCheckedChange={(value) => setConfirmed(value === true)}
-        />
-        <Label htmlFor="approve-confirm" className="text-sm leading-snug font-normal">
-          I approve this action for the account shown above
-        </Label>
-      </div>
-
-      {identity ? (
-        <div className="flex items-start gap-2">
-          <Checkbox
-            id="approve-service-access"
-            checked={keepAccess}
-            onCheckedChange={(value) => setKeepAccess(value === true)}
-          />
-          <Label htmlFor="approve-service-access" className="text-sm leading-snug font-normal">
-            Keep this service identity and its role-based management access
-          </Label>
+          <p className="text-xs text-muted-foreground">
+            Submitted directly to your gateway and stored encrypted. Only a hint of it is
+            ever shown again.
+          </p>
         </div>
       ) : null}
 
@@ -479,11 +497,7 @@ function ApprovalForm({
         </p>
       ) : null}
 
-      <Button
-        type="submit"
-        className="w-full"
-        disabled={pending || !confirmed || (secretRequired && !secret)}
-      >
+      <Button type="submit" className="w-full" disabled={pending || (secretRequired && !secret)}>
         {pending ? <Loader2 className="size-4 animate-spin" /> : null}
         Approve request
       </Button>

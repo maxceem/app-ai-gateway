@@ -12,7 +12,6 @@ import type { CliContext, HandoffRow } from "./types";
 export async function completeIdentity(
   c: CliContext,
   row: HandoffRow,
-  allowServiceAccess: boolean,
 ): Promise<void> {
   if (row.kind !== "claim")
     throw new GatewayError(400, "invalid_request", "Unsupported identity handoff");
@@ -49,7 +48,11 @@ export async function completeIdentity(
       provisioning: {
         userId: row.initiating_user_id,
         credentialId: row.initiating_credential_id,
-        revokeAccess: !allowServiceAccess,
+        // A claim never retires the CLI that asked for it: the person approving
+        // is at their terminal mid-command, and an approval that logged them
+        // out of it would be a worse answer than anything it could protect
+        // against. Retiring that access is the console's job, afterwards.
+        revokeAccess: false,
       },
     });
   } catch (error) {
@@ -63,11 +66,7 @@ export async function completeIdentity(
        WHERE id=? AND kind='claim' AND consumed_at IS NULL AND expires_at>?`,
     ).bind(
       now,
-      JSON.stringify({
-        accountId: target,
-        accessGranted: allowServiceAccess,
-        approvedBy: state.user.id,
-      }),
+      JSON.stringify({ accountId: target, approvedBy: state.user.id }),
       now,
       row.id,
       now,

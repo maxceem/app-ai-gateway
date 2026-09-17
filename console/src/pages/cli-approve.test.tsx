@@ -27,7 +27,7 @@ function details(overrides: Record<string, unknown> = {}) {
       kind: "claim",
       payload: {},
       account,
-      signedIn: false,
+      viewer: null,
       googleEnabled: false,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
       ...overrides,
@@ -102,6 +102,10 @@ describe("CliApprovePage proof handling", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toMatch(/can no longer be approved/i);
     expect(alert.textContent).toMatch(/rerun the command/i);
+    // The id identifies the request even when nothing about it could load.
+    const footnote = screen.getByText(OPERATION_ID);
+    expect(footnote).toBeTruthy();
+    expect(alert.contains(footnote)).toBe(false);
   });
 });
 
@@ -165,18 +169,23 @@ describe("CliApprovePage claim", () => {
     ).toBe(false);
   });
 
-  it("approves with the service-access choice once a human is signed in", async () => {
+  it("names the signed-in human beside the account and approves on one click", async () => {
     const fetchMock = stubApi({
-      [DETAILS_URL]: details({ signedIn: true }),
+      [DETAILS_URL]: details({
+        viewer: { name: "Ada Lovelace", email: "ada@example.test" },
+      }),
       [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
     });
 
     renderApprove();
 
     const approve = await screen.findByRole("button", { name: /approve request/i });
-    expect((approve as HTMLButtonElement).disabled).toBe(true);
-    await userEvent.click(screen.getByLabelText(/i approve this action/i));
-    await userEvent.click(screen.getByLabelText(/keep this service identity/i));
+    // Which account is claimed, and which person is claiming it.
+    expect(screen.getByText("Acme")).toBeTruthy();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    expect(screen.getByText("ada@example.test")).toBeTruthy();
+    expect((approve as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("checkbox")).toBeNull();
     await userEvent.click(approve);
 
     await waitFor(() => {
@@ -185,7 +194,6 @@ describe("CliApprovePage claim", () => {
       expect(JSON.parse(String(call![1]!.body))).toEqual({
         submissionToken: TOKEN,
         approve: true,
-        allowServiceAccess: false,
       });
     });
     expect(await screen.findByText(/return to your cli/i)).toBeTruthy();
@@ -199,7 +207,6 @@ describe("CliApprovePage provider handoffs", () => {
       [DETAILS_URL]: details({
         kind: "provider.add",
         payload: { type: "openai", name: "OpenAI" },
-        signedIn: false,
       }),
       [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
     });
@@ -214,7 +221,8 @@ describe("CliApprovePage provider handoffs", () => {
     const secret = screen.getByLabelText(/provider credential/i);
     expect(secret.getAttribute("type")).toBe("password");
     await userEvent.type(secret, "sk-test-value");
-    await userEvent.click(screen.getByLabelText(/i approve this action/i));
+    // The one screen that still explains where a secret goes.
+    expect(screen.getByText(/submitted directly to your gateway/i)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /approve request/i }));
 
     await waitFor(() => {
@@ -234,7 +242,6 @@ describe("CliApprovePage provider handoffs", () => {
       [DETAILS_URL]: details({
         kind: "provider.add",
         payload: { type: "openai", providerGatewayId: "pg-1" },
-        signedIn: false,
       }),
     });
 
@@ -242,5 +249,6 @@ describe("CliApprovePage provider handoffs", () => {
 
     await screen.findByText(/add a provider/i);
     expect(screen.queryByLabelText(/provider credential/i)).toBeNull();
+    expect(screen.queryByText(/submitted directly to your gateway/i)).toBeNull();
   });
 });

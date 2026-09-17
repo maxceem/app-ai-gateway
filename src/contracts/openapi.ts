@@ -995,7 +995,7 @@ register({ method: "post", path: "/v1/cli/operations", tags: ["CLI"], operationI
   responses: { 200: response("Browser URL for the pending handoff.", CliOperationResponseSchema), ...cliErrors } });
 register({ method: "get", path: "/v1/cli/operations/{id}", tags: ["CLI"], operationId: "pollCliOperation",
   summary: "Poll a browser handoff", security: [{ CliPollProof: [] }], request: { params: CliOperationPath },
-  description: "Only the original polling proof can recover the result. Completed claims report whether the existing service access was retained. Provider secrets are never returned.",
+  description: "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
   responses: { 200: response("Current operation state and nonsecret result.", CliPollResponseSchema), ...cliErrors } });
 register({ method: "get", path: "/v1/cli/account", tags: ["CLI"], operationId: "getCliAccount",
   summary: "Read account lifecycle and current access", security: managementSecurity,
@@ -1012,7 +1012,7 @@ register({ method: "get", path: "/v1/cli/usage", tags: ["CLI"], operationId: "ge
  * these four are the API it calls with the proof it read from the URL fragment.
  */
 const browserActions = {
-  details: response("The pending action, its configuration, the account it lands on, and whether an interactive human is signed in.", CliBrowserDetailsResponseSchema),
+  details: response("The pending action, its configuration, the account it lands on, and the signed-in human who would approve it, if any.", CliBrowserDetailsResponseSchema),
   submit: response("The handoff is approved and consumed. No submitted secret is ever echoed.", CliBrowserSubmitResponseSchema),
   register: response("A new human identity for a pending claim, with its session set as a cookie.", CliBrowserRegisterResponseSchema),
   google: response("Where to send the browser to start Google consent for a pending claim.", CliBrowserGoogleResponseSchema),

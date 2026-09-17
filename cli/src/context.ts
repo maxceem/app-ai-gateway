@@ -729,14 +729,9 @@ export class Context {
           4,
         );
       operation.completed = true;
-      if (this.active) {
-        if (data.account) this.active.account = data.account;
-        if (data.result?.accessGranted === false) {
-          delete this.active.credential;
-          this.active.authenticated = false;
-          this.state.generation = (this.state.generation ?? 0) + 1;
-        }
-      }
+      // A claim only ever adds a human owner: this connection keeps the
+      // credential it polled with, so nothing here is invalidated by it.
+      if (this.active && data.account) this.active.account = data.account;
       await this.save();
     }
     return data;

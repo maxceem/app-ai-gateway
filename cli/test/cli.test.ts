@@ -214,7 +214,7 @@ test("operation initiation retries persisted proof, then completed polling canno
         };
       }
       return {
-        data: pollResponse({ account: credential.account, result: { accessGranted: true } })
+        data: pollResponse({ account: credential.account, result: { accountId: credential.account.id } })
       };
     },
   };
@@ -404,7 +404,6 @@ test("a completed handoff reports only declared outcome fields", async () => {
           id: "claim",
           result: {
             accountId: "account-1",
-            accessGranted: true,
             // The approving human and the internal compare-and-swap marker the
             // gateway stores beside the outcome; neither is the caller's.
             approvedBy: "user-SENTINEL",
@@ -416,7 +415,7 @@ test("a completed handoff reports only declared outcome fields", async () => {
     {},
   );
   const result = await ctx.poll("claim");
-  assert.deepEqual(result.result, { accountId: "account-1", accessGranted: true });
+  assert.deepEqual(result.result, { accountId: "account-1" });
   assert.equal(JSON.stringify(result).includes("SENTINEL"), false);
 });
 
@@ -606,11 +605,11 @@ test("advanced public app config and provider gateway IDs survive response parsi
   });
 });
 
-test("claim completion with declined service access clears retired bootstrap authentication", async () => {
+test("claim completion records the claimed account and keeps this connection signed in", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
-    credential: "retired",
+    credential: "bootstrap",
     account: credential.account,
     authenticated: true,
   };
@@ -628,7 +627,7 @@ test("claim completion with declined service access clears retired bootstrap aut
       request: async () => ({
         data: pollResponse({
           id: "claim",
-          result: { accessGranted: false },
+          result: { accountId: credential.account.id },
           account: { ...credential.account, claimed: true },
         })
       }),
@@ -636,8 +635,8 @@ test("claim completion with declined service access clears retired bootstrap aut
     {},
   );
   await ctx.poll("claim");
-  assert.equal(state.active?.credential, undefined);
-  assert.equal(state.active?.authenticated, false);
+  assert.equal(state.active?.credential, "bootstrap");
+  assert.equal(state.active?.authenticated, true);
   assert.equal(state.active?.account?.claimed, true);
 });
 

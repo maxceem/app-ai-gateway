@@ -22,7 +22,6 @@ export const CliSubmissionRequestSchema = z
   .object({
     submissionToken: CliProofSchema,
     approve: z.literal(true).optional(),
-    allowServiceAccess: z.boolean().optional(),
     email: z.email().optional(),
     password: z.string().min(8).max(256).optional(),
     name: z.string().min(1).max(100).optional(),
@@ -43,20 +42,25 @@ export const CliAccountSchema = z.object({
   claimed: z.boolean(),
   expiresAt: z.string().nullable(),
 });
+/** Who this browser would approve as: the interactive human holding the session. */
+export const CliViewerSchema = z.object({
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+});
 /**
  * What the console's approval page reads before it shows anything.
  *
  * The page is the human half of a browser handoff, so it is told only what a
  * person needs in order to recognize the request they started in a terminal:
  * the action, the resource configuration the CLI sent, the account it lands on,
- * and whether this browser already holds an interactive human session. No
- * secret, submitted or stored, is ever part of it.
+ * and the human this browser would approve as, which is null when nobody is
+ * signed in. No secret, submitted or stored, is ever part of it.
  */
 export const CliBrowserDetailsResponseSchema = z.object({
   kind: CliOperationRequestSchema.shape.kind,
   payload: z.record(z.string(), z.unknown()),
   account: CliAccountSchema,
-  signedIn: z.boolean(),
+  viewer: CliViewerSchema.nullable(),
   googleEnabled: z.boolean(),
   expiresAt: z.string(),
 });
@@ -111,8 +115,6 @@ export const CliOperationResponseSchema = z.object({
 export const CliOperationResultSchema = z.object({
   /** The account a claim acted on. */
   accountId: z.string().optional(),
-  /** Whether the claiming human left the CLI's service access in place. */
-  accessGranted: z.boolean().optional(),
   /** The stored row a provider submission created or rotated. */
   provider: ProviderSummarySchema.optional(),
   gateway: ProviderGatewaySummarySchema.optional(),
