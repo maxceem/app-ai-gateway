@@ -75,7 +75,7 @@ export async function verifiedSubmission(c: CliContext) {
     await cliJson(c.req.raw),
   );
   const row = await challenge(c);
-  await enforceEndpointRateLimit(c.env, `submission:${row.id}`, 10, 60_000);
+  await enforceEndpointRateLimit(c.env, "submission", row.id);
   if (row.expires_at <= Date.now())
     throw new GatewayError(410, "invalid_request", "Operation has expired");
   if (!(await proofMatches(input.submissionToken, row.submission_proof_hash)))

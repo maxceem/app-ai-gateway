@@ -32,7 +32,7 @@ export const ErrorResponseSchema = z.object({
     code: z.string(),
     message: z.string(),
     data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().meta({
-      description: "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; an app_rate_limited or app_budget_exhausted rejection carries scope, either user or app.",
+      description: "Machine-readable facts about this rejection, present only where the code alone is not actionable. A billing_request_quota_exceeded rejection carries periodId, periodStart, periodEnd, limit, used, and resetAt; a billing_plan_limit_reached rejection carries limit and used; an app_rate_limited or app_budget_exhausted rejection carries scope, either user or app; a rate_limited rejection carries scope naming the endpoint policy that refused, plus limit, windowSeconds, retryAfterSeconds and resetAt.",
     }),
   }),
 }).meta({ id: "ErrorResponse" });

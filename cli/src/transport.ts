@@ -53,6 +53,49 @@ export function reported(value: unknown, sent?: unknown): string {
 const RECOVERABLE_RESOURCE_CODES = ["resource_receipt_expired", "resource_key_unavailable"];
 const RECOVERABLE_RESOURCE_FIELDS = ["appId", "keyId", "providerId", "providerGatewayId"] as const;
 
+/**
+ * The refusals that name a ceiling, and the facts each one reports about it.
+ *
+ * Carried through to `details` because the message is prose: a script deciding
+ * how long to wait, or whether waiting helps at all, needs the numbers rather
+ * than the sentence they were written into. Split by type only because the two
+ * groups are assigned separately below.
+ */
+const LIMIT_CODES = [
+  "rate_limited",
+  "app_rate_limited",
+  "app_budget_exhausted",
+  "billing_request_quota_exceeded",
+  "billing_plan_limit_reached",
+];
+const LIMIT_TEXT_FIELDS = ["scope", "resetAt"] as const;
+const LIMIT_NUMBER_FIELDS = ["limit", "used", "windowSeconds", "retryAfterSeconds"] as const;
+
+/**
+ * What to do about a refusal, as far as its status can say.
+ *
+ * A limit that resets says so and is worth retrying unchanged; a plan ceiling
+ * is answered with 409 because nothing resets on a schedule, so the same
+ * request will never succeed and telling the caller to wait would be wrong.
+ */
+function nextActionFor(status: number, code: string, details: CliErrorDetails): string {
+  if (status === 401) return "Run agw account login.";
+  if (code === "billing_plan_limit_reached")
+    return "Delete one you no longer need, or move to a plan whose limits are higher.";
+  if (status === 429) {
+    const seconds = details.retryAfterSeconds;
+    if (seconds === undefined)
+      return "Wait for the limit named in the message to reset, then run the same command again.";
+    // Same split the deployment's own message makes: nobody converts a wait of
+    // 65580 seconds in their head, and a wait of 50 is over before an instant
+    // written out in UTC would have been read.
+    return seconds >= 3600 && details.resetAt !== undefined
+      ? `Wait until ${details.resetAt}, then run the same command again.`
+      : `Wait ${seconds} seconds, then run the same command again.`;
+  }
+  return "Review command configuration and account status.";
+}
+
 export class Transport {
   private readonly fetch: FetchLike;
 
@@ -118,11 +161,20 @@ export class Transport {
             ? wire.code
             : `http_${response.status}`;
       const details: CliErrorDetails = { status: response.status };
-      if (RECOVERABLE_RESOURCE_CODES.includes(code)) {
-        const reported = wire.error?.data ?? {};
+      const facts = wire.error?.data ?? {};
+      if (RECOVERABLE_RESOURCE_CODES.includes(code))
         for (const field of RECOVERABLE_RESOURCE_FIELDS) {
-          const value = reported[field];
+          const value = facts[field];
           if (typeof value === "string") details[field] = value;
+        }
+      if (LIMIT_CODES.includes(code)) {
+        for (const field of LIMIT_TEXT_FIELDS) {
+          const value = facts[field];
+          if (typeof value === "string") details[field] = value;
+        }
+        for (const field of LIMIT_NUMBER_FIELDS) {
+          const value = facts[field];
+          if (typeof value === "number") details[field] = value;
         }
       }
       const explanation = reported(wire.error?.message ?? wire.message, body);
@@ -130,9 +182,7 @@ export class Transport {
         code,
         `Deployment rejected the request (HTTP ${response.status})` +
           (explanation ? `: ${explanation}` : "."),
-        response.status === 401
-          ? "Run agw account login."
-          : "Review command configuration and account status.",
+        nextActionFor(response.status, code, details),
         3,
         details,
       );

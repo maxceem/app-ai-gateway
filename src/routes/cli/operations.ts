@@ -178,12 +178,7 @@ export async function createOperation(c: CliContext): Promise<Response> {
         });
       }
     }
-    await enforceEndpointRateLimit(
-      c.env,
-      `operation:${organizationId ?? c.req.header("cf-connecting-ip") ?? "local"}`,
-      10,
-      60_000,
-    );
+    await enforceEndpointRateLimit(c.env, "operation", organizationId);
     const now = Date.now();
     await c.env.DB.prepare(
       `INSERT OR IGNORE INTO mgmt_handoff(id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
