@@ -96,6 +96,9 @@ describe("provider browser submissions", () => {
         op.submit("browser-provider-secret"),
       ]);
       expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      // The command that opened this page is still running, so the approval
+      // sends its approver back to the terminal rather than into the console.
+      await expect(responses[0]!.json()).resolves.toMatchObject({ continueTo: "cli" });
       expect((await op.submit("different-replay-secret")).status).toBe(200);
       expect(upstream).not.toHaveBeenCalled();
     } finally {
