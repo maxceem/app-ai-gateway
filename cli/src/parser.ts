@@ -197,6 +197,11 @@ export function parse(argv: string[]): ParseResult {
       fail(
         "unknown_flag",
         `Unknown flag ${token.split("=")[0]} for ${command}.`,
+        // Resources are addressed positionally throughout, so the one mistake
+        // worth answering with more than the help text is naming one as a flag.
+        spec.args && ["id", "app", "app-id"].includes(match?.[1] ?? "")
+          ? `Pass the identifier as an argument: agw ${command}${" <id>".repeat(spec.args)}.`
+          : undefined,
       );
     const name = match[1]!;
     const inline = match[2];

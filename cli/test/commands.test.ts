@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import type { AppWrite } from "../../src/contracts/schemas.ts";
 import { operations } from "../../src/contracts/operations.ts";
 import { CliErrorDetailsSchema } from "../../src/contracts/operation-schemas.ts";
-import { appDocument, appCommand } from "../src/apps.ts";
+import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
 import {
   deploymentCommand,
@@ -14,7 +14,7 @@ import {
   type CloudflareClient,
   type CloudflareRequestOptions,
 } from "../src/deployment.ts";
-import { StateStore, type CliState, type InstallationJournal } from "../src/state.ts";
+import { StateStore, reserveOutput, type CliState, type InstallationJournal } from "../src/state.ts";
 import { Context } from "../src/context.ts";
 import type { Flags } from "../src/parser.ts";
 import { fail } from "../src/common.ts";
@@ -118,6 +118,140 @@ test("app remove supplies required confirmation query and full writes supply the
   // back in the body — no header is involved.
   assert.equal(options.body.revision, 1);
   assert.equal(options.body.name, "Renamed");
+});
+
+/** A provider as `listProviders` answers with one, named and typed by this test. */
+const providerRow = (slug: string, type: string) => ({
+  id: `p-${slug}`, slug, type, name: slug, secretHint: null, providerGatewayId: null,
+  gatewayRoute: null, baseUrl: null, pricing: null, status: "active",
+  createdAt: "now", createdBy: "me",
+});
+
+/** The example a command answered with, refused as a string by the union's other members. */
+function snippetOf(result: AppResult): string {
+  assert.ok("snippet" in result && typeof result.snippet === "string");
+  return result.snippet;
+}
+
+/** A context that answers the three reads an example is written from. */
+const snippetContext = (providers: ReturnType<typeof providerRow>[], app: AppWrite = server) =>
+  stubContext({
+    url: "https://gw.test",
+    call: async (name: string) => {
+      if (name === "listProviders") return { data: { providers } };
+      if (name === "listModelPrices")
+        return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
+      return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+    },
+  });
+
+test("a server app gets a runnable example, with placeholders for what it does not have yet", async () => {
+  const bare = await appCommand(snippetContext([]), "app snippet", ["app-1"], {});
+  const bareSnippet = snippetOf(bare);
+  assert.ok(bareSnippet.includes("/proxy/PROVIDER_SLUG/v1/chat/completions"));
+  assert.ok(bareSnippet.includes('"model":"MODEL"'));
+  assert.ok(bareSnippet.includes('-H "Authorization: Bearer $APP_AI_GATEWAY_KEY"'));
+  assert.ok("notes" in bare && bare.notes.length === 2);
+  // The placeholders are named in the snippet itself, as shell comments, so
+  // the human output says why without a second channel to read.
+  assert.match(bareSnippet, /^# No provider is configured yet/);
+
+  const configured = snippetOf(
+    await appCommand(
+      snippetContext([providerRow("openai", "openai"), providerRow("second", "openai")]),
+      "app snippet",
+      ["app-1"],
+      {},
+    ),
+  );
+  assert.ok(configured.includes("/proxy/openai/v1/responses"));
+  assert.ok(configured.includes('{"model":"gpt-5.6","input":"Say hello."}'));
+  // Two reachable providers is not an ambiguity to refuse over: the first is
+  // shown, and the other is named as one flag away.
+  assert.match(configured, /^# This app can reach 2 providers/);
+
+  const named = snippetOf(
+    await appCommand(
+      snippetContext([providerRow("openai", "openai"), providerRow("claude", "anthropic")]),
+      "app snippet",
+      ["app-1"],
+      { provider: "claude" },
+    ),
+  );
+  assert.ok(named.includes("/proxy/claude/v1/messages"));
+  assert.ok(named.includes("anthropic-version: 2023-06-01"));
+});
+
+test("creating a server app hands back the request to send, keyed from the file it just wrote", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-add-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const keyPath = join(dir, "app.key");
+  const created = { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" };
+  const ctx = stubContext({
+    url: "https://gw.test",
+    bootstrap: async () => {},
+    call: async (name: string) => {
+      if (name === "listProviders") return { data: { providers: [providerRow("openai", "openai")] } };
+      if (name === "listModelPrices")
+        return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
+      return { data: { app: created, resolved: null, config_error: null } };
+    },
+    keyOutput: async () => await reserveOutput(keyPath),
+    create: async () => ({
+      data: {
+        app: created,
+        resolved: null,
+        config_error: null,
+        api_key: { id: "key-1", key: "SENTINEL-KEY", name: "default", key_prefix: "agw_", created_at: "now" },
+      },
+      complete: async () => {},
+    }),
+  });
+  const result = await appCommand(ctx, "app add", [], { type: "server", name: "Server", "no-input": true });
+  const snippet = snippetOf(result);
+  assert.equal(snippet.includes("SENTINEL-KEY"), false);
+  assert.match(snippet, /^export APP_AI_GATEWAY_KEY="\$\(cat '.*app\.key'\)"/);
+  assert.ok(snippet.includes("/v1/apps/app-1/proxy/openai/v1/responses"));
+  assert.ok("applicationKey" in result && result.applicationKey?.storagePath === keyPath);
+});
+
+test("each application type is offered only the snippet its callers can authenticate", async () => {
+  const ios = await appDocument(iosFlags);
+  await assert.rejects(
+    () => appCommand(snippetContext([], server), "app snippet", ["app-1"], { language: "swift" }),
+    hasCode("unsupported_snippet"),
+  );
+  await assert.rejects(
+    () => appCommand(snippetContext([], ios), "app snippet", ["app-1"], { language: "curl" }),
+    hasCode("unsupported_snippet"),
+  );
+  await assert.rejects(
+    () => appCommand(snippetContext([], server), "app snippet", ["app-1"], { language: "python" }),
+    hasCode("invalid_input"),
+  );
+  await assert.rejects(
+    () => appCommand(snippetContext([], server), "app snippet", ["app-1"], { provider: "absent" }),
+    hasCode("provider_not_found"),
+  );
+  // A provider the account holds but the app cannot send to is a different
+  // answer from one that does not exist.
+  await assert.rejects(
+    () =>
+      appCommand(
+        snippetContext([{ ...providerRow("openai", "openai"), status: "disabled" }], server),
+        "app snippet",
+        ["app-1"],
+        { provider: "openai" },
+      ),
+    hasCode("provider_unavailable"),
+  );
+  // An iOS app defaults to Swift, and its example carries a body like the rest.
+  const swift = snippetOf(
+    await appCommand(snippetContext([providerRow("openai", "openai")], ios), "app snippet", ["app-1"], {}),
+  );
+  assert.ok(swift.includes("import AppAIGateway"));
+  assert.ok(swift.includes('providerPath: "v1/responses"'));
+  assert.ok(swift.includes("request.httpBody = Data("));
 });
 
 test("app key failures revoke one-time credential before returning error", async () => {

@@ -18,6 +18,14 @@ import type { Flags } from "./parser.ts";
 import { flagList } from "./parser.ts";
 import { jsonFile, required } from "./resources.ts";
 import { reserveOutput, type ReservedOutput, type StoredKeyMetadata } from "./state.ts";
+import {
+  curlSnippet,
+  exampleNotes,
+  firstRequest,
+  shellQuote,
+  swiftSnippet,
+  type RequestExample,
+} from "../../src/shared/first-request.ts";
 
 const unlimited = () => ({
   requests: { per_minute: null, per_day: null },
@@ -70,7 +78,7 @@ export type AppResult =
   | { dryRun: true; definition: AppWrite; validation: ValidationResult }
   | { appId: string; applicationKey: StoredKeyMetadata }
   | { output: string }
-  | { language: "swift"; snippet: string; requires?: string };
+  | { language: "swift" | "shell"; snippet: string; notes: string[] };
 
 /**
  * The stored application as a write body.
@@ -376,15 +384,21 @@ export async function appCommand(
         });
         ({ app, resolved, config_error: configError } = updated.data);
       }
+      // The request this application can now send, written against whatever it
+      // has: a provider it can reach and a priced model where those exist, and
+      // named placeholders where they do not, so a first application is never
+      // left to compose its first call from the reference.
       let snippet: string | undefined;
-      if (doc.config.authentication.type === "apple_app_attest") {
-        try {
-          const example = await appCommand(ctx, "app snippet", [app.id], {});
-          if ("snippet" in example) snippet = example.snippet;
-        } catch {
-          /* A successful app creation remains successful when an example is ambiguous or unavailable. */
-        }
+      try {
+        const example = await appCommand(ctx, "app snippet", [app.id], {});
+        if ("snippet" in example) snippet = example.snippet;
+      } catch {
+        /* A successful app creation remains successful when an example is unavailable. */
       }
+      // The key itself is never printed. This reads the file the CLI has just
+      // written, which is the one place it exists.
+      if (snippet && key)
+        snippet = `export APP_AI_GATEWAY_KEY="$(cat ${shellQuote(key.storagePath)})"\n\n${snippet}`;
       return {
         ...(snippet ? { snippet } : {}),
         app,
@@ -394,7 +408,7 @@ export async function appCommand(
         guidance:
           doc.config.authentication.type === "apple_app_attest"
             ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.0.0, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
-            : "Store the generated key on your server; never embed it in a mobile application.",
+            : `Store the generated key on your server; never embed it in a mobile application. Run agw app snippet ${app.id} for this request again.`,
       };
     } finally {
       await output?.cancel();
@@ -487,51 +501,97 @@ export async function appCommand(
     };
   }
   if (action === "snippet") {
-    if (flags.language && flags.language !== "swift")
-      fail("invalid_input", "Only --language swift is supported.");
-    if (doc.config.authentication.type !== "apple_app_attest")
+    const ios = doc.config.authentication.type === "apple_app_attest";
+    const language = flags.language ?? (ios ? "swift" : "curl");
+    if (!["swift", "curl"].includes(language))
+      fail("invalid_input", "--language must be swift or curl.");
+    // The two are not interchangeable: an iOS application's caller holds an
+    // App Attest assertion rather than a key, and a server application holds a
+    // key the Swift client has no way to send.
+    if ((language === "swift") !== ios)
       fail(
         "unsupported_snippet",
-        "Swift snippets are for iOS applications.",
-        "Use your server HTTP client with the stored application key.",
+        ios
+          ? "iOS applications authenticate with App Attest, which curl cannot perform."
+          : "Swift snippets are for iOS applications.",
+        `Run agw app snippet ${appId} --language ${ios ? "swift" : "curl"}.`,
       );
-    let target: string;
+    const notes: string[] = [];
+    let example: RequestExample;
     if (flags.endpoint) {
-      if (!doc.config.endpoints?.[flags.endpoint])
+      const endpoint = doc.config.endpoints?.[flags.endpoint];
+      if (!endpoint)
         fail("endpoint_not_found", "Choose an existing named endpoint.");
-      target = `endpointSlug: ${JSON.stringify(flags.endpoint)}`;
+      // A named endpoint holds the provider, the model and the parameters, so
+      // the client sends only what its style documents.
+      const responses = endpoint.api_style === "responses";
+      example = {
+        target: { endpoint: flags.endpoint },
+        body: responses ? { input: "Say hello." } : null,
+        anthropic: false,
+        gaps: responses ? [] : ["body"],
+      };
     } else {
+      const routing = {
+        providerMode: doc.config.routing.providers.mode,
+        providers: doc.config.routing.providers.selected,
+      };
       const { data: all } = await ctx.call("listProviders", []);
-      let providers = all.providers.filter(
+      // What this application may send to today, which is narrower than what
+      // the account holds: a disabled provider serves nothing, and a selected
+      // routing policy names the rest out.
+      const reachable = all.providers.filter(
         (p) =>
           p.status === "active" &&
-          (doc.config.routing.providers.mode === "all" ||
-            Object.hasOwn(doc.config.routing.providers.selected ?? {}, p.slug)),
+          (routing.providerMode === "all" ||
+            Object.hasOwn(routing.providers ?? {}, p.slug)),
       );
       const requested = typeof flags.provider === "string" ? flags.provider : undefined;
-      if (requested) providers = providers.filter((p) => p.slug === requested);
-      const p = providers[0];
-      if (providers.length !== 1 || !p)
+      if (requested && !reachable.some((p) => p.slug === requested))
         fail(
-          "provider_required",
-          "Choose one available provider slug using --provider, or use --endpoint.",
+          all.providers.some((p) => p.slug === requested)
+            ? "provider_unavailable"
+            : "provider_not_found",
+          all.providers.some((p) => p.slug === requested)
+            ? "That provider is disabled or outside this app's proxy policy."
+            : "No provider has that slug.",
+          "Run agw provider list for the slugs, and agw app show <id> for the policy.",
         );
-      const { data: capabilities } = await ctx.publicCall("getCliCapabilities", []);
-      const cap = capabilities.providers.find((c) => c.type === p.type);
-      const path = cap?.defaultPath;
-      if (!path)
-        fail(
-          "provider_path_required",
-          "This provider has no default snippet path in deployment capabilities.",
-          "Configure and select a named endpoint.",
-        );
-      target = `provider: ${JSON.stringify(p.slug)},\n    providerPath: ${JSON.stringify(path)}`;
+      const { data: catalog } = await ctx.call("listModelPrices", []);
+      const providers = requested
+        ? reachable.filter((p) => p.slug === requested)
+        : reachable;
+      example = firstRequest(routing, providers, catalog.prices);
+      if (!requested && reachable.length > 1)
+        notes.push(`This app can reach ${reachable.length} providers. Add --provider <slug> for a different one.`);
     }
-    const issuer = doc.config.authentication.end_user.source === "issuer";
-    const authMode = issuer
-      ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
-      : ".appAttestInstall";
-    const snippet = `// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)\n// Enable App Attest and test on a supported physical device.\nimport Foundation\nimport AppAIGateway\n\nlet gateway = AppAIGatewayClient(\n    appID: ${JSON.stringify(appId)},\n    baseURL: URL(string: ${JSON.stringify(ctx.url)})!,\n    authMode: ${authMode}\n)\n\nvar request = try await gateway.authorizedRequest(\n    ${target}\n)\n// Supply the provider-native JSON body, then send request with URLSession.\n`;
+    notes.push(...exampleNotes(example));
+    let snippet: string;
+    if (ios) {
+      const endUser = doc.config.authentication.type === "apple_app_attest"
+        ? doc.config.authentication.end_user
+        : undefined;
+      const issuer = endUser?.source === "issuer";
+      if (issuer)
+        notes.push(
+          "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.",
+        );
+      snippet = swiftSnippet({
+        baseUrl: ctx.url,
+        appId,
+        example,
+        authMode: issuer
+          ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
+          : ".appAttestInstall",
+        notes: [
+          "Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)",
+          "Enable App Attest and test on a supported physical device.",
+          ...notes,
+        ],
+      });
+    } else {
+      snippet = curlSnippet({ baseUrl: ctx.url, appId, example, notes });
+    }
     if (flags.output) {
       const output = await reserveOutput(flags.output);
       try {
@@ -541,16 +601,7 @@ export async function appCommand(
         await output.cancel();
       }
     }
-    return {
-      language: "swift",
-      snippet,
-      ...(issuer
-        ? {
-            requires:
-              "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.",
-          }
-        : {}),
-    };
+    return { language: ios ? "swift" : "shell", snippet, notes };
   }
   fail("unknown_command", "Unknown command.");
 }

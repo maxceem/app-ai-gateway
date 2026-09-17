@@ -58,6 +58,12 @@ parameters. They do not transfer credentials or usage
 to another deployment. Build that file from `agw app show <app-id> --json`,
 keeping `name`, `config` and `status` from `result.app`.
 
+`agw app snippet <app-id>` prints a request that app can send: curl for a
+server app, Swift for an iOS one. Creating an app prints it too. It is built
+from that app's own providers, allowed paths and priced models, and stands
+named placeholders in — `PROVIDER_SLUG`, `MODEL` — for anything not set up yet,
+so you always get something to run and can see what is still missing.
+
 Application keys are written only to a private file. Select a path with
 `--key-output`, or use the default managed private file.
 Use hidden prompts or `--key-stdin` when connecting with an existing management

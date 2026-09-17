@@ -26,7 +26,7 @@ import { useApp, useApps, usePrices, useProviders } from "@/lib/queries";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
 import { noteProxiedRequests } from "@/lib/analytics";
 import { useConsoleSession } from "@/lib/console-session";
-import { firstRequest } from "@/lib/first-request";
+import { curlSnippet, exampleNotes, firstRequest, swiftSnippet } from "@shared/first-request";
 import type { AppSummary } from "@/lib/types";
 
 /** Where the Swift client walks through the first proxied request end to end. */
@@ -112,38 +112,26 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
   const prices = usePrices();
   const ios = app.authentication_type === "apple_app_attest";
   if (details.isPending || providers.isPending || prices.isPending) return <Skeleton className="mt-4 h-32" />;
-  const example = details.data && providers.data && prices.data
-    ? firstRequest(details.data, providers.data.providers, prices.data.prices) : null;
-  if (!example) return <p className="mt-3 text-sm text-muted-foreground">No text request example is available for this app’s current provider and model settings.</p>;
-  const { provider, path, body, anthropic } = example;
-  const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  const origin = window.location.origin;
+  // An app with no provider yet still gets an example, with placeholders where
+  // its own configuration cannot fill one in — see `@shared/first-request`.
+  const example = firstRequest(
+    details.data?.resolved?.routing,
+    providers.data?.providers ?? [],
+    prices.data?.prices ?? {},
+  );
   const code = ios
-    ? `import Foundation
-import AppAIGateway
-
-let gateway = AppAIGatewayClient(
-    appID: ${JSON.stringify(app.id)},
-    baseURL: URL(string: ${JSON.stringify(origin)})!,
-    authMode: .appAttestInstall
-)
-
-var request = try await gateway.authorizedRequest(
-    provider: ${JSON.stringify(provider)},
-    providerPath: ${JSON.stringify(path)}
-)
-request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-${anthropic ? 'request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")\n' : ""}request.httpBody = Data(${JSON.stringify(JSON.stringify(body))}.utf8)
-let (data, response) = try await URLSession.shared.data(for: request)
-print(String(decoding: data, as: UTF8.self))`
-    : `curl --fail-with-body ${shellQuote(`${origin}/v1/apps/${encodeURIComponent(app.id)}/proxy/${encodeURIComponent(provider)}/${path}`)} \\
-  -H 'Authorization: Bearer API_KEY' \\
-  -H 'Content-Type: application/json' \\
-${anthropic ? "  -H 'anthropic-version: 2023-06-01' \\\n" : ""}  -d ${shellQuote(JSON.stringify(body))}`;
+    ? swiftSnippet({ baseUrl: window.location.origin, appId: app.id, example })
+    : curlSnippet({ baseUrl: window.location.origin, appId: app.id, example, keyExpression: "API_KEY" });
+  const notes = exampleNotes(example);
 
   return (
-    <div className="mt-4 min-w-0 overflow-hidden rounded-lg border bg-muted/40">
-      <pre className="overflow-x-auto p-4 text-xs leading-relaxed"><code>{code}</code></pre>
+    <div className="mt-4 min-w-0 space-y-2">
+      <div className="min-w-0 overflow-hidden rounded-lg border bg-muted/40">
+        <pre className="overflow-x-auto p-4 text-xs leading-relaxed"><code>{code.trimEnd()}</code></pre>
+      </div>
+      {notes.map((note) => (
+        <p key={note} className="text-sm text-pretty text-muted-foreground">{note}</p>
+      ))}
     </div>
   );
 }

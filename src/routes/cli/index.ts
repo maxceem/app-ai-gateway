@@ -1,5 +1,6 @@
 import { accountMonthUsage } from "../../core/account-usage";
 import { providerCapability } from "../../shared/capabilities";
+import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
 import { requireOrganization } from "@maxceem/cf-auth";
@@ -39,15 +40,18 @@ cliRoutes.get("/capabilities", (c) => {
       // entry omits is read as optional rather than as missing.
       const spec: ProviderSpec = PROVIDER_REGISTRY[type];
       const capability = providerCapability(type);
+      // The same path the console and the CLI write their examples against,
+      // from `src/shared/first-request.ts`. A type without one — Gemini, whose
+      // native surface needs the model in the path — publishes none rather
+      // than a path no client could call as it stands.
+      const defaultPath = examplePath(type);
       return {
         type,
         name: type,
         apiStyles: [...capability.apiStyles],
         endpointStyles: [...capability.endpointStyles],
         baseUrl: spec.directBaseUrl,
-        // Declared per provider in `PROVIDER_REGISTRY`; a type without one has
-        // no obvious first call, and the CLI says so rather than guessing.
-        ...(spec.defaultPath === undefined ? {} : { defaultPath: spec.defaultPath }),
+        ...(defaultPath === undefined ? {} : { defaultPath }),
       };
     }),
     providerGateways: [
