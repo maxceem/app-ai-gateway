@@ -439,16 +439,16 @@ describe("CLI account lifecycle", () => {
         "SELECT COUNT(*) AS n FROM mgmt_organization",
       ).first("n"),
     ).toBe(1);
-    expect(
-      (
-        await request(
-          testEnv,
-          `/browser/${op.id}/submit`,
-          { submissionToken: new URL(op.url).hash.slice(1), approve: true },
-          { origin: "https://example.test", cookie },
-        )
-      ).status,
-    ).toBe(200);
+    const approved = await request(
+      testEnv,
+      `/browser/${op.id}/submit`,
+      { submissionToken: new URL(op.url).hash.slice(1), approve: true },
+      { origin: "https://example.test", cookie },
+    );
+    expect(approved.status).toBe(200);
+    // Claiming is also how its approver got a console, and this browser is
+    // signed in to it, so the page is told to offer it rather than the terminal.
+    await expect(approved.json()).resolves.toMatchObject({ continueTo: "console" });
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM mgmt_organization",

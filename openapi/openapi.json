@@ -9908,11 +9908,19 @@
                     },
                     "message": {
                       "type": "string"
+                    },
+                    "continueTo": {
+                      "type": "string",
+                      "enum": [
+                        "cli",
+                        "console"
+                      ]
                     }
                   },
                   "required": [
                     "state",
-                    "message"
+                    "message",
+                    "continueTo"
                   ]
                 }
               }

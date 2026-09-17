@@ -37,6 +37,22 @@ function details(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** The two endings the gateway answers an approval with. */
+const CONSOLE_OUTCOME = {
+  body: {
+    state: "completed",
+    message: "This account is yours. Open the console to set up your first app.",
+    continueTo: "console",
+  },
+};
+const CLI_OUTCOME = {
+  body: {
+    state: "completed",
+    message: "You can close this tab and return to your CLI.",
+    continueTo: "cli",
+  },
+};
+
 /** Every case starts on the link the CLI printed: path plus proof fragment. */
 function renderApprove(route = `${PATH}#${TOKEN}`) {
   return renderPublic(<CliApprovePage />, { route, path: "/cli/approve/:id" });
@@ -239,7 +255,7 @@ describe("CliApprovePage claim", () => {
         viewer: { name: "Ada Lovelace", email: "ada@example.test" },
         blockedBy: null,
       }),
-      [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
+      [SUBMIT_URL]: CONSOLE_OUTCOME,
     });
 
     renderApprove();
@@ -261,7 +277,12 @@ describe("CliApprovePage claim", () => {
         approve: true,
       });
     });
-    expect(await screen.findByText(/return to your cli/i)).toBeTruthy();
+    // A claim ends in the console the approver just gained, not back in the
+    // terminal, and the gateway is what says so.
+    expect(await screen.findByText(/open the console/i)).toBeTruthy();
+    const onwards = screen.getByRole("link", { name: /go to your console/i });
+    expect(onwards.getAttribute("href")).toBe("/apps");
+    expect(screen.queryByText(/return to your cli/i)).toBeNull();
     expect(sessionStorage.getItem(`app-ai-gateway:cli-approve:${PATH}`)).toBeNull();
   });
 });
@@ -274,7 +295,7 @@ describe("CliApprovePage provider handoffs", () => {
         payload: { type: "openai", name: "OpenAI" },
         blockedBy: null,
       }),
-      [SUBMIT_URL]: { body: { state: "completed", message: "Approved. Return to your CLI." } },
+      [SUBMIT_URL]: CLI_OUTCOME,
     });
 
     renderApprove();
@@ -300,7 +321,9 @@ describe("CliApprovePage provider handoffs", () => {
         secret: "sk-test-value",
       });
     });
+    // The command is still running, so this tab offers no way onwards.
     expect(await screen.findByText(/return to your cli/i)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /console/i })).toBeNull();
   });
 
   it("omits the credential field when the provider is routed through a gateway", async () => {

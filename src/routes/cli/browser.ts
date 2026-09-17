@@ -35,6 +35,31 @@ function refusalFor(row: HandoffRow, state: AuthState): CliApprovalRefusal | nul
   return row.kind === "claim" ? claimRefusal(state, row.organization_id) : null;
 }
 
+/**
+ * What the page says once the handoff is approved, and where it sends the
+ * person afterwards.
+ *
+ * On the same kind dispatch `refusalFor` uses, and for the same reason: what
+ * each kind leaves behind is the gateway's knowledge. A claim ends with its
+ * approver holding a console session for the account they just took, since
+ * they created their sign-in on the approval page moments before, so the
+ * console is where they continue. Every other kind was opened by a command
+ * that is still running, and the terminal already has the answer.
+ */
+function outcomeFor(kind: CliOperationKind): CliBrowserSubmitResponse {
+  return kind === "claim"
+    ? {
+        state: "completed",
+        message: "This account is yours. Open the console to set up your first app.",
+        continueTo: "console",
+      }
+    : {
+        state: "completed",
+        message: "You can close this tab and return to your CLI.",
+        continueTo: "cli",
+      };
+}
+
 export async function verifiedSubmission(c: CliContext) {
   const meta = deployment(c);
   if (new URL(c.req.url).origin !== meta.consoleOrigin)
@@ -121,8 +146,5 @@ export async function browserSubmit(c: CliContext): Promise<Response> {
   } else {
     await completeProviderSubmission(c, row, input.secret);
   }
-  return c.json({
-    state: "completed",
-    message: "Approved. Return to your CLI.",
-  } satisfies CliBrowserSubmitResponse);
+  return c.json(outcomeFor(row.kind as CliOperationKind) satisfies CliBrowserSubmitResponse);
 }

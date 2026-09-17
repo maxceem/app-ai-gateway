@@ -1,9 +1,13 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { operations } from "@contracts/operations";
-import type { CliBrowserDetailsResponse, CliOperationKind } from "@contracts/cli";
+import type {
+  CliBrowserDetailsResponse,
+  CliBrowserSubmitResponse,
+  CliOperationKind,
+} from "@contracts/cli";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
+import { DEFAULT_LANDING } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
 
@@ -25,7 +30,10 @@ import { useSignIn, useSignOut } from "@/lib/queries";
  * What the page offers for a claim is not decided here. The gateway answers
  * every details request with `blockedBy`, the same verdict its submission
  * endpoint would reach, so the button this page shows and the answer pressing
- * it would get can never disagree.
+ * it would get can never disagree. Its ending is the gateway's too: the
+ * approval answers with the sentence to show and with `continueTo`, which says
+ * whether this browser has anywhere to go afterwards or the terminal has the
+ * rest.
  *
  * The submission proof arrives in the URL fragment, which never leaves the
  * browser. This page strips it from the address bar on arrival, keeps it in
@@ -140,13 +148,15 @@ export function CliApprovePage() {
     writeStoredProof(storageKey, { token, expiresAt: Date.parse(data.expiresAt) });
   }, [data, storageKey, token]);
 
-  const [approved, setApproved] = useState(false);
+  /* The gateway's own account of the approval, which is also the whole of what
+     the final screen says and offers. */
+  const [outcome, setOutcome] = useState<CliBrowserSubmitResponse | null>(null);
   const submit = useMutation({
     mutationFn: (body: { approve: true; secret?: string }) =>
       call(operations.cliBrowserSubmit, [id], { submissionToken: token, ...body }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       clearStoredProof(storageKey);
-      setApproved(true);
+      setOutcome(result);
     },
   });
 
@@ -187,14 +197,25 @@ export function CliApprovePage() {
     );
   }
 
-  if (approved) {
+  if (outcome) {
     return (
       <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
         <Alert role="status">
           <CheckCircle2 className="size-4" />
           <AlertTitle>Approved</AlertTitle>
-          <AlertDescription>Return to your CLI.</AlertDescription>
+          <AlertDescription>{outcome.message}</AlertDescription>
         </Alert>
+        {/*
+          Offered only where the gateway says this browser has somewhere to go.
+          A claim leaves its approver signed in on the account they just took,
+          so the link lands them in the console; every other handoff leaves this
+          tab with nothing, and the sentence above says so instead.
+        */}
+        {outcome.continueTo === "console" ? (
+          <Button asChild className="w-full">
+            <Link to={DEFAULT_LANDING}>Go to your console</Link>
+          </Button>
+        ) : null}
       </ApproveShell>
     );
   }

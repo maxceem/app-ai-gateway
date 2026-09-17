@@ -91,10 +91,29 @@ export const CliBrowserDetailsResponseSchema = z.object({
   googleEnabled: z.boolean(),
   expiresAt: z.string(),
 });
+/**
+ * Where the person who approved a handoff goes next.
+ *
+ * A handoff is started in a terminal, so `cli` is the answer for all but one
+ * kind: the command that opened the browser is still waiting, and the browser
+ * has nothing left to offer. A `claim` is the exception, because approving it
+ * is also the moment its approver gets a console: they created their sign-in on
+ * the approval page seconds earlier, so this browser now holds a session on the
+ * very account the CLI just settled, and sending them back to a terminal would
+ * hide the thing they just gained.
+ *
+ * Decided by the gateway rather than by the page, for the same reason
+ * `blockedBy` is: the handoff kinds and what each one leaves behind are the
+ * gateway's knowledge, and a page that mapped kinds to endings itself would be
+ * a second copy of that table, free to disagree with the first.
+ */
+export const CliHandoffContinuationSchema = z.enum(["cli", "console"]);
 /** The terminal state a completed approval leaves the page in. */
 export const CliBrowserSubmitResponseSchema = z.object({
   state: z.literal("completed"),
+  /** The whole of what the page says once it is approved. */
   message: z.string(),
+  continueTo: CliHandoffContinuationSchema,
 });
 /**
  * Better Auth's own sign-up answer, relayed verbatim by the claim-registration
@@ -276,6 +295,7 @@ export type CliOperationRequest = z.infer<typeof CliOperationRequestSchema>;
 export type CliSubmissionRequest = z.infer<typeof CliSubmissionRequestSchema>;
 export type CliApprovalRefusal = z.infer<typeof CliApprovalRefusalSchema>;
 export type CliBrowserDetailsResponse = z.infer<typeof CliBrowserDetailsResponseSchema>;
+export type CliHandoffContinuation = z.infer<typeof CliHandoffContinuationSchema>;
 export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
 export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;
 export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
