@@ -9,10 +9,14 @@ import { CliErrorDetailsSchema } from "../../src/contracts/operation-schemas.ts"
 import { appDocument, appCommand } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
 import {
+  Cloudflare,
   deploymentCommand,
+  runWrangler,
+  wranglerEnvironment,
   wranglerFailure,
   type CloudflareClient,
   type CloudflareRequestOptions,
+  type WranglerOptions,
 } from "../src/deployment.ts";
 import { StateStore, type CliState, type InstallationJournal } from "../src/state.ts";
 import { Context } from "../src/context.ts";
@@ -820,4 +824,173 @@ test("app snippet names the deployment's API host, not the managed URL", async (
   assert.ok(snippet !== undefined);
   assert.match(snippet, /baseURL: URL\(string: "https:\/\/api\.example\.com"\)!/u);
   assert.equal(snippet.includes("console.example"), false);
+});
+
+/** A wrangler double that records every run and answers from a script. */
+function runnerMock(answers: Record<string, string | { exit: number; output: string }>) {
+  const runs: [string[], WranglerOptions | undefined][] = [];
+  const run = async (args: string[], options?: WranglerOptions): Promise<string> => {
+    runs.push([args, options]);
+    const answer = answers[args.join(" ")];
+    if (answer === undefined) throw new Error(`unscripted wrangler run: ${args.join(" ")}`);
+    // Failures arrive the way the real runner raises them, redaction included,
+    // so a test cannot pass on an error shape production never produces.
+    if (typeof answer !== "string")
+      throw wranglerFailure(args, answer.exit, answer.output, options?.redact ?? []);
+    return answer;
+  };
+  return { runs, run, ran: (name: string) => runs.some(([args]) => args[0] === name) };
+}
+
+/** What wrangler answers with when nobody is logged in and nothing is set. */
+const loggedOut = { exit: 1, output: "Not logged in. Please run `wrangler login`." };
+
+/** Runs with the Cloudflare credential variables cleared from the environment. */
+async function withoutCloudflareEnv(body: () => Promise<void>): Promise<void> {
+  const names = [
+    "CLOUDFLARE_API_TOKEN",
+    "CF_API_TOKEN",
+    "CLOUDFLARE_API_KEY",
+    "CF_API_KEY",
+    "CLOUDFLARE_EMAIL",
+    "CF_EMAIL",
+  ];
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) delete process.env[name];
+  try {
+    await body();
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+test("a parsed wrangler run keeps the log level its answer is printed at", () => {
+  // The regression this guards: quietening the run that reports the current
+  // authorization leaves it exiting 0 with nothing on stdout, which reads as
+  // being logged out and sends an authorized caller to a login that refuses.
+  assert.equal(wranglerEnvironment({ parse: true }).WRANGLER_LOG, "log");
+  assert.equal(wranglerEnvironment().WRANGLER_LOG, "error");
+  assert.equal(wranglerEnvironment({ interactive: true, parse: true }).WRANGLER_LOG, "log");
+  assert.equal(wranglerEnvironment().CI, "true");
+  assert.equal(wranglerEnvironment({ interactive: true }).CI, "");
+  assert.equal(wranglerEnvironment().WRANGLER_SEND_METRICS, "false");
+});
+
+test("an existing wrangler authorization is reused instead of starting a login", async () => {
+  for (const [reported, expected] of [
+    [
+      { type: "api_token", token: "SENTINEL-TOKEN" },
+      { authorization: "Bearer SENTINEL-TOKEN" },
+    ],
+    [
+      { type: "oauth", token: "SENTINEL-OAUTH" },
+      { authorization: "Bearer SENTINEL-OAUTH" },
+    ],
+    [
+      { type: "api_key", key: "SENTINEL-KEY", email: "someone@example.com" },
+      { "x-auth-key": "SENTINEL-KEY", "x-auth-email": "someone@example.com" },
+    ],
+  ] as const) {
+    const wrangler = runnerMock({ "auth token --json": JSON.stringify(reported) });
+    const sent: Headers[] = [];
+    const cf = new Cloudflare(wrangler.run, async (_url, init) => {
+      sent.push(new Headers(init?.headers));
+      return new Response(JSON.stringify({ success: true, result: {} }), { status: 200 });
+    });
+    await cf.authenticate({});
+    assert.equal(wrangler.ran("login"), false);
+    // Silencing this run is what broke it before, so the option is the point.
+    assert.equal(wrangler.runs[0]?.[1]?.parse, true);
+    await cf.request("/accounts");
+    for (const [name, value] of Object.entries(expected))
+      assert.equal(sent[0]?.get(name), value);
+  }
+});
+
+test("wrangler output that will not parse is reported, not read as being logged out", async () => {
+  const wrangler = runnerMock({ "auth token --json": "", login: "" });
+  await assert.rejects(
+    () => new Cloudflare(wrangler.run).authenticate({}),
+    hasCode("cloudflare_auth_unreadable"),
+  );
+  assert.equal(wrangler.ran("login"), false);
+});
+
+test("a wrangler run that failed at something else keeps its own cause", async () => {
+  await withoutCloudflareEnv(async () => {
+    process.env["CLOUDFLARE_API_TOKEN"] = "SENTINEL-TOKEN-VALUE";
+    // With credentials set, wrangler cannot be reporting a missing login, so
+    // this failure is about something else — here a project config beside the
+    // caller — and answering it with a login would bury the reason.
+    const wrangler = runnerMock({
+      "auth token --json": {
+        exit: 1,
+        output: 'Expected "name" to be of type string\nusing SENTINEL-TOKEN-VALUE',
+      },
+      login: "",
+    });
+    const error = await new Cloudflare(wrangler.run).authenticate({}).catch((e: unknown) => e);
+    assert.equal(errorOf(error).code, "wrangler_failed");
+    assert.match(String(errorOf(error).details?.["output"]), /Expected "name"/);
+    assert.equal(wrangler.ran("login"), false);
+    // The run declares the environment's credentials as secrets, so neither the
+    // reported output nor the message may echo one back.
+    assert.equal(JSON.stringify(error).includes("SENTINEL"), false);
+    assert.equal((error as Error).message.includes("SENTINEL"), false);
+    assert.match(String(errorOf(error).details?.["output"]), /using \[redacted\]/);
+  });
+});
+
+test("the authorization read cannot be decided by a config beside the caller", async () => {
+  const wrangler = runnerMock({
+    "auth token --json": JSON.stringify({ type: "oauth", token: "t" }),
+  });
+  await new Cloudflare(wrangler.run).authenticate({});
+  assert.equal(wrangler.runs[0]?.[1]?.cwd, tmpdir());
+});
+
+test("a login that refuses is reported as such, without a crash in its place", async () => {
+  await withoutCloudflareEnv(async () => {
+    // Wrangler prints a refusal on stderr and still exits 0; only what it holds
+    // afterwards says whether the login took.
+    const wrangler = runnerMock({ "auth token --json": loggedOut, login: "" });
+    await assert.rejects(
+      () => new Cloudflare(wrangler.run).authenticate({}),
+      hasCode("cloudflare_auth_required"),
+    );
+    assert.equal(wrangler.ran("login"), true);
+  });
+});
+
+test("a non-interactive run asks for a token rather than opening a browser", async () => {
+  await withoutCloudflareEnv(async () => {
+    for (const flags of [{ "no-input": true }, { "dry-run": true }] as Flags[]) {
+      const wrangler = runnerMock({ "auth token --json": loggedOut });
+      await assert.rejects(
+        () => new Cloudflare(wrangler.run).authenticate(flags),
+        hasCode("cloudflare_auth_required"),
+      );
+      assert.equal(wrangler.ran("login"), false);
+    }
+  });
+});
+
+test("the real wrangler answers a parsed run where this CLI reads it", async () => {
+  // The bug this guards was invisible to every double: wrangler exited 0 and
+  // printed its answer where a quietened run could not see it. Only the real
+  // binary can say whether that is still true.
+  await withoutCloudflareEnv(async () => {
+    process.env["CLOUDFLARE_API_TOKEN"] = "dummy_value_123";
+    const reported = await runWrangler(["auth", "token", "--json"], {
+      parse: true,
+      cwd: tmpdir(),
+    });
+    assert.deepEqual(JSON.parse(reported), {
+      type: "api_token",
+      token: "dummy_value_123",
+    });
+  });
 });
