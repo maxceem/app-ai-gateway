@@ -24,6 +24,7 @@ export interface MainOptions {
   >;
   transport?: Pick<Transport, "request">;
   stdout?: OutputSink;
+  stderr?: OutputSink;
 }
 
 type ParsedCommand = Extract<ParseResult, { command: string }>;
@@ -82,6 +83,7 @@ export async function main(
     store = new StateStore(),
     transport = new Transport(),
     stdout = process.stdout,
+    stderr = process.stderr,
   }: MainOptions = {},
 ): Promise<number> {
   const json = argv.includes("--json");
@@ -144,17 +146,32 @@ export async function main(
     // that do not parse are dropped rather than printed, and never turn a
     // reportable failure into a crash inside the reporter.
     const details = e.details ? CliErrorDetailsSchema.safeParse(e.details) : undefined;
-    const output = {
-      schemaVersion: 1,
-      ok: false,
-      error: {
-        code: e.code,
-        message: e.message,
-        nextAction: e.nextAction,
-        ...(details?.success ? { details: details.data } : {}),
-      },
+    const reported = {
+      code: e.code,
+      message: e.message,
+      nextAction: e.nextAction,
+      ...(details?.success ? { details: details.data } : {}),
     };
-    stdout.write(JSON.stringify(output, null, json ? undefined : 2) + "\n");
+    if (json) {
+      stdout.write(
+        JSON.stringify({ schemaVersion: 1, ok: false, error: reported }) + "\n",
+      );
+      return e.exitCode;
+    }
+    // Text failures go to stderr, where a shell already expects them: stdout
+    // stays clean for the command's own output, so `agw app snippet ... > f`
+    // writes a snippet or an empty file, never half a report of a failure.
+    // `--json` keeps its one document on stdout, which is what agents read.
+    const lines = [
+      `Error: ${e.message}`,
+      `Next: ${e.nextAction}`,
+      `Code: ${e.code}`,
+    ];
+    // Every declared detail field is a string, a number or a boolean, so each
+    // one is a line of its own rather than a nested document.
+    for (const [key, value] of Object.entries(reported.details ?? {}))
+      lines.push(`  ${key}: ${String(value)}`);
+    stderr.write(lines.join("\n") + "\n");
     return e.exitCode;
   }
 }

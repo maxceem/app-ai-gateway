@@ -88,7 +88,9 @@ The whole documentation is also published as
 [agents.md](https://docs.appaigateway.com/agents.md).
 
 **Output.** Add `--json` for exactly one JSON document on stdout; progress goes
-to stderr. Add `--no-input` to fail instead of prompting.
+to stderr. Without `--json`, output is plain text and a failure is printed to
+stderr, so stdout carries only the command's own output. Add `--no-input` to
+fail instead of prompting.
 
 ```json
 { "schemaVersion": 1, "ok": true,  "context": { "url": "...", "accountId": "..." }, "result": { } }
