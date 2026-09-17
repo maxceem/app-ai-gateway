@@ -8,6 +8,13 @@ For the simplest terminal setup, install `@maxceem/agw` and run
 saves its recovery journal and connects the new gateway. See [CLI](/automation/cli).
 The button below is an alternative for a deployment maintained through a GitHub fork.
 
+Setup acts on your Cloudflare account through Wrangler, and reuses whatever
+Wrangler is already authorized with: an earlier `wrangler login`, or
+`CLOUDFLARE_API_TOKEN` in the environment. It opens a browser only when it finds
+neither. Setting `CLOUDFLARE_API_TOKEN` is what keeps a browser out of it; add
+`--no-input` so nothing else prompts either, and supply the values it would
+have asked for.
+
 The first deployment command downloads the gateway build belonging to that CLI
 version: one archive, published with the project's GitHub release. It is checked
 against a SHA-256 built into the CLI before anything is unpacked, and kept under

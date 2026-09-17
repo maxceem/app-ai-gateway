@@ -26,6 +26,7 @@ import { useApp, useApps, usePrices, useProviders } from "@/lib/queries";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
 import { noteProxiedRequests } from "@/lib/analytics";
 import { useConsoleSession } from "@/lib/console-session";
+import { clientApiOrigin } from "@/lib/client-api";
 import { curlSnippet, exampleNotes, firstRequest, swiftSnippet } from "@shared/first-request";
 import type { AppSummary } from "@/lib/types";
 
@@ -107,6 +108,7 @@ function WaitingForRequest() {
 }
 
 function FirstRequestExample({ app }: { app: AppSummary }) {
+  const { capabilities } = useConsoleSession();
   const details = useApp(app.id);
   const providers = useProviders();
   const prices = usePrices();
@@ -119,9 +121,12 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
     providers.data?.providers ?? [],
     prices.data?.prices ?? {},
   );
+  // The host applications call, which on a deployment that publishes a separate
+  // API domain is not the console's own. A snippet is pasted into a real app.
+  const origin = clientApiOrigin(capabilities);
   const code = ios
-    ? swiftSnippet({ baseUrl: window.location.origin, appId: app.id, example })
-    : curlSnippet({ baseUrl: window.location.origin, appId: app.id, example, keyExpression: "API_KEY" });
+    ? swiftSnippet({ baseUrl: origin, appId: app.id, example })
+    : curlSnippet({ baseUrl: origin, appId: app.id, example, keyExpression: "API_KEY" });
   const notes = exampleNotes(example);
 
   return (

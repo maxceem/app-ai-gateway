@@ -566,6 +566,10 @@ export async function appCommand(
         notes.push(`This app can reach ${reachable.length} providers. Add --provider <slug> for a different one.`);
     }
     notes.push(...exampleNotes(example));
+    // The host applications call, which is not always the one this CLI manages
+    // the gateway through: a deployment publishing a separate API domain names
+    // it in its own deployment identity, and a snippet goes into a real app.
+    const clientUrl = ctx.active?.deployment?.apiUrl ?? ctx.url;
     let snippet: string;
     if (ios) {
       const endUser = doc.config.authentication.type === "apple_app_attest"
@@ -577,7 +581,7 @@ export async function appCommand(
           "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.",
         );
       snippet = swiftSnippet({
-        baseUrl: ctx.url,
+        baseUrl: clientUrl,
         appId,
         example,
         authMode: issuer
@@ -590,7 +594,7 @@ export async function appCommand(
         ],
       });
     } else {
-      snippet = curlSnippet({ baseUrl: ctx.url, appId, example, notes });
+      snippet = curlSnippet({ baseUrl: clientUrl, appId, example, notes });
     }
     if (flags.output) {
       const output = await reserveOutput(flags.output);
