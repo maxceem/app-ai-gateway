@@ -347,7 +347,7 @@ function Footnote({ id, expiresAt }: { id: string; expiresAt?: string }) {
  *
  * Signing in appears exactly once, as the answer to a question a person has
  * already been asked: a registration refused because that email is taken.
- * Whoever registered here for a claim that then expired owns a sign-in
+ * Whoever registered here for a claim that then expired owns an account
  * attached to nothing, and this is the only screen that can tell them so. It
  * is reached by failing, never by choosing.
  */
@@ -406,8 +406,8 @@ function ClaimRegister({
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         {recovering
-          ? "Sign in to the sign-in you already created for this claim."
-          : "Claiming settles this account on a new person. Create your sign-in to continue."}
+          ? "Sign in to the account you already created for this claim."
+          : "Create your account to claim."}
       </p>
 
       {googleEnabled ? (
@@ -457,7 +457,7 @@ function ClaimRegister({
         </div>
         {taken ? (
           <Alert role="alert">
-            <AlertTitle>That email already has a sign-in</AlertTitle>
+            <AlertTitle>That email already has an account</AlertTitle>
             <AlertDescription className="space-y-3">
               <span>
                 If you created it here for a claim you never finished, sign in to carry on.
@@ -492,7 +492,7 @@ function ClaimRegister({
  *
  * A claim settles this account on a person who has no other, so there is
  * nothing to decide here beyond leaving the current session: signing out
- * returns the page to the sign-in creation form, without a navigation that
+ * returns the page to the account creation form, without a navigation that
  * would drop the proof this tab is holding.
  */
 function SignOutFirst({
@@ -509,8 +509,8 @@ function SignOutFirst({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        {who} is signed in and already has an account. This one must be claimed by a new
-        person, so sign out first, then create a sign-in on this page.
+        {who} is signed in and already owns an account. This one must be claimed by a new
+        person, so sign out first, then create your account on this page.
       </p>
       <Button
         type="button"
