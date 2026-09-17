@@ -908,11 +908,34 @@ test("pending setup domain resumes without bootstrap and preserves current inven
   assert.ok(saved.domains?.includes("existing.example.com"));
 });
 
+test("a refused Cloudflare call reports what Cloudflare said, not only its status", async () => {
+  const cf = new Cloudflare(
+    async () => JSON.stringify({ type: "oauth", token: "SENTINEL-CF-TOKEN" }),
+    async () =>
+      Response.json(
+        {
+          success: false,
+          errors: [{ code: 10021, message: "workers.api.error.cron_trigger_limit_exceeded" }],
+        },
+        { status: 400 },
+      ),
+  );
+  await cf.authenticate({});
+  await assert.rejects(
+    () => cf.request("/accounts/account-cf/workers/scripts/worker/schedules", { method: "PUT", body: [] }),
+    (error: unknown) =>
+      errorOf(error).code === "cloudflare_error" &&
+      errorOf(error).details?.["apiErrors"] ===
+        "workers.api.error.cron_trigger_limit_exceeded [code: 10021]" &&
+      (error as Error).message.includes("HTTP 400"),
+  );
+});
+
 test("a failed wrangler run reports its own output, minus the secrets it was given", () => {
   const failure = wranglerFailure(
     ["deploy", "--config", "wrangler.json"],
     1,
-    `${"noise\n".repeat(600)}✘ A worker with this name already exists\nusing SENTINEL-VAULT-KEY-VALUE\n`,
+    `${"noise\n".repeat(2000)}✘ A worker with this name already exists\nusing SENTINEL-VAULT-KEY-VALUE\n`,
     ["SENTINEL-VAULT-KEY-VALUE", "short"],
   );
   assert.equal(failure.code, "wrangler_failed");
@@ -922,7 +945,11 @@ test("a failed wrangler run reports its own output, minus the secrets it was giv
   assert.match(details.output ?? "", /A worker with this name already exists/);
   assert.match(details.output ?? "", /using \[redacted\]/);
   assert.ok(!(details.output ?? "").includes("SENTINEL"));
-  assert.ok((details.output ?? "").length <= 2000);
+  assert.ok((details.output ?? "").length <= 5000);
+  // Wrangler colours its output for a terminal; this is read out of a JSON
+  // envelope, so the escapes are gone and the text is not.
+  const coloured = wranglerFailure(["deploy"], 1, "\u001b[31m✘ \u001b[0mrefused by the API");
+  assert.equal(CliErrorDetailsSchema.parse(coloured.details).output, "✘ refused by the API");
 });
 
 /**
@@ -1002,13 +1029,14 @@ async function withoutCloudflareEnv(body: () => Promise<void>): Promise<void> {
   }
 }
 
-test("a parsed wrangler run keeps the log level its answer is printed at", () => {
-  // The regression this guards: quietening the run that reports the current
+test("no wrangler run is quietened, whatever its output is read for", () => {
+  // Two regressions this guards. Quietening the run that reports the current
   // authorization leaves it exiting 0 with nothing on stdout, which reads as
   // being logged out and sends an authorized caller to a login that refuses.
-  assert.equal(wranglerEnvironment({ parse: true }).WRANGLER_LOG, "log");
-  assert.equal(wranglerEnvironment().WRANGLER_LOG, "error");
-  assert.equal(wranglerEnvironment({ interactive: true, parse: true }).WRANGLER_LOG, "log");
+  // Quietening the rest leaves a failed deployment reported as the one line
+  // wrangler ends on, with everything it said about the cause discarded.
+  assert.equal(wranglerEnvironment().WRANGLER_LOG, "log");
+  assert.equal(wranglerEnvironment({ interactive: true }).WRANGLER_LOG, "log");
   assert.equal(wranglerEnvironment().CI, "true");
   assert.equal(wranglerEnvironment({ interactive: true }).CI, "");
   assert.equal(wranglerEnvironment().WRANGLER_SEND_METRICS, "false");
@@ -1037,8 +1065,8 @@ test("an existing wrangler authorization is reused instead of starting a login",
     });
     await cf.authenticate({});
     assert.equal(wrangler.ran("login"), false);
-    // Silencing this run is what broke it before, so the option is the point.
-    assert.equal(wrangler.runs[0]?.[1]?.parse, true);
+    // Away from the caller's directory, so no config beside them decides it.
+    assert.equal(wrangler.runs[0]?.[1]?.cwd, tmpdir());
     await cf.request("/accounts");
     for (const [name, value] of Object.entries(expected))
       assert.equal(sent[0]?.get(name), value);
@@ -1120,7 +1148,6 @@ test("the real wrangler answers a parsed run where this CLI reads it", async () 
   await withoutCloudflareEnv(async () => {
     process.env["CLOUDFLARE_API_TOKEN"] = "dummy_value_123";
     const reported = await runWrangler(["auth", "token", "--json"], {
-      parse: true,
       cwd: tmpdir(),
     });
     assert.deepEqual(JSON.parse(reported), {
