@@ -39,7 +39,7 @@ A Cloudflare account is all you need. The deployment form asks for one value:
 Everything else is provisioned for you. When the deployment finishes, open the
 console, create the first account, and add your provider keys.
 
-## Run locally
+## Local development
 
 Requirements: Node.js 22+, pnpm 11, and Wrangler 4.
 

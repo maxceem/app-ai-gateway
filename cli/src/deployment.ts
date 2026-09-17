@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { cp, writeFile, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CliCapabilitiesResponse } from "../../src/contracts/cli.ts";
@@ -18,6 +19,12 @@ export interface WranglerOptions {
   cwd?: string;
   input?: string;
   interactive?: boolean;
+  /**
+   * Whether this run's stdout is read rather than only awaited. Wrangler
+   * prints its machine-readable answers at the ordinary log level, so a run
+   * that is parsed cannot be quietened the way a deploy can.
+   */
+  parse?: boolean;
   /** Secret values that must never appear in a reported failure. */
   redact?: string[];
 }
@@ -56,19 +63,35 @@ export function wranglerFailure(
   );
 }
 
+/**
+ * The environment a wrangler run is given.
+ *
+ * `WRANGLER_LOG` is set rather than inherited, so a caller's `debug` cannot
+ * leak into a run this CLI has to read, and the long runs stay quiet. A parsed
+ * run has to stay at `log`: that is the level wrangler prints its `--json`
+ * answers at, and quietening one silences the answer while still exiting 0,
+ * which is indistinguishable from not being logged in.
+ */
+export function wranglerEnvironment({
+  interactive = false,
+  parse = false,
+}: Pick<WranglerOptions, "interactive" | "parse"> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    WRANGLER_SEND_METRICS: "false",
+    WRANGLER_LOG: parse ? "log" : "error",
+    CI: interactive ? "" : "true",
+  };
+}
+
 export async function runWrangler(
   args: string[],
-  { cwd, input, interactive = false, redact }: WranglerOptions = {},
+  { cwd, input, interactive = false, parse = false, redact }: WranglerOptions = {},
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [require.resolve("wrangler/bin/wrangler.js"), ...args], {
       ...(cwd === undefined ? {} : { cwd }),
-      env: {
-        ...process.env,
-        WRANGLER_SEND_METRICS: "false",
-        WRANGLER_LOG: "error",
-        CI: interactive ? "" : "true",
-      },
+      env: wranglerEnvironment({ interactive, parse }),
       stdio: [input ? "pipe" : interactive ? "inherit" : "ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -105,6 +128,30 @@ interface CloudflareAuth {
   token?: string;
   key?: string;
   email?: string;
+}
+
+/** Whether an authorization carries enough to sign a Cloudflare API request. */
+function usable(auth: CloudflareAuth): boolean {
+  return auth.type === "api_key" ? Boolean(auth.key && auth.email) : Boolean(auth.token);
+}
+
+/**
+ * The Cloudflare credential values the environment carries, under the names
+ * and in the two shapes wrangler itself accepts: an API token, or a global key
+ * paired with an email.
+ *
+ * Wrangler reads exactly these, so an empty result is what allows a failed
+ * read to mean "logged out" at all — with credentials present it cannot. The
+ * values are also what a reported wrangler failure has to be scrubbed of.
+ */
+function environmentCredentials(): string[] {
+  const env = process.env;
+  const token = env.CLOUDFLARE_API_TOKEN ?? env.CF_API_TOKEN;
+  const key = env.CLOUDFLARE_API_KEY ?? env.CF_API_KEY;
+  const email = env.CLOUDFLARE_EMAIL ?? env.CF_EMAIL;
+  return [token, key && email ? key : undefined].filter((value): value is string =>
+    Boolean(value),
+  );
 }
 
 interface CloudflareEnvelope<T> {
@@ -163,22 +210,76 @@ export class Cloudflare {
     this.fetch = fetchImpl;
   }
 
-  async authenticate(flags: Flags): Promise<void> {
+  /**
+   * The authorization wrangler holds, or undefined when it holds none.
+   *
+   * Only one outcome may be read as "logged out": wrangler exiting non-zero
+   * with nothing in the environment for it to have used. A run that failed
+   * while credentials were set failed at something else, a run that could not
+   * start failed at nothing to do with authorization, and output that will not
+   * parse means this CLI and the wrangler it drives disagree about the
+   * command. Answering any of those with a login would hide the cause behind a
+   * message about something the caller had already done.
+   */
+  private async readAuth(): Promise<CloudflareAuth | undefined> {
+    const credentials = environmentCredentials();
+    let reported: string;
     try {
-      this.auth = JSON.parse(await this.run(["auth", "token", "--json"])) as CloudflareAuth;
-    } catch {
-      if (flags["no-input"] || flags["dry-run"])
-        fail(
-          "cloudflare_auth_required",
-          "Cloudflare authentication is required.",
-          "Set CLOUDFLARE_API_TOKEN securely, or run setup interactively to authorize Cloudflare.",
-          4,
-        );
-      await this.run(["login"], { interactive: true });
-      this.auth = JSON.parse(await this.run(["auth", "token", "--json"])) as CloudflareAuth;
+      // Away from the caller's directory: this command reads a wrangler config
+      // if one sits beside it, and an unrelated project's config must not
+      // decide whether Cloudflare is authorized.
+      reported = await this.run(["auth", "token", "--json"], {
+        parse: true,
+        cwd: tmpdir(),
+        redact: credentials,
+      });
+    } catch (error) {
+      if (
+        credentials.length > 0 ||
+        !(error instanceof CliError) ||
+        error.code !== "wrangler_failed"
+      )
+        throw error;
+      return undefined;
     }
-    if (!this.auth?.token && this.auth?.type !== "api_key")
-      fail("cloudflare_auth_required", "No Cloudflare authorization is available.");
+    let auth: CloudflareAuth;
+    try {
+      auth = JSON.parse(reported) as CloudflareAuth;
+    } catch {
+      fail(
+        "cloudflare_auth_unreadable",
+        "Wrangler did not report the Cloudflare authorization it holds.",
+        "Reinstall the CLI so the wrangler it bundles is the one it expects, then retry.",
+        3,
+      );
+    }
+    return usable(auth) ? auth : undefined;
+  }
+
+  async authenticate(flags: Flags): Promise<void> {
+    this.auth = await this.readAuth();
+    if (this.auth) return;
+    if (flags["no-input"] || flags["dry-run"])
+      fail(
+        "cloudflare_auth_required",
+        "Cloudflare authentication is required.",
+        "Set CLOUDFLARE_API_TOKEN securely, or run setup interactively to authorize Cloudflare.",
+        4,
+      );
+    // Reaching here means the environment carried nothing, so wrangler will
+    // not refuse the flow. Run it away from the caller's directory too, for
+    // the same reason the read is.
+    await this.run(["login"], { interactive: true, cwd: tmpdir() });
+    // Wrangler reports a refused login on stderr and still exits 0, so what it
+    // holds afterwards is the only answer worth believing.
+    this.auth = await this.readAuth();
+    if (!this.auth)
+      fail(
+        "cloudflare_auth_required",
+        "Cloudflare authorization was not completed.",
+        "Read the wrangler output above, complete the browser login, then retry the same command.",
+        4,
+      );
   }
 
   private authHeaders(): Record<string, string> {
