@@ -139,6 +139,13 @@ export const CliErrorDetailsSchema = z.object({
   providerGatewayId: z.string().optional(),
   revoked: z.boolean().optional(),
   storagePath: z.string().optional(),
+  /** Which ceiling refused the request, for the codes that name one. */
+  scope: z.string().optional(),
+  limit: z.number().optional(),
+  used: z.number().optional(),
+  windowSeconds: z.number().optional(),
+  retryAfterSeconds: z.number().optional(),
+  resetAt: z.string().optional(),
   id: z.string().optional(),
   state: z.string().optional(),
   expiresAt: z.string().optional(),

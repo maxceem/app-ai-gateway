@@ -111,9 +111,8 @@ export async function bootstrap(c: CliContext): Promise<Response> {
   if (!row) {
     await enforceEndpointRateLimit(
       c.env,
-      `bootstrap:${c.req.header("cf-connecting-ip") ?? "local"}`,
-      3,
-      86_400_000,
+      "bootstrap",
+      c.req.header("cf-connecting-ip") ?? "local",
     );
     const accountId = meta.mode === "self_hosted" ? `private-${meta.id}` : `account-${hash}`;
     const userId = `service-${accountId}`;

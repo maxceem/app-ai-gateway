@@ -2,6 +2,81 @@ import { GatewayError } from "./errors";
 
 const encoder = new TextEncoder();
 
+/**
+ * One endpoint abuse policy: how often, over what, and how to say so.
+ *
+ * `action` names what the caller did too often and `sharedBy` what the counter
+ * is taken over. Those two carry the whole difference between a limit the
+ * caller can wait out alone and one that somebody else on the same network
+ * already spent, which is the first thing a person needs in order to decide
+ * what to do — and a bare count cannot tell them either. `CAPPED_RESOURCES` in
+ * plan-caps.ts carries a `subject` for the same reason.
+ */
+interface EndpointRateLimit {
+  limit: number;
+  windowMs: number;
+  action: string;
+  sharedBy: string;
+}
+
+/**
+ * Every abuse policy this gateway enforces on its own endpoints.
+ *
+ * Each key is also the prefix of the subject it counts, so one name identifies
+ * a policy here, in the Durable Object that counts it, and in the `scope` a
+ * refusal reports. Changing a key renames the object and so forgives every
+ * counter currently held under it; the numbers beside it can be changed freely.
+ *
+ * These are not a plan allowance and not an application's own limits. Nothing
+ * here is bought, sold or configured by anyone, and neither quota system reads
+ * this table: it exists only to stop one caller from hammering one endpoint.
+ */
+export const ENDPOINT_RATE_LIMITS = {
+  bootstrap: {
+    limit: 3,
+    windowMs: 86_400_000,
+    action: "create an account",
+    sharedBy: "everyone sharing your network address",
+  },
+  operation: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "start a management operation",
+    sharedBy: "your account",
+  },
+  submission: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "answer an approval page",
+    sharedBy: "this operation",
+  },
+} as const satisfies Record<string, EndpointRateLimit>;
+
+export type EndpointRateLimitName = keyof typeof ENDPOINT_RATE_LIMITS;
+
+const UNITS = [
+  { ms: 86_400_000, singular: "day", plural: "days" },
+  { ms: 3_600_000, singular: "hour", plural: "hours" },
+  { ms: 60_000, singular: "minute", plural: "minutes" },
+  { ms: 1_000, singular: "second", plural: "seconds" },
+] as const;
+
+/** A duration as a person says it, in the largest unit that fits it whole. */
+function spoken(ms: number): string {
+  for (const unit of UNITS) {
+    if (ms < unit.ms) continue;
+    const count = Math.floor(ms / unit.ms);
+    return `${count} ${count === 1 ? unit.singular : unit.plural}`;
+  }
+  return "1 second";
+}
+
+/** The same duration as the unit alone, for "at most 3 times per day". */
+function perWindow(ms: number): string {
+  const text = spoken(ms);
+  return text.startsWith("1 ") ? text.slice(2) : text;
+}
+
 async function subjectDigest(subject: string): Promise<string> {
   return Array.from(
     new Uint8Array(
@@ -11,22 +86,51 @@ async function subjectDigest(subject: string): Promise<string> {
   ).join("");
 }
 
-/** Enforces a gateway endpoint's fixed-window abuse policy for one subject. */
+/**
+ * Enforces a gateway endpoint's fixed-window abuse policy for one subject.
+ *
+ * `scopeId` is whatever the policy counts over — a network address, an account,
+ * one pending operation — and never reaches the Durable Object's name in the
+ * clear, because the digest below is what the object is named after.
+ */
 export async function enforceEndpointRateLimit(
   env: Env,
-  subject: string,
-  limit: number,
-  windowMs: number,
+  name: EndpointRateLimitName,
+  scopeId: string,
 ): Promise<void> {
-  const name = `endpoint-rate:${await subjectDigest(subject)}`;
+  const policy = ENDPOINT_RATE_LIMITS[name];
+  const subject = `${name}:${scopeId}`;
+  const objectName = `endpoint-rate:${await subjectDigest(subject)}`;
   const result = await env.ENDPOINT_RATE_LIMITER
-    .getByName(name)
-    .check({ limit, windowMs });
-  if (!result.allowed)
-    throw new GatewayError(
-      429,
-      "rate_limited",
-      "Too many attempts; try again later",
-      { "Retry-After": String(result.retryAfterSeconds) },
-    );
+    .getByName(objectName)
+    .check({ limit: policy.limit, windowMs: policy.windowMs });
+  if (result.allowed) return;
+
+  const resetAt = new Date(
+    Date.now() + result.retryAfterSeconds * 1_000,
+  ).toISOString();
+  // A wait measured in seconds is best said as a wait. One measured in hours is
+  // best said as an instant: the window is aligned to the clock rather than to
+  // the caller's last attempt, so "about 18 hours" is the one part of this they
+  // would otherwise have to work out for themselves.
+  const retry =
+    result.retryAfterSeconds >= 3_600
+      ? `Try again after ${resetAt}.`
+      : `Try again in ${spoken(result.retryAfterSeconds * 1_000)}.`;
+  throw new GatewayError(
+    429,
+    "rate_limited",
+    `You can ${policy.action} at most ${policy.limit} times per ` +
+      `${perWindow(policy.windowMs)}, counted across ${policy.sharedBy}. ${retry}`,
+    { "Retry-After": String(result.retryAfterSeconds) },
+    {
+      data: {
+        scope: name,
+        limit: policy.limit,
+        windowSeconds: policy.windowMs / 1_000,
+        retryAfterSeconds: result.retryAfterSeconds,
+        resetAt,
+      },
+    },
+  );
 }

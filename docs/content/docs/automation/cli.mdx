@@ -72,6 +72,11 @@ must be requested explicitly.
 input errors, 3 for remote failures, 4 for state or authentication recovery, and
 5 for a wait timeout. A timeout leaves the operation pending.
 
+A request refused by a limit says which one: `error.message` names the limit, its
+ceiling and what the count is shared across, and `error.details` carries `scope`,
+`limit`, `windowSeconds`, `retryAfterSeconds` and `resetAt`. Wait
+`retryAfterSeconds` and repeat the same command.
+
 The CLI keeps one active connection. Its private state lives in
 `$XDG_STATE_HOME/agw` or `~/.local/state/agw`, and `%LOCALAPPDATA%/agw` on Windows.
 It saves initiation proofs before requests and credentials before reporting

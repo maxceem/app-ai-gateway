@@ -5,7 +5,10 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { enforceEndpointRateLimit } from "../src/core/endpoint-rate-limit";
+import {
+  ENDPOINT_RATE_LIMITS,
+  enforceEndpointRateLimit,
+} from "../src/core/endpoint-rate-limit";
 import type { EndpointRateLimiter } from "../src/do/EndpointRateLimiter";
 
 const MINUTE = 60_000;
@@ -192,10 +195,10 @@ describe("EndpointRateLimiter", () => {
 });
 
 describe("enforceEndpointRateLimit", () => {
-  it("hashes the subject and returns the existing 429 response metadata", async () => {
+  it("names the policy that refused and keeps the scope out of the object name", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(ANCHOR);
-    const subject = `private-subject:${crypto.randomUUID()}`;
+    const scopeId = `private-scope:${crypto.randomUUID()}`;
     let objectName = "";
     const namespace = new Proxy(env.ENDPOINT_RATE_LIMITER, {
       get(target, property, receiver) {
@@ -213,14 +216,61 @@ describe("enforceEndpointRateLimit", () => {
           : Reflect.get(target, property, receiver),
     }) as Env;
 
-    await enforceEndpointRateLimit(testEnv, subject, 1, MINUTE);
-    await expect(enforceEndpointRateLimit(testEnv, subject, 1, MINUTE)).rejects.toMatchObject({
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.submission.limit; spent++)
+      await enforceEndpointRateLimit(testEnv, "submission", scopeId);
+
+    // The refusal has to name the policy, its ceiling and what shares it:
+    // "too many attempts" leaves a caller unable to tell a limit they can wait
+    // out from one somebody else spent for them.
+    await expect(
+      enforceEndpointRateLimit(testEnv, "submission", scopeId),
+    ).rejects.toMatchObject({
       status: 429,
       code: "rate_limited",
-      message: "Too many attempts; try again later",
+      message:
+        "You can answer an approval page at most 10 times per minute, " +
+        "counted across this operation. Try again in 50 seconds.",
       headers: { "Retry-After": "50" },
+      data: {
+        scope: "submission",
+        limit: 10,
+        windowSeconds: 60,
+        retryAfterSeconds: 50,
+        resetAt: new Date(ANCHOR + 50_000).toISOString(),
+      },
     });
     expect(objectName).toMatch(/^endpoint-rate:[0-9a-f]{64}$/u);
-    expect(objectName).not.toContain(subject);
+    expect(objectName).not.toContain(scopeId);
+  });
+
+  it("says when a day-long window reopens rather than how far away it is", async () => {
+    vi.useFakeTimers();
+    // Fixed rather than derived from the clock: the wording below depends on
+    // how far the refusal is from the window's edge, so a run that happened to
+    // start near midnight UTC would otherwise assert a different sentence.
+    vi.setSystemTime(Date.UTC(2031, 0, 1, 6, 0, 0));
+    const scopeId = `203.0.113.${crypto.randomUUID()}`;
+
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.bootstrap.limit; spent++)
+      await enforceEndpointRateLimit(env, "bootstrap", scopeId);
+
+    await expect(
+      enforceEndpointRateLimit(env, "bootstrap", scopeId),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      message:
+        "You can create an account at most 3 times per day, counted across " +
+        "everyone sharing your network address. Try again after " +
+        "2031-01-02T00:00:00.000Z.",
+      headers: { "Retry-After": "64800" },
+      data: {
+        scope: "bootstrap",
+        limit: 3,
+        windowSeconds: 86_400,
+        retryAfterSeconds: 64_800,
+        resetAt: "2031-01-02T00:00:00.000Z",
+      },
+    });
   });
 });
