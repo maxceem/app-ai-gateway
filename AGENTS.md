@@ -104,3 +104,32 @@ configuration changes, and `pnpm run docs:build` when you change anything under
 Type checking runs on `tsgo` (`@typescript/native-preview`), which is fast but
 still a preview build. `pnpm run typecheck:tsc` checks the same projects on
 `tsc` to confirm a diagnostic it reports, or fails to report, is real.
+
+## Releasing
+
+Only the project owner releases. Contributors send pull requests, and nothing a
+pull request changes can release or deploy anything: releases are cut from
+`vX.Y.Z` tags, creating one is restricted to the owner by a repository ruleset,
+and CI fails a pull request that edits a version field. Do not add a
+contributing guide or release instructions aimed at anyone else.
+
+One command, on a clean and up-to-date `main`:
+
+```sh
+pnpm run release 0.1.8            # add --dry-run to print the plan and write nothing
+pnpm run release 0.1.8 --breaks-upgrades   # when this release cannot migrate the previous one's database
+```
+
+`scripts/release.mjs` sets the version in `package.json` and `cli/package.json`,
+prepends the previous version to `upgradeFrom`, runs `pnpm run check`, commits
+`Release 0.1.8`, tags `v0.1.8` and pushes the commit and the tag atomically.
+The tag triggers `.github/workflows/release.yml`, which verifies, publishes the
+gateway archive to the GitHub release, deploys the Worker with the `cloud`
+profile, publishes `@maxceem/agw` to npm and deploys the documentation. Its
+header comment lists the repository secrets it needs; npm uses trusted
+publishing configured on npmjs.com for this repository and workflow file, so
+no npm token exists anywhere.
+
+Rolling back: `wrangler rollback` returns a Worker to its previous version, but
+a D1 migration is forward-only, so ship a fix release instead. A published npm
+version cannot be replaced; `npm deprecate` it and release the fix.

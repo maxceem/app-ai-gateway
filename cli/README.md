@@ -128,7 +128,6 @@ pnpm run cli:check   # type-check and bundle
 pnpm run cli:test    # run the CLI tests
 ```
 
-Both are part of `pnpm run verify`. Releasing is two steps in order:
-`pnpm run cli:release:github` builds the gateway archive and uploads it to the
-GitHub release, then `npm publish` from `cli/` ships the executable that
-demands that exact archive. Licensed under Apache-2.0.
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).

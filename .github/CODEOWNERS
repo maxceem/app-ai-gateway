@@ -1,0 +1,10 @@
+# Review by the project owner is required for the files that decide what gets
+# released and where it is deployed. A release is triggered by a `vX.Y.Z` tag
+# only the project owner can create, and these are the files that would let a merged
+# pull request change what such a tag then publishes: the versions the release
+# is cut from, the workflows that publish it, and the scripts they run.
+
+/package.json      @maxceem
+/cli/package.json  @maxceem
+/.github/          @maxceem
+/scripts/          @maxceem

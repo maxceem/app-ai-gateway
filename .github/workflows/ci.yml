@@ -1,0 +1,67 @@
+# Checks and tests on every pull request and on main.
+#
+# `pull_request`, never `pull_request_target`: this runs a contributor's code,
+# so it must run with their permissions and no repository secrets.
+#
+# The `versions` job is the other half of the release design. Releasing is
+# triggered by a pushed `vX.Y.Z` tag (.github/workflows/release.yml) and the
+# version fields are written only by `pnpm run release`, so a pull request that
+# edits one cannot start a release — but it could leave main carrying a version
+# no tag describes. This refuses that outright.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4 # the version pinned in packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run verify
+
+      # Builds the Worker exactly as a deployment would, without an account or a
+      # token: `--dry-run` never contacts Cloudflare.
+      - run: pnpm run deploy:dry-run
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
+  versions:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the version fields against the base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          node scripts/check-version-unchanged.mjs "origin/${BASE_REF}"

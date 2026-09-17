@@ -1,0 +1,152 @@
+# Releases everything a version consists of, triggered by a pushed `vX.Y.Z` tag.
+#
+# The trigger is the tag and never a changed file. A version field can be edited
+# by anyone who opens a pull request, so a release keyed on one would be a
+# release strangers can start; creating a `v*` tag is restricted to the project owner
+# by a repository ruleset, and `.github/workflows/ci.yml` refuses a pull request
+# that edits a version field at all. The tag also names exactly one commit, so a
+# re-run releases the same tree rather than whatever main has reached since.
+#
+# The project owner cuts a release with `pnpm run release <version>` (scripts/release.mjs),
+# which bumps both manifests, commits, tags and pushes the two together.
+#
+# In order, in one job so the built archive is on disk for every later step:
+#   1. the gateway archive, uploaded to the GitHub release the tag names
+#   2. the gateway Worker, deployed to Cloudflare with the `cloud` profile
+#   3. the CLI, published to npm — after 1, because an installed CLI refuses to
+#      run until it can download exactly that archive
+#   4. the documentation site
+#
+# Repository secrets required:
+#   CLOUDFLARE_API_TOKEN         Workers Scripts: Edit, D1: Edit, and Workers Routes: Edit on the zone
+#   CLOUDFLARE_ACCOUNT_ID        the account both Workers live in
+#   WRANGLER_CLOUD_OVERLAY       contents of wrangler.cloud.overlay.jsonc
+#   DOCS_WRANGLER_CLOUD_OVERLAY  contents of docs/wrangler.cloud.overlay.jsonc
+# npm needs no token: `@maxceem/agw` is published through npm trusted publishing,
+# which authenticates this workflow file by OIDC and signs the provenance.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag against the manifests and against main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          root=$(node -p "require('./package.json').version")
+          cli=$(node -p "require('./cli/package.json').version")
+          if [ "$version" != "$root" ] || [ "$version" != "$cli" ]; then
+            echo "Tag $TAG names version $version, but package.json is $root and cli/package.json is $cli." >&2
+            echo "A tag is only ever created by \`pnpm run release\`, which bumps both files in the commit it tags." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$TAG points at $GITHUB_SHA, which is not on main. Releases are cut from main only." >&2
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4 # the version pinned in packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run verify
+
+  publish:
+    needs: verify
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and upload the gateway archive
+      id-token: write # npm trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4 # the version pinned in packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # First, and before any overlay is written: this refuses to run in a dirty
+      # working tree, because the archive is packed from the tree rather than
+      # from the commit. The overlays and everything the build writes are
+      # gitignored, but the ordering keeps that from being load-bearing.
+      - name: Build the gateway archive and publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm run cli:release:github
+
+      - name: Write the Cloudflare deployment profile
+        env:
+          WRANGLER_CLOUD_OVERLAY: ${{ secrets.WRANGLER_CLOUD_OVERLAY }}
+          DOCS_WRANGLER_CLOUD_OVERLAY: ${{ secrets.DOCS_WRANGLER_CLOUD_OVERLAY }}
+        run: |
+          set -euo pipefail
+          test -n "$WRANGLER_CLOUD_OVERLAY" || { echo "WRANGLER_CLOUD_OVERLAY is missing" >&2; exit 1; }
+          test -n "$DOCS_WRANGLER_CLOUD_OVERLAY" || { echo "DOCS_WRANGLER_CLOUD_OVERLAY is missing" >&2; exit 1; }
+          printf '%s\n' "$WRANGLER_CLOUD_OVERLAY" > wrangler.cloud.overlay.jsonc
+          printf '%s\n' "$DOCS_WRANGLER_CLOUD_OVERLAY" > docs/wrangler.cloud.overlay.jsonc
+
+      - name: Deploy the gateway
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: pnpm run deploy --profile cloud
+
+      # Trusted publishing needs npm 11.5.1 or newer; Node 22 still bundles 10.
+      # Provenance is generated by the OIDC exchange itself, so no flag and no
+      # NPM_TOKEN are involved.
+      - name: Publish the CLI to npm
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          npm install --global npm@latest
+          npm --version
+          version="${TAG#v}"
+          if npm view "@maxceem/agw@${version}" version >/dev/null 2>&1; then
+            echo "@maxceem/agw@${version} is already published; leaving it alone."
+            exit 0
+          fi
+          cd cli
+          npm publish --access public
+
+      - name: Deploy the documentation
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: pnpm run docs:deploy --profile cloud

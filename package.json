@@ -38,12 +38,14 @@
     "test:worker": "vitest run --config vitest.suites.config.ts",
     "test:swift-publish": "node --test test/swift-publish.node.mjs",
     "test:deploy-script": "node --test test/deploy-script.node.mjs test/bootstrap-account.node.mjs",
+    "test:release-script": "node --test test/release-script.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:check": "pnpm --filter @maxceem/agw check",
     "cli:test": "pnpm --filter @maxceem/agw test",
     "cli:release:github": "node cli/scripts/publish-release.mjs",
-    "account:bootstrap": "node scripts/bootstrap-account.mjs"
+    "account:bootstrap": "node scripts/bootstrap-account.mjs",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.6.9",

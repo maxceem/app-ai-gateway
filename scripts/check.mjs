@@ -33,6 +33,7 @@ const steps = [
   { name: "console:typecheck", tier: "check" },
   { name: "test:deploy-script", tier: "test" },
   { name: "test:swift-publish", tier: "test" },
+  { name: "test:release-script", tier: "test" },
 ];
 
 const tier = process.argv[2];
