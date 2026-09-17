@@ -118,14 +118,42 @@ overwritten. `app validate --file` checks a file without touching the account.
 Windows), mode 0700. Do not delete it to fix an authentication error; run
 `agw account login` instead. Output files are never overwritten.
 
-## Contributing
+## Local development
 
-The CLI lives in `cli/` of the
-[main repository](https://github.com/maxceem/app-ai-gateway). From the repo root:
+The source lives in `cli/` of the
+[main repository](https://github.com/maxceem/app-ai-gateway). Clone it and run
+`pnpm install`.
+
+From the repository root, `pnpm cli:dev` is `agw` built from your own source
+instead of an installed copy. It rebuilds before every run, so your latest edit
+is always the one that runs.
 
 ```sh
-pnpm run cli:check   # type-check and bundle
-pnpm run cli:test    # run the CLI tests
+pnpm cli:dev account login
+pnpm cli:dev provider add --type openai
+pnpm cli:dev app list
+```
+
+It keeps its state in `.agw-dev/`, separate from the state an installed `agw`
+uses. To start again from nothing:
+
+```sh
+pnpm cli:dev:reset
+```
+
+Deploying needs the gateway itself built too, once per change to the Worker,
+console or migrations:
+
+```sh
+pnpm --filter @maxceem/agw release:build
+pnpm cli:dev deployment setup --name my-gateway --no-domain
+```
+
+Type-check and test:
+
+```sh
+pnpm run cli:check
+pnpm run cli:test
 ```
 
 ## License

@@ -41,6 +41,8 @@
     "test:release-script": "node --test test/release-script.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
+    "cli:dev": "node cli/scripts/dev.mjs",
+    "cli:dev:reset": "node cli/scripts/dev.mjs --reset",
     "cli:check": "pnpm --filter @maxceem/agw check",
     "cli:test": "pnpm --filter @maxceem/agw test",
     "cli:release:github": "node cli/scripts/publish-release.mjs",
