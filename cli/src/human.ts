@@ -2,6 +2,7 @@ import { AppConfigSchema } from "../../src/contracts/schemas.ts";
 import type { CommandName } from "./parser.ts";
 import type { GatewayCapability, ProviderCapability } from "./resources.ts";
 import type { RenderedResult } from "./results.ts";
+import { plain, type Style } from "./style.ts";
 
 /** What every line of human output is written against: which gateway, whose account. */
 export interface OutputContext {
@@ -18,36 +19,50 @@ type Cell = string | number | boolean | undefined | null;
  *
  * The width is measured rather than fixed so that a renderer never has to know
  * what the longest label in its own block is, and a label added later cannot
- * silently break the alignment of the ones above it.
+ * silently break the alignment of the ones above it. The label is padded before
+ * it is coloured: an escape sequence has width on nobody's terminal but every
+ * string length.
  */
-function kv(entries: readonly (readonly [string, Cell])[]): string[] {
+function kv(entries: readonly (readonly [string, Cell])[], style: Style): string[] {
   const rows: [string, string][] = [];
   for (const [key, value] of entries)
     if (value !== undefined && value !== null) rows.push([key, String(value)]);
   const width = Math.max(0, ...rows.map(([key]) => key.length + 1));
-  return rows.map(([key, value]) => `${key}:`.padEnd(width + 1) + value);
+  return rows.map(
+    ([key, value]) => style.dim(`${key}:`.padEnd(width + 1)) + style.state(value),
+  );
 }
 
 /**
  * A padded-column table. No dependency: the columns are known strings and the
  * only thing a table library would add here is the box drawing nobody pipes.
+ * Like `kv`, every width is measured on the plain text and the colour goes on
+ * afterwards.
  */
-function table(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
+function table(
+  headers: readonly string[],
+  rows: readonly (readonly string[])[],
+  style: Style,
+): string[] {
   const widths = headers.map((header, column) =>
     Math.max(header.length, ...rows.map((row) => (row[column] ?? "").length)),
   );
-  const line = (cells: readonly string[]): string =>
+  const line = (cells: readonly string[], tone: (cell: string) => string): string =>
     cells
-      .map((cell, column) =>
-        column === widths.length - 1 ? cell : cell.padEnd((widths[column] ?? 0) + 2),
+      .map(
+        (cell, column) =>
+          tone(cell) +
+          (column === widths.length - 1
+            ? ""
+            : " ".repeat((widths[column] ?? 0) + 2 - cell.length)),
       )
       .join("")
       .trimEnd();
-  return [line(headers), ...rows.map(line)];
+  return [
+    line(headers, (cell) => style.dim(cell)),
+    ...rows.map((row) => line(row, (cell) => style.state(cell))),
+  ];
 }
-
-/** The fallback for a shape no renderer claims, and for `show`'s full document. */
-const json = (value: unknown): string => JSON.stringify(value, null, 2);
 
 const yesNo = (value: boolean): string => (value ? "yes" : "no");
 
@@ -59,24 +74,26 @@ const yesNo = (value: boolean): string => (value ? "yes" : "no");
  * of `undefined` on somebody's terminal. A branch that meets a shape it does not
  * recognize at runtime falls back to the indented document rather than printing
  * a half-rendered line.
+ *
+ * `style` decides whether any of this is coloured, and defaults to plain: a
+ * caller that has not been given a terminal never gets escape sequences.
  */
 export function humanResult(
   command: CommandName,
   result: RenderedResult,
   context: OutputContext,
+  style: Style = plain,
 ): string {
-  // The snippet is source code somebody pipes into a file: it is the whole of
-  // this command's output, with no trailers and no trailing blank line.
-  if (command === "app snippet" && "snippet" in result && typeof result.snippet === "string")
-    return result.snippet;
-  const lines = render(command, result, context);
-  // Which account this was said about, for the commands whose own rendering
-  // does not name it. `Account ID`, and skipped once the id is already on the
-  // screen: one label holding two different things is how a reader ends up
-  // copying the wrong one.
-  const accountId = context.accountId;
-  if (accountId && !lines.some((line) => line.includes(accountId)))
-    lines.push(`Account ID: ${accountId}`);
+  // The snippet is source code somebody pipes into a file: off a terminal it is
+  // the whole of this command's output, byte for byte, with no frame, no colour
+  // and no trailing report. On a terminal nothing is being piped, so it is
+  // framed like every other code block.
+  if (command === "app snippet" && "snippet" in result && typeof result.snippet === "string") {
+    if (!style.enabled) return result.snippet;
+    const language = "language" in result ? result.language : "code";
+    return style.code(result.snippet, language).join("\n") + "\n";
+  }
+  const lines = render(command, result, context, style);
   if ("trial" in result && result.trial)
     lines.push(`Free access ends: ${result.trial.endsAt}`);
   if ("account" in result && result.account?.expiresAt)
@@ -88,12 +105,13 @@ function render(
   command: CommandName,
   result: RenderedResult,
   context: OutputContext,
+  style: Style,
 ): string[] {
   // A browser handoff answers whichever command opened it, so it is recognized
   // before that command's own renderer ever sees the result.
   if ("state" in result && result.state === "pending" && "url" in result)
     return [
-      `Waiting for browser handoff (${result.id}).`,
+      style.headline(`Waiting for browser handoff (${result.id}).`),
       result.url,
       `Resume: agw operation wait ${result.id}`,
     ];
@@ -103,18 +121,18 @@ function render(
     case "account claim":
     case "deployment connect":
     case "deployment status":
-      return status(command, result, context);
+      return status(command, result, context, style);
     case "provider types":
     case "provider-gateway types":
     case "provider list":
     case "provider-gateway list":
     case "app list":
     case "app key list":
-      return list(command, result);
+      return list(command, result, style);
     case "provider show":
     case "provider-gateway show":
     case "app show":
-      return show(command, result);
+      return show(command, result, style);
     case "provider update":
     case "provider-gateway update":
     case "provider rotate-key":
@@ -127,23 +145,23 @@ function render(
     case "app key add":
     case "app key revoke":
     case "account logout":
-      return mutation(command, result, context);
+      return mutation(command, result, context, style);
     case "usage show":
     case "usage breakdown":
-      return usage(command, result);
+      return usage(command, result, style);
     case "operation status":
     case "operation wait":
-      return operation(result);
+      return operation(result, style);
     case "app add":
     case "app update":
     case "app validate":
     case "app check":
     case "app snippet":
-      return app(command, result, context);
+      return app(command, result, context, style);
     case "deployment setup":
     case "deployment update":
     case "deployment domain":
-      return deployment(result);
+      return deployment(result, style);
   }
 }
 
@@ -152,42 +170,49 @@ function status(
   command: CommandName,
   result: RenderedResult,
   context: OutputContext,
+  style: Style,
 ): string[] {
   // A command that changed the selected connection confirms that first, the way
   // a mutation does; a plain status report has nothing to confirm.
   const did =
     command === "account login"
-      ? [`Signed in to ${context.url}.`]
+      ? [style.headline(`Signed in to ${context.url}.`)]
       : command === "deployment connect"
-        ? [`Connected to ${context.url}.`]
+        ? [style.headline(`Connected to ${context.url}.`)]
         : [];
   if ("billing" in result)
     return [
       ...did,
-      ...kv([
-        ["Gateway", context.url],
-        ["Account", `${result.account.name} (${result.account.id})`],
-        ["Claimed", yesNo(result.account.claimed)],
-        ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
-        ["Console", result.deployment.consoleOrigin],
-      ]),
+      ...kv(
+        [
+          ["Gateway", context.url],
+          ["Account", `${result.account.name} (${result.account.id})`],
+          ["Claimed", yesNo(result.account.claimed)],
+          ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
+          ["Console", result.deployment.consoleOrigin],
+        ],
+        style,
+      ),
     ];
   if ("protocolVersion" in result)
     return [
       ...did,
-      ...kv([
-        ["Gateway", result.url],
-        ["Connected", yesNo(result.connected)],
-        ["Authenticated", yesNo(result.authenticated)],
-        ["Version", result.serverVersion],
-        ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
-        ["Console", result.consoleOrigin],
-        ["Provider types", result.providers.length],
-        ["Provider gateway types", result.providerGateways.length],
-      ]),
+      ...kv(
+        [
+          ["Gateway", result.url],
+          ["Connected", yesNo(result.connected)],
+          ["Authenticated", yesNo(result.authenticated)],
+          ["Version", result.serverVersion],
+          ["Deployment", result.deployment.mode === "cloud" ? "cloud" : "self-hosted"],
+          ["Console", result.consoleOrigin],
+          ["Provider types", result.providers.length],
+          ["Provider gateway types", result.providerGateways.length],
+        ],
+        style,
+      ),
     ];
-  if ("state" in result) return [...did, ...operation(result)];
-  return [...did, json(result)];
+  if ("state" in result) return [...did, ...operation(result, style)];
+  return [...did, style.json(result)];
 }
 
 /**
@@ -195,9 +220,9 @@ function status(
  * answer. Dispatched on the command first so that a key several results share
  * is read as the one this command can actually have returned.
  */
-function list(command: CommandName, result: RenderedResult): string[] {
+function list(command: CommandName, result: RenderedResult, style: Style): string[] {
   if (command === "provider types" || command === "provider-gateway types") {
-    if (!Array.isArray(result)) return [json(result)];
+    if (!Array.isArray(result)) return [style.json(result)];
     // The two capability lists differ by one column, and a gateway type has no
     // origin of its own: its adapter holds it.
     const types: readonly (ProviderCapability | GatewayCapability)[] = result;
@@ -205,6 +230,7 @@ function list(command: CommandName, result: RenderedResult): string[] {
     return table(
       ["TYPE", "NAME", "BASE URL"],
       types.map((entry) => [entry.type, entry.name, "baseUrl" in entry ? entry.baseUrl : ""]),
+      style,
     );
   }
   if (command === "provider list") {
@@ -213,7 +239,7 @@ function list(command: CommandName, result: RenderedResult): string[] {
     // Naming the other two out is what leaves `ProviderSummary[]` here rather
     // than a union of three different arrays.
     if (!("providers" in result) || "appId" in result || "protocolVersion" in result)
-      return [json(result)];
+      return [style.json(result)];
     if (!result.providers.length) return ["No providers."];
     return table(
       ["ID", "SLUG", "TYPE", "NAME", "STATUS", "CREATED"],
@@ -225,6 +251,7 @@ function list(command: CommandName, result: RenderedResult): string[] {
         provider.status,
         provider.createdAt,
       ]),
+      style,
     );
   }
   if (command === "provider-gateway list" && "gateways" in result) {
@@ -239,6 +266,7 @@ function list(command: CommandName, result: RenderedResult): string[] {
         String(gateway.providerCount),
         gateway.createdAt,
       ]),
+      style,
     );
   }
   // `apps` is also the account-wide usage report's per-app list, which is the
@@ -255,6 +283,7 @@ function list(command: CommandName, result: RenderedResult): string[] {
         String(entry.providers.length),
         entry.created_at,
       ]),
+      style,
     );
   }
   // Matched on `app_id` as well as `keys`, because every array in the union
@@ -271,9 +300,10 @@ function list(command: CommandName, result: RenderedResult): string[] {
         key.created_at,
         key.last_used_at ?? "never",
       ]),
+      style,
     );
   }
-  return [json(result)];
+  return [style.json(result)];
 }
 
 /**
@@ -283,21 +313,26 @@ function list(command: CommandName, result: RenderedResult): string[] {
  * the guides tell people to save and edit, and the plain run is how they read
  * the same thing before deciding to.
  */
-function show(command: CommandName, result: RenderedResult): string[] {
+function show(command: CommandName, result: RenderedResult, style: Style): string[] {
   if (command === "app show" && "app" in result && !("guidance" in result)) {
-    const lines = [`${result.app.name} (${result.app.id})`];
-    if (result.config_error) lines.push(`Configuration error: ${result.config_error}`);
-    return [...lines, "", json(result)];
+    const lines = [style.headline(`${result.app.name} (${result.app.id})`)];
+    if (result.config_error)
+      lines.push(style.alert(`Configuration error: ${result.config_error}`));
+    return [...lines, "", style.json(result)];
   }
   if ("slug" in result)
     return [
-      `${result.name} (${result.id}), type ${result.type}, slug ${result.slug}`,
+      style.headline(`${result.name} (${result.id}), type ${result.type}, slug ${result.slug}`),
       "",
-      json(result),
+      style.json(result),
     ];
   if ("referencedCount" in result)
-    return [`${result.name} (${result.id}), type ${result.type}`, "", json(result)];
-  return [json(result)];
+    return [
+      style.headline(`${result.name} (${result.id}), type ${result.type}`),
+      "",
+      style.json(result),
+    ];
+  return [style.json(result)];
 }
 
 /** One line naming what happened, plus where a key was written. */
@@ -305,33 +340,50 @@ function mutation(
   command: CommandName,
   result: RenderedResult,
   context: OutputContext,
+  style: Style,
 ): string[] {
   if ("loggedOut" in result)
-    return [`Signed out of ${context.url}. The stored credential was removed.`];
-  if ("deleted" in result) {
-    if ("provider_id" in result) return [`Removed provider ${result.provider_id}.`];
-    if ("provider_gateway_id" in result)
-      return [`Removed provider gateway ${result.provider_gateway_id}.`];
     return [
-      `Removed app ${result.app_id}. ${result.removed_users} users removed; usage events retained.`,
+      style.headline(`Signed out of ${context.url}.`) +
+        " The stored credential was removed.",
+    ];
+  if ("deleted" in result) {
+    if ("provider_id" in result)
+      return [style.headline(`Removed provider ${result.provider_id}.`)];
+    if ("provider_gateway_id" in result)
+      return [style.headline(`Removed provider gateway ${result.provider_gateway_id}.`)];
+    return [
+      style.headline(`Removed app ${result.app_id}.`) +
+        ` ${result.removed_users} users removed; usage events retained.`,
     ];
   }
   if ("key" in result)
-    return [`Revoked key ${result.key.name} (${result.key.id}) for app ${result.app_id}.`];
+    return [
+      style.headline(
+        `Revoked key ${result.key.name} (${result.key.id}) for app ${result.app_id}.`,
+      ),
+    ];
   if ("applicationKey" in result && "appId" in result)
     return [
-      `Created key ${result.applicationKey.name} (${result.applicationKey.id}) for app ${result.appId}.`,
-      `Key saved: ${result.applicationKey.storagePath}`,
+      style.headline(
+        `Created key ${result.applicationKey.name} (${result.applicationKey.id}) for app ${result.appId}.`,
+      ),
+      ...kv([["Key saved", result.applicationKey.storagePath]], style),
     ];
   if ("provider" in result) {
     const added = command === "provider add";
     return [
-      `${added ? "Stored" : "Updated"} provider ${result.provider.name} (${result.provider.id}).`,
-      ...kv([
-        ["Gateway", context.url],
-        ["Status", result.provider.status],
-        ["Key hint", result.provider.secretHint],
-      ]),
+      style.headline(
+        `${added ? "Stored" : "Updated"} provider ${result.provider.name} (${result.provider.id}).`,
+      ),
+      ...kv(
+        [
+          ["Gateway", context.url],
+          ["Status", result.provider.status],
+          ["Key hint", result.provider.secretHint],
+        ],
+        style,
+      ),
       ...(added
         ? ["Credential stored; no upstream probe or inference was performed."]
         : []),
@@ -340,27 +392,35 @@ function mutation(
   if ("gateway" in result) {
     const added = command === "provider-gateway add";
     return [
-      `${added ? "Stored" : "Updated"} provider gateway ${result.gateway.name} (${result.gateway.id}).`,
-      ...kv([
-        ["Gateway", context.url],
-        ["Status", result.gateway.status],
-        ["Token hint", result.gateway.secretHint],
-      ]),
+      style.headline(
+        `${added ? "Stored" : "Updated"} provider gateway ${result.gateway.name} (${result.gateway.id}).`,
+      ),
+      ...kv(
+        [
+          ["Gateway", context.url],
+          ["Status", result.gateway.status],
+          ["Token hint", result.gateway.secretHint],
+        ],
+        style,
+      ),
       ...(added
         ? ["Credential stored; no upstream probe or inference was performed."]
         : []),
     ];
   }
-  return [json(result)];
+  return [style.json(result)];
 }
 
-function usage(command: CommandName, result: RenderedResult): string[] {
+function usage(command: CommandName, result: RenderedResult, style: Style): string[] {
   if (command === "usage breakdown" && "rows" in result) {
-    const head = kv([
-      ["App", result.app_id],
-      ["Grouped by", result.by],
-      ["Period", `${result.from} to ${result.to}`],
-    ]);
+    const head = kv(
+      [
+        ["App", result.app_id],
+        ["Grouped by", result.by],
+        ["Period", `${result.from} to ${result.to}`],
+      ],
+      style,
+    );
     const rows = result.rows.length
       ? table(
           ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS", "BLOCKED"],
@@ -373,21 +433,25 @@ function usage(command: CommandName, result: RenderedResult): string[] {
             String(row.errors),
             String(row.blocked),
           ]),
+          style,
         )
       : ["No usage in this period."];
     return [...head, "", ...rows, "", result.coverage.source];
   }
   if ("totals" in result)
     return [
-      ...kv([
-        ["Month", result.month],
-        ["Requests", result.totals.requests],
-        ["Input tokens", result.totals.input_tokens],
-        ["Output tokens", result.totals.output_tokens],
-        ["Cost USD", result.totals.cost_usd.toFixed(4)],
-        ["Errors", result.totals.errors],
-        ["Blocked", result.totals.blocked],
-      ]),
+      ...kv(
+        [
+          ["Month", result.month],
+          ["Requests", result.totals.requests],
+          ["Input tokens", result.totals.input_tokens],
+          ["Output tokens", result.totals.output_tokens],
+          ["Cost USD", result.totals.cost_usd.toFixed(4)],
+          ["Errors", result.totals.errors],
+          ["Blocked", result.totals.blocked],
+        ],
+        style,
+      ),
       "",
       // The totals are the sum of these rows, so the apps they came from are
       // printed rather than counted: a month is read to find which app spent it.
@@ -403,53 +467,66 @@ function usage(command: CommandName, result: RenderedResult): string[] {
               String(entry.errors),
               String(entry.blocked),
             ]),
+            style,
           )
         : ["No app usage recorded."]),
       "",
       result.coverage.historicalAttribution,
     ];
   if ("requests" in result)
-    return kv([
-      ["App", result.app_id],
-      ["Month", result.month],
-      ["Requests", result.requests],
-      ["Input tokens", result.input_tokens],
-      ["Cached input tokens", result.cached_input_tokens],
-      ["Cache write tokens", result.cache_write_tokens],
-      ["Output tokens", result.output_tokens],
-      ["Cost USD", result.cost_usd.toFixed(4)],
-    ]);
-  return [json(result)];
+    return kv(
+      [
+        ["App", result.app_id],
+        ["Month", result.month],
+        ["Requests", result.requests],
+        ["Input tokens", result.input_tokens],
+        ["Cached input tokens", result.cached_input_tokens],
+        ["Cache write tokens", result.cache_write_tokens],
+        ["Output tokens", result.output_tokens],
+        ["Cost USD", result.cost_usd.toFixed(4)],
+      ],
+      style,
+    );
+  return [style.json(result)];
 }
 
 /** A handoff that is no longer pending: `operation status`, `operation wait`. */
-function operation(result: RenderedResult): string[] {
-  if (!("state" in result)) return [json(result)];
+function operation(result: RenderedResult, style: Style): string[] {
+  if (!("state" in result)) return [style.json(result)];
   const stored = "result" in result ? result.result : undefined;
-  return kv([
-    ["Operation", result.id],
-    ["State", result.state],
-    ["Expires", result.expiresAt],
-    ["Account", stored?.accountId],
-    ["Provider", stored?.provider && `${stored.provider.name} (${stored.provider.id})`],
-    ["Provider gateway", stored?.gateway && `${stored.gateway.name} (${stored.gateway.id})`],
-  ]);
+  return kv(
+    [
+      ["Operation", result.id],
+      ["State", result.state],
+      ["Expires", result.expiresAt],
+      ["Account", stored?.accountId],
+      ["Provider", stored?.provider && `${stored.provider.name} (${stored.provider.id})`],
+      ["Provider gateway", stored?.gateway && `${stored.gateway.name} (${stored.gateway.id})`],
+    ],
+    style,
+  );
 }
 
 function app(
   command: CommandName,
   result: RenderedResult,
   context: OutputContext,
+  style: Style,
 ): string[] {
-  if ("output" in result) return [`Saved: ${result.output}`];
+  if ("output" in result) return [style.headline(`Saved: ${result.output}`)];
   if ("ready" in result)
     return [
-      `${result.appId} is ${result.ready ? "ready to serve requests" : "not ready to serve requests"}.`,
-      ...kv([
-        ["Status", result.status],
-        ["Providers", result.providers.length],
-        ["Active providers", result.providers.filter((p) => p.status === "active").length],
-      ]),
+      style.headline(
+        `${result.appId} is ${result.ready ? "ready to serve requests" : "not ready to serve requests"}.`,
+      ),
+      ...kv(
+        [
+          ["Status", result.status],
+          ["Providers", result.providers.length],
+          ["Active providers", result.providers.filter((p) => p.status === "active").length],
+        ],
+        style,
+      ),
       ...notes([
         ...(result.validation.remote ? [] : result.validation.skipped),
         ...result.limitations,
@@ -458,98 +535,137 @@ function app(
   if ("definition" in result) {
     const dryRun = "dryRun" in result;
     return [
-      `${dryRun ? "Dry run: " : ""}${result.definition.name} is valid${
-        result.validation.remote ? " here and on the gateway" : " locally"
-      }.`,
-      ...kv([
-        ["Gateway", context.url],
-        ["Status", result.definition.status],
-        ["Authentication", result.definition.config.authentication.type],
-        ["App ID", result.validation.remote ? result.validation.app_id : undefined],
-      ]),
+      style.headline(
+        `${dryRun ? "Dry run: " : ""}${result.definition.name} is valid${
+          result.validation.remote ? " here and on the gateway" : " locally"
+        }.`,
+      ),
+      ...kv(
+        [
+          ["Gateway", context.url],
+          ["Status", result.definition.status],
+          ["Authentication", result.definition.config.authentication.type],
+          ["App ID", result.validation.remote ? result.validation.app_id : undefined],
+        ],
+        style,
+      ),
       ...notes(result.validation.remote ? [] : result.validation.skipped),
       ...(dryRun ? ["", "Nothing was written."] : []),
     ];
   }
-  if ("guidance" in result && "app" in result) return written(command, result, context);
-  return [json(result)];
+  if ("guidance" in result && "app" in result)
+    return written(command, result, context, style);
+  return [style.json(result)];
 }
 
 /** The issue list a verdict is followed by, one per line, or nothing at all. */
 const notes = (values: readonly string[]): string[] =>
   values.length ? ["", ...values.map((value) => `- ${value}`)] : [];
 
-/** What `app add` and `app update` report about the application they wrote. */
+/**
+ * What `app add` and `app update` report about the application they wrote.
+ *
+ * In the order somebody reads it in: what happened, what the application now
+ * is, what to do next, and then the request it can already send.
+ */
 function written(
   command: CommandName,
   result: Extract<RenderedResult, { guidance: string }>,
   context: OutputContext,
+  style: Style,
 ): string[] {
-  const lines = [
-    `${command === "app add" ? "Created" : "Updated"} ${result.app.name}`,
-    `Gateway: ${context.url}`,
-    `App ID: ${result.app.id}`,
-    "",
-  ];
   const parsed = AppConfigSchema.safeParse(result.app.config);
+  const details: [string, Cell][] = [];
+  let language = "shell";
   if (parsed.success) {
     const config = parsed.data;
     if (config.authentication.type === "apple_app_attest") {
+      language = "swift";
       const endUser = config.authentication.end_user;
-      lines.push(
-        `App Attest: ${(config.authentication.app_attest.environments ?? ["production"]).join(" + ")}`,
-        `User identity: ${endUser.source === "app_install" ? "per installation; sign-in not required" : "verified issuer; integrate your sign-in SDK"}`,
-        `Paid subscription check: ${endUser.source === "issuer" && endUser.issuer.required_claims.length ? "configured claim requirements" : "off"}`,
+      details.push(
+        [
+          "App Attest",
+          (config.authentication.app_attest.environments ?? ["production"]).join(" + "),
+        ],
+        [
+          "User identity",
+          endUser.source === "app_install"
+            ? "per installation; sign-in not required"
+            : "verified issuer; integrate your sign-in SDK",
+        ],
+        [
+          "Paid subscription check",
+          endUser.source === "issuer" && endUser.issuer.required_claims.length
+            ? "configured claim requirements"
+            : "off",
+        ],
       );
-    } else lines.push("Authentication: server application API key");
+    } else details.push(["Authentication", "server application API key"]);
     const limits = config.limits?.per_user;
-    lines.push(
-      `Per-user limits: ${limits?.requests.per_minute ?? "unlimited"} requests/minute, ${limits?.requests.per_day ?? "unlimited"}/day`,
-    );
+    details.push([
+      "Per-user limits",
+      `${limits?.requests.per_minute ?? "unlimited"} requests/minute, ${limits?.requests.per_day ?? "unlimited"}/day`,
+    ]);
   }
   if (result.applicationKey)
-    lines.push(`Key saved: ${result.applicationKey.storagePath}`);
-  if (result.guidance) lines.push("", result.guidance);
-  if ("snippet" in result && result.snippet) lines.push("", result.snippet);
-  return lines;
+    details.push(["Key saved", result.applicationKey.storagePath]);
+  return [
+    style.headline(
+      `${command === "app add" ? "Created" : "Updated"} app ${result.app.name} (${result.app.id}).`,
+    ),
+    ...kv([["Gateway", context.url], ...details], style),
+    ...(result.guidance ? ["", result.guidance] : []),
+    ...("snippet" in result && result.snippet
+      ? ["", ...style.code(result.snippet, language)]
+      : []),
+  ];
 }
 
 /** The three deployment plans, each printed as the fields it actually carries. */
-function deployment(result: RenderedResult): string[] {
+function deployment(result: RenderedResult, style: Style): string[] {
   if ("hostname" in result)
-    return kv([
-      [result.dryRun ? "Would attach domain" : "Domain", result.hostname],
-      ["Worker", result.worker],
-      ["Cloudflare account", result.accountId],
-      ["Zone", result.zoneId],
-      ["Previous URL", result.previousUrl],
-      ["URL", result.url],
-      ["Note", result.note],
-    ]);
+    return kv(
+      [
+        [result.dryRun ? "Would attach domain" : "Domain", result.hostname],
+        ["Worker", result.worker],
+        ["Cloudflare account", result.accountId],
+        ["Zone", result.zoneId],
+        ["Previous URL", result.previousUrl],
+        ["URL", result.url],
+        ["Note", result.note],
+      ],
+      style,
+    );
   if ("fromVersion" in result)
-    return kv([
-      [result.dryRun ? "Would update worker" : "Worker", result.worker],
-      ["Cloudflare account", result.accountId],
-      ["Database", result.databaseId],
-      ["From version", result.fromVersion],
-      ["To version", result.toVersion],
-      ["Updated", result.updated ? "yes" : undefined],
-    ]);
+    return kv(
+      [
+        [result.dryRun ? "Would update worker" : "Worker", result.worker],
+        ["Cloudflare account", result.accountId],
+        ["Database", result.databaseId],
+        ["From version", result.fromVersion],
+        ["To version", result.toVersion],
+        ["Updated", result.updated ? "yes" : undefined],
+      ],
+      style,
+    );
   // Every setup answer carries one of these two: a dry run reports the plan it
   // would install, and the other two report an installation that is complete.
   if ("installed" in result || "resources" in result)
-    return kv([
-      [result.dryRun ? "Would install worker" : "Worker", result.name],
-      ["Cloudflare account", result.accountId],
-      ["URL", result.url],
-      ["Version", result.version],
-      ["Domain", result.domain],
-      ["Pending domain", result.pendingDomain],
-      ["Deployment", result.deploymentId],
-      ["Resources", result.resources?.join(", ")],
-      ["Backup", result.backup],
-      ["Installed", result.installed ? "yes" : undefined],
-      ["Note", result.note],
-    ]);
-  return [json(result)];
+    return kv(
+      [
+        [result.dryRun ? "Would install worker" : "Worker", result.name],
+        ["Cloudflare account", result.accountId],
+        ["URL", result.url],
+        ["Version", result.version],
+        ["Domain", result.domain],
+        ["Pending domain", result.pendingDomain],
+        ["Deployment", result.deploymentId],
+        ["Resources", result.resources?.join(", ")],
+        ["Backup", result.backup],
+        ["Installed", result.installed ? "yes" : undefined],
+        ["Note", result.note],
+      ],
+      style,
+    );
+  return [style.json(result)];
 }

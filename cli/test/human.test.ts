@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import type { CliAccountResponse, CliDeployment } from "../../src/contracts/cli.ts";
 import type {
   ApiKey,
@@ -10,6 +11,8 @@ import type {
 } from "../../src/contracts/responses.ts";
 import { CliError } from "../src/common.ts";
 import { humanResult, type OutputContext } from "../src/human.ts";
+import { maskDelta } from "../src/input.ts";
+import { colorEnabled, style } from "../src/style.ts";
 import { main } from "../src/main.ts";
 import type { CommandName } from "../src/parser.ts";
 import type { RenderedResult } from "../src/results.ts";
@@ -473,12 +476,16 @@ const cases: Case[] = [
       guidance: "Store the generated key on your server.",
     },
     includes: [
-      "Created Example",
-      "App ID: app_1",
-      "Authentication: server application API key",
-      "Key saved: /tmp/app.key",
+      "Created app Example (app_1).",
+      "Gateway:",
+      "Authentication:",
+      "server application API key",
+      "Per-user limits:",
+      "Key saved:",
+      "/tmp/app.key",
       "Store the generated key on your server.",
     ],
+    excludes: ["App ID:"],
   },
   {
     name: "a snippet written to a file reports only the path",
@@ -530,14 +537,28 @@ const cases: Case[] = [
   },
 ];
 
+/** The same output as a terminal would receive it, with the colour taken off. */
+const stripped = (text: string): string => text.replace(/\u001b\[\d+m/g, "");
+
 test("every command shape renders as plain text a person can read", () => {
   for (const item of cases) {
-    const text = humanResult(item.command, item.result, item.context ?? context);
+    const where = item.context ?? context;
+    const text = humanResult(item.command, item.result, where);
     assert.equal(text.endsWith("\n"), true, item.name);
+    assert.equal(text.includes("\u001b["), false, `${item.name}: coloured by default`);
     for (const expected of item.includes)
       assert.ok(text.includes(expected), `${item.name}: missing ${expected}\n${text}`);
     for (const forbidden of item.excludes ?? [])
       assert.ok(!text.includes(forbidden), `${item.name}: printed ${forbidden}\n${text}`);
+    // Colour is added on top of a layout that is decided without it: every
+    // width is measured on the plain text, so taking the colour off again has
+    // to give back exactly the plain rendering.
+    assert.equal(
+      stripped(humanResult(item.command, item.result, where, style(true))),
+      text,
+      item.name,
+    );
+    assert.equal(text.includes("Account ID"), false, `${item.name}: trailer returned`);
   }
 });
 
@@ -547,6 +568,78 @@ test("a snippet is the whole of its own output, with nothing appended", () => {
     humanResult("app snippet", { language: "shell", snippet, notes: [] }, owned),
     snippet,
   );
+  // On a terminal nothing is being piped, so the same snippet is framed.
+  const framed = humanResult(
+    "app snippet",
+    { language: "shell", snippet, notes: [] },
+    owned,
+    style(true),
+  );
+  assert.equal(stripped(framed), `── shell ──\n${snippet}\n───────────\n`);
+  assert.ok(framed.includes("\u001b[2m"));
+});
+
+test("colour is decided by the destination, and NO_COLOR and FORCE_COLOR settle it", () => {
+  const sink = { write: () => {} };
+  const terminal = new Writable({ write(_chunk, _encoding, done) { done(); } });
+  Object.defineProperty(terminal, "isTTY", { value: true });
+  Object.defineProperty(terminal, "getColorDepth", { value: () => 24 });
+  const piped = new Writable({ write(_chunk, _encoding, done) { done(); } });
+  // An injected sink and a pipe are the same thing to this: not a terminal.
+  assert.equal(colorEnabled(sink, {}), false);
+  assert.equal(colorEnabled(piped, {}), false);
+  assert.equal(colorEnabled(terminal, { FORCE_COLOR: "1" }), true);
+  assert.equal(colorEnabled(terminal, { NO_COLOR: "1" }), false);
+  // FORCE_COLOR reaches a stream, but never a sink that is not one at all,
+  // which is what keeps this suite's own output plain wherever it runs.
+  assert.equal(colorEnabled(sink, { FORCE_COLOR: "1" }), false);
+  assert.equal(colorEnabled(piped, { FORCE_COLOR: "1" }), true);
+});
+
+test("colour marks the headline, the labels and the state words, and nothing else", () => {
+  const painted = humanResult("provider list", { providers: [provider] }, context, style(true));
+  // Dim table header, green state, and an id left in the terminal's own colour.
+  assert.ok(painted.includes("\u001b[2mID"), painted);
+  assert.ok(painted.includes("\u001b[32mactive\u001b[39m"), painted);
+  assert.ok(!painted.includes("\u001b[32mprv_1"), painted);
+  const removed = humanResult(
+    "provider remove",
+    { deleted: true, provider_id: "prv_1" },
+    context,
+    style(true),
+  );
+  assert.equal(removed, "\u001b[1mRemoved provider prv_1.\u001b[22m\n");
+  const status = humanResult("account logout", { loggedOut: true }, context, style(true));
+  assert.ok(status.startsWith("\u001b[1mSigned out of https://gw.example.\u001b[22m"), status);
+  const disabled = humanResult(
+    "app check",
+    {
+      appId: "app_1",
+      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: true },
+      status: "disabled",
+      providers: [],
+      ready: false,
+      limitations: [],
+    },
+    context,
+    style(true),
+  );
+  assert.ok(disabled.includes("\u001b[31mdisabled\u001b[39m"), disabled);
+});
+
+test("the JSON document is highlighted on a terminal and exact everywhere else", () => {
+  const document = { app_id: "app_1", revision: 1, enabled: true, note: null };
+  const off = humanResult("provider show", { ...provider }, context);
+  assert.equal(off.includes("\u001b["), false);
+  const on = style(true).json(document);
+  assert.equal(stripped(on), JSON.stringify(document, null, 2));
+  // Keys bold, punctuation dim, strings plain, scalars in the accent colour.
+  assert.ok(on.includes('\u001b[1m"revision"\u001b[22m'), on);
+  assert.ok(on.includes("\u001b[32m1\u001b[39m"), on);
+  assert.ok(on.includes("\u001b[32mtrue\u001b[39m"), on);
+  assert.ok(on.includes("\u001b[32mnull\u001b[39m"), on);
+  assert.ok(on.includes('"app_1"'), on);
+  assert.equal(style(false).json(document), JSON.stringify(document, null, 2));
 });
 
 test("key and value lines share one value column", () => {
@@ -567,6 +660,18 @@ test("key and value lines share one value column", () => {
     .filter((line) => line.includes(": "))
     .map((line) => /^[^:]+: +/.exec(line)?.[0].length);
   assert.equal(new Set(columns).size, 1, status.join("\n"));
+});
+
+test("a hidden prompt acknowledges every character it accepts, up to a line of them", () => {
+  // The prompt itself needs a real terminal, so what is tested here is the one
+  // thing that decides what appears: the mask, with the value nowhere in it.
+  assert.equal(maskDelta(0, 3), "***");
+  assert.equal(maskDelta(3, 3), "");
+  assert.equal(maskDelta(3, 2), "\b \b");
+  assert.equal(maskDelta(3, 0), "\b \b\b \b\b \b");
+  // A pasted key is acknowledged without wrapping the line away.
+  assert.equal(maskDelta(0, 5000).length, 64);
+  assert.equal(maskDelta(64, 5000), "");
 });
 
 test("a plain-text failure goes to stderr, leaving stdout empty, and keeps its exit code", async () => {

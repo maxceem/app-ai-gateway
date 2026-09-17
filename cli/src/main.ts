@@ -9,6 +9,7 @@ import { helpText, parse, type ParseResult } from "./parser.ts";
 import { required, resourceCommand } from "./resources.ts";
 import type { CommandResult, RenderedResult } from "./results.ts";
 import { StateStore } from "./state.ts";
+import { styleFor } from "./style.ts";
 import { Transport } from "./transport.ts";
 import { positive, usageCommand } from "./usage.ts";
 
@@ -114,7 +115,7 @@ export async function main(
       const output = { schemaVersion: 1, ok: true, context, result: rendered };
       const text = json
         ? JSON.stringify(output) + "\n"
-        : humanResult(parsed.command, rendered, context);
+        : humanResult(parsed.command, rendered, context, styleFor(stdout));
       if (stdout instanceof Writable) {
         await new Promise<void>((resolve, reject) =>
           stdout.write(text, (error) =>
@@ -162,15 +163,16 @@ export async function main(
     // stays clean for the command's own output, so `agw app snippet ... > f`
     // writes a snippet or an empty file, never half a report of a failure.
     // `--json` keeps its one document on stdout, which is what agents read.
+    const style = styleFor(stderr);
     const lines = [
-      `Error: ${e.message}`,
-      `Next: ${e.nextAction}`,
-      `Code: ${e.code}`,
+      style.alert(`Error: ${e.message}`),
+      style.warn(`Next: ${e.nextAction}`),
+      style.dim(`Code: ${e.code}`),
     ];
     // Every declared detail field is a string, a number or a boolean, so each
     // one is a line of its own rather than a nested document.
     for (const [key, value] of Object.entries(reported.details ?? {}))
-      lines.push(`  ${key}: ${String(value)}`);
+      lines.push(`  ${style.dim(`${key}:`)} ${String(value)}`);
     stderr.write(lines.join("\n") + "\n");
     return e.exitCode;
   }
