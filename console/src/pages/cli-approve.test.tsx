@@ -41,7 +41,7 @@ function details(overrides: Record<string, unknown> = {}) {
 const CONSOLE_OUTCOME = {
   body: {
     state: "completed",
-    message: "This account is yours. Open the console to set up your first app.",
+    message: "This account is yours.",
     continueTo: "console",
   },
 };
@@ -279,7 +279,7 @@ describe("CliApprovePage claim", () => {
     });
     // A claim ends in the console the approver just gained, not back in the
     // terminal, and the gateway is what says so.
-    expect(await screen.findByText(/open the console/i)).toBeTruthy();
+    expect(await screen.findByText(/this account is yours/i)).toBeTruthy();
     const onwards = screen.getByRole("link", { name: /go to your console/i });
     expect(onwards.getAttribute("href")).toBe("/apps");
     expect(screen.queryByText(/return to your cli/i)).toBeNull();
