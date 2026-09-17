@@ -45,7 +45,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -70,8 +70,8 @@ jobs:
             exit 1
           fi
 
-      - uses: pnpm/action-setup@v4 # the version pinned in packageManager
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6 # the version pinned in packageManager
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -86,14 +86,14 @@ jobs:
       contents: write # create the GitHub release and upload the gateway archive
       id-token: write # npm trusted publishing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4 # the version pinned in packageManager
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6 # the version pinned in packageManager
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
