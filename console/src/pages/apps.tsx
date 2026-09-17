@@ -26,6 +26,7 @@ import { useApp, useApps, usePrices, useProviders } from "@/lib/queries";
 import { useCheckoutSuccessToast } from "@/lib/checkout-return";
 import { noteProxiedRequests } from "@/lib/analytics";
 import { useConsoleSession } from "@/lib/console-session";
+import { clientApiOrigin } from "@/lib/client-api";
 import { firstRequest } from "@/lib/first-request";
 import type { AppSummary } from "@/lib/types";
 
@@ -107,6 +108,7 @@ function WaitingForRequest() {
 }
 
 function FirstRequestExample({ app }: { app: AppSummary }) {
+  const { capabilities } = useConsoleSession();
   const details = useApp(app.id);
   const providers = useProviders();
   const prices = usePrices();
@@ -117,7 +119,9 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
   if (!example) return <p className="mt-3 text-sm text-muted-foreground">No text request example is available for this app’s current provider and model settings.</p>;
   const { provider, path, body, anthropic } = example;
   const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  const origin = window.location.origin;
+  // The host applications call, which on a deployment that publishes a separate
+  // API domain is not the console's own. A snippet is pasted into a real app.
+  const origin = clientApiOrigin(capabilities);
   const code = ios
     ? `import Foundation
 import AppAIGateway

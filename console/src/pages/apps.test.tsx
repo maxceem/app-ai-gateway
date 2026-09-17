@@ -178,6 +178,37 @@ describe("the first-run checklist", () => {
     expect(screen.queryByText(/import AppAIGateway/)).toBeNull();
   });
 
+  /**
+   * The snippet is pasted into a real application, so it has to name the host
+   * that application calls. On a deployment that publishes a separate API
+   * domain that is not this console's own origin, and only the deployment can
+   * say so.
+   */
+  it("points the request example at the deployment's API host when one is configured", async () => {
+    renderApps(
+      {
+        apps: [app, { ...app, id: "server-app", name: "Backend", authentication_type: "api_key", created_at: "2026-08-01T00:00:00.000Z" }],
+        providers: [provider],
+      },
+      { capabilities: { apiBaseUrl: "https://api.example.com" } },
+    );
+
+    const code = await screen.findByText(/curl --fail-with-body/);
+    expect(code.textContent).toContain("https://api.example.com/v1/apps/server-app/proxy/openai/");
+    expect(code.textContent).not.toContain(window.location.origin);
+  });
+
+  it("points an iOS request example at the same host", async () => {
+    renderApps(
+      { apps: [app], providers: [provider] },
+      { capabilities: { apiBaseUrl: "https://api.example.com" } },
+    );
+
+    const code = await screen.findByText(/import AppAIGateway/);
+    expect(code.textContent).toContain('baseURL: URL(string: "https://api.example.com")!');
+    expect(code.textContent).not.toContain(window.location.origin);
+  });
+
   it("does not wait or show code when only an app exists", async () => {
     renderApps({ apps: [app] });
     await screen.findByText(/start proxying in three steps/i);
