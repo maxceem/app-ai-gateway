@@ -531,7 +531,11 @@ export async function appCommand(
     const authMode = issuer
       ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
       : ".appAttestInstall";
-    const snippet = `// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)\n// Enable App Attest and test on a supported physical device.\nimport Foundation\nimport AppAIGateway\n\nlet gateway = AppAIGatewayClient(\n    appID: ${JSON.stringify(appId)},\n    baseURL: URL(string: ${JSON.stringify(ctx.url)})!,\n    authMode: ${authMode}\n)\n\nvar request = try await gateway.authorizedRequest(\n    ${target}\n)\n// Supply the provider-native JSON body, then send request with URLSession.\n`;
+    // The host applications call, which is not always the one this CLI manages
+    // the gateway through: a deployment publishing a separate API domain names
+    // it in its own deployment identity, and a snippet goes into a real app.
+    const clientUrl = ctx.active?.deployment?.apiUrl ?? ctx.url;
+    const snippet = `// Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)\n// Enable App Attest and test on a supported physical device.\nimport Foundation\nimport AppAIGateway\n\nlet gateway = AppAIGatewayClient(\n    appID: ${JSON.stringify(appId)},\n    baseURL: URL(string: ${JSON.stringify(clientUrl)})!,\n    authMode: ${authMode}\n)\n\nvar request = try await gateway.authorizedRequest(\n    ${target}\n)\n// Supply the provider-native JSON body, then send request with URLSession.\n`;
     if (flags.output) {
       const output = await reserveOutput(flags.output);
       try {

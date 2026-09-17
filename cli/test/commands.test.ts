@@ -784,3 +784,40 @@ test("a failed wrangler run reports its own output, minus the secrets it was giv
   assert.ok(!(details.output ?? "").includes("SENTINEL"));
   assert.ok((details.output ?? "").length <= 2000);
 });
+
+/**
+ * The snippet is compiled into an application, so its base URL has to be the
+ * host that application calls. A deployment publishing a separate API domain
+ * names it in its own identity, which is not the URL this CLI manages the
+ * gateway through — the console host serves both.
+ */
+test("app snippet names the deployment's API host, not the managed URL", async () => {
+  const ios = await appDocument(iosFlags);
+  const ctx = stubContext({
+    url: "https://console.example",
+    active: {
+      url: "https://console.example",
+      authenticated: true,
+      deployment: {
+        id: "deployment-1",
+        mode: "cloud",
+        apiUrl: "https://api.example.com",
+        consoleOrigin: "https://console.example",
+      },
+    },
+    call: async (name: string) => {
+      if (name === "getApp")
+        return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+      return { data: { providers: [{ id: "p-1", slug: "openai", type: "openai", status: "active" }] } };
+    },
+    publicCall: async () => ({
+      data: { providers: [{ type: "openai", defaultPath: "v1/responses" }] },
+    }),
+  });
+  const result = await appCommand(ctx, "app snippet", ["app-1"], {});
+  const snippet = "snippet" in result ? result.snippet : undefined;
+  assert.equal(typeof snippet, "string");
+  assert.ok(snippet !== undefined);
+  assert.match(snippet, /baseURL: URL\(string: "https:\/\/api\.example\.com"\)!/u);
+  assert.equal(snippet.includes("console.example"), false);
+});
