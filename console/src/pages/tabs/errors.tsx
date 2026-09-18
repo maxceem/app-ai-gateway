@@ -111,7 +111,7 @@ const OUTCOME_FILTERS = [
   "ok",
 ] as const;
 
-export function AuthEventsTab({ appId }: { appId: string }) {
+export function ErrorsTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
   const [outcome, setOutcome] = useState<string>("all");
   const [cursors, setCursors] = useState<number[]>([]);

@@ -18,14 +18,52 @@ const APP_ROW = {
   },
 };
 
-function renderSection(tab: string) {
+/** A registered user who has spent something, for the users table. */
+const USER = {
+  id: "user-1",
+  status: "active",
+  attest_key_id: "attest-key",
+  attest_registered: true,
+  // Carried by the API and deliberately not drawn: see the test below.
+  attest_counter: 42,
+  created_at: "2026-09-01T00:00:00.000Z",
+  last_seen_at: "2026-09-18T00:00:00.000Z",
+  is_virtual: false,
+  usage: {
+    requests: 10,
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_write_tokens: 0,
+    output_tokens: 0,
+    cost_usd: 3,
+    errors: 0,
+    blocked: 0,
+  },
+};
+
+/** `limits` with a per-user monthly budget of `monthlyUsd`; `null` is unlimited. */
+function limits(monthlyUsd: number | null) {
+  const scope = {
+    requests: { per_minute: null, per_day: null },
+    spending: { monthly_usd: monthlyUsd },
+  };
+  return { per_user: scope, per_app: scope };
+}
+
+function renderSection(
+  tab: string,
+  { config, users = [] }: { config?: Record<string, unknown>; users?: unknown[] } = {},
+) {
+  const app = { ...APP_ROW, config: { ...APP_ROW.config, ...config } };
   stubApi({
     // Longest prefixes first: `stubApi` matches the first key that prefixes the
     // URL, and the app row's own path prefixes all of these.
     [`/v1/admin/apps/${APP_ID}/usage`]: { body: { app_id: APP_ID, requests: 0 } },
-    [`/v1/admin/apps/${APP_ID}/users`]: { body: { app_id: APP_ID, total: 0, users: [] } },
+    [`/v1/admin/apps/${APP_ID}/users`]: {
+      body: { app_id: APP_ID, total: users.length, users },
+    },
     [`/v1/admin/apps/${APP_ID}/keys`]: { body: { app_id: APP_ID, keys: [] } },
-    [`/v1/admin/apps/${APP_ID}`]: { body: { app: APP_ROW, resolved: null, config_error: null } },
+    [`/v1/admin/apps/${APP_ID}`]: { body: { app, resolved: null, config_error: null } },
   });
   return renderAuthenticated(
     <Routes>
@@ -73,5 +111,55 @@ describe("AppDetailPage", () => {
     renderSection("settings");
     await screen.findByRole("heading", { level: 1, name: "Settings" });
     expect(screen.queryByLabelText("Month")).toBeNull();
+  });
+});
+
+describe("a tab the app does not have", () => {
+  it("sends a stale or mistyped section to the default one", async () => {
+    renderSection("not-a-section");
+
+    // The page settles on Overview rather than showing one section's content
+    // under another section's name.
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Overview");
+    expect(screen.queryByText(/named endpoints/i)).toBeNull();
+  });
+
+  it("catches the section slug that was renamed out from under old bookmarks", async () => {
+    // `auth-events` was this page's Errors tab until it was renamed, so anyone
+    // who bookmarked it is the likeliest visitor to an unknown tab.
+    renderSection("auth-events");
+
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Overview");
+  });
+});
+
+describe("the users table", () => {
+  it("measures each user against the per-user budget the app sets", async () => {
+    renderSection("users", { config: { limits: limits(4) }, users: [USER] });
+
+    const bar = await screen.findByRole("progressbar", { name: /monthly budget used/i });
+    expect(bar.getAttribute("aria-valuenow")).toBe("3");
+    expect(bar.getAttribute("aria-valuemax")).toBe("4");
+    expect(bar.getAttribute("aria-valuetext")).toBe("$3.00 of $4.00");
+    // The column reports a budget now, not a bare cost.
+    expect(screen.getByRole("columnheader", { name: "Budget" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Cost" })).toBeNull();
+  });
+
+  it("reports a user as unlimited when the app sets no budget at all", async () => {
+    renderSection("users", { users: [USER] });
+
+    expect(await screen.findByTitle(/no monthly budget/i)).toBeTruthy();
+    expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
+  });
+
+  it("keeps the App Attest assertion counter out of the table", async () => {
+    renderSection("users", { config: { limits: limits(4) }, users: [USER] });
+
+    // Registration is worth saying; the number of assertions the key has ever
+    // signed is an implementation detail no operator acts on.
+    expect(await screen.findByText("registered")).toBeTruthy();
+    expect(screen.queryByText(/counter/i)).toBeNull();
+    expect(screen.queryByText("42")).toBeNull();
   });
 });

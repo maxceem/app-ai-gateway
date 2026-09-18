@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
-import { AuthEventsTab, foldOutcomes, formatDuration } from "./auth-events";
+import { ErrorsTab, foldOutcomes, formatDuration } from "./errors";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AuthEvent, AuthEventSummary } from "@/lib/types";
 
@@ -45,8 +45,8 @@ function renderTab(data: AuthEventSummary, events: AuthEvent[]) {
       body: { app_id: APP_ID, limit: 25, next_before_id: null, events },
     },
   });
-  return renderAuthenticated(<AuthEventsTab appId={APP_ID} />, {
-    route: `/apps/${APP_ID}/auth-events`,
+  return renderAuthenticated(<ErrorsTab appId={APP_ID} />, {
+    route: `/apps/${APP_ID}/errors`,
   });
 }
 
@@ -162,7 +162,7 @@ describe("foldOutcomes", () => {
   });
 });
 
-describe("AuthEventsTab", () => {
+describe("ErrorsTab", () => {
   it("leads with the success rate, the claim delays, and who is waiting now", async () => {
     renderTab(
       summary({

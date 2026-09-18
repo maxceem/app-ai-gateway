@@ -210,10 +210,7 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
         >
           {initialsFor(session.user?.name, email)}
         </span>
-        <span className="min-w-0 flex-1 leading-tight">
-          <span className="block truncate text-sm font-medium">{name}</span>
-          <span className="block truncate text-xs text-muted-foreground">{email}</span>
-        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{name}</span>
         <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
       </DropdownMenuTrigger>
       <DropdownMenuContent

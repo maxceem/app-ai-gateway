@@ -128,7 +128,7 @@ describe("AppShell navigation", () => {
       "/apps/app-1/limits",
       "/apps/app-1/users",
       "/apps/app-1/usage",
-      "/apps/app-1/auth-events",
+      "/apps/app-1/errors",
       "/apps/app-1/settings",
     ]);
   });
@@ -173,7 +173,10 @@ describe("AppShell navigation", () => {
   it("names only the operator in the sidebar, never their organization", async () => {
     renderAuthenticated(<AppShell>content</AppShell>);
 
-    expect(screen.getByText("ada@example.test")).toBeTruthy();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    // Their name and nothing else: the address is on Settings, which is the
+    // first item of the menu this same block opens.
+    expect(screen.queryByText("ada@example.test")).toBeNull();
     // Acme is the session's organization; the rail is the operator's, not the org's.
     expect(screen.queryByText("Acme")).toBeNull();
 
