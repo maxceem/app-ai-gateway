@@ -25,13 +25,26 @@ import {
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MonthPicker } from "@/components/pickers";
 import { UserStatusBadge } from "@/components/status-badge";
-import { currentMonth, formatCompact, formatCost, formatNumber, formatRelative, totalTokens } from "@/lib/format";
+import { BudgetCell } from "@/components/budget";
+import { currentMonth, formatCompact, formatNumber, formatRelative, totalTokens } from "@/lib/format";
 import { useUserAction, useUsers } from "@/lib/queries";
 import type { GatewayUser } from "@/lib/types";
 
 const PAGE_SIZE = 25;
 
-export function UsersTab({ appId }: { appId: string }) {
+export function UsersTab({
+  appId,
+  monthlyBudgetUsd,
+}: {
+  appId: string;
+  /**
+   * What each of this app's users may spend in a month, from the app's own
+   * limits. One number for the whole table rather than a field per row: it is
+   * the same ceiling for every user, and only the spend measured against it
+   * differs. `null` is unlimited.
+   */
+  monthlyBudgetUsd: number | null;
+}) {
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "blocked">("all");
@@ -109,7 +122,7 @@ export function UsersTab({ appId }: { appId: string }) {
               <TableHead>Last seen</TableHead>
               <TableHead className="text-right">Requests</TableHead>
               <TableHead className="text-right">Tokens</TableHead>
-              <TableHead className="text-right">Cost</TableHead>
+              <TableHead className="text-right">Budget</TableHead>
               <TableHead className="w-24" />
             </TableRow>
           </TableHeader>
@@ -139,14 +152,9 @@ export function UsersTab({ appId }: { appId: string }) {
                   </TableCell>
                   <TableCell>
                     {user.attest_registered ? (
-                      <div className="flex items-center gap-1.5">
-                        <Badge variant="secondary" className="text-[11px] font-normal">
-                          registered
-                        </Badge>
-                        <span className="tabular text-[11px] text-muted-foreground">
-                          counter {user.attest_counter}
-                        </span>
-                      </div>
+                      <Badge variant="secondary" className="text-[11px] font-normal">
+                        registered
+                      </Badge>
                     ) : (
                       <span className="text-xs text-muted-foreground">
                         {user.is_virtual ? "server attributed" : "issuer token"}
@@ -162,7 +170,12 @@ export function UsersTab({ appId }: { appId: string }) {
                   <TableCell className="tabular text-right">
                     {formatCompact(totalTokens(user.usage))}
                   </TableCell>
-                  <TableCell className="tabular text-right">{formatCost(user.usage.cost_usd)}</TableCell>
+                  <TableCell className="tabular text-right">
+                    {/* One user against the budget the app sets for each of
+                        them, drawn exactly as the apps list draws an app
+                        against its own. */}
+                    <BudgetCell spent={user.usage.cost_usd} budget={monthlyBudgetUsd} />
+                  </TableCell>
                   <TableCell className="text-right">
                     <GuardedButton
                       variant="ghost"

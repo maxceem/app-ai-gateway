@@ -271,6 +271,75 @@ describe("the first-run checklist", () => {
   });
 });
 
+describe("the budget column", () => {
+  /** The listed app with `budget` set, and whatever the row spent that month. */
+  function budgeted(budget: number | null, cost: number): AppSummary {
+    return {
+      ...app,
+      monthly_budget_usd: budget,
+      usage: { ...app.usage, cost_usd: cost },
+    };
+  }
+
+  it("draws the share of the budget spent, and reads it out as money", async () => {
+    renderApps({ apps: [budgeted(40, 20)], hasProxiedRequests: true });
+
+    const bar = await screen.findByRole("progressbar", { name: /monthly budget used/i });
+    expect(bar.getAttribute("aria-valuenow")).toBe("20");
+    expect(bar.getAttribute("aria-valuemax")).toBe("40");
+    // The figures, not the ratio: the column above it is in dollars.
+    expect(bar.getAttribute("aria-valuetext")).toBe("$20.00 of $40.00");
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe("50%");
+  });
+
+  it("warns in amber past four fifths, and never overflows its track", async () => {
+    const { unmount } = renderApps({ apps: [budgeted(10, 9)], hasProxiedRequests: true });
+    const warning = await screen.findByRole("progressbar", { name: /monthly budget used/i });
+    expect((warning.firstElementChild as HTMLElement).className).toContain("bg-amber-500");
+    unmount();
+
+    // Spending past the budget settles after the request that crossed it, so a
+    // row really can report more than its own ceiling. It reads as full.
+    renderApps({ apps: [budgeted(10, 14)], hasProxiedRequests: true });
+    const over = await screen.findByRole("progressbar", { name: /monthly budget used/i });
+    const fill = over.firstElementChild as HTMLElement;
+    expect(fill.className).toContain("bg-destructive");
+    expect(fill.style.width).toBe("100%");
+  });
+
+  it("keeps a spent-against budget visible rather than rounding it away", async () => {
+    renderApps({ apps: [budgeted(1000, 0.02)], hasProxiedRequests: true });
+
+    const bar = await screen.findByRole("progressbar", { name: /monthly budget used/i });
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe("2%");
+  });
+
+  it("draws every bar at one width, so two rows can be compared by eye", async () => {
+    renderApps({
+      apps: [
+        { ...budgeted(2.5, 1.81), id: "small", name: "Small" },
+        { ...budgeted(40000, 22377.82), id: "large", name: "Large" },
+      ],
+      hasProxiedRequests: true,
+    });
+
+    const bars = await screen.findAllByRole("progressbar", { name: /monthly budget used/i });
+    expect(bars).toHaveLength(2);
+    // The figures differ in length by half a dozen characters; the track they
+    // sit under does not, or the two fills would not mean the same thing.
+    expect(bars[0]!.className).toBe(bars[1]!.className);
+    expect(bars[0]!.className).toContain("w-28");
+  });
+
+  it("draws no bar for an app with no budget, which says so with a sign", async () => {
+    renderApps({ apps: [budgeted(null, 5)], hasProxiedRequests: true });
+
+    expect(await screen.findByTitle(/no monthly budget/i)).toBeTruthy();
+    // An empty track would read as an untouched budget rather than an absent one.
+    expect(screen.queryByRole("progressbar", { name: /monthly budget used/i })).toBeNull();
+  });
+});
+
 describe("returning from a completed checkout", () => {
   it("announces the purchase and spends the marker", async () => {
     const success = vi.spyOn(toast, "success");

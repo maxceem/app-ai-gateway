@@ -34,7 +34,12 @@ export const APP_SECTIONS: AppSection[] = [
   { slug: "usage", label: "Usage", icon: ChartNoAxesColumn },
   // Next to Usage because it answers the other half of "what happened": one
   // counts the requests that got through, the other the ones that did not.
-  { slug: "auth-events", label: "Auth & Errors", icon: ShieldAlert },
+  //
+  // Named for what an operator comes here to find rather than for the table it
+  // mostly reads. Most of these failures are authentication refusals, but the
+  // page folds refused proxied requests in beside them, and nobody opens it
+  // except to ask why something did not work.
+  { slug: "errors", label: "Errors", icon: ShieldAlert },
   // Last, and apart: name, on or off, and delete are about the app as a record,
   // not about how it works, and nothing here is needed to get traffic flowing.
   { slug: "settings", label: "Settings", icon: Settings },

@@ -19,6 +19,7 @@ import { GuardedButton } from "@/components/guarded-button";
 import { MonthPicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
 import { AppStatusBadge } from "@/components/status-badge";
+import { BudgetCell } from "@/components/budget";
 import { NewAppDialog } from "@/pages/new-app-dialog";
 import { AddProviderButton } from "@/pages/providers";
 import { currentMonth, formatCompact, formatCost, formatNumber, totalTokens } from "@/lib/format";
@@ -357,17 +358,11 @@ export function AppsPage() {
                       </Link>
                     </TableCell>
                     <TableCell className="tabular text-right">
-                      {formatCost(app.usage.cost_usd)}
-                      <span className="text-muted-foreground">
-                        {" / "}
-                        {app.monthly_budget_usd === null ? (
-                          // No budget is set, so there is nothing to spend
-                          // against — the sign says so without a number.
-                          <span title="No monthly budget">&#8734;</span>
-                        ) : (
-                          formatCost(app.monthly_budget_usd)
-                        )}
-                      </span>
+                      {/* The whole app against the budget set for it. */}
+                      <BudgetCell
+                        spent={app.usage.cost_usd}
+                        budget={app.monthly_budget_usd}
+                      />
                     </TableCell>
                     <TableCell className="tabular text-right">
                       {formatNumber(app.users.total)}

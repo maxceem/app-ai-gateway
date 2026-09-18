@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -9,10 +9,10 @@ import { PageHeader } from "@/components/field";
 import { MissingProvidersAlert } from "@/components/missing-providers-alert";
 import { MonthPicker } from "@/components/pickers";
 import { useAppDraft } from "@/hooks/use-app-draft";
-import { APP_SECTIONS } from "@/lib/app-sections";
+import { APP_SECTIONS, DEFAULT_APP_SECTION } from "@/lib/app-sections";
 import { draftProblem } from "@/lib/draft-problems";
 import { currentMonth } from "@/lib/format";
-import { AuthEventsTab } from "@/pages/tabs/auth-events";
+import { ErrorsTab } from "@/pages/tabs/errors";
 import { AuthPolicyTab } from "@/pages/tabs/auth-policy";
 import { LimitsTab } from "@/pages/tabs/limits";
 import { OverviewTab } from "@/pages/tabs/overview";
@@ -42,6 +42,24 @@ export function AppDetailPage() {
   const [month, setMonth] = useState(currentMonth());
   const heading = APP_SECTIONS.find((entry) => entry.slug === tab);
 
+  /*
+   * A tab this app does not have: a stale bookmark, or a hand-typed URL.
+   *
+   * Answered once, here, rather than left to fall out of the chain below. That
+   * chain ends in the pair of lazily-loaded tabs, so an unknown tab used to
+   * reach `Endpoints` — not as anyone's choice of fallback, but because
+   * Endpoints is the second of the two and so the last branch standing. The
+   * header meanwhile did its own lookup, missed, and titled the page
+   * "Overview", leaving the two halves of the screen naming different sections.
+   *
+   * Sending the URL to the default section instead keeps the address bar and
+   * the content agreeing on what is open, and `replace` keeps Back going to
+   * wherever the operator came from rather than to a tab that does not exist.
+   */
+  if (!heading) {
+    return <Navigate to={`/apps/${encodeURIComponent(appId)}/${DEFAULT_APP_SECTION}`} replace />;
+  }
+
   const { query, draft, dirty } = state;
   // What would make the Worker refuse the draft, said on the button instead.
   const problem = draft ? draftProblem(draft) : null;
@@ -64,7 +82,7 @@ export function AppDetailPage() {
   return (
     <div className="space-y-6 pb-24">
       <PageHeader
-        title={heading?.label ?? "Overview"}
+        title={heading.label}
         action={
           tab === "overview" ? <MonthPicker value={month} onChange={setMonth} /> : undefined
         }
@@ -96,9 +114,15 @@ export function AppDetailPage() {
       ) : tab === "limits" ? (
         <LimitsTab state={state} />
       ) : tab === "users" ? (
-        <UsersTab appId={appId} />
-      ) : tab === "auth-events" ? (
-        <AuthEventsTab appId={appId} />
+        // The users table measures each user against the app's own per-user
+        // budget, which lives in the draft this page already holds. An app with
+        // no limits block is unlimited.
+        <UsersTab
+          appId={appId}
+          monthlyBudgetUsd={draft.config.limits?.per_user.spending.monthly_usd ?? null}
+        />
+      ) : tab === "errors" ? (
+        <ErrorsTab appId={appId} />
       ) : tab === "settings" ? (
         <SettingsTab appId={appId} state={state} />
       ) : (
