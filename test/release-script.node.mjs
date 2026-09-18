@@ -84,7 +84,10 @@ test("rewrites upgradeFrom in place, keeping the trailing comma", () => {
   const next = setUpgradeFrom(cliManifest, ["0.1.7", "0.1.6"]);
   assert.deepEqual(readUpgradeFrom(next), ["0.1.7", "0.1.6"]);
   assert.ok(next.includes('"upgradeFrom": ["0.1.7", "0.1.6"],\n'));
-  assert.equal(next.split("\n").length, cliManifest.split("\n").length);
+  // Only the array itself is rewritten: the rest of the manifest is untouched,
+  // whether it keeps the array on one line or wrapped once it outgrows 100.
+  const withoutArray = (text) => text.replace(/^[ \t]*"upgradeFrom":[ \t]*\[[^\]]*\],?\n/mu, "");
+  assert.equal(withoutArray(next), withoutArray(cliManifest));
 });
 
 test("applies a release to both manifests together", () => {
