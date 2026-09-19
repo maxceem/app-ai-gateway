@@ -109,11 +109,28 @@ export async function bootstrap(c: CliContext): Promise<Response> {
 
   const now = Date.now();
   if (!row) {
-    await enforceEndpointRateLimit(
-      c.env,
-      "bootstrap",
-      c.req.header("cf-connecting-ip") ?? "local",
-    );
+    // Cloud only, where an account costs this gateway's operator something and
+    // anyone can ask for one.
+    //
+    // A self-host counts nothing, because the only thing counting could refuse
+    // there is the race to be its first caller — and that race is the rule, not
+    // a flaw in it: whoever initializes an empty deployment owns it. Nobody
+    // else is racing for one anyway. The address is not published, the
+    // deployment is empty until its owner arrives, and the person who does own
+    // it owns the infrastructure under it, so the answer to losing the race is
+    // to destroy the deployment and install again.
+    //
+    // What a limit here would reliably refuse instead is the owner's own
+    // installer retrying a deployment whose storage has not come up yet — three
+    // attempts in a few seconds, and then a day of refusals on a deployment
+    // nobody has ever owned. The 409 above is the guard that matters, and it
+    // never expires.
+    if (meta.mode === "cloud")
+      await enforceEndpointRateLimit(
+        c.env,
+        "bootstrap",
+        c.req.header("cf-connecting-ip") ?? "local",
+      );
     const accountId = meta.mode === "self_hosted" ? `private-${meta.id}` : `account-${hash}`;
     const userId = `service-${accountId}`;
     const createdAt = new Date(now).toISOString();

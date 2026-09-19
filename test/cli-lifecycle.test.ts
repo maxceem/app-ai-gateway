@@ -15,6 +15,7 @@ import {
   clearAccountLifecycleCache,
   pruneExpiredAccounts,
 } from "../src/core/account-lifecycle";
+import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
 import { secretVault } from "../src/vault";
 
 function fakeBilling(): BillingRuntime {
@@ -234,6 +235,43 @@ describe("CLI account lifecycle", () => {
         })
       ).status,
     ).toBe(200);
+  });
+  it("does not count a selfhost's attempts, so an installer may retry past the cloud allowance", async () => {
+    const testEnv = runtime(false);
+    const input = { idempotencyKey: random(), pollToken: random() };
+    // A deployment whose database is not callable yet: the writes throw, the
+    // request is answered 500, and nothing is created. The CLI answers this by
+    // sending the identical request again, which is what a counted endpoint
+    // would refuse on the fourth try — on a deployment nobody owns yet.
+    const batch = env.DB.batch.bind(env.DB);
+    let refusals = 0;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (refusals++ < ENDPOINT_RATE_LIMITS.bootstrap.limit)
+        throw new Error("D1_ERROR: Network connection lost");
+      return batch(statements);
+    });
+    for (let attempt = 0; attempt < ENDPOINT_RATE_LIMITS.bootstrap.limit; attempt++)
+      expect((await request(testEnv, "/bootstrap", input)).status).toBe(500);
+    const installed = await request(testEnv, "/bootstrap", input);
+    expect(installed.status).toBe(200);
+    expect(((await installed.json()) as { credential: { token: string } }).credential.token)
+      .toMatch(/^agw_mgmt_/u);
+  });
+  it("counts a cloud account's attempts, which is the deployment nobody owns", async () => {
+    // Cloud is where initializing is open to anyone and each attempt is another
+    // account on somebody else's infrastructure, so the allowance still holds.
+    const testEnv = runtime();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.bootstrap.limit; spent++)
+      expect(
+        (await request(testEnv, "/bootstrap", { idempotencyKey: random(), pollToken: random() }))
+          .status,
+      ).toBe(200);
+    const refused = await request(testEnv, "/bootstrap", {
+      idempotencyKey: random(),
+      pollToken: random(),
+    });
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ error: { code: "rate_limited" } });
   });
   it("gives a selfhost to its first caller and permanently closes second bootstrap", async () => {
     const testEnv = runtime(false);

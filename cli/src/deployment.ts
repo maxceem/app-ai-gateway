@@ -468,6 +468,85 @@ async function configFile(
   return { path, directory, config };
 }
 
+/**
+ * The failures that mean "not yet" rather than "not ever".
+ *
+ * Every one of them is the deployment failing to answer at all: a 5xx it raised
+ * reaching its own storage, a connection its Worker is not routable for yet, or
+ * an edge error page in front of that Worker, which is a 5xx that is not even
+ * JSON. None of them says anything about the request, so none of them is
+ * settled by sending a different one.
+ *
+ * The status is what decides, never the code alone: `invalid_response` is also
+ * how `Context.parse` reports a body this CLI cannot read, which is a release
+ * mismatch that no amount of waiting repairs, and that one carries no status.
+ *
+ * Distinct from `RETRYABLE_STATUS` in context.ts, which answers a different
+ * question — whether a *receipt* survives a refusal — and deliberately includes
+ * 429, which must stop this loop rather than restart it.
+ */
+function transient(error: unknown): boolean {
+  if (!(error instanceof CliError)) return false;
+  if (error.code === "connection_failed") return true;
+  const status = error.details?.status;
+  return typeof status === "number" && status >= 500;
+}
+
+/**
+ * Sends a request that only a warmed deployment can answer, until it can.
+ *
+ * `verifyDeployment` below polls for half a minute before it calls an install
+ * live, but it polls `getCliCapabilities`, which reads environment variables
+ * and a static registry — it can answer from a Worker whose D1 binding and
+ * Durable Object namespaces, created by the same deploy, are still propagating.
+ * Passing it therefore proves the Worker is running and nothing more, so the
+ * first request that does touch storage is the one that meets the gap, and it
+ * needs a wait of its own.
+ *
+ * Only for a request that is idempotent by its own stored proofs: a retry here
+ * re-sends a request whose outcome is unknown, and nothing but the deployment's
+ * own receipt keeps that from creating a second thing.
+ *
+ * Backing off rather than polling flat, and bounded at six attempts: the
+ * window this is waiting out is measured in seconds, so a deployment still
+ * refusing after half a minute of it is not warming up — it is broken, and the
+ * useful thing to do with the sixth attempt's answer is print it. Half a
+ * minute is the waiting, not the ceiling: an attempt that hangs spends the
+ * transport's own 30s timeout before this one starts counting.
+ *
+ * Each attempt is a real account initialization, which the deployment answers
+ * from the proofs rather than by creating a second account. A self-host counts
+ * none of them, deliberately — see the rate limit in src/routes/cli/bootstrap.ts,
+ * which a deployment nobody owns yet does not apply.
+ *
+ * Each wait is announced on stderr, never stdout: a `--json` run stays one
+ * document, and a person watching an install that has gone quiet for half a
+ * minute can see what it is waiting for — and say so in a bug report, which is
+ * the one piece of evidence this failure has been hard to collect.
+ */
+export async function whileWarming<T>(
+  run: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = delay,
+  report: (line: string) => void = (line) => process.stderr.write(line + "\n"),
+): Promise<T> {
+  let wait = 1000;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      if (attempt === 5 || !transient(error)) throw error;
+      const { code, details } = error as CliError;
+      const status = details?.status;
+      report(
+        `Deployment is still coming up (${code}${status === undefined ? "" : ` ${status}`});` +
+          ` retrying in ${wait / 1000}s.`,
+      );
+      await sleep(wait);
+      wait = Math.min(wait * 2, 8000);
+    }
+  }
+}
+
 async function verifyDeployment(
   ctx: Context,
   url: string,
@@ -990,13 +1069,16 @@ export async function deploymentCommand(
     journal.phase = "deployed";
     await ctx.save();
     await verifyDeployment(ctx, url, journal.id);
-    const { data } = await ctx.publicCall("bootstrapCliAccount", [], {
-      body: {
-        idempotencyKey: journal.bootstrap!.idempotencyKey,
-        pollToken: journal.bootstrap!.pollToken,
-      },
-      url,
-    });
+    // Sent on the same proofs however many attempts it takes, which is what
+    // makes retrying safe: the deployment keys the account it creates by them
+    // and answers an identical request with the identical account.
+    const proofs = {
+      idempotencyKey: journal.bootstrap!.idempotencyKey,
+      pollToken: journal.bootstrap!.pollToken,
+    };
+    const { data } = await whileWarming(() =>
+      ctx.publicCall("bootstrapCliAccount", [], { body: proofs, url }),
+    );
     await ctx.select(url, data);
     journal.phase = "ready";
     if (domain) journal.pendingDomain = domain;

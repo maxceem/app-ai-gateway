@@ -150,6 +150,10 @@ export class Transport {
         "Deployment returned an invalid JSON response.",
         "Check deployment version and connectivity.",
         3,
+        // The status this arrived with, which is the whole difference between
+        // an edge error page in front of a Worker that is not serving yet and
+        // a deployment that answered 200 with a body no client can read.
+        { status: response.status },
       );
     }
     if (!response.ok) {

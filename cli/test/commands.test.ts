@@ -12,6 +12,7 @@ import {
   Cloudflare,
   deploymentCommand,
   runWrangler,
+  whileWarming,
   wranglerEnvironment,
   wranglerFailure,
   type CloudflareClient,
@@ -21,7 +22,7 @@ import {
 import { StateStore, reserveOutput, type CliState, type InstallationJournal } from "../src/state.ts";
 import { Context } from "../src/context.ts";
 import type { Flags } from "../src/parser.ts";
-import { fail } from "../src/common.ts";
+import { CliError, fail } from "../src/common.ts";
 import { errorOf, hasCode, stubContext } from "./helpers.ts";
 
 const server: AppWrite = {
@@ -1155,4 +1156,160 @@ test("the real wrangler answers a parsed run where this CLI reads it", async () 
       token: "dummy_value_123",
     });
   });
+});
+
+/**
+ * Drives one complete fresh installation, with the bootstrap call scripted.
+ *
+ * Everything before that call is what `cfMock` already answers — no Worker of
+ * this name, a workers.dev subdomain, a created database, wrangler runs that
+ * succeed — so a test written on this helper varies only the thing under test:
+ * how the deployment answers the first request that reaches its storage.
+ */
+async function freshInstall(
+  directory: string,
+  releaseDirectory: string,
+  bootstrapAnswers: (attempt: number) => unknown,
+) {
+  const cf = cfMock();
+  const bodies: unknown[] = [];
+  const ctx = stubContext({
+    state: { installations: {} },
+    url: "https://unset.example",
+    save: async () => {},
+    select: async () => {},
+    store: {
+      directory,
+      vaultKey: async () => "SENTINEL-KEK",
+    },
+    publicCall: async (name: string, _params: unknown[], options: { body?: unknown }) => {
+      if (name === "getCliCapabilities")
+        return { data: { deployment: { id: installedId() }, serverVersion: "0.1.0" } };
+      assert.equal(name, "bootstrapCliAccount");
+      bodies.push(options.body);
+      return { data: bootstrapAnswers(bodies.length) };
+    },
+  });
+  const installedId = () =>
+    Object.keys((ctx.state as { installations: Record<string, unknown> }).installations)[0];
+  const artifact = async () =>
+    ({ directory: releaseDirectory, config: {}, manifest: { version: "0.1.0" } }) as never;
+  const run = deploymentCommand(
+    ctx,
+    "deployment setup",
+    { name: "fresh", "no-input": true, yes: true },
+    cf,
+    artifact,
+  );
+  return { run, bodies, ctx };
+}
+
+test("the warming retry backs off, gives up, and knows which failures to repeat", async () => {
+  const waits: number[] = [];
+  const said: string[] = [];
+  const sleep = async (ms: number) => void waits.push(ms);
+  // The three answers a deployment gives while it is coming up: a 500 raised
+  // reaching storage that is not callable yet, a connection to a Worker that is
+  // not routable yet, and Cloudflare's own error page in front of it, which is
+  // a 5xx that is not even the JSON the CLI asked for.
+  const warming = [
+    new CliError("internal_error", "Internal server error", "wait", 3, { status: 500 }),
+    new CliError("connection_failed", "unreachable", "wait", 3),
+    new CliError("invalid_response", "not JSON", "wait", 3, { status: 502 }),
+  ];
+  let attempts = 0;
+  const answered = await whileWarming(
+    async () => {
+      const failure = warming[attempts++];
+      if (failure) throw failure;
+      return "installed";
+    },
+    sleep,
+    (line) => said.push(line),
+  );
+  assert.equal(answered, "installed");
+  assert.deepEqual(waits, [1000, 2000, 4000]);
+  // Each wait is accounted for out loud, with the answer that caused it: the
+  // evidence this failure was hard to collect the first time it happened.
+  assert.deepEqual(said, [
+    "Deployment is still coming up (internal_error 500); retrying in 1s.",
+    "Deployment is still coming up (connection_failed); retrying in 2s.",
+    "Deployment is still coming up (invalid_response 502); retrying in 4s.",
+  ]);
+
+  waits.length = 0;
+  attempts = 0;
+  const always = new CliError("internal_error", "Internal server error", "wait", 3, { status: 500 });
+  await assert.rejects(
+    () =>
+      whileWarming(
+        async () => {
+          attempts++;
+          throw always;
+        },
+        sleep,
+        () => {},
+      ),
+    hasCode("internal_error"),
+  );
+  // Six attempts across half a minute, and the last failure is the one
+  // reported: a deployment that never warms says so in its own words.
+  assert.equal(attempts, 6);
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 8000]);
+
+  for (const settled of [
+    new CliError("conflict", "already initialized", "", 3, { status: 409 }),
+    new CliError("rate_limited", "too many", "", 3, { status: 429 }),
+    new CliError("forbidden", "proof does not match", "", 3, { status: 403 }),
+    // A body this release cannot read is the other `invalid_response`, and the
+    // one no wait repairs. It carries no status, which is how they differ.
+    new CliError("invalid_response", "unusable body", "", 3),
+  ]) {
+    let sent = 0;
+    await assert.rejects(
+      () =>
+        whileWarming(
+          async () => {
+            sent++;
+            throw settled;
+          },
+          sleep,
+          () => {},
+        ),
+      hasCode(settled.code),
+    );
+    assert.equal(sent, 1);
+  }
+});
+
+test("a bootstrap that only says 'not yet' is retried on the same proofs", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-warming-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const releaseDir = join(dir, "artifact");
+  await mkdir(releaseDir);
+  const { run, bodies } = await freshInstall(dir, releaseDir, (attempt) => {
+    if (attempt === 1)
+      throw new CliError("internal_error", "Internal server error", "wait", 3, { status: 500 });
+    return { deployment: { id: "deployment-1" }, account: { id: "private-1" } };
+  });
+  const result = await run;
+  assert.equal("installed" in result && result.installed, true);
+  assert.equal(bodies.length, 2);
+  // Retried unchanged, which is the whole reason retrying is safe: the same
+  // proofs name the same account, however many times they arrive.
+  assert.equal(new Set(bodies.map((body) => JSON.stringify(body))).size, 1);
+});
+
+test("a bootstrap that refuses is not retried into a rate limit", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-refusal-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const releaseDir = join(dir, "artifact");
+  await mkdir(releaseDir);
+  // A deployment somebody else already owns. Nothing about waiting changes it,
+  // and every further attempt would spend the endpoint's abuse allowance.
+  const { run, bodies } = await freshInstall(dir, releaseDir, () => {
+    throw new CliError("conflict", "already initialized", "pick another name", 3, { status: 409 });
+  });
+  await assert.rejects(() => run, hasCode("conflict"));
+  assert.equal(bodies.length, 1);
 });
