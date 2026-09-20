@@ -27,9 +27,16 @@ import {
  * for the reason given on {@link VAULT_SERVICE}.
  */
 const SECRET_CONTEXTS = {
-  providerKey: (organizationId: string, providerId: string) => ({
+  providerKey: (
+    organizationId: string,
+    providerId: string,
+    providerType: string,
+    baseUrl: string,
+  ) => ({
     organizationId,
     providerId,
+    providerType,
+    baseUrl,
   }),
   providerGatewayToken: (organizationId: string, providerGatewayId: string) => ({
     organizationId,

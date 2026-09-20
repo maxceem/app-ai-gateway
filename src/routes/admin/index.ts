@@ -30,7 +30,8 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
   });
 
   if (!row) {
-    const validationOnly = c.req.method === "POST" && c.req.path.endsWith("/validate");
+    const validationOnly = c.req.method === "POST"
+      && c.req.path === `/v1/admin/apps/${appId}/validate`;
     const upsertOnly = (c.req.method === "POST" || c.req.method === "PUT")
       && c.req.path === `/v1/admin/apps/${appId}`;
     if (validationOnly || upsertOnly) {

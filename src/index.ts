@@ -85,6 +85,7 @@ const consoleHostOnly: MiddlewareHandler<{ Bindings: Env }> = async (c, next) =>
 
 app.use("/v1/auth/*", consoleHostOnly);
 app.use("/v1/console/*", consoleHostOnly);
+app.use("/v1/cli/browser/*", consoleHostOnly);
 
 app.route("/v1/cli", cliRoutes);
 app.route("/v1/auth", identityAuthRoutes);

@@ -31,6 +31,16 @@ function objectBody(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+async function jsonObjectBody(request: Request): Promise<Record<string, unknown>> {
+  let value: unknown;
+  try {
+    value = await request.json();
+  } catch {
+    throw new GatewayError(400, "invalid_request", "A valid JSON object is required");
+  }
+  return objectBody(value);
+}
+
 function schemaBody<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } } }, value: unknown): T {
   const parsed = schema.safeParse(value);
   if (parsed.success) return parsed.data;
@@ -385,6 +395,7 @@ authRoutes.post("/challenge", async (c) => {
 
 authRoutes.post("/register", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_register");
+  const rawBody = await jsonObjectBody(c.req.raw);
   return recorded(c, "register", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
@@ -392,7 +403,7 @@ authRoutes.post("/register", async (c) => {
     assertAppActive(app);
     const auth = appleAuth(app);
     attempt.authMethod = "attest";
-    const body = schemaBody(AppAttestRegisterRequestSchema, await c.req.json());
+    const body = schemaBody(AppAttestRegisterRequestSchema, rawBody);
     const { userId, trusted } = await attestedUserId(auth.end_user, body);
     if (trusted) attempt.userId = userId;
     // Do not spend a challenge or ask Apple to attest a replacement key for a
@@ -428,13 +439,12 @@ authRoutes.post("/register", async (c) => {
 
 authRoutes.post("/token", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_token");
+  const rawBody = await jsonObjectBody(c.req.raw);
   return recorded(c, "token_exchange", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
     const app = await loadAppConfig(c.env, appId);
     assertAppActive(app);
-    const rawBody = objectBody(await c.req.json());
-
     if ("api_key" in rawBody) {
       if (app.authentication.type !== "api_key") {
         throw new GatewayError(

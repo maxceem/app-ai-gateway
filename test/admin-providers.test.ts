@@ -134,7 +134,7 @@ describe("admin provider instances", () => {
     expect(row?.secretBlob).not.toBeNull();
     await expect(secretVault(env).decryptSecret(
       row!.secretBlob!,
-      secretContext("providerKey", [TEST_ORGANIZATION_ID, summary.id]),
+      secretContext("providerKey", [TEST_ORGANIZATION_ID, summary.id, "openai", ""]),
     )).resolves.toBe("sk-live-super-secret-value");
   });
 
@@ -1234,9 +1234,19 @@ describe("operator-configurable base URL", () => {
     expect(cleared.status, cleared.text).toBe(200);
     expect(cleared.body.provider.baseUrl).toBeNull();
     expect(urls).toEqual([]);
-    expect(decrypt).not.toHaveBeenCalled();
+    expect(decrypt).toHaveBeenCalledWith(
+      expect.any(String),
+      secretContext("providerKey", [
+        TEST_ORGANIZATION_ID,
+        id,
+        "openai",
+        "https://first.example.com/v1/",
+      ]),
+    );
     clearProviderCaches();
-    expect((await resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))?.baseUrl).toBeNull();
+    const resolved = await resolveProvider(env, TEST_ORGANIZATION_ID, "openai");
+    expect(resolved?.baseUrl).toBeNull();
+    expect(resolved?.secret).toBe("sk-original-value");
   });
 
   it("rotates a key without calling the origin, and refuses an invalid update outright", async () => {

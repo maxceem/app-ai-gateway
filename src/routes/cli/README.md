@@ -21,10 +21,14 @@ An empty self-host belongs to whoever takes it first, by console registration or
 by CLI bootstrap. Bootstrap once required a separate installer secret; that
 guarded only one of those two doors while registration left the other open, so
 it bought consistency of configuration rather than security, and was removed.
-What actually closes the window is that both paths check for an existing account
-inside the statement that creates one, so exactly one caller wins and neither
-door reopens afterwards. Guidance to initialize promptly, and to reset the
-database if a stranger gets there first, lives in the self-hosting guides.
+What actually closes the window is that registration checks for an existing
+human and account inside the statement that inserts its human, while bootstrap
+checks for both inside the transaction that creates its account. Registration's
+human insert therefore closes bootstrap's guard even before registration has
+finished provisioning the account. Exactly one caller wins, and additional
+registrations reopen only through the explicit self-host setting. Guidance to
+initialize promptly, and to reset the database if a stranger gets there first,
+lives in the self-hosting guides.
 
 Cloud bootstrap is public and rate limited per IP, and each call yields its own
 account.

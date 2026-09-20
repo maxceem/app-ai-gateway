@@ -103,7 +103,10 @@ export async function bootstrap(c: CliContext): Promise<Response> {
   // A self-host belongs to whoever initializes it first, exactly as its first
   // console registration does. Once an account exists, neither door reopens.
   if (!row && meta.mode === "self_hosted") {
-    if (await c.env.DB.prepare("SELECT id FROM mgmt_organization LIMIT 1").first())
+    if (await c.env.DB.prepare(
+      `SELECT 1 FROM mgmt_organization
+       UNION ALL SELECT 1 FROM mgmt_user WHERE kind='human' LIMIT 1`,
+    ).first())
       throw new GatewayError(409, "conflict", "This deployment has already been initialized");
   }
 
@@ -134,7 +137,8 @@ export async function bootstrap(c: CliContext): Promise<Response> {
       meta.mode === "cloud" ? new Date(now + 90 * 86_400_000).toISOString() : null;
     const guard =
       meta.mode === "self_hosted"
-        ? "NOT EXISTS (SELECT 1 FROM mgmt_organization)"
+        ? `NOT EXISTS (SELECT 1 FROM mgmt_organization)
+           AND NOT EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human')`
         : "1";
     await c.env.DB.batch([
       c.env.DB.prepare(

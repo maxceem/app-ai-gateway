@@ -1,8 +1,9 @@
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
+import { createIdentityAuth } from "../src/auth/identity";
 import worker from "../src/index";
-import { seedHuman, serverConfig } from "./helpers";
+import { seedHuman, seedServerApp, serverConfig } from "./helpers";
 
 // Signing up hashes a password with scrypt in pure JS (workerd has no
 // node:crypto scrypt), which costs about two and a half seconds on an idle
@@ -78,6 +79,20 @@ async function createApp(cookie: string, name: string) {
 async function createdAppId(response: Response): Promise<string> {
   expect(response.status).toBe(201);
   return (await response.json<{ app: { id: string } }>()).app.id;
+}
+
+async function passwordSignIn(email: string, password: string): Promise<Response> {
+  return worker.request(`${ORIGIN}/v1/auth/sign-in/email`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: ORIGIN },
+    body: JSON.stringify({ email, password }),
+  }, env);
+}
+
+async function sessionFor(cookie: string) {
+  return createIdentityAuth(env, ORIGIN).auth.api.getSession({
+    headers: new Headers({ cookie }),
+  });
 }
 
 describe("operator authentication", () => {
@@ -200,6 +215,30 @@ describe("operator authentication", () => {
       headers: sessionHeaders(cookie),
     });
     expect(read.status).toBe(200);
+
+    const validation = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/member-validation/validate`,
+      {
+        method: "POST",
+        headers: sessionHeaders(cookie, true),
+        body: JSON.stringify({ name: "Candidate", config: serverConfig() }),
+      },
+    );
+    expect(validation.status, await validation.clone().text()).toBe(200);
+
+    await seedServerApp("validate", { organizationId });
+    const validateNamedAppMutation = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/validate`,
+      {
+        method: "PUT",
+        headers: sessionHeaders(cookie, true),
+        body: "{}",
+      },
+    );
+    expect(validateNamedAppMutation.status).toBe(403);
+    await expect(validateNamedAppMutation.json()).resolves.toMatchObject({
+      error: { code: "forbidden" },
+    });
 
     const write = await createApp(cookie, "member-cannot-create");
     expect(write.status).toBe(403);
@@ -383,6 +422,121 @@ describe("operator authentication", () => {
         error: { code: "app_not_found" },
       });
     }
+  });
+});
+
+describe("password changes", () => {
+  it("forces JSON false to revoke other sessions and preserves them after a wrong password", async () => {
+    const email = `password-json-${crypto.randomUUID()}@example.test`;
+    const first = await signup(email);
+    const secondResponse = await passwordSignIn(email, "correct-horse-42");
+    expect(secondResponse.status, await secondResponse.clone().text()).toBe(200);
+    const secondCookie = cookieFrom(secondResponse);
+
+    const wrong = await worker.request(`${ORIGIN}/v1/auth/change-password`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: ORIGIN,
+        cookie: first.cookie,
+      },
+      body: JSON.stringify({
+        currentPassword: "wrong-password",
+        newPassword: "new-correct-horse-43",
+        revokeOtherSessions: false,
+      }),
+    }, env);
+    expect(wrong.status).toBe(400);
+    await expect(sessionFor(first.cookie)).resolves.not.toBeNull();
+    await expect(sessionFor(secondCookie)).resolves.not.toBeNull();
+
+    const changed = await worker.request(`${ORIGIN}/v1/auth/change-password`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: ORIGIN,
+        cookie: first.cookie,
+      },
+      body: JSON.stringify({
+        currentPassword: "correct-horse-42",
+        newPassword: "new-correct-horse-43",
+        revokeOtherSessions: false,
+      }),
+    }, env);
+    expect(changed.status, await changed.clone().text()).toBe(200);
+    const rotatedCookie = cookieFrom(changed);
+    await expect(sessionFor(first.cookie)).resolves.toBeNull();
+    await expect(sessionFor(secondCookie)).resolves.toBeNull();
+    await expect(sessionFor(rotatedCookie)).resolves.not.toBeNull();
+    expect((await passwordSignIn(email, "correct-horse-42")).status).not.toBe(200);
+    expect((await passwordSignIn(email, "new-correct-horse-43")).status).toBe(200);
+  });
+
+  it("rejects forms and forces an omitted flag for JSON and direct auth.api calls", async () => {
+    const email = `password-omitted-${crypto.randomUUID()}@example.test`;
+    const first = await signup(email);
+    const secondResponse = await passwordSignIn(email, "correct-horse-42");
+    expect(secondResponse.status, await secondResponse.clone().text()).toBe(200);
+    const secondCookie = cookieFrom(secondResponse);
+
+    const formRejected = await worker.request(`${ORIGIN}/v1/auth/change-password`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: ORIGIN,
+        cookie: first.cookie,
+      },
+      body: new URLSearchParams({
+        currentPassword: "correct-horse-42",
+        newPassword: "form-changed-password-43",
+      }).toString(),
+    }, env);
+    expect(formRejected.status).toBe(415);
+    await expect(sessionFor(first.cookie)).resolves.not.toBeNull();
+    await expect(sessionFor(secondCookie)).resolves.not.toBeNull();
+    const unchangedPasswordResponse = await passwordSignIn(email, "correct-horse-42");
+    expect(
+      unchangedPasswordResponse.status,
+      await unchangedPasswordResponse.clone().text(),
+    ).toBe(200);
+    const unchangedPasswordCookie = cookieFrom(unchangedPasswordResponse);
+    expect((await passwordSignIn(email, "form-changed-password-43")).status).not.toBe(200);
+
+    const jsonChanged = await worker.request(`${ORIGIN}/v1/auth/change-password`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: ORIGIN,
+        cookie: first.cookie,
+      },
+      body: JSON.stringify({
+        currentPassword: "correct-horse-42",
+        newPassword: "json-changed-password-44",
+      }),
+    }, env);
+    expect(jsonChanged.status, await jsonChanged.clone().text()).toBe(200);
+    const jsonRotatedCookie = cookieFrom(jsonChanged);
+    await expect(sessionFor(first.cookie)).resolves.toBeNull();
+    await expect(sessionFor(secondCookie)).resolves.toBeNull();
+    await expect(sessionFor(unchangedPasswordCookie)).resolves.toBeNull();
+    await expect(sessionFor(jsonRotatedCookie)).resolves.not.toBeNull();
+
+    const otherResponse = await passwordSignIn(email, "json-changed-password-44");
+    expect(otherResponse.status, await otherResponse.clone().text()).toBe(200);
+    const otherCookie = cookieFrom(otherResponse);
+    const direct = await createIdentityAuth(env, ORIGIN).auth.api.changePassword({
+      body: {
+        currentPassword: "json-changed-password-44",
+        newPassword: "direct-changed-password-45",
+      },
+      headers: new Headers({ cookie: jsonRotatedCookie }),
+      asResponse: true,
+    });
+    expect(direct.status, await direct.clone().text()).toBe(200);
+    const directRotatedCookie = cookieFrom(direct);
+    await expect(sessionFor(jsonRotatedCookie)).resolves.toBeNull();
+    await expect(sessionFor(otherCookie)).resolves.toBeNull();
+    await expect(sessionFor(directRotatedCookie)).resolves.not.toBeNull();
   });
 });
 
