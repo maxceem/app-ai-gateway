@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { readDatabase } from "../db";
+import { database } from "../db";
 import { app } from "../db/schema";
 import { supportsEndpointStyle } from "./capabilities";
 import { GatewayError } from "./errors";
@@ -750,7 +750,8 @@ export function parseStoredAppConfig(
   };
 }
 
-function fromRow(row: typeof app.$inferSelect): AppConfig {
+/** Resolves one authoritative stored row without consulting or mutating caches. */
+export function appConfigFromRow(row: typeof app.$inferSelect): AppConfig {
   const parsed = parseStoredAppConfig(row.config, null);
   return {
     id: row.id,
@@ -778,12 +779,11 @@ export const hasUserLevelLimits = (app: AppConfig): boolean => scopeHasLimits(ap
 export async function loadAppConfig(env: Env, appId: string): Promise<AppConfig> {
   const cached = appCache.get(appId);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  // Through a read session: this read exists to fill the cache above, and the
-  // cache already tolerates a minute of staleness, so a replica's answer is as
-  // good as the primary's here.
-  const row = await readDatabase(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
+  // Fill from the authoritative primary. The cache TTL is the only intentional
+  // configuration staleness window, so it must not be extended by replica lag.
+  const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const value = fromRow(row);
+  const value = appConfigFromRow(row);
   appCache.set(appId, { expiresAt: Date.now() + CONFIG_CACHE_TTL_MS, value });
   return value;
 }

@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { generateApiKey } from "../../core/apikeys";
-import { loadAppConfig } from "../../core/config";
+import { appConfigFromRow } from "../../core/config";
 import { GatewayError } from "../../core/errors";
 import { andCondition, planCap } from "../../core/plan-caps";
 import { prepareResourceReceipt } from "../../core/resource-receipt";
@@ -26,8 +26,9 @@ function keyName(value: unknown): string {
   return name.trim();
 }
 
-async function assertApiKeyApp(env: Env, appId: string): Promise<void> {
-  const app = await loadAppConfig(env, appId);
+function assertApiKeyApp(row: AdminVariables["adminApp"]): void {
+  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
+  const app = appConfigFromRow(row);
   if (app.authentication.type !== "api_key") {
     throw new GatewayError(400, "invalid_request", "API keys can only be managed for api_key apps");
   }
@@ -48,7 +49,7 @@ export const keyRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>(
 
 keyRoutes.post("/apps/:app/keys", async (c) => {
   const appId = c.req.param("app");
-  await assertApiKeyApp(c.env, appId);
+  assertApiKeyApp(c.get("adminApp"));
   const name = keyName(await c.req.json());
   const receipt = await prepareResourceReceipt(c, "app.key.add", { name });
   if (receipt?.result) return c.json(receipt.result, 201);
@@ -89,7 +90,7 @@ keyRoutes.post("/apps/:app/keys", async (c) => {
 
 keyRoutes.get("/apps/:app/keys", async (c) => {
   const appId = c.req.param("app");
-  await assertApiKeyApp(c.env, appId);
+  assertApiKeyApp(c.get("adminApp"));
   const rows = await database(c.env.DB)
     .select()
     .from(appApiKey)
@@ -100,7 +101,7 @@ keyRoutes.get("/apps/:app/keys", async (c) => {
 
 keyRoutes.post("/apps/:app/keys/:id/revoke", async (c) => {
   const appId = c.req.param("app");
-  await assertApiKeyApp(c.env, appId);
+  assertApiKeyApp(c.get("adminApp"));
   const [row] = await database(c.env.DB)
     .update(appApiKey)
     .set({ status: "revoked" })

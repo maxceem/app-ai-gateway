@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { readDatabase } from "../db";
+import { database, type Database } from "../db";
 import {
   provider as providerTable,
   providerGateway as providerGatewayTable,
@@ -227,14 +227,11 @@ export function providerRowsCacheKeys(): string[] {
   return [...rowsCache.keys()];
 }
 
-async function organizationRows(env: Env, organizationId: string): Promise<ProviderRow[]> {
-  const cached = rowsCache.get(organizationId);
-  if (cached && cached.expiresAt > Date.now()) return cached.rows;
-  // Through a read session, for the same reason as the app row: the query below
-  // exists only to fill the cache above, which is already a minute behind D1 at
-  // worst, so answering it from the nearest replica changes nothing but the
-  // distance the request travels.
-  const rows = await readDatabase(env.DB)
+async function queryOrganizationRows(
+  db: Database,
+  organizationId: string,
+): Promise<ProviderRow[]> {
+  return db
     .select({
       id: providerTable.id,
       slug: providerTable.slug,
@@ -264,6 +261,14 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
     // exist" are different answers, and only the full set can tell them apart.
     // They hold their slug too, so including them costs no ambiguity.
     .where(eq(providerTable.organizationId, organizationId));
+}
+
+async function organizationRows(env: Env, organizationId: string): Promise<ProviderRow[]> {
+  const cached = rowsCache.get(organizationId);
+  if (cached && cached.expiresAt > Date.now()) return cached.rows;
+  // Fill from the authoritative primary. The row-cache TTL is the only
+  // intentional configuration staleness window on the data plane.
+  const rows = await queryOrganizationRows(database(env.DB), organizationId);
   remember(
     rowsCache,
     organizationId,
@@ -439,9 +444,27 @@ export async function organizationProviders(
   env: Env,
   organizationId: string,
 ): Promise<OrganizationProviders> {
+  return providerIndex(await organizationRows(env, organizationId));
+}
+
+/**
+ * Current provider capabilities and prices for management decisions.
+ *
+ * This deliberately bypasses the data-plane row cache: a save or validation
+ * must be judged against the authoritative rows that exist now, while runtime
+ * traffic keeps its bounded cache and its request-path warming.
+ */
+export async function authoritativeOrganizationProviders(
+  env: Env,
+  organizationId: string,
+): Promise<OrganizationProviders> {
+  return providerIndex(await queryOrganizationRows(database(env.DB), organizationId));
+}
+
+function providerIndex(rows: ProviderRow[]): OrganizationProviders {
   // Prototype-less: a slug like "constructor" is legal, and a plain object
   // would answer for it whether or not the organization configured one.
-  return recordFromEntries((await organizationRows(env, organizationId)).map((row) => [
+  return recordFromEntries(rows.map((row) => [
     row.slug,
     {
       id: row.id,
