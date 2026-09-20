@@ -16,8 +16,8 @@ import {
 } from "../../core/provider-store";
 import { appInsertStatement, updateApp } from "../../core/app-writes";
 import { andCondition, planCap } from "../../core/plan-caps";
-import { databaseErrorMatches } from "./provider-shared";
-import { prepareResourceReceipt } from "../../core/resource-receipt";
+import { databaseErrorMatches } from "../../management/validation";
+import { prepareResourceReceipt } from "./resource-receipt";
 import { database } from "../../db";
 import {
   appApiKey,

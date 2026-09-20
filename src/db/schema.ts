@@ -199,6 +199,7 @@ export const providerGateway = sqliteTable(
     /** Vault blob for the gateway token; never leaves the server. */
     secretBlob: text("secret_blob").notNull(),
     secretHint: text("secret_hint").notNull(),
+    revision: integer("revision").notNull().default(1),
     status: text("status").$type<ProviderGatewayStatus>().notNull().default("active"),
     createdBy: text("created_by").notNull(),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -252,6 +253,7 @@ export const provider = sqliteTable(
      */
     gatewayRoute: text("gateway_route_json", { mode: "json" }).$type<GatewayRouteConfig>(),
     pricing: text("pricing_json", { mode: "json" }).$type<ProviderPricing>(),
+    revision: integer("revision").notNull().default(1),
     status: text("status").$type<ProviderStatus>().notNull().default("active"),
     createdBy: text("created_by").notNull(),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),

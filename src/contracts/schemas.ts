@@ -401,10 +401,12 @@ export const ProviderGatewayTestRequestSchema = z.discriminatedUnion("type", [
 
 export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,
+  revision: z.number().int().positive().meta({ description: "The gateway revision returned by the read this edit is based on." }),
 }).strict().meta({ id: "ProviderGatewayUpdateRequest" });
 
 export const ProviderGatewayRotateRequestSchema = z.object({
   token: ProviderSecretSchema,
+  revision: z.number().int().positive().meta({ description: "The gateway revision returned by the read this rotation is based on." }),
 }).strict().meta({ id: "ProviderGatewayRotateRequest" });
 
 /**
@@ -419,6 +421,7 @@ export const BASE_URL_REQUIRES_SECRET =
   "Changing the base URL requires re-supplying the provider key, because the stored key is never sent to a new origin";
 
 export const ProviderUpdateRequestSchema = z.object({
+  revision: z.number().int().positive().meta({ description: "The provider revision returned by the read this update is based on." }),
   name: ProviderNameSchema.optional(),
   secret: ProviderSecretSchema.optional(),
   /** A full replace; `null` clears the row's routing configuration. */

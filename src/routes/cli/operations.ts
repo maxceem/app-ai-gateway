@@ -8,7 +8,7 @@ import {
 import { GatewayError } from "../../core/errors";
 import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { CliOperationRequestSchema } from "../../contracts/cli";
-import { providerSchemaBody } from "../admin/provider-shared";
+import { schemaBody } from "../../management/validation";
 import { deployment } from "./bootstrap";
 import {
   derive,
@@ -63,11 +63,22 @@ function nonSecretPayload(value: unknown): void {
     }
 }
 export async function createOperation(c: CliContext): Promise<Response> {
-  const input = providerSchemaBody(
+  const input = schemaBody(
     CliOperationRequestSchema,
     await cliJson(c.req.raw),
   );
   nonSecretPayload(input.payload);
+  for (const field of ["__requestHash", "expectedRevision", "expectedGatewayRevision", "snapshot", "gatewaySnapshot"]) {
+    if (Object.hasOwn(input.payload, field)) {
+      throw new GatewayError(400, "invalid_request", `${field} is managed by the server`);
+    }
+  }
+  if (
+    input.payload.revision !== undefined &&
+    (!Number.isInteger(input.payload.revision) || (input.payload.revision as number) <= 0)
+  ) {
+    throw new GatewayError(400, "invalid_request", "revision must be a positive integer");
+  }
   const meta = deployment(c);
   const state = await authState(c);
   const resolved = requireOrganization(state);
@@ -135,8 +146,8 @@ export async function createOperation(c: CliContext): Promise<Response> {
       const gateway = input.kind.startsWith("provider-gateway.");
       const snapshot = await c.env.DB.prepare(
         gateway
-          ? "SELECT id,type,name,config_json AS config,status,updated_at AS expectedUpdatedAt FROM provider_gateway WHERE id=? AND organization_id=?"
-          : "SELECT id,type,name,slug,base_url AS baseUrl,provider_gateway_id AS providerGatewayId,gateway_route_json AS gatewayRoute,status,updated_at AS expectedUpdatedAt FROM provider WHERE id=? AND organization_id=?",
+          ? "SELECT id,type,name,config_json AS config,status,revision AS expectedRevision FROM provider_gateway WHERE id=? AND organization_id=?"
+          : "SELECT id,type,name,slug,base_url AS baseUrl,provider_gateway_id AS providerGatewayId,gateway_route_json AS gatewayRoute,status,revision AS expectedRevision FROM provider WHERE id=? AND organization_id=?",
       )
         .bind(input.payload.id, organizationId)
         .first<Record<string, unknown>>();
@@ -146,9 +157,16 @@ export async function createOperation(c: CliContext): Promise<Response> {
           "not_found",
           "Resource was not found in this account",
         );
+      if (
+        input.payload.revision !== undefined &&
+        input.payload.revision !== snapshot.expectedRevision
+      ) {
+        throw new GatewayError(409, "conflict", "The resource changed; fetch it and retry");
+      }
       value = JSON.stringify({
         ...input.payload,
-        expectedUpdatedAt: snapshot.expectedUpdatedAt,
+        revision: snapshot.expectedRevision,
+        expectedRevision: snapshot.expectedRevision,
         snapshot,
         __requestHash: requestHash,
       });
@@ -161,7 +179,7 @@ export async function createOperation(c: CliContext): Promise<Response> {
         : snapshot?.providerGatewayId;
       if (typeof gatewayId === "string") {
         const gatewaySnapshot = await c.env.DB.prepare(
-          "SELECT id,type,name,config_json AS config,status,updated_at AS expectedUpdatedAt FROM provider_gateway WHERE id=? AND organization_id=?",
+          "SELECT id,type,name,config_json AS config,status,revision AS expectedRevision FROM provider_gateway WHERE id=? AND organization_id=?",
         )
           .bind(gatewayId, organizationId)
           .first<Record<string, unknown>>();
@@ -174,7 +192,7 @@ export async function createOperation(c: CliContext): Promise<Response> {
         value = JSON.stringify({
           ...captured,
           gatewaySnapshot,
-          expectedGatewayUpdatedAt: gatewaySnapshot.expectedUpdatedAt,
+          expectedGatewayRevision: gatewaySnapshot.expectedRevision,
         });
       }
     }

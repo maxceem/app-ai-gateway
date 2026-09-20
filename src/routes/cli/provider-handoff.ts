@@ -1,9 +1,9 @@
 import { assertAccountAccess } from "../../core/account-lifecycle";
 import { GatewayError } from "../../core/errors";
-import type { ProviderWriteBoundary } from "../../core/provider-writes";
-import { createProvider, updateProvider } from "../admin/providers";
-import { createProviderGateway, rotateProviderGateway } from "../admin/provider-gateways";
-import { databaseErrorMatches } from "../admin/provider-shared";
+import { createProvider, updateProvider } from "../../management/providers";
+import { createProviderGateway, rotateProviderGateway } from "../../management/provider-gateways";
+import { databaseErrorMatches } from "../../management/validation";
+import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import type { HandoffRow, CliContext } from "./types";
 
 /** Authority is rechecked in the mutation transaction, not merely when the URL was issued. */
@@ -31,11 +31,11 @@ export async function completeProviderSubmission(
   const parsed = JSON.parse(row.request_json) as Record<string, unknown>;
   const {
     id,
-    expectedUpdatedAt,
+    expectedRevision,
     snapshot: _snapshot,
     __requestHash: _requestHash,
     gatewaySnapshot,
-    expectedGatewayUpdatedAt,
+    expectedGatewayRevision,
     ...payload
   } = parsed;
   const kind = row.kind;
@@ -77,16 +77,16 @@ export async function completeProviderSubmission(
         OR expires_at IS NULL OR julianday(created_at)+30>julianday('now')))`,
     );
   if (c.env.BILLING) parameters.push(row.organization_id);
-  if (typeof expectedGatewayUpdatedAt === "string") {
+  if (typeof expectedGatewayRevision === "number") {
     const gatewayId = (gatewaySnapshot as { id?: unknown } | undefined)?.id;
     if (typeof gatewayId !== "string")
       throw new GatewayError(409, "conflict", "The gateway binding is missing");
     conditions.push(
-      "EXISTS (SELECT 1 FROM provider_gateway WHERE id=? AND organization_id=? AND updated_at=?)",
+      "EXISTS (SELECT 1 FROM provider_gateway WHERE id=? AND organization_id=? AND revision=?)",
     );
-    parameters.push(gatewayId, row.organization_id, expectedGatewayUpdatedAt);
+    parameters.push(gatewayId, row.organization_id, expectedGatewayRevision);
   }
-  const boundary: ProviderWriteBoundary = {
+  const boundary: ResourceWriteBoundary = {
     condition: { sql: conditions.join(" AND "), params: parameters },
     async commit(statement, outcome) {
       try {
@@ -143,21 +143,20 @@ export async function completeProviderSubmission(
         boundary,
       );
     } else if (kind === "provider.rotate-key" || kind === "provider.update") {
-      if (typeof id !== "string" || typeof expectedUpdatedAt !== "string")
+      if (typeof id !== "string" || typeof expectedRevision !== "number")
         throw new GatewayError(409, "conflict", "The provider binding is missing");
-      await updateProvider(c.env, actor, id, { ...payload, secret }, boundary, expectedUpdatedAt);
+      await updateProvider(c.env, actor, id, { ...payload, revision: expectedRevision, secret }, boundary);
     } else if (kind === "provider-gateway.add") {
       await createProviderGateway(c.env, actor, { ...payload, token: secret }, boundary);
     } else if (kind === "provider-gateway.rotate-key") {
-      if (typeof id !== "string" || typeof expectedUpdatedAt !== "string")
+      if (typeof id !== "string" || typeof expectedRevision !== "number")
         throw new GatewayError(409, "conflict", "The gateway binding is missing");
       await rotateProviderGateway(
         c.env,
         actor,
         id,
-        { ...payload, token: secret },
+        { ...payload, revision: expectedRevision, token: secret },
         boundary,
-        expectedUpdatedAt,
       );
     } else {
       throw new GatewayError(400, "invalid_request", "Unsupported provider submission purpose");

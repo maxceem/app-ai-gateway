@@ -762,7 +762,7 @@ register({
   operationId: "updateProvider",
   summary: "Rotate a credential, rename it, move it to another origin, replace its custom pricing, or disable it",
   description:
-    "Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling therefore always succeeds. Sending a non-null baseUrl also requires secret in the same request: the stored key is write-only and is never decrypted to be sent to an origin it has not been sent to before, so a move carries the key it is to be used with. Sending baseUrl: null returns the instance to its provider type's own origin and needs nothing else.",
+    "Requires the revision returned by the provider read this edit is based on; a stale revision returns 409 conflict. Sending status disables or re-enables the instance. Disabling keeps the secret, the pricing and the slug, so requests to it fail with provider_disabled and no other instance can take its slug meanwhile. Re-enabling does not require reclaiming the slug. Sending a non-null baseUrl also requires secret in the same request: the stored key is write-only and is never decrypted to be sent to an origin it has not been sent to before, so a move carries the key it is to be used with. Sending baseUrl: null returns the instance to its provider type's own origin and needs nothing else.",
   security: managementSecurity,
   request: {
     params: ProviderIdPath,
@@ -840,6 +840,7 @@ register({
   tags: ["Admin provider gateways"],
   operationId: "updateProviderGateway",
   summary: "Rename a provider gateway",
+  description: "Requires the revision returned by the gateway read this rename is based on; a stale revision returns 409 conflict.",
   security: managementSecurity,
   request: {
     params: ProviderIdPath,
@@ -857,7 +858,7 @@ register({
   tags: ["Admin provider gateways"],
   operationId: "rotateProviderGateway",
   summary: "Rotate a shared provider gateway token",
-  description: "Re-encrypts the token once for every provider instance referencing this gateway. The new token is stored as given, never probed.",
+  description: "Requires the revision returned by the gateway read this rotation is based on; a stale revision returns 409 conflict. Re-encrypts the token once for every provider instance referencing this gateway. The new token is stored as given, never probed.",
   security: managementSecurity,
   request: {
     params: ProviderIdPath,

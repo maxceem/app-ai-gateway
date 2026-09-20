@@ -258,6 +258,7 @@ export const ProviderSummarySchema = z.object({
     example: "https://my-resource.openai.azure.com/openai/v1/",
   }),
   pricing: ProviderPricingSchema.nullable(),
+  revision: z.number().int().positive(),
   status: z.enum(["active", "disabled"]).meta({
     description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",
   }),
@@ -308,6 +309,7 @@ const providerGatewayFields = {
     description:
       "All provider instances referencing this gateway, including disabled rows retained for re-enabling. Deletion is refused while this is above zero.",
   }),
+  revision: z.number().int().positive(),
   status: z.enum(["active", "revoked"]),
   createdAt: z.string(),
   updatedAt: z.string(),

@@ -162,13 +162,16 @@ describe("initial database migration", () => {
       "created_by",
       "created_at",
       "updated_at",
+      "revision",
     ]);
     expect(providerColumns.results.find((column) => column.name === "gateway_route_json"))
       .toMatchObject({ notnull: 0 });
     expect(providerColumns.results.find((column) => column.name === "base_url"))
       .toMatchObject({ notnull: 0, dflt_value: null });
+    expect(providerColumns.results.find((column) => column.name === "revision"))
+      .toMatchObject({ notnull: 1, dflt_value: "1" });
     const gatewayColumns = await env.DB.prepare("PRAGMA table_info(provider_gateway)")
-      .all<{ name: string }>();
+      .all<{ name: string; notnull: number; dflt_value: string | null }>();
     expect(gatewayColumns.results.map((column) => column.name)).toEqual([
       "id",
       "organization_id",
@@ -181,7 +184,10 @@ describe("initial database migration", () => {
       "created_by",
       "created_at",
       "updated_at",
+      "revision",
     ]);
+    expect(gatewayColumns.results.find((column) => column.name === "revision"))
+      .toMatchObject({ notnull: 1, dflt_value: "1" });
     const mgmtTables = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'mgmt_%' ORDER BY name",
     ).all<{ name: string }>();

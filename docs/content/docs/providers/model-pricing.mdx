@@ -91,7 +91,7 @@ by model ID, and `null` clears every custom price:
 
 ```json
 PUT /v1/admin/providers/{id}
-{ "pricing": { "gpt-brand-new": { "input": 1.25, "output": 10 } } }
+{ "pricing": { "gpt-brand-new": { "input": 1.25, "output": 10 } }, "revision": 7 }
 ```
 
 The same field is accepted on `POST /v1/admin/providers` when you create the

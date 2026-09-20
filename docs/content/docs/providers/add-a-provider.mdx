@@ -145,8 +145,11 @@ that gateway follows.
 
 ```json
 PUT /v1/admin/providers/{id}
-{ "secret": "sk-new..." }
+{ "secret": "sk-new...", "revision": 7 }
 ```
+
+Use the `revision` returned by the provider list. If another edit wins first,
+the API returns `409 conflict`; read the provider again before retrying.
 
 On a gateway-routed provider this answers `409 provider_gateway_managed` and
 points you at the gateway's rotate endpoint.
@@ -159,8 +162,8 @@ These are two different intentions.
 to `openai` start failing within a minute" and lists the apps whose
 configuration names that slug. The key, the custom pricing and the slug all
 stay. Requests to the slug answer `502 provider_disabled`. **Enable provider**
-puts it straight back, and always succeeds, because nothing could have taken
-the slug in the meantime.
+puts it straight back without reclaiming the slug, because nothing could have
+taken the slug in the meantime.
 
 **Delete provider** is permanent. The confirm dialog says "Apps using OpenAI
 start failing within a minute, and any custom pricing on this provider is
@@ -176,7 +179,7 @@ exactly as it would on an upstream failure.
 
 ```json
 PUT /v1/admin/providers/{id}
-{ "status": "disabled" }
+{ "status": "disabled", "revision": 7 }
 ```
 
 ```text

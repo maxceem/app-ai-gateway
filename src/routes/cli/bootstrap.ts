@@ -10,7 +10,7 @@ import {
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
 import { CliBootstrapRequestSchema } from "../../contracts/cli";
-import { providerSchemaBody } from "../admin/provider-shared";
+import { schemaBody } from "../../management/validation";
 import {
   cliJson,
   digest,
@@ -89,7 +89,7 @@ async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow |
 }
 
 export async function bootstrap(c: CliContext): Promise<Response> {
-  const input = providerSchemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
+  const input = schemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
   const meta = deployment(c);
   const hash = await digest(input.idempotencyKey);
   const proofHash = await digest(input.pollToken);

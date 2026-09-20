@@ -15,6 +15,13 @@
       "when": 1789892271578,
       "tag": "0001_usage_spend",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789894433243,
+      "tag": "0002_provider_revisions",
+      "breakpoints": true
     }
   ]
 }

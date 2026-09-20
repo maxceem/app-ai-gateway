@@ -4,7 +4,7 @@ import { generateApiKey } from "../../core/apikeys";
 import { appConfigFromRow } from "../../core/config";
 import { GatewayError } from "../../core/errors";
 import { andCondition, planCap } from "../../core/plan-caps";
-import { prepareResourceReceipt } from "../../core/resource-receipt";
+import { prepareResourceReceipt } from "./resource-receipt";
 import { database } from "../../db";
 import { appApiKey } from "../../db/schema";
 import type {

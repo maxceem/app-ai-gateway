@@ -289,15 +289,15 @@ export function useCreateProviderGateway() {
 }
 
 export function useRenameProviderGateway() {
-  return useGatewayMutation(({ id, name }: { id: string; name: string }) =>
-    call(operations.updateProviderGateway, [id], { name }),
+  return useGatewayMutation(({ id, name, revision }: { id: string; name: string; revision: number }) =>
+    call(operations.updateProviderGateway, [id], { name, revision }),
   );
 }
 
 /** A single re-encryption, shared by every provider behind the gateway. */
 export function useRotateProviderGateway() {
-  return useGatewayMutation(({ id, token }: { id: string; token: string }) =>
-    call(operations.rotateProviderGateway, [id], { token }),
+  return useGatewayMutation(({ id, token, revision }: { id: string; token: string; revision: number }) =>
+    call(operations.rotateProviderGateway, [id], { token, revision }),
   );
 }
 
