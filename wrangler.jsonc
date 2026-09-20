@@ -17,8 +17,8 @@
     // Set once per deployment to a UUID; preserve it across updates and domains.
     "DEPLOYMENT_ID": ""
   },
-  // Minute spend-projection recovery, plus nightly retention and cleanup.
-  "triggers": { "crons": ["* * * * *", "17 3 * * *"] },
+  // One minute trigger: spend recovery except at 03:17 UTC, when it runs nightly maintenance.
+  "triggers": { "crons": ["* * * * *"] },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },
