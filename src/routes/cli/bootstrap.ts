@@ -1,16 +1,20 @@
 import type { CfAuth } from "@maxceem/cf-auth";
 import { createIdentityAuth, rethrowCfAuthError } from "../../auth/identity";
-import { billingBinding } from "../../billing/gateway";
 import { resolveBillingQuota } from "../../billing/quota";
 import {
   accountLifecycle,
-  accountTrialEnd,
   assertAccountAccess,
 } from "../../core/account-lifecycle";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
 import { CliBootstrapRequestSchema } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
+import { accountTrialDeadline } from "../../policy/accounts";
+import {
+  bootstrapDecision,
+  deploymentPolicy,
+} from "../../policy/deployment";
+import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
 import {
   cliJson,
   digest,
@@ -32,11 +36,6 @@ interface BootstrapReceiptRow {
   consumed_at: number | null;
   expires_at: number;
 }
-
-const humanOwner = (organizationExpression: string) => `EXISTS (
-  SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
-  WHERE m.organization_id=${organizationExpression} AND m.role='owner' AND u.kind='human'
-)`;
 
 /** The management key this receipt's committed outcome names, if it has one yet. */
 function committedCredentialId(row: BootstrapReceiptRow): string | null {
@@ -76,7 +75,7 @@ export function deployment(c: CliContext) {
   const consoleOrigin = configuredOrigin.origin;
   return {
     id,
-    mode: billingBinding(c.env) ? ("cloud" as const) : ("self_hosted" as const),
+    mode: deploymentPolicy(c.env).mode,
     apiUrl: c.env.PUBLIC_API_URL ?? consoleOrigin,
     consoleOrigin,
   };
@@ -91,9 +90,16 @@ async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow |
 export async function bootstrap(c: CliContext): Promise<Response> {
   const input = schemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
   const meta = deployment(c);
+  const policy = deploymentPolicy(c.env);
   const hash = await digest(input.idempotencyKey);
   const proofHash = await digest(input.pollToken);
   const id = `cli-bootstrap:${meta.id}:${hash}`;
+  const now = Date.now();
+  const decision = bootstrapDecision(policy, {
+    deploymentId: meta.id,
+    requestHash: hash,
+    nowMs: now,
+  });
   let row = await receipt(c, id);
   if (row && !(await proofMatches(input.pollToken, row.proof_hash)))
     throw new GatewayError(403, "forbidden", "Bootstrap proof does not match");
@@ -102,15 +108,13 @@ export async function bootstrap(c: CliContext): Promise<Response> {
 
   // A self-host belongs to whoever initializes it first, exactly as its first
   // console registration does. Once an account exists, neither door reopens.
-  if (!row && meta.mode === "self_hosted") {
+  if (!row && decision.requiresEmptyDeployment) {
     if (await c.env.DB.prepare(
-      `SELECT 1 FROM mgmt_organization
-       UNION ALL SELECT 1 FROM mgmt_user WHERE kind='human' LIMIT 1`,
+      `SELECT 1 WHERE NOT (${emptyDeploymentCondition()})`,
     ).first())
       throw new GatewayError(409, "conflict", "This deployment has already been initialized");
   }
 
-  const now = Date.now();
   if (!row) {
     // Cloud only, where an account costs this gateway's operator something and
     // anyone can ask for one.
@@ -128,18 +132,16 @@ export async function bootstrap(c: CliContext): Promise<Response> {
     // attempts in a few seconds, and then a day of refusals on a deployment
     // nobody has ever owned. The 409 above is the guard that matters, and it
     // never expires.
-    if (meta.mode === "cloud")
+    if (decision.rateLimited)
       await enforceEndpointRateLimit(c.env, "bootstrap", clientAddress(c.req.raw));
-    const accountId = meta.mode === "self_hosted" ? `private-${meta.id}` : `account-${hash}`;
-    const userId = `service-${accountId}`;
-    const createdAt = new Date(now).toISOString();
-    const expiresAt =
-      meta.mode === "cloud" ? new Date(now + 90 * 86_400_000).toISOString() : null;
-    const guard =
-      meta.mode === "self_hosted"
-        ? `NOT EXISTS (SELECT 1 FROM mgmt_organization)
-           AND NOT EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human')`
-        : "1";
+    const {
+      accountId,
+      userId,
+      createdAt,
+      recoveryEndsAt,
+      receiptExpiresAt,
+    } = decision;
+    const guard = decision.requiresEmptyDeployment ? emptyDeploymentCondition() : "1";
     await c.env.DB.batch([
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at)
@@ -148,7 +150,7 @@ export async function bootstrap(c: CliContext): Promise<Response> {
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO mgmt_organization(id,name,created_by_user_id,expires_at,created_at,updated_at)
          SELECT ?,'My account',?,?,?,? WHERE ${guard}`,
-      ).bind(accountId, userId, expiresAt, createdAt, createdAt),
+      ).bind(accountId, userId, recoveryEndsAt, createdAt, createdAt),
       c.env.DB.prepare(
         `INSERT OR IGNORE INTO mgmt_organization_user(id,organization_id,user_id,role,status,joined_at)
          SELECT ?,?,?,'owner','active',? WHERE EXISTS (
@@ -159,13 +161,13 @@ export async function bootstrap(c: CliContext): Promise<Response> {
            id,kind,organization_id,initiating_user_id,proof_hash,request_hash,expires_at,created_at,updated_at)
          SELECT ?,'bootstrap',?,?,?,'{}',?,?,? WHERE EXISTS (
            SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)
-         ${meta.mode === "self_hosted" ? "AND NOT EXISTS (SELECT 1 FROM mgmt_resource_receipt WHERE kind='bootstrap')" : ""}`,
+         ${decision.requiresEmptyDeployment ? "AND NOT EXISTS (SELECT 1 FROM mgmt_resource_receipt WHERE kind='bootstrap')" : ""}`,
       ).bind(
         id,
         accountId,
         userId,
         proofHash,
-        meta.mode === "cloud" ? now + 90 * 86_400_000 : 8_640_000_000_000_000,
+        receiptExpiresAt,
         now,
         now,
         accountId,
@@ -209,7 +211,7 @@ export async function bootstrap(c: CliContext): Promise<Response> {
        SET protected_credential=?,protected_credential_expires_at=?,outcome=?,updated_at=?
        WHERE id=? AND consumed_at IS NULL
          AND (protected_credential IS NULL OR protected_credential_expires_at<=?)
-         AND NOT ${humanOwner("mgmt_resource_receipt.organization_id")}`,
+         AND NOT ${humanOwnerCondition("mgmt_resource_receipt.organization_id")}`,
     )
       .bind(encrypted, now + TTL, JSON.stringify({ credentialId: issued.id }), now, id, now)
       .run()
@@ -250,17 +252,26 @@ export async function bootstrap(c: CliContext): Promise<Response> {
     rethrowCfAuthError(error);
   }
 
-  const quota = meta.mode === "cloud" ? await resolveBillingQuota(c.env, account.id) : null;
+  let trial: { endsAt: string; limit?: number } | null = null;
+  if (policy.mode === "cloud") {
+    const trialDeadline = accountTrialDeadline(account.createdAt);
+    if (trialDeadline === null) {
+      throw new GatewayError(
+        403,
+        "billing_trial_expired",
+        "The trial has ended; claim your account to continue",
+      );
+    }
+    const quota = await resolveBillingQuota(c.env, account.id);
+    trial = {
+      endsAt: new Date(trialDeadline).toISOString(),
+      ...(quota.limit === undefined ? {} : { limit: quota.limit }),
+    };
+  }
   return c.json({
     deployment: meta,
     account: await accountLifecycle(c.env, account.id),
     credential: await openCredential(c.env, id, proofHash, row.protected_credential),
-    trial:
-      meta.mode === "cloud"
-        ? {
-            endsAt: accountTrialEnd(account),
-            ...(quota?.limit === undefined ? {} : { limit: quota.limit }),
-          }
-        : null,
+    trial,
   });
 }

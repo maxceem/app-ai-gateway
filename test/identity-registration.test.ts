@@ -88,7 +88,11 @@ function registrationBarrierEnv(base: Env, skipReads: number): Env {
   }) as Env;
 }
 
-function signupWinsBootstrapEnv(base: Env): { env: Env; guardedInsertCount: () => number } {
+function signupWinsBootstrapEnv(base: Env): {
+  env: Env;
+  guardedInsertCount: () => number;
+  bootstrapPreflightCount: () => number;
+} {
   let signupFinalReady!: () => void;
   const signupFinal = new Promise<void>((resolve) => {
     signupFinalReady = resolve;
@@ -107,6 +111,7 @@ function signupWinsBootstrapEnv(base: Env): { env: Env; guardedInsertCount: () =
   });
   let registrationReads = 0;
   let guardedInserts = 0;
+  let bootstrapPreflights = 0;
   let bootstrapMayBatch = false;
   const db = new Proxy(base.DB, {
     get(target, property, receiver) {
@@ -130,7 +135,8 @@ function signupWinsBootstrapEnv(base: Env): { env: Env; guardedInsertCount: () =
             return result;
           });
         }
-        if (query.includes("UNION ALL SELECT 1 FROM mgmt_user WHERE kind='human'")) {
+        if (query.includes("SELECT 1 WHERE NOT (NOT EXISTS (SELECT 1 FROM mgmt_organization)")) {
+          bootstrapPreflights += 1;
           return interceptFirst(statement, async (run) => {
             const result = await run();
             await signupFinal;
@@ -161,7 +167,11 @@ function signupWinsBootstrapEnv(base: Env): { env: Env; guardedInsertCount: () =
       return property === "DB" ? db : Reflect.get(target, property, receiver);
     },
   }) as Env;
-  return { env: proxied, guardedInsertCount: () => guardedInserts };
+  return {
+    env: proxied,
+    guardedInsertCount: () => guardedInserts,
+    bootstrapPreflightCount: () => bootstrapPreflights,
+  };
 }
 
 async function authRequest(testEnv: Env, path: string, body: Record<string, unknown>) {
@@ -329,6 +339,7 @@ describe("self-hosted registration policy", () => {
     expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_resource_receipt").first("n"))
       .toBe(bootstrap.status === 200 ? 1 : 0);
     expect(barrier.guardedInsertCount()).toBe(1);
+    expect(barrier.bootstrapPreflightCount()).toBe(1);
   });
 
   it("preserves adapter ids, dates, and selected fields on guarded creates", async () => {

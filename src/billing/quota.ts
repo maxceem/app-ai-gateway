@@ -1,8 +1,5 @@
-import {
-  ACCOUNT_TRIAL_MS,
-  accountLifecycle,
-  accountOnTrial,
-} from "../core/account-lifecycle";
+import { accountLifecycle } from "../core/account-lifecycle";
+import { accountOnTrial, accountTrialDeadline } from "../policy/accounts";
 import { GatewayError } from "../core/errors";
 import {
   billingPlanLimits,
@@ -161,7 +158,12 @@ export async function getBillingQuotaResolution(
     // draw a second month. Claiming it resumes the ordinary monthly renewals.
     // Measured from the schedule's own anchor, so the window can never close
     // before the period it belongs to opens.
-    if (accountOnTrial(account)) trialEnd = anchorAt + ACCOUNT_TRIAL_MS;
+    if (accountOnTrial(account)) {
+      // normalizedInstant above already validated this same stored value.
+      const deadline = accountTrialDeadline(account.createdAt);
+      if (deadline === null) throw invalidSchedule("organization creation time");
+      trialEnd = deadline;
+    }
   } else {
     now ??= Date.now();
     const subscription = access.subscription;

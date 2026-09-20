@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import type { ConsoleCapabilitiesResponse } from "../contracts/responses";
-import { billingBinding } from "../billing/gateway";
 import { googleAuthEnabled, registrationOpen } from "../auth/identity";
 import { publicApiOrigin } from "../core/public-api-url";
+import { deploymentPolicy } from "../policy/deployment";
 
 export const consoleRoutes = new Hono<{ Bindings: Env }>();
 
@@ -12,7 +12,7 @@ function optionalUrl(value: string | undefined): string | undefined {
 }
 
 consoleRoutes.get("/capabilities", async (c) => c.json({
-  billing: Boolean(billingBinding(c.env)),
+  billing: deploymentPolicy(c.env).mode === "cloud",
   registrationOpen: await registrationOpen(c.env),
   googleAuth: googleAuthEnabled(c.env),
   // Legal documents are deployment-specific. The console shows the sign-up

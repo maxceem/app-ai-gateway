@@ -7,6 +7,8 @@ import { createProviderGateway, rotateProviderGateway } from "../../management/p
 import { databaseErrorMatches } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import type { HandoffRow, CliContext } from "./types";
+import { deploymentPolicy } from "../../policy/deployment";
+import { accountAccessCondition } from "../../policy/sql";
 
 export async function completeProviderSubmission(
   c: CliContext,
@@ -47,30 +49,24 @@ export async function completeProviderSubmission(
   });
   const transition = crypto.randomUUID();
   const marker = JSON.stringify({ transition });
+  const accountAccess = accountAccessCondition(
+    deploymentPolicy(c.env),
+    row.organization_id,
+    "setup",
+    now,
+  );
   const conditions = [
     "EXISTS (SELECT 1 FROM mgmt_handoff WHERE id=? AND consumed_at=? AND outcome=?)",
     liveCredential.sql,
-    `EXISTS (SELECT 1 FROM mgmt_organization o WHERE id=? AND (
-      EXISTS (SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
-        WHERE m.organization_id=o.id AND m.role='owner' AND u.kind='human')
-      OR expires_at IS NULL OR expires_at>MAX(?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))))`,
+    accountAccess.sql,
   ];
   const parameters: unknown[] = [
     row.id,
     now,
     marker,
     ...liveCredential.params,
-    row.organization_id,
-    new Date(now).toISOString(),
+    ...accountAccess.params,
   ];
-  if (c.env.BILLING)
-    conditions.push(
-      `EXISTS (SELECT 1 FROM mgmt_organization o WHERE id=? AND (
-        EXISTS (SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
-          WHERE m.organization_id=o.id AND m.role='owner' AND u.kind='human')
-        OR expires_at IS NULL OR julianday(created_at)+30>julianday('now')))`,
-    );
-  if (c.env.BILLING) parameters.push(row.organization_id);
   if (typeof expectedGatewayRevision === "number") {
     const gatewayId = (gatewaySnapshot as { id?: unknown } | undefined)?.id;
     if (typeof gatewayId !== "string")

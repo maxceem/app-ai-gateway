@@ -1,7 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { invalidateAccountLifecycle } from "../core/account-lifecycle";
 import {
-  billingBinding,
   invalidateBillingRequestAccess,
   type BillingVariables,
 } from "../billing/gateway";
@@ -13,6 +12,7 @@ import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { ExecutionVariables } from "../execution/plan";
 import type { GatewayVariables } from "./auth";
+import { deploymentPolicy } from "../policy/deployment";
 
 /**
  * The dispatch boundary.
@@ -107,7 +107,7 @@ async function monthlyRequestAllowance(
 ): Promise<Awaited<ReturnType<typeof resolveBillingQuota>> | undefined> {
   // No billing service means self-hosted, which is unlimited and must never
   // depend on a hosted plan lookup that cannot happen.
-  if (!billingBinding(env)) return undefined;
+  if (deploymentPolicy(env).mode === "self_hosted") return undefined;
   return resolveBillingQuota(env, organizationId, cache);
 }
 

@@ -5,20 +5,22 @@ import {
   isCfAuthError,
 } from "@maxceem/cf-auth";
 import { APIError } from "better-auth/api";
-import { sql } from "drizzle-orm";
-import { billingBinding } from "../billing/gateway";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
+import {
+  deploymentPolicy,
+  registrationAllowed as policyRegistrationAllowed,
+  registrationRule,
+  registrationUnrestricted,
+  shouldProvisionDefaultOrganization,
+} from "../policy/deployment";
+import { registrationCreateCondition } from "../policy/sql";
 
 export const IDENTITY_AUTH_BASE_PATH = "/v1/auth";
 export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
 export const CONSOLE_REQUEST_HEADER = "x-console-request";
 
-function additionalRegistrationsAllowed(env: Env): boolean {
-  return env.ALLOW_ADDITIONAL_REGISTRATIONS?.trim().toLowerCase() === "true";
-}
-
-async function selfHostedRegistrationState(env: Env): Promise<{
+async function registrationState(env: Env): Promise<{
   humanExists: boolean;
   accountExists: boolean;
 }> {
@@ -38,10 +40,10 @@ export async function registrationOpen(env: Env): Promise<boolean> {
 }
 
 async function registrationAllowed(env: Env, claimRegistration: boolean): Promise<boolean> {
-  if (billingBinding(env)) return true;
-  const state = await selfHostedRegistrationState(env);
-  if (state.humanExists) return additionalRegistrationsAllowed(env);
-  return claimRegistration || !state.accountExists;
+  const policy = deploymentPolicy(env);
+  const rule = registrationRule(policy, claimRegistration);
+  if (registrationUnrestricted(rule)) return true;
+  return policyRegistrationAllowed(rule, await registrationState(env));
 }
 
 async function assertRegistrationAllowed(
@@ -104,7 +106,8 @@ function identityAuth(
   const origin = new URL(requestUrl).origin;
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
-  const hosted = Boolean(billingBinding(env));
+  const policy = deploymentPolicy(env);
+  const rule = registrationRule(policy, claimRegistration);
   return createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
@@ -116,22 +119,11 @@ function identityAuth(
     userHooks: {
       beforeCreate: () =>
         assertRegistrationAllowed(env, claimRegistration, onRegistrationDenied),
-      ...(!hosted
+      ...(!registrationUnrestricted(rule)
         ? {
             atomicCreateGuard: {
-              condition: (tables: typeof mgmtAuthTables) => sql`
-                (
-                  exists (select 1 from ${tables.user} where ${tables.user.kind} = 'human')
-                  and ${additionalRegistrationsAllowed(env) ? 1 : 0}
-                )
-                or (
-                  not exists (select 1 from ${tables.user} where ${tables.user.kind} = 'human')
-                  and (
-                    ${claimRegistration ? 1 : 0}
-                    or not exists (select 1 from ${tables.organization})
-                  )
-                )
-              `,
+              condition: (tables: typeof mgmtAuthTables) =>
+                registrationCreateCondition(rule, tables),
               onDenied: onRegistrationDenied,
             },
           }
@@ -139,10 +131,11 @@ function identityAuth(
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
     organizations: {
-      autoProvisionDefaultOrganization:
-        !claimRegistration &&
-        !suppressDefaultOrganization &&
-        (Boolean(billingBinding(env)) || provisionRegistration),
+      autoProvisionDefaultOrganization: shouldProvisionDefaultOrganization(policy, {
+        claimRegistration,
+        suppressDefaultOrganization,
+        provisionRegistration,
+      }),
     },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
     cookies: { prefix: "agw_identity" },
