@@ -184,7 +184,7 @@ through the API, on `gatewayRoute` at create time or on
 
 ```json
 PUT /v1/admin/providers/{id}
-{ "gatewayRoute": { "providerOnly": ["vertex", "anthropic"] } }
+{ "gatewayRoute": { "providerOnly": ["vertex", "anthropic"] }, "revision": 7 }
 ```
 
 Cloudflare AI Gateway takes no routing configuration. Sending `gatewayRoute`
@@ -227,7 +227,7 @@ this reason, and the API answers `409 provider_gateway_managed` there.
 
 ```json
 POST /v1/admin/provider-gateways/{id}/rotate
-{ "token": "..." }
+{ "token": "...", "revision": 4 }
 ```
 
 ## Rename and delete
@@ -237,8 +237,11 @@ the connection or the providers routed through it moves.
 
 ```json
 PATCH /v1/admin/provider-gateways/{id}
-{ "name": "Prod CF gateway" }
+{ "name": "Prod CF gateway", "revision": 4 }
 ```
+
+Both updates use the `revision` returned by the gateway list. A `409 conflict`
+means the gateway changed after that read; read it again before retrying.
 
 **Delete gateway** destroys the stored token. It is only available once
 nothing routes through the gateway, and the confirm dialog says so: "Nothing

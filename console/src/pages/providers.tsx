@@ -354,7 +354,7 @@ function ProvidersSection() {
   const disable = async () => {
     if (!pendingDisable) return;
     try {
-      await updateProvider.mutateAsync({ id: pendingDisable.id, body: { status: "disabled" } });
+      await updateProvider.mutateAsync({ id: pendingDisable.id, body: { status: "disabled", revision: pendingDisable.revision } });
       toast.success(`Disabled ${pendingDisable.name}`);
       setPendingDisable(null);
     } catch (error) {
@@ -369,7 +369,7 @@ function ProvidersSection() {
    */
   const enable = async (row: ProviderCredential) => {
     try {
-      await updateProvider.mutateAsync({ id: row.id, body: { status: "active" } });
+      await updateProvider.mutateAsync({ id: row.id, body: { status: "active", revision: row.revision } });
       toast.success(`Enabled ${row.name}`);
     } catch (error) {
       toast.error(errorMessage(error, "Could not enable the provider"));
@@ -1487,7 +1487,7 @@ function RenameGatewayDialog({
   const submit = async () => {
     if (!gateway || !name.trim()) return;
     try {
-      await renameGateway.mutateAsync({ id: gateway.id, name: name.trim() });
+      await renameGateway.mutateAsync({ id: gateway.id, name: name.trim(), revision: gateway.revision });
       toast.success(`Renamed to ${name.trim()}`);
       close();
     } catch (error) {
@@ -1578,7 +1578,7 @@ function RotateGatewayDialog({
   const submit = async () => {
     if (!gateway || !token) return;
     try {
-      await rotateGateway.mutateAsync({ id: gateway.id, token });
+      await rotateGateway.mutateAsync({ id: gateway.id, token, revision: gateway.revision });
       setToken("");
       setTested(null);
       rotateGateway.reset();
@@ -1675,7 +1675,7 @@ function RotateDialog({
   const submit = async () => {
     if (!provider || !secret) return;
     try {
-      await updateProvider.mutateAsync({ id: provider.id, body: { secret, ...movedTo } });
+      await updateProvider.mutateAsync({ id: provider.id, body: { secret, ...movedTo, revision: provider.revision } });
       setSecret("");
       updateProvider.reset();
       toast.success(`Updated the key for ${provider.name}`);
@@ -1772,7 +1772,7 @@ function PricingDialog({
     try {
       await updateProvider.mutateAsync({
         id: provider.id,
-        body: { pricing: Object.keys(result.pricing).length ? result.pricing : null },
+        body: { pricing: Object.keys(result.pricing).length ? result.pricing : null, revision: provider.revision },
       });
       toast.success(`Updated pricing for ${provider.name}`);
       onClose();

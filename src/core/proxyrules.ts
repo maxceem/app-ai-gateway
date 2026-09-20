@@ -458,56 +458,6 @@ export function clientResponseHeaders(upstream: Response): Headers {
   return headers;
 }
 
-/**
- * How long an upstream may take to send its response headers. Reasoning models
- * can think for a minute before the first byte on a long prompt, so the default
- * is generous; only a provider that has stopped answering altogether hits it.
- *
- * On a named endpoint this is the budget for the whole fallback chain rather
- * than for each target, so a chain never holds a client longer than one budget
- * however many targets it lists.
- */
-export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
-
-/** The deployment's time-to-first-byte budget, in milliseconds. */
-export function providerTtfbTimeoutMs(env: Env): number {
-  const seconds = Number(env.PROVIDER_TTFB_TIMEOUT_SECONDS);
-  return Number.isFinite(seconds) && seconds > 0
-    ? Math.round(seconds * 1_000)
-    : PROVIDER_TTFB_TIMEOUT_MS;
-}
-
-/** The upstream accepted the connection but sent no headers within the budget. */
-export class ProviderTtfbTimeoutError extends Error {
-  constructor(readonly timeoutMs: number) {
-    super(`Provider sent no response headers within ${timeoutMs} ms`);
-    this.name = "ProviderTtfbTimeoutError";
-  }
-}
-
-/**
- * A time-to-first-byte timeout, not a whole-request one: the timer is cleared
- * the moment the response headers arrive, so a stream may then take as long as
- * the model needs. Only the proxy and named-endpoint routes use this; the
- * credential probe has its own, much shorter, whole-request timeout.
- */
-export async function fetchWithTtfbTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (controller.signal.aborted) throw new ProviderTtfbTimeoutError(timeoutMs);
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function prepareProxyRequest(input: {
   request: Request;
   app: AppConfig;

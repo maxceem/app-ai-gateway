@@ -1,45 +1,34 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { ENDPOINT_SLUG, hasAppLevelLimits } from "../core/config";
+import { ENDPOINT_SLUG } from "../core/config";
 import {
-  endpointAttempt,
+  endpointAttemptRequest,
+  endpointProviderPath,
   prepareEndpointRequest,
-  type PreparedEndpointRequest,
 } from "../core/endpointrules";
 import { GatewayError } from "../core/errors";
-import { log } from "../core/log";
 import {
   requireProvider,
   resolveProvider,
   type ResolvedProvider,
 } from "../core/provider-store";
 import {
-  clientResponseHeaders,
-  fetchWithTtfbTimeout,
-  providerTtfbTimeoutMs,
-  ProviderTtfbTimeoutError,
-  providerUpstream,
   unpricedMessage,
-  type PreparedProxyRequest,
 } from "../core/proxyrules";
 import { supportsEndpointStyle } from "../core/capabilities";
 import { lookup } from "../core/records";
-import { isBillable, observeUpstreamBody, recordUsageEvent, type ObservedBody } from "../core/usage";
+import { isBillable } from "../core/usage";
+import {
+  type ExecutionAttempt,
+  type ExecutionPlan,
+  type ExecutionVariables,
+} from "../execution/plan";
 import type { GatewayVariables } from "../middleware/auth";
-import type { ProxyVariables } from "./proxy";
-
-export interface EndpointVariables {
-  preparedEndpointRequest: PreparedEndpointRequest;
-}
+import { executionHandler } from "./execution";
 
 type EndpointEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & ProxyVariables & EndpointVariables;
+  Variables: GatewayVariables & ExecutionVariables;
 };
-
-/** Upstream outcomes worth spending a fallback attempt on. */
-function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
 
 export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) => {
   // Named endpoints are POST-only. Rejecting here keeps other methods from
@@ -128,214 +117,42 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
     }
     usableTargets.push(target);
   }
-  prepared.targets = usableTargets;
-
   // A skipped disabled primary is the only way the chain can end up empty: on
   // every other primary failure the loop threw above. With nothing left to try,
   // the pause is the answer.
   if (usableTargets.length === 0 && disabledPrimary) throw disabledPrimary;
 
-  const primary = prepared.targets[0]!;
-  const primaryResolved = resolvedProviders.get(primary.provider)!;
-  const attempt = endpointAttempt(
-    prepared,
-    primary,
-    primaryResolved.type,
-    primaryResolved.gateway?.type ?? "direct",
-    primaryResolved.gatewayRoute,
-  );
-  c.set("preparedEndpointRequest", prepared);
-  c.set("resolvedProviders", resolvedProviders);
-  c.set("resolvedProvider", primaryResolved);
-  c.set("endpointSlug", slug);
-  c.set("provider", attempt.provider);
-  c.set("providerSlug", primary.provider);
-  c.set("providerPath", attempt.providerPath);
-  c.set("preparedProxyRequest", attempt);
+  const attempts = usableTargets.map((target) => {
+    const resolved = resolvedProviders.get(target.provider);
+    if (!resolved) throw new Error(`Resolved provider missing for ${target.provider}`);
+    const buildRequest = () => endpointAttemptRequest(
+      prepared,
+      target,
+      resolved.type,
+      resolved.gateway?.type ?? "direct",
+      resolved.gatewayRoute,
+    );
+    return {
+      resolved,
+      providerPath: endpointProviderPath(endpoint.api_style, resolved.type),
+      model: target.model,
+      buildRequest,
+    } satisfies ExecutionAttempt;
+  });
+  const first = attempts[0];
+  if (!first) throw disabledPrimary ?? new Error("Endpoint execution plan is empty");
+  // Validate and materialize the primary before admission. Fallback builders
+  // stay lazy so a multipart upload is copied only for targets actually tried.
+  const primaryRequest = first.buildRequest();
+  const primary: ExecutionAttempt = { ...first, buildRequest: () => primaryRequest };
+  c.set("executionPlan", {
+    method: "POST",
+    endpointSlug: slug,
+    attempts: [primary, ...attempts.slice(1)],
+  } satisfies ExecutionPlan);
   await next();
 };
 
 export const endpointRoutes = new Hono<EndpointEnv>();
 
-endpointRoutes.post("/:slug", async (c) => {
-  const identity = c.get("identity");
-  const app = c.get("appConfig");
-  const prepared = c.get("preparedEndpointRequest");
-  const slug = prepared.slug;
-
-  const resolvedProviders = c.get("resolvedProviders")!;
-  // One time-to-first-byte budget for the whole chain, fixed before the first
-  // attempt. Spending it per target would let a three-target endpoint hold the
-  // client for three times what the deployment configured.
-  //
-  // The trade-off is deliberate: a primary that hangs for the whole budget
-  // leaves nothing for its fallbacks, so the chain covers fast failures,
-  // connection errors and retryable statuses rather than a primary that never
-  // answers at all. A deployment that wants fallbacks to cover hangs too should
-  // lower PROVIDER_TTFB_TIMEOUT_SECONDS, which shortens the wait each target
-  // can spend before the next one gets its turn.
-  const timeoutMs = providerTtfbTimeoutMs(c.env);
-  const deadline = performance.now() + timeoutMs;
-
-  const record = (input: {
-    attempt: PreparedProxyRequest;
-    resolved: ResolvedProvider;
-    observed: Promise<ObservedBody> | null;
-    contentType: string;
-    status: "ok" | "provider_error";
-    latencyMs: number;
-  }) =>
-    c.executionCtx.waitUntil(
-      recordUsageEvent({
-        organizationId: app.organizationId,
-        appLevelLimitsEnabled: hasAppLevelLimits(app),
-        env: c.env,
-        observed: input.observed,
-        contentType: input.contentType,
-        appId: app.id,
-        userId: identity.userId,
-        authMethod: identity.authMethod,
-        apiKeyId: identity.apiKeyId,
-        provider: input.attempt.provider,
-        providerId: input.resolved.id,
-        providerSlug: input.resolved.slug,
-        gateway: input.resolved.gateway,
-        gatewayRoute: input.resolved.gatewayRoute,
-        pricing: input.resolved.pricing,
-        model: input.attempt.model,
-        route: `${input.resolved.slug}/${input.attempt.providerPath}`,
-        endpointSlug: slug,
-        appVersion: c.req.header("x-app-version") ?? null,
-        status: input.status,
-        latencyMs: input.latencyMs,
-      }),
-    );
-
-  for (const [index, target] of prepared.targets.entries()) {
-    const last = index === prepared.targets.length - 1;
-    // The first attempt was prepared by the middleware, which is also where the
-    // organization's monthly allowance was spent — once, for this incoming
-    // request. Falling through the chain below never spends another.
-    const resolved = resolvedProviders.get(target.provider)!;
-    const attempt = index === 0
-      ? c.get("preparedProxyRequest")
-      : endpointAttempt(
-        prepared,
-        target,
-        resolved.type,
-        resolved.gateway?.type ?? "direct",
-        resolved.gatewayRoute,
-      );
-
-    // What is left of the chain's budget is what this attempt gets. Once it is
-    // gone it is gone for every target still to come, so there is nothing to
-    // fall through to and the timeout the client has already waited out is
-    // answered here. Nothing is recorded for the targets left: the attempt that
-    // spent the budget has its own row, and a provider that was never contacted
-    // must not appear in its own error counts. One log line names them instead.
-    const remainingMs = deadline - performance.now();
-    if (remainingMs <= 0) {
-      log("warn", "provider_ttfb_budget_exhausted", {
-        appId: app.id,
-        endpointSlug: slug,
-        budgetMs: timeoutMs,
-        skipped: prepared.targets
-          .slice(index)
-          .map((untried) => resolvedProviders.get(untried.provider)!.slug),
-      });
-      throw new GatewayError(504, "provider_error", "Provider did not respond in time");
-    }
-    const attemptTimeoutMs = Math.round(remainingMs);
-
-    const upstreamRequest = providerUpstream({
-      resolved,
-      prepared: attempt,
-      appId: app.id,
-      userId: identity.userId,
-    });
-    const providerStart = performance.now();
-    let upstream: Response;
-    try {
-      upstream = await fetchWithTtfbTimeout(
-        upstreamRequest.url,
-        {
-          method: "POST",
-          headers: upstreamRequest.headers,
-          body: attempt.body,
-          redirect: "manual",
-        },
-        attemptTimeoutMs,
-      );
-    } catch (error) {
-      // A provider that never answers is a failed attempt like any other, so
-      // the chain falls through to the next target rather than hanging on it.
-      const timedOut = error instanceof ProviderTtfbTimeoutError;
-      if (timedOut) {
-        log("warn", "provider_ttfb_timeout", {
-          appId: app.id,
-          providerSlug: resolved.slug,
-          route: `${resolved.slug}/${attempt.providerPath}`,
-          endpointSlug: slug,
-          // What this attempt was given, and the whole chain's budget it came
-          // out of: on a fallback the first is the smaller of the two.
-          timeoutMs: attemptTimeoutMs,
-          budgetMs: timeoutMs,
-        });
-      }
-      record({
-        attempt,
-        resolved,
-        observed: null,
-        contentType: "",
-        status: "provider_error",
-        latencyMs: timedOut ? attemptTimeoutMs : Math.round(performance.now() - providerStart),
-      });
-      if (!last) continue;
-      throw timedOut
-        ? new GatewayError(504, "provider_error", "Provider did not respond in time")
-        : new GatewayError(502, "provider_error", "Provider request failed");
-    }
-    const providerTtfb = performance.now() - providerStart;
-
-    // Nothing has been written to the client yet, so a retryable upstream
-    // status can still be replaced by the next target in the chain.
-    if (!last && isRetryableStatus(upstream.status)) {
-      await upstream.body?.cancel();
-      record({
-        attempt,
-        resolved,
-        observed: null,
-        contentType: "",
-        status: "provider_error",
-        latencyMs: Math.round(providerTtfb),
-      });
-      continue;
-    }
-
-    const headers = clientResponseHeaders(upstream);
-    headers.set(
-      "Server-Timing",
-      `auth;dur=${c.get("authDurationMs").toFixed(1)}, limiter;dur=${c.get("limiterDurationMs").toFixed(1)}, provider_ttfb;dur=${providerTtfb.toFixed(1)}`,
-    );
-    let clientStream = upstream.body;
-    let observed: Promise<ObservedBody> | null = null;
-    // The observer rides the client's own stream, so a client that hangs up
-    // cancels the provider call instead of leaving it running unwatched.
-    if (upstream.body) ({ stream: clientStream, observed } = observeUpstreamBody(upstream.body));
-    record({
-      attempt,
-      resolved,
-      observed,
-      contentType: upstream.headers.get("content-type") ?? "",
-      status: upstream.ok ? "ok" : "provider_error",
-      latencyMs: Math.round(providerTtfb),
-    });
-    return new Response(clientStream, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers,
-    });
-  }
-
-  throw new GatewayError(502, "provider_error", "Provider request failed");
-});
+endpointRoutes.post("/:slug", executionHandler);

@@ -10,6 +10,34 @@ import {
   type OutputClampStyle,
   type ProviderType,
 } from "@shared/capabilities";
+import {
+  ENDPOINT_SLUG,
+  type AppAttestEnvironment,
+  type ClaimRequirement,
+  type EndpointConfig,
+  type EndpointsConfig,
+  type EntitlementCheck,
+  type IssuerAuthConfig,
+  type IssuerProvider,
+  type LimitScopeConfig,
+  type LimitsConfig,
+  type ProviderProxyConfig,
+  type RoutingConfig,
+  type StoredAppConfig as NormalizedAppConfig,
+  type StoredAuthenticationConfig,
+} from "@shared/app-config";
+
+export { DEFAULT_END_USER_HEADER, ENDPOINT_SLUG } from "@shared/app-config";
+export type {
+  AppAttestEnvironment,
+  ClaimRequirement,
+  EndpointConfig,
+  EndpointsConfig,
+  EntitlementCheck,
+  IssuerProvider,
+  LimitScopeConfig,
+  LimitsConfig,
+};
 
 // The capability facts come from `src/shared/capabilities.ts`, which the Worker
 // enforces from the same tables. What stays here is presentation — labels, form
@@ -87,105 +115,34 @@ export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["val
 export const CLAMP_STYLES = OUTPUT_CLAMP_STYLES;
 export type ClampStyle = OutputClampStyle;
 
-export interface ClaimRequirement {
-  path: string;
-  contains?: string | string[];
-  equals?: string | number | boolean;
-}
-
-/**
- * Every field except `token_header` is required by the Worker; they are
- * optional here because a draft passes through incomplete states while an
- * operator types. The save is what enforces the contract.
- */
-/** The identity providers the console knows how to write an issuer for. */
-export type IssuerProvider = "firebase" | "supabase" | "auth0" | "clerk" | "custom";
-
-/** How `required_claims` says a user has paid. */
-export type EntitlementCheck = "revenuecat" | "custom";
-
-export interface AuthConfig {
-  jwks_url?: string;
-  /**
-   * Accepted `iss` values. Required by the Worker: Firebase, Sign in with Apple
-   * and Google Sign-In publish one key set for every customer, so the JWKS URL
-   * alone scopes an app to nobody.
-   */
+/** Incomplete issuer state while the form is being edited. */
+export type IssuerDraft = Partial<Omit<IssuerAuthConfig, "issuer" | "audience">> & {
   issuer?: string | string[];
-  /** Accepted `aud` values, required for the same reason as {@link AuthConfig.issuer}. */
   audience?: string | string[];
-  user_id_claim?: string;
-  token_header?: string;
-  required_claims?: ClaimRequirement[];
-  max_token_lifetime_seconds?: number;
-  /**
-   * Which provider and which paid-user check the block was written for. The
-   * console's bookkeeping: the gateway verifies from the fields above and
-   * reads neither.
-   */
-  provider?: IssuerProvider;
-  entitlement?: EntitlementCheck;
-}
+};
+/** Stable compatibility name for existing form components. */
+export type AuthConfig = IssuerDraft;
 
-export type AppAttestEnvironment = "production" | "development";
+export type HeaderEndUserDraft = { source: "header"; header: string };
+export type IssuerEndUserDraft = { source: "issuer"; issuer: IssuerDraft };
+export type AppInstallEndUserDraft = { source: "app_install" };
+export type ApiKeyEndUserDraft = HeaderEndUserDraft | IssuerEndUserDraft;
+export type AppAttestEndUserDraft = IssuerEndUserDraft | AppInstallEndUserDraft;
+export type EndUserIdentity = ApiKeyEndUserDraft | AppAttestEndUserDraft;
 
-/** What the Worker offers when a header source is turned on. */
-export const DEFAULT_END_USER_HEADER = "x-end-user-id";
+export type AuthenticationDraft =
+  | (Omit<Extract<StoredAuthenticationConfig, { type: "apple_app_attest" }>, "end_user"> & {
+      end_user: AppAttestEndUserDraft;
+    })
+  | (Omit<Extract<StoredAuthenticationConfig, { type: "api_key" }>, "end_user"> & {
+      end_user?: ApiKeyEndUserDraft;
+    });
 
-/**
- * How the gateway learns which end user a request acts for. `type` says how the
- * client proves itself; this says who it acts for, and the two are separate
- * questions. Each application type admits only the sources that can mean
- * something for it, so an impossible pairing cannot be drafted.
- */
-export interface HeaderEndUser {
-  source: "header";
-  header: string;
-}
+export type AllowedPath = ProviderProxyConfig["allowed_paths"][number];
+export type AllowedPathObject = Exclude<AllowedPath, string>;
+export type EndpointTarget = Pick<EndpointConfig, "provider" | "model">;
 
-export interface IssuerEndUser {
-  source: "issuer";
-  issuer: AuthConfig;
-}
-
-export interface AppInstallEndUser {
-  source: "app_install";
-}
-
-export type ApiKeyEndUser = HeaderEndUser | IssuerEndUser;
-export type AppAttestEndUser = IssuerEndUser | AppInstallEndUser;
-export type EndUserIdentity = HeaderEndUser | IssuerEndUser | AppInstallEndUser;
-
-export type AuthenticationConfig =
-  | {
-      type: "apple_app_attest";
-      app_attest: {
-        team_id: string;
-        bundle_id: string;
-        /**
-         * Absent means production only, and stays absent unless the operator
-         * opts in: writing the default would stamp it onto every application on
-         * the next unrelated edit.
-         */
-        environments?: AppAttestEnvironment[];
-      };
-      end_user: AppAttestEndUser;
-    }
-  | {
-      type: "api_key";
-      /** Absent means the application has no end users at all. */
-      end_user?: ApiKeyEndUser;
-    };
-
-export interface AllowedPathObject {
-  path: string;
-  fixed_model?: string;
-  clamp?: ClampStyle;
-}
-
-export type AllowedPath = string | AllowedPathObject;
-
-export interface ProviderConfig {
+export interface ProviderConfig extends Partial<ProviderProxyConfig> {
   /** Missing or empty allows the default inference APIs; a non-empty list replaces that default. */
   allowed_paths?: AllowedPath[];
   /** Missing or empty allows every model; a non-empty list restricts access. */
@@ -229,8 +186,8 @@ export function instanceModels(
   return [...priced, ...overrides.filter((model) => !priced.includes(model))];
 }
 
-export interface ProxyConfig {
-  providers: {
+export interface ProxyConfig extends Omit<RoutingConfig, "providers" | "model_rewrites"> {
+  providers: Omit<RoutingConfig["providers"], "selected"> & {
     mode: "all" | "selected";
     /** Keyed by provider instance slug, matching `/proxy/{slug}/…`. */
     selected?: Partial<Record<string, ProviderConfig>>;
@@ -265,53 +222,18 @@ export function endpointInstances<T extends ProviderInstance>(
   );
 }
 
-export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
-
-export interface EndpointTarget {
-  /** A provider instance slug, resolved by the Worker against the organization. */
-  provider: string;
-  model: string;
-}
-
-export interface EndpointConfig extends EndpointTarget {
-  api_style: EndpointApiStyle;
-  params?: Record<string, unknown>;
-  max_output_tokens?: number;
-  fallback?: EndpointTarget[];
-}
-
-export type EndpointsConfig = Record<string, EndpointConfig>;
-
-/**
- * Limits the organization sets on its own app's end users. Unrelated to the
- * plan allowance on the billing page: that meters the organization itself.
- * `null` is unlimited.
- */
-export interface LimitScopeConfig {
-  requests: { per_minute: number | null; per_day: number | null };
-  spending: { monthly_usd: number | null };
-}
-
-export interface LimitsConfig {
-  per_user: LimitScopeConfig;
-  per_app: LimitScopeConfig;
-}
-
-export interface StoredAppConfig {
-  authentication: AuthenticationConfig;
+/** The explicitly incomplete shape edited by the structured form. */
+export interface AppConfigDraft extends Omit<NormalizedAppConfig, "authentication" | "routing"> {
+  authentication: AuthenticationDraft;
   routing: ProxyConfig;
-  /** Absent means unlimited. */
-  limits?: LimitsConfig;
-  endpoints?: EndpointsConfig;
 }
-
 /** The issuer block, which api_key apps only have once an operator enables one. */
-export const authIssuer = (auth: AuthenticationConfig): AuthConfig | undefined =>
+export const authIssuer = (auth: AuthenticationDraft): AuthConfig | undefined =>
   auth.end_user?.source === "issuer" ? auth.end_user.issuer : undefined;
 
 /** The end-user source an application uses, or `undefined` when it has none. */
 export const endUserSource = (
-  auth: AuthenticationConfig,
+  auth: AuthenticationDraft,
 ): EndUserIdentity["source"] | undefined => auth.end_user?.source;
 
 /**
@@ -338,9 +260,9 @@ export function emptyIssuer(): AuthConfig {
  * leaving it with nothing to identify anyone by.
  */
 export function withIssuer(
-  auth: AuthenticationConfig,
+  auth: AuthenticationDraft,
   issuer: AuthConfig | undefined,
-): AuthenticationConfig {
+): AuthenticationDraft {
   if (auth.type === "apple_app_attest") {
     return { ...auth, end_user: { source: "issuer", issuer: issuer ?? authIssuer(auth) ?? emptyIssuer() } };
   }

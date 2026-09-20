@@ -247,10 +247,10 @@ export async function resourceCommand(
       if (!existingGateway) fail("invalid_arguments", "Supply the gateway to rotate.");
       const value = await secret(flags, "Gateway token");
       if (flags.browser)
-        return ctx.operation("provider-gateway.rotate-key", { id: existingGateway.id });
+        return ctx.operation("provider-gateway.rotate-key", { id: existingGateway.id, revision: existingGateway.revision });
       return (
         await ctx.call("rotateProviderGateway", [existingGateway.id], {
-          body: { token: value! },
+          body: { token: value!, revision: existingGateway.revision },
         })
       ).data;
     }
@@ -262,10 +262,10 @@ export async function resourceCommand(
       );
     const value = await secret(flags, "Provider API key");
     if (flags.browser)
-      return ctx.operation("provider.rotate-key", { id: existingProvider.id });
+      return ctx.operation("provider.rotate-key", { id: existingProvider.id, revision: existingProvider.revision });
     return (
       await ctx.call("updateProvider", [existingProvider.id], {
-        body: { secret: value! },
+        body: { secret: value!, revision: existingProvider.revision },
       })
     ).data;
   }
@@ -274,6 +274,7 @@ export async function resourceCommand(
       if (!existingGateway) fail("invalid_arguments", "Supply the gateway to update.");
       const body = validate(ProviderGatewayUpdateRequestSchema, {
         name: await required(flags, "name"),
+        revision: existingGateway.revision,
       });
       return (
         await ctx.call("updateProviderGateway", [existingGateway.id], { body })
@@ -311,6 +312,7 @@ export async function resourceCommand(
     if (flags["base-url"] || flags["clear-base-url"]) {
       validate(ProviderUpdateRequestSchema, {
         ...draft,
+        revision: existingProvider.revision,
         secret: "validation-placeholder",
       });
       const value = await secret(flags, "Provider API key");
@@ -318,10 +320,11 @@ export async function resourceCommand(
     }
     const body: ProviderUpdateRequest = validate(ProviderUpdateRequestSchema, {
       ...draft,
+      revision: existingProvider.revision,
       ...(flags.browser ? { secret: "validation-placeholder" } : {}),
     });
     if (flags.browser)
-      return ctx.operation("provider.update", { id: existingProvider.id, ...draft });
+      return ctx.operation("provider.update", { id: existingProvider.id, revision: existingProvider.revision, ...draft });
     return (await ctx.call("updateProvider", [existingProvider.id], { body })).data;
   }
   fail("unknown_command", "Unknown command.");

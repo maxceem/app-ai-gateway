@@ -1,7 +1,15 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { clearProviderCaches } from "../src/core/provider-store";
+import { Hono } from "hono";
+import { afterEach, describe, expect, it } from "vitest";
+import { clearAppConfigCache, loadAppConfig } from "../src/core/config";
+import {
+  clearProviderCaches,
+  organizationProviders,
+} from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
+import { database } from "../src/db";
+import type { AdminVariables } from "../src/middleware/admin";
+import { appRoutes } from "../src/routes/admin/apps";
 import {
   appleConfig,
   defaultProxyConfig,
@@ -648,5 +656,178 @@ describe("application conditional writes", () => {
     const latest = await get(`/v1/admin/apps/${appId}`);
     expect(latest.body.app.revision).toBe(2);
     expect(latest.body.app.name).toBe("Edited");
+  });
+});
+
+describe("authoritative admin configuration", () => {
+  const appIds = [
+    "admin-primary-get",
+    "admin-primary-put",
+    "admin-primary-key-mode",
+  ];
+  const providerId = "admin-primary-provider-pricing";
+
+  afterEach(async () => {
+    const placeholders = appIds.map(() => "?").join(", ");
+    await env.DB.prepare(`DELETE FROM app_api_key WHERE app_id IN (${placeholders})`)
+      .bind(...appIds)
+      .run();
+    await env.DB.prepare(`DELETE FROM app WHERE id IN (${placeholders})`)
+      .bind(...appIds)
+      .run();
+    await env.DB.prepare("DELETE FROM provider WHERE id = ?").bind(providerId).run();
+    clearAppConfigCache();
+    clearProviderCaches();
+  });
+
+  it("resolves GET from its scoped primary row while the runtime cache is stale", async () => {
+    const appId = "admin-primary-get";
+    await seedApp(appId);
+    const cached = await loadAppConfig(env, appId);
+    expect(cached.authentication.type).toBe("apple_app_attest");
+
+    await env.DB.prepare(
+      "UPDATE app SET name = ?, config_json = ?, status = 'disabled' WHERE id = ?",
+    ).bind("Current primary row", JSON.stringify(serverConfig()), appId).run();
+
+    const current = await get(`/v1/admin/apps/${appId}`);
+    expect(current.status).toBe(200);
+    expect(current.body.app).toMatchObject({ name: "Current primary row", status: "disabled" });
+    expect(current.body.resolved).toMatchObject({
+      name: "Current primary row",
+      status: "disabled",
+      authentication: { type: "api_key" },
+    });
+    // The admin response did not refresh or consult the still-stale runtime cache.
+    await expect(loadAppConfig(env, appId)).resolves.toMatchObject({
+      name: `Test ${appId}`,
+      status: "active",
+      authentication: { type: "apple_app_attest" },
+    });
+    clearAppConfigCache();
+  });
+
+  it("resolves PUT from the row returned by its write with a warm runtime cache", async () => {
+    const appId = "admin-primary-put";
+    await seedApp(appId);
+    await expect(loadAppConfig(env, appId)).resolves.toMatchObject({
+      authentication: { type: "apple_app_attest" },
+    });
+
+    const scopedRow = await database(env.DB).query.app.findFirst({
+      where: (app, { eq }) => eq(app.id, appId),
+    });
+    expect(scopedRow).toBeDefined();
+    let sessionCalls = 0;
+    const primaryOnly = {
+      prepare: (query: string) => env.DB.prepare(query),
+      batch: <T = unknown>(statements: D1PreparedStatement[]) => env.DB.batch<T>(statements),
+      exec: (query: string) => env.DB.exec(query),
+      withSession: () => {
+        sessionCalls += 1;
+        throw new Error("PUT attempted to reread its write through a replica session");
+      },
+    } as unknown as D1Database;
+    const requestEnv = new Proxy(env, {
+      get: (target, property, receiver) =>
+        property === "DB" ? primaryOnly : Reflect.get(target, property, receiver),
+    }) as Env;
+    const route = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+    route.use("*", async (c, next) => {
+      c.set("billingRequestCache", new Map());
+      c.set("admin", {
+        userId: "operator-test-owner",
+        identityKind: "service",
+        credentialId: "test-management-key",
+        organizationId: "operator-test-organization",
+        role: "owner",
+        credentialType: "apiKey",
+      });
+      c.set("adminApp", scopedRow);
+      await next();
+    });
+    route.route("/", appRoutes);
+
+    const response = await route.request(`/apps/${appId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: 1,
+        name: "Written primary row",
+        status: "disabled",
+        config: serverConfig(),
+      }),
+    }, requestEnv);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      app: { name: "Written primary row", status: "disabled", revision: 2 },
+      resolved: {
+        name: "Written primary row",
+        status: "disabled",
+        authentication: { type: "api_key" },
+      },
+      config_error: null,
+    });
+    expect(sessionCalls).toBe(0);
+  });
+
+  it("uses the scoped primary row when deciding whether an app can create API keys", async () => {
+    const appId = "admin-primary-key-mode";
+    await seedApp(appId);
+    await loadAppConfig(env, appId);
+    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?")
+      .bind(JSON.stringify(serverConfig()), appId)
+      .run();
+
+    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}/keys`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Primary mode key" }),
+    });
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({ name: "Primary mode key" });
+    clearAppConfigCache();
+  });
+
+  it("validates provider pricing from current rows despite a stale runtime cache", async () => {
+    const providerSlug = "admin-primary-provider-pricing";
+    const model = "admin-primary-custom-model";
+    await seedProvider({
+      type: "openai",
+      id: providerId,
+      slug: providerSlug,
+      pricing: { [model]: { input: 1, output: 2 } },
+    });
+    expect((await organizationProviders(env, "operator-test-organization"))[providerSlug]?.pricing)
+      .toHaveProperty(model);
+    await env.DB.prepare("UPDATE provider SET pricing_json = NULL WHERE id = ?")
+      .bind(providerId)
+      .run();
+    // The runtime cache intentionally retains its TTL; management must bypass it.
+    expect((await organizationProviders(env, "operator-test-organization"))[providerSlug]?.pricing)
+      .toHaveProperty(model);
+
+    const response = await exports.default.fetch(
+      `${ORIGIN}/v1/admin/apps/admin-primary-provider-validate/validate`,
+      {
+        method: "POST",
+        headers: JSON_AUTH,
+        body: JSON.stringify({
+          name: "Current provider pricing",
+          config: serverConfig({
+            proxy: {
+              [providerSlug]: {
+                allowed_paths: ["v1/responses"],
+                allowed_models: [model],
+              },
+            },
+          }),
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { message: expect.stringContaining("has no configured price") },
+    });
   });
 });

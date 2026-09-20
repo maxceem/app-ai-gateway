@@ -1,26 +1,15 @@
-import {
-  billingBinding,
-} from "../billing/gateway";
-import { readSession } from "../db";
 import { GatewayError } from "./errors";
 import type { QueryBudget } from "./query-budget";
-
-export interface AccountLifecycle {
-  id: string;
-  name: string;
-  createdAt: string;
-  claimed: boolean;
-  /** The recovery deadline a cloud bootstrap sets, cleared the moment a human claims. */
-  expiresAt: string | null;
-}
-
-/** One free allowance, counted from account creation. It never renews while unclaimed. */
-export const ACCOUNT_TRIAL_MS = 30 * 86_400_000;
-
-/** D1 writes `datetime('now')` defaults without a zone; an ISO instant already has one. */
-function instant(value: string): number {
-  return Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
-}
+import {
+  accountAccessDenial,
+  type AccountAccessMode,
+  type AccountLifecycle,
+} from "../policy/accounts";
+import { deploymentPolicy } from "../policy/deployment";
+import {
+  expiredUnclaimedAccountsCondition,
+  humanOwnerCondition,
+} from "../policy/sql";
 
 /**
  * Lifecycle rows are read on the dispatch path of every hosted request, so they
@@ -63,16 +52,12 @@ export async function accountLifecycle(
 ): Promise<AccountLifecycle> {
   const cached = lifecycleCache.get(id);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  // Through a read session, like the other cache fills on this path: what comes
-  // back is written into the cache above, which is already allowed to be ten
-  // seconds behind, so a replica that is a moment behind the primary cannot
-  // widen the window this cache already has. The raw statement is used rather
+  // Fill from the authoritative primary. The ten-second TTL is the entire
+  // intentional lifecycle staleness window. The raw statement is used rather
   // than drizzle because the claim predicate is a correlated EXISTS.
-  const row = await readSession(env.DB).prepare(
+  const row = await env.DB.prepare(
     `SELECT o.id, o.name, o.created_at AS createdAt,
-    EXISTS (SELECT 1 FROM mgmt_organization_user m
-      JOIN mgmt_user u ON u.id=m.user_id
-      WHERE m.organization_id=o.id AND m.role='owner' AND u.kind='human') AS claimed,
+    ${humanOwnerCondition("o.id")} AS claimed,
     o.expires_at AS expiresAt
     FROM mgmt_organization o WHERE o.id = ?`,
   )
@@ -82,25 +67,6 @@ export async function accountLifecycle(
   const value = { ...row, claimed: Boolean(row.claimed) };
   lifecycleCache.set(id, { value, expiresAt: Date.now() + LIFECYCLE_CACHE_TTL_MS });
   return value;
-}
-
-/**
- * Whether the account is still the anonymous one the CLI created.
- *
- * `expires_at` is written only by a cloud bootstrap and cleared only by a
- * claim, so no separate trial record is needed to recognise an account that has
- * never had a human owner. Ownership is tested beside it, so that a human owner
- * arriving by any other route — a recovery script, a future console path — ends
- * the trial on its own, exactly as the scheduled cleanup's predicate does.
- */
-export function accountOnTrial(
-  account: AccountLifecycle,
-): account is AccountLifecycle & { expiresAt: string } {
-  return !account.claimed && account.expiresAt !== null;
-}
-
-export function accountTrialEnd(account: AccountLifecycle): string {
-  return new Date(instant(account.createdAt) + ACCOUNT_TRIAL_MS).toISOString();
 }
 
 /**
@@ -115,23 +81,23 @@ export function accountTrialEnd(account: AccountLifecycle): string {
 export async function assertAccountAccess(
   env: Env,
   id: string,
-  mode: "read" | "setup" | "proxy" | "claim",
+  mode: AccountAccessMode,
 ): Promise<AccountLifecycle> {
   const account = await accountLifecycle(env, id);
-  if (!accountOnTrial(account)) return account;
-  const now = Date.now();
-  if (instant(account.expiresAt) <= now) {
+  const denial = accountAccessDenial(
+    deploymentPolicy(env).mode,
+    account,
+    mode,
+    Date.now(),
+  );
+  if (denial === "account_expired") {
     throw new GatewayError(
       403,
       "account_expired",
       "The account recovery deadline has passed",
     );
   }
-  if (
-    billingBinding(env) &&
-    (mode === "setup" || mode === "proxy") &&
-    Date.parse(accountTrialEnd(account)) <= now
-  ) {
+  if (denial === "billing_trial_expired") {
     throw new GatewayError(
       403,
       "billing_trial_expired",
@@ -145,7 +111,7 @@ export async function assertAccountAccess(
  * Accounts one cleanup pass deletes.
  *
  * The batch is not what bounds a night's work — the loop below is — but a pass
- * costs the same sixteen statements whether it collects one account or two
+ * costs the same seventeen statements whether it collects one account or two
  * hundred, so collecting one at a time would make the query allowance, not the
  * database, the thing that decides how fast an expired backlog drains. The
  * ceiling on the batch is transaction size: every statement in a pass is one
@@ -154,8 +120,8 @@ export async function assertAccountAccess(
  */
 export const ACCOUNT_CLEANUP_BATCH = 200;
 
-/** Statements one cleanup pass issues: sixteen transactional deletes and updates. */
-export const ACCOUNT_CLEANUP_PASS_QUERIES = 16;
+/** Statements one cleanup pass issues: seventeen transactional deletes and updates. */
+export const ACCOUNT_CLEANUP_PASS_QUERIES = 17;
 
 /** Statements {@link pruneExpiredAuthorizations} issues, on every deployment. */
 export const AUTHORIZATION_SWEEP_QUERIES = 2;
@@ -163,17 +129,17 @@ export const AUTHORIZATION_SWEEP_QUERIES = 2;
 /**
  * Deletes one batch of expired accounts, and answers how many it found.
  *
- * Every statement repeats the unclaimed deadline predicate and re-selects the
- * same ordered batch, so the whole pass addresses one set of accounts inside
- * one D1 transaction: a claim landing mid-pass removes that account from every
- * remaining statement rather than from some of them.
+ * Every statement repeats the unclaimed deadline predicate with one captured
+ * cutoff and the same ordering, so the whole D1 transaction addresses one set
+ * of accounts. A claim committed before this write transaction begins excludes
+ * its account from every statement; no claim can commit midway through it.
  */
 async function deleteExpiredAccountBatch(env: Env): Promise<number> {
-  const now = new Date().toISOString();
-  const expired = `SELECT id FROM mgmt_organization o WHERE expires_at IS NOT NULL AND expires_at <= ?
-    AND NOT EXISTS (SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
-      WHERE m.organization_id=o.id AND m.role='owner' AND u.kind='human')
+  const cutoffMs = Date.now();
+  const expiredCondition = expiredUnclaimedAccountsCondition(cutoffMs);
+  const expired = `SELECT id FROM mgmt_organization o WHERE ${expiredCondition.sql}
     ORDER BY o.id LIMIT ${ACCOUNT_CLEANUP_BATCH}`;
+  const cutoff = expiredCondition.params;
   const apps = `SELECT id FROM app WHERE organization_id IN (${expired})`;
   const statements: D1PreparedStatement[] = [];
   for (const table of [
@@ -181,16 +147,17 @@ async function deleteExpiredAccountBatch(env: Env): Promise<number> {
     "app_user",
     "app_usage_event",
     "app_usage_rollup",
+    "app_usage_spend",
     "app_auth_event",
     "app_auth_challenge",
   ]) {
     statements.push(
       env.DB.prepare(
-        `DELETE FROM ${table} WHERE app_id IN (${apps})${table === "app_usage_event" || table === "app_usage_rollup" ? ` OR organization_id IN (${expired})` : ""}`,
+        `DELETE FROM ${table} WHERE app_id IN (${apps})${table === "app_usage_event" || table === "app_usage_rollup" || table === "app_usage_spend" ? ` OR organization_id IN (${expired})` : ""}`,
       ).bind(
-        ...(table === "app_usage_event" || table === "app_usage_rollup"
-          ? [now, now]
-          : [now]),
+        ...(table === "app_usage_event" || table === "app_usage_rollup" || table === "app_usage_spend"
+          ? [...cutoff, ...cutoff]
+          : cutoff),
       ),
     );
   }
@@ -204,7 +171,7 @@ async function deleteExpiredAccountBatch(env: Env): Promise<number> {
     statements.push(
       env.DB.prepare(
         `DELETE FROM ${table} WHERE organization_id IN (${expired})`,
-      ).bind(now),
+      ).bind(...cutoff),
     );
   }
   // Keep only the proof-bound bootstrap tombstone: deleting it would let an old
@@ -215,23 +182,23 @@ async function deleteExpiredAccountBatch(env: Env): Promise<number> {
       initiating_user_id=NULL, initiating_credential_id=NULL, protected_credential=NULL,
       protected_credential_expires_at=NULL, consumed_at=?, expires_at=?, updated_at=?
       WHERE kind='bootstrap' AND organization_id IN (${expired})`,
-    ).bind(Date.now(), Date.now(), Date.now(), now),
+    ).bind(cutoffMs, cutoffMs, cutoffMs, ...cutoff),
   );
   statements.push(
     env.DB.prepare(
       `DELETE FROM mgmt_resource_receipt WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
-    ).bind(now),
+    ).bind(...cutoff),
   );
   statements.push(
     env.DB.prepare(
       `DELETE FROM mgmt_handoff WHERE organization_id IN (${expired})`,
-    ).bind(now),
+    ).bind(...cutoff),
   );
   const accounts = statements.length;
   statements.push(
     env.DB.prepare(
       `DELETE FROM mgmt_organization WHERE id IN (${expired})`,
-    ).bind(now),
+    ).bind(...cutoff),
   );
   statements.push(
     env.DB.prepare(

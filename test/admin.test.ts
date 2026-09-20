@@ -1,5 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { projectPendingAppMonthSpend } from "../src/core/app-usage-accounting";
+import worker from "../src/index";
 import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
 
 describe("admin API", () => {
@@ -40,18 +42,7 @@ describe("admin API", () => {
     });
   });
 
-  /**
-   * An app-wide budget turned on part-way through a month.
-   *
-   * Cost settles against the app-wide ledger only while the app has app-wide
-   * limits — that is what keeps an app without them off a second Durable Object
-   * on every request. So the ledger is empty on the day someone first sets an
-   * app budget, and without a backfill that budget would start from zero while
-   * a per-user budget set the same day already counted the whole month. Two
-   * identical-looking fields meaning different months is not something anyone
-   * discovers until a budget fails to bite.
-   */
-  it("backfills the app ledger when app-wide limits are first turned on", async () => {
+  it("already projects app spend recorded before app-wide limits are enabled", async () => {
     const appId = "admin-budget-flip";
     await seedApp(appId);
     await env.DB.prepare(
@@ -59,11 +50,13 @@ describe("admin API", () => {
          app_id, user_id, provider_type, model, route, cost_usd, status
        ) VALUES (?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok')`,
     ).bind(appId, "spender", 0.08).run();
+    const month = new Date().toISOString().slice(0, 7);
+    await projectPendingAppMonthSpend(env, appId, month, 2);
 
-    // Nothing has settled against the app ledger: the app had no app-wide
-    // limits while that spend happened.
+    // Accounting is independent of configuration, so enabling a budget below
+    // needs no historical SUM/backfill race.
     expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
-      .toBe(0);
+      .toBe(80_000);
 
     const written = await exports.default.fetch(
       `https://example.test/v1/admin/apps/${appId}`,
@@ -127,9 +120,8 @@ describe("admin API", () => {
     // the same rows. Repricing has to correct it too, or that budget would run
     // on a total nothing can fix.
     const appLimiter = env.USER_LIMITER.getByName(appId);
-    await userLimiter.addCost(crypto.randomUUID(), Date.now(), 184);
-    await appLimiter.addCost(crypto.randomUUID(), Date.now(), 184);
     const month = new Date().toISOString().slice(0, 7);
+    await projectPendingAppMonthSpend(env, appId, month, 2);
     const url = `https://example.test/v1/admin/apps/${appId}/usage/reprice`;
     const request = (apply: boolean) => exports.default.fetch(url, {
       method: "POST",
@@ -165,6 +157,71 @@ describe("admin API", () => {
     expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);
     expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
     expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
+  });
+
+  it("rolls back every reprice chunk when a later chunk fails", async () => {
+    const appId = "admin-reprice-atomic-chunks";
+    const userId = "bulk-user";
+    await seedApp(appId);
+    for (let offset = 0; offset < 501; offset += 100) {
+      const statements: D1PreparedStatement[] = [];
+      for (let index = offset; index < Math.min(offset + 100, 501); index += 1) {
+        statements.push(env.DB.prepare(
+          `INSERT INTO app_usage_event(
+             event_id, app_id, user_id, provider_type, model, route,
+             input_tokens, output_tokens, cost_usd, status
+           ) VALUES (?, ?, ?, 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+             50, 20, 0.000184, 'ok')`,
+        ).bind(`bulk-${index}`, appId, userId));
+      }
+      await env.DB.batch(statements);
+    }
+    const before = await env.DB.prepare(
+      "SELECT microusd, revision FROM app_usage_spend WHERE app_id = ? AND scope = 'app'",
+    ).bind(appId).first<{ microusd: number; revision: number }>();
+
+    let sabotaged = false;
+    const failingDb = {
+      prepare: (query: string) => env.DB.prepare(query),
+      exec: (query: string) => env.DB.exec(query),
+      batch(statements: D1PreparedStatement[]) {
+        if (!sabotaged && statements.length === 2) {
+          sabotaged = true;
+          return env.DB.batch([
+            statements[0]!,
+            env.DB.prepare("UPDATE missing_reprice_table SET value = 1"),
+          ]);
+        }
+        return env.DB.batch(statements);
+      },
+    } as unknown as D1Database;
+    const response = await worker.request(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: "openai",
+          model: "gpt-5.6-luna",
+          month: new Date().toISOString().slice(0, 7),
+          apply: true,
+        }),
+      },
+      { ...env, DB: failingDb } as Env,
+    );
+    expect(response.status).toBe(500);
+    expect(sabotaged).toBe(true);
+
+    const costs = await env.DB.prepare(
+      "SELECT COUNT(*) AS rows, COUNT(DISTINCT cost_usd) AS costs, MIN(cost_usd) AS cost FROM app_usage_event WHERE app_id = ?",
+    ).bind(appId).first<{ rows: number; costs: number; cost: number }>();
+    expect(costs).toEqual({ rows: 501, costs: 1, cost: 0.000184 });
+    expect(await env.DB.prepare(
+      "SELECT microusd, revision FROM app_usage_spend WHERE app_id = ? AND scope = 'app'",
+    ).bind(appId).first()).toEqual(before);
   });
 
   /**

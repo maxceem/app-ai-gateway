@@ -5,8 +5,9 @@ import { DurableObject } from "cloudflare:workers";
  * the month's settled spend, and the request windows the app's own limits are
  * counted against.
  *
- * One instance per `app:user` pair, and — only for apps that set app-wide
- * limits — one more per app id, which is why nothing here is named for a user.
+ * One instance per `app:user` pair and one more per app id, which is why
+ * nothing here is named for a user. D1 owns spend accounting; the monthly row
+ * here is a versioned projection used by the request gate.
  *
  * The quota it enforces is the organization's own, set on its app and applied
  * to that app's end users. It is not the plan allowance: that is organization
@@ -34,19 +35,7 @@ export interface LimiterStatus {
   monthlyCostMicrousd: number;
 }
 
-/** How long the dedup ledger keeps an event, and how often it is pruned. */
-const LEDGER_RETENTION_MS = 7 * 86_400_000;
-const PRUNE_INTERVAL_MS = 86_400_000;
-
 export class UserLimiter extends DurableObject<Env> {
-  /**
-   * Whether a pruning alarm is already pending, as far as this instance knows.
-   * `undefined` means it has not looked yet; {@link ensurePruneAlarm} asks
-   * storage once and then answers from here, so the common case — a ledger that
-   * already has an alarm — costs nothing.
-   */
-  private prunePending: boolean | undefined;
-
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -57,24 +46,13 @@ export class UserLimiter extends DurableObject<Env> {
         );
         CREATE TABLE IF NOT EXISTS monthly_cost (
           month TEXT PRIMARY KEY,
-          microusd INTEGER NOT NULL
+          microusd INTEGER NOT NULL,
+          version INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS state (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           blocked INTEGER NOT NULL DEFAULT 0
         );
-        -- WITHOUT ROWID, so the primary key *is* the table: one page write per
-        -- settled event rather than a table row plus a separate index entry.
-        -- Every write here is on the request path and Cloudflare bills each
-        -- index a row of its own, so the ledger carries no index but its key.
-        --
-        -- That is also why applied_at is not indexed: the daily prune below
-        -- scans instead, which is billed as rows read at a thousandth the price
-        -- of the write the index would have cost on every single request.
-        CREATE TABLE IF NOT EXISTS applied_events (
-          event_id TEXT PRIMARY KEY,
-          applied_at INTEGER NOT NULL
-        ) WITHOUT ROWID;
         -- Both counters in one row, so an admitted request writes once instead
         -- of once per window. A window that has rolled is overwritten in place
         -- rather than appended to, so there is nothing here to prune and the
@@ -95,26 +73,32 @@ export class UserLimiter extends DurableObject<Env> {
         INSERT OR IGNORE INTO state(singleton, blocked) VALUES (1, 0);
         INSERT OR IGNORE INTO _sql_schema_migrations(id, applied_at) VALUES (1, unixepoch());
       `);
+      const versioned = this.ctx.storage.sql
+        .exec<{ id: number }>("SELECT id FROM _sql_schema_migrations WHERE id = 2")
+        .toArray().length === 1;
+      if (!versioned) {
+        // Existing objects have the pre-projection table without a version.
+        // Its spend is preserved at version zero until D1 sends revision one.
+        const columns = this.ctx.storage.sql
+          .exec<{ name: string }>("PRAGMA table_info(monthly_cost)")
+          .toArray();
+        if (!columns.some((column) => column.name === "version")) {
+          this.ctx.storage.sql.exec(
+            "ALTER TABLE monthly_cost ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+          );
+        }
+        this.ctx.storage.sql.exec(`
+          DROP TABLE IF EXISTS applied_events;
+        `);
+        // Old objects may have a ledger-pruning alarm. Versioned projection has
+        // no local retention work, so migration cancels it once and never arms
+        // another perpetual alarm.
+        await this.ctx.storage.deleteAlarm();
+        this.ctx.storage.sql.exec(
+          "INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (2, unixepoch())",
+        );
+      }
     });
-  }
-
-  /**
-   * Schedules the ledger prune if nothing has scheduled it yet.
-   *
-   * Called after every settlement, and after a prune that left rows behind.
-   * Never anywhere else: the alarm exists only to prune `applied_events`, so an
-   * object that has never settled an event arms nothing at all. That is what
-   * keeps a dormant end user free — an alarm re-armed unconditionally would
-   * bill a request and a write every day per user, forever, whether or not
-   * they ever came back.
-   */
-  private async ensurePruneAlarm(): Promise<void> {
-    if (this.prunePending === undefined) {
-      this.prunePending = (await this.ctx.storage.getAlarm()) !== null;
-    }
-    if (this.prunePending) return;
-    await this.ctx.storage.setAlarm(Date.now() + PRUNE_INTERVAL_MS);
-    this.prunePending = true;
   }
 
   private month(now: number): string {
@@ -239,51 +223,35 @@ export class UserLimiter extends DurableObject<Env> {
   }
 
   /**
-   * Settles one usage event against the month's spend. Recording retries the
-   * same event, so the cost is applied only when `eventId` is new to this
-   * instance's ledger; a replay reads the month back unchanged.
+   * Applies a D1 aggregate snapshot only when its revision is newer.
    *
-   * Every statement below runs before the one `await`, so the ledger insert and
-   * the spend it authorises still cannot be split by a concurrent caller. The
-   * await only arms the alarm that will prune the row seven days from now, and
-   * it happens last precisely so it cannot interleave with the settlement.
+   * A delivery can be duplicated forever, arrive after a later delivery, or
+   * succeed while its D1 acknowledgement fails. This predicate makes every one
+   * of those cases harmless without retaining event identities in the object.
    */
-  async addCost(eventId: string, now: number, microusd: number): Promise<number> {
-    const month = this.month(now);
-    const applied = this.ctx.storage.sql
-      .exec<{ event_id: string }>(
-        `INSERT OR IGNORE INTO applied_events(event_id, applied_at) VALUES (?, ?)
-         RETURNING event_id`,
-        eventId,
-        // Deliberately not `now`: retention is measured against real time, so a
-        // caller-supplied clock cannot make a row outlive the pruning window.
-        Date.now(),
+  setMonthlyCost(month: string, revision: number, microusd: number): boolean {
+    if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(month)) {
+      throw new TypeError("month must use a valid YYYY-MM");
+    }
+    if (!Number.isSafeInteger(revision) || revision <= 0) {
+      throw new TypeError("revision must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(microusd) || microusd < 0) {
+      throw new TypeError("microusd must be a non-negative safe integer");
+    }
+    return this.ctx.storage.sql
+      .exec<{ month: string }>(
+        `INSERT INTO monthly_cost(month, microusd, version) VALUES (?, ?, ?)
+         ON CONFLICT(month) DO UPDATE SET
+           microusd = excluded.microusd,
+           version = excluded.version
+         WHERE excluded.version > monthly_cost.version
+         RETURNING month`,
+        month,
+        microusd,
+        revision,
       )
       .toArray().length === 1;
-    const total = applied
-      ? this.ctx.storage.sql
-        .exec<{ microusd: number }>(
-          `INSERT INTO monthly_cost(month, microusd) VALUES (?, ?)
-           ON CONFLICT(month) DO UPDATE SET microusd = microusd + excluded.microusd
-           RETURNING microusd`,
-          month,
-          Math.max(0, Math.trunc(microusd)),
-        )
-        .one().microusd
-      : this.monthlyCost(month);
-    /*
-     * The ledger holds a row for this event either way — this attempt stored
-     * one, or an earlier one did — so a prune is owed either way.
-     *
-     * Arming on the replay path too is what makes the invariant "addCost
-     * returned, so a prune is pending" rather than "the attempt that stored the
-     * row armed it". The weaker version breaks when that attempt's `setAlarm`
-     * is the thing that failed: the SQL above has already committed, so the
-     * retry finds the row present, takes the replay path, and would leave a
-     * stored row with nothing scheduled to ever remove it.
-     */
-    await this.ensurePruneAlarm();
-    return total;
   }
 
   getStatus(now: number): LimiterStatus {
@@ -299,48 +267,9 @@ export class UserLimiter extends DurableObject<Env> {
     this.ctx.storage.sql.exec("UPDATE state SET blocked = ? WHERE singleton = 1", blocked ? 1 : 0);
   }
 
-  reconcileMonth(month: string, microusd: number): void {
-    this.ctx.storage.sql.exec(
-      `INSERT INTO monthly_cost(month, microusd) VALUES (?, ?)
-       ON CONFLICT(month) DO UPDATE SET microusd = excluded.microusd`,
-      month,
-      Math.max(0, Math.trunc(microusd)),
-    );
+  /** Harmlessly consumes an alarm that an object may have carried into v2. */
+  override async alarm(): Promise<void> {
+    await this.ctx.storage.deleteAlarm();
   }
 
-  override async alarm(): Promise<void> {
-    /*
-     * First, before anything that can throw. The alarm that fired is already
-     * cleared, so nothing is pending from here until this handler schedules the
-     * next one, and the flag has to say so even if the prune below fails.
-     *
-     * Leaving it set through a failure is the one way this object stops pruning
-     * for good: the platform retries a failing handler a handful of times and
-     * then drops the alarm, and every later `addCost` would read the stale
-     * `true` and decline to arm a replacement.
-     */
-    this.prunePending = false;
-    // Dedup only has to outlive a recording retry, which finishes with the
-    // request; a week of history is generous and keeps the ledger small.
-    //
-    // Unindexed, so this is a scan of the ledger. That is the deliberate half
-    // of the trade in the schema above: a scan once a day is billed as rows
-    // read, where the index that would avoid it is billed as a row written on
-    // every request that ever settles.
-    this.ctx.storage.sql.exec(
-      "DELETE FROM applied_events WHERE applied_at < ?",
-      Date.now() - LEDGER_RETENTION_MS,
-    );
-    // Only whether anything survived, so it stops at the first row rather than
-    // counting every one of them across a second scan of the whole ledger.
-    const remaining = this.ctx.storage.sql
-      .exec<{ one: number }>("SELECT 1 AS one FROM applied_events LIMIT 1")
-      .toArray().length === 1;
-    // A standing alarm is not free: it is a request and a write every day, for
-    // as long as the object exists. So it is rearmed only while there is still
-    // something to prune, and a user who stops sending traffic stops costing
-    // anything once their last settled event ages out. The next `addCost`
-    // arms it again.
-    if (remaining) await this.ensurePruneAlarm();
-  }
 }

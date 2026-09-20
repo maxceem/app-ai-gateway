@@ -1,5 +1,5 @@
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
-import { database, readDatabase, type Database } from "../db";
+import { database, type Database } from "../db";
 import { appApiKey } from "../db/schema";
 import { GatewayError } from "./errors";
 import type { GatewayIdentity } from "./types";
@@ -86,10 +86,9 @@ export async function generateApiKey(): Promise<{
 
 /*
  * Both lookups take the database rather than the environment, because which
- * database they read is the whole difference between the two callers below: a
- * cache fill goes through a read session, and the uncached token-exchange
- * lookup goes to the primary. Passing it in keeps that choice at the call site,
- * where the reason for it is visible.
+ * database they read stays explicit at the call site. Both cached and uncached
+ * security lookups use the authoritative primary; the cache TTL is the only
+ * intentional revocation window.
  */
 async function lookupApiKeyHash(db: Database, hash: string): Promise<ApiKeyRecord | null> {
   const row = await db.query.appApiKey.findFirst({
@@ -109,10 +108,7 @@ async function lookupApiKeyId(db: Database, id: string): Promise<ApiKeyRecord | 
 
 /**
  * Reads the active key straight from D1. Used by the token-exchange path, where
- * revocation must take effect immediately — which is also why this one reads
- * the primary rather than a read session: nothing caches its answer, so a
- * replica lagging behind a revocation would be exactly the staleness this
- * lookup exists to avoid.
+ * revocation must take effect immediately, so nothing caches its answer.
  */
 export async function lookupApiKeyUncached(
   env: Env,
@@ -167,7 +163,7 @@ export async function lookupActiveApiKeyById(
   env: Env,
   id: string,
 ): Promise<ApiKeyRecord | null> {
-  return lookupCachedApiKey(`id:${id}`, () => lookupApiKeyId(readDatabase(env.DB), id));
+  return lookupCachedApiKey(`id:${id}`, () => lookupApiKeyId(database(env.DB), id));
 }
 
 export async function verifyApiKey(
@@ -179,7 +175,7 @@ export async function verifyApiKey(
   const hash = await hashApiKey(credential);
   const value = await lookupCachedApiKey(
     `hash:${hash}`,
-    () => lookupApiKeyHash(readDatabase(env.DB), hash),
+    () => lookupApiKeyHash(database(env.DB), hash),
   );
   if (!value || value.appId !== expectedAppId) {
     throw new GatewayError(401, "auth_required", "A valid gateway API key is required");

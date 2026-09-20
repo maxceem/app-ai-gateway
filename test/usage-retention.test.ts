@@ -249,7 +249,9 @@ describe("compactUsageEvents", () => {
 
     const result = await compactUsageEvents(env, NOW);
 
-    expect(result.caughtUp).toBe(true);
+    // A fixed-before-observation timestamp can straggle behind this live row,
+    // so the cursor cannot prove the table has no later expired event.
+    expect(result.caughtUp).toBe(false);
     expect(result.chunks).toBe(1);
     expect(await remainingEventDays()).toEqual([LIVE_DAY]);
   });

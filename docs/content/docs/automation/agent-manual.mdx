@@ -150,10 +150,10 @@ a slug, or the create answers `409 slug_taken`.
 
 | Call | Body | Notes |
 | --- | --- | --- |
-| `GET /v1/admin/providers` | | Returns `providers[]` with `id`, `type`, `slug`, `name`, `secretHint`, `providerGatewayId`, `baseUrl`, `pricing`, `status` |
+| `GET /v1/admin/providers` | | Returns `providers[]` with `id`, `type`, `slug`, `name`, `secretHint`, `providerGatewayId`, `baseUrl`, `pricing`, `revision`, `status` |
 | `POST /v1/admin/providers/test` | `{ type, secret }` or `{ type, providerGatewayId }`, optional `baseUrl` | Dry run. `validated: true` means the provider accepted the key. `validated: false` with a `reason` means nothing was proven. A refused key answers `400 provider_key_invalid` |
 | `POST /v1/admin/providers` | `{ type, name, secret }` or `{ type, name, providerGatewayId }`; optional `slug`, `baseUrl`, `pricing`, `gatewayRoute` | Exactly one of `secret` and `providerGatewayId`. `baseUrl` only with `secret` |
-| `PUT /v1/admin/providers/{id}` | Any of `name`, `secret`, `baseUrl`, `pricing`, `gatewayRoute`, `status` | `secret` rotates the key in place. A new non-null `baseUrl` requires `secret` in the same call. `pricing: null` clears prices. `status: "disabled"` pauses without freeing the slug |
+| `PUT /v1/admin/providers/{id}` | `revision` plus any of `name`, `secret`, `baseUrl`, `pricing`, `gatewayRoute`, `status` | `revision` is the value from the provider read this edit is based on. `secret` rotates the key in place. A new non-null `baseUrl` requires `secret` in the same call. `pricing: null` clears prices. `status: "disabled"` pauses without freeing the slug |
 | `DELETE /v1/admin/providers/{id}` | | Permanent. Frees the slug, deletes custom prices |
 
 `pricing` is per model, in USD per million tokens:
@@ -182,9 +182,13 @@ whose token is stored once and shared by providers routed through it.
 | `GET /v1/admin/provider-gateways` | |
 | `POST /v1/admin/provider-gateways/test` | `{ type: "cf_aig", accountId, gatewayId, token }` or `{ type: "vercel", token }` |
 | `POST /v1/admin/provider-gateways` | Same plus `name` |
-| `PATCH /v1/admin/provider-gateways/{id}` | `{ name }` |
-| `POST /v1/admin/provider-gateways/{id}/rotate` | `{ token }` |
+| `PATCH /v1/admin/provider-gateways/{id}` | `{ name, revision }` |
+| `POST /v1/admin/provider-gateways/{id}/rotate` | `{ token, revision }` |
 | `DELETE /v1/admin/provider-gateways/{id}` | Refused with `409 gateway_in_use` while any provider references it |
+
+Provider and gateway updates use the revision returned by their list route.
+A missing or invalid revision returns 400. If another edit wins first, the
+write returns `409 conflict`; read the row again and merge before retrying.
 
 Cloudflare routes `openai`, `anthropic`, `xai`, `gemini`, `perplexity`.
 Vercel routes those plus `deepseek` and `moonshot`, and accepts only the

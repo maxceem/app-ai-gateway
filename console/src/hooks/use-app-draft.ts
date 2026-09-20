@@ -6,19 +6,20 @@ import {
   emptyIssuer,
   withIssuer,
   type AuthConfig,
-  type AuthenticationConfig,
+  type AuthenticationDraft,
   type EndUserIdentity,
   type EndpointsConfig,
   type LimitsConfig,
   type ProxyConfig,
-  type StoredAppConfig,
+  type AppConfigDraft,
 } from "@/lib/config-types";
 import { useApp, useSaveApp } from "@/lib/queries";
-import type { AppRow, AppUpsertBody } from "@/lib/types";
+import { decodeStoredAppConfig } from "@shared/app-config";
+import type { AppRow, AppUpsertBody, InvalidAppResponse } from "@/lib/types";
 
 export interface Draft {
   name: string;
-  config: StoredAppConfig;
+  config: AppConfigDraft;
   status: "active" | "disabled";
 }
 
@@ -28,13 +29,35 @@ export function toDraft(row: AppRow): Draft {
 
 const asBody = (draft: Draft): AppUpsertBody => draft;
 
+type StructuredSession = {
+  kind: "structured";
+  appId: string;
+  draft: Draft;
+  baseline: Draft;
+  revision: number;
+};
+
+type RepairSession = {
+  kind: "repair";
+  appId: string;
+  row: InvalidAppResponse["app"];
+  text: string;
+  baseline: string;
+  revision: number;
+  error: string | null;
+};
+
+type EditorSession = StructuredSession | RepairSession;
+
+const sessionDirty = (session: EditorSession): boolean => session.kind === "structured"
+  ? JSON.stringify(session.draft) !== JSON.stringify(session.baseline)
+  : session.text !== session.baseline;
+
 export function useAppDraft(appId: string) {
   const query = useApp(appId);
   const saveMutation = useSaveApp(appId);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [baseline, setBaseline] = useState<string | null>(null);
-  const [revision, setRevision] = useState<number | null>(null);
-  const [draftAppId, setDraftAppId] = useState<string | null>(null);
+  const [session, setSession] = useState<EditorSession | null>(null);
+  const [repairError, setRepairError] = useState<string | null>(null);
   /**
    * What the issuer held the last time one was configured, so switching the
    * toggle off and back on restores the JWKS URL and claims instead of handing
@@ -42,34 +65,64 @@ export function useAppDraft(appId: string) {
    */
   const lastIssuer = useRef<AuthConfig | null>(null);
 
-  const row = query.data?.app;
   useEffect(() => {
-    if (!row) return;
-    // Background refetches cannot replace an unsaved draft or its original revision.
-    if (draftAppId === appId && draft !== null && baseline !== null && JSON.stringify(draft) !== baseline) return;
-    const next = toDraft(row);
-    lastIssuer.current = authIssuer(next.config.authentication) ?? null;
-    setDraft(next);
-    setBaseline(JSON.stringify(next));
-    setRevision(row.revision);
-    setDraftAppId(appId);
-  }, [appId, row]);
+    if (!query.data) return;
+    setSession((current) => {
+      // A dirty editor owns both its working value and the revision it opened
+      // at, even when a background refetch changes validity or revision.
+      if (current?.appId === appId && sessionDirty(current)) return current;
+      if (query.data.kind === "valid") {
+        const draft = toDraft(query.data.app);
+        return {
+          kind: "structured",
+          appId,
+          draft,
+          baseline: draft,
+          revision: query.data.app.revision,
+        };
+      }
+      const text = JSON.stringify(query.data.app.config, null, 2);
+      return {
+        kind: "repair",
+        appId,
+        row: query.data.app,
+        text,
+        baseline: text,
+        revision: query.data.app.revision,
+        error: query.data.config_error,
+      };
+    });
+  }, [appId, query.data]);
 
-  const activeDraft = draftAppId === appId ? draft : null;
-  const activeBaseline = draftAppId === appId ? baseline : null;
-  const dirty = activeDraft !== null && activeBaseline !== null && JSON.stringify(activeDraft) !== activeBaseline;
+  const activeSession = session?.appId === appId ? session : null;
+  const activeDraft = activeSession?.kind === "structured" ? activeSession.draft : null;
+  const activeRepair = activeSession?.kind === "repair" ? activeSession : null;
+  const dirty = activeSession?.kind === "structured" ? sessionDirty(activeSession) : false;
+  const repairDirty = activeSession?.kind === "repair" ? sessionDirty(activeSession) : false;
+
+  useEffect(() => {
+    if (activeDraft) lastIssuer.current = authIssuer(activeDraft.config.authentication) ?? null;
+  }, [appId, activeSession?.kind, activeSession?.revision]);
+
+  const setDraft = useCallback((update: (current: Draft | null) => Draft | null) => {
+    setSession((current) => {
+      if (current?.kind !== "structured" || current.appId !== appId) return current;
+      const draft = update(current.draft);
+      return draft === null ? current : { ...current, draft };
+    });
+  }, [appId]);
 
   const update = useCallback((partial: Partial<Draft>) => {
     setDraft((current) => (current ? { ...current, ...partial } : current));
-  }, []);
+  }, [setDraft]);
 
-  const updateConfig = useCallback((partial: Partial<StoredAppConfig>) => {
+  const updateConfig = useCallback((partial: Partial<AppConfigDraft>) => {
     setDraft((current) => current
       ? { ...current, config: { ...current.config, ...partial } }
       : current);
-  }, []);
+  }, [setDraft]);
 
-  const updateAuthentication = useCallback((authentication: AuthenticationConfig) => {
+  const updateAuthentication = useCallback((authentication: AuthenticationDraft) => {
     updateConfig({ authentication });
   }, [updateConfig]);
 
@@ -91,7 +144,7 @@ export function useAppDraft(appId: string) {
         },
       };
     });
-  }, []);
+  }, [setDraft]);
 
 /**
    * Switches which source identifies this application's end users. `undefined`
@@ -106,7 +159,7 @@ export function useAppDraft(appId: string) {
       const authentication = current.config.authentication;
       const configured = authIssuer(authentication);
       if (configured) lastIssuer.current = configured;
-      const next = ((): AuthenticationConfig => {
+      const next = ((): AuthenticationDraft => {
         if (source === "issuer") {
           return withIssuer(authentication, configured ?? lastIssuer.current ?? emptyIssuer());
         }
@@ -154,7 +207,7 @@ export function useAppDraft(appId: string) {
         };
       return { ...current, config: { ...config, authentication: next } };
     });
-  }, []);
+  }, [setDraft]);
 
   /** The header name, editable only while a header source is selected. */
   const updateEndUserHeader = useCallback((header: string) => {
@@ -172,13 +225,13 @@ export function useAppDraft(appId: string) {
         },
       };
     });
-  }, []);
+  }, [setDraft]);
 
   const updateProxy = useCallback((partial: Partial<ProxyConfig>) => {
     setDraft((current) => current
       ? { ...current, config: { ...current.config, routing: { ...current.config.routing, ...partial } } }
       : current);
-  }, []);
+  }, [setDraft]);
 
 
   const updateLimits = useCallback((limits: LimitsConfig) => updateConfig({ limits }), [updateConfig]);
@@ -194,22 +247,37 @@ export function useAppDraft(appId: string) {
         config: Object.keys(endpoints).length === 0 ? config : { ...config, endpoints },
       };
     });
-  }, []);
+  }, [setDraft]);
 
   const reset = useCallback(() => {
-    if (!activeBaseline) return;
-    const restored = JSON.parse(activeBaseline) as Draft;
+    if (!activeSession || activeSession.kind !== "structured") return;
+    const restored = activeSession.baseline;
     // Discarding also forgets an issuer that only ever existed in the draft.
     lastIssuer.current = authIssuer(restored.config.authentication) ?? null;
-    setDraft(restored);
-  }, [activeBaseline]);
+    setSession({ ...activeSession, draft: restored });
+  }, [activeSession]);
 
   const save = useCallback(async () => {
-    if (!activeDraft || revision === null) return false;
+    if (!activeDraft || activeSession?.kind !== "structured") return false;
+    const submitted = activeDraft;
+    const submittedRevision = activeSession.revision;
     try {
-      const saved = await saveMutation.mutateAsync({ body: asBody(activeDraft), revision });
-      setRevision(saved.app.revision);
-      setBaseline(JSON.stringify(activeDraft));
+      const saved = await saveMutation.mutateAsync({
+        body: asBody(submitted),
+        revision: submittedRevision,
+      });
+      const next = toDraft(saved.app);
+      setSession((current) => {
+        if (current?.kind !== "structured"
+          || current.appId !== appId
+          || current.revision !== submittedRevision) return current;
+        return {
+          ...current,
+          draft: JSON.stringify(current.draft) === JSON.stringify(submitted) ? next : current.draft,
+          baseline: next,
+          revision: saved.app.revision,
+        };
+      });
       toast.success("Configuration saved", {
         description: "The gateway picks it up within the 60 second config cache TTL.",
       });
@@ -218,7 +286,77 @@ export function useAppDraft(appId: string) {
       toast.error("Save rejected", { description: error instanceof Error ? error.message : "Unknown error" });
       return false;
     }
-  }, [activeDraft, revision, saveMutation]);
+  }, [activeDraft, activeSession, appId, saveMutation]);
+
+  const updateRepair = useCallback((text: string) => {
+    setSession((current) => current?.kind === "repair" && current.appId === appId
+      ? { ...current, text }
+      : current);
+    setRepairError(null);
+  }, [appId]);
+
+  const resetRepair = useCallback(() => {
+    setSession((current) => current?.kind === "repair" && current.appId === appId
+      ? { ...current, text: current.baseline }
+      : current);
+    setRepairError(null);
+  }, [appId]);
+
+  const saveRepair = useCallback(async () => {
+    if (!activeRepair) return false;
+    const submittedText = activeRepair.text;
+    const submittedRevision = activeRepair.revision;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(submittedText) as unknown;
+    } catch (error) {
+      setRepairError(error instanceof Error ? error.message : "Invalid JSON");
+      return false;
+    }
+    try {
+      const config = decodeStoredAppConfig(raw);
+      const saved = await saveMutation.mutateAsync({
+        body: { name: activeRepair.row.name, status: activeRepair.row.status, config },
+        revision: submittedRevision,
+      });
+      const draft = toDraft(saved.app);
+      setSession((current) => {
+        if (current?.kind !== "repair"
+          || current.appId !== appId
+          || current.revision !== submittedRevision) return current;
+        if (current.text === submittedText) {
+          return {
+            kind: "structured",
+            appId,
+            draft,
+            baseline: draft,
+            revision: saved.app.revision,
+          };
+        }
+        const baseline = JSON.stringify(saved.app.config, null, 2);
+        return {
+          ...current,
+          row: {
+            ...saved.app,
+            config: Object.fromEntries(Object.entries(saved.app.config)),
+          },
+          baseline,
+          revision: saved.app.revision,
+          error: null,
+        };
+      });
+      setRepairError(null);
+      toast.success("Configuration repaired", {
+        description: "The gateway picks it up within the 60 second config cache TTL.",
+      });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setRepairError(message);
+      toast.error("Save rejected", { description: message });
+      return false;
+    }
+  }, [activeRepair, appId, saveMutation]);
 
   return {
     query,
@@ -235,6 +373,18 @@ export function useAppDraft(appId: string) {
     updateEndpoints,
     reset,
     save,
+    repair: activeRepair,
+    invalidApp: activeRepair?.row ?? null,
+    configError: activeRepair && query.data?.kind === "invalid" && activeRepair.error !== null
+      ? query.data.config_error
+      : null,
+    storedConfigValid: activeRepair !== null
+      && (activeRepair.error === null || query.data?.kind === "valid"),
+    repairDirty,
+    repairError,
+    updateRepair,
+    resetRepair,
+    saveRepair,
     saving: saveMutation.isPending,
   };
 }

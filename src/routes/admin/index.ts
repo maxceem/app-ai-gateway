@@ -15,7 +15,7 @@ import { providerRoutes } from "./providers";
 import { providerGatewayRoutes } from "./provider-gateways";
 import { organizationRoutes } from "./organizations";
 import { billingRoutes } from "./billing";
-import { billingBinding } from "../../billing/gateway";
+import { deploymentPolicy } from "../../policy/deployment";
 
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
@@ -54,7 +54,7 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
 adminRoutes.use("/apps/:app", scopeAdminApp);
 adminRoutes.use("/apps/:app/*", scopeAdminApp);
 adminRoutes.use("/billing/*", async (c, next) => {
-  if (!billingBinding(c.env)) {
+  if (deploymentPolicy(c.env).mode === "self_hosted") {
     throw new GatewayError(404, "not_found", "Billing is not configured");
   }
   await next();

@@ -1,7 +1,6 @@
 import { assertAccountAccess } from "../core/account-lifecycle";
 import type { MiddlewareHandler } from "hono";
 import {
-  billingBinding,
   getBillingAccess,
   requireActiveBilling,
   type BillingVariables,
@@ -9,6 +8,7 @@ import {
 import { loadAppConfig } from "../core/config";
 import { GatewayError } from "../core/errors";
 import { organizationProviders } from "../core/provider-store";
+import { deploymentPolicy } from "../policy/deployment";
 
 export const billingEntitlementGate: MiddlewareHandler<{
   Bindings: Env;
@@ -20,7 +20,7 @@ export const billingEntitlementGate: MiddlewareHandler<{
    * cloud bootstrap writes one. So this whole gate — and the D1 read behind it
    * — costs a self-hosted deployment nothing.
    */
-  if (!billingBinding(c.env)) {
+  if (deploymentPolicy(c.env).mode === "self_hosted") {
     await next();
     return;
   }

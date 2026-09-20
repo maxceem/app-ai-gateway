@@ -19,6 +19,7 @@ const DIRECT: ProviderCredential = {
   gatewayRoute: null,
   baseUrl: null,
   pricing: { "gpt-brand-new": { input: 1.25, output: 10 } },
+  revision: 7,
   status: "active",
   createdAt: "2026-02-01T00:00:00.000Z",
   createdBy: "user-1",
@@ -44,6 +45,7 @@ const GATEWAY: ProviderGateway = {
   secretHint: "9xyz",
   providerCount: 1,
   referencedCount: 1,
+  revision: 11,
   status: "active",
   createdAt: "2026-02-01T00:00:00.000Z",
   updatedAt: "2026-02-01T00:00:00.000Z",
@@ -80,6 +82,7 @@ const VERCEL_GATEWAY: ProviderGateway = {
   secretHint: "1abc",
   providerCount: 1,
   referencedCount: 1,
+  revision: 5,
   status: "active",
   createdAt: "2026-02-01T00:00:00.000Z",
   updatedAt: "2026-02-01T00:00:00.000Z",
@@ -1035,7 +1038,7 @@ describe("ProvidersPage", () => {
     await waitFor(() => {
       const call = calls.find((entry) => entry.url.includes("/rotate"));
       expect(call?.url).toContain("/v1/admin/provider-gateways/gw-1/rotate");
-      expect(call?.body).toEqual({ token: "cf-aig-new-token" });
+      expect(call?.body).toEqual({ token: "cf-aig-new-token", revision: GATEWAY.revision });
     });
     expect(document.body.textContent).not.toContain("cf-aig-new-token");
   });
@@ -1054,7 +1057,7 @@ describe("ProvidersPage", () => {
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "PATCH");
       expect(call?.url).toContain("/v1/admin/provider-gateways/gw-1");
-      expect(call?.body).toEqual({ name: "Renamed gateway" });
+      expect(call?.body).toEqual({ name: "Renamed gateway", revision: GATEWAY.revision });
     });
   });
 
@@ -1083,7 +1086,7 @@ describe("ProvidersPage", () => {
     await waitFor(() => {
       const call = calls.find((entry) => entry.method === "PUT");
       expect(call?.url).toContain("/v1/admin/providers/provider-1");
-      expect(call?.body).toEqual({ secret: "sk-rotated" });
+      expect(call?.body).toEqual({ secret: "sk-rotated", revision: DIRECT.revision });
     });
     expect(document.body.textContent).not.toContain("sk-rotated");
   });
@@ -1111,6 +1114,7 @@ describe("ProvidersPage", () => {
       expect(call?.body).toEqual({
         secret: "sk-rotated",
         baseUrl: "https://second.example.com/v1/",
+        revision: DIRECT.revision,
       });
     });
   });
@@ -1146,9 +1150,32 @@ describe("ProvidersPage", () => {
           "gpt-brand-new": { input: 1.25, output: 10 },
           "another-model": { input: 2, output: 4 },
         },
+        revision: DIRECT.revision,
       });
       // Nothing about the credential travels with a pricing edit.
       expect(call?.body.secret).toBeUndefined();
+    });
+  });
+
+  it("keeps a dirty provider draft bound to the revision it opened from", async () => {
+    const rows = [DIRECT, VIA_GATEWAY];
+    const calls = stubProviders({ providers: rows });
+    const { client } = renderProviders();
+
+    await runRowAction("Prod OpenAI", /pricing/i);
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText("Input price 1"), "5");
+    rows[0] = { ...DIRECT, revision: 99 };
+    await client.invalidateQueries({ queryKey: ["providers"] });
+    await waitFor(() => {
+      expect(client.getQueryData<{ providers: ProviderCredential[] }>(["providers"])?.providers[0]?.revision)
+        .toBe(99);
+    });
+    await userEvent.click(within(dialog).getByRole("button", { name: /save pricing/i }));
+
+    await waitFor(() => {
+      const call = calls.find((entry) => entry.method === "PUT");
+      expect(call?.body.revision).toBe(DIRECT.revision);
     });
   });
 

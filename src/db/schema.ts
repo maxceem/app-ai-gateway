@@ -199,6 +199,7 @@ export const providerGateway = sqliteTable(
     /** Vault blob for the gateway token; never leaves the server. */
     secretBlob: text("secret_blob").notNull(),
     secretHint: text("secret_hint").notNull(),
+    revision: integer("revision").notNull().default(1),
     status: text("status").$type<ProviderGatewayStatus>().notNull().default("active"),
     createdBy: text("created_by").notNull(),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -252,6 +253,7 @@ export const provider = sqliteTable(
      */
     gatewayRoute: text("gateway_route_json", { mode: "json" }).$type<GatewayRouteConfig>(),
     pricing: text("pricing_json", { mode: "json" }).$type<ProviderPricing>(),
+    revision: integer("revision").notNull().default(1),
     status: text("status").$type<ProviderStatus>().notNull().default("active"),
     createdBy: text("created_by").notNull(),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -457,6 +459,62 @@ export const appUsageEvent = sqliteTable(
       "usage_events_status_check",
       sql`${table.status} IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')`,
     ),
+  ],
+);
+
+export type AppUsageSpendScope = "app" | "user";
+
+/**
+ * Canonical monthly spend derived atomically from `app_usage_event` by the D1
+ * triggers installed with this table. `UserLimiter` is only a versioned
+ * projection of these rows: `pending` is the coalescing outbox bit, so any
+ * failed or superseded delivery is retried without retaining event ids.
+ *
+ * `user_key` is deliberately non-null. App rows use the empty string, while a
+ * user row may also name a real empty user id; `scope` keeps those identities
+ * distinct in the unique key.
+ */
+export const appUsageSpend = sqliteTable(
+  "app_usage_spend",
+  {
+    id: integer("id").primaryKey(),
+    /** Null only when historical usage cannot be attributed to an account. */
+    organizationId: text("organization_id"),
+    appId: text("app_id").notNull(),
+    scope: text("scope").$type<AppUsageSpendScope>().notNull(),
+    userKey: text("user_key").notNull(),
+    /** UTC calendar month as `YYYY-MM`, fixed from the event timestamp. */
+    month: text("month").notNull(),
+    microusd: integer("microusd").notNull(),
+    /** Monotonic version delivered to the limiter; starts at one. */
+    revision: integer("revision").notNull(),
+    pending: integer("pending").notNull().default(1),
+    /** Milliseconds since epoch; rotates failed rows through bounded recovery. */
+    lastAttemptAt: integer("last_attempt_at").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("app_usage_spend_scope_month_unique").on(
+      table.scope,
+      table.appId,
+      table.userKey,
+      table.month,
+    ),
+    index("idx_app_usage_spend_pending").on(table.pending, table.lastAttemptAt, table.id),
+    index("idx_app_usage_spend_app_month").on(
+      table.appId,
+      table.month,
+      table.pending,
+      table.lastAttemptAt,
+    ),
+    index("idx_app_usage_spend_organization").on(table.organizationId),
+    check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user')`),
+    check(
+      "app_usage_spend_month_check",
+      sql`${table.month} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(${table.month}, 6, 2) BETWEEN '01' AND '12'`,
+    ),
+    check("app_usage_spend_microusd_check", sql`${table.microusd} >= 0`),
+    check("app_usage_spend_revision_check", sql`${table.revision} > 0`),
+    check("app_usage_spend_pending_check", sql`${table.pending} IN (0, 1)`),
   ],
 );
 

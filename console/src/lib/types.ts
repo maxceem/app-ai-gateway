@@ -12,7 +12,8 @@
  * and the editor's view of an application, whose configuration model lives in
  * `./config-types` because it is a form, not a wire format.
  */
-import type { StoredAppConfig } from "./config-types";
+import type { AppConfigDraft } from "./config-types";
+import type { StoredAppConfig, ResolvedAppConfig } from "@shared/app-config";
 import type { AppResponse as WireAppResponse, CreatedApiKey } from "@contracts/responses";
 
 export type {
@@ -116,35 +117,29 @@ export type UsageFailureBucket = AuthEventSummary["usage_failures"][number];
  * no vocabulary for. It is the one shape here that is deliberately not the
  * contract's, and `client-api.ts` is where the two meet.
  */
-export type AppRow = Omit<WireAppResponse["app"], "config"> & { config: StoredAppConfig };
+type AppMetadata = Omit<WireAppResponse["app"], "config">;
+export type AppRow = AppMetadata & { config: StoredAppConfig };
+export type ResolvedConfig = ResolvedAppConfig & Pick<AppMetadata, "id" | "name" | "status">;
 
-export interface ResolvedConfig {
-  id: string;
-  name: string;
-  authentication: StoredAppConfig["authentication"];
-  routing: {
-    providerMode: "all" | "selected";
-    providers: StoredAppConfig["routing"]["providers"]["selected"];
-    modelRewrites: Record<string, string>;
-  };
-  endpoints: import("./config-types").EndpointsConfig;
-  /** Always present; an app with no `limits` block resolves to all-null. */
-  limits: {
-    perUser: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
-    perApp: { requestsPerMinute: number | null; requestsPerDay: number | null; monthlyBudgetMicrousd: number | null };
-  };
-  status: "active" | "disabled";
-}
-
-export interface AppResponse {
+export interface ValidAppResponse {
+  kind: "valid";
   app: AppRow;
-  resolved: ResolvedConfig | null;
-  config_error: string | null;
+  resolved: ResolvedConfig;
+  config_error: null;
 }
+
+export interface InvalidAppResponse {
+  kind: "invalid";
+  app: AppMetadata & { config: Record<string, unknown> };
+  resolved: null;
+  config_error: string;
+}
+
+export type AppResponse = ValidAppResponse | InvalidAppResponse;
 
 export interface AppUpsertBody {
   name: string;
-  config: StoredAppConfig;
+  config: AppConfigDraft;
   status?: "active" | "disabled";
 }
 
@@ -158,9 +153,7 @@ export type AppCreateBody = AppUpsertBody;
  * A create answers with the application itself, exactly as a read or an update
  * does, plus the one-time key an API-key application is born with.
  */
-export interface CreatedApp extends AppResponse {
-  api_key: CreatedApiKey | null;
-}
+export type CreatedApp = ValidAppResponse & { api_key: CreatedApiKey | null };
 
 export interface MonthlyUsage {
   app_id: string;

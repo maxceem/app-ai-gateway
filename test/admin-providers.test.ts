@@ -10,6 +10,9 @@ import {
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import { provider, providerGateway } from "../src/db/schema";
+import { updateProvider } from "../src/management/providers";
+import { GatewayError } from "../src/core/errors";
+import type { ResourceWriteBoundary } from "../src/management/write-boundary";
 import { secretVault } from "../src/vault";
 import { secretContext } from "../src/vault/secrets";
 import {
@@ -32,6 +35,7 @@ interface ProviderSummary {
   gatewayRoute: Record<string, unknown> | null;
   baseUrl: string | null;
   pricing: Record<string, { input: number; output: number }> | null;
+  revision: number;
   status: string;
   createdAt: string;
   createdBy: string;
@@ -44,6 +48,7 @@ interface GatewaySummary {
   config: Record<string, string>;
   secretHint: string;
   providerCount: number;
+  revision: number;
   status: string;
 }
 
@@ -362,6 +367,7 @@ describe("admin provider instances", () => {
     const id = (created.body.provider as ProviderSummary).id;
 
     const rotated = await call("PUT", `/v1/admin/providers/${id}`, {
+      revision: created.body.provider.revision,
       secret: "rotated-value",
       name: "Prod rotated",
     });
@@ -373,6 +379,76 @@ describe("admin provider instances", () => {
       pricing: { "custom-model": { input: 1.25, output: 10 } },
     });
     expect(rotated.text).not.toContain("rotated-value");
+  });
+
+  it("allows only one writer from the same revision even when clocks do not advance", async () => {
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Concurrent",
+      secret: "original-value",
+    });
+    const initial = created.body.provider as ProviderSummary;
+    const futureTimestamp = "2099-01-01T00:00:00.000Z";
+    await env.DB.prepare("UPDATE provider SET updated_at=? WHERE id=?")
+      .bind(futureTimestamp, initial.id)
+      .run();
+
+    let entered = 0;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { release = resolve; });
+    const boundary = (): ResourceWriteBoundary => ({
+      condition: { sql: "1", params: [] },
+      async commit(statement) {
+        entered++;
+        if (entered === 2) release();
+        await ready;
+        const result = await statement.run();
+        if (result.meta.changes !== 1) throw new GatewayError(409, "conflict", "lost CAS");
+      },
+    });
+    const actor = { organizationId: TEST_ORGANIZATION_ID, userId: "operator-test-owner" };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2020-01-01T00:00:00.000Z"));
+    let writes: PromiseSettledResult<Awaited<ReturnType<typeof updateProvider>>>[];
+    try {
+      writes = await Promise.allSettled([
+        updateProvider(env, actor, initial.id, { name: "Writer A", revision: initial.revision }, boundary()),
+        updateProvider(env, actor, initial.id, { name: "Writer B", revision: initial.revision }, boundary()),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(writes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(writes.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const rejected = writes.find((result) => result.status === "rejected");
+    expect(rejected?.reason).toBeInstanceOf(GatewayError);
+    expect((rejected?.reason as GatewayError).status).toBe(409);
+    const fulfilled = writes.find((result) => result.status === "fulfilled");
+    const stored = await database(env.DB).query.provider.findFirst({ where: eq(provider.id, initial.id) });
+    expect(stored?.revision).toBe(initial.revision + 1);
+    expect(stored?.name).toBe(fulfilled?.value.provider.name);
+    expect(stored?.updatedAt.localeCompare(futureTimestamp)).toBeLessThan(0);
+  });
+
+  it("requires a provider revision and rejects a stale one", async () => {
+    const created = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      name: "Revisioned",
+      secret: "original-value",
+    });
+    const initial = created.body.provider as ProviderSummary;
+    expect((await call("PUT", `/v1/admin/providers/${initial.id}`, { name: "Missing" })).status).toBe(400);
+    const updated = await call("PUT", `/v1/admin/providers/${initial.id}`, {
+      name: "Current",
+      revision: initial.revision,
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.provider.revision).toBe(initial.revision + 1);
+    const stale = await call("PUT", `/v1/admin/providers/${initial.id}`, {
+      name: "Stale",
+      revision: initial.revision,
+    });
+    expect(stale.status).toBe(409);
   });
 
   /**
@@ -391,7 +467,7 @@ describe("admin provider instances", () => {
     });
     const id = (created.body.provider as ProviderSummary).id;
 
-    const disabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "disabled" });
+    const disabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "disabled", revision: created.body.provider.revision });
     expect(disabled.status, disabled.text).toBe(200);
     // The credential and the overrides survive the pause untouched.
     expect(disabled.body.provider).toMatchObject({
@@ -408,7 +484,7 @@ describe("admin provider instances", () => {
     await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))
       .rejects.toThrow(/is disabled/u);
 
-    const enabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "active" });
+    const enabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "active", revision: disabled.body.provider.revision });
     expect(enabled.status, enabled.text).toBe(200);
     expect(enabled.body.provider).toMatchObject({ id, status: "active" });
     clearProviderCaches();
@@ -430,7 +506,8 @@ describe("admin provider instances", () => {
       secret: "original-value",
     });
     const id = (created.body.provider as ProviderSummary).id;
-    expect((await call("PUT", `/v1/admin/providers/${id}`, { status: "disabled" })).status)
+    const disabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "disabled", revision: created.body.provider.revision });
+    expect(disabled.status)
       .toBe(200);
 
     // The slug is still spoken for while the row is paused.
@@ -449,7 +526,7 @@ describe("admin provider instances", () => {
 
     // So enabling it again is unconditional, and the slug resolves to the row
     // that held it all along.
-    const enabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "active" });
+    const enabled = await call("PUT", `/v1/admin/providers/${id}`, { status: "active", revision: disabled.body.provider.revision });
     expect(enabled.status, enabled.text).toBe(200);
     clearProviderCaches();
     await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai"))
@@ -479,6 +556,31 @@ describe("admin provider instances", () => {
 });
 
 describe("admin provider gateway API", () => {
+  it("requires gateway revisions and rejects stale rename and rotation", async () => {
+    const gateway = await createGateway();
+    expect((await call("PATCH", `/v1/admin/provider-gateways/${gateway.id}`, { name: "Missing" })).status).toBe(400);
+    expect((await call("POST", `/v1/admin/provider-gateways/${gateway.id}/rotate`, { token: "missing" })).status).toBe(400);
+    const renamed = await call("PATCH", `/v1/admin/provider-gateways/${gateway.id}`, {
+      name: "Current",
+      revision: gateway.revision,
+    });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.gateway.revision).toBe(gateway.revision + 1);
+    expect((await call("POST", `/v1/admin/provider-gateways/${gateway.id}/rotate`, {
+      token: "stale-token",
+      revision: gateway.revision,
+    })).status).toBe(409);
+    const rotated = await call("POST", `/v1/admin/provider-gateways/${gateway.id}/rotate`, {
+      token: "current-token",
+      revision: renamed.body.gateway.revision,
+    });
+    expect(rotated.status).toBe(200);
+    expect((await call("PATCH", `/v1/admin/provider-gateways/${gateway.id}`, {
+      name: "Stale rename",
+      revision: renamed.body.gateway.revision,
+    })).status).toBe(409);
+  });
+
   it("creates, lists, renames, and encrypts a reusable gateway token", async () => {
     const urls = stubProbe();
     const gateway = await createGateway();
@@ -503,6 +605,7 @@ describe("admin provider gateway API", () => {
 
     const renamed = await call("PATCH", `/v1/admin/provider-gateways/${gateway.id}`, {
       name: "Renamed gateway",
+      revision: gateway.revision,
     });
     expect(renamed.status).toBe(200);
     expect(renamed.body.gateway.name).toBe("Renamed gateway");
@@ -517,10 +620,12 @@ describe("admin provider gateway API", () => {
       .run();
     const revoked = await call("PATCH", `/v1/admin/provider-gateways/${gateway.id}`, {
       name: "Renamed again",
+      revision: renamed.body.gateway.revision,
     });
     expect(revoked.status).toBe(404);
     expect((await call("POST", `/v1/admin/provider-gateways/${gateway.id}/rotate`, {
       token: "another-token",
+      revision: renamed.body.gateway.revision,
     })).status).toBe(404);
   });
 
@@ -546,7 +651,7 @@ describe("admin provider gateway API", () => {
     const rotated = await call(
       "POST",
       `/v1/admin/provider-gateways/${created.body.gateway.id}/rotate`,
-      { token: "cf-aig-still-unproven" },
+      { token: "cf-aig-still-unproven", revision: created.body.gateway.revision },
     );
     expect(rotated.status, rotated.text).toBe(200);
     expect(urls).toEqual([]);
@@ -639,12 +744,14 @@ describe("admin provider gateway API", () => {
 
     const forbidden = await call("PUT", `/v1/admin/providers/${providerSummary.id}`, {
       secret: "wrong-place",
+      revision: providerSummary.revision,
     });
     expect(forbidden.status).toBe(409);
     expect(forbidden.body.error.code).toBe("provider_gateway_managed");
 
     const rotated = await call("POST", `/v1/admin/provider-gateways/${gateway.id}/rotate`, {
       token: "new-shared-token",
+      revision: gateway.revision,
     });
     expect(rotated.status).toBe(200);
     expect(rotated.body.gateway.providerCount).toBe(1);
@@ -811,7 +918,7 @@ describe("gateway routing configuration", () => {
     const rotated = await call(
       "POST",
       `/v1/admin/provider-gateways/${created.body.gateway.id}/rotate`,
-      { token: "vck_live_rotated_secret" },
+      { token: "vck_live_rotated_secret", revision: created.body.gateway.revision },
     );
     expect(rotated.status, rotated.text).toBe(200);
     expect(rotated.text).not.toContain("vck_live_rotated_secret");
@@ -835,7 +942,7 @@ describe("gateway routing configuration", () => {
     const rotated = await call(
       "POST",
       `/v1/admin/provider-gateways/${created.body.gateway.id}/rotate`,
-      { token: "vck_still_not_a_key" },
+      { token: "vck_still_not_a_key", revision: created.body.gateway.revision },
     );
     expect(rotated.status, rotated.text).toBe(200);
     expect(urls).toEqual([]);
@@ -893,12 +1000,14 @@ describe("gateway routing configuration", () => {
 
     const badPrefix = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: { modelPrefix: "google" },
+      revision: routed.body.provider.revision,
     });
     expect(badPrefix.status, badPrefix.text).toBe(400);
     expect(badPrefix.body.error.message).toContain("end with a slash");
 
     const unknownKey = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: { modelPrefix: "google/", region: "us" },
+      revision: routed.body.provider.revision,
     });
     expect(unknownKey.status, unknownKey.text).toBe(400);
   });
@@ -953,11 +1062,13 @@ describe("gateway routing configuration", () => {
     expect(created.status, created.text).toBe(201);
     const updated = await call("PUT", `/v1/admin/providers/${created.body.provider.id}`, {
       gatewayRoute: { providerOnly: ["azure"] },
+      revision: created.body.provider.revision,
     });
     expect(updated.status, updated.text).toBe(400);
     // Clearing what was never set stays a legal no-op.
     const cleared = await call("PUT", `/v1/admin/providers/${created.body.provider.id}`, {
       gatewayRoute: null,
+      revision: created.body.provider.revision,
     });
     expect(cleared.status, cleared.text).toBe(200);
     expect(cleared.body.provider.gatewayRoute).toBeNull();
@@ -996,6 +1107,7 @@ describe("gateway routing configuration", () => {
     const decrypt = vi.spyOn(secretVault(env), "decryptSecret");
     const cleared = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: null,
+      revision: routed.body.provider.revision,
     });
     expect(cleared.status, cleared.text).toBe(200);
     expect(cleared.body.provider.gatewayRoute).toBeNull();
@@ -1035,12 +1147,14 @@ describe("gateway routing configuration", () => {
     // The adapter still judges it, so a bad namespace is still refused.
     const bad = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: { modelPrefix: "google" },
+      revision: routed.body.provider.revision,
     });
     expect(bad.status, bad.text).toBe(400);
     expect(bad.body.error.message).toContain("end with a slash");
 
     const good = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: { modelPrefix: "google/" },
+      revision: routed.body.provider.revision,
     });
     expect(good.status, good.text).toBe(200);
     expect(good.body.provider.gatewayRoute).toEqual({ modelPrefix: "google/" });
@@ -1152,6 +1266,7 @@ describe("operator-configurable base URL", () => {
     // is the message an origin without one gets, routed or not.
     const keyless = await call("PUT", `/v1/admin/providers/${id}`, {
       baseUrl: "https://my-vllm.example.com/v1/",
+      revision: routed.body.provider.revision,
     });
     expect(keyless.status).toBe(400);
     expect(keyless.body.error.message).toMatch(/never sent to a new origin/u);
@@ -1159,6 +1274,7 @@ describe("operator-configurable base URL", () => {
     const updated = await call("PUT", `/v1/admin/providers/${id}`, {
       baseUrl: "https://my-vllm.example.com/v1/",
       secret: "sk-value",
+      revision: routed.body.provider.revision,
     });
     expect(updated.status).toBe(400);
     expect(updated.body.error.message).toMatch(/gateway owns the upstream origin/u);
@@ -1178,6 +1294,7 @@ describe("operator-configurable base URL", () => {
 
     const refused = await call("PUT", `/v1/admin/providers/${id}`, {
       baseUrl: "https://attacker.example.com/v1/",
+      revision: created.body.provider.revision,
     });
     expect(refused.status, refused.text).toBe(400);
     expect(refused.body.error.message).toMatch(/never sent to a new origin/u);
@@ -1205,6 +1322,7 @@ describe("operator-configurable base URL", () => {
     const moved = await call("PUT", `/v1/admin/providers/${id}`, {
       baseUrl: "https://second.example.com/v1/",
       secret: "sk-second-origin-value",
+      revision: created.body.provider.revision,
     });
     expect(moved.status, moved.text).toBe(200);
     expect(moved.body.provider.baseUrl).toBe("https://second.example.com/v1/");
@@ -1230,7 +1348,7 @@ describe("operator-configurable base URL", () => {
     urls.length = 0;
     const decrypt = vi.spyOn(secretVault(env), "decryptSecret");
 
-    const cleared = await call("PUT", `/v1/admin/providers/${id}`, { baseUrl: null });
+    const cleared = await call("PUT", `/v1/admin/providers/${id}`, { baseUrl: null, revision: created.body.provider.revision });
     expect(cleared.status, cleared.text).toBe(200);
     expect(cleared.body.provider.baseUrl).toBeNull();
     expect(urls).toEqual([]);
@@ -1260,13 +1378,14 @@ describe("operator-configurable base URL", () => {
     const id = (created.body.provider as ProviderSummary).id;
     urls.length = 0;
 
-    const rotated = await call("PUT", `/v1/admin/providers/${id}`, { secret: "sk-rotated-value" });
+    const rotated = await call("PUT", `/v1/admin/providers/${id}`, { secret: "sk-rotated-value", revision: created.body.provider.revision });
     expect(rotated.status).toBe(200);
     expect(urls).toEqual([]);
 
     const invalid = await call("PUT", `/v1/admin/providers/${id}`, {
       baseUrl: "http://my-vllm.example.com/v1/",
       secret: "sk-rotated-value",
+      revision: rotated.body.provider.revision,
     });
     expect(invalid.status).toBe(400);
     const listed = await call("GET", "/v1/admin/providers");

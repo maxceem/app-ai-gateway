@@ -5,7 +5,7 @@ import {
 } from "./core/account-lifecycle";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { HealthResponse } from "./contracts/responses";
-import { billingBinding, type BillingVariables } from "./billing/gateway";
+import type { BillingVariables } from "./billing/gateway";
 import {
   AUTH_EVENT_RETENTION_DAYS,
   AUTH_SWEEP_QUERIES,
@@ -18,6 +18,7 @@ import {
   type QueryBudget,
 } from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
+import { recoverPendingUsageSpend } from "./core/app-usage-accounting";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
@@ -27,23 +28,21 @@ import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { quotaGate } from "./middleware/gate";
+import type { ExecutionVariables } from "./execution/plan";
 import { billingEntitlementGate } from "./middleware/billing";
 import { billingRequestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
-import {
-  endpointPrepare,
-  endpointRoutes,
-  type EndpointVariables,
-} from "./routes/endpoints";
+import { endpointPrepare, endpointRoutes } from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
-import { proxyPrepare, proxyRoutes, type ProxyVariables } from "./routes/proxy";
+import { proxyPrepare, proxyRoutes } from "./routes/proxy";
 import { vaultStatus } from "./vault";
+import { deploymentPolicy } from "./policy/deployment";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
 type AppEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & ProxyVariables & EndpointVariables & BillingVariables;
+  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
 };
 
 const app = new Hono<AppEnv>();
@@ -234,7 +233,7 @@ async function prune(env: Env): Promise<void> {
   // deployment can have one to collect: a self-host's single account has no
   // `expires_at` at all, so running this there would spend a sixth of a Free
   // plan's nightly queries on a sweep that cannot match a row.
-  if (billingBinding(env)) {
+  if (deploymentPolicy(env).mode === "cloud") {
     const share: QueryBudget = { remaining: Math.floor(budget.remaining / 2) };
     const offered = share.remaining;
     try {
@@ -252,6 +251,17 @@ async function prune(env: Env): Promise<void> {
   await runUsageRetention(env, Date.now(), budget);
 }
 
+async function recoverUsageSpend(env: Env): Promise<void> {
+  try {
+    const result = await recoverPendingUsageSpend(env);
+    if (result.attempted > 0) log("info", "usage_spend_recovered", { ...result });
+  } catch (error) {
+    log("error", "usage_spend_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /**
  * The Hono app itself is the handler — `fetch` is one of its own properties, so
  * the cron entry point is attached beside it rather than wrapped around it. That
@@ -259,7 +269,7 @@ async function prune(env: Env): Promise<void> {
  * here is exercised.
  */
 export default Object.assign(app, {
-  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(prune(env));
+  scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(controller.cron === "* * * * *" ? recoverUsageSpend(env) : prune(env));
   },
 });

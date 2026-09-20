@@ -1,10 +1,9 @@
 import { Hono, type Context } from "hono";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getBillingAccess, requireActiveBilling } from "../../billing/gateway";
 import {
-  hasAppLevelLimits,
+  appConfigFromRow,
   invalidateAppConfig,
-  loadAppConfig,
   parseStoredAppConfig,
   referencedProviderSlugs,
   validateAppConfigJson,
@@ -12,20 +11,19 @@ import {
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
 import {
-  organizationProviders,
+  authoritativeOrganizationProviders,
   type OrganizationProviders,
 } from "../../core/provider-store";
 import { appInsertStatement, updateApp } from "../../core/app-writes";
 import { andCondition, planCap } from "../../core/plan-caps";
-import { databaseErrorMatches } from "./provider-shared";
-import { prepareResourceReceipt } from "../../core/resource-receipt";
+import { databaseErrorMatches } from "../../management/validation";
+import { prepareResourceReceipt } from "./resource-receipt";
 import { database } from "../../db";
 import {
   appApiKey,
   app,
   appAuthChallenge,
   appAuthEvent,
-  appUsageEvent,
   appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -268,7 +266,7 @@ appRoutes.get("/apps", async (c) => {
   assertMonth(month);
   const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
-  const providerIndex = await organizationProviders(c.env, organizationId);
+  const providerIndex = await authoritativeOrganizationProviders(c.env, organizationId);
   const rows = await db
     .select()
     .from(app)
@@ -393,7 +391,7 @@ appRoutes.post("/apps", async (c) => {
   const organizationId = c.get("admin").organizationId;
   const config = validatedConfig(
     body.config,
-    await organizationProviders(c.env, organizationId),
+    await authoritativeOrganizationProviders(c.env, organizationId),
   );
   const cap = await planCap(c.env, "app", organizationId, c.get("billingRequestCache"));
   for (let attempt = 0; attempt < 16; attempt += 1) {
@@ -454,19 +452,12 @@ appRoutes.post("/apps", async (c) => {
 });
 
 appRoutes.get("/apps/:app", async (c) => {
-  const appId = c.req.param("app");
-  const row = await database(c.env.DB).query.app.findFirst({
-    where: and(
-      eq(app.id, appId),
-      eq(app.organizationId, c.get("admin").organizationId),
-    ),
-  });
+  const row = c.get("adminApp");
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   let resolved: Record<string, unknown> | null = null;
   let configError: string | null = null;
   try {
-    parseStoredAppConfig(row.config, null);
-    resolved = asJsonObject(await loadAppConfig(c.env, appId));
+    resolved = asJsonObject(appConfigFromRow(row));
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
   }
@@ -477,71 +468,24 @@ appRoutes.post("/apps/:app/validate", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
-  const existing = await database(c.env.DB).query.app.findFirst({
-    where: and(
-      eq(app.id, appId),
-      eq(app.organizationId, c.get("admin").organizationId),
-    ),
-  });
+  const existing = c.get("adminApp");
   validatedConfig(
     body.config,
-    await organizationProviders(c.env, c.get("admin").organizationId),
+    await authoritativeOrganizationProviders(c.env, c.get("admin").organizationId),
     existing ? referencedProviderSlugs(existing.config) : undefined,
   );
   return c.json({ valid: true, app_id: appId, exists: existing !== undefined } satisfies AppValidateResponse);
 });
 
-/**
- * Seeds the app-wide spend ledger the first time an app grows app-wide limits.
- *
- * Every request settles its cost against the per-user ledger, but against the
- * app-wide one only while the app has app-level limits — that is what keeps an
- * app without them from paying for a second Durable Object round trip on every
- * request. The cost is that the app-wide ledger is empty until the day someone
- * turns those limits on, so a budget set mid-month would start from zero while
- * a per-user budget set the same day already counts the whole month.
- *
- * Two identical-looking fields meaning different months is the kind of thing
- * nobody discovers until a budget fails to bite, so the transition backfills
- * from the usage rows, which are the source of truth either way.
- */
-async function backfillAppLedger(
-  env: Env,
-  appId: string,
-  previousConfig: unknown,
-  next: Awaited<ReturnType<typeof loadAppConfig>>,
-): Promise<void> {
-  if (!hasAppLevelLimits(next)) return;
-  // Only the transition. An app that already had them has been settling all
-  // along, and re-summing would be a needless read on every unrelated edit.
-  const before = parseStoredAppConfig(previousConfig, null).resolved.limits;
-  if (hasAppLevelLimits({ ...next, limits: before })) return;
-  const month = new Date().toISOString().slice(0, 7);
-  const [total] = await database(env.DB)
-    .select({
-      microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
-    })
-    .from(appUsageEvent)
-    .where(and(
-      eq(appUsageEvent.appId, appId),
-      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
-    ));
-  await env.USER_LIMITER.getByName(appId).reconcileMonth(month, total?.microusd ?? 0);
-}
-
 appRoutes.put("/apps/:app", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appUpdateBody(await c.req.json());
-  const db = database(c.env.DB);
   const organizationId = c.get("admin").organizationId;
   // Update only. Applications are created through `POST /v1/admin/apps`, which
   // is the sole place an id is minted; a path id nobody has ever been given is
   // simply an app that does not exist, whoever asked for it.
-  const existing = await db.query.app.findFirst({
-    columns: { config: true, revision: true },
-    where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
-  });
+  const existing = c.get("adminApp");
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
   if (body.revision === undefined) {
     throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
@@ -553,7 +497,7 @@ appRoutes.put("/apps/:app", async (c) => {
   // rows were deleted in the meantime.
   const config = validatedConfig(
     body.config,
-    await organizationProviders(c.env, organizationId),
+    await authoritativeOrganizationProviders(c.env, organizationId),
     referencedProviderSlugs(existing.config),
   );
   const values = {
@@ -571,8 +515,7 @@ appRoutes.put("/apps/:app", async (c) => {
   const written = await updateApp(c.env.DB, values);
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
-  const resolved = await loadAppConfig(c.env, appId);
-  await backfillAppLedger(c.env, appId, existing.config, resolved);
+  const resolved = appConfigFromRow(written);
   return c.json(
     { app: serializeRow(written), resolved: asJsonObject(resolved), config_error: null } satisfies AppResponse,
     200,

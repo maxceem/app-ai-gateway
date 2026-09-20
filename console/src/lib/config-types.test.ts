@@ -17,7 +17,7 @@ import {
   reportsCost,
   selectedSlugs,
   withIssuer,
-  type AuthenticationConfig,
+  type AuthenticationDraft,
   type EndpointsConfig,
   type ProviderInstance,
 } from "./config-types";
@@ -191,7 +191,7 @@ describe("named endpoint targets", () => {
 });
 
 describe("the issuer as an end-user source", () => {
-  const serverApp: AuthenticationConfig = {
+  const serverApp: AuthenticationDraft = {
     type: "api_key",
   };
 
@@ -227,7 +227,7 @@ describe("the issuer as an end-user source", () => {
   });
 
   it("keeps the issuer on an App Attest app without discarding it", () => {
-    const appleApp: AuthenticationConfig = {
+    const appleApp: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
       end_user: { source: "issuer", issuer: { jwks_url: "https://issuer.example.test/jwks.json" } },
@@ -240,7 +240,7 @@ describe("the issuer as an end-user source", () => {
   });
 
   it("materializes an issuer for an App Attest config that carries none", () => {
-    const installOnly: AuthenticationConfig = {
+    const installOnly: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
       end_user: { source: "app_install" },

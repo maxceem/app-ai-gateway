@@ -8,6 +8,7 @@ const APP_ID = "my-app";
 
 const APP_ROW = {
   id: APP_ID,
+  revision: 1,
   name: "My app",
   status: "active",
   created_at: "2026-01-01T00:00:00.000Z",
@@ -54,7 +55,13 @@ function renderSection(
   tab: string,
   { config, users = [] }: { config?: Record<string, unknown>; users?: unknown[] } = {},
 ) {
-  const app = { ...APP_ROW, config: { ...APP_ROW.config, ...config } };
+  const authentication = config?.limits && config.authentication === undefined
+    ? { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }
+    : APP_ROW.config.authentication;
+  const app = {
+    ...APP_ROW,
+    config: { ...APP_ROW.config, authentication, ...config },
+  };
   stubApi({
     // Longest prefixes first: `stubApi` matches the first key that prefixes the
     // URL, and the app row's own path prefixes all of these.
@@ -76,6 +83,31 @@ function renderSection(
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AppDetailPage", () => {
+  it("renders malformed stored JSON in the repair editor without opening structured tabs", async () => {
+    const app = {
+      ...APP_ROW,
+      config: { authentication: { type: "api_key" }, legacy_field: { keep: true } },
+    };
+    stubApi({
+      [`/v1/admin/apps/${APP_ID}`]: {
+        body: { app, resolved: null, config_error: "Invalid routing configuration" },
+      },
+    });
+    renderAuthenticated(
+      <Routes>
+        <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
+      </Routes>,
+      { route: `/apps/${APP_ID}/proxy` },
+    );
+
+    expect(await screen.findByRole("heading", { name: "Repair configuration JSON" })).toBeTruthy();
+    expect(screen.getByText("My app")).toBeTruthy();
+    expect(screen.getByText(/my-app/)).toBeTruthy();
+    expect(await screen.findByText(/legacy_field/)).toBeTruthy();
+    expect(screen.getByText(/keep/)).toBeTruthy();
+    expect(screen.queryByText(/provider access/i)).toBeNull();
+  });
+
   it("heads the content with the section the sidebar is pointing at", async () => {
     renderSection("auth");
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Auth policy");

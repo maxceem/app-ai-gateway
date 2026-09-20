@@ -129,7 +129,7 @@ test("app remove supplies required confirmation query and full writes supply the
 const providerRow = (slug: string, type: string) => ({
   id: `p-${slug}`, slug, type, name: slug, secretHint: null, providerGatewayId: null,
   gatewayRoute: null, baseUrl: null, pricing: null, status: "active",
-  createdAt: "now", createdBy: "me",
+  revision: 1, createdAt: "now", createdBy: "me",
 });
 
 /** The example a command answered with, refused as a string by the union's other members. */
@@ -308,6 +308,7 @@ test("provider canonical-origin reset can initiate a narrowly bound browser resu
             gatewayRoute: null,
             baseUrl: "https://custom.example",
             pricing: null,
+            revision: 1,
             status: "active",
             createdAt: "now",
             createdBy: "me",
@@ -327,7 +328,39 @@ test("provider canonical-origin reset can initiate a narrowly bound browser resu
   });
   assert.deepEqual(operation, {
     kind: "provider.update",
-    payload: { id: "p1", baseUrl: null },
+    payload: { id: "p1", revision: 1, baseUrl: null },
+  });
+});
+
+test("provider and gateway updates forward the revision that was listed", async () => {
+  const calls: Array<{ name: string; options?: { body?: Record<string, unknown> } }> = [];
+  const provider = {
+    id: "p1", slug: "openai", type: "openai", name: "OpenAI", secretHint: null,
+    providerGatewayId: null, gatewayRoute: null, baseUrl: null, pricing: null,
+    revision: 7, status: "active", createdAt: "now", createdBy: "me",
+  };
+  const gateway = {
+    id: "g1", type: "vercel", name: "Gateway", config: {}, secretHint: "safe",
+    providerCount: 0, referencedCount: 0, revision: 9, status: "active",
+    createdAt: "now", updatedAt: "now", createdBy: "me",
+  };
+  const ctx = stubContext({
+    call: async (name: string, _params: string[], options?: { body?: Record<string, unknown> }) => {
+      calls.push({ name, ...(options ? { options } : {}) });
+      if (name === "listProviders") return { data: { providers: [provider] } };
+      if (name === "listProviderGateways") return { data: { gateways: [gateway] } };
+      return { data: {} };
+    },
+  });
+  await resourceCommand(ctx, "provider update", ["openai"], { name: "Renamed" });
+  await resourceCommand(ctx, "provider-gateway update", ["g1"], { name: "Renamed gateway" });
+  assert.deepEqual(calls.find((call) => call.name === "updateProvider")?.options?.body, {
+    name: "Renamed",
+    revision: 7,
+  });
+  assert.deepEqual(calls.find((call) => call.name === "updateProviderGateway")?.options?.body, {
+    name: "Renamed gateway",
+    revision: 9,
   });
 });
 

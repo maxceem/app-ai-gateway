@@ -45,6 +45,7 @@ function interceptFirst(
         return (...values: unknown[]) => interceptFirst(target.bind(...values), runFirst);
       }
       if (property === "first") return () => runFirst(() => target.first());
+      if (property === "all") return () => runFirst(() => target.all());
       const value = Reflect.get(target, property, target) as unknown;
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -87,7 +88,11 @@ function registrationBarrierEnv(base: Env, skipReads: number): Env {
   }) as Env;
 }
 
-function signupWinsBootstrapEnv(base: Env): Env {
+function signupWinsBootstrapEnv(base: Env): {
+  env: Env;
+  guardedInsertCount: () => number;
+  bootstrapPreflightCount: () => number;
+} {
   let signupFinalReady!: () => void;
   const signupFinal = new Promise<void>((resolve) => {
     signupFinalReady = resolve;
@@ -105,6 +110,8 @@ function signupWinsBootstrapEnv(base: Env): Env {
     bootstrapBatchFinished = resolve;
   });
   let registrationReads = 0;
+  let guardedInserts = 0;
+  let bootstrapPreflights = 0;
   let bootstrapMayBatch = false;
   const db = new Proxy(base.DB, {
     get(target, property, receiver) {
@@ -128,7 +135,8 @@ function signupWinsBootstrapEnv(base: Env): Env {
             return result;
           });
         }
-        if (query.includes("UNION ALL SELECT 1 FROM mgmt_user WHERE kind='human'")) {
+        if (query.includes("SELECT 1 WHERE NOT (NOT EXISTS (SELECT 1 FROM mgmt_organization)")) {
+          bootstrapPreflights += 1;
           return interceptFirst(statement, async (run) => {
             const result = await run();
             await signupFinal;
@@ -138,9 +146,11 @@ function signupWinsBootstrapEnv(base: Env): Env {
             return result;
           });
         }
-        if (query.includes("INSERT INTO mgmt_user(id,name,email,email_verified,image,kind")) {
+        const normalized = query.toLowerCase().replaceAll('"', "").replace(/\s+/gu, " ");
+        if (normalized.includes("insert into mgmt_user")) {
           return interceptFirst(statement, async (run) => {
             const result = await run();
+            guardedInserts += 1;
             signupInserted();
             // Keep signup between user insertion and account provisioning until
             // bootstrap's guarded batch has observed the new human.
@@ -152,11 +162,16 @@ function signupWinsBootstrapEnv(base: Env): Env {
       };
     },
   });
-  return new Proxy(base, {
+  const proxied = new Proxy(base, {
     get(target, property, receiver) {
       return property === "DB" ? db : Reflect.get(target, property, receiver);
     },
   }) as Env;
+  return {
+    env: proxied,
+    guardedInsertCount: () => guardedInserts,
+    bootstrapPreflightCount: () => bootstrapPreflights,
+  };
 }
 
 async function authRequest(testEnv: Env, path: string, body: Record<string, unknown>) {
@@ -301,7 +316,8 @@ describe("self-hosted registration policy", () => {
   });
 
   it("atomically chooses one initializer between public signup and CLI bootstrap", async () => {
-    const testEnv = signupWinsBootstrapEnv(runtime());
+    const barrier = signupWinsBootstrapEnv(runtime());
+    const testEnv = barrier.env;
     const [signup, bootstrap] = await Promise.all([
       signUp(testEnv, "signup-race@example.test"),
       worker.request(`${ORIGIN}/v1/cli/bootstrap`, {
@@ -322,6 +338,8 @@ describe("self-hosted registration policy", () => {
       .toBe(signup.status === 200 ? 1 : 0);
     expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_resource_receipt").first("n"))
       .toBe(bootstrap.status === 200 ? 1 : 0);
+    expect(barrier.guardedInsertCount()).toBe(1);
+    expect(barrier.bootstrapPreflightCount()).toBe(1);
   });
 
   it("preserves adapter ids, dates, and selected fields on guarded creates", async () => {

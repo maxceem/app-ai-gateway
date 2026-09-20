@@ -26,6 +26,7 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
     gatewayRoute: null,
     baseUrl: null,
     pricing: null,
+    revision: 1,
     status: "active",
     createdAt: "2026-02-01T00:00:00.000Z",
     createdBy: "user-1",

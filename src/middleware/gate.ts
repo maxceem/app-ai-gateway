@@ -1,7 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { invalidateAccountLifecycle } from "../core/account-lifecycle";
 import {
-  billingBinding,
   invalidateBillingRequestAccess,
   type BillingVariables,
 } from "../billing/gateway";
@@ -11,8 +10,9 @@ import { GatewayError } from "../core/errors";
 import { recordBlockedUsageEvent } from "../core/usage";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
-import type { ProxyVariables } from "../routes/proxy";
+import type { ExecutionVariables } from "../execution/plan";
 import type { GatewayVariables } from "./auth";
+import { deploymentPolicy } from "../policy/deployment";
 
 /**
  * The dispatch boundary.
@@ -107,17 +107,19 @@ async function monthlyRequestAllowance(
 ): Promise<Awaited<ReturnType<typeof resolveBillingQuota>> | undefined> {
   // No billing service means self-hosted, which is unlimited and must never
   // depend on a hosted plan lookup that cannot happen.
-  if (!billingBinding(env)) return undefined;
+  if (deploymentPolicy(env).mode === "self_hosted") return undefined;
   return resolveBillingQuota(env, organizationId, cache);
 }
 
 export const quotaGate: MiddlewareHandler<{
   Bindings: Env;
-  Variables: GatewayVariables & ProxyVariables & BillingVariables;
+  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
 }> = async (c, next) => {
   const start = performance.now();
   const app = c.get("appConfig");
   const identity = c.get("identity");
+  const plan = c.get("executionPlan");
+  const firstAttempt = plan.attempts[0];
 
   const blockedEvent = (
     status: "blocked_user" | "blocked_app_rate" | "blocked_app_budget" | "blocked_billing",
@@ -131,12 +133,12 @@ export const quotaGate: MiddlewareHandler<{
         userId: identity.userId,
         authMethod: identity.authMethod,
         apiKeyId: identity.apiKeyId,
-        provider: c.get("provider"),
-        providerId: c.get("resolvedProvider").id,
-        providerSlug: c.get("providerSlug"),
-        model: c.get("preparedProxyRequest").model,
-        route: `${c.get("providerSlug")}/${c.get("providerPath")}`,
-        endpointSlug: c.get("endpointSlug") ?? null,
+        provider: firstAttempt.resolved.type,
+        providerId: firstAttempt.resolved.id,
+        providerSlug: firstAttempt.resolved.slug,
+        model: firstAttempt.model,
+        route: `${firstAttempt.resolved.slug}/${firstAttempt.providerPath}`,
+        endpointSlug: plan.endpointSlug,
         appVersion: c.req.header("x-app-version") ?? null,
         status,
         latencyMs: Math.round(latencyMs),

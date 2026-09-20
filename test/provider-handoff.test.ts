@@ -14,8 +14,8 @@ const runtime = new Proxy(env, {
     return Reflect.get(target, key, receiver);
   },
 });
-async function operation(kind: string, payload: Record<string, unknown>) {
-  const auth = createIdentityAuth(env, origin);
+async function operation(kind: string, payload: Record<string, unknown>, operationEnv: Env = runtime) {
+  const auth = createIdentityAuth(operationEnv, origin);
   const user = await auth.service.createServiceIdentity({ name: "Handoff test" });
   await auth.repository.addOrganizationUser({
     organizationId: TEST_ORGANIZATION_ID,
@@ -35,7 +35,7 @@ async function operation(kind: string, payload: Record<string, unknown>) {
       headers: { authorization: `Bearer ${key.plaintext}`, "content-type": "application/json" },
       body: JSON.stringify({ kind, payload, pollToken }),
     },
-    runtime,
+    operationEnv,
   );
   expect(response.status, await response.clone().text()).toBe(200);
   const data = await response.json<{ id: string; url: string }>();
@@ -55,7 +55,7 @@ async function operation(kind: string, payload: Record<string, unknown>) {
           ...(secret === undefined ? {} : { secret }),
         }),
       },
-      runtime,
+      operationEnv,
     );
   const details = () =>
     worker.request(
@@ -65,13 +65,13 @@ async function operation(kind: string, payload: Record<string, unknown>) {
         headers: { origin, "content-type": "application/json" },
         body: JSON.stringify({ submissionToken: new URL(data.url).hash.slice(1) }),
       },
-      runtime,
+      operationEnv,
     );
   const poll = () =>
     worker.request(
       `${origin}/v1/cli/operations/${encodeURIComponent(data.id)}`,
       { headers: { authorization: `Bearer ${pollToken}` } },
-      runtime,
+      operationEnv,
     );
   return { ...data, submit, details, poll, user, key };
 }
@@ -147,13 +147,68 @@ describe("provider browser submissions", () => {
     ).toBeNull();
   });
 
+  it("rolls back submission when the initiating member is demoted before the mutation", async () => {
+    const body = providerBody();
+    let demoteAtCommit = false;
+    let commitInterceptions = 0;
+    let initiatingUserId = "";
+    const db = new Proxy(runtime.DB, {
+      get(target, property, receiver) {
+        if (property !== "batch") return Reflect.get(target, property, receiver);
+        return async (statements: Parameters<Env["DB"]["batch"]>[0]) => {
+          if (demoteAtCommit) {
+            demoteAtCommit = false;
+            commitInterceptions += 1;
+            await env.DB.prepare(
+              "UPDATE mgmt_organization_user SET role='member' WHERE organization_id=? AND user_id=?",
+            )
+              .bind(TEST_ORGANIZATION_ID, initiatingUserId)
+              .run();
+          }
+          return target.batch(statements);
+        };
+      },
+    });
+    const interleavedEnv = new Proxy(runtime, {
+      get(target, property, receiver) {
+        return property === "DB" ? db : Reflect.get(target, property, receiver);
+      },
+    }) as Env;
+    const op = await operation("provider.add", body, interleavedEnv);
+    initiatingUserId = op.user.id;
+    demoteAtCommit = true;
+
+    expect((await op.submit("secret-after-demotion")).status).toBe(409);
+    expect(commitInterceptions).toBe(1);
+    expect(
+      (
+        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
+          .bind(op.id)
+          .first<{ consumed_at: number | null }>()
+      )?.consumed_at,
+    ).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM provider WHERE slug=?")
+        .bind(body.slug)
+        .first("n"),
+    ).toBe(0);
+  });
+
   it("keeps rotation bound to the reviewed provider configuration", async () => {
     const create = await operation("provider.add", providerBody());
     expect((await create.submit("initial-secret")).status).toBe(200);
     const { result } = await (await create.poll()).json<{ result: { provider: { id: string } } }>();
     const rotate = await operation("provider.rotate-key", { id: result.provider.id });
+    const reviewed = await (await rotate.details()).json<{ payload: Record<string, any> }>();
+    expect(reviewed.payload.snapshot).toMatchObject({
+      id: result.provider.id,
+      name: "Browser connection",
+      baseUrl: null,
+    });
+    expect(JSON.stringify(reviewed.payload)).not.toContain("expectedRevision");
+    expect(JSON.stringify(reviewed.payload)).not.toContain("__requestHash");
     await env.DB.prepare(
-      "UPDATE provider SET base_url='https://changed.example.com',updated_at=? WHERE id=?",
+      "UPDATE provider SET base_url='https://changed.example.com',revision=revision+1,updated_at=? WHERE id=?",
     )
       .bind(new Date(Date.now() + 1000).toISOString(), result.provider.id)
       .run();
@@ -165,6 +220,51 @@ describe("provider browser submissions", () => {
           .first<{ consumed_at: number | null }>()
       )?.consumed_at,
     ).toBeNull();
+  });
+
+  it("rejects invalid, stale, and caller-supplied internal revision snapshots", async () => {
+    const create = await operation("provider.add", providerBody());
+    expect((await create.submit("initial-secret")).status).toBe(200);
+    const { result } = await (await create.poll()).json<{ result: { provider: { id: string; revision: number } } }>();
+    const request = (payload: Record<string, unknown>) => worker.request(
+      `${origin}/v1/cli/operations`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${create.key.plaintext}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "provider.rotate-key",
+          payload,
+          pollToken: crypto.randomUUID(),
+        }),
+      },
+      runtime,
+    );
+    expect((await request({ id: result.provider.id, revision: "1" })).status).toBe(400);
+    expect((await request({ id: result.provider.id, revision: result.provider.revision + 1 })).status).toBe(409);
+    expect((await request({ id: result.provider.id, snapshot: { revision: result.provider.revision } })).status).toBe(400);
+    expect((await request({ id: result.provider.id, expectedRevision: result.provider.revision })).status).toBe(400);
+  });
+
+  it("keeps a provider submission pending when its reviewed gateway changes", async () => {
+    const createGateway = await operation("provider-gateway.add", {
+      type: "vercel",
+      name: "Reviewed gateway",
+    });
+    expect((await createGateway.submit("gateway-secret")).status).toBe(200);
+    const { result } = await (await createGateway.poll()).json<{ result: { gateway: { id: string } } }>();
+    const add = await operation("provider.add", {
+      type: "openai",
+      name: "Bound provider",
+      slug: `bound-${crypto.randomUUID()}`,
+      providerGatewayId: result.gateway.id,
+    });
+    await env.DB.prepare("UPDATE provider_gateway SET revision=revision+1 WHERE id=?")
+      .bind(result.gateway.id)
+      .run();
+    expect((await add.submit()).status).toBe(409);
+    expect((await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
+      .bind(add.id)
+      .first<{ consumed_at: number | null }>())?.consumed_at).toBeNull();
   });
 
   it("creates and rotates a shared gateway through the same atomic path", async () => {

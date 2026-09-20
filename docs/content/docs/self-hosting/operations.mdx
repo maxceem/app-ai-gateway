@@ -116,6 +116,13 @@ reported are never touched; that figure is what you were charged. The request
 shape is in the [API reference](/api), and management keys for calling it are
 covered in [API](/automation/api).
 
+Saved spend changes are sent to the app's limit counters immediately. That
+work is bounded for a large reprice: `reconciled_users` is the number of user
+counters acknowledged during this request, and the remaining saved updates
+stay pending. A recovery cron retries pending updates every minute. Replays and
+out-of-order deliveries are safe, so a transient counter failure cannot add the
+same spend twice or replace a newer total with an older one.
+
 ## Request volume
 
 A self-hosted gateway has no ceiling on request volume. It bounds what a

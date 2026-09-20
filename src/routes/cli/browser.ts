@@ -9,7 +9,7 @@ import type {
   CliBrowserSubmitResponse,
   CliOperationKind,
 } from "../../contracts/cli";
-import { providerSchemaBody } from "../admin/provider-shared";
+import { schemaBody } from "../../management/validation";
 import {
   accountLifecycle,
   assertAccountAccess,
@@ -70,7 +70,7 @@ export async function verifiedSubmission(c: CliContext) {
       "forbidden",
       "Use the first-party approval page",
     );
-  const input = providerSchemaBody(
+  const input = schemaBody(
     CliSubmissionRequestSchema,
     await cliJson(c.req.raw),
   );
@@ -89,10 +89,16 @@ export async function browserDetails(c: CliContext): Promise<Response> {
   const visiblePayload = JSON.parse(row.request_json) as Record<string, unknown>;
   for (const field of [
     "__requestHash",
-    "expectedUpdatedAt",
-    "expectedGatewayUpdatedAt",
+    "expectedRevision",
+    "expectedGatewayRevision",
   ])
     delete visiblePayload[field];
+  for (const field of ["snapshot", "gatewaySnapshot"]) {
+    const snapshot = visiblePayload[field];
+    if (snapshot && typeof snapshot === "object") {
+      delete (snapshot as Record<string, unknown>).expectedRevision;
+    }
+  }
   return c.json({
     kind: row.kind as CliOperationKind,
     payload: visiblePayload,

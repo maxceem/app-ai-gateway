@@ -7,6 +7,7 @@ import { log } from "./log";
 import { timeOrderedId } from "./ids";
 import { storedAppVersion } from "./app-version";
 import { claimDiagnosticSample } from "./endpoint-rate-limit";
+import { projectUsageEventSpend } from "./app-usage-accounting";
 import { costReport, namespaceModelAuthor, providerModelAuthor, reportsCost } from "./providers";
 import { asRecord, lookup } from "./records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
@@ -152,11 +153,6 @@ interface UsageEventInput {
   userId: string | null;
   authMethod: GatewayAuthMethod;
   apiKeyId?: string;
-  /**
-   * Whether this app sets app-wide limits, and so keeps an app-scoped ledger
-   * this event has to settle against as well as the per-user one.
-   */
-  appLevelLimitsEnabled: boolean;
   provider: ProviderType;
   /** The provider row that served the traffic. */
   providerId: string;
@@ -857,11 +853,7 @@ export interface UsageEvent {
   /** Stable across every retry and replay: it is what makes each step a no-op the second time. */
   eventId: string;
   /** The `app_usage_event` row exactly as it will be inserted. */
-  row: typeof appUsageEvent.$inferInsert;
-  /** Cost to settle against the ledgers; zero when there is nothing to spend. */
-  costMicrousd: number;
-  /** Whether the app-wide ledger settles this event alongside the per-user one. */
-  appLevelLimitsEnabled: boolean;
+  row: typeof appUsageEvent.$inferInsert & { createdAt: string };
   /**
    * Billed duration for per-minute and per-hour models, which price on time
    * rather than tokens. Log-only: the row has no column for it, and the logged
@@ -923,47 +915,33 @@ async function recordStep(
 function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
   return database(env.DB)
     .insert(appUsageEvent)
-    .values({ ...event.row, appVersion: storedAppVersion(event.row.appVersion) })
+    .values({
+      ...event.row,
+      eventId: event.eventId,
+      appVersion: storedAppVersion(event.row.appVersion),
+    })
     .onConflictDoNothing({ target: appUsageEvent.eventId });
 }
 
 /**
- * Writes one event everywhere it belongs. The spend ledgers are settled first
- * because a monthly budget starts refusing as soon as the spend is known, and
- * because the per-user one is read back live by the caller's own `/me`; the D1
- * row and the API key timestamp are reporting and can lag. Steps are retried
- * independently, and all of them are idempotent, so re-persisting the same
- * event after a partial failure converges instead of double-counting.
- *
- * The `applied_events` ledger is per Durable Object instance, which is what
- * lets one event settle exactly once against each of the two limiters.
+ * Persists the canonical D1 event first. Its insert trigger updates both
+ * aggregate scopes in the same transaction; only after that succeeds may the
+ * latest versions be projected to limiters. A failed projection remains
+ * pending for scheduled recovery, while a duplicate event insert changes no
+ * aggregate and can safely replay the same latest versions.
  */
 export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<void> {
   const outcomes: boolean[] = [];
-  if (event.costMicrousd > 0) {
-    const now = Date.now();
-    const userId = event.row.userId;
-    // No user, no per-user ledger. An application that identifies nobody cannot
-    // hold per-user limits, so there is no budget here to settle against and
-    // opening a Durable Object for a stand-in id would only invent one.
-    const settlements = userId === null
-      ? []
-      : [
-        recordStep("limiter_user", event, () =>
-          env.USER_LIMITER
-            .getByName(`${event.row.appId}:${userId}`)
-            .addCost(event.eventId, now, event.costMicrousd)),
-      ];
-    if (event.appLevelLimitsEnabled) {
-      const appLimiter = env.USER_LIMITER.getByName(event.row.appId);
-      settlements.push(
-        recordStep("limiter_app", event, () =>
-          appLimiter.addCost(event.eventId, now, event.costMicrousd)),
-      );
-    }
-    outcomes.push(...(await Promise.all(settlements)));
+  const stored = await recordStep("usage_insert", event, () => insertUsageEvent(env, event));
+  outcomes.push(stored);
+  if (stored && Math.round(Number(event.row.costUsd ?? 0) * 1_000_000) !== 0) {
+    outcomes.push(await recordStep("limiter_projection", event, () =>
+      projectUsageEventSpend(env, {
+        appId: event.row.appId,
+        userId: event.row.userId ?? null,
+        month: event.row.createdAt.slice(0, 7),
+      })));
   }
-  outcomes.push(await recordStep("usage_insert", event, () => insertUsageEvent(env, event)));
   const apiKeyId = event.row.apiKeyId;
   if (apiKeyId) {
     outcomes.push(await recordStep("api_key_used", event, () => markApiKeyUsed(env, apiKeyId)));
@@ -995,6 +973,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // Minted before any work, so the observer read, the retries below and any
   // later replay of this same event all settle under one identity.
   const eventId = timeOrderedId();
+  const createdAt = new Date().toISOString();
   let observed: UsageObservation | null = null;
   let report: ProviderReport | null = null;
   // Whether the client walked away mid-stream. It does not change the status —
@@ -1160,14 +1139,14 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       status: input.status,
       clientAborted: aborted ? 1 : null,
       latencyMs: input.latencyMs,
+      createdAt,
     },
-    costMicrousd: Math.max(0, Math.round(cost * 1_000_000)),
-    appLevelLimitsEnabled: input.appLevelLimitsEnabled,
     audioSeconds: usage.audioSeconds,
   });
 }
 
 export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Promise<void> {
+  const createdAt = new Date().toISOString();
   // Blocked requests are diagnostics rather than accounting facts. Keep one
   // representative row per authenticated identity per minute: a caller may
   // vary model, route, status or version, but none of those opens another
@@ -1214,8 +1193,7 @@ export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Pr
       authMethod: input.authMethod,
       status: input.status,
       latencyMs: input.latencyMs,
+      createdAt,
     },
-    costMicrousd: 0,
-    appLevelLimitsEnabled: false,
   });
 }

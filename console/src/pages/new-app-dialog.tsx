@@ -24,7 +24,7 @@ import { clientApiOrigin } from "@/lib/client-api";
 import {
   DEFAULT_END_USER_HEADER,
   type AppAttestEnvironment,
-  type AuthenticationConfig,
+  type AuthenticationDraft,
 } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
@@ -201,7 +201,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
     setUserSource(null);
   };
 
-  const authentication = (): AuthenticationConfig => {
+  const authentication = (): AuthenticationDraft => {
     const signIn = userSource === "issuer"
       ? {
           source: "issuer" as const,

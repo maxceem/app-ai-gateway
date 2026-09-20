@@ -105,12 +105,12 @@ else:
 
 ```json
 PUT /v1/admin/providers/{id}
-{ "secret": "sk-...", "baseUrl": "https://eu.example.com/v1/" }
+{ "secret": "sk-...", "baseUrl": "https://eu.example.com/v1/", "revision": 7 }
 ```
 
 ```json
 PUT /v1/admin/providers/{id}
-{ "baseUrl": null }
+{ "baseUrl": null, "revision": 7 }
 ```
 
 Send the same `type`, `secret` and `baseUrl` to `POST /v1/admin/providers/test`
