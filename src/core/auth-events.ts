@@ -2,6 +2,7 @@ import { log } from "./log";
 import { timeOrderedId } from "./ids";
 import { database } from "../db";
 import { appAuthEvent, type AuthEventName, type AuthMethod } from "../db/schema";
+import { storedAppVersion } from "./app-version";
 
 /**
  * How long an authentication attempt stays on file. Long enough to answer "did
@@ -12,7 +13,7 @@ import { appAuthEvent, type AuthEventName, type AuthMethod } from "../db/schema"
  */
 export const AUTH_EVENT_RETENTION_DAYS = 90;
 
-const RECORD_ATTEMPTS = 3;
+const SUCCESS_RECORD_ATTEMPTS = 3;
 const RECORD_RETRY_DELAY_MS = 25;
 
 export interface AuthEventInput {
@@ -43,8 +44,12 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
   // Minted before any attempt so every retry, and any later replay, settles
   // under one identity.
   const eventId = timeOrderedId();
+  // A successful exchange is worth retrying because it is trusted operational
+  // history. A rejection is attacker-triggerable, so it gets one best-effort
+  // insert: a D1 outage or exhausted quota must not triple the attacker's work.
+  const attempts = input.outcome === "ok" ? SUCCESS_RECORD_ATTEMPTS : 1;
   let lastError: unknown;
-  for (let attempt = 1; attempt <= RECORD_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       await database(input.env.DB)
         .insert(appAuthEvent)
@@ -56,7 +61,7 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
           authMethod: input.authMethod ?? null,
           outcome: input.outcome,
           reason: input.reason ?? null,
-          appVersion: input.appVersion ?? null,
+          appVersion: storedAppVersion(input.appVersion),
           latencyMs: input.latencyMs,
           claimDelayMs: input.claimDelayMs ?? null,
         })
@@ -64,7 +69,7 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
       return;
     } catch (error) {
       lastError = error;
-      if (attempt < RECORD_ATTEMPTS) {
+      if (attempt < attempts) {
         await new Promise((resolve) => setTimeout(resolve, RECORD_RETRY_DELAY_MS * attempt));
       }
     }

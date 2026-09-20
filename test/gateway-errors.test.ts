@@ -97,6 +97,21 @@ describe("gateway error logging", () => {
     expect(logs.error.filter((line) => line.message === "gateway_error").length).toBe(0);
   });
 
+  it("caps client versions before writing them to structured logs", async () => {
+    const logs = captureLogs();
+    const version = `release-${"x".repeat(100)}`;
+
+    const response = await post(
+      "/v1/apps/never-registered-version/auth/token",
+      JSON.stringify({ issuer_token: "x", key_id: "k", assertion: "a", challenge: "c" }),
+      { "x-app-version": version },
+    );
+
+    expect(response.status).toBe(404);
+    const line = logs.warn.find((entry) => entry.message === "gateway_error");
+    expect(line?.appVersion).toBe(`release-${"x".repeat(56)}`);
+  });
+
   it("logs a 5xx rejection at error, carrying the granular reason", async () => {
     const fixture = await signingFixture("log-jwks-down");
     const key = await seedServerApp("log-jwks-down", { issuer: {} });

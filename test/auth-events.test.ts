@@ -40,12 +40,15 @@ function withDatabase(database: D1Database): Env {
 }
 
 /** A D1 binding whose statements fail before touching the real database. */
-function brokenDatabase(): D1Database {
-  return {
+function brokenDatabase(): { database: D1Database; attempts: () => number } {
+  let attempts = 0;
+  const database = {
     prepare() {
+      attempts += 1;
       throw new Error("D1 is unavailable");
     },
   } as unknown as D1Database;
+  return { database, attempts: () => attempts };
 }
 
 /**
@@ -188,34 +191,50 @@ describe("auth event recording", () => {
       env: withDatabase(lossyDatabase(1)),
       appId: "record-replay",
       event: "token_exchange",
-      outcome: "issuer_token_rejected",
-      reason: "bad_signature",
+      outcome: "ok",
       latencyMs: 3,
     });
 
     const rows = await eventsFor("record-replay");
     expect(rows.length).toBe(1);
-    expect(rows[0]).toMatchObject({ outcome: "issuer_token_rejected", reason: "bad_signature" });
+    expect(rows[0]).toMatchObject({ outcome: "ok" });
   });
 
-  it("abandons a hopeless recording under its own code instead of throwing", async () => {
+  it("tries an attacker-triggerable failure once and abandons it without throwing", async () => {
     const errors: string[] = [];
     vi.spyOn(console, "error").mockImplementation((value: unknown) => {
       if (typeof value === "string") errors.push(value);
     });
 
+    const broken = brokenDatabase();
     await expect(
       recordAuthEvent({
-        env: withDatabase(brokenDatabase()),
+        env: withDatabase(broken.database),
         appId: "record-broken",
         event: "register",
-        outcome: "ok",
+        outcome: "attest_failed",
         latencyMs: 1,
       }),
     ).resolves.toBeUndefined();
 
+    expect(broken.attempts()).toBe(1);
     expect(errors.some((line) => line.includes("auth_event_record_failed"))).toBe(true);
     expect(await eventsFor("record-broken")).toEqual([]);
+  });
+
+  it("caps stored client versions at 64 characters", async () => {
+    await recordAuthEvent({
+      env,
+      appId: "record-version-cap",
+      event: "token_exchange",
+      outcome: "ok",
+      appVersion: `release-${"x".repeat(100)}`,
+      latencyMs: 1,
+    });
+
+    const [row] = await eventsFor("record-version-cap");
+    expect(row?.app_version).toBe(`release-${"x".repeat(56)}`);
+    expect(row?.app_version).toHaveLength(64);
   });
 });
 

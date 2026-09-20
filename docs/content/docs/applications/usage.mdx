@@ -53,6 +53,11 @@ Filter by status:
 | `blocked_user` | Refused because the user is blocked |
 | `blocked_billing` | Refused because your account's request allowance was spent |
 
+Blocked traffic is sampled once per app identity per minute. Repeated refusals
+from the same user or API key in that minute do not add events or increase the
+request totals; served requests and provider errors are still recorded one by
+one.
+
 ## Where a cost comes from
 
 Each event records how its cost was arrived at.

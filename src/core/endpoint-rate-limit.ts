@@ -152,6 +152,28 @@ async function subjectDigest(subject: string): Promise<string> {
 }
 
 /**
+ * Claims the sole diagnostic sample for one subject in one fixed window.
+ *
+ * The same Durable Object used for endpoint limits is a good fit here: after
+ * the first claim it only reads its one counter, and D1 is not touched until a
+ * claim succeeds. `category` is part of both the digest and object prefix so a
+ * diagnostic sampler can never spend an endpoint's enforcement counter.
+ */
+export async function claimDiagnosticSample(
+  env: Env,
+  category: string,
+  scopeId: string,
+  windowMs: number,
+): Promise<boolean> {
+  const subject = `${category}:${scopeId}`;
+  const objectName = `diagnostic-${category}:${await subjectDigest(subject)}`;
+  const result = await env.ENDPOINT_RATE_LIMITER
+    .getByName(objectName)
+    .check({ limit: 1, windowMs });
+  return result.allowed;
+}
+
+/**
  * Enforces a gateway endpoint's fixed-window abuse policy for one subject.
  *
  * `scopeId` is whatever the policy counts over — a network address, an account,
