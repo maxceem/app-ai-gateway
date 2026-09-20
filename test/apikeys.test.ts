@@ -9,6 +9,7 @@ import {
   setApiKeyCacheLimit,
   verifyApiKey,
 } from "../src/core/apikeys";
+import { issueGatewayToken } from "../src/core/jwt";
 import { database } from "../src/db";
 import { appApiKey } from "../src/db/schema";
 import { gatewayToken, seedApp, seedServerApp } from "./helpers";
@@ -88,6 +89,77 @@ describe("server tenant API keys", () => {
     await expect(verifyApiKey(late, env, "miss-ttl", null)).resolves.toMatchObject({
       apiKeyId: "key_miss-ttl-late",
     });
+  });
+
+  it("re-checks the key behind a gateway token after a fixed minute", async () => {
+    await seedServerApp("jwt-key-cache", { issuer: {} });
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const { token } = await issueGatewayToken(
+      env.JWT_SECRET,
+      "jwt-key-cache",
+      "customer-42",
+      "api_key",
+      3600,
+      { apiKeyId: "key_jwt-key-cache" },
+    );
+    const request = () => exports.default.fetch(
+      "https://example.test/v1/apps/jwt-key-cache/me",
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+
+    expect((await request()).status).toBe(200);
+    await database(env.DB)
+      .update(appApiKey)
+      .set({ status: "revoked" })
+      .where(eq(appApiKey.id, "key_jwt-key-cache"));
+
+    vi.mocked(Date.now).mockReturnValue(now + 30_000);
+    expect((await request()).status).toBe(200);
+    vi.mocked(Date.now).mockReturnValue(now + 59_000);
+    expect((await request()).status).toBe(200);
+
+    vi.mocked(Date.now).mockReturnValue(now + 60_000);
+    const revoked = await request();
+    expect(revoked.status).toBe(401);
+    await expect(revoked.json()).resolves.toMatchObject({
+      error: { code: "auth_required" },
+    });
+  });
+
+  it("rejects gateway tokens tied to missing or different-app keys", async () => {
+    await seedServerApp("jwt-key-owner", { issuer: {} });
+    await seedServerApp("jwt-key-target", { issuer: {} });
+    const token = async (apiKeyId: string) => (await issueGatewayToken(
+      env.JWT_SECRET,
+      "jwt-key-target",
+      "customer-42",
+      "api_key",
+      3600,
+      { apiKeyId },
+    )).token;
+    const request = (credential: string) => exports.default.fetch(
+      "https://example.test/v1/apps/jwt-key-target/me",
+      { headers: { authorization: `Bearer ${credential}` } },
+    );
+
+    expect((await request(await token("key_jwt-key-owner"))).status).toBe(401);
+    await database(env.DB)
+      .delete(appApiKey)
+      .where(eq(appApiKey.id, "key_jwt-key-target"));
+    expect((await request(await token("key_jwt-key-target"))).status).toBe(401);
+  });
+
+  it("leaves gateway tokens without an API-key ID unchanged", async () => {
+    await seedApp("jwt-no-key-id");
+    const token = await gatewayToken("jwt-no-key-id", "customer-42");
+    const response = await exports.default.fetch(
+      "https://example.test/v1/apps/jwt-no-key-id/me",
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ user_id: "customer-42" });
   });
 
   // Each rejected credential is a real D1 lookup, so the bound is narrowed to
