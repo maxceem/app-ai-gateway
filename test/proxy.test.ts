@@ -7,7 +7,14 @@ import { clearProviderCaches } from "../src/core/provider-store";
 import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
 import { costReportBodyMutation } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
-import { defaultProxyConfig, gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
+import {
+  clearIsolateCaches,
+  defaultProxyConfig,
+  gatewayToken,
+  seedApp,
+  seedProvider,
+  seedServerApp,
+} from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -217,6 +224,40 @@ function withTtfbTimeout(seconds: number): Env {
       property === "PROVIDER_TTFB_TIMEOUT_SECONDS"
         ? String(seconds)
         : Reflect.get(target, property, receiver),
+  }) as Env;
+}
+
+/**
+ * The deployment's own database, counting the statements prepared against it.
+ *
+ * Both ways in are counted, because cache-filling reads go through a D1
+ * session and everything else goes through the binding, and a test that
+ * counted only one of them would stop seeing half the request the moment a
+ * read moved between them.
+ */
+function countingDatabase(counter: { statements: number }): Env {
+  const db = {
+    prepare: (query: string) => {
+      counter.statements += 1;
+      return env.DB.prepare(query);
+    },
+    batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
+    exec: (query: string) => env.DB.exec(query),
+    withSession: (constraint?: string) => {
+      const session = env.DB.withSession(constraint);
+      return {
+        prepare: (query: string) => {
+          counter.statements += 1;
+          return session.prepare(query);
+        },
+        batch: (statements: D1PreparedStatement[]) => session.batch(statements),
+        getBookmark: () => session.getBookmark(),
+      };
+    },
+  } as unknown as D1Database;
+  return new Proxy(env, {
+    get: (target, property, receiver) =>
+      property === "DB" ? db : Reflect.get(target, property, receiver),
   }) as Env;
 }
 
@@ -1054,6 +1095,74 @@ describe("provider-native proxy", () => {
     expect(upstreamHeaders.get("x-api-key")).toBe("test-anthropic-secret");
     expect(upstreamHeaders.get("authorization")).toBeNull();
     expect(upstreamHeaders.get("cf-aig-authorization")).toBeNull();
+  });
+
+  it("falls through an empty authorization header to x-api-key", async () => {
+    // `extractGatewayToken` tries `authorization` first and only moves on when
+    // it carries nothing. A header that is present but empty carries nothing,
+    // so an Anthropic SDK that always sets `authorization` — to an empty string
+    // when it has no key of its own — must still be read from `x-api-key`.
+    await seedApp("proxy-empty-authorization");
+    const token = await gatewayToken("proxy-empty-authorization");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }));
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-empty-authorization/proxy/anthropic/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+          authorization: "",
+          "x-api-key": token,
+        },
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 100, messages: [] }),
+      },
+    );
+    await response.text();
+    expect(response.status).toBe(200);
+  });
+
+  /**
+   * What a cold proxied request costs in D1 round trips, counted up to the
+   * moment it reaches the provider.
+   *
+   * The reads are overlapped rather than serialized now, and overlapping them
+   * is only a win if it did not also duplicate one: a provider read started as
+   * a warm and then started again by `proxyPrepare` would cost the round trip
+   * it was meant to save. Counting at the upstream call rather than at the
+   * response keeps usage recording — which runs in `waitUntil` and settles
+   * whenever it settles — out of the number, so the bound is stable.
+   */
+  it("reaches the provider on three D1 statements from cold", async () => {
+    const key = await seedServerApp("proxy-cold-statements", { endUser: "none" });
+    clearIsolateCaches();
+    let statementsAtUpstream = 0;
+    const counter = { statements: 0 };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      statementsAtUpstream = counter.statements;
+      return Response.json({ usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    });
+
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-cold-statements/proxy/openai/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+          authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
+      },
+      countingDatabase(counter),
+    );
+    await response.text();
+
+    expect(response.status).toBe(200);
+    // The app row, the organization's provider rows, and the key hash. Nothing
+    // else, and none of them twice.
+    expect(statementsAtUpstream).toBe(3);
   });
 
   it("accepts a tenant-configured token header and strips it upstream", async () => {

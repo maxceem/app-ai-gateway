@@ -145,6 +145,18 @@ Put the ceiling where the money is:
   rising one from a single app or user is worth investigating.
 </Callout>
 
+## Read replication
+
+The rows the gateway caches — an app, its providers, its keys and its account
+row — are read through a D1 read-replication session. If you turn on read
+replication for the database in the Cloudflare dashboard (**D1** → your
+database → **Settings**), a Worker running far from the database's primary
+answers those cold reads from the nearest replica instead of crossing a region
+for each one; without it nothing changes, and there is nothing to configure in
+the gateway either way. Those caches already tolerate up to a minute of
+staleness, so a replica running slightly behind costs them nothing. Writes, and
+every read behind the console and the CLI, still go to the primary.
+
 ## Routine verification
 
 After a deployment, a configuration change, or a Cloudflare zone change:

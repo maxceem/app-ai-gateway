@@ -3,6 +3,7 @@ import "../registry.test";
 import "../providers.test";
 import "../provider-store.test";
 import "../config.test";
+import "../read-session.test";
 import "../migration.test";
 import "../index.test";
 import "../performance.test";

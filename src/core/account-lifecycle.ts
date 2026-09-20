@@ -1,6 +1,7 @@
 import {
   billingBinding,
 } from "../billing/gateway";
+import { readSession } from "../db";
 import { GatewayError } from "./errors";
 import type { QueryBudget } from "./query-budget";
 
@@ -62,7 +63,12 @@ export async function accountLifecycle(
 ): Promise<AccountLifecycle> {
   const cached = lifecycleCache.get(id);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const row = await env.DB.prepare(
+  // Through a read session, like the other cache fills on this path: what comes
+  // back is written into the cache above, which is already allowed to be ten
+  // seconds behind, so a replica that is a moment behind the primary cannot
+  // widen the window this cache already has. The raw statement is used rather
+  // than drizzle because the claim predicate is a correlated EXISTS.
+  const row = await readSession(env.DB).prepare(
     `SELECT o.id, o.name, o.created_at AS createdAt,
     EXISTS (SELECT 1 FROM mgmt_organization_user m
       JOIN mgmt_user u ON u.id=m.user_id

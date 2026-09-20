@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { database } from "../db";
+import { readDatabase } from "../db";
 import {
   provider as providerTable,
   providerGateway as providerGatewayTable,
@@ -188,7 +188,11 @@ export function secretCacheKeys(): string[] {
 async function organizationRows(env: Env, organizationId: string): Promise<ProviderRow[]> {
   const cached = rowsCache.get(organizationId);
   if (cached && cached.expiresAt > Date.now()) return cached.rows;
-  const rows = await database(env.DB)
+  // Through a read session, for the same reason as the app row: the query below
+  // exists only to fill the cache above, which is already a minute behind D1 at
+  // worst, so answering it from the nearest replica changes nothing but the
+  // distance the request travels.
+  const rows = await readDatabase(env.DB)
     .select({
       id: providerTable.id,
       slug: providerTable.slug,
