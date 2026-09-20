@@ -67,6 +67,26 @@ export const API_STYLES = [
 export type ApiStyle = (typeof API_STYLES)[number];
 
 /**
+ * Provider API contracts an app may use without naming paths explicitly.
+ *
+ * This is deliberately an allowlist rather than "everything except the thing
+ * we know is unsafe": a newly classified operation must make an explicit
+ * policy decision here before an empty path list can authorize it. `other`
+ * remains available through an explicit `allowed_paths` entry.
+ */
+export const DEFAULT_PROXY_API_STYLES = [
+  "responses",
+  "chat_completions",
+  "anthropic_messages",
+  "gemini_native",
+  "audio_transcription",
+] as const satisfies readonly ApiStyle[];
+
+export function isDefaultProxyApiStyle(style: ApiStyle): boolean {
+  return (DEFAULT_PROXY_API_STYLES as readonly ApiStyle[]).includes(style);
+}
+
+/**
  * The path each cross-provider style is reached at *through a gateway that
  * publishes one URL space for every provider it serves*. Direct rows have no
  * entry here on purpose: each provider names its own prefix

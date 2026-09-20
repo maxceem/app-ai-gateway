@@ -102,6 +102,29 @@ const selectedRouting = (selected: Record<string, unknown>): ProxyConfig =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ProxyPolicyTab", () => {
+  it("makes the default and explicit path policies visible as the list changes", async () => {
+    renderTab(selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: [] } }));
+
+    expect(await screen.findByText("Inference APIs are allowed by default")).toBeTruthy();
+    for (const label of [
+      "Responses",
+      "Chat Completions",
+      "Anthropic Messages",
+      "Gemini generateContent",
+      "Transcription",
+    ]) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+
+    await userEvent.click(screen.getAllByRole("button", { name: /add path/i })[0]!);
+    expect(screen.getByText("Only listed paths")).toBeTruthy();
+    expect(screen.queryByText("Inference APIs are allowed by default")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /remove path/i }));
+    expect(screen.getByText("Inference APIs are allowed by default")).toBeTruthy();
+    expect(screen.queryByText("Only listed paths")).toBeNull();
+  });
+
   it("switches the organization's instances, not the five provider types", async () => {
     renderTab(selectedRouting({ "openai-dev": { allowed_paths: [], allowed_models: [] } }));
 

@@ -6,23 +6,38 @@ export { API_STYLES, type ApiStyle } from "../shared/capabilities.ts";
 import type { ApiStyle } from "../shared/capabilities.ts";
 
 /**
+ * Exact path shapes that participate in the implicit inference policy.
+ *
+ * These match supported provider URL layouts, not arbitrary suffixes. The
+ * classifier is also an authorization boundary when `allowed_paths` is empty,
+ * so a control-plane path that happens to end in `messages` or `responses`
+ * must remain `other`.
+ */
+const API_STYLE_PATH_MATCHERS = [
+  {
+    style: "audio_transcription",
+    pattern: /^(?:(?:v1|openai\/v1)\/audio\/transcriptions|v1\/stt)$/u,
+  },
+  {
+    style: "chat_completions",
+    pattern: /^(?:chat|v1\/chat|openai\/v1\/chat|inference\/v1\/chat|v1beta\/openai\/chat)\/completions$/u,
+  },
+  { style: "responses", pattern: /^(?:v1|openai\/v1)\/responses$/u },
+  {
+    style: "gemini_native",
+    pattern: /^v1(?:alpha|beta)?\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/u,
+  },
+  { style: "anthropic_messages", pattern: /^v1\/messages$/u },
+] as const satisfies readonly { style: ApiStyle; pattern: RegExp }[];
+
+/**
  * Classifies the requested operation from the provider path alone. Provider
  * identity is deliberately not consulted: the same path is the same operation
  * on every route that offers it, which is what makes the capability matrix
  * expressible.
  */
 export function apiStyleFromPath(providerPath: string): ApiStyle {
-  if (providerPath.endsWith("audio/transcriptions") || providerPath === "v1/stt") {
-    return "audio_transcription";
-  }
-  if (providerPath.includes("chat/completions")) return "chat_completions";
-  if (providerPath.endsWith("responses")) return "responses";
-  // Case-sensitive on purpose: `:streamGenerateContent` does not match here and
-  // never has, so it resolves through the provider's own shape below. Widening
-  // the test would change the clamped field for providers other than Gemini.
-  if (providerPath.includes("generateContent")) return "gemini_native";
-  if (providerPath.endsWith("messages")) return "anthropic_messages";
-  return "other";
+  return API_STYLE_PATH_MATCHERS.find(({ pattern }) => pattern.test(providerPath))?.style ?? "other";
 }
 
 /**
