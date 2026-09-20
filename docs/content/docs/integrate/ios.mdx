@@ -138,6 +138,11 @@ var request = try await gateway.authorizedRequest(endpointSlug: "chat")
   longer exists in the Secure Enclave. The client detects the local signing
   failure, registers a new key and retries. It does the same once when the
   gateway answers `attest_failed`.
+- **Rate limits.** If the gateway refuses `challenge`, `register` or `token`
+  with a `429`, the client remembers how long the wait is and refuses the next
+  call itself until it passes, rather than asking Apple for a new key on every
+  attempt. The error it raises carries the time still left in `retryAfter`. A
+  token it already holds keeps working throughout.
 - **ID token retries.** On `issuer_token_rejected` it asks your provider for
   a refreshed token once and retries. On `issuer_claims_missing` it first
   runs your recovery hook, described below, then retries with a refreshed
@@ -183,6 +188,11 @@ reads it. The useful properties:
   this user down" from "the whole app is busy".
 - `isRetryable`: whether the same request could succeed later without a
   change.
+
+`.rateLimited` is the gateway protecting its own authentication endpoints, so
+it carries no `limitScope` — it is not one of the limits you set on your app.
+The client has already started waiting that window out, so show "try again in
+`retryAfter` seconds" and leave the user signed in.
 
 The full code list and what each one means for your app is on
 [Errors and limits](/integrate/errors).

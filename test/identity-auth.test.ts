@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
 import worker from "../src/index";
 import { seedHuman, serverConfig } from "./helpers";
 
@@ -382,5 +383,154 @@ describe("operator authentication", () => {
         error: { code: "app_not_found" },
       });
     }
+  });
+});
+
+/**
+ * One password sign-in attempt, from a named address.
+ *
+ * The password is deliberately left out of the body. Better Auth refuses an
+ * incomplete body before it reaches the handler that would hash one, and a hash
+ * here is about two and a half seconds of pure-JS scrypt — eleven of them would
+ * cost more than the rest of this suite. The gateway's limit runs before Better
+ * Auth either way, so the attempt is counted all the same, and the `400` is the
+ * proof that the limit was not what refused it.
+ */
+async function signInAttempt(email: string, address: string): Promise<Response> {
+  return exports.default.fetch(`${ORIGIN}/v1/auth/sign-in/email`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: ORIGIN,
+      "cf-connecting-ip": address,
+    },
+    body: JSON.stringify({ email }),
+  });
+}
+
+async function expectRateLimited(
+  response: Response,
+  scope: string,
+  retryAfter: string,
+): Promise<void> {
+  expect(response.status, await response.clone().text()).toBe(429);
+  expect(response.headers.get("retry-after")).toBe(retryAfter);
+  await expect(response.json()).resolves.toMatchObject({
+    error: { code: "rate_limited", data: { scope } },
+  });
+}
+
+// Ten seconds into a ten-minute boundary, a day out. Both sign-in windows are
+// aligned to the clock rather than to the first attempt, so an unanchored test
+// that straddled one would see its counter reset and the refusal it asserts on
+// never arrive. A boundary both windows share also fixes both waits: fifty
+// seconds of the minute, and five hundred and ninety of the ten minutes.
+const SIGN_IN_WINDOW_ANCHOR = Math.floor((Date.now() + 86_400_000) / 600_000) * 600_000 + 10_000;
+
+/**
+ * Freezes the clock for one test, without faking the timers a request runs on.
+ *
+ * Only `Date` is replaced: `workerd` schedules the request itself, and the
+ * Durable Object alarm behind these counters, on real timers.
+ */
+function anchorSignInWindows(): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(SIGN_IN_WINDOW_ANCHOR);
+}
+
+describe("password sign-in throttling", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("refuses a flood from one address and leaves every other address alone", async () => {
+    anchorSignInWindows();
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.sign_in_address.limit; spent++) {
+      const allowed = await signInAttempt(`flood-${spent}@example.test`, address);
+      expect(allowed.status, `attempt ${spent}`).toBe(400);
+    }
+
+    await expectRateLimited(
+      await signInAttempt("flood-again@example.test", address),
+      "sign_in_address",
+      "50",
+    );
+
+    const elsewhere = await signInAttempt("flood-0@example.test", crypto.randomUUID());
+    expect(elsewhere.status).toBe(400);
+  });
+
+  it("refuses guesses at one account however many addresses they come from", async () => {
+    anchorSignInWindows();
+    const email = `grind-${crypto.randomUUID()}@example.test`;
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.sign_in_email.limit; spent++) {
+      const allowed = await signInAttempt(email, crypto.randomUUID());
+      expect(allowed.status, `attempt ${spent}`).toBe(400);
+    }
+
+    // Spelled differently on purpose: one account is one counter whatever case
+    // and padding the attempt arrives with.
+    await expectRateLimited(
+      await signInAttempt(`  ${email.toUpperCase()}  `, crypto.randomUUID()),
+      "sign_in_email",
+      "590",
+    );
+
+    const other = await signInAttempt(
+      `other-${crypto.randomUUID()}@example.test`,
+      crypto.randomUUID(),
+    );
+    expect(other.status).toBe(400);
+  });
+
+  it("counts a form-encoded attempt against the same account as a JSON one", async () => {
+    anchorSignInWindows();
+    const email = `form-${crypto.randomUUID()}@example.test`;
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.sign_in_email.limit - 1; spent++) {
+      const allowed = await signInAttempt(email, crypto.randomUUID());
+      expect(allowed.status, `attempt ${spent}`).toBe(400);
+    }
+
+    // Better Auth takes these credentials form-encoded as readily as it takes
+    // them as JSON, so an email counter that only read JSON would be bypassed
+    // by changing one header.
+    const encoded = await exports.default.fetch(`${ORIGIN}/v1/auth/sign-in/email`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: ORIGIN,
+        "cf-connecting-ip": crypto.randomUUID(),
+      },
+      body: new URLSearchParams({ email }).toString(),
+    });
+    expect(encoded.status).not.toBe(429);
+
+    await expectRateLimited(
+      await signInAttempt(email, crypto.randomUUID()),
+      "sign_in_email",
+      "590",
+    );
+  });
+
+  it("counts an unreadable body against the address it came from", async () => {
+    anchorSignInWindows();
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.sign_in_address.limit; spent++) {
+      const response = await exports.default.fetch(`${ORIGIN}/v1/auth/sign-in/email`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: ORIGIN,
+          "cf-connecting-ip": address,
+        },
+        body: "not json at all",
+      });
+      expect(response.status, `attempt ${spent}`).not.toBe(429);
+    }
+
+    await expectRateLimited(
+      await signInAttempt("readable@example.test", address),
+      "sign_in_address",
+      "50",
+    );
   });
 });

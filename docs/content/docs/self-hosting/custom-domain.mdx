@@ -1,12 +1,14 @@
 ---
 title: Custom domain and rate limiting
-description: Serve the gateway on your own hostname, give your apps a separate API host, and bound abuse with Cloudflare rules.
+description: Serve the gateway on your own hostname, give your apps a separate API host, and see the limits that bound abuse.
 ---
 
 A `workers.dev` address works, but it belongs to no zone of yours, so there is
-nowhere to attach a WAF rule or a rate limiting rule. Serving the gateway on a
-domain you own in Cloudflare gives you both. Everything on this page is zone
-configuration and a deployment profile; nothing here changes code.
+nowhere to attach a WAF rule. Serving the gateway on a domain you own in
+Cloudflare gives you one, and lets you refuse a flood before it ever starts a
+Worker. The gateway's own rate limits, further down, run either way. Everything
+on this page is zone configuration and a deployment profile; nothing here
+changes code.
 
 ## Serve on a custom domain
 
@@ -89,14 +91,46 @@ every asset request through the Worker and bill for it.
 
 ## Rate limiting
 
-The gateway does not throttle sign-in attempts itself, and cannot do it
-usefully: a Worker runs as many separate instances that share no memory, so
-an in-memory counter sees only a fraction of the traffic and limits nothing
-in practice. Bounding password
-guessing and challenge flooding is the zone's job, with
+The gateway throttles its own authentication endpoints, on every deployment —
+including a one-click `workers.dev` install that has no zone to attach a rule
+to. The counters live in a Durable Object rather than in memory, so one count
+holds across every instance and location the Worker runs in.
+
+| Endpoint | Limit | Counted by |
+| --- | --- | --- |
+| `POST /v1/auth/sign-in/email` | 10 per minute | client IP |
+| `POST /v1/auth/sign-in/email` | 10 per 10 minutes | the email address in the body |
+| `POST /v1/apps/{app}/auth/challenge` | 60 per minute | app and client IP |
+| `POST /v1/apps/{app}/auth/register` | 60 per minute | app and client IP |
+| `POST /v1/apps/{app}/auth/token` | 60 per minute | app and client IP |
+
+Sign-in is counted twice because the two counts refuse different things. The
+count per address stops one client hammering the endpoint. The count per email
+address stops a spread of addresses working through one password, which no
+per-address count can see. Ten attempts per ten minutes is far more than you
+spend when you know your own password, and nowhere near enough to guess one.
+
+The three application routes are unauthenticated by design, so each is counted
+per app and per address, on a counter of its own. Sixty a minute is far above
+real use — a gateway token lasts an hour, so sixty exchanges a minute from one
+address speaks for thousands of devices — and still bounds a flood.
+
+Every refusal answers `429` with the code `rate_limited`, a `Retry-After`
+header, and a body naming the limit, its window, and when it reopens.
+
+Only `CF-Connecting-IP` is read. Cloudflare writes it on every inbound request,
+so a caller cannot choose its own counter; `X-Forwarded-For` can be set by
+anyone and is ignored. A Worker reached directly, with no Cloudflare in front
+of it, sees no such header and counts every caller as one.
+
+### Optional: refuse at the edge as well
+
+Nothing in this section is required, and skipping it leaves the limits above in
+force. What it adds is
 [Cloudflare rate limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/)
-in front of the Worker. Those counters live at the edge, so they hold across
-instances and locations, and a refused request never reaches the Worker at all.
+in front of the Worker: a refused request never starts one, so it costs you no
+Worker invocation at all. Rules need a zone, which means the custom domain set
+up above.
 
 Create three rules, each counting by client IP.
 
@@ -107,16 +141,15 @@ Create three rules, each counting by client IP.
    http.request.uri.path eq "/v1/auth/sign-in/email"
    ```
 
-2. **Account creation and password reset**, 5 requests per minute.
+2. **Account creation and password reset**, 5 requests per minute. These are
+   the routes the gateway does not count for itself.
 
    ```txt
    http.request.uri.path matches "^/v1/auth/(sign-up|forget-password|reset-password)"
    ```
 
-3. **App authentication**, 60 requests per minute. These routes are
-   unauthenticated by design. A legitimate app performs a handful of them per
-   hour per device, so the limit is far above real use and still bounds a
-   flood.
+3. **App authentication**, 60 requests per minute, which mirrors the gateway's
+   own count for these routes at the edge.
 
    ```txt
    http.request.uri.path matches "^/v1/apps/[^/]+/auth/(challenge|token|register)$"
@@ -125,10 +158,10 @@ Create three rules, each counting by client IP.
 The rules match on the path alone, so they cover every host in the zone. A
 separate API host is included with no second set of rules.
 
-### On the Free and Pro plans
+#### On the Free and Pro plans
 
 Rate limiting rules exist on every Cloudflare plan, but not in equal amounts.
-Adapt rather than skip.
+If you add them at all, adapt rather than skip.
 
 - The Free plan allows **one** rule, with a fixed ten-second counting period
   and a ten-second block. Spend it on sign-in, at 2 requests per ten seconds.

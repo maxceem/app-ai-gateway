@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../core/auth-events";
 import { assertAppActive, endUserIssuer, loadAppConfig } from "../core/config";
+import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { lookupApiKeyUncached } from "../core/apikeys";
@@ -329,7 +330,31 @@ async function recorded(
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
+/**
+ * Bounds flooding of one application's unauthenticated authentication routes
+ * from one network address.
+ *
+ * Counted per application *and* address, so a flood aimed at one app never
+ * spends another app's allowance, and the `scope` on the refusal names the
+ * endpoint its developer has to look at.
+ *
+ * Deliberately outside `recorded`: a refused request is not an authentication
+ * attempt, and it is the one request that must not write an `app_auth_event`
+ * row. Recording it would give a flood a database write per request, which is
+ * exactly the cost this limit exists to refuse, and would bury the app's real
+ * failures under rows nobody acted on. For the same reason it runs before the
+ * app is loaded, so a flood aimed at an invented app id costs no read either.
+ */
+async function enforceAppAuthLimit(
+  c: Context<{ Bindings: Env }>,
+  policy: "app_auth_challenge" | "app_auth_register" | "app_auth_token",
+): Promise<void> {
+  const appId = c.req.param("app") ?? "";
+  await enforceEndpointRateLimit(c.env, policy, `${appId}:${clientAddress(c.req.raw)}`);
+}
+
 authRoutes.post("/challenge", async (c) => {
+  await enforceAppAuthLimit(c, "app_auth_challenge");
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
   const app = await loadAppConfig(c.env, appId);
@@ -358,167 +383,173 @@ authRoutes.post("/challenge", async (c) => {
   return c.json({ challenge, expires_in: 300 });
 });
 
-authRoutes.post("/register", (c) => recorded(c, "register", async (attempt) => {
-  const appId = c.req.param("app");
-  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadAppConfig(c.env, appId);
-  assertAppActive(app);
-  const auth = appleAuth(app);
-  attempt.authMethod = "attest";
-  const body = schemaBody(AppAttestRegisterRequestSchema, await c.req.json());
-  const { userId, trusted } = await attestedUserId(auth.end_user, body);
-  if (trusted) attempt.userId = userId;
-  // Do not spend a challenge or ask Apple to attest a replacement key for a
-  // user whom the operator has blocked.
-  const { claimPendingSince } = await assertExistingUserActive(c.env, appId, userId);
-  await consumeChallenge(c.env, appId, body.challenge);
-  // Imported here rather than at the top of the module: App Attest verification
-  // pulls in pkijs, asn1js and cbor-x, which would otherwise be parsed at every
-  // isolate cold start for the sake of these two handlers.
-  const { verifyAppAttestation } = await import("../core/appattest");
-  const verifiedAttestation = await verifyAppAttestation({
-    appId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
-    allowedEnvironments: auth.app_attest.environments,
-    keyId: body.key_id,
-    challenge: body.challenge,
-    attestation: body.attestation,
-  });
-  // Proved now: the attestation verified against this very key id, so recording
-  // it as the attempt's identity no longer takes the caller's word for it.
-  attempt.userId = userId;
-  await storeAttestedUser({
-    env: c.env,
-    appId,
-    userId,
-    keyId: body.key_id,
-    publicKeyPem: verifiedAttestation.publicKeyPem,
-    environment: verifiedAttestation.environment,
-  });
-  attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, claimPendingSince);
-  return c.json({ user_id: userId });
-}));
-
-authRoutes.post("/token", (c) => recorded(c, "token_exchange", async (attempt) => {
-  const appId = c.req.param("app");
-  if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadAppConfig(c.env, appId);
-  assertAppActive(app);
-  const rawBody = objectBody(await c.req.json());
-
-  if ("api_key" in rawBody) {
-    if (app.authentication.type !== "api_key") {
-      throw new GatewayError(
-        400,
-        "auth_method_not_supported",
-        "API key token exchange is not supported for this app",
-      );
-    }
-    const issuer = endUserIssuer(app.authentication);
-    if (!issuer) {
-      throw new GatewayError(
-        400,
-        "auth_method_not_supported",
-        "API key token exchange requires an issuer end-user source",
-      );
-    }
-    attempt.authMethod = "api_key";
-    const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
-    // Token exchange is a security boundary where revocation must take effect
-    // immediately. Issuer-less data-plane authentication keeps the short
-    // verification cache, but an exchange always confirms the key's current
-    // status against D1.
-    const apiKeyRecord = await lookupApiKeyUncached(c.env, body.api_key);
-    if (!apiKeyRecord || apiKeyRecord.appId !== appId) {
-      throw new GatewayError(403, "auth_required", "Gateway API key was rejected");
-    }
-    const apiKeyId = apiKeyRecord.id;
-    const { userId } = await verifyIssuerToken(body.issuer_token, issuer);
+authRoutes.post("/register", async (c) => {
+  await enforceAppAuthLimit(c, "app_auth_register");
+  return recorded(c, "register", async (attempt) => {
+    const appId = c.req.param("app");
+    if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+    const app = await loadAppConfig(c.env, appId);
+    assertAppActive(app);
+    const auth = appleAuth(app);
+    attempt.authMethod = "attest";
+    const body = schemaBody(AppAttestRegisterRequestSchema, await c.req.json());
+    const { userId, trusted } = await attestedUserId(auth.end_user, body);
+    if (trusted) attempt.userId = userId;
+    // Do not spend a challenge or ask Apple to attest a replacement key for a
+    // user whom the operator has blocked.
+    const { claimPendingSince } = await assertExistingUserActive(c.env, appId, userId);
+    await consumeChallenge(c.env, appId, body.challenge);
+    // Imported here rather than at the top of the module: App Attest verification
+    // pulls in pkijs, asn1js and cbor-x, which would otherwise be parsed at every
+    // isolate cold start for the sake of these two handlers.
+    const { verifyAppAttestation } = await import("../core/appattest");
+    const verifiedAttestation = await verifyAppAttestation({
+      appId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
+      allowedEnvironments: auth.app_attest.environments,
+      keyId: body.key_id,
+      challenge: body.challenge,
+      attestation: body.attestation,
+    });
+    // Proved now: the attestation verified against this very key id, so recording
+    // it as the attempt's identity no longer takes the caller's word for it.
     attempt.userId = userId;
-    const { claimPendingSince } = await storeIssuerUser(c.env, appId, userId);
-    attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, claimPendingSince);
-    const issued = await issueGatewayToken(
-      c.env.JWT_SECRET,
+    await storeAttestedUser({
+      env: c.env,
       appId,
       userId,
-      "api_key",
-      accessTtl(),
-      { apiKeyId },
-    );
+      keyId: body.key_id,
+      publicKeyPem: verifiedAttestation.publicKeyPem,
+      environment: verifiedAttestation.environment,
+    });
+    attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, claimPendingSince);
+    return c.json({ user_id: userId });
+  });
+});
+
+authRoutes.post("/token", async (c) => {
+  await enforceAppAuthLimit(c, "app_auth_token");
+  return recorded(c, "token_exchange", async (attempt) => {
+    const appId = c.req.param("app");
+    if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
+    const app = await loadAppConfig(c.env, appId);
+    assertAppActive(app);
+    const rawBody = objectBody(await c.req.json());
+
+    if ("api_key" in rawBody) {
+      if (app.authentication.type !== "api_key") {
+        throw new GatewayError(
+          400,
+          "auth_method_not_supported",
+          "API key token exchange is not supported for this app",
+        );
+      }
+      const issuer = endUserIssuer(app.authentication);
+      if (!issuer) {
+        throw new GatewayError(
+          400,
+          "auth_method_not_supported",
+          "API key token exchange requires an issuer end-user source",
+        );
+      }
+      attempt.authMethod = "api_key";
+      const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
+      // Token exchange is a security boundary where revocation must take effect
+      // immediately. Issuer-less data-plane authentication keeps the short
+      // verification cache, but an exchange always confirms the key's current
+      // status against D1.
+      const apiKeyRecord = await lookupApiKeyUncached(c.env, body.api_key);
+      if (!apiKeyRecord || apiKeyRecord.appId !== appId) {
+        throw new GatewayError(403, "auth_required", "Gateway API key was rejected");
+      }
+      const apiKeyId = apiKeyRecord.id;
+      const { userId } = await verifyIssuerToken(body.issuer_token, issuer);
+      attempt.userId = userId;
+      const { claimPendingSince } = await storeIssuerUser(c.env, appId, userId);
+      attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, claimPendingSince);
+      const issued = await issueGatewayToken(
+        c.env.JWT_SECRET,
+        appId,
+        userId,
+        "api_key",
+        accessTtl(),
+        { apiKeyId },
+      );
+      return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
+    }
+
+    if (app.authentication.type === "api_key") {
+      throw new GatewayError(
+        400,
+        "invalid_request",
+        endUserIssuer(app.authentication)
+          ? "api_key and issuer_token are required"
+          : "API key token exchange requires an issuer end-user source",
+      );
+    }
+
+    const auth = appleAuth(app);
+    attempt.authMethod = "attest";
+    const body = schemaBody(AppAttestTokenRequestSchema, rawBody);
+    const { userId, trusted } = await attestedUserId(auth.end_user, body);
+    if (trusted) attempt.userId = userId;
+    const user = await database(c.env.DB).query.appUser.findFirst({
+      columns: {
+        attestKeyId: true,
+        attestPublicKey: true,
+        attestCounter: true,
+        attestEnvironment: true,
+        status: true,
+        // Read alongside the key material rather than in a second round trip:
+        // this branch already has to fetch the row.
+        claimPendingSince: true,
+      },
+      where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
+    });
+    if (user?.status !== undefined && user.status !== "active") {
+      throw new GatewayError(403, "auth_required", "User is blocked");
+    }
+    if (!user || user.attestKeyId !== body.key_id || !user.attestPublicKey) {
+      throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
+    }
+    // Withdrawing an environment has to stop the keys it admitted, not just new
+    // registrations: an assertion carries no aaguid, so the environment the key
+    // was registered in is the only record of it. Null predates the column and
+    // can only be production, which no application can refuse.
+    if (
+      user.attestEnvironment !== null &&
+      !auth.app_attest.environments.includes(user.attestEnvironment)
+    ) {
+      throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
+    }
+    await consumeChallenge(c.env, appId, body.challenge);
+    const { verifyAppAssertion } = await import("../core/appattest");
+    const counter = await verifyAppAssertion({
+      gatewayAppId: appId,
+      rpId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
+      keyId: body.key_id,
+      challenge: body.challenge,
+      assertion: body.assertion,
+      publicKeyPem: user.attestPublicKey,
+      previousCounter: user.attestCounter,
+    });
+    const updated = await database(c.env.DB)
+      .update(appUser)
+      .set({ attestCounter: counter, lastSeenAt: sql`datetime('now')` })
+      .where(and(
+        eq(appUser.appId, appId),
+        eq(appUser.id, userId),
+        lt(appUser.attestCounter, counter),
+      ))
+      .returning({ id: appUser.id });
+    if (updated.length !== 1) {
+      throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
+    }
+    // Proved now: the assertion verified against the stored public key for this
+    // key id, so the identity is the gateway's own conclusion rather than a
+    // string the caller supplied.
+    attempt.userId = userId;
+    attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, user.claimPendingSince);
+    const issued = await issueGatewayToken(c.env.JWT_SECRET, appId, userId, "attest", accessTtl());
     return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
-  }
-
-  if (app.authentication.type === "api_key") {
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      endUserIssuer(app.authentication)
-        ? "api_key and issuer_token are required"
-        : "API key token exchange requires an issuer end-user source",
-    );
-  }
-
-  const auth = appleAuth(app);
-  attempt.authMethod = "attest";
-  const body = schemaBody(AppAttestTokenRequestSchema, rawBody);
-  const { userId, trusted } = await attestedUserId(auth.end_user, body);
-  if (trusted) attempt.userId = userId;
-  const user = await database(c.env.DB).query.appUser.findFirst({
-    columns: {
-      attestKeyId: true,
-      attestPublicKey: true,
-      attestCounter: true,
-      attestEnvironment: true,
-      status: true,
-      // Read alongside the key material rather than in a second round trip:
-      // this branch already has to fetch the row.
-      claimPendingSince: true,
-    },
-    where: and(eq(appUser.appId, appId), eq(appUser.id, userId)),
   });
-  if (user?.status !== undefined && user.status !== "active") {
-    throw new GatewayError(403, "auth_required", "User is blocked");
-  }
-  if (!user || user.attestKeyId !== body.key_id || !user.attestPublicKey) {
-    throw new GatewayError(403, "attest_failed", "No matching registered App Attest key");
-  }
-  // Withdrawing an environment has to stop the keys it admitted, not just new
-  // registrations: an assertion carries no aaguid, so the environment the key
-  // was registered in is the only record of it. Null predates the column and
-  // can only be production, which no application can refuse.
-  if (
-    user.attestEnvironment !== null &&
-    !auth.app_attest.environments.includes(user.attestEnvironment)
-  ) {
-    throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
-  }
-  await consumeChallenge(c.env, appId, body.challenge);
-  const { verifyAppAssertion } = await import("../core/appattest");
-  const counter = await verifyAppAssertion({
-    gatewayAppId: appId,
-    rpId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
-    keyId: body.key_id,
-    challenge: body.challenge,
-    assertion: body.assertion,
-    publicKeyPem: user.attestPublicKey,
-    previousCounter: user.attestCounter,
-  });
-  const updated = await database(c.env.DB)
-    .update(appUser)
-    .set({ attestCounter: counter, lastSeenAt: sql`datetime('now')` })
-    .where(and(
-      eq(appUser.appId, appId),
-      eq(appUser.id, userId),
-      lt(appUser.attestCounter, counter),
-    ))
-    .returning({ id: appUser.id });
-  if (updated.length !== 1) {
-    throw new GatewayError(403, "attest_failed", "App Attest assertion counter was replayed");
-  }
-  // Proved now: the assertion verified against the stored public key for this
-  // key id, so the identity is the gateway's own conclusion rather than a
-  // string the caller supplied.
-  attempt.userId = userId;
-  attempt.claimDelayMs = await settleClaimDelay(c.env, appId, userId, user.claimPendingSince);
-  const issued = await issueGatewayToken(c.env.JWT_SECRET, appId, userId, "attest", accessTtl());
-  return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
-}));
+});

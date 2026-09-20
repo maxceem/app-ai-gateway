@@ -50,9 +50,74 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "answer an approval page",
     sharedBy: "this operation",
   },
+  // Password sign-in is counted twice, because the two counters refuse two
+  // different attacks and neither one sees the other's. The address counter
+  // stops one client hammering the endpoint; the email counter stops a spread
+  // of addresses grinding through one account's passwords, which is invisible
+  // to a per-address count. A person who mistypes their own password ten times
+  // in a minute is already reaching for the reset link.
+  sign_in_address: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "try to sign in",
+    sharedBy: "everyone sharing your network address",
+  },
+  // Ten attempts per ten minutes is 1,440 guesses a day against one account.
+  // Against any password worth the name that is nothing, and it is far above
+  // what a person who knows their password ever spends, so the window buys the
+  // account real protection at no cost to its owner.
+  sign_in_email: {
+    limit: 10,
+    windowMs: 600_000,
+    action: "try to sign in to one account",
+    sharedBy: "everyone signing in to that email address",
+  },
+  // The three application authentication endpoints are unauthenticated by
+  // design, so each is counted per application and network address. They are
+  // deliberately three counters rather than one: a client that registers a key
+  // has not spent the token exchange that follows it, and a refusal has to name
+  // the endpoint that was flooded for the app's developer to act on it.
+  //
+  // Sixty a minute per address is far above real use and still bounds a flood.
+  // A gateway token lasts an hour, so an address exchanging sixty a minute
+  // speaks for about 3,600 devices — more than sits behind one carrier NAT for
+  // a single application — and a challenge or a registration happens once per
+  // install, not per session.
+  app_auth_challenge: {
+    limit: 60,
+    windowMs: 60_000,
+    action: "ask this app for a challenge",
+    sharedBy: "everyone sharing your network address",
+  },
+  app_auth_register: {
+    limit: 60,
+    windowMs: 60_000,
+    action: "register a key with this app",
+    sharedBy: "everyone sharing your network address",
+  },
+  app_auth_token: {
+    limit: 60,
+    windowMs: 60_000,
+    action: "exchange a token with this app",
+    sharedBy: "everyone sharing your network address",
+  },
 } as const satisfies Record<string, EndpointRateLimit>;
 
 export type EndpointRateLimitName = keyof typeof ENDPOINT_RATE_LIMITS;
+
+/**
+ * The caller's address, as the only header that cannot be set by the caller.
+ *
+ * `cf-connecting-ip` is written by Cloudflare's edge and overwritten on every
+ * inbound request, so a client cannot choose its own counter. `x-forwarded-for`
+ * is attacker-controlled and is never read here: trusting it would let one
+ * client spend a different address's allowance, or spread its own attempts over
+ * as many counters as it cares to invent. Direct `workerd` runs have no edge in
+ * front of them and share the one `local` counter.
+ */
+export function clientAddress(request: Request): string {
+  return request.headers.get("cf-connecting-ip") ?? "local";
+}
 
 const UNITS = [
   { ms: 86_400_000, singular: "day", plural: "days" },

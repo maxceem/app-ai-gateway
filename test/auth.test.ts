@@ -8,6 +8,10 @@ import { clearApiKeyCache } from "../src/core/apikeys";
 import { appAttestEnvironment } from "../src/core/appattest";
 import { pruneAuthChallenges } from "../src/core/auth-events";
 import { clearAppConfigCache } from "../src/core/config";
+import {
+  ENDPOINT_RATE_LIMITS,
+  enforceEndpointRateLimit,
+} from "../src/core/endpoint-rate-limit";
 import { verifyGatewayToken } from "../src/core/jwt";
 import { database } from "../src/db";
 import { appApiKey, appUser } from "../src/db/schema";
@@ -653,5 +657,94 @@ describe("App Attest applications identified by installation", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "invalid_request", message: "issuer_token is required" },
     });
+  });
+});
+
+// Ten seconds into a minute, a day out, so every refusal below reports the same
+// fifty seconds and no Durable Object alarm this suite schedules can come due
+// while the real runtime scheduler is still watching.
+const RATE_WINDOW_ANCHOR = Math.floor((Date.now() + 86_400_000) / 60_000) * 60_000 + 10_000;
+
+/** One unauthenticated application authentication call from a named address. */
+async function appAuthRequest(appId: string, endpoint: string, address: string): Promise<Response> {
+  return app.fetch(
+    new Request(`https://example.test/v1/apps/${appId}/auth/${endpoint}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": address },
+      body: "{}",
+    }),
+    env,
+    createExecutionContext(),
+  );
+}
+
+describe("application authentication throttling", () => {
+  afterEach(() => vi.useRealTimers());
+
+  for (const endpoint of [
+    { path: "challenge", policy: "app_auth_challenge" },
+    { path: "register", policy: "app_auth_register" },
+    { path: "token", policy: "app_auth_token" },
+  ] as const) {
+    it(`refuses a ${endpoint.path} flood aimed at one app from one address`, async () => {
+      // Only Date is faked, and only for this test: the fixed window must not
+      // roll between the attempts spent below and the one asserted on, while
+      // the runtime's own timers stay real because a request runs on them.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(RATE_WINDOW_ANCHOR);
+      const appId = `throttle-${endpoint.path}`;
+      const address = crypto.randomUUID();
+      // Spent through the same entry point the route uses, so the subject the
+      // route builds from the app and the address is what this exhausts.
+      for (let spent = 0; spent < ENDPOINT_RATE_LIMITS[endpoint.policy].limit - 1; spent++)
+        await enforceEndpointRateLimit(env, endpoint.policy, `${appId}:${address}`);
+
+      // The last attempt the window allows still reaches the handler, which is
+      // what proves the refusal after it came from the limit and not the route.
+      const allowed = await appAuthRequest(appId, endpoint.path, address);
+      expect(allowed.status, await allowed.clone().text()).toBe(404);
+
+      const refused = await appAuthRequest(appId, endpoint.path, address);
+      expect(refused.status).toBe(429);
+      expect(refused.headers.get("retry-after")).toBe("50");
+      await expect(refused.json()).resolves.toMatchObject({
+        error: { code: "rate_limited", data: { scope: endpoint.policy, limit: 60 } },
+      });
+
+      // Neither another application from the same address nor the same
+      // application from another address shares the counter that refused.
+      expect((await appAuthRequest(`${appId}-other`, endpoint.path, address)).status).toBe(404);
+      expect(
+        (await appAuthRequest(appId, endpoint.path, crypto.randomUUID())).status,
+      ).toBe(404);
+    });
+  }
+
+  it("keeps the three endpoints on counters of their own", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "throttle-per-endpoint";
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_token.limit; spent++)
+      await enforceEndpointRateLimit(env, "app_auth_token", `${appId}:${address}`);
+
+    expect((await appAuthRequest(appId, "token", address)).status).toBe(429);
+    expect((await appAuthRequest(appId, "challenge", address)).status).toBe(404);
+    expect((await appAuthRequest(appId, "register", address)).status).toBe(404);
+  });
+
+  it("does not record a refused request as an authentication attempt", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "throttle-unrecorded";
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_register.limit; spent++)
+      await enforceEndpointRateLimit(env, "app_auth_register", `${appId}:${address}`);
+
+    expect((await appAuthRequest(appId, "register", address)).status).toBe(429);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM app_auth_event WHERE app_id = ?",
+    ).bind(appId).first<{ n: number }>();
+    expect(rows!.n).toBe(0);
   });
 });

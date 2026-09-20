@@ -2329,6 +2329,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many sign-in attempts. Counted twice over: per client address, and per email address so that a spread of addresses cannot grind through one account's passwords. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -2619,6 +2629,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many application authentication requests from this network address for this application. Carries Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -2712,6 +2732,16 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many application authentication requests from this network address for this application. Carries Retry-After.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2834,6 +2864,16 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many application authentication requests from this network address for this application. Carries Retry-After.",
             "content": {
               "application/json": {
                 "schema": {
