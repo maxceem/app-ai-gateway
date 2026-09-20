@@ -88,6 +88,26 @@ function captureUpstream(
   return captured;
 }
 
+/** The structured lines the Worker writes, so a test can read their fields. */
+interface LogLine {
+  level: string;
+  message: string;
+  [field: string]: unknown;
+}
+
+function captureWarnings(): LogLine[] {
+  const lines: LogLine[] = [];
+  vi.spyOn(console, "warn").mockImplementation((value: unknown) => {
+    if (typeof value !== "string") return;
+    try {
+      lines.push(JSON.parse(value) as LogLine);
+    } catch {
+      // Not one of ours.
+    }
+  });
+  return lines;
+}
+
 const usageResponse = () =>
   Response.json({ usage: { input_tokens: 10, output_tokens: 2 } });
 
@@ -718,9 +738,10 @@ describe("named endpoints", () => {
     expect(attempts).toBe(2);
   });
 
-  // A hang is the failure the chain could not see before: the fetch neither
-  // resolved nor threw, so the fallback never got its turn.
-  it("falls through to the next target when the primary sends no headers in time", async () => {
+  // A hang is the one failure that leaves the chain nothing to fall through
+  // with: the primary waits out the whole shared budget, so the fallback is
+  // never called and never recorded.
+  it("ends the chain when the primary spends the whole budget on a hang", async () => {
     const appId = "endpoint-fallback-ttfb";
     await seedApp(appId, {
       endpoints: {
@@ -742,16 +763,122 @@ describe("named endpoints", () => {
       env: withTtfbTimeout(0.05),
     });
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ id: "from-fallback" });
-    expect(captured).toHaveLength(2);
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "provider_error" },
+    });
+    expect(captured).toHaveLength(1);
 
     await settleUsage();
-    const rows = await latestUsage(appId, 2);
+    // Only the attempt that was actually made: the untried fallback is nobody's
+    // failure.
+    const rows = await latestUsage(appId, 1);
     expect(rows.map((row) => [row.provider, row.status])).toEqual([
       ["openai", "provider_error"],
-      ["xai", "ok"],
     ]);
+  });
+
+  // The budget belongs to the request, not to each target: a chain that hangs
+  // all the way down must not multiply the wait the deployment configured.
+  it("shares one time-to-first-byte budget across the chain", async () => {
+    const appId = "endpoint-fallback-ttfb-budget";
+    // Only openai and xai compose named endpoints, so the third target is a
+    // second openai instance rather than a third provider type.
+    await seedProvider({ type: "openai", id: "provider_endpoint_openai_spare", slug: "openai-spare" });
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          fallback: [
+            { provider: "xai", model: "grok-4.5" },
+            { provider: "openai-spare", model: "gpt-5.6-luna" },
+          ],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const warnings = captureWarnings();
+    const captured = captureUpstream((_attempt, signal) => hangingUpstream(signal));
+
+    const started = performance.now();
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+      env: withTtfbTimeout(0.2),
+    });
+    const elapsed = performance.now() - started;
+
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "provider_error" },
+    });
+    // One budget of 200 ms, not three: the old behaviour took past 600 ms.
+    expect(elapsed).toBeLessThan(500);
+    // The primary spent the whole budget, so the two fallbacks were never
+    // called at all.
+    expect(captured).toHaveLength(1);
+
+    // The two targets that never ran are named once, in chain order, rather
+    // than counted against providers that were never contacted.
+    const exhausted = warnings.filter(
+      (line) => line.message === "provider_ttfb_budget_exhausted",
+    );
+    expect(exhausted).toHaveLength(1);
+    expect(exhausted[0]).toMatchObject({
+      endpointSlug: "chat",
+      budgetMs: 200,
+      skipped: ["xai", "openai-spare"],
+    });
+
+    await settleUsage();
+    // One row, for the one attempt the budget paid for.
+    const rows = await latestUsage(appId, 1);
+    expect(rows.map((row) => [row.provider_slug, row.status])).toEqual([
+      ["openai", "provider_error"],
+    ]);
+  });
+
+  // The budget a fallback inherits is what the primary left of it, which is how
+  // one budget can cover a chain at all.
+  it("gives a fallback only the budget the primary left", async () => {
+    const appId = "endpoint-fallback-ttfb-remaining";
+    await seedApp(appId, {
+      endpoints: {
+        chat: { ...CHAT_ENDPOINTS.chat, fallback: [{ provider: "xai", model: "grok-4.5" }] },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const warnings = captureWarnings();
+    // The primary burns part of the budget before failing over, so the
+    // fallback's own timeout is provably shorter than the budget.
+    const captured = captureUpstream((attempt, signal) =>
+      attempt === 0
+        ? new Promise((resolve) => {
+          setTimeout(() => resolve(Response.json({ error: "busy" }, { status: 503 })), 120);
+        })
+        : hangingUpstream(signal));
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+      env: withTtfbTimeout(0.3),
+    });
+    await response.text();
+
+    expect(response.status).toBe(504);
+    expect(captured).toHaveLength(2);
+
+    const timeouts = warnings.filter((line) => line.message === "provider_ttfb_timeout");
+    expect(timeouts).toHaveLength(1);
+    expect(timeouts[0]).toMatchObject({ providerSlug: "xai", budgetMs: 300 });
+    expect(timeouts[0]!.timeoutMs).toBeGreaterThan(0);
+    expect(timeouts[0]!.timeoutMs).toBeLessThan(300);
   });
 
   it.each([

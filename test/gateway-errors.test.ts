@@ -155,4 +155,36 @@ describe("gateway error logging", () => {
     expect(logs.error.some((line) => line.message === "unhandled_error")).toBe(true);
     expect(logs.error.some((line) => line.message === "gateway_error")).toBe(false);
   });
+
+  /**
+   * The management routes are mounted lazily, so the pattern the entry module
+   * matched is what `c.req.param()` answers from while the error is formatted.
+   * A bare `/v1/admin/*` mount would name no application at all, which is why
+   * the app-scoped patterns are registered in front of it.
+   */
+  it("names the application on an admin app route", async () => {
+    const logs = captureLogs();
+    const path = "/v1/admin/apps/never-registered-admin/usage";
+
+    const response = await app.fetch(
+      new Request(`https://example.test${path}?month=${new Date().toISOString().slice(0, 7)}`, {
+        headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "app_not_found" } });
+    const lines = logs.warn.filter((line) => line.message === "gateway_error");
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toMatchObject({
+      level: "warn",
+      code: "app_not_found",
+      status: 404,
+      method: "GET",
+      path,
+      app: "never-registered-admin",
+    });
+  });
 });

@@ -598,6 +598,8 @@ describe("the per-user block flag", () => {
   it("reads the flag once for two requests inside the cache window", async () => {
     const organizationId = "block-cache-org";
     await seedOrganization(organizationId);
+    // No per-user limits, so the cached flag is the only thing asking this
+    // user's limiter anything at all.
     const key = await seedServerApp("block-cache", { organizationId });
     const counted = withBlockReadCount({ maxRequestsPerMonth: 10 });
     mockUpstream(ok);
@@ -612,6 +614,65 @@ describe("the per-user block flag", () => {
       expect(response.status).toBe(200);
     }
     expect(counted.reads()).toBe(1);
+  });
+
+  /**
+   * An app that sets per-user limits calls the very same Durable Object a
+   * moment later, and that call answers "blocked" itself, atomically, before it
+   * counts anything. Reading the flag separately would be a second round trip
+   * to one object for an answer the first one already carries.
+   */
+  it("never reads the flag for an app whose per-user limits already ask the same object", async () => {
+    const organizationId = "block-skip-org";
+    await seedOrganization(organizationId);
+    const key = await seedServerApp("block-skip", { organizationId, limits: { rpm: 10 } });
+    const counted = withBlockReadCount({ maxRequestsPerMonth: 10 });
+    mockUpstream(ok);
+
+    for (let request = 0; request < 2; request += 1) {
+      const response = await proxyRequest({
+        appId: "block-skip",
+        key,
+        env: counted.env,
+        userId: "limited-user",
+      });
+      expect(response.status).toBe(200);
+    }
+    expect(counted.reads()).toBe(0);
+  });
+
+  it("still refuses a blocked user on such an app, and records it as blocked_user", async () => {
+    const organizationId = "block-skip-blocked-org";
+    await seedOrganization(organizationId);
+    const key = await seedServerApp("block-skip-blocked", {
+      organizationId,
+      limits: { rpm: 10 },
+    });
+    await env.DB.prepare("INSERT INTO app_user(app_id, id) VALUES (?, ?)")
+      .bind("block-skip-blocked", "banned-user")
+      .run();
+    await env.USER_LIMITER.getByName("block-skip-blocked:banned-user").setBlocked(true);
+    const counted = withBlockReadCount({ maxRequestsPerMonth: 10 });
+    mockUpstream(ok);
+
+    const refused = await proxyRequest({
+      appId: "block-skip-blocked",
+      key,
+      env: counted.env,
+      userId: "banned-user",
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "auth_required" } });
+    // The limiter's own check reported the block, so the flag was never read
+    // separately and the allowance was never reached.
+    expect(counted.reads()).toBe(0);
+    expect(await used(organizationId)).toBe(0);
+
+    await settle();
+    const row = await env.DB.prepare(
+      `SELECT status, cost_usd FROM app_usage_event WHERE app_id = ? AND status LIKE 'blocked_%'`,
+    ).bind("block-skip-blocked").first<{ status: string; cost_usd: number }>();
+    expect(row).toEqual({ status: "blocked_user", cost_usd: 0 });
   });
 
   it("refuses at once after a block through the admin route in the same isolate", async () => {

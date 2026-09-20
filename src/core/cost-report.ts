@@ -185,13 +185,14 @@ export const OPENROUTER_COST_REPORT: CostReport = {
  * `null` when the response said none of it, which is what turns a reporting
  * route's silence into an unresolved event rather than a free request.
  *
- * Scanned back to front, like `usageFromValues`: what a stream reports lives in
- * its last event, so the common case reads one value instead of every delta
- * chunk. {@link CostReport.read} never overwrites a field, so the traversal
- * order does not change the answer.
+ * Values arrive back to front, like the usage walk's: what a stream reports
+ * lives in its last event, and the caller parses them only as far as this reads,
+ * so the common case reads one value instead of every delta chunk.
+ * {@link CostReport.read} never overwrites a field, so the traversal order does
+ * not change the answer.
  */
 export function readProviderReport(
-  values: unknown[],
+  values: Iterable<unknown>,
   integration: CostReport,
 ): ProviderReport | null {
   const report: ProviderReport = {
@@ -201,8 +202,8 @@ export function readProviderReport(
     credentialSource: null,
   };
   let reported = false;
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    const root = asRecord(values[index]);
+  for (const value of values) {
+    const root = asRecord(value);
     if (!root) continue;
     if (integration.read(root, report)) reported = true;
     // `credentialSource` is deliberately not required to stop: it is a claim

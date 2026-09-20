@@ -794,6 +794,50 @@ describe("billing gateway", () => {
     expect(stored?.total).toBe(0);
   });
 
+  /**
+   * The account's own deadline is answered before anything else a served
+   * request would do.
+   *
+   * The gate reads the provider rows alongside the lifecycle row now, so the
+   * two reads land in either order; what must not move is which of them decides.
+   * An account past its recovery deadline is refused with `account_expired`,
+   * and the request never reaches its key, its provider or the upstream.
+   */
+  it("refuses an expired account before a proxy request is authenticated", async () => {
+    const organizationId = "billing-expired-account";
+    const createdAt = new Date(Date.now() - 200 * 86_400_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO mgmt_user(id, name, email, email_verified, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, ?)`,
+      ).bind(`${organizationId}-owner`, organizationId, `${organizationId}@example.test`,
+        Date.parse(createdAt), Date.parse(createdAt)),
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind(organizationId, organizationId, `${organizationId}-owner`, createdAt, createdAt,
+        new Date(Date.now() - 1000).toISOString()),
+    ]);
+    const appId = "billing-expired-app";
+    const key = await seedServerApp(appId, { endUser: "none", organizationId });
+    clearAccountLifecycleCache();
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({}));
+    const response = await worker.request(
+      `${ORIGIN}/v1/apps/${appId}/proxy/openai/v1/responses`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.6-terra" }),
+      },
+      withBilling(stub()),
+    );
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "account_expired" },
+    });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("rejects the data plane with stable 402 without disabling the app", async () => {
     const appId = "billing-payment-required";
     const key = await seedServerApp(appId, { endUser: "none" });

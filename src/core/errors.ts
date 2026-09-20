@@ -167,3 +167,12 @@ export function errorResponse(
     headers: { "content-type": "application/json; charset=UTF-8", ...headers },
   });
 }
+
+/**
+ * The body every unrouted path answers with, shared by the entry module and by
+ * each lazily mounted route bundle so a path that falls through an inner app
+ * is refused in exactly the shape the outer app would have used.
+ */
+export const ROUTE_NOT_FOUND = {
+  error: { code: "invalid_request", message: "Route not found" },
+} as const;

@@ -154,7 +154,9 @@ export async function prepareEndpointRequest(input: {
     const form = await new Request("https://local.invalid", {
       method: "POST",
       headers: { "content-type": contentType },
-      body: Uint8Array.from(bytes).buffer,
+      // The exact-sized array `readBodyLimited` returns is the body; copying it
+      // here copied the whole upload a second time.
+      body: bytes,
     }).formData();
     if (!form.has("file")) {
       throw new GatewayError(400, "invalid_request", "A file field is required");

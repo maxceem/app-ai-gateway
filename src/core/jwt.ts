@@ -4,11 +4,51 @@ import type { GatewayAuthMethod, GatewayIdentity } from "./types";
 
 const encoder = new TextEncoder();
 
-function key(secret: string): Uint8Array {
-  if (encoder.encode(secret).byteLength < 32) {
+/**
+ * How many imported keys to hold. A deployment signs and verifies with one
+ * secret; the suites use a handful, and an old one being evicted only costs the
+ * import it was saving.
+ */
+const MAX_KEY_CACHE_ENTRIES = 8;
+
+/**
+ * HMAC keys by secret, imported once each. Handing jose the raw bytes makes it
+ * import a `CryptoKey` on every sign and every verify, and a verify is on the
+ * hot path of every proxied request.
+ */
+const keyCache = new Map<string, Promise<CryptoKey>>();
+
+function importKey(secret: string): Promise<CryptoKey> {
+  const bytes = encoder.encode(secret);
+  if (bytes.byteLength < 32) {
     throw new GatewayError(500, "internal_error", "JWT_SECRET must be at least 32 bytes");
   }
-  return encoder.encode(secret);
+  return crypto.subtle.importKey(
+    "raw",
+    bytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+function key(secret: string): Promise<CryptoKey> {
+  const cached = keyCache.get(secret);
+  // A cached secret passed the length check when it was imported.
+  if (cached) return cached;
+  const imported: Promise<CryptoKey> = importKey(secret).catch((error: unknown) => {
+    // An import that failed is not a key: forget it, so the next call tries
+    // again instead of being served the same rejection forever.
+    if (keyCache.get(secret) === imported) keyCache.delete(secret);
+    throw error;
+  });
+  keyCache.set(secret, imported);
+  // Insertion order is eviction order, so the oldest secret goes first.
+  if (keyCache.size > MAX_KEY_CACHE_ENTRIES) {
+    const oldest = keyCache.keys().next();
+    if (!oldest.done) keyCache.delete(oldest.value);
+  }
+  return imported;
 }
 
 export async function issueGatewayToken(
@@ -31,7 +71,7 @@ export async function issueGatewayToken(
     .setIssuedAt(now)
     .setExpirationTime(now + expiresIn)
     .setJti(crypto.randomUUID())
-    .sign(key(secret));
+    .sign(await key(secret));
   return { token, expiresIn };
 }
 
@@ -41,7 +81,7 @@ export async function verifyGatewayToken(
   expectedAppId: string,
 ): Promise<GatewayIdentity> {
   try {
-    const { payload, protectedHeader } = await jwtVerify(token, key(secret), {
+    const { payload, protectedHeader } = await jwtVerify(token, await key(secret), {
       algorithms: ["HS256"],
       typ: "JWT",
     });
