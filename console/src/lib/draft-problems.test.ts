@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { draftProblem } from "./draft-problems";
 import type { Draft } from "@/hooks/use-app-draft";
-import type { AuthenticationConfig } from "./config-types";
+import type { AuthenticationDraft } from "./config-types";
 
-const draft = (authentication: AuthenticationConfig, name = "My app"): Draft => ({
+const draft = (authentication: AuthenticationDraft, name = "My app"): Draft => ({
   name,
   status: "active",
   config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },

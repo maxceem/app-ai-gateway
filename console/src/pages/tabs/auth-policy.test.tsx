@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { AuthPolicyTab, levelStatuses } from "./auth-policy";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AppDraft, Draft } from "@/hooks/use-app-draft";
-import type { AuthConfig, AuthenticationConfig } from "@/lib/config-types";
+import type { AuthConfig, AuthenticationDraft } from "@/lib/config-types";
 
 const APP_ID = "my-app";
 
@@ -12,7 +12,7 @@ const APP_ID = "my-app";
  * The tab only reads a slice of the draft, so the fixture supplies that slice
  * rather than reproducing the whole `useAppDraft` surface.
  */
-function draftFor(authentication: AuthenticationConfig): AppDraft {
+function draftFor(authentication: AuthenticationDraft): AppDraft {
   return {
     draft: { name: "My app", status: "active", config: { authentication } },
     dirty: false,
@@ -34,23 +34,23 @@ const FIREBASE: AuthConfig = {
   required_claims: [],
 };
 
-const serverApp = (issuer?: AuthConfig): AuthenticationConfig => ({
+const serverApp = (issuer?: AuthConfig): AuthenticationDraft => ({
   type: "api_key",
   ...(issuer ? { end_user: { source: "issuer" as const, issuer } } : {}),
 });
 
-const headerApp = (header = "x-end-user-id"): AuthenticationConfig => ({
+const headerApp = (header = "x-end-user-id"): AuthenticationDraft => ({
   type: "api_key",
   end_user: { source: "header", header },
 });
 
-const appleApp = (issuer: AuthConfig = FIREBASE): AuthenticationConfig => ({
+const appleApp = (issuer: AuthConfig = FIREBASE): AuthenticationDraft => ({
   type: "apple_app_attest",
   app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
   end_user: { source: "issuer", issuer },
 });
 
-const appInstallApp = (): AuthenticationConfig => ({
+const appInstallApp = (): AuthenticationDraft => ({
   type: "apple_app_attest",
   app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
   end_user: { source: "app_install" },
@@ -74,7 +74,7 @@ function renderTab(state: AppDraft, level?: string, role: "owner" | "member" = "
 afterEach(() => vi.unstubAllGlobals());
 
 describe("levelStatuses", () => {
-  const draft = (authentication: AuthenticationConfig): Draft => ({
+  const draft = (authentication: AuthenticationDraft): Draft => ({
     name: "My app",
     status: "active",
     config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },

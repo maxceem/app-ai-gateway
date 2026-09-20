@@ -75,8 +75,37 @@ function renderApps(
 ) {
   stubApi({
     ...Object.fromEntries(apps.map((entry) => [`${APPS_URL}/${entry.id}`, { body: {
-      app: { config: { authentication: { type: entry.authentication_type } } },
+      app: {
+        revision: 1,
+        id: entry.id,
+        name: entry.name,
+        status: entry.status,
+        created_at: entry.created_at,
+        updated_at: entry.created_at,
+        config: {
+          authentication: entry.authentication_type === "apple_app_attest"
+            ? {
+                type: "apple_app_attest",
+                app_attest: {
+                  team_id: "ABCDE12345",
+                  bundle_id: entry.apple_bundle_id ?? "com.example.app",
+                },
+                end_user: { source: "app_install" },
+              }
+            : { type: "api_key" },
+          routing: {
+            providers: {
+              mode: "selected",
+              selected: {
+                openai: { allowed_paths: ["v1/responses"], allowed_models: ["configured-model"] },
+              },
+            },
+            model_rewrites: {},
+          },
+        },
+      },
       resolved: { routing: { providerMode: "selected", providers: { openai: { allowed_paths: ["v1/responses"], allowed_models: ["configured-model"] } } } },
+      config_error: null,
     } }])),
     "/v1/admin/prices": { body: { prices: {} } },
     [APPS_URL]: {

@@ -1,9 +1,66 @@
 import { describe, expect, it } from "vitest";
 import { parseStoredAppConfig, validateAppConfigJson } from "../src/core/config";
 import { providersForEndpointStyle } from "../src/core/capabilities";
+import { AppConfigSchema } from "../src/contracts/schemas";
+import { decodeStoredAppConfig, resolveConfiguration } from "../src/shared/app-config";
 import { serverConfig } from "./helpers";
 
 describe("canonical app configuration", () => {
+  it("agrees with the public schema on a representative normalized configuration", () => {
+    const normalized = decodeStoredAppConfig(serverConfig({
+      endpoints: {
+        chat: {
+          api_style: "responses",
+          provider: "openai",
+          model: "gpt-5-mini",
+          params: { reasoning: { effort: "low" } },
+        },
+      },
+    }));
+
+    expect(AppConfigSchema.safeParse(normalized).success).toBe(true);
+  });
+
+  it("normalizes idempotently and drops only unknown console bookkeeping labels", () => {
+    const config = serverConfig({
+      authentication: {
+        type: "api_key",
+        end_user: {
+          source: "issuer",
+          issuer: {
+            jwks_url: "https://issuer.example.test/jwks.json",
+            issuer: "https://issuer.example.test",
+            audience: ["my-app", "my-app-next"],
+            user_id_claim: "sub",
+            required_claims: [],
+            max_token_lifetime_seconds: 3600,
+            provider: "future-provider",
+          },
+        },
+      },
+    });
+    const once = decodeStoredAppConfig(config);
+    const twice = decodeStoredAppConfig(once);
+
+    expect(twice).toEqual(once);
+    expect(once.authentication.end_user?.source === "issuer"
+      ? once.authentication.end_user.issuer.provider
+      : "unexpected").toBeUndefined();
+  });
+
+  it("applies optional defaults only at runtime resolution", () => {
+    const stored = decodeStoredAppConfig(serverConfig());
+    expect(stored).not.toHaveProperty("limits");
+    expect(stored).not.toHaveProperty("endpoints");
+    expect(resolveConfiguration(stored)).toMatchObject({
+      endpoints: {},
+      limits: {
+        perUser: { requestsPerMinute: null, requestsPerDay: null, monthlyBudgetMicrousd: null },
+        perApp: { requestsPerMinute: null, requestsPerDay: null, monthlyBudgetMicrousd: null },
+      },
+    });
+  });
+
   it("accepts explicit all-provider mode", () => {
     expect(() => validateAppConfigJson(serverConfig())).not.toThrow();
   });

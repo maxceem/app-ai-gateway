@@ -17,7 +17,7 @@ import {
   authIssuer,
   emptyIssuer,
   type AuthConfig,
-  type AuthenticationConfig,
+  type AuthenticationDraft,
 } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
 import { claimComplete, issuerComplete } from "@/lib/draft-problems";
@@ -244,7 +244,7 @@ function AppIdentity({
   readOnly,
   state,
 }: {
-  authentication: Extract<AuthenticationConfig, { type: "apple_app_attest" }>;
+  authentication: Extract<AuthenticationDraft, { type: "apple_app_attest" }>;
   readOnly: boolean;
   state: AppDraft;
 }) {
@@ -335,7 +335,7 @@ function UserAuthentication({
   readOnly,
   state,
 }: {
-  authentication: AuthenticationConfig;
+  authentication: AuthenticationDraft;
   readOnly: boolean;
   state: AppDraft;
 }) {

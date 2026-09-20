@@ -3,12 +3,12 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NewAppDialog } from "./new-app-dialog";
 import { renderAuthenticated } from "@/test/render";
-import type { AuthenticationConfig } from "@/lib/config-types";
+import type { AuthenticationDraft } from "@/lib/config-types";
 
 interface CreateAttempt {
   id?: unknown;
   name: string;
-  config?: { authentication?: AuthenticationConfig; limits?: unknown };
+  config?: { authentication?: AuthenticationDraft; limits?: unknown };
 }
 
 /**
@@ -23,13 +23,15 @@ function stubCreate(appId = "calorie-tracker-k3f9x1") {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.startsWith("/v1/admin/apps") && init?.method === "POST") {
-        attempts.push(JSON.parse(String(init.body)) as CreateAttempt);
+        const attempt = JSON.parse(String(init.body)) as CreateAttempt;
+        attempts.push(attempt);
         return new Response(
           JSON.stringify({
             app: {
               id: appId,
-              name: "Created app",
-              config: {},
+              revision: 1,
+              name: attempt.name,
+              config: attempt.config,
               status: "active",
               created_at: "2026-09-02T00:00:00.000Z",
               updated_at: "2026-09-02T00:00:00.000Z",
@@ -259,8 +261,8 @@ describe("an iOS application", () => {
           provider: "firebase",
           jwks_url:
             "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
-          issuer: "https://securetoken.google.com/calories-1a2b3",
-          audience: "calories-1a2b3",
+          issuer: ["https://securetoken.google.com/calories-1a2b3"],
+          audience: ["calories-1a2b3"],
           user_id_claim: "sub",
           required_claims: [],
           max_token_lifetime_seconds: 86400,

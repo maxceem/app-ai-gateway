@@ -1,7 +1,13 @@
 import { z } from "zod";
 import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
-import { PROVIDER_SLUG_PATTERN, PROVIDER_TYPES } from "../core/providers.ts";
-import { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "../core/types.ts";
+import { PROVIDER_TYPES } from "../shared/capabilities.ts";
+import {
+  ENDPOINT_SLUG,
+  ENTITLEMENT_CHECKS,
+  HTTP_FIELD_NAME,
+  ISSUER_PROVIDERS,
+  PROVIDER_SLUG_PATTERN,
+} from "../shared/app-config.ts";
 
 /**
  * Registry-driven, and deliberately narrower than the database's own CHECK: the
@@ -66,7 +72,7 @@ const EndUserHeaderSchema = z.string()
   .trim()
   .min(1)
   .max(64)
-  .regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, { error: "header must be a valid HTTP header name" });
+  .regex(HTTP_FIELD_NAME, { error: "header must be a valid HTTP header name" });
 
 const HeaderEndUserSchema = z.object({
   source: z.literal("header"),
@@ -185,7 +191,7 @@ export const AppConfigSchema = z.object({
     per_user: LimitScopeSchema,
     per_app: LimitScopeSchema,
   }).optional(),
-  endpoints: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), EndpointSchema).optional(),
+  endpoints: z.record(z.string().regex(ENDPOINT_SLUG), EndpointSchema).optional(),
 }).meta({ id: "AppConfig" });
 
 /**
@@ -467,6 +473,21 @@ export const OrganizationSelectRequestSchema = z.object({
 /** Inferred request bodies, so a consumer never re-describes one by hand. */
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 export type AppWrite = z.infer<typeof AppWriteSchema>;
+export type ClaimRequirement = z.infer<typeof ClaimRequirementSchema>;
+export type IssuerAuthentication = z.infer<typeof IssuerAuthenticationSchema>;
+export type IssuerProvider = NonNullable<IssuerAuthentication["provider"]>;
+export type EntitlementCheck = NonNullable<IssuerAuthentication["entitlement"]>;
+export type ApiKeyEndUser = z.infer<typeof ApiKeyEndUserSchema>;
+export type AppAttestEndUser = z.infer<typeof AppAttestEndUserSchema>;
+export type AppAttestEnvironment = NonNullable<
+  z.infer<typeof AppleAppAttestAuthenticationSchema>["app_attest"]["environments"]
+>[number];
+export type ProviderPolicy = z.infer<typeof ProviderPolicySchema>;
+export type RoutingConfig = AppConfig["routing"];
+export type LimitScopeConfig = z.infer<typeof LimitScopeSchema>;
+export type LimitsConfig = NonNullable<AppConfig["limits"]>;
+export type EndpointConfig = z.infer<typeof EndpointSchema>;
+export type EndpointsConfig = NonNullable<AppConfig["endpoints"]>;
 export type GatewayRouteConfigInput = z.infer<typeof GatewayRouteConfigSchema>;
 export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;
 export type OrganizationSelectRequest = z.infer<typeof OrganizationSelectRequestSchema>;

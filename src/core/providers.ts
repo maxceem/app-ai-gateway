@@ -2,6 +2,8 @@
 // module's import graph through Node's type stripping, which resolves specifiers
 // literally rather than bundling them.
 import { type CostReport, OPENROUTER_COST_REPORT } from "./cost-report.ts";
+import { PROVIDER_AUTH, type ProviderAuth } from "../shared/provider-auth.ts";
+export { PROVIDER_SLUG_PATTERN } from "../shared/app-config.ts";
 
 // The provider list and the endpoint styles are shared with the console, which
 // used to keep its own copy of both — see `src/shared/capabilities.ts`.
@@ -16,20 +18,13 @@ import type { ProviderType } from "../shared/capabilities.ts";
 
 // Flag-free on purpose: this source string is published verbatim as an
 // OpenAPI `pattern`, where a trailing JS flag would make the regex invalid.
-export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
-
 /**
  * How a provider authenticates a direct call. The header name and the scheme
  * prefix are free-form: providers name their key header whatever they like
  * (`x-api-key`, `x-goog-api-key`, `DeepL-Auth-Key`), and the sanitizer derives
  * its strip list from these declarations rather than repeating them.
  */
-export interface ProviderAuth {
-  /** Lower-case header name; header lookups are case-insensitive anyway. */
-  header: string;
-  /** Placed verbatim in front of the secret, trailing space included. */
-  scheme?: string;
-}
+export type { ProviderAuth } from "../shared/provider-auth.ts";
 
 export interface ProviderSpec {
   directBaseUrl: string;
@@ -85,12 +80,12 @@ export interface ProviderSpec {
 export const PROVIDER_REGISTRY = {
   openai: {
     directBaseUrl: "https://api.openai.com/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.openai,
     modelAuthor: "OpenAI",
   },
   anthropic: {
     directBaseUrl: "https://api.anthropic.com/",
-    auth: { header: "x-api-key" },
+    auth: PROVIDER_AUTH.anthropic,
     modelAuthor: "Anthropic",
     // Anthropic refuses any request without a version header, probe included —
     // and a probe has no client to send one for it. Deliberately not a
@@ -101,17 +96,17 @@ export const PROVIDER_REGISTRY = {
   },
   xai: {
     directBaseUrl: "https://api.x.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.xai,
     modelAuthor: "xAI",
   },
   gemini: {
     directBaseUrl: "https://generativelanguage.googleapis.com/",
-    auth: { header: "x-goog-api-key" },
+    auth: PROVIDER_AUTH.gemini,
     modelAuthor: "Google",
   },
   perplexity: {
     directBaseUrl: "https://api.perplexity.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.perplexity,
     modelAuthor: "Perplexity",
   },
 
@@ -124,41 +119,41 @@ export const PROVIDER_REGISTRY = {
     // No `v1` segment: DeepSeek documents the bare origin as its OpenAI base
     // URL, and `https://api.deepseek.com/anthropic` for the Anthropic format.
     directBaseUrl: "https://api.deepseek.com/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.deepseek,
     modelAuthor: "DeepSeek",
   },
   groq: {
     // Groq's OpenAI-compatible surface lives under `openai/v1/`, so the client
     // path is `openai/v1/chat/completions` rather than `v1/chat/completions`.
     directBaseUrl: "https://api.groq.com/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.groq,
   },
   mistral: {
     directBaseUrl: "https://api.mistral.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.mistral,
     modelAuthor: "Mistral",
   },
   together: {
     // `api.together.ai`, not the `.xyz` host older SDKs default to: the current
     // OpenAI-compatibility guide names this one and warns against the other.
     directBaseUrl: "https://api.together.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.together,
   },
   fireworks: {
     // The inference plane is `/inference/v1`; `/v1` on the same host is the
     // control plane, so the client path is `inference/v1/chat/completions`.
     directBaseUrl: "https://api.fireworks.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.fireworks,
   },
   cerebras: {
     directBaseUrl: "https://api.cerebras.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.cerebras,
   },
   moonshot: {
     // The international host. `api.moonshot.cn` is the separate China platform
     // and is not reachable with a key issued for this one.
     directBaseUrl: "https://api.moonshot.ai/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.moonshot,
     modelAuthor: "Moonshot AI",
   },
   huggingface: {
@@ -168,13 +163,13 @@ export const PROVIDER_REGISTRY = {
     // order of magnitude more on some of them than others. It ships with no
     // catalog section for that reason; see `catalogPrice` in usage.ts.
     directBaseUrl: "https://router.huggingface.co/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.huggingface,
   },
   baseten: {
     // The Model APIs inference host. `api.baseten.co` is the management plane
     // for dedicated deployments and answers to different paths entirely.
     directBaseUrl: "https://inference.baseten.co/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.baseten,
   },
   bytedance: {
     // BytePlus ModelArk, the international edition: `/api/v3` is its version
@@ -183,7 +178,7 @@ export const PROVIDER_REGISTRY = {
     // region — keys and catalogs are region-isolated, so reaching either needs
     // the per-row base URL override that Stage 6 introduces.
     directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.bytedance,
   },
 
   openrouter: {
@@ -193,7 +188,7 @@ export const PROVIDER_REGISTRY = {
     // `/api/v1` is its documented server URL, so the client path is
     // `v1/chat/completions` under this origin.
     directBaseUrl: "https://openrouter.ai/api/",
-    auth: { header: "authorization", scheme: "Bearer " },
+    auth: PROVIDER_AUTH.openrouter,
     // Every chat-completions response carries `usage.cost`: what OpenRouter
     // actually charged for that request, which beats any local estimate of a
     // catalog this deployment does not track. It is also the only way to bill

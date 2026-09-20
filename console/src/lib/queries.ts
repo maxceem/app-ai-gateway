@@ -1,8 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { operations } from "@contracts/operations";
-import type { AppResponse as WireAppResponse } from "@contracts/responses";
-import type { AppWrite } from "@contracts/schemas";
 import { api, call } from "./api";
+import { fromWireApp, toAppWrite } from "./config-conversion";
 import {
   changePassword,
   signInWithPassword,
@@ -15,7 +14,6 @@ import { analytics, captureAppCreated, captureProviderAdded, noteAuthMethod } fr
 import { checkoutReturnPathFor } from "./auth-redirect";
 import type {
   AppCreateBody,
-  AppResponse,
   AppUpsertBody,
   BillingPlansResponse,
   BillingStatusResponse,
@@ -26,19 +24,6 @@ import type {
   ProviderTestBody,
   ProviderUpdateBody,
 } from "./types";
-
-/**
- * The editor's view of an application, and the wire body it writes back.
- *
- * The API describes `config` as the stored `AppConfig`; the console describes
- * it as the form model in `lib/config-types`, which carries draft states a wire
- * format has no vocabulary for. Everything else about an application read is
- * the contract's own type, and these two functions are the only place the two
- * descriptions meet — deliberately named, so the seam is visible.
- */
-const asEditorApp = (response: WireAppResponse): AppResponse =>
-  response as unknown as AppResponse;
-const asWriteBody = (body: AppUpsertBody): AppWrite => body as unknown as AppWrite;
 
 export const keys = {
   capabilities: ["capabilities"] as const,
@@ -433,17 +418,20 @@ export function useApps(month: string, refetchInterval?: number) {
 export function useApp(appId: string) {
   return useQuery({
     queryKey: keys.app(appId),
-    queryFn: async () => asEditorApp(await call(operations.getApp, [appId])),
+    queryFn: async () => fromWireApp(await call(operations.getApp, [appId])),
   });
 }
 
 export function useSaveApp(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) =>
-      asEditorApp(
-        await call(operations.updateApp, [appId], { ...asWriteBody(body), revision }),
-      ),
+    mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) => {
+      const result = fromWireApp(
+        await call(operations.updateApp, [appId], { ...toAppWrite(body), revision }),
+      );
+      if (result.kind !== "valid") throw new Error(result.config_error);
+      return result;
+    },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });
       void client.invalidateQueries({ queryKey: ["apps"] });
@@ -455,10 +443,12 @@ export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (body: AppCreateBody): Promise<CreatedApp> => {
-      const created = await call(operations.createApp, [], asWriteBody(body));
+      const created = await call(operations.createApp, [], toAppWrite(body));
+      const converted = fromWireApp(created);
+      if (converted.kind !== "valid") throw new Error(converted.config_error);
       // The one-time initial key an API-key application is born with, which is
       // the one field a create carries beyond an ordinary application read.
-      return { ...asEditorApp(created), api_key: created.api_key };
+      return { ...converted, api_key: created.api_key };
     },
     onSuccess: (created, body) => {
       // Which of the two ways in the application was born with, since App

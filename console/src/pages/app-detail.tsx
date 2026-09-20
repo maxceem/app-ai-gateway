@@ -12,6 +12,7 @@ import { useAppDraft } from "@/hooks/use-app-draft";
 import { APP_SECTIONS, DEFAULT_APP_SECTION } from "@/lib/app-sections";
 import { draftProblem } from "@/lib/draft-problems";
 import { currentMonth } from "@/lib/format";
+import { useConsoleSession } from "@/lib/console-session";
 import { ErrorsTab } from "@/pages/tabs/errors";
 import { AuthPolicyTab } from "@/pages/tabs/auth-policy";
 import { LimitsTab } from "@/pages/tabs/limits";
@@ -26,6 +27,9 @@ const UsageTab = lazy(() => import("@/pages/tabs/usage").then((module) => ({ def
 const EndpointsTab = lazy(() =>
   import("@/pages/tabs/endpoints").then((module) => ({ default: module.EndpointsTab })),
 );
+const JsonEditor = lazy(() =>
+  import("@/components/json-editor").then((module) => ({ default: module.JsonEditor })),
+);
 
 /**
  * One app. The sidebar names it and lists its sections; the content is headed
@@ -37,6 +41,7 @@ const EndpointsTab = lazy(() =>
 export function AppDetailPage() {
   const { appId = "", tab = "overview", section } = useParams();
   const state = useAppDraft(appId);
+  const { readOnly } = useConsoleSession();
   // The month belongs to the page, because the control that picks it sits in
   // the page header beside the section's name.
   const [month, setMonth] = useState(currentMonth());
@@ -79,6 +84,75 @@ export function AppDetailPage() {
     );
   }
 
+  if (state.repair && state.invalidApp) {
+    const row = state.invalidApp;
+    return (
+      <div className="space-y-6 pb-24">
+        <PageHeader title={heading.label} />
+        {state.storedConfigValid ? (
+          <Alert>
+            <AlertCircle />
+            <AlertTitle>A newer valid configuration is stored</AlertTitle>
+            <AlertDescription>
+              This editor keeps your unsaved JSON and its original revision. Saving may require reloading first.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertTitle>The stored configuration is invalid</AlertTitle>
+            <AlertDescription>
+              {state.configError}. The gateway rejects requests for this app until it is fixed.
+            </AlertDescription>
+          </Alert>
+        )}
+        <div className="space-y-1 text-sm text-muted-foreground">
+          <p><span className="font-medium text-foreground">{row.name}</span> · {row.id}</p>
+          <p>Status: {row.status}</p>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <h2 className="font-medium">Repair configuration JSON</h2>
+            <p className="text-sm text-muted-foreground">
+              Correct the stored value below. It is validated before it is sent.
+            </p>
+          </div>
+          {state.repair ? (
+            <Suspense fallback={<Skeleton className="h-72 w-full" />}>
+              <JsonEditor
+                value={state.repair.text}
+                onChange={state.updateRepair}
+                readOnly={readOnly || state.saving}
+                minHeight="320px"
+              />
+            </Suspense>
+          ) : (
+            <Skeleton className="h-72 w-full" />
+          )}
+          {state.repairError ? (
+            <p role="alert" className="text-sm text-destructive">{state.repairError}</p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={state.resetRepair}
+              disabled={!state.repairDirty || state.saving}
+            >
+              Discard
+            </Button>
+            <GuardedButton
+              onClick={() => void state.saveRepair()}
+              disabled={!state.repairDirty || state.saving}
+            >
+              {state.saving ? <Loader2 className="size-4 animate-spin" /> : null}
+              Save repaired configuration
+            </GuardedButton>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 pb-24">
       <PageHeader
@@ -87,16 +161,6 @@ export function AppDetailPage() {
           tab === "overview" ? <MonthPicker value={month} onChange={setMonth} /> : undefined
         }
       />
-
-      {query.data?.config_error ? (
-        <Alert variant="destructive">
-          <AlertCircle />
-          <AlertTitle>The stored configuration is invalid</AlertTitle>
-          <AlertDescription>
-            {query.data.config_error}. The gateway rejects requests for this app until it is fixed.
-          </AlertDescription>
-        </Alert>
-      ) : null}
 
       {draft ? <MissingProvidersAlert proxy={draft.config.routing} /> : null}
 
