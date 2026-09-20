@@ -9,7 +9,10 @@ import {
   type UsageEvent,
 } from "../src/core/usage";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 /** A D1 binding that fails its first `failures` statements, then behaves normally. */
 function flakyDatabase(failures: number): { database: D1Database; attempts: () => number } {
@@ -485,5 +488,149 @@ describe("usage recording idempotency", () => {
       .bind(appId)
       .first<{ model: string }>();
     expect(after?.model).toBe("gpt-5.6-sol");
+  });
+
+  it("stores one blocked sample per identity and minute regardless of caller-controlled dimensions", async () => {
+    const anchor = Math.floor((Date.now() + 86_400_000) / 60_000) * 60_000 + 10_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(anchor);
+    const appId = "usage-record-blocked-sampled";
+    const blocked = (overrides: Partial<Parameters<typeof recordBlockedUsageEvent>[0]> = {}) =>
+      recordBlockedUsageEvent({
+        organizationId: "operator-test-organization",
+        env,
+        appId,
+        userId: "sampled-user",
+        authMethod: "api_key",
+        provider: "openai",
+        providerId: "provider-test",
+        providerSlug: "openai",
+        model: "gpt-5.6-sol",
+        route: "openai/v1/responses",
+        appVersion: `release-${"x".repeat(100)}`,
+        status: "blocked_user",
+        latencyMs: 2,
+        ...overrides,
+      });
+
+    await blocked();
+    await Promise.all([
+      blocked({
+        model: "caller-varied-model",
+        route: "caller-varied/route",
+        appVersion: "caller-varied-version",
+        status: "blocked_app_rate",
+      }),
+      blocked({ route: "another/varied-route", status: "blocked_app_budget" }),
+    ]);
+    await Promise.all([
+      blocked({ userId: "concurrent-user" }),
+      blocked({ userId: "concurrent-user", model: "concurrent-varied-model" }),
+    ]);
+    await blocked({ userId: null, apiKeyId: "key-a" });
+    await blocked({ userId: null, apiKeyId: "key-a", route: "key-varied/route" });
+    await blocked({ userId: null, apiKeyId: "key-b" });
+    await blocked({ appId: `${appId}-other` });
+    vi.setSystemTime(anchor + 60_000);
+    await blocked();
+
+    const rows = await env.DB.prepare(
+      "SELECT user_id, model, status, app_version FROM app_usage_event WHERE app_id = ? ORDER BY id",
+    )
+      .bind(appId)
+      .all<{ user_id: string | null; model: string; status: string; app_version: string }>();
+    expect(rows.results).toHaveLength(5);
+    expect(rows.results[0]).toMatchObject({
+      user_id: "sampled-user",
+      model: "gpt-5.6-sol",
+      status: "blocked_user",
+      app_version: `release-${"x".repeat(56)}`,
+    });
+    expect(rows.results.filter((row) => row.user_id === "sampled-user")).toHaveLength(2);
+    expect(rows.results.filter((row) => row.user_id === "concurrent-user")).toHaveLength(1);
+    expect(rows.results.filter((row) => row.user_id === null)).toHaveLength(2);
+    expect(await rowCount(`${appId}-other`)).toBe(1);
+  });
+
+  it("suppresses blocked diagnostics when their sampler is unavailable", async () => {
+    const appId = "usage-record-blocked-sampler-down";
+    let prepares = 0;
+    const countedDatabase = {
+      prepare(query: string) {
+        prepares += 1;
+        return env.DB.prepare(query);
+      },
+      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
+      exec: (query: string) => env.DB.exec(query),
+    } as unknown as D1Database;
+    const testEnv = {
+      ...env,
+      DB: countedDatabase,
+      ENDPOINT_RATE_LIMITER: {
+        getByName: () => ({ check: () => Promise.reject(new Error("sampler unavailable")) }),
+      },
+    } as unknown as Env;
+
+    await recordBlockedUsageEvent({
+      organizationId: "operator-test-organization",
+      env: testEnv,
+      appId,
+      userId: "user-1",
+      authMethod: "api_key",
+      apiKeyId: "suppressed-key",
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "blocked_app_rate",
+      latencyMs: 2,
+    });
+
+    expect(prepares).toBe(0);
+    expect(await rowCount(appId)).toBe(0);
+  });
+
+  it("does no D1 work after the identity's blocked sample is spent", async () => {
+    const appId = "usage-record-blocked-sample-spent";
+    let prepares = 0;
+    const countedDatabase = {
+      prepare(query: string) {
+        prepares += 1;
+        return env.DB.prepare(query);
+      },
+      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
+      exec: (query: string) => env.DB.exec(query),
+    } as unknown as D1Database;
+    const testEnv = {
+      ...env,
+      DB: countedDatabase,
+      ENDPOINT_RATE_LIMITER: {
+        getByName: () => ({
+          check: () => Promise.resolve({ allowed: false, retryAfterSeconds: 30 } as const),
+        }),
+      },
+    } as unknown as Env;
+
+    await recordBlockedUsageEvent({
+      organizationId: "operator-test-organization",
+      env: testEnv,
+      appId,
+      userId: null,
+      authMethod: "api_key",
+      apiKeyId: "spent-sample-key",
+      provider: "openai",
+      providerId: "provider-test",
+      providerSlug: "openai",
+      model: "gpt-5.6-sol",
+      route: "openai/v1/responses",
+      appVersion: null,
+      status: "blocked_app_rate",
+      latencyMs: 2,
+    });
+
+    expect(prepares).toBe(0);
+    expect(await rowCount(appId)).toBe(0);
   });
 });

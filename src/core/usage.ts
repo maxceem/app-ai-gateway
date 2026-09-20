@@ -5,6 +5,8 @@ import { readProviderReport, type ProviderReport } from "./cost-report";
 import { credentialSource } from "./gateways";
 import { log } from "./log";
 import { timeOrderedId } from "./ids";
+import { storedAppVersion } from "./app-version";
+import { claimDiagnosticSample } from "./endpoint-rate-limit";
 import { costReport, namespaceModelAuthor, providerModelAuthor, reportsCost } from "./providers";
 import { asRecord, lookup } from "./records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
@@ -799,7 +801,7 @@ async function recordStep(
 function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
   return database(env.DB)
     .insert(appUsageEvent)
-    .values(event.row)
+    .values({ ...event.row, appVersion: storedAppVersion(event.row.appVersion) })
     .onConflictDoNothing({ target: appUsageEvent.eventId });
 }
 
@@ -1044,6 +1046,23 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
 }
 
 export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Promise<void> {
+  // Blocked requests are diagnostics rather than accounting facts. Keep one
+  // representative row per authenticated identity per minute: a caller may
+  // vary model, route, status or version, but none of those opens another
+  // sample. API-key apps without end users use the credential id as the stable
+  // identity; the final fallback still groups by app rather than caller input.
+  const subject = JSON.stringify([
+    input.appId,
+    input.userId === null ? "api_key" : "user",
+    input.userId ?? input.apiKeyId ?? "app",
+  ]);
+  try {
+    if (!await claimDiagnosticSample(input.env, "blocked-usage", subject, 60_000)) return;
+  } catch {
+    // Sampling is a cost-control boundary. If its coordinator is unavailable,
+    // suppress the optional diagnostic instead of failing open into D1 writes.
+    return;
+  }
   const eventId = timeOrderedId();
   // A blocked request spent nothing, so there is no ledger settlement: only the
   // row and the key timestamp, both idempotent under the same identity.

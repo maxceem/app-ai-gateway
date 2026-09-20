@@ -24,6 +24,7 @@ import { runUsageRetention } from "./core/usage-retention";
 import { GatewayError } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
+import { storedAppVersion } from "./core/app-version";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
@@ -136,7 +137,7 @@ app.onError((error, c) => {
       path: c.req.path,
       method: c.req.method,
       app: c.req.param("app"),
-      appVersion: c.req.header("x-app-version"),
+      appVersion: storedAppVersion(c.req.header("x-app-version")) ?? undefined,
     });
     return new Response(
       JSON.stringify({

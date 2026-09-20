@@ -23,6 +23,10 @@ with **Outcome**, **Reason**, **Count**, **Days affected** and **Last seen**
 over the chosen range. This is the first place to look when a release starts
 failing.
 
+Repeated blocked proxy requests are sampled once per app identity per minute,
+so this view shows the refusal without turning a tight retry loop into one row
+per attempt. Authentication failures themselves remain individual events.
+
 ## Recent attempts
 
 Every token exchange and key registration, newest first: **When**, **User**,

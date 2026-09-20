@@ -747,4 +747,38 @@ describe("application authentication throttling", () => {
     ).bind(appId).first<{ n: number }>();
     expect(rows!.n).toBe(0);
   });
+
+  it("does no D1 work after refusing a throttled request for an existing app", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "throttle-existing-no-d1";
+    const address = crypto.randomUUID();
+    await seedServerApp(appId, { issuer: {} });
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_token.limit; spent++)
+      await enforceEndpointRateLimit(env, "app_auth_token", `${appId}:${address}`);
+
+    let prepares = 0;
+    const countedDatabase = {
+      prepare(query: string) {
+        prepares += 1;
+        return env.DB.prepare(query);
+      },
+      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
+      exec: (query: string) => env.DB.exec(query),
+    } as unknown as D1Database;
+    const ctx = createExecutionContext();
+    const response = await app.fetch(
+      new Request(`https://example.test/v1/apps/${appId}/auth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": address },
+        body: "{}",
+      }),
+      { ...env, DB: countedDatabase },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(429);
+    expect(prepares).toBe(0);
+  });
 });
