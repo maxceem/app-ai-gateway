@@ -6,6 +6,7 @@ import {
   clearApiKeyCache,
   generateApiKey,
   hashApiKey,
+  markApiKeyUsed,
   setApiKeyCacheLimit,
   verifyApiKey,
 } from "../src/core/apikeys";
@@ -245,5 +246,98 @@ describe("server tenant API keys", () => {
     await expect(exchange.json()).resolves.toMatchObject({
       error: { code: "auth_method_not_supported" },
     });
+  });
+});
+
+/**
+ * `last_used_at` is reporting: the console shows it, nothing decides anything
+ * by it, and the statement that maintains it only writes once an hour. Issuing
+ * it on every recorded request therefore buys a D1 round trip to be told the
+ * row is already current, which is what the per-isolate interval below skips.
+ */
+describe("marking a server key used", () => {
+  /**
+   * Counts the statements that reach D1, and can make one of them fail. Local
+   * to this file on purpose: a barrel imports test files, not the other way
+   * round, so a helper shared between two of them would have to live in
+   * `helpers.ts` first.
+   */
+  function countingDatabase(): { env: Env; statements: () => number; failNext: () => void } {
+    let statements = 0;
+    let failing = false;
+    const rejected = {
+      bind: () => rejected,
+      run: async () => { throw new Error("d1 unavailable"); },
+      all: async () => { throw new Error("d1 unavailable"); },
+      first: async () => { throw new Error("d1 unavailable"); },
+      raw: async () => { throw new Error("d1 unavailable"); },
+    } as unknown as D1PreparedStatement;
+    const db = {
+      prepare: (query: string) => {
+        statements += 1;
+        if (!failing) return env.DB.prepare(query);
+        failing = false;
+        return rejected;
+      },
+      batch: (input: D1PreparedStatement[]) => env.DB.batch(input),
+      exec: (query: string) => env.DB.exec(query),
+      withSession: (constraint?: string) => env.DB.withSession(constraint),
+    } as unknown as D1Database;
+    return {
+      env: new Proxy(env, {
+        get: (target, property, receiver) =>
+          property === "DB" ? db : Reflect.get(target, property, receiver),
+      }) as Env,
+      statements: () => statements,
+      failNext: () => { failing = true; },
+    };
+  }
+
+  function lastUsedAt(id: string): Promise<string | null | undefined> {
+    return env.DB.prepare("SELECT last_used_at FROM app_api_key WHERE id = ?")
+      .bind(id)
+      .first<{ last_used_at: string | null }>()
+      .then((row) => row?.last_used_at);
+  }
+
+  it("writes once for repeated requests inside the hour it would write in anyway", async () => {
+    await seedServerApp("mark-used-window");
+    const counted = countingDatabase();
+
+    await markApiKeyUsed(counted.env, "key_mark-used-window");
+    await markApiKeyUsed(counted.env, "key_mark-used-window");
+
+    expect(counted.statements()).toBe(1);
+    await expect(lastUsedAt("key_mark-used-window")).resolves.not.toBeNull();
+  });
+
+  it("writes again in a fresh isolate, which is what keeps the column accurate", async () => {
+    await seedServerApp("mark-used-fresh");
+    const counted = countingDatabase();
+
+    await markApiKeyUsed(counted.env, "key_mark-used-fresh");
+    // Standing in for an isolate that never saw this key: it has to reach D1,
+    // where the statement's own predicate decides whether anything changes.
+    clearApiKeyCache();
+    await markApiKeyUsed(counted.env, "key_mark-used-fresh");
+
+    expect(counted.statements()).toBe(2);
+  });
+
+  it("gives the interval back when the statement fails, so the retry reaches D1", async () => {
+    await seedServerApp("mark-used-failed");
+    const counted = countingDatabase();
+    counted.failNext();
+
+    await expect(markApiKeyUsed(counted.env, "key_mark-used-failed")).rejects.toThrow();
+    expect(counted.statements()).toBe(1);
+    expect(await lastUsedAt("key_mark-used-failed")).toBeNull();
+
+    // The caller retries this step, and a retry held off by an interval the
+    // failed attempt had already claimed would report a write that never
+    // happened.
+    await markApiKeyUsed(counted.env, "key_mark-used-failed");
+    expect(counted.statements()).toBe(2);
+    await expect(lastUsedAt("key_mark-used-failed")).resolves.not.toBeNull();
   });
 });

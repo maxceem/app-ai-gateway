@@ -31,6 +31,13 @@ export type QuotaUsage =
 /**
  * The organization-wide allowance counter. The caller resolves the billing
  * schedule; this object atomically adopts it and admits against its counter.
+ *
+ * There is exactly one instance per organization, so every request that
+ * organization makes is serialized through it and pays a round trip to
+ * wherever it lives — a pinned serialization point by design, and what makes
+ * the allowance an exact count rather than an estimate. The gate's own
+ * documentation, above `quotaGate` in `src/middleware/gate.ts`, explains what
+ * that costs per request and why leasing admissions per isolate was refused.
  */
 export class OrgQuota extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {

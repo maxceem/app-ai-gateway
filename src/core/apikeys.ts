@@ -26,6 +26,26 @@ const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
 const HIT_TTL_MS = 60_000;
 const MISS_TTL_MS = 10_000;
 const MAX_API_KEY_CACHE_ENTRIES = 10_000;
+/**
+ * How often a key's `last_used_at` is worth rewriting, and the interval the
+ * statement in {@link markApiKeyUsed} matches in SQL.
+ */
+const MARK_USED_INTERVAL_MS = 3_600_000;
+/**
+ * When this isolate last issued that statement, per key id. Without it the
+ * recorder pays a D1 round trip on every single request to be told the row is
+ * already current, which it is for fifty-nine minutes out of sixty.
+ *
+ * Remembering it per isolate does not make the column any less accurate: every
+ * isolate still issues at most one statement an hour per key, and the SQL
+ * predicate makes all but the first of those a no-op, so `last_used_at` is
+ * still within an hour of the truth however many isolates are serving the key.
+ *
+ * The ids come back from D1, so no caller invents them, but a deployment with
+ * many keys still accumulates entries: the map is bounded like the cache above
+ * and evicts insertion-oldest first. Losing an entry costs one no-op UPDATE.
+ */
+const lastMarkedAt = new Map<string, number>();
 // Narrowed only by `setApiKeyCacheLimit` below, and restored by
 // `clearApiKeyCache`, so nothing but a test can be running on another bound.
 let apiKeyCacheLimit = MAX_API_KEY_CACHE_ENTRIES;
@@ -183,22 +203,47 @@ export async function verifyApiKey(
 }
 
 export async function markApiKeyUsed(env: Env, apiKeyId: string): Promise<void> {
-  await database(env.DB)
-    .update(appApiKey)
-    .set({ lastUsedAt: sql`datetime('now')` })
-    .where(
-      and(
-        eq(appApiKey.id, apiKeyId),
-        or(
-          isNull(appApiKey.lastUsedAt),
-          lt(appApiKey.lastUsedAt, sql`datetime('now', '-1 hour')`),
+  const now = Date.now();
+  const marked = lastMarkedAt.get(apiKeyId);
+  if (marked !== undefined && now - marked < MARK_USED_INTERVAL_MS) return;
+  // Claimed before the statement is awaited, so a burst of concurrent requests
+  // on this isolate issues one UPDATE between them rather than one each.
+  // Re-inserting keeps the map in least-recently-written order.
+  lastMarkedAt.delete(apiKeyId);
+  lastMarkedAt.set(apiKeyId, now);
+  if (lastMarkedAt.size > MAX_API_KEY_CACHE_ENTRIES) {
+    const oldest = lastMarkedAt.keys().next();
+    if (!oldest.done) lastMarkedAt.delete(oldest.value);
+  }
+  try {
+    await database(env.DB)
+      .update(appApiKey)
+      .set({ lastUsedAt: sql`datetime('now')` })
+      .where(
+        and(
+          eq(appApiKey.id, apiKeyId),
+          // The same hour as MARK_USED_INTERVAL_MS, stated again here because
+          // this is what keeps the column accurate across isolates: whichever
+          // of them gets here first writes, and the rest find the row current.
+          or(
+            isNull(appApiKey.lastUsedAt),
+            lt(appApiKey.lastUsedAt, sql`datetime('now', '-1 hour')`),
+          ),
         ),
-      ),
-    );
+      );
+  } catch (error) {
+    // The claim is given back, because the caller retries this operation and a
+    // retry that found its own claim standing would return without writing
+    // anything and report the step as landed. Nothing here is lost by letting
+    // the next attempt reach D1: the statement is idempotent.
+    lastMarkedAt.delete(apiKeyId);
+    throw error;
+  }
 }
 
 export function clearApiKeyCache(): void {
   apiKeyCache.clear();
+  lastMarkedAt.clear();
   apiKeyCacheLimit = MAX_API_KEY_CACHE_ENTRIES;
 }
 

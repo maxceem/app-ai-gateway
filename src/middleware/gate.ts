@@ -35,14 +35,39 @@ import type { GatewayVariables } from "./auth";
  * The order is not arbitrary. A request the organization itself refused must
  * not consume the allowance the organization is billed for, so the app's limits
  * are always decided first and the allowance is claimed last.
+ *
+ * What this costs. Both quotas live in single Durable Objects — one per
+ * `app:user` pair and one per app for the app's own limits, one per
+ * organization for the plan allowance — and a request that is subject to all
+ * of them calls them one after another, because each is allowed to refuse
+ * before the next is spent. Those objects sit wherever they were created, so a
+ * request served far from them pays a round trip to each, in series, before it
+ * reaches the provider. That is accepted rather than optimised away. The
+ * target is many small applications, where the objects are barely contended
+ * and the trips are what makes a limit a limit: an exact count, a refusal that
+ * takes effect on the next request everywhere, and a `used` figure the console
+ * can show as fact. The alternative would be to lease a small batch of
+ * admissions from {@link import("../do/OrgQuota").OrgQuota} into each isolate
+ * and spend them locally, amortising the trip over the batch — but `used` and
+ * the refusal boundary would both become approximate, an overshoot would be
+ * charged to somebody's plan, and every admission an evicted isolate still
+ * held would be lost. None of that is worth the latency to an organization
+ * whose allowance is monthly.
  */
 
 /**
- * The block flag is read on every proxied request, is almost always `false`,
- * and changes only when an operator acts, so it is cached per isolate rather
- * than fetched from the Durable Object each time. Keys are `app:user` pairs the
- * gateway has already authenticated, but an app with many users still produces
- * many of them, so the map is bounded and evicts insertion-oldest first.
+ * The cached block flag, and the answer only for applications that set no
+ * per-user limits. Where per-user limits exist the gate calls the very same
+ * Durable Object a moment later, and that call checks the flag itself, before
+ * anything is counted — so reading it separately would be a second round trip
+ * to one object for an answer the first one already carries. The cached read is
+ * kept for the apps that make no such call, where it is the whole of what the
+ * gate would otherwise pay: it is almost always `false`, and changes only when
+ * an operator acts, so it is worth far less than a round trip per request.
+ *
+ * Keys are `app:user` pairs the gateway has already authenticated, but an app
+ * with many users still produces many of them, so the map is bounded and evicts
+ * insertion-oldest first.
  *
  * The isolate that serves a block clears its own entry
  * ({@link invalidateBlockedCache}); every other isolate converges within the
@@ -132,9 +157,12 @@ export const quotaGate: MiddlewareHandler<{
   ): never => {
     const durationMs = finish();
     if (result.reason === "blocked") {
-      // The cached flag was up to BLOCK_CACHE_TTL_MS stale and the limiter has
-      // since seen the block. Same answer as the cached path, never an app_*
-      // code: being blocked is not a limit the organization set.
+      // Where an app sets per-user limits this is how a blocked user is
+      // answered at all: the gate skipped the cached read precisely because
+      // this check reports the block itself, and it reports it before counting
+      // anything, so nothing has been spent. The answer is the same as the
+      // cached path's and never an app_* code: being blocked is not a limit
+      // the organization set.
       blockedEvent("blocked_user", durationMs);
       throw new GatewayError(403, "auth_required", "User is blocked");
     }
@@ -177,9 +205,18 @@ export const quotaGate: MiddlewareHandler<{
    * this is not an RPC per request either.
    */
   const [blockedResult, allowanceResult] = await Promise.allSettled([
-    // Blocking names a user, so an application with none has nobody to block
-    // and the read is skipped rather than aimed at a stand-in identity.
-    identity.userId === null
+    /*
+     * Two reasons to skip the read. Blocking names a user, so an application
+     * that identifies none has nobody to block and the flag is skipped rather
+     * than aimed at a stand-in identity. And an application with per-user
+     * limits reaches the very same Durable Object below, whose own check is
+     * atomic and reports a block before it counts anything — asking here as
+     * well would be a second round trip for an answer that call already
+     * carries. What that ordering protected is protected either way: the
+     * per-user check runs before the app-wide one, so a blocked user still
+     * drains nothing of the window their app shares.
+     */
+    identity.userId === null || hasUserLevelLimits(app)
       ? Promise.resolve(false)
       : isUserBlocked(c.env, `${identity.appId}:${identity.userId}`),
     monthlyRequestAllowance(c.env, app.organizationId, c.get("billingRequestCache")),
@@ -187,9 +224,10 @@ export const quotaGate: MiddlewareHandler<{
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
   if (blockedResult.value) {
-    // First, and unconditionally: the cached flag costs nothing, and answering
-    // here is what stops a blocked user from spending an app rate token on
-    // every attempt.
+    // First, and before any limit is consulted: for the apps that get here the
+    // cached flag costs nothing, and answering from it is what stops a blocked
+    // user from spending an app rate token on every attempt. An app with
+    // per-user limits never reaches this branch; it is answered below instead.
     const durationMs = finish();
     blockedEvent("blocked_user", durationMs);
     throw new GatewayError(403, "auth_required", "User is blocked");
