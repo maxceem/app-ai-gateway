@@ -6,6 +6,7 @@ import "../config.test";
 import "../read-session.test";
 import "../migration.test";
 import "../index.test";
+import "../lazy-routes.test";
 import "../performance.test";
 import "../public-api-url.test";
 import "../openapi.test";

@@ -1,6 +1,3 @@
-import { isCfAuthError } from "@maxceem/cf-auth";
-import { asGatewayAuthError } from "./auth/identity";
-import { cliRoutes } from "./routes/cli";
 import {
   AUTHORIZATION_SWEEP_QUERIES,
   pruneExpiredAccounts,
@@ -21,21 +18,18 @@ import {
   type QueryBudget,
 } from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
-import { GatewayError } from "./core/errors";
+import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
-import { adminAuth, type AdminVariables } from "./middleware/admin";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { quotaGate } from "./middleware/gate";
 import { billingEntitlementGate } from "./middleware/billing";
-import { adminRoutes } from "./routes/admin";
-import { authRoutes } from "./routes/auth";
-import { identityAuthRoutes } from "./routes/identity-auth";
-import { consoleRoutes } from "./routes/console";
+import { billingRequestScope } from "./middleware/request-scope";
+import { lazyRoutes } from "./routes/lazy";
 import {
   endpointPrepare,
   endpointRoutes,
@@ -47,17 +41,14 @@ import { vaultStatus } from "./vault";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
-const ROUTE_NOT_FOUND = { error: { code: "invalid_request", message: "Route not found" } } as const;
-
-const app = new Hono<{
+type AppEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & AdminVariables & ProxyVariables & EndpointVariables & BillingVariables;
-}>();
+  Variables: GatewayVariables & ProxyVariables & EndpointVariables & BillingVariables;
+};
 
-app.use("*", async (c, next) => {
-  c.set("billingRequestCache", new Map());
-  await next();
-});
+const app = new Hono<AppEnv>();
+
+app.use("*", billingRequestScope);
 
 app.get("/v1/healthz", (c) => c.json({
   ok: true,
@@ -87,12 +78,33 @@ app.use("/v1/auth/*", consoleHostOnly);
 app.use("/v1/console/*", consoleHostOnly);
 app.use("/v1/cli/browser/*", consoleHostOnly);
 
-app.route("/v1/cli", cliRoutes);
-app.route("/v1/auth", identityAuthRoutes);
-app.route("/v1/console", consoleRoutes);
+/**
+ * The management surface and the application token exchange are mounted as
+ * whole apps behind a dynamic `import()`, so a proxied request never evaluates
+ * better-auth, the operator identity or the zod contract schemas on a cold
+ * isolate. See `./routes/lazy` for why the request is forwarded untouched and
+ * how errors get back here.
+ *
+ * One bundle, four prefixes: the loader is memoised per `lazyRoutes` call, so
+ * all four share a single evaluation of `./routes/management`. The wildcard
+ * also matches the bare prefix, so `/v1/admin` reaches the same app as
+ * `/v1/admin/apps`.
+ */
+const management = lazyRoutes<AppEnv>(
+  () => import("./routes/management").then((module) => module.managementRoutes),
+);
+
+app.all("/v1/cli/*", management);
+app.all("/v1/auth/*", management);
+app.all("/v1/console/*", management);
 
 app.use("/v1/apps/:app/*", billingEntitlementGate);
-app.route("/v1/apps/:app/auth", authRoutes);
+app.all(
+  "/v1/apps/:app/auth/*",
+  lazyRoutes<AppEnv>(
+    () => import("./routes/app-auth").then((module) => module.appAuthRoutes),
+  ),
+);
 
 app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, quotaGate);
 app.route("/v1/apps/:app/proxy", proxyRoutes);
@@ -103,13 +115,23 @@ app.route("/v1/apps/:app/endpoints", endpointRoutes);
 app.use("/v1/apps/:app/me", gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);
 
-app.use("/v1/admin/*", adminAuth);
-app.route("/v1/admin", adminRoutes);
+/*
+ * The two app-scoped patterns exist only so the error log below still names the
+ * application. Hono binds `c.req.param()` from the pattern of the handler that
+ * is running, and `onError` runs on that same context, so a failure under a
+ * bare `/v1/admin/*` mount would log no `app` at all — where mounting the admin
+ * routes statically used to register `/v1/admin/apps/:app/...` on this app and
+ * fill it in. Nothing about routing changes: all three send the untouched
+ * request to the same memoised handler, and the first match wins because it
+ * answers without calling `next()`, so these must be registered first.
+ */
+app.all("/v1/admin/apps/:app", management);
+app.all("/v1/admin/apps/:app/*", management);
+app.all("/v1/admin/*", management);
 
 app.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 
 app.onError((error, c) => {
-  if (isCfAuthError(error)) error = asGatewayAuthError(error);
   const headers = new Headers();
   headers.set("content-type", "application/json; charset=UTF-8");
   if (c.req.path.includes("/proxy/") || c.req.path.includes("/endpoints/")) {
