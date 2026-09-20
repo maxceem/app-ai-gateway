@@ -4,16 +4,16 @@ description: Choose which providers, paths and models an app may use, cap output
 ---
 
 The **Proxy policy** page decides what an app may ask a provider for. A new app
-may use every provider you have, every path and every priced model. Narrow it
-here when an app should be able to do less.
+may use every provider you have, its inference APIs and every priced model.
+Narrow it here or explicitly allow another provider path.
 
 ## Provider access
 
 The **Provider access** card has one switch, **Configure individually**.
 
-- **Off**: every provider you have configured is allowed, and any provider,
-  path or model you add later is available to this app automatically. The
-  card lists the slugs of your providers; a disabled provider is struck
+- **Off**: every provider you have configured is allowed for inference, and any
+  provider or priced model you add later is available to this app automatically.
+  The card lists the slugs of your providers; a disabled provider is struck
   through.
 - **On**: the app may use only the providers you switch on below, and each
   one can be restricted further. A provider you add later is not allowed
@@ -25,11 +25,15 @@ name, and its description shows the URL segment clients use,
 
 ## Allowed paths
 
-Leave the list empty to allow every path the provider has. Add one or more
-paths to allow only those. A path is the provider's own API path without a
-leading slash, for example `v1/responses` or `v1/messages`. Paths are matched
-exactly, except that `{model}` in a path matches one segment, which is how
-Gemini's `v1beta/models/{model}:generateContent` names its model in the URL.
+Leave the list empty to allow the inference APIs: Responses, Chat Completions,
+Anthropic Messages, Gemini `generateContent` and transcription. Add one or more
+paths to allow only those instead. This is how you opt into any other provider
+operation.
+
+A path is the provider's own API path without a leading slash, for example
+`v1/responses` or `v1/messages`. Paths are matched exactly, except that
+`{model}` in a path matches one segment, which is how Gemini's
+`v1beta/models/{model}:generateContent` names its model in the URL.
 
 Each row has two optional settings:
 
@@ -109,7 +113,7 @@ it, and you can turn it off or recreate the provider.
 
 `mode` is `all` or `selected`. With `selected`, the keys of `selected` are
 provider slugs, and a slug not listed is not allowed. An entry with empty
-lists allows every path and every priced model of that provider. When you
-create an app, every slug you name must exist; when you update one, only
-slugs the update introduces are checked, so removing a provider never blocks
-unrelated edits.
+lists allows the default inference APIs and every priced model of that
+provider. A non-empty `allowed_paths` replaces that default. When you create an
+app, every slug you name must exist; when you update one, only slugs the update
+introduces are checked, so removing a provider never blocks unrelated edits.

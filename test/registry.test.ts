@@ -93,9 +93,7 @@ describe("API style classification", () => {
     ["v1beta/openai/chat/completions", "chat_completions"],
     ["v1/messages", "anthropic_messages"],
     ["v1beta/models/gemini-3.6-flash:generateContent", "gemini_native"],
-    // Streaming spells the operation `:streamGenerateContent`, which the
-    // gateway has never matched; Gemini's own shape carries it instead.
-    ["v1beta/models/gemini-3.6-flash:streamGenerateContent", "other"],
+    ["v1beta/models/gemini-3.6-flash:streamGenerateContent", "gemini_native"],
     ["v1/audio/transcriptions", "audio_transcription"],
     ["v1/stt", "audio_transcription"],
     ["v1/embeddings", "other"],
@@ -131,7 +129,6 @@ describe("API style classification", () => {
     "v1/audio/transcriptions",
     "v1/stt",
     "v1beta/models/gemini-3.6-flash:generateContent",
-    "v1beta/models/gemini-3.6-flash:streamGenerateContent",
     "openai/v1/responses",
   ];
 
@@ -144,6 +141,13 @@ describe("API style classification", () => {
         expect([providerType, path, outputClampStyle(apiStyleFromPath(path), providerType)])
           .toEqual([providerType, path, legacyClampStyle(providerType, path)]);
       }
+    }
+  });
+
+  it("uses Gemini's output field for native streaming generation", () => {
+    const style = apiStyleFromPath("v1beta/models/gemini-3.6-flash:streamGenerateContent");
+    for (const providerType of PROVIDER_TYPES) {
+      expect(outputClampStyle(style, providerType)).toBe("gemini_native");
     }
   });
 

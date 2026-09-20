@@ -282,7 +282,7 @@ Policy object for one provider:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `allowed_paths` | array | Empty allows every path. Entries are strings like `"v1/responses"`, or objects `{ "path", "fixed_model"?, "clamp"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none` |
+| `allowed_paths` | array | Empty allows inference APIs. A non-empty array allows only its entries, as strings like `"v1/responses"` or objects `{ "path", "fixed_model"?, "clamp"? }`. `clamp` is one of `responses`, `chat_completions`, `gemini_native`, `anthropic`, `none` |
 | `allowed_models` | string[] | Empty allows every priced model |
 | `max_output_tokens` | positive integer, optional | Requests above it are refused; requests without an output limit get it injected |
 

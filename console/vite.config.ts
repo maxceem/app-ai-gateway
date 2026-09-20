@@ -43,6 +43,9 @@ export default defineConfig(({ command, mode, isPreview }) => {
       ...(cloudflareDev
         ? [cloudflare({
           configPath: workerConfigPathFor(mode),
+          // Local development needs multiple test accounts. This plugin runs
+          // only in the dev server, so the override never enters a deployment.
+          config: { vars: { ALLOW_ADDITIONAL_REGISTRATIONS: "true" } },
           inspectorPort: false,
           // The same local D1, KV and Durable Object state `wrangler dev` uses.
           // The plugin would otherwise persist beside this config — the Vite

@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { ArrowRight, CheckCircle2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { DEFAULT_PROXY_API_STYLES } from "@shared/capabilities";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -29,7 +30,7 @@ import {
   type Provider,
   type ProviderConfig,
 } from "@/lib/config-types";
-import { gatewayApiSurface } from "@/lib/capabilities";
+import { API_STYLE_LABELS, gatewayApiSurface } from "@/lib/capabilities";
 import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
 import type { ProviderCredential, ProviderGateway } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -108,6 +109,23 @@ function PolicyStateBadge({ state }: { state: "disabled" | "deleted" }) {
   );
 }
 
+/** The empty allowlist's complete policy, kept visual and scannable. */
+function DefaultApiBadges() {
+  return (
+    <div className="flex flex-wrap justify-center gap-1.5">
+      {DEFAULT_PROXY_API_STYLES.map((style) => (
+        <Badge
+          key={style}
+          variant="secondary"
+          className="bg-background/80 text-[11px] font-normal text-foreground shadow-sm ring-1 ring-border/70"
+        >
+          {API_STYLE_LABELS[style]}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 function ProviderCard({
   row,
   config,
@@ -147,7 +165,14 @@ function ProviderCard({
         <CardContent className="space-y-5">
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label className="text-sm">Allowed paths</Label>
+              <div className="flex items-center gap-2">
+                <Label className="text-sm">Allowed paths</Label>
+                {paths.length > 0 ? (
+                  <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground">
+                    Only listed paths
+                  </Badge>
+                ) : null}
+              </div>
               <Button
                 variant="outline"
                 size="sm"
@@ -158,7 +183,13 @@ function ProviderCard({
               </Button>
             </div>
             {paths.length === 0 ? (
-              <EmptyState>Every path is allowed. Add one or more paths to restrict this provider.</EmptyState>
+              <EmptyState>
+                <div className="space-y-3">
+                  <p className="font-medium text-foreground">Inference APIs are allowed by default</p>
+                  <DefaultApiBadges />
+                  <p className="text-xs">Add paths to allow only those.</p>
+                </div>
+              </EmptyState>
             ) : (
               <div className="space-y-2">
                 {paths.map((entry, index) => (
@@ -237,11 +268,13 @@ function ProviderCard({
                 ))}
               </div>
             )}
-            <p className="text-xs text-muted-foreground">
-              Leave this list empty to allow every path. A fixed model applies to
-              transcription-style routes with no model in the body; it is never injected upstream.
-              Leave the output cap style on auto unless the route needs an exception.
-            </p>
+            {paths.length > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                A fixed model applies to transcription-style routes with no model in the body; it
+                is never injected upstream. Leave the output cap style on auto unless the route
+                needs an exception.
+              </p>
+            ) : null}
           </div>
 
           <Field
@@ -491,10 +524,18 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
                   <CheckCircle2 className="size-5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">Every configured instance is allowed</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold">Every configured instance is allowed</p>
+                    <Badge
+                      variant="outline"
+                      className="border-emerald-500/30 bg-background/60 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-300"
+                    >
+                      Inference APIs
+                    </Badge>
+                  </div>
                   <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                    New provider instances, paths, and models are available automatically. Turn on
-                    individual configuration only when this application needs restrictions.
+                    New provider instances and priced models are available automatically. Other
+                    provider paths require individual configuration.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {instances.length === 0 ? (
@@ -538,8 +579,8 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
                   {selected.length} of {instances.length} provider instances enabled
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Use the switches below. An enabled instance allows every path and model until you
-                  add a restriction, and clients reach it at its own slug.
+                  Use the switches below. An enabled instance allows inference APIs and every
+                  priced model until you add a restriction, and clients reach it at its own slug.
                 </p>
               </div>
             </div>

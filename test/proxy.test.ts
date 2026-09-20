@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { API_STYLES } from "../src/core/api-styles";
+import { API_STYLES, apiStyleFromPath, outputClampStyle } from "../src/core/api-styles";
 import { clearProviderCaches } from "../src/core/provider-store";
 import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
 import { costReportBodyMutation } from "../src/core/proxyrules";
@@ -280,11 +280,27 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+describe("proxy API style classification", () => {
+  it.each([
+    ["v1/responses", "responses", "responses"],
+    ["openai/v1/responses", "responses", "responses"],
+    ["v1/audio/transcriptions", "audio_transcription", "none"],
+    ["openai/v1/audio/transcriptions", "audio_transcription", "none"],
+    ["v1beta/models/gemini-3.5-flash:generateContent", "gemini_native", "gemini_native"],
+    ["v1beta/models/gemini-3.5-flash:streamGenerateContent", "gemini_native", "gemini_native"],
+    ["v1/threads/thread_123/messages", "other", "chat_completions"],
+  ] as const)("classifies %s as %s", (path, expectedStyle, expectedGroqClamp) => {
+    const style = apiStyleFromPath(path);
+    expect(style).toBe(expectedStyle);
+    expect(outputClampStyle(style, "groq")).toBe(expectedGroqClamp);
+  });
+});
+
 describe("provider-native proxy", () => {
   it.each([
     ["an empty legacy config", { model_rewrites: {} }],
     ["explicit all mode", { provider_mode: "all", model_rewrites: {} }],
-  ])("allows every provider and path with a priced model in %s", async (_label, proxy) => {
+  ])("allows every provider's inference APIs and priced models in %s", async (_label, proxy) => {
     const appId = `proxy-all-${crypto.randomUUID()}`;
     await seedApp(appId, { proxy });
     const token = await gatewayToken(appId);
@@ -307,6 +323,99 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe("https://api.perplexity.ai/chat/completions");
+  });
+
+  it.each([
+    ["an empty selected policy", { openai: { allowed_paths: [], allowed_models: [] }, model_rewrites: {} }],
+    ["all mode", { provider_mode: "all", model_rewrites: {} }],
+  ])("refuses provider control-plane paths in %s", async (_label, proxy) => {
+    const appId = `proxy-default-deny-${crypto.randomUUID()}`;
+    await seedApp(appId, { proxy });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "openai/v1/fine_tuning/jobs",
+      body: { model: "gpt-5.6-sol", training_file: "file-secret" },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake an inference-like suffix for a default inference path", async () => {
+    const appId = "proxy-default-deny-suffix";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "openai/v1/threads/thread_123/messages",
+      body: { model: "gpt-5.6-sol", content: "hello" },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows an explicitly listed provider-native operation", async () => {
+    const appId = "proxy-explicit-other-path";
+    await seedApp(appId, {
+      proxy: {
+        openai: {
+          allowed_paths: ["v1/fine_tuning/jobs"],
+          allowed_models: ["gpt-5.6-sol"],
+        },
+        model_rewrites: {},
+      },
+    });
+    const token = await gatewayToken(appId);
+    const captured: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
+      captured.push(typeof request === "string" ? request : request instanceof URL ? request.toString() : request.url);
+      return Response.json({ id: "ftjob_123", usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "openai/v1/fine_tuning/jobs",
+      body: { model: "gpt-5.6-sol", training_file: "file-explicit" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(captured).toEqual(["https://api.openai.com/v1/fine_tuning/jobs"]);
+  });
+
+  it("keeps Groq's namespaced inference paths in the default policy", async () => {
+    const appId = "proxy-default-groq-responses";
+    await seedApp(appId, { proxy: { provider_mode: "all", model_rewrites: {} } });
+    const token = await gatewayToken(appId);
+    const captured: CapturedRequest[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      captured.push({
+        url: typeof request === "string" ? request : request instanceof URL ? request.toString() : request.url,
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === "string" ? init.body : "",
+      });
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+
+    const response = await proxyRequest({
+      appId,
+      token,
+      path: "groq/openai/v1/responses",
+      body: { model: "openai/gpt-oss-120b", input: "hello" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(captured[0]?.url).toBe("https://api.groq.com/openai/v1/responses");
   });
 
   it("allows individual mode to disable every provider", async () => {
@@ -626,7 +735,7 @@ describe("provider-native proxy", () => {
   it.each([
     ["omitted", undefined],
     ["empty", []],
-  ])("allows every path when allowed_paths is %s", async (suffix, allowedPaths) => {
+  ])("allows default inference paths when allowed_paths is %s", async (suffix, allowedPaths) => {
     const appId = `proxy-paths-${suffix}`;
     const openai: Record<string, unknown> = {
       allowed_models: [],
@@ -657,9 +766,13 @@ describe("provider-native proxy", () => {
   });
 
   it.each([
-    ["omitted", undefined],
-    ["empty", []],
-  ])("resolves native Gemini URL models when allowed_paths is %s", async (suffix, allowedPaths) => {
+    ["omitted", undefined, "generateContent"],
+    ["empty", [], "streamGenerateContent"],
+  ])("resolves native Gemini URL models when allowed_paths is %s", async (
+    suffix,
+    allowedPaths,
+    operation,
+  ) => {
     const appId = `proxy-gemini-paths-${suffix}`;
     const gemini: Record<string, unknown> = {
       allowed_models: [],
@@ -686,13 +799,13 @@ describe("provider-native proxy", () => {
     const response = await proxyRequest({
       appId,
       token,
-      path: "gemini/v1beta/models/gemini-3.5-flash:generateContent",
+      path: `gemini/v1beta/models/gemini-3.5-flash:${operation}`,
       body: { contents: [] },
     });
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:${operation}`,
     );
     expect(JSON.parse(captured[0]!.body)).toMatchObject({
       generationConfig: { maxOutputTokens: 128 },

@@ -186,7 +186,7 @@ export interface AllowedPathObject {
 export type AllowedPath = string | AllowedPathObject;
 
 export interface ProviderConfig {
-  /** Missing or empty allows every path; a non-empty list restricts access. */
+  /** Missing or empty allows the default inference APIs; a non-empty list replaces that default. */
   allowed_paths?: AllowedPath[];
   /** Missing or empty allows every model; a non-empty list restricts access. */
   allowed_models?: string[];

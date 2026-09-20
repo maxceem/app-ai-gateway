@@ -18,6 +18,7 @@ import {
 } from "./providers";
 import { lookup } from "./records";
 import { isBillable } from "./usage";
+import { isDefaultProxyApiStyle } from "../shared/capabilities";
 import type {
   AllowedPath,
   AllowedPathConfig,
@@ -28,7 +29,7 @@ import type {
 } from "./types";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
-const UNRESTRICTED_PROVIDER: ProviderProxyConfig = {
+const DEFAULT_PROVIDER_POLICY: ProviderProxyConfig = {
   allowed_paths: [],
   allowed_models: [],
 };
@@ -116,9 +117,9 @@ function matchedPath(provider: ProviderType, path: string, allowed: AllowedPath[
   if (allowed.length === 0) {
     if (provider === "gemini") {
       // Native Gemini generation requests carry the model in the URL rather
-      // than the JSON body, so unrestricted paths still need a model capture.
+      // than the JSON body, so default inference paths still need a model capture.
       const nativeMatch = path.match(
-        /^(v1(?:alpha|beta)?\/models\/)([^/]+)(:(?:stream)?generateContent)$/u,
+        /^(v1(?:alpha|beta)?\/models\/)([^/]+)(:(?:generateContent|streamGenerateContent))$/u,
       );
       if (nativeMatch?.[2]) {
         return {
@@ -501,12 +502,15 @@ export async function prepareProxyRequest(input: {
   pricing: ProviderPricing | null;
 }): Promise<PreparedProxyRequest> {
   const config = input.app.routing.providerMode === "all"
-    ? UNRESTRICTED_PROVIDER
+    ? DEFAULT_PROVIDER_POLICY
     : lookup(input.app.routing.providers, input.providerSlug);
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
+  const apiStyle = apiStyleFromPath(input.providerPath);
+  if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
+    throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+  }
   const match = matchedPath(input.provider, input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
-  const apiStyle = apiStyleFromPath(input.providerPath);
   assertApiStyleSupported(input.route, input.provider, apiStyle);
 
   const bytes = await readBodyLimited(input.request);
