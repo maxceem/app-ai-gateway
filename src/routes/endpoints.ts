@@ -164,7 +164,18 @@ endpointRoutes.post("/:slug", async (c) => {
   const slug = prepared.slug;
 
   const resolvedProviders = c.get("resolvedProviders")!;
+  // One time-to-first-byte budget for the whole chain, fixed before the first
+  // attempt. Spending it per target would let a three-target endpoint hold the
+  // client for three times what the deployment configured.
+  //
+  // The trade-off is deliberate: a primary that hangs for the whole budget
+  // leaves nothing for its fallbacks, so the chain covers fast failures,
+  // connection errors and retryable statuses rather than a primary that never
+  // answers at all. A deployment that wants fallbacks to cover hangs too should
+  // lower PROVIDER_TTFB_TIMEOUT_SECONDS, which shortens the wait each target
+  // can spend before the next one gets its turn.
   const timeoutMs = providerTtfbTimeoutMs(c.env);
+  const deadline = performance.now() + timeoutMs;
 
   const record = (input: {
     attempt: PreparedProxyRequest;
@@ -215,6 +226,27 @@ endpointRoutes.post("/:slug", async (c) => {
         resolved.gateway?.type ?? "direct",
         resolved.gatewayRoute,
       );
+
+    // What is left of the chain's budget is what this attempt gets. Once it is
+    // gone it is gone for every target still to come, so there is nothing to
+    // fall through to and the timeout the client has already waited out is
+    // answered here. Nothing is recorded for the targets left: the attempt that
+    // spent the budget has its own row, and a provider that was never contacted
+    // must not appear in its own error counts. One log line names them instead.
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      log("warn", "provider_ttfb_budget_exhausted", {
+        appId: app.id,
+        endpointSlug: slug,
+        budgetMs: timeoutMs,
+        skipped: prepared.targets
+          .slice(index)
+          .map((untried) => resolvedProviders.get(untried.provider)!.slug),
+      });
+      throw new GatewayError(504, "provider_error", "Provider did not respond in time");
+    }
+    const attemptTimeoutMs = Math.round(remainingMs);
+
     const upstreamRequest = providerUpstream({
       resolved,
       prepared: attempt,
@@ -232,7 +264,7 @@ endpointRoutes.post("/:slug", async (c) => {
           body: attempt.body,
           redirect: "manual",
         },
-        timeoutMs,
+        attemptTimeoutMs,
       );
     } catch (error) {
       // A provider that never answers is a failed attempt like any other, so
@@ -244,7 +276,10 @@ endpointRoutes.post("/:slug", async (c) => {
           providerSlug: resolved.slug,
           route: `${resolved.slug}/${attempt.providerPath}`,
           endpointSlug: slug,
-          timeoutMs,
+          // What this attempt was given, and the whole chain's budget it came
+          // out of: on a fallback the first is the smaller of the two.
+          timeoutMs: attemptTimeoutMs,
+          budgetMs: timeoutMs,
         });
       }
       record({
@@ -253,7 +288,7 @@ endpointRoutes.post("/:slug", async (c) => {
         observed: null,
         contentType: "",
         status: "provider_error",
-        latencyMs: timedOut ? timeoutMs : Math.round(performance.now() - providerStart),
+        latencyMs: timedOut ? attemptTimeoutMs : Math.round(performance.now() - providerStart),
       });
       if (!last) continue;
       throw timedOut

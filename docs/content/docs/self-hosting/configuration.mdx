@@ -164,7 +164,10 @@ Plain variable, default `120`. How long a provider may take to send its
 response headers before the gateway gives up and answers `504`. Once headers
 arrive the body streams for as long as the model needs; only the first byte is
 bounded. Reasoning models can think for a minute before that first byte, which
-is why the default is generous.
+is why the default is generous. A named endpoint's fallback chain shares one
+budget across all of its targets, so a chain never keeps a client waiting longer
+than this however many fallbacks it lists. A primary that never answers spends
+the whole budget, so lower it if you want fallbacks to cover that case too.
 
 ## Nightly maintenance
 

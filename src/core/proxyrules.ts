@@ -444,6 +444,10 @@ export function clientResponseHeaders(upstream: Response): Headers {
  * How long an upstream may take to send its response headers. Reasoning models
  * can think for a minute before the first byte on a long prompt, so the default
  * is generous; only a provider that has stopped answering altogether hits it.
+ *
+ * On a named endpoint this is the budget for the whole fallback chain rather
+ * than for each target, so a chain never holds a client longer than one budget
+ * however many targets it lists.
  */
 export const PROVIDER_TTFB_TIMEOUT_MS = 120_000;
 
