@@ -27,6 +27,8 @@ describe("initial database migration", () => {
       name: string;
       notnull: number;
     }>();
+    const spendColumns = await env.DB.prepare("PRAGMA table_info(app_usage_spend)")
+      .all<{ name: string; notnull: number }>();
     const apiKeyColumns = await env.DB.prepare("PRAGMA table_info(app_api_key)").all<{ name: string }>();
     const apiKeyIndexes = await env.DB.prepare("PRAGMA index_list(app_api_key)").all<{
       name: string;
@@ -78,6 +80,27 @@ describe("initial database migration", () => {
       "updated_at",
     ]);
     expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
+    expect(spendColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "organization_id",
+      "app_id",
+      "scope",
+      "user_key",
+      "month",
+      "microusd",
+      "revision",
+      "pending",
+      "last_attempt_at",
+    ]);
+    expect(spendColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(0);
+    const spendTriggers = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'app_usage_event_%' ORDER BY name",
+    ).all<{ name: string }>();
+    expect(spendTriggers.results.map((row) => row.name)).toEqual([
+      "app_usage_event_owner_guard_before_insert",
+      "app_usage_event_spend_after_cost_update",
+      "app_usage_event_spend_after_insert",
+    ]);
     const appTables = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND (name = 'app' OR name LIKE 'app_%') ORDER BY name",
     ).all<{ name: string }>();
@@ -88,6 +111,7 @@ describe("initial database migration", () => {
       "app_auth_event",
       "app_usage_event",
       "app_usage_rollup",
+      "app_usage_spend",
       "app_user",
     ]);
     // The auth event log mirrors usage's conventions, with the two differences

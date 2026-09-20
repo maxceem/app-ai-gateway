@@ -1,8 +1,7 @@
 import { Hono, type Context } from "hono";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getBillingAccess, requireActiveBilling } from "../../billing/gateway";
 import {
-  hasAppLevelLimits,
   appConfigFromRow,
   invalidateAppConfig,
   parseStoredAppConfig,
@@ -25,7 +24,6 @@ import {
   app,
   appAuthChallenge,
   appAuthEvent,
-  appUsageEvent,
   appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -479,44 +477,6 @@ appRoutes.post("/apps/:app/validate", async (c) => {
   return c.json({ valid: true, app_id: appId, exists: existing !== undefined } satisfies AppValidateResponse);
 });
 
-/**
- * Seeds the app-wide spend ledger the first time an app grows app-wide limits.
- *
- * Every request settles its cost against the per-user ledger, but against the
- * app-wide one only while the app has app-level limits — that is what keeps an
- * app without them from paying for a second Durable Object round trip on every
- * request. The cost is that the app-wide ledger is empty until the day someone
- * turns those limits on, so a budget set mid-month would start from zero while
- * a per-user budget set the same day already counts the whole month.
- *
- * Two identical-looking fields meaning different months is the kind of thing
- * nobody discovers until a budget fails to bite, so the transition backfills
- * from the usage rows, which are the source of truth either way.
- */
-async function backfillAppLedger(
-  env: Env,
-  appId: string,
-  previousConfig: unknown,
-  next: ReturnType<typeof appConfigFromRow>,
-): Promise<void> {
-  if (!hasAppLevelLimits(next)) return;
-  // Only the transition. An app that already had them has been settling all
-  // along, and re-summing would be a needless read on every unrelated edit.
-  const before = parseStoredAppConfig(previousConfig, null).resolved.limits;
-  if (hasAppLevelLimits({ ...next, limits: before })) return;
-  const month = new Date().toISOString().slice(0, 7);
-  const [total] = await database(env.DB)
-    .select({
-      microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
-    })
-    .from(appUsageEvent)
-    .where(and(
-      eq(appUsageEvent.appId, appId),
-      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
-    ));
-  await env.USER_LIMITER.getByName(appId).reconcileMonth(month, total?.microusd ?? 0);
-}
-
 appRoutes.put("/apps/:app", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
@@ -556,7 +516,6 @@ appRoutes.put("/apps/:app", async (c) => {
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
   const resolved = appConfigFromRow(written);
-  await backfillAppLedger(c.env, appId, existing.config, resolved);
   return c.json(
     { app: serializeRow(written), resolved: asJsonObject(resolved), config_error: null } satisfies AppResponse,
     200,

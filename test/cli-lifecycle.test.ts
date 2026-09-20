@@ -100,6 +100,7 @@ beforeEach(async () => {
       "app_auth_event",
       "app_usage_event",
       "app_usage_rollup",
+      "app_usage_spend",
       "app_api_key",
       "app_user",
       "app",
@@ -960,6 +961,11 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   const testEnv = runtime();
   const { data, input } = await start(testEnv);
   await env.DB.prepare(
+    `INSERT INTO app_usage_spend(
+       organization_id, app_id, scope, user_key, month, microusd, revision, pending
+     ) VALUES (?, 'expired-spend-app', 'app', '', '2026-07', 10, 1, 1)`,
+  ).bind(data.account.id).run();
+  await env.DB.prepare(
     "UPDATE mgmt_organization SET expires_at=? WHERE id=?",
   )
     .bind(new Date(Date.now() - 1000).toISOString(), data.account.id)
@@ -970,6 +976,9 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
     await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first(
       "n",
     ),
+  ).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) n FROM app_usage_spend").first("n"),
   ).toBe(0);
   expect(
     await env.DB.prepare(

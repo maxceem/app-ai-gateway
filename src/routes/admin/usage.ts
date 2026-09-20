@@ -1,6 +1,8 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNotNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { projectPendingAppMonthSpend } from "../../core/app-usage-accounting";
 import { GatewayError } from "../../core/errors";
+import { log } from "../../core/log";
 import type { ProviderType } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
@@ -46,6 +48,13 @@ type BreakdownKey = keyof typeof BREAKDOWN_COLUMNS;
 
 const USAGE_STATUSES = ["ok", "provider_error", "blocked_app_rate", "blocked_app_budget", "blocked_billing", "blocked_user"] as const;
 type UsageStatusFilter = (typeof USAGE_STATUSES)[number];
+
+const REPRICE_UPDATE_CHUNK = 500;
+const FREE_SUBREQUEST_LIMIT = 50;
+// Authentication, the event/provider read, projection select, response work,
+// and slack share the same invocation limit as update and delivery calls.
+const REPRICE_FIXED_QUERY_ALLOWANCE = 11;
+const QUERIES_PER_PROJECTION = 3;
 
 /**
  * Whether an event carries usage a price could act on.
@@ -176,8 +185,9 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
 
   let reconciledUsers = 0;
   if (apply && repriced.length > 0) {
-    for (let offset = 0; offset < repriced.length; offset += 100) {
-      const chunk = repriced.slice(offset, offset + 100);
+    const updates: D1PreparedStatement[] = [];
+    for (let offset = 0; offset < repriced.length; offset += REPRICE_UPDATE_CHUNK) {
+      const chunk = repriced.slice(offset, offset + REPRICE_UPDATE_CHUNK);
       // `cost_source` moves with the figure, but only where there was a figure
       // to move. A row with readable counts now has a cost the local catalog
       // stands behind, so leaving an `unresolved` marker on it would keep the
@@ -195,53 +205,51 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
       // marker survives.
       //
       // `reported` rows never get here — they are excluded by the query above.
-      await c.env.DB.batch(chunk.map((row) => c.env.DB
-        .prepare(row.metered
-          ? "UPDATE app_usage_event SET cost_usd = ?, cost_source = 'computed' WHERE id = ? AND app_id = ?"
-          : "UPDATE app_usage_event SET cost_usd = ? WHERE id = ? AND app_id = ?")
-        .bind(row.costUsd, row.id, appId)));
+      const changes = JSON.stringify(chunk.map((row) => ({
+        id: row.id,
+        cost: row.costUsd,
+        metered: row.metered ? 1 : 0,
+      })));
+      // Each chunk is one D1 subrequest. The row triggers still apply every
+      // delta separately, so a concurrent live event composes with repricing.
+      updates.push(c.env.DB.prepare(
+        `WITH changes AS (
+           SELECT
+             CAST(json_extract(value, '$.id') AS INTEGER) AS id,
+             CAST(json_extract(value, '$.cost') AS REAL) AS cost,
+             CAST(json_extract(value, '$.metered') AS INTEGER) AS metered
+           FROM json_each(?)
+         )
+         UPDATE app_usage_event SET
+           cost_usd = (SELECT cost FROM changes WHERE changes.id = app_usage_event.id),
+           cost_source = CASE
+             WHEN (SELECT metered FROM changes WHERE changes.id = app_usage_event.id) = 1
+             THEN 'computed' ELSE cost_source END
+         WHERE app_id = ? AND id IN (SELECT id FROM changes)`,
+      ).bind(changes, appId));
     }
-
-    const monthFilter = and(
-      eq(appUsageEvent.appId, appId),
-      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
-    );
-    const userTotals = await database(c.env.DB)
-      .select({
-        userId: appUsageEvent.userId,
-        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
-      })
-      .from(appUsageEvent)
-      // Userless rows settle against no per-user ledger, so there is none to
-      // reconcile: excluded here rather than filtered afterwards, so the count
-      // reported below is of ledgers actually touched.
-      .where(and(monthFilter, isNotNull(appUsageEvent.userId)))
-      .groupBy(appUsageEvent.userId);
-    for (const total of userTotals) {
-      await c.env.USER_LIMITER
-        .getByName(`${appId}:${total.userId}`)
-        .reconcileMonth(month, total.microusd);
+    // One transaction preserves the endpoint's all-or-nothing apply contract;
+    // each statement still counts against the invocation's query allowance.
+    await c.env.DB.batch(updates);
+    const updateQueries = updates.length;
+    const projectionLimit = Math.max(0, Math.min(
+      12,
+      Math.floor(
+        (FREE_SUBREQUEST_LIMIT - REPRICE_FIXED_QUERY_ALLOWANCE - updateQueries)
+        / QUERIES_PER_PROJECTION,
+      ),
+    ));
+    try {
+      const projected = await projectPendingAppMonthSpend(c.env, appId, month, projectionLimit);
+      reconciledUsers = projected.projectedUsers;
+    } catch (error) {
+      // D1 already marked every changed row pending, so recovery owns the rest.
+      log("error", "usage_reprice_projection_failed", {
+        appId,
+        month,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    reconciledUsers = userTotals.length;
-
-    /*
-     * The app-wide ledger is a second, independent sum over the same rows, and
-     * it backs the app-wide monthly budget. Reconciling only the per-user
-     * ledgers would leave that budget running on a total repricing can no
-     * longer correct.
-     *
-     * Done unconditionally rather than behind `hasAppLevelLimits`, so a reprice
-     * leaves the ledger right whether or not the app currently has app-wide
-     * limits. An app that grows them later is backfilled at that moment
-     * instead, by `backfillAppLedger` in the app write route.
-     */
-    const [appTotal] = await database(c.env.DB)
-      .select({
-        microusd: sql<number>`CAST(COALESCE(SUM(ROUND(${appUsageEvent.costUsd} * 1000000)), 0) AS INTEGER)`,
-      })
-      .from(appUsageEvent)
-      .where(monthFilter);
-    await c.env.USER_LIMITER.getByName(appId).reconcileMonth(month, appTotal?.microusd ?? 0);
   }
 
   return c.json({

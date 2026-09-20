@@ -45,13 +45,11 @@ function usageEvent(input: {
   costUsd: number;
   eventId?: string;
   model?: string;
-  appLevelLimitsEnabled?: boolean;
 }): UsageEvent {
   const eventId = input.eventId ?? crypto.randomUUID();
   const userId = input.userId ?? "user-1";
   return {
     eventId,
-    appLevelLimitsEnabled: input.appLevelLimitsEnabled ?? false,
     row: {
       eventId,
       appId: input.appId,
@@ -72,8 +70,8 @@ function usageEvent(input: {
       authMethod: "api_key",
       status: "ok",
       latencyMs: 12,
+      createdAt: new Date().toISOString(),
     },
-    costMicrousd: Math.round(input.costUsd * 1_000_000),
   };
 }
 
@@ -106,16 +104,16 @@ describe("usage recording idempotency", () => {
     expect(await monthlyCost(`${appId}:user-1`)).toBe(123);
   });
 
-  it("converges without double charging when a re-run follows a failed insert", async () => {
+  it("does not project spend until a re-run successfully stores the event", async () => {
     const appId = "usage-record-partial";
     const event = usageEvent({ appId, costUsd: 0.00005 });
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    // The spend ledger settles, then D1 stays down for every retry: the event
-    // is half-recorded, exactly the state a re-run has to repair.
+    // D1 stays down for every retry. No limiter may claim spend for an event
+    // that never became a canonical row.
     await persistUsageEvent(withDatabase(flakyDatabase(Number.MAX_SAFE_INTEGER).database), event);
     expect(await rowCount(appId)).toBe(0);
-    expect(await monthlyCost(`${appId}:user-1`)).toBe(50);
+    expect(await monthlyCost(`${appId}:user-1`)).toBe(0);
     const failure = JSON.parse(String(errors.mock.calls.at(-1)?.[0]));
     expect(failure).toMatchObject({
       level: "error",
@@ -139,7 +137,8 @@ describe("usage recording idempotency", () => {
 
     await persistUsageEvent(withDatabase(flaky.database), usageEvent({ appId, costUsd: 0.00002 }));
 
-    expect(flaky.attempts()).toBe(2);
+    // Two insert attempts, then the aggregate read and two attempt/ack pairs.
+    expect(flaky.attempts()).toBe(7);
     expect(await rowCount(appId)).toBe(1);
     expect(await monthlyCost(`${appId}:user-1`)).toBe(20);
     expect(errorCodes(errors)).not.toContain("usage_record_failed");
@@ -159,7 +158,6 @@ describe("usage recording idempotency", () => {
     await recordUsageEvent({
       organizationId: "operator-test-organization",
 
-      appLevelLimitsEnabled: false,
       env,
       observed: observedBody(JSON.stringify({ usage: { input_tokens: 5, output_tokens: 7 } })),
       contentType: "application/json",
@@ -225,7 +223,6 @@ describe("usage recording idempotency", () => {
     await recordUsageEvent({
       organizationId: "operator-test-organization",
 
-      appLevelLimitsEnabled: false,
       env,
       observed: observedBody(JSON.stringify({ text: "hello", duration: 90 })),
       contentType: "application/json",
@@ -270,7 +267,6 @@ describe("usage recording idempotency", () => {
     await recordUsageEvent({
       organizationId: "operator-test-organization",
 
-      appLevelLimitsEnabled: false,
       env,
       // Cohere's shape: the request proxied fine, and nothing here is priceable.
       observed: observedBody(
@@ -329,7 +325,6 @@ describe("usage recording idempotency", () => {
     await recordUsageEvent({
       organizationId: "operator-test-organization",
 
-      appLevelLimitsEnabled: false,
       env,
       observed: observedBody(JSON.stringify({ usage: { input_tokens: 0, output_tokens: 0 } })),
       contentType: "application/json",
@@ -358,7 +353,6 @@ describe("usage recording idempotency", () => {
     const record = (appId: string, body: string) =>
       recordUsageEvent({
       organizationId: "operator-test-organization",
-        appLevelLimitsEnabled: false,
         env,
         observed: observedBody(body),
         contentType: "application/json",
@@ -403,7 +397,6 @@ describe("usage recording idempotency", () => {
     await recordUsageEvent({
       organizationId: "operator-test-organization",
 
-      appLevelLimitsEnabled: false,
       env,
       observed: observedBody(JSON.stringify({ error: { message: "rate limited" } })),
       contentType: "application/json",

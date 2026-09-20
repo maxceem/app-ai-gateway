@@ -1,177 +1,48 @@
 import { env } from "cloudflare:workers";
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { UserLimiter } from "../src/do/UserLimiter";
 
 /**
- * The object behind an application's own limits: a moderation switch, a month's
- * settled spend whose ledger has to stay exactly-once under recording retries,
- * and the request windows the rate limits are counted against.
+ * The projection behind an application's own limits: a moderation switch, a
+ * versioned monthly spend snapshot, and fixed request windows.
  */
 describe("UserLimiter", () => {
-  it("applies a settled event once however many times it is replayed", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:ledger");
-    const now = Date.now();
-    const eventId = crypto.randomUUID();
+  it("accepts only a newer monthly revision", async () => {
+    const limiter = env.USER_LIMITER.getByName("user-limiter:versions");
+    const now = Date.UTC(2026, 6, 23, 12);
 
-    expect(await limiter.addCost(eventId, now, 70)).toBe(70);
-    expect(await limiter.addCost(eventId, now, 70)).toBe(70);
-    expect(await limiter.addCost(crypto.randomUUID(), now, 5)).toBe(75);
-  });
-
-  it("prunes the dedup ledger past the retry horizon and reschedules itself", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:prune");
-    const now = Date.now();
-    const stale = crypto.randomUUID();
-    await limiter.addCost(stale, now, 70);
-    await limiter.addCost(crypto.randomUUID(), now, 5);
-
-    // Age one entry past the week the ledger keeps. Once it is gone the ledger
-    // no longer claims to have seen that event; that is the retention
-    // trade-off, and it only matters far past any recording retry.
-    await runInDurableObject(limiter, async (_instance, state) => {
-      state.storage.sql.exec(
-        "UPDATE applied_events SET applied_at = ? WHERE event_id = ?",
-        Date.now() - 8 * 86_400_000,
-        stale,
-      );
-      await state.storage.setAlarm(Date.now() + 60_000);
-    });
-    expect(await runDurableObjectAlarm(limiter)).toBe(true);
-
-    await runInDurableObject(limiter, async (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM applied_events")
-          .one().count,
-      ).toBe(1);
-      // Entries survive, so there is still something to come back for.
-      const nextAlarm = await state.storage.getAlarm();
-      expect(nextAlarm).not.toBeNull();
-      expect(nextAlarm!).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
-    });
-
-    // Spend itself is history and is never pruned with the ledger.
+    expect(await limiter.setMonthlyCost("2026-07", 2, 70)).toBe(true);
+    expect(await limiter.setMonthlyCost("2026-07", 2, 999)).toBe(false);
+    expect(await limiter.setMonthlyCost("2026-07", 1, 5)).toBe(false);
+    expect((await limiter.getStatus(now)).monthlyCostMicrousd).toBe(70);
+    expect(await limiter.setMonthlyCost("2026-07", 3, 75)).toBe(true);
     expect((await limiter.getStatus(now)).monthlyCostMicrousd).toBe(75);
   });
 
-  /**
-   * A standing alarm costs a request and a write every day for as long as the
-   * object exists, and there is one object per end user. So the prune stops
-   * rearming itself the moment the ledger it prunes is empty; an app's dormant
-   * users then cost nothing at all until they come back.
-   */
-  it("stops rescheduling cleanup once the ledger is empty", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:empty-alarm");
-    const stale = crypto.randomUUID();
-    await limiter.addCost(stale, Date.now(), 70);
-
-    await runInDurableObject(limiter, (_instance, state) => {
-      state.storage.sql.exec(
-        "UPDATE applied_events SET applied_at = ? WHERE event_id = ?",
-        Date.now() - 8 * 86_400_000,
-        stale,
-      );
-    });
-    expect(await runDurableObjectAlarm(limiter)).toBe(true);
-
-    await runInDurableObject(limiter, async (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM applied_events")
-          .one().count,
-      ).toBe(0);
-      expect(await state.storage.getAlarm()).toBeNull();
-    });
-
-    // Settling again arms it once more, so the ledger is never left unpruned.
-    await limiter.addCost(crypto.randomUUID(), Date.now(), 5);
-    await runInDurableObject(limiter, async (_instance, state) => {
-      expect(await state.storage.getAlarm()).not.toBeNull();
+  it("validates projection snapshots before writing them", async () => {
+    const limiter = env.USER_LIMITER.getByName("user-limiter:validation");
+    await runInDurableObject(limiter, (instance) => {
+      const userLimiter = instance as UserLimiter;
+      expect(() => userLimiter.setMonthlyCost("2026-13", 1, 1)).toThrow(/valid YYYY-MM/u);
+      expect(() => userLimiter.setMonthlyCost("2026-07", 0, 1)).toThrow(/revision/u);
+      expect(() => userLimiter.setMonthlyCost("2026-07", 1, -1)).toThrow(/microusd/u);
     });
   });
 
-  /**
-   * The settling attempt commits its ledger row before it arms the prune, so a
-   * `setAlarm` that fails leaves the row stored with nothing scheduled to
-   * remove it. The recording retry then replays an event that is already there
-   * and stores nothing — so arming has to happen on that path too, or the row
-   * outlives every chance to prune it.
-   */
-  it("arms the prune even when the settling attempt is a replay", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:replay-arms");
-    const eventId = crypto.randomUUID();
-    await limiter.addCost(eventId, Date.now(), 70);
+  it("keeps no event ledger or standing cleanup alarm", async () => {
+    const limiter = env.USER_LIMITER.getByName("user-limiter:no-ledger");
+    await limiter.setMonthlyCost("2026-07", 1, 1);
 
-    // Exactly the state a failed `setAlarm` leaves behind.
-    await runInDurableObject(limiter, async (instance, state) => {
-      await state.storage.deleteAlarm();
-      (instance as unknown as { prunePending?: boolean }).prunePending = false;
-    });
-
-    // The replay settles nothing, and still leaves a prune scheduled.
-    expect(await limiter.addCost(eventId, Date.now(), 70)).toBe(70);
     await runInDurableObject(limiter, async (_instance, state) => {
-      expect(await state.storage.getAlarm()).not.toBeNull();
-    });
-  });
-
-  /**
-   * A failing prune must not be able to stop this object pruning for good. The
-   * platform retries the handler a few times and then drops the alarm, so if
-   * the handler left "an alarm is pending" set on the way out, every later
-   * settlement would decline to arm a replacement.
-   */
-  it("rearms after a prune that failed outright", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:failed-prune");
-    await limiter.addCost(crypto.randomUUID(), Date.now(), 70);
-
-    await runInDurableObject(limiter, async (instance, state) => {
-      await state.storage.deleteAlarm();
-      // Take the ledger out from under the prune, so the handler fails the way
-      // a storage error would — after it has already committed to there being
-      // nothing scheduled.
-      state.storage.sql.exec("DROP TABLE applied_events");
-      await expect(instance.alarm!()).rejects.toThrow();
-      state.storage.sql.exec(
-        "CREATE TABLE applied_events (event_id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) WITHOUT ROWID",
-      );
-      // Named explicitly, because this is the mechanism: the handler cleared
-      // the flag on its way in, so nothing is left claiming a prune is pending.
-      expect((instance as unknown as { prunePending?: boolean }).prunePending).toBe(false);
-      expect(await state.storage.getAlarm()).toBeNull();
-    });
-
-    // The next settlement arms a fresh prune rather than trusting a stale flag.
-    await limiter.addCost(crypto.randomUUID(), Date.now(), 5);
-    await runInDurableObject(limiter, async (_instance, state) => {
-      expect(await state.storage.getAlarm()).not.toBeNull();
-    });
-  });
-
-  /**
-   * The shape the write saving rests on. Every secondary index here is another
-   * row written on every request that settles a cost, which is the whole reason
-   * the ledger carries none and the prune scans instead.
-   */
-  it("keeps the dedup ledger free of everything but its primary key", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:ledger-shape");
-    await limiter.addCost(crypto.randomUUID(), Date.now(), 1);
-
-    await runInDurableObject(limiter, (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec<{ sql: string }>(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'applied_events'",
-          )
-          .one().sql,
-      ).toContain("WITHOUT ROWID");
       expect(
         state.storage.sql
           .exec<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND tbl_name = 'applied_events'",
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'applied_events'",
           )
           .one().count,
       ).toBe(0);
+      expect(await state.storage.getAlarm()).toBeNull();
     });
   });
 
@@ -193,7 +64,7 @@ describe("UserLimiter", () => {
   it("tracks the block flag and the month's spend independently", async () => {
     const limiter = env.USER_LIMITER.getByName("user-limiter:status");
     const now = Date.UTC(2026, 6, 23, 12);
-    await limiter.addCost(crypto.randomUUID(), now, 42);
+    await limiter.setMonthlyCost("2026-07", 1, 42);
     expect(await limiter.getStatus(now)).toEqual({ blocked: false, requestsToday: 0, monthlyCostMicrousd: 42 });
     expect(await limiter.isBlocked()).toBe(false);
 
@@ -205,13 +76,6 @@ describe("UserLimiter", () => {
     expect((await limiter.getStatus(Date.UTC(2026, 7, 1))).monthlyCostMicrousd).toBe(0);
   });
 
-  it("replaces a month's spend when repricing reconciles it", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:reconcile");
-    const now = Date.UTC(2026, 6, 23, 12);
-    await limiter.addCost(crypto.randomUUID(), now, 184);
-    await limiter.reconcileMonth("2026-07", 37);
-    expect((await limiter.getStatus(now)).monthlyCostMicrousd).toBe(37);
-  });
 });
 
 /**
@@ -310,7 +174,7 @@ describe("UserLimiter request windows", () => {
   it("refuses on a budget the settled spend has reached, before counting anything", async () => {
     const limiter = env.USER_LIMITER.getByName("windows:budget");
     const now = Date.now();
-    await limiter.addCost(crypto.randomUUID(), now, 500);
+    await limiter.setMonthlyCost(new Date(now).toISOString().slice(0, 7), 1, 500);
 
     expect(await limiter.checkAndIncrement({ now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: 500 }))
       .toMatchObject({ allowed: false, reason: "budget" });

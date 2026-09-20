@@ -17,6 +17,7 @@
  * stops growing.
  */
 import { log } from "./log";
+import { pruneSettledUsageSpend } from "./app-usage-accounting";
 import { AUTHORIZATION_SWEEP_QUERIES } from "./account-lifecycle";
 import { AUTH_SWEEP_QUERIES } from "./auth-events";
 import {
@@ -72,6 +73,7 @@ export const USAGE_RETENTION_QUERY_BUDGET =
 
 /** Held back so a large compaction backlog can never starve the fold entirely. */
 const FOLD_RESERVE = 9;
+export const USAGE_SPEND_PRUNE_QUERIES = 1;
 
 const SUMMED_COLUMNS = [
   "requests",
@@ -227,24 +229,21 @@ export async function compactUsageEvents(
     }
     /*
      * A row inside the range just processed survived it, so it is newer than the
-     * cutoff — and ids are handed out in insertion order, so everything above it
-     * is newer still. There is nothing left to compact.
+     * cutoff. The cursor is always the oldest surviving id, so this run cannot
+     * advance past that row without persisting a separate scan cursor.
      *
      * Order inside a chunk does not matter, because a chunk is an id range and
      * both statements filter it by `created_at`: an expired row sitting behind a
      * live one in the same chunk is still collected.
      *
-     * As written this cannot leave anything behind at all. `created_at` is never
-     * supplied by the application — it is the column default, evaluated by D1,
-     * which serialises writes — so among live rows it only ever increases with
-     * `id`, and the expired rows are therefore always an id prefix. The test
-     * that constructs a straggler has to reach past the insert path to do it.
-     * The stopping rule is kept row-exact anyway rather than assuming that
-     * invariant, because the cost of being wrong is silently skipping history
-     * and the cost of being careful is one comparison.
+     * Event time is fixed before response observation, while id is assigned
+     * after observation finishes. A long response can therefore insert an old
+     * timestamp behind a newer row. Such a straggler is retained until the live
+     * row blocking this cursor also ages out; no history is skipped or deleted
+     * without first being rolled up.
      */
     if (next < end) {
-      result.caughtUp = true;
+      result.caughtUp = false;
       break;
     }
     // Jumps the gap left by earlier deletes rather than stepping through it.
@@ -306,6 +305,10 @@ export async function runUsageRetention(
   now: number = Date.now(),
   budget: QueryBudget = { remaining: USAGE_RETENTION_QUERY_BUDGET },
 ): Promise<void> {
+  const spendPrune = budget.remaining >= USAGE_SPEND_PRUNE_QUERIES
+    ? USAGE_SPEND_PRUNE_QUERIES
+    : 0;
+  budget.remaining -= spendPrune;
   const fold = Math.min(FOLD_RESERVE, Math.max(0, budget.remaining));
   budget.remaining -= fold;
   try {
@@ -327,5 +330,18 @@ export async function runUsageRetention(
     log("error", "usage_rollup_fold_failed", {
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+  if (spendPrune > 0) {
+    try {
+      const deleted = await pruneSettledUsageSpend(
+        env,
+        dayBefore(now, USAGE_EVENT_RETENTION_DAYS).slice(0, 7),
+      );
+      if (deleted > 0) log("info", "usage_spend_pruned", { deleted });
+    } catch (error) {
+      log("error", "usage_spend_prune_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

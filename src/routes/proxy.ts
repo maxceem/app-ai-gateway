@@ -1,5 +1,4 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { hasAppLevelLimits } from "../core/config";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { requireProvider, type ResolvedProvider } from "../core/provider-store";
@@ -113,7 +112,6 @@ proxyRoutes.all("/:provider/*", async (c) => {
     c.executionCtx.waitUntil(
       recordUsageEvent({
         organizationId: app.organizationId,
-        appLevelLimitsEnabled: hasAppLevelLimits(app),
         env: c.env,
         observed: null,
         contentType: "",
@@ -155,7 +153,6 @@ proxyRoutes.all("/:provider/*", async (c) => {
   c.executionCtx.waitUntil(
     recordUsageEvent({
         organizationId: app.organizationId,
-      appLevelLimitsEnabled: hasAppLevelLimits(app),
       env: c.env,
       observed,
       contentType: upstream.headers.get("content-type") ?? "",

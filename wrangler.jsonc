@@ -17,8 +17,8 @@
     // Set once per deployment to a UUID; preserve it across updates and domains.
     "DEPLOYMENT_ID": ""
   },
-  // Nightly authentication retention, usage compaction and expired-account cleanup.
-  "triggers": { "crons": ["17 3 * * *"] },
+  // Minute spend-projection recovery, plus nightly retention and cleanup.
+  "triggers": { "crons": ["* * * * *", "17 3 * * *"] },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },

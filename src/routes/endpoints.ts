@@ -1,5 +1,5 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import { ENDPOINT_SLUG, hasAppLevelLimits } from "../core/config";
+import { ENDPOINT_SLUG } from "../core/config";
 import {
   endpointAttempt,
   prepareEndpointRequest,
@@ -188,7 +188,6 @@ endpointRoutes.post("/:slug", async (c) => {
     c.executionCtx.waitUntil(
       recordUsageEvent({
         organizationId: app.organizationId,
-        appLevelLimitsEnabled: hasAppLevelLimits(app),
         env: c.env,
         observed: input.observed,
         contentType: input.contentType,

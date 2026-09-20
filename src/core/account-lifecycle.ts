@@ -151,8 +151,8 @@ export async function assertAccountAccess(
  */
 export const ACCOUNT_CLEANUP_BATCH = 200;
 
-/** Statements one cleanup pass issues: sixteen transactional deletes and updates. */
-export const ACCOUNT_CLEANUP_PASS_QUERIES = 16;
+/** Statements one cleanup pass issues: seventeen transactional deletes and updates. */
+export const ACCOUNT_CLEANUP_PASS_QUERIES = 17;
 
 /** Statements {@link pruneExpiredAuthorizations} issues, on every deployment. */
 export const AUTHORIZATION_SWEEP_QUERIES = 2;
@@ -178,14 +178,15 @@ async function deleteExpiredAccountBatch(env: Env): Promise<number> {
     "app_user",
     "app_usage_event",
     "app_usage_rollup",
+    "app_usage_spend",
     "app_auth_event",
     "app_auth_challenge",
   ]) {
     statements.push(
       env.DB.prepare(
-        `DELETE FROM ${table} WHERE app_id IN (${apps})${table === "app_usage_event" || table === "app_usage_rollup" ? ` OR organization_id IN (${expired})` : ""}`,
+        `DELETE FROM ${table} WHERE app_id IN (${apps})${table === "app_usage_event" || table === "app_usage_rollup" || table === "app_usage_spend" ? ` OR organization_id IN (${expired})` : ""}`,
       ).bind(
-        ...(table === "app_usage_event" || table === "app_usage_rollup"
+        ...(table === "app_usage_event" || table === "app_usage_rollup" || table === "app_usage_spend"
           ? [now, now]
           : [now]),
       ),

@@ -18,6 +18,7 @@ import {
   type QueryBudget,
 } from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
+import { recoverPendingUsageSpend } from "./core/app-usage-accounting";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
@@ -252,6 +253,17 @@ async function prune(env: Env): Promise<void> {
   await runUsageRetention(env, Date.now(), budget);
 }
 
+async function recoverUsageSpend(env: Env): Promise<void> {
+  try {
+    const result = await recoverPendingUsageSpend(env);
+    if (result.attempted > 0) log("info", "usage_spend_recovered", { ...result });
+  } catch (error) {
+    log("error", "usage_spend_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /**
  * The Hono app itself is the handler — `fetch` is one of its own properties, so
  * the cron entry point is attached beside it rather than wrapped around it. That
@@ -259,7 +271,7 @@ async function prune(env: Env): Promise<void> {
  * here is exercised.
  */
 export default Object.assign(app, {
-  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(prune(env));
+  scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(controller.cron === "* * * * *" ? recoverUsageSpend(env) : prune(env));
   },
 });
