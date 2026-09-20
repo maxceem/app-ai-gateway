@@ -28,23 +28,20 @@ import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { quotaGate } from "./middleware/gate";
+import type { ExecutionVariables } from "./execution/plan";
 import { billingEntitlementGate } from "./middleware/billing";
 import { billingRequestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
-import {
-  endpointPrepare,
-  endpointRoutes,
-  type EndpointVariables,
-} from "./routes/endpoints";
+import { endpointPrepare, endpointRoutes } from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
-import { proxyPrepare, proxyRoutes, type ProxyVariables } from "./routes/proxy";
+import { proxyPrepare, proxyRoutes } from "./routes/proxy";
 import { vaultStatus } from "./vault";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
 type AppEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & ProxyVariables & EndpointVariables & BillingVariables;
+  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
 };
 
 const app = new Hono<AppEnv>();

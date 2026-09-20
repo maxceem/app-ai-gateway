@@ -86,7 +86,7 @@ function formWithModel(source: FormData, model: string): FormData {
 }
 
 /** Builds the concrete upstream request for one target in the fallback chain. */
-export function endpointAttempt(
+export function endpointAttemptRequest(
   prepared: PreparedEndpointRequest,
   target: EndpointTarget,
   provider: ProviderType,
@@ -94,8 +94,7 @@ export function endpointAttempt(
   route: ProviderRoute,
   /** The row's stored routing configuration, if its gateway takes one. */
   gatewayRoute: GatewayRouteConfig | null = null,
-): PreparedProxyRequest {
-  const providerPath = endpointProviderPath(prepared.endpoint.api_style, provider);
+): Pick<PreparedProxyRequest, "body" | "headers" | "query"> {
   // The configured model is canonical, so it is what gets priced and recorded;
   // only the body the upstream reads carries the route's namespace.
   const wireModel = routeWireModel(route, provider, target.model, gatewayRoute);
@@ -121,9 +120,6 @@ export function endpointAttempt(
     body = JSON.stringify(json);
   }
   return {
-    provider,
-    providerPath,
-    model: target.model,
     body,
     headers: prepared.headers,
     // The endpoint URL is a gateway contract, not a provider path, so client

@@ -433,6 +433,57 @@ describe("named endpoints", () => {
     clearProviderCaches();
   });
 
+  it("attributes a gate refusal to the first usable target when the primary is disabled", async () => {
+    const appId = "endpoint-disabled-primary-blocked";
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-paused-blocked",
+      slug: "openai-paused-blocked",
+      status: "disabled",
+    });
+    await seedProvider({
+      type: "openai",
+      id: "endpoint-openai-standby-blocked",
+      slug: "openai-standby-blocked",
+    });
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          provider: "openai-paused-blocked",
+          fallback: [{ provider: "openai-standby-blocked", model: "gpt-5.6-luna" }],
+        },
+      },
+    });
+    await env.USER_LIMITER.getByName(`${appId}:user-1`).setBlocked(true);
+    const token = await gatewayToken(appId);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const [row] = await latestUsage(appId);
+    expect(row).toMatchObject({
+      provider_slug: "openai-standby-blocked",
+      model: "gpt-5.6-luna",
+      route: "openai-standby-blocked/v1/responses",
+      endpoint_slug: "chat",
+      status: "blocked_user",
+    });
+
+    await env.DB.prepare(
+      "DELETE FROM provider WHERE id IN ('endpoint-openai-paused-blocked', 'endpoint-openai-standby-blocked')",
+    ).run();
+    clearProviderCaches();
+  });
+
   // With nothing left in the chain the pause is the only answer there is, and
   // it is the one the operator can act on.
   it("reports provider_disabled when a disabled primary has no usable fallback", async () => {
@@ -683,6 +734,92 @@ describe("named endpoints", () => {
       status: "ok",
       endpoint_slug: "chat",
     });
+  });
+
+  it("records and falls back when discarding a failed response body cannot be cancelled", async () => {
+    const appId = "endpoint-fallback-cancel-failure";
+    await seedApp(appId, {
+      endpoints: {
+        chat: {
+          ...CHAT_ENDPOINTS.chat,
+          fallback: [{ provider: "xai", model: "grok-4.5" }],
+        },
+      },
+    });
+    const token = await gatewayToken(appId);
+    const warnings = captureWarnings();
+    let attempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(new ReadableStream({
+          cancel() {
+            throw new Error("provider stream refused cancellation");
+          },
+        }), { status: 503 });
+      }
+      return usageResponse();
+    });
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(attempts).toBe(2);
+    const rows = await latestUsage(appId, 2);
+    expect(rows.map((row) => [row.provider_slug, row.status])).toEqual([
+      ["openai", "provider_error"],
+      ["xai", "ok"],
+    ]);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      message: "provider_response_discard_failed",
+      providerSlug: "openai",
+    }));
+  });
+
+  it("cancels an endpoint upstream stream and finalizes its usage through the shared executor", async () => {
+    const appId = "endpoint-client-abort";
+    await seedApp(appId, { endpoints: CHAT_ENDPOINTS });
+    const token = await gatewayToken(appId);
+    const delta = "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n";
+    const upstreamCancelled = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(delta));
+        },
+        cancel: upstreamCancelled,
+      }), { headers: { "content-type": "text/event-stream" } }));
+
+    const response = await endpointRequest({
+      appId,
+      slug: "chat",
+      token,
+      contentType: "application/json",
+      body: JSON.stringify({ input: "hello" }),
+    });
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(delta);
+    await reader.cancel();
+
+    const [row] = await latestUsage(appId);
+    expect(upstreamCancelled).toHaveBeenCalledTimes(1);
+    expect(row).toMatchObject({
+      provider_slug: "openai",
+      model: "gpt-5.6-luna",
+      endpoint_slug: "chat",
+      status: "ok",
+    });
+    const accounting = await env.DB.prepare(
+      "SELECT client_aborted, cost_source FROM app_usage_event WHERE app_id = ?",
+    ).bind(appId).first<{ client_aborted: number | null; cost_source: string | null }>();
+    expect(accounting).toEqual({ client_aborted: 1, cost_source: "unresolved" });
   });
 
   it("returns the last upstream failure when every target fails", async () => {
