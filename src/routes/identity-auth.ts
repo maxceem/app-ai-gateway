@@ -1,5 +1,6 @@
 import { claimOAuthAuthorized, CLAIM_OAUTH_COOKIE } from "./cli/oauth";
 import { Hono } from "hono";
+import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import {
   createIdentityAuth,
   createClaimRegistrationAuth,
@@ -15,6 +16,50 @@ const CONSOLE_LOGIN_PATH = "/login";
 
 /** The Better Auth route that answers with a provider authorization URL. */
 const SOCIAL_SIGN_IN_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-in/social`;
+
+/** The Better Auth route that accepts a password. */
+const PASSWORD_SIGN_IN_PATH = `${IDENTITY_AUTH_BASE_PATH}/sign-in/email`;
+
+/**
+ * The account an attempt names, read without consuming the request.
+ *
+ * Always from a clone, so Better Auth still receives its own body. Both media
+ * types this route accepts are read: Better Auth takes the credentials
+ * form-encoded as readily as it takes them as JSON, and a counter that only
+ * understood JSON would be bypassed by changing one header. A body in neither
+ * shape names no account, and only the address counter applies.
+ */
+async function submittedEmail(request: Request): Promise<string | null> {
+  const clone = request.clone();
+  const named = request.headers.get("content-type")?.includes(
+    "application/x-www-form-urlencoded",
+  )
+    ? (await clone.formData().catch(() => undefined))?.get("email")
+    : ((await clone.json().catch(() => undefined)) as { email?: unknown } | undefined)?.email;
+  if (typeof named !== "string") return null;
+  // Normalized, so one account is one counter however the attempt spells it.
+  return named.trim().toLowerCase() || null;
+}
+
+/**
+ * Bounds password guessing on the one route where guessing pays.
+ *
+ * This is the gateway's own limit and runs on every deployment, because the
+ * zone rules that would otherwise do it need a zone: a one-click `workers.dev`
+ * install has none, and Better Auth's own limiter is off. Only this route is
+ * counted. Sign-up is already refused outright once a deployment has its
+ * owner, and the rest of Better Auth's surface either needs a session or hands
+ * out nothing an attacker can grind for.
+ *
+ * The address is counted first and counted always, including for a body that
+ * names no account: the attempt reached the endpoint and cost this Worker the
+ * same as any other.
+ */
+async function enforcePasswordSignInLimit(env: Env, request: Request): Promise<void> {
+  await enforceEndpointRateLimit(env, "sign_in_address", clientAddress(request));
+  const email = await submittedEmail(request);
+  if (email) await enforceEndpointRateLimit(env, "sign_in_email", email);
+}
 
 function registrationDisabled() {
   return {
@@ -88,6 +133,10 @@ export function registrationDisabledRedirect(rejected: Response): Response {
 }
 
 identityAuthRoutes.all("/*", async (c) => {
+  if (c.req.method === "POST" && c.req.path === PASSWORD_SIGN_IN_PATH) {
+    await enforcePasswordSignInLimit(c.env, c.req.raw);
+  }
+
   if (
     c.req.method === "POST" &&
     c.req.path === "/v1/auth/sign-up/email" &&

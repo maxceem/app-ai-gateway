@@ -34,6 +34,11 @@ whether the body has a top-level `error.code` string from the table below.
 | `issuer_verification_unavailable` | 503 | The identity provider's keys could not be fetched | Retry with backoff |
 | `auth_method_not_supported` | 404 | The app is not configured for this call, such as a token exchange on an app without user identity | Fix the app's configuration |
 | `invalid_request` | 400 | A malformed body, a missing `X-App-Version`, or a missing end-user header | Fix the request |
+| `rate_limited` | 429 | Too many calls to `challenge`, `register` or `token` for this app from one network address. `data.scope` names the endpoint: `app_auth_challenge`, `app_auth_register` or `app_auth_token` | Wait `Retry-After` seconds. A real app almost never reaches this, so look for a retry loop of your own, or a lot of devices sharing one address |
+
+`rate_limited` is the gateway protecting these three endpoints itself, and is
+counted per app and per address. It is not one of the limits you set on your
+app below, and nothing in the console changes it.
 
 ## Limits
 

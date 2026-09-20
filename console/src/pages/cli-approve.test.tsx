@@ -249,6 +249,20 @@ describe("CliApprovePage claim", () => {
     ).toBe(false);
   });
 
+  it("explains a refused Google sign-in and leaves the claim finishable", async () => {
+    // The gateway returns the browser here with no session and no response
+    // body, so the query string is the only account of what happened.
+    stubApi({ [DETAILS_URL]: details({ googleEnabled: true }) });
+
+    renderApprove(`${PATH}?error=account_not_linked#${TOKEN}`);
+
+    const notice = await screen.findByRole("alert");
+    expect(notice.textContent).toMatch(/already signs in with a password/i);
+    expect(notice.textContent).toMatch(/sign in with your password instead/i);
+    // The password form is still there to finish the claim with.
+    expect(screen.getByRole("button", { name: /create account/i })).toBeTruthy();
+  });
+
   it("names the signed-in human beside the account and approves on one click", async () => {
     const fetchMock = stubApi({
       [DETAILS_URL]: details({

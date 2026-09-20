@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createClaimRegistrationAuth } from "../src/auth/identity";
 import worker from "../src/index";
 import { registrationDisabledRedirect } from "../src/routes/identity-auth";
-import { derive } from "../src/routes/cli/security";
+import { derive, digest } from "../src/routes/cli/security";
 import { seedHuman } from "./helpers";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -26,6 +26,8 @@ function runtime(options: { additional?: boolean; cloud?: boolean; google?: bool
         return options.google ? "test-google-secret" : undefined;
       }
       if (property === "OAUTH_RELAY_URL") return undefined;
+      // The CLI handoff routes refuse a deployment without an identity.
+      if (property === "DEPLOYMENT_ID") return "registration-test-deployment";
       return Reflect.get(target, property, receiver);
     },
   }) as Env;
@@ -95,10 +97,13 @@ function mockGoogleTokenExchange(email: string, subject: string) {
   }));
 }
 
-async function startGoogleRedirect(testEnv: Env) {
+async function startGoogleRedirect(testEnv: Env, errorCallbackURL?: string) {
   const started = await authRequest(testEnv, "sign-in/social", {
     provider: "google",
     callbackURL: `${ORIGIN}/after-google`,
+    // The console names one, so a refusal lands on its sign-in screen rather
+    // than on Better Auth's own error page.
+    ...(errorCallbackURL === undefined ? {} : { errorCallbackURL }),
   });
   expect(started.status).toBe(200);
   const authorization = new URL(((await started.clone().json()) as { url: string }).url);
@@ -394,6 +399,126 @@ describe("Google registration policy", () => {
       "agw_identity_auth.state=; Max-Age=0; Path=/",
       "agw_identity_auth.pkce=; Max-Age=0; Path=/",
     ]);
+  });
+});
+
+describe("Google sign-in onto an email that already has a sign-in", () => {
+  it("refuses to sign a Google identity into the account someone else registered with that email", async () => {
+    // Registration is open on the cloud deployment and no email is ever
+    // verified, so whoever registers an address first must not inherit the
+    // Google sign-ins for it.
+    const testEnv = runtime({ cloud: true, google: true });
+    const registered = await signUp(testEnv, "victim@example.test");
+    expect(registered.status, await registered.clone().text()).toBe(200);
+    const squatted = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email=?")
+      .bind("victim@example.test")
+      .first<{ id: string }>();
+    const sessionsBefore = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM mgmt_user_session WHERE user_id=?",
+    ).bind(squatted!.id).first("n");
+
+    const hijack = await googleSignIn(testEnv, "victim@example.test", "victim-google-subject");
+
+    expect(hijack.status, await hijack.clone().text()).toBe(401);
+    await expect(hijack.json()).resolves.toMatchObject({ code: "OAUTH_LINK_ERROR" });
+    expect(hijack.headers.getSetCookie().some((cookie) => cookie.includes("session_token=")))
+      .toBe(false);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mgmt_user_account WHERE user_id=? AND provider_id='google'",
+      ).bind(squatted!.id).first("n"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user_session WHERE user_id=?")
+        .bind(squatted!.id)
+        .first("n"),
+    ).toBe(sessionsBefore);
+  });
+
+  it("returns a refused Google claim to the approval page with its reason", async () => {
+    // The claim flow is the one Google entry point that does not end on the
+    // sign-in screen: the claimant carries on here with a password, so the
+    // refusal has to come back to the page they started on.
+    const testEnv = runtime({ additional: true, google: true });
+    const operationId = "claim-google-takeover";
+    const submissionToken = "claim-submission-proof-0123456789abcdef";
+    const expires = Date.now() + 10 * 60_000;
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at) VALUES ('takeover-service','CLI',NULL,0,'service',?,?)",
+      ).bind(now, now),
+      env.DB.prepare(
+        "INSERT INTO mgmt_organization(id,name,created_by_user_id,created_at,updated_at) VALUES ('takeover-account','Claim account','takeover-service',?,?)",
+      ).bind(iso, iso),
+    ]);
+    await env.DB.prepare(
+      `INSERT INTO mgmt_handoff(
+        id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,
+        submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
+       VALUES (?, 'claim', '{}', 'takeover-account', 'takeover-service', 'takeover-key', ?, 'poll', ?, ?, ?)`,
+    ).bind(operationId, await digest(submissionToken), expires, now, now).run();
+    // The email already signs in with a password, so Google must not open it.
+    const squatted = await seedHuman("claim-victim@example.test");
+
+    const started = await worker.request(
+      `${ORIGIN}/v1/cli/browser/${operationId}/google`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN },
+        body: JSON.stringify({ submissionToken }),
+      },
+      testEnv,
+    );
+    expect(started.status, await started.clone().text()).toBe(200);
+    const authorization = new URL(((await started.clone().json()) as { url: string }).url);
+    mockGoogleTokenExchange("claim-victim@example.test", "claim-victim-google");
+
+    const callback = await googleCallback(
+      testEnv,
+      started,
+      authorization.searchParams.get("state")!,
+    );
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe(
+      `${ORIGIN}/cli/approve/${operationId}?error=account_not_linked`,
+    );
+    expect(callback.headers.getSetCookie().some((cookie) => cookie.includes("session_token=")))
+      .toBe(false);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mgmt_user_account WHERE user_id=? AND provider_id='google'",
+      ).bind(squatted.userId).first("n"),
+    ).toBe(0);
+  });
+
+  it("refuses the same takeover at the redirect callback", async () => {
+    // Seeded rather than registered over HTTP: the refusal turns on the email
+    // already belonging to a user with no Google account, and seeding one
+    // costs a fraction of hashing a password.
+    const testEnv = runtime({ cloud: true, google: true });
+    const squatted = await seedHuman("redirect-victim@example.test");
+    const started = await startGoogleRedirect(testEnv, "/login");
+    mockGoogleTokenExchange("redirect-victim@example.test", "redirect-victim-google");
+
+    const callback = await googleCallback(testEnv, started.response, started.state);
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/login?error=account_not_linked");
+    expect(callback.headers.getSetCookie().some((cookie) => cookie.includes("session_token=")))
+      .toBe(false);
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM mgmt_user_account WHERE user_id=? AND provider_id='google'",
+      ).bind(squatted.userId).first("n"),
+    ).toBe(0);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user_session WHERE user_id=?")
+        .bind(squatted.userId)
+        .first("n"),
+    ).toBe(1); // The one `seedHuman` created; the callback added none.
   });
 });
 

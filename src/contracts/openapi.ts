@@ -210,6 +210,13 @@ register({
   },
 });
 
+// Only the password route is throttled by the gateway, so the two console
+// authentication routes no longer document the same responses.
+const signInRateLimited = response(
+  "Too many sign-in attempts. Counted twice over: per client address, and per email address so that a spread of addresses cannot grind through one account's passwords. Carries Retry-After.",
+  ErrorResponseSchema,
+);
+
 for (const authRoute of [
   {
     method: "post",
@@ -217,6 +224,7 @@ for (const authRoute of [
     operationId: "signUp",
     summary: "Create an account",
     body: z.object({ name: z.string(), email: z.email(), password: z.string().min(8) }),
+    rateLimited: false,
   },
   {
     method: "post",
@@ -224,6 +232,7 @@ for (const authRoute of [
     operationId: "signIn",
     summary: "Sign in with email and password",
     body: z.object({ email: z.email(), password: z.string() }),
+    rateLimited: true,
   },
 ] as const) {
   register({
@@ -236,6 +245,7 @@ for (const authRoute of [
     responses: {
       200: response("Authenticated session.", z.unknown()),
       ...errorResponses,
+      ...(authRoute.rateLimited ? { 429: signInRateLimited } : {}),
     },
   });
 }
@@ -282,6 +292,7 @@ register({
     200: response("A five-minute, single-use challenge.", AppAttestChallengeResponseSchema),
     ...errorResponses,
     402: response("No billing plan resolves for the account.", ErrorResponseSchema),
+    429: response("Too many application authentication requests from this network address for this application. Carries Retry-After.", ErrorResponseSchema),
     404: response(
       "This application identifies no end users, so there is no per-user standing to report. Answered with auth_method_not_supported: the request was well-formed, and nothing the caller can rephrase would make it work.",
       ErrorResponseSchema,
@@ -304,6 +315,7 @@ register({
     ...errorResponses,
     ...issuerErrorResponses,
     402: response("No billing plan resolves for the account.", ErrorResponseSchema),
+    429: response("Too many application authentication requests from this network address for this application. Carries Retry-After.", ErrorResponseSchema),
   },
 });
 
@@ -326,6 +338,7 @@ register({
     ...errorResponses,
     ...issuerErrorResponses,
     402: response("No billing plan resolves for the account.", ErrorResponseSchema),
+    429: response("Too many application authentication requests from this network address for this application. Carries Retry-After.", ErrorResponseSchema),
   },
 });
 

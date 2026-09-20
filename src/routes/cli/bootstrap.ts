@@ -7,7 +7,7 @@ import {
   accountTrialEnd,
   assertAccountAccess,
 } from "../../core/account-lifecycle";
-import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
+import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
 import { CliBootstrapRequestSchema } from "../../contracts/cli";
 import { providerSchemaBody } from "../admin/provider-shared";
@@ -126,11 +126,7 @@ export async function bootstrap(c: CliContext): Promise<Response> {
     // nobody has ever owned. The 409 above is the guard that matters, and it
     // never expires.
     if (meta.mode === "cloud")
-      await enforceEndpointRateLimit(
-        c.env,
-        "bootstrap",
-        c.req.header("cf-connecting-ip") ?? "local",
-      );
+      await enforceEndpointRateLimit(c.env, "bootstrap", clientAddress(c.req.raw));
     const accountId = meta.mode === "self_hosted" ? `private-${meta.id}` : `account-${hash}`;
     const userId = `service-${accountId}`;
     const createdAt = new Date(now).toISOString();

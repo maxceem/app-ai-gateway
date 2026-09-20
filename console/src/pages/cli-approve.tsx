@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
-import { DEFAULT_LANDING } from "@/lib/auth-redirect";
+import { DEFAULT_LANDING, oauthErrorNotice } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
 
@@ -134,6 +134,14 @@ export function CliApprovePage() {
     void navigate(`${location.pathname}${location.search}`, { replace: true });
   }, [location.hash, location.pathname, location.search, navigate]);
 
+  /*
+   * A Google attempt that failed comes back to this same page as `?error=…`,
+   * because a provider redirect has no response body to carry a reason. The
+   * claim is still finishable here with a password, so the reason is shown
+   * here rather than sent anywhere else.
+   */
+  const oauthError = oauthErrorNotice(location.search);
+
   const details = useQuery({
     queryKey: ["cli-approve", id],
     queryFn: () => call(operations.cliBrowserDetails, [id], { submissionToken: token }),
@@ -222,6 +230,13 @@ export function CliApprovePage() {
 
   return (
     <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
+      {oauthError ? (
+        <Alert variant={oauthError.tone} role="alert">
+          <AlertTitle>{oauthError.title}</AlertTitle>
+          <AlertDescription>{oauthError.description}</AlertDescription>
+        </Alert>
+      ) : null}
+
       <Summary details={data} />
 
       {data.blockedBy === "registration_required" ? (

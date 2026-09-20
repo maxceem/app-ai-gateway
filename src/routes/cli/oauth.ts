@@ -48,6 +48,12 @@ export async function browserGoogle(c: CliContext): Promise<Response> {
     body: {
       provider: "google",
       callbackURL: `${meta.consoleOrigin}${browserPath(row.id)}`,
+      // A refusal — a declined consent, or an email that already signs in with
+      // a password, which is never linked to a Google login — belongs back on
+      // the approval page, where the claim can still be finished with a
+      // password. Without this Better Auth sends the browser to its own error
+      // document on the gateway, which says nothing and leads nowhere.
+      errorCallbackURL: `${meta.consoleOrigin}${browserPath(row.id)}`,
     },
     headers: c.req.raw.headers,
     asResponse: true,

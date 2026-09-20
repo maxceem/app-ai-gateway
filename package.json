@@ -52,7 +52,7 @@
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.6.9",
     "@hono/zod-openapi": "^1.5.1",
-    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.4.0/maxceem-cf-auth-0.4.0.tgz",
+    "@maxceem/cf-auth": "https://github.com/maxceem/cf-auth/releases/download/v0.5.0/maxceem-cf-auth-0.5.0.tgz",
     "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
     "asn1js": "^3.0.7",
     "better-auth": "1.6.9",
