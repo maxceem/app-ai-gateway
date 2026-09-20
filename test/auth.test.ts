@@ -506,14 +506,21 @@ describe("App Attest challenge retention", () => {
     return rows.results.map((row) => row.challenge);
   }
 
-  it("drops expired challenges on the nightly sweep and keeps the live ones", async () => {
-    await seedChallenges("prune-challenges");
+  it.each([
+    ["the minute trigger at scheduled UTC 03:17", "* * * * *", "2026-10-01T03:17:00Z"],
+    ["the legacy nightly trigger during rollout", "17 3 * * *", "2026-10-01T09:45:00Z"],
+  ] as const)("drops expired challenges from %s", async (_label, cron, scheduledAt) => {
+    const appId = `prune-challenges-${cron === "* * * * *" ? "minute" : "legacy"}`;
+    await seedChallenges(appId);
 
     const ctx = createExecutionContext();
-    app.scheduled({ cron: "17 3 * * *", scheduledTime: Date.now() } as ScheduledController, env, ctx);
+    app.scheduled({
+      cron,
+      scheduledTime: Date.parse(scheduledAt),
+    } as ScheduledController, env, ctx);
     await waitOnExecutionContext(ctx);
 
-    await expect(challengesFor("prune-challenges")).resolves.toEqual(["prune-challenges-live"]);
+    await expect(challengesFor(appId)).resolves.toEqual([`${appId}-live`]);
   });
 
   it("reports how many it took", async () => {

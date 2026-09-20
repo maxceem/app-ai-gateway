@@ -262,6 +262,22 @@ async function recoverUsageSpend(env: Env): Promise<void> {
   }
 }
 
+export function scheduledMaintenance(
+  cron: string,
+  scheduledTime: number,
+): "prune" | "recover" | undefined {
+  // Keep accepting the former nightly trigger while Cloudflare propagates the
+  // one-trigger configuration. An unrelated trigger must not spend either
+  // maintenance budget.
+  if (cron === "17 3 * * *") return "prune";
+  if (cron !== "* * * * *") return undefined;
+
+  const scheduled = new Date(scheduledTime);
+  return scheduled.getUTCHours() === 3 && scheduled.getUTCMinutes() === 17
+    ? "prune"
+    : "recover";
+}
+
 /**
  * The Hono app itself is the handler — `fetch` is one of its own properties, so
  * the cron entry point is attached beside it rather than wrapped around it. That
@@ -270,6 +286,8 @@ async function recoverUsageSpend(env: Env): Promise<void> {
  */
 export default Object.assign(app, {
   scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(controller.cron === "* * * * *" ? recoverUsageSpend(env) : prune(env));
+    const maintenance = scheduledMaintenance(controller.cron, controller.scheduledTime);
+    if (maintenance === "prune") ctx.waitUntil(prune(env));
+    if (maintenance === "recover") ctx.waitUntil(recoverUsageSpend(env));
   },
 });

@@ -15,7 +15,7 @@ import {
   type ObservedBody,
   type UsageEvent,
 } from "../src/core/usage";
-import app from "../src/index";
+import app, { scheduledMaintenance } from "../src/index";
 
 const PREFIX = "accounting-";
 
@@ -110,7 +110,7 @@ describe("app usage accounting", () => {
     ]);
   });
 
-  it("keeps failed delivery pending and the minute cron recovers it", async () => {
+  it("keeps failed delivery pending and an ordinary minute run recovers it", async () => {
     const appId = `${PREFIX}cron-recovery`;
     const month = new Date().toISOString().slice(0, 7);
     await insertEvent({ appId, userId: null, costUsd: 0.000021 });
@@ -126,7 +126,10 @@ describe("app usage accounting", () => {
       .bind(appId).run();
 
     const ctx = createExecutionContext();
-    app.scheduled({ cron: "* * * * *", scheduledTime: Date.now() } as ScheduledController, env, ctx);
+    app.scheduled({
+      cron: "* * * * *",
+      scheduledTime: Date.parse("2026-10-01T03:16:00Z"),
+    } as ScheduledController, env, ctx);
     await waitOnExecutionContext(ctx);
 
     expect(await spend(appId)).toEqual([
@@ -134,6 +137,76 @@ describe("app usage accounting", () => {
     ]);
     expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
       .toBe(21);
+  });
+
+  it("uses the scheduled UTC minute for nightly work and resumes recovery after it", async () => {
+    const appId = `${PREFIX}maintenance-minute`;
+    const month = "2026-10";
+    await insertEvent({
+      appId,
+      userId: null,
+      costUsd: 0.000022,
+      createdAt: "2026-10-01T03:00:00Z",
+    });
+    const unavailable = {
+      ...env,
+      USER_LIMITER: {
+        getByName: () => ({ setMonthlyCost: () => Promise.reject(new Error("limiter unavailable")) }),
+      },
+    } as unknown as Env;
+    expect((await projectUsageEventSpend(unavailable, { appId, userId: null, month })).acknowledged)
+      .toBe(0);
+    await env.DB.prepare("UPDATE app_usage_spend SET last_attempt_at = -1 WHERE app_id = ?")
+      .bind(appId).run();
+
+    // Delivery can be delayed: dispatch follows the trigger's UTC timestamp,
+    // not the wall clock at which this isolate eventually receives it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime("2026-10-01T09:45:00Z");
+    const nightly = createExecutionContext();
+    app.scheduled({
+      cron: "* * * * *",
+      scheduledTime: Date.parse("2026-10-01T03:17:00Z"),
+    } as ScheduledController, env, nightly);
+    await waitOnExecutionContext(nightly);
+    expect(await spend(appId)).toEqual([
+      expect.objectContaining({ pending: 1, microusd: 22 }),
+    ]);
+
+    const nextMinute = createExecutionContext();
+    app.scheduled({
+      cron: "* * * * *",
+      scheduledTime: Date.parse("2026-10-01T03:18:00Z"),
+    } as ScheduledController, env, nextMinute);
+    await waitOnExecutionContext(nextMinute);
+    expect(await spend(appId)).toEqual([
+      expect.objectContaining({ pending: 0, microusd: 22 }),
+    ]);
+  });
+
+  it.each([
+    ["the minute before maintenance", "* * * * *", "2026-10-01T03:16:00Z", "recover"],
+    ["the maintenance minute", "* * * * *", "2026-10-01T03:17:00Z", "prune"],
+    ["the minute after maintenance", "* * * * *", "2026-10-01T03:18:00Z", "recover"],
+    ["the end of a UTC day", "* * * * *", "2026-10-01T23:59:00Z", "recover"],
+    ["the start of a UTC day", "* * * * *", "2026-10-02T00:00:00Z", "recover"],
+    ["the legacy nightly trigger", "17 3 * * *", "2026-10-01T09:45:00Z", "prune"],
+    ["an unknown trigger", "0 * * * *", "2026-10-01T03:17:00Z", undefined],
+  ] as const)("routes %s", (_label, cron, scheduledAt, expected) => {
+    expect(scheduledMaintenance(cron, Date.parse(scheduledAt))).toBe(expected);
+  });
+
+  it("does no work for an unknown trigger", () => {
+    const waitUntil = vi.fn();
+    app.scheduled(
+      {
+        cron: "0 * * * *",
+        scheduledTime: Date.parse("2026-10-01T03:17:00Z"),
+      } as ScheduledController,
+      env,
+      { waitUntil } as unknown as ExecutionContext,
+    );
+    expect(waitUntil).not.toHaveBeenCalled();
   });
 
   it("replays an acknowledgement lost over a week ago without adding spend twice", async () => {
