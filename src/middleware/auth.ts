@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { assertAppActive, endUserHeader, endUserIssuer, loadAppConfig } from "../core/config";
-import { verifyApiKey } from "../core/apikeys";
+import { lookupActiveApiKeyById, verifyApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "../core/jwt";
 import { organizationProviders } from "../core/provider-store";
@@ -96,6 +96,12 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
     identity = await verifyApiKey(credential.token, c.env, appId, null);
   } else {
     identity = await verifyGatewayToken(credential.token, c.env.JWT_SECRET, appId);
+    if (identity.apiKeyId !== undefined) {
+      const apiKey = await lookupActiveApiKeyById(c.env, identity.apiKeyId);
+      if (!apiKey || apiKey.appId !== appId) {
+        throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
+      }
+    }
   }
   c.set("appConfig", app);
   c.set("identity", identity);

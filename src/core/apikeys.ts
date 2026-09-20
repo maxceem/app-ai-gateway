@@ -14,10 +14,12 @@ interface CachedApiKey {
   value: ApiKeyRecord | null;
 }
 
+type ApiKeyCacheKey = `hash:${string}` | `id:${string}`;
+
 // Misses are cached too, so an unauthenticated caller controls the keys of this
 // map. It is bounded and evicts insertion-oldest first, and misses expire much
 // sooner than hits so a freshly created key is not refused for a whole minute.
-const apiKeyCache = new Map<string, CachedApiKey>();
+const apiKeyCache = new Map<ApiKeyCacheKey, CachedApiKey>();
 const encoder = new TextEncoder();
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -70,6 +72,14 @@ async function lookupApiKeyHash(env: Env, hash: string): Promise<ApiKeyRecord | 
   return row ? { id: row.id, appId: row.appId } : null;
 }
 
+async function lookupApiKeyId(env: Env, id: string): Promise<ApiKeyRecord | null> {
+  const row = await database(env.DB).query.appApiKey.findFirst({
+    columns: { id: true, appId: true },
+    where: and(eq(appApiKey.id, id), eq(appApiKey.status, "active")),
+  });
+  return row ? { id: row.id, appId: row.appId } : null;
+}
+
 /**
  * Reads the active key straight from D1. Used by the token-exchange path, where
  * revocation must take effect immediately.
@@ -81,17 +91,53 @@ export async function lookupApiKeyUncached(
   return lookupApiKeyHash(env, await hashApiKey(credential));
 }
 
-function rememberApiKey(hash: string, value: ApiKeyRecord | null): void {
+function rememberApiKey(
+  cacheKey: ApiKeyCacheKey,
+  value: ApiKeyRecord | null,
+  lookupStartedAt: number,
+): void {
   // Re-inserting keeps the map in least-recently-used order.
-  apiKeyCache.delete(hash);
-  apiKeyCache.set(hash, {
-    expiresAt: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS),
+  apiKeyCache.delete(cacheKey);
+  apiKeyCache.set(cacheKey, {
+    // A slow read must not add its own duration to the revocation window.
+    expiresAt: lookupStartedAt + (value ? HIT_TTL_MS : MISS_TTL_MS),
     value,
   });
   if (apiKeyCache.size > apiKeyCacheLimit) {
     const oldest = apiKeyCache.keys().next();
     if (!oldest.done) apiKeyCache.delete(oldest.value);
   }
+}
+
+async function lookupCachedApiKey(
+  cacheKey: ApiKeyCacheKey,
+  lookup: () => Promise<ApiKeyRecord | null>,
+): Promise<ApiKeyRecord | null> {
+  const now = Date.now();
+  const cached = apiKeyCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    apiKeyCache.delete(cacheKey);
+    apiKeyCache.set(cacheKey, cached);
+    return cached.value;
+  }
+
+  apiKeyCache.delete(cacheKey);
+  const lookupStartedAt = Date.now();
+  const value = await lookup();
+  rememberApiKey(cacheKey, value, lookupStartedAt);
+  return value;
+}
+
+/**
+ * Resolves an active key ID through the same short, bounded cache used for raw
+ * API-key authentication. Gateway tokens carry this ID so revocation can take
+ * effect without waiting for the token itself to expire.
+ */
+export async function lookupActiveApiKeyById(
+  env: Env,
+  id: string,
+): Promise<ApiKeyRecord | null> {
+  return lookupCachedApiKey(`id:${id}`, () => lookupApiKeyId(env, id));
 }
 
 export async function verifyApiKey(
@@ -101,16 +147,10 @@ export async function verifyApiKey(
   userId: string | null,
 ): Promise<GatewayIdentity> {
   const hash = await hashApiKey(credential);
-  const cached = apiKeyCache.get(hash);
-  let value: ApiKeyRecord | null;
-  if (cached && cached.expiresAt > Date.now()) {
-    value = cached.value;
-    apiKeyCache.delete(hash);
-    apiKeyCache.set(hash, cached);
-  } else {
-    value = await lookupApiKeyHash(env, hash);
-    rememberApiKey(hash, value);
-  }
+  const value = await lookupCachedApiKey(
+    `hash:${hash}`,
+    () => lookupApiKeyHash(env, hash),
+  );
   if (!value || value.appId !== expectedAppId) {
     throw new GatewayError(401, "auth_required", "A valid gateway API key is required");
   }
@@ -166,5 +206,7 @@ export function setApiKeyCacheLimit(limit: number): void {
 
 /** Cached credential hashes, oldest first. Exposed for tests. */
 export function apiKeyCacheHashes(): string[] {
-  return [...apiKeyCache.keys()];
+  return [...apiKeyCache.keys()]
+    .filter((key) => key.startsWith("hash:"))
+    .map((key) => key.slice("hash:".length));
 }
