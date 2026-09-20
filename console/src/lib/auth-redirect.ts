@@ -186,6 +186,14 @@ const OAUTH_ERRORS: Record<string, OAuthErrorNotice> = {
     description:
       "Your Google account is not registered here. Ask an owner or admin to add you, then sign in.",
   },
+  // Better Auth refuses to join a Google login to a sign-in it did not create,
+  // so this is what an email that already has a password gets back.
+  account_not_linked: {
+    tone: "destructive",
+    title: "This email already signs in with a password",
+    description:
+      "An account with this email already signs in with a password. Sign in with your password instead.",
+  },
 };
 
 export function oauthErrorNotice(search: string): OAuthErrorNotice | null {

@@ -135,6 +135,10 @@ the first account on an empty deployment, or separate additional accounts when
 additional registration is enabled. A verified pending claim can create the
 human owner of its existing account through the scoped Google flow.
 
+Signing in with Google never joins a sign-in that already exists for the same
+email address. If you registered that address with a password, keep using the
+password; Google sign-in is refused for it rather than opening the same account.
+
 ### `OAUTH_RELAY_URL`
 
 Plain variable, unset by default. It points at an OAuth callback relay for

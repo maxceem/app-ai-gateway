@@ -104,6 +104,12 @@ describe("oauthErrorNotice", () => {
     expect(oauthErrorNotice("?error=access-denied")?.title).toMatch(/cancelled/i);
   });
 
+  it("sends a refused Google link back to the password it already has", () => {
+    const notice = oauthErrorNotice("?error=account_not_linked");
+    expect(notice?.tone).toBe("destructive");
+    expect(notice?.description).toMatch(/sign in with your password/i);
+  });
+
   it("falls back to generic copy for an unknown code", () => {
     const notice = oauthErrorNotice("?error=server_exploded");
     expect(notice?.tone).toBe("destructive");
