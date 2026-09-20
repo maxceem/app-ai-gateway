@@ -1,22 +1,12 @@
 import { assertAccountAccess } from "../../core/account-lifecycle";
+import { credentialAuthorityCondition } from "@maxceem/cf-auth";
 import { GatewayError } from "../../core/errors";
+import { mgmtAuthTables } from "../../db/schema";
 import { createProvider, updateProvider } from "../../management/providers";
 import { createProviderGateway, rotateProviderGateway } from "../../management/provider-gateways";
 import { databaseErrorMatches } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import type { HandoffRow, CliContext } from "./types";
-
-/** Authority is rechecked in the mutation transaction, not merely when the URL was issued. */
-const liveCredential = `EXISTS (
-  SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
-  WHERE m.organization_id=? AND m.user_id=? AND m.status='active' AND m.role IN ('owner','admin')
-  AND (
-    EXISTS (SELECT 1 FROM mgmt_api_key k WHERE k.id=? AND k.user_id=u.id AND k.organization_id=m.organization_id
-      AND k.enabled=1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>MAX(?,CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)))
-    )
-    OR (u.kind='human' AND EXISTS (SELECT 1 FROM mgmt_user_session s WHERE s.id=? AND s.user_id=u.id AND s.expires_at>MAX(?,CAST((julianday('now')-2440587.5)*86400000 AS INTEGER))))
-  )
-)`;
 
 export async function completeProviderSubmission(
   c: CliContext,
@@ -46,11 +36,20 @@ export async function completeProviderSubmission(
     throw new GatewayError(400, "invalid_request", "A provider credential is required");
   const actor = { organizationId: row.organization_id, userId: row.initiating_user_id };
   const now = Date.now();
+  // Authority is rechecked in the mutation transaction, not merely when the
+  // URL was issued. Product lifecycle conditions are appended below.
+  const liveCredential = credentialAuthorityCondition(mgmtAuthTables, {
+    organizationId: row.organization_id,
+    userId: row.initiating_user_id,
+    credentialId: row.initiating_credential_id,
+    allowedRoles: ["owner", "admin"],
+    nowMs: now,
+  });
   const transition = crypto.randomUUID();
   const marker = JSON.stringify({ transition });
   const conditions = [
     "EXISTS (SELECT 1 FROM mgmt_handoff WHERE id=? AND consumed_at=? AND outcome=?)",
-    liveCredential,
+    liveCredential.sql,
     `EXISTS (SELECT 1 FROM mgmt_organization o WHERE id=? AND (
       EXISTS (SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
         WHERE m.organization_id=o.id AND m.role='owner' AND u.kind='human')
@@ -60,12 +59,7 @@ export async function completeProviderSubmission(
     row.id,
     now,
     marker,
-    row.organization_id,
-    row.initiating_user_id,
-    row.initiating_credential_id,
-    now,
-    row.initiating_credential_id,
-    now,
+    ...liveCredential.params,
     row.organization_id,
     new Date(now).toISOString(),
   ];

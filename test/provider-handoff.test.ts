@@ -14,8 +14,8 @@ const runtime = new Proxy(env, {
     return Reflect.get(target, key, receiver);
   },
 });
-async function operation(kind: string, payload: Record<string, unknown>) {
-  const auth = createIdentityAuth(env, origin);
+async function operation(kind: string, payload: Record<string, unknown>, operationEnv: Env = runtime) {
+  const auth = createIdentityAuth(operationEnv, origin);
   const user = await auth.service.createServiceIdentity({ name: "Handoff test" });
   await auth.repository.addOrganizationUser({
     organizationId: TEST_ORGANIZATION_ID,
@@ -35,7 +35,7 @@ async function operation(kind: string, payload: Record<string, unknown>) {
       headers: { authorization: `Bearer ${key.plaintext}`, "content-type": "application/json" },
       body: JSON.stringify({ kind, payload, pollToken }),
     },
-    runtime,
+    operationEnv,
   );
   expect(response.status, await response.clone().text()).toBe(200);
   const data = await response.json<{ id: string; url: string }>();
@@ -55,7 +55,7 @@ async function operation(kind: string, payload: Record<string, unknown>) {
           ...(secret === undefined ? {} : { secret }),
         }),
       },
-      runtime,
+      operationEnv,
     );
   const details = () =>
     worker.request(
@@ -65,13 +65,13 @@ async function operation(kind: string, payload: Record<string, unknown>) {
         headers: { origin, "content-type": "application/json" },
         body: JSON.stringify({ submissionToken: new URL(data.url).hash.slice(1) }),
       },
-      runtime,
+      operationEnv,
     );
   const poll = () =>
     worker.request(
       `${origin}/v1/cli/operations/${encodeURIComponent(data.id)}`,
       { headers: { authorization: `Bearer ${pollToken}` } },
-      runtime,
+      operationEnv,
     );
   return { ...data, submit, details, poll, user, key };
 }
@@ -145,6 +145,53 @@ describe("provider browser submissions", () => {
           .first<{ consumed_at: number | null }>()
       )?.consumed_at,
     ).toBeNull();
+  });
+
+  it("rolls back submission when the initiating member is demoted before the mutation", async () => {
+    const body = providerBody();
+    let demoteAtCommit = false;
+    let commitInterceptions = 0;
+    let initiatingUserId = "";
+    const db = new Proxy(runtime.DB, {
+      get(target, property, receiver) {
+        if (property !== "batch") return Reflect.get(target, property, receiver);
+        return async (statements: Parameters<Env["DB"]["batch"]>[0]) => {
+          if (demoteAtCommit) {
+            demoteAtCommit = false;
+            commitInterceptions += 1;
+            await env.DB.prepare(
+              "UPDATE mgmt_organization_user SET role='member' WHERE organization_id=? AND user_id=?",
+            )
+              .bind(TEST_ORGANIZATION_ID, initiatingUserId)
+              .run();
+          }
+          return target.batch(statements);
+        };
+      },
+    });
+    const interleavedEnv = new Proxy(runtime, {
+      get(target, property, receiver) {
+        return property === "DB" ? db : Reflect.get(target, property, receiver);
+      },
+    }) as Env;
+    const op = await operation("provider.add", body, interleavedEnv);
+    initiatingUserId = op.user.id;
+    demoteAtCommit = true;
+
+    expect((await op.submit("secret-after-demotion")).status).toBe(409);
+    expect(commitInterceptions).toBe(1);
+    expect(
+      (
+        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
+          .bind(op.id)
+          .first<{ consumed_at: number | null }>()
+      )?.consumed_at,
+    ).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM provider WHERE slug=?")
+        .bind(body.slug)
+        .first("n"),
+    ).toBe(0);
   });
 
   it("keeps rotation bound to the reviewed provider configuration", async () => {

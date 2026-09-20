@@ -23,3 +23,6 @@ minimumReleaseAgeExclude:
   - '@next/swc-win32-x64-msvc@16.3.0'
   - fumadocs-openapi@11.2.3
   - next@16.3.0
+
+patchedDependencies:
+  '@maxceem/cf-auth@0.5.0': patches/@maxceem__cf-auth@0.5.0.patch

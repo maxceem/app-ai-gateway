@@ -1,18 +1,11 @@
 import {
-  createAuthMiddleware,
-  createAuthService,
-  createBetterAuthOptions,
-  createCfAuthRepository,
-  createCurrentOrganizationCookie,
-  resolveConfig,
+  createCfAuth,
   type CfAuth,
-  type CfAuthConfig,
   type CfAuthError,
   isCfAuthError,
 } from "@maxceem/cf-auth";
-import { APIError, createAuthMiddleware as createBetterAuthMiddleware } from "better-auth/api";
-import { betterAuth } from "better-auth/minimal";
-import type { DBAdapter, DBTransactionAdapter } from "better-auth/types";
+import { APIError } from "better-auth/api";
+import { sql } from "drizzle-orm";
 import { billingBinding } from "../billing/gateway";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
@@ -67,212 +60,6 @@ function registrationDenied(onDenied?: () => void): never {
   });
 }
 
-interface LogicalHumanUser {
-  id: string;
-  name: string;
-  email: string;
-  emailVerified: boolean;
-  image: string | null;
-  kind: "human";
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-function userDate(value: unknown): Date {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
-  if (typeof value === "number" || typeof value === "string") {
-    const parsed = new Date(value);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
-  }
-  return new Date();
-}
-
-function selectedUser(
-  user: LogicalHumanUser,
-  select: string[] | undefined,
-): Record<string, unknown> {
-  if (!select?.length) return { ...user };
-  const result: Record<string, unknown> = {};
-  for (const field of select) {
-    if (Object.hasOwn(user, field)) result[field] = user[field as keyof LogicalHumanUser];
-  }
-  return result;
-}
-
-async function insertHumanAtomically(
-  env: Env,
-  data: Record<string, unknown>,
-  select: string[] | undefined,
-  forceAllowId: boolean,
-  claimRegistration: boolean,
-  onDenied?: () => void,
-): Promise<Record<string, unknown>> {
-  // Better Auth's additional-field default must identify this as a human. Do
-  // not let a caller choose another kind and sidestep the registration gate.
-  if (data.kind !== undefined && data.kind !== "human") {
-    throw new Error("Better Auth user creation must carry the human identity kind");
-  }
-  if (typeof data.name !== "string" || typeof data.email !== "string") {
-    throw new Error("Better Auth user creation is missing normalized identity fields");
-  }
-
-  const createdAt = userDate(data.createdAt);
-  const updatedAt = userDate(data.updatedAt);
-  const user: LogicalHumanUser = {
-    id:
-      forceAllowId && typeof data.id === "string" && data.id.length > 0
-        ? data.id
-        : crypto.randomUUID(),
-    name: data.name,
-    email: data.email,
-    emailVerified: data.emailVerified === true,
-    image: typeof data.image === "string" ? data.image : null,
-    kind: "human",
-    createdAt,
-    updatedAt,
-  };
-  const additionalAllowed = additionalRegistrationsAllowed(env);
-  const inserted = await env.DB.prepare(
-    `INSERT INTO mgmt_user(id,name,email,email_verified,image,kind,created_at,updated_at)
-     SELECT ?,?,?,?,?, 'human',?,?
-     WHERE
-       (EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human') AND ?)
-       OR
-       (NOT EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human') AND
-        (? OR NOT EXISTS (SELECT 1 FROM mgmt_organization)))
-     RETURNING id`,
-  ).bind(
-    user.id,
-    user.name,
-    user.email,
-    user.emailVerified ? 1 : 0,
-    user.image,
-    user.createdAt.getTime(),
-    user.updatedAt.getTime(),
-    additionalAllowed ? 1 : 0,
-    claimRegistration ? 1 : 0,
-  ).first<{ id: string }>();
-  if (!inserted) registrationDenied(onDenied);
-  return selectedUser(user, select);
-}
-
-/**
- * Keeps the guarded create method inside Better Auth's transaction callback.
- * D1's Drizzle adapter implements transactions as sequential adapter calls; if
- * the callback received the original adapter, signup and OAuth would bypass
- * the atomic user insertion even though top-level creates were wrapped.
- */
-function guardUserCreates(
-  env: Env,
-  adapter: DBAdapter,
-  claimRegistration: boolean,
-  onDenied?: () => void,
-): DBAdapter {
-  const createGuarded = (delegate: DBTransactionAdapter["create"]): DBAdapter["create"] => async <
-    T extends Record<string, unknown>,
-    R = T,
-  >(args: {
-    model: string;
-    data: Omit<T, "id">;
-    select?: string[];
-    forceAllowId?: boolean;
-  }): Promise<R> => {
-    if (args.model !== "user") return delegate<T, R>(args);
-    return await insertHumanAtomically(
-      env,
-      args.data,
-      args.select,
-      args.forceAllowId ?? false,
-      claimRegistration,
-      onDenied,
-    ) as R;
-  };
-  const guardedCreate = createGuarded(adapter.create);
-
-  return {
-    ...adapter,
-    create: guardedCreate,
-    transaction: <R>(callback: (trx: DBTransactionAdapter) => Promise<R>) =>
-      adapter.transaction((trx) =>
-        callback({
-          ...trx,
-          create: createGuarded(trx.create),
-        }),
-      ),
-  };
-}
-
-function createGatewayIdentityAuth(
-  env: Env,
-  config: CfAuthConfig,
-  claimRegistration: boolean,
-  onRegistrationDenied?: () => void,
-): CfAuth {
-  const resolved = resolveConfig(config);
-  const repository = createCfAuthRepository(resolved.db, resolved.tables, {
-    onError: resolved.onError,
-  });
-  let service: ReturnType<typeof createAuthService> | undefined;
-  const getService = () => {
-    if (!service) throw new Error("cf-auth service accessed before initialization");
-    return service;
-  };
-  const options = createBetterAuthOptions(resolved, getService);
-
-  // Hosted registration is deliberately unrestricted, so it keeps cf-auth's
-  // adapter untouched. Only self-hosted human creation needs the D1 predicate.
-  if (!billingBinding(env)) {
-    const adapterFactory = options.database;
-    if (typeof adapterFactory !== "function") {
-      throw new Error("cf-auth did not configure a database adapter");
-    }
-    options.database = (authOptions: Parameters<typeof adapterFactory>[0]) =>
-      guardUserCreates(
-        env,
-        adapterFactory(authOptions),
-        claimRegistration,
-        onRegistrationDenied,
-      );
-  }
-
-  options.hooks = {
-    before: createBetterAuthMiddleware(async (ctx) => {
-      if (ctx.path !== "/change-password") return;
-      return {
-        context: {
-          body: { ...ctx.body, revokeOtherSessions: true },
-        },
-      };
-    }),
-  };
-
-  const auth = betterAuth(options);
-  service = createAuthService(repository, resolved);
-  const currentOrganizationCookie = createCurrentOrganizationCookie(resolved);
-  const middleware = createAuthMiddleware(resolved, {
-    auth,
-    service,
-    currentOrganizationCookie,
-  });
-  const routePattern = `${resolved.basePath === "/" ? "" : resolved.basePath}/*`;
-  const handler = (request: Request): Promise<Response> => auth.handler(request);
-
-  return {
-    config: resolved,
-    auth,
-    service,
-    repository,
-    currentOrganizationCookie,
-    basePath: resolved.basePath,
-    routePattern,
-    handler,
-    middleware,
-    mount(app) {
-      app.all(routePattern, (c: { req: { raw: Request } }) => handler(c.req.raw));
-    },
-  };
-}
-
 export function googleAuthEnabled(env: Env): boolean {
   return Boolean(env.GOOGLE_CLIENT_ID?.trim() && env.GOOGLE_CLIENT_SECRET?.trim());
 }
@@ -317,7 +104,8 @@ function identityAuth(
   const origin = new URL(requestUrl).origin;
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
-  return createGatewayIdentityAuth(env, {
+  const hosted = Boolean(billingBinding(env));
+  return createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
     tables: mgmtAuthTables,
@@ -328,8 +116,28 @@ function identityAuth(
     userHooks: {
       beforeCreate: () =>
         assertRegistrationAllowed(env, claimRegistration, onRegistrationDenied),
+      ...(!hosted
+        ? {
+            atomicCreateGuard: {
+              condition: (tables: typeof mgmtAuthTables) => sql`
+                (
+                  exists (select 1 from ${tables.user} where ${tables.user.kind} = 'human')
+                  and ${additionalRegistrationsAllowed(env) ? 1 : 0}
+                )
+                or (
+                  not exists (select 1 from ${tables.user} where ${tables.user.kind} = 'human')
+                  and (
+                    ${claimRegistration ? 1 : 0}
+                    or not exists (select 1 from ${tables.organization})
+                  )
+                )
+              `,
+              onDenied: onRegistrationDenied,
+            },
+          }
+        : {}),
     },
-    emailAndPassword: { enabled: true },
+    emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
     organizations: {
       autoProvisionDefaultOrganization:
         !claimRegistration &&
@@ -347,7 +155,7 @@ function identityAuth(
           },
         }
       : {}),
-  }, claimRegistration, onRegistrationDenied);
+  });
 }
 
 export function createIdentityAuth(
