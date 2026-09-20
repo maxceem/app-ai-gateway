@@ -22,6 +22,19 @@ interface CapturedRequest {
   body: string;
 }
 
+/**
+ * The bytes a mocked upstream was handed. A body the gateway forwards
+ * unchanged travels as the exact array it read, so this reads a view as
+ * readily as an `ArrayBuffer`.
+ */
+function upstreamBodyBytes(body: BodyInit | null | undefined): Uint8Array | null {
+  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+  if (ArrayBuffer.isView(body)) {
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  }
+  return null;
+}
+
 interface OutputCapCase {
   name: string;
   provider: ProviderType;
@@ -1386,9 +1399,9 @@ describe("provider-native proxy", () => {
       + "test-audio-bytes\r\n"
       + `--${boundary}--\r\n`,
     );
-    let upstreamBytes = new Uint8Array();
+    let upstreamBytes: Uint8Array | null = null;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
-      if (init?.body instanceof ArrayBuffer) upstreamBytes = new Uint8Array(init.body);
+      upstreamBytes = upstreamBodyBytes(init?.body) ?? upstreamBytes;
       return Response.json({ text: "hello", duration: 1.25 });
     });
 
@@ -1417,6 +1430,34 @@ describe("provider-native proxy", () => {
     expect(row?.model).toBe("grok-transcribe");
     expect(row?.cost_usd).toBeCloseTo((1.25 / 3600) * 0.1, 8);
     expect(row?.auth_method).toBe("attest");
+  });
+
+  it("forwards an unrewritten JSON body as the text the client sent", async () => {
+    // No output cap, so nothing has a reason to rewrite the body at all.
+    await seedApp("proxy-json-passthrough", {
+      proxy: { openai: { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] } },
+    });
+    const token = await gatewayToken("proxy-json-passthrough");
+    // Whitespace and key order included: nothing rewrote this body, so the
+    // bytes the client sent are the bytes the provider sees, decoded once.
+    const text = '{\n  "model": "gpt-5.6-sol",\n  "input": "hi",\n  "metadata": { "a": 1 }\n}';
+    const captured = captureProviderBodies();
+    const response = await workerFetch(
+      "https://example.test/v1/apps/proxy-json-passthrough/proxy/openai/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-app-version": "1.2.3",
+        },
+        body: text,
+      },
+    );
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(captured).toEqual([text]);
   });
 
   it("rejects bodies larger than 20 MB before contacting the provider", async () => {

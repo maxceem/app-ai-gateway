@@ -318,22 +318,66 @@ function audioUsage(value: unknown): UsageObservation | null {
   return { ...EMPTY, audioSeconds: duration };
 }
 
-function parseSse(text: string): unknown[] {
-  const values: unknown[] = [];
-  for (const block of text.replace(/\r\n/gu, "\n").split("\n\n")) {
-    const data = block
-      .split("\n")
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
-    if (!data || data === "[DONE]") continue;
-    try {
-      values.push(JSON.parse(data) as unknown);
-    } catch {
-      // A malformed event is ignored; a later completion event may still be usable.
+/** Marks a block that carries no value: empty, `[DONE]`, or malformed. */
+const NO_VALUE = Symbol("no SSE value");
+
+/** One SSE block's `data:` payload, or null when it carries nothing to parse. */
+function sseData(block: string): string | null {
+  const data = block
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  return !data || data === "[DONE]" ? null : data;
+}
+
+/**
+ * One SSE window as its events, parsed only where a reader reaches one.
+ *
+ * Splitting the text into blocks is cheap work over the window; parsing them is
+ * what costs, and every shape this file reads reports at one end of a stream.
+ * Walking from the last block back therefore costs the few events that carry
+ * the answer rather than a `JSON.parse` per delta chunk. Each block is parsed
+ * at most once however many readers reach it, because usage and a cost report
+ * are read off the same window.
+ */
+function sseEvents(text: string): {
+  forwards(): Iterable<unknown>;
+  backwards(): Iterable<unknown>;
+} {
+  const blocks = text.replace(/\r\n/gu, "\n").split("\n\n");
+  const parsed = new Array<unknown>(blocks.length);
+  function valueAt(index: number): unknown {
+    const seen = parsed[index];
+    // `JSON.parse` never answers `undefined`, so an untouched slot is the only
+    // thing that reads as one.
+    if (seen !== undefined) return seen;
+    const data = sseData(blocks[index]!);
+    let value: unknown = NO_VALUE;
+    if (data !== null) {
+      try {
+        value = JSON.parse(data) as unknown;
+      } catch {
+        // A malformed event is ignored; another event may still be usable.
+      }
     }
+    parsed[index] = value;
+    return value;
   }
-  return values;
+  return {
+    *forwards() {
+      for (let index = 0; index < blocks.length; index += 1) {
+        const value = valueAt(index);
+        if (value !== NO_VALUE) yield value;
+      }
+    },
+    *backwards() {
+      for (let index = blocks.length - 1; index >= 0; index -= 1) {
+        const value = valueAt(index);
+        if (value !== NO_VALUE) yield value;
+      }
+    },
+  };
 }
 
 /**
@@ -496,21 +540,19 @@ export function observeUpstreamBody(body: ResponseBodyStream): {
   return { stream: transform.readable, observed };
 }
 
-function mergeAnthropicEvents(values: unknown[]): UsageCounts | null {
-  let result: UsageCounts | null = null;
-  for (const value of values) {
-    const parsed = anthropicUsage(value);
-    if (!parsed) continue;
-    result = result
-      ? {
-          inputTokens: Math.max(result.inputTokens, parsed.inputTokens),
-          cachedInputTokens: Math.max(result.cachedInputTokens, parsed.cachedInputTokens),
-          cacheWriteTokens: Math.max(result.cacheWriteTokens, parsed.cacheWriteTokens),
-          outputTokens: Math.max(result.outputTokens, parsed.outputTokens),
-        }
-      : parsed;
-  }
-  return result;
+/**
+ * Two Anthropic events as one figure. Field-wise `max`, because each event
+ * reports its own half of the request and every counter it omits reads as zero:
+ * `message_start` names the input tokens and `message_delta` the cumulative
+ * output tokens, and neither may pull the other's counter back down.
+ */
+function mergeAnthropicUsage(left: UsageCounts, right: UsageCounts): UsageCounts {
+  return {
+    inputTokens: Math.max(left.inputTokens, right.inputTokens),
+    cachedInputTokens: Math.max(left.cachedInputTokens, right.cachedInputTokens),
+    cacheWriteTokens: Math.max(left.cacheWriteTokens, right.cacheWriteTokens),
+    outputTokens: Math.max(left.outputTokens, right.outputTokens),
+  };
 }
 
 type UsageShape = "openai" | "anthropic" | "gemini" | "audio";
@@ -532,6 +574,15 @@ function usageShape(value: unknown): UsageShape | null {
     return "anthropic";
   }
   return "openai";
+}
+
+/**
+ * Whether a value carries usage under `message`, which on an Anthropic stream
+ * is `message_start` and nothing else: the deltas report at the root. It is the
+ * only event that names the input tokens, and it is the stream's first.
+ */
+function carriesMessageUsage(value: unknown): boolean {
+  return asRecord(asRecord(value)?.message)?.usage !== undefined;
 }
 
 /**
@@ -621,25 +672,72 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
   return duration === undefined ? null : { duration: Number(duration) };
 }
 
-/** One response body as a list of values: the document, or every SSE event. */
-function responseValues(body: ObservedText, contentType: string): unknown[] {
+/**
+ * The values of one response body, parsed where a reader reaches one and
+ * nowhere else. Every reader below walks from the last value backwards, because
+ * that is where every shape here reports.
+ */
+interface ResponseValues {
+  /** Every value the body carries, the last one first. */
+  backwards(): Iterable<unknown>;
+  /**
+   * The values of the head window, the first one first. Only Anthropic needs
+   * it: its input tokens are in `message_start`, which opens the stream.
+   */
+  headForwards(): Iterable<unknown>;
+}
+
+/** A body already parsed whole; nothing about these values is worth deferring. */
+function documentValues(values: unknown[]): ResponseValues {
+  return {
+    *backwards() {
+      for (let index = values.length - 1; index >= 0; index -= 1) yield values[index];
+    },
+    headForwards: () => values,
+  };
+}
+
+/** One response body as its values: the document, or every SSE event. */
+function responseValues(body: ObservedText, contentType: string): ResponseValues {
   if (contentType.toLowerCase().includes("text/event-stream")) {
-    // Both windows are parsed: an Anthropic stream reports its input tokens in
+    // Both windows are read: an Anthropic stream reports its input tokens in
     // the `message_start` event at the head and its output tokens at the tail.
-    return body.truncated
-      ? [...parseSse(body.head), ...parseSse(completeTailEvents(body.tail))]
-      : parseSse(body.head);
+    const head = sseEvents(body.head);
+    const tail = body.truncated ? sseEvents(completeTailEvents(body.tail)) : null;
+    return {
+      *backwards() {
+        if (tail) yield* tail.backwards();
+        yield* head.backwards();
+      },
+      headForwards: () => head.forwards(),
+    };
   }
   if (body.truncated) {
     const document = tailUsageDocument(body.tail);
-    return document ? [document] : [];
+    return documentValues(document ? [document] : []);
   }
   try {
     const parsed = JSON.parse(body.head) as unknown;
-    return Array.isArray(parsed) ? parsed : [parsed];
+    return documentValues(Array.isArray(parsed) ? parsed : [parsed]);
   } catch {
     throw new Error("Provider response was not valid usage JSON or SSE");
   }
+}
+
+/**
+ * `counts` merged with the `message_start` of the same body. The input tokens
+ * of an Anthropic stream are named there and nowhere else, and it is the first
+ * event, so the head is walked forwards and stops on it — on a truncated body
+ * as on an intact one, and never through the deltas in between.
+ */
+function withMessageStart(counts: UsageCounts, values: ResponseValues): UsageCounts {
+  let merged = counts;
+  for (const value of values.headForwards()) {
+    const earlier = anthropicUsage(value);
+    if (earlier) merged = mergeAnthropicUsage(merged, earlier);
+    if (carriesMessageUsage(value)) break;
+  }
+  return merged;
 }
 
 /**
@@ -647,18 +745,40 @@ function responseValues(body: ObservedText, contentType: string): unknown[] {
  * this deployment recognises. That distinction is the whole point: a provider
  * that reports zero tokens and a provider whose usage object we cannot read both
  * cost `$0` to compute, and only the second one is a metering failure.
+ *
+ * Values are consumed from the last one backwards and the walk stops as soon as
+ * the answer is settled, which is what keeps a long stream from being parsed
+ * whole. What "settled" means per shape:
+ *
+ * - OpenAI, Gemini and audio report once, at the end, so the answer is the last
+ *   value that parses to an observation.
+ * - Anthropic splits it in two: `message_start` carries the input tokens and
+ *   every `message_delta` the *cumulative* output tokens. Merging the last
+ *   Anthropic usage with `message_start` under field-wise `max` therefore gives
+ *   exactly what merging all of them gave — no other event carries usage, and a
+ *   cumulative counter is largest in the last one that reports it.
+ *
+ * An Anthropic-shaped value turns the rest of the walk Anthropic, so no other
+ * shape's usage is ever read out of an Anthropic body: the rule the shape
+ * filter enforced before any value was read, applied from the end inwards.
  */
-function usageFromValues(values: unknown[]): UsageObservation | null {
-  const anthropicValues = values.filter((value) => usageShape(value) === "anthropic");
-  if (anthropicValues.length > 0) return mergeAnthropicEvents(anthropicValues);
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    const shape = usageShape(values[index]);
+function usageFrom(values: ResponseValues): UsageObservation | null {
+  let anthropicShaped = false;
+  for (const value of values.backwards()) {
+    const shape = usageShape(value);
+    if (shape === "anthropic") {
+      anthropicShaped = true;
+      const counts = anthropicUsage(value);
+      if (!counts) continue;
+      return carriesMessageUsage(value) ? counts : withMessageStart(counts, values);
+    }
+    if (anthropicShaped) continue;
     const parsed = shape === "gemini"
-      ? geminiUsage(values[index])
+      ? geminiUsage(value)
       : shape === "openai"
-        ? openAiUsage(values[index])
+        ? openAiUsage(value)
         : shape === "audio"
-          ? audioUsage(values[index])
+          ? audioUsage(value)
         : null;
     if (parsed) return parsed;
   }
@@ -670,7 +790,7 @@ export function extractUsageText(
   contentType: string,
   _provider: ProviderType,
 ): UsageObservation | null {
-  return usageFromValues(responseValues(wholeBody(text), contentType));
+  return usageFrom(responseValues(wholeBody(text), contentType));
 }
 
 /**
@@ -687,8 +807,10 @@ export function observeResponse(
   const values = responseValues(body, contentType);
   const reporting = costReport(provider);
   return {
-    usage: usageFromValues(values),
-    report: reporting ? readProviderReport(values, reporting) : null,
+    usage: usageFrom(values),
+    // Handed the same backwards walk: the report of a stream is in its final
+    // chunk too, and that reader stops as soon as it has one.
+    report: reporting ? readProviderReport(values.backwards(), reporting) : null,
   };
 }
 

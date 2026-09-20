@@ -127,9 +127,37 @@ const SECRET_STALE_MAX_MS = 60 * 60_000;
  */
 const MAX_SECRET_CACHE_ENTRIES = 5_000;
 
+/**
+ * The same bound for the same reason, one entry per organization: the ids come
+ * from D1 and no caller can invent one, but a long-lived isolate in a large
+ * deployment would otherwise keep a row set for every organization it ever
+ * served.
+ */
+const MAX_ROWS_CACHE_ENTRIES = 5_000;
+
+/**
+ * Narrowed only by `setProviderRowsCacheLimit` below, and restored by
+ * `clearProviderCaches`, so nothing but a test can be running on another bound.
+ */
+let rowsCacheLimit = MAX_ROWS_CACHE_ENTRIES;
+
 const rowsCache = new Map<string, RowsEntry>();
 /** The complete authenticated identity plus blob makes rotation-safe entries. */
 const secretCache = new Map<string, SecretEntry>();
+
+/**
+ * Stores one entry and drops the oldest once the map is over its bound.
+ * Re-inserting first keeps the map in insertion order, so eviction drops the
+ * entry that has been there longest.
+ */
+function remember<T>(cache: Map<string, T>, key: string, value: T, bound: number): void {
+  cache.delete(key);
+  cache.set(key, value);
+  if (cache.size > bound) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
+  }
+}
 
 function secretCacheKey(
   kind: "providerKey" | "providerGatewayToken",
@@ -143,14 +171,12 @@ function secretCacheKey(
 }
 
 function rememberSecret(key: string, secret: string): void {
-  // Re-inserting keeps the map in insertion order, so eviction drops the entry
-  // that has been there longest.
-  secretCache.delete(key);
-  secretCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, secret });
-  if (secretCache.size > MAX_SECRET_CACHE_ENTRIES) {
-    const oldest = secretCache.keys().next();
-    if (!oldest.done) secretCache.delete(oldest.value);
-  }
+  remember(
+    secretCache,
+    key,
+    { expiresAt: Date.now() + CACHE_TTL_MS, secret },
+    MAX_SECRET_CACHE_ENTRIES,
+  );
 }
 
 /**
@@ -178,11 +204,27 @@ export function invalidateOrganizationProviders(organizationId: string): void {
 export function clearProviderCaches(): void {
   rowsCache.clear();
   secretCache.clear();
+  rowsCacheLimit = MAX_ROWS_CACHE_ENTRIES;
 }
 
 /** Cached authenticated secret identities, oldest first. Exposed for tests. */
 export function secretCacheKeys(): string[] {
   return [...secretCache.keys()];
+}
+
+/**
+ * Narrows the row-cache bound. Exposed for tests, like the API key one: what
+ * wants covering is that the bound holds and that eviction is insertion-oldest
+ * first, and neither depends on the number. Every caller clears the caches
+ * between tests, which restores the production bound with them.
+ */
+export function setProviderRowsCacheLimit(limit: number): void {
+  rowsCacheLimit = limit;
+}
+
+/** Cached organization ids, oldest first. Exposed for tests. */
+export function providerRowsCacheKeys(): string[] {
+  return [...rowsCache.keys()];
 }
 
 async function organizationRows(env: Env, organizationId: string): Promise<ProviderRow[]> {
@@ -222,7 +264,12 @@ async function organizationRows(env: Env, organizationId: string): Promise<Provi
     // exist" are different answers, and only the full set can tell them apart.
     // They hold their slug too, so including them costs no ambiguity.
     .where(eq(providerTable.organizationId, organizationId));
-  rowsCache.set(organizationId, { expiresAt: Date.now() + CACHE_TTL_MS, rows });
+  remember(
+    rowsCache,
+    organizationId,
+    { expiresAt: Date.now() + CACHE_TTL_MS, rows },
+    rowsCacheLimit,
+  );
   return rows;
 }
 

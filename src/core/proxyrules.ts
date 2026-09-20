@@ -64,7 +64,13 @@ export function sanitizedQuery(request: Request): string {
   return url.search;
 }
 
-export async function readBodyLimited(request: Request): Promise<Uint8Array> {
+/**
+ * The whole request body, or a 413 before any of it reaches a provider. The
+ * return type is exact on purpose: an `ArrayBuffer`-backed view is what the
+ * runtime accepts as a `BodyInit`, and what lets callers forward these bytes
+ * without copying them.
+ */
+export async function readBodyLimited(request: Request): Promise<Uint8Array<ArrayBuffer>> {
   const declared = request.headers.get("content-length");
   if (declared && Number.parseInt(declared, 10) > MAX_REQUEST_BYTES) {
     throw new GatewayError(413, "payload_too_large", "Request body exceeds 20 MB");
@@ -83,6 +89,9 @@ export async function readBodyLimited(request: Request): Promise<Uint8Array> {
     }
     chunks.push(value);
   }
+  // Exactly `total` bytes at offset 0, never a view onto something larger:
+  // callers hand this array straight to `fetch` and to `Request` as a body,
+  // which is only the same bytes because of that.
   const result = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -139,8 +148,17 @@ function matchedPath(provider: ProviderType, path: string, allowed: AllowedPath[
 }
 
 export function jsonObject(bytes: Uint8Array): Record<string, unknown> {
+  return jsonObjectFromText(new TextDecoder().decode(bytes));
+}
+
+/**
+ * The same, for a caller that already holds the text. A request whose body is
+ * forwarded unchanged is forwarded as that text, so decoding the bytes a second
+ * time to produce it was a second pass over every byte of every JSON request.
+ */
+export function jsonObjectFromText(text: string): Record<string, unknown> {
   try {
-    const value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    const value = JSON.parse(text) as unknown;
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not object");
     return value as Record<string, unknown>;
   } catch {
@@ -535,7 +553,9 @@ export async function prepareProxyRequest(input: {
       parsed = await new Request("https://local.invalid", {
         method: "POST",
         headers: { "content-type": contentType },
-        body: Uint8Array.from(bytes).buffer,
+        // The bytes themselves: `readBodyLimited` already owns an exact-sized
+        // array, and copying it to parse the form copied the whole upload.
+        body: bytes,
       }).formData();
       const modelField = parsed.get("model");
       if (typeof modelField === "string" && modelField.length > 0) {
@@ -561,7 +581,7 @@ export async function prepareProxyRequest(input: {
     );
     if (match.modelFromPath && wireModel !== requestedModel) {
       providerPath = match.entry.path.replace("{model}", encodeURIComponent(wireModel));
-      body = Uint8Array.from(bytes).buffer;
+      body = bytes;
     } else if (!match.modelFromPath && !match.entry.fixed_model && wireModel !== requestedModel) {
       parsed!.set("model", wireModel);
       headers.delete("content-type");
@@ -569,7 +589,7 @@ export async function prepareProxyRequest(input: {
     } else {
       // Preserve the original multipart boundary and bytes when no rewrite is
       // needed. A fixed model is policy metadata and is never injected.
-      body = Uint8Array.from(bytes).buffer;
+      body = bytes;
     }
     return {
       provider: input.provider,
@@ -581,7 +601,10 @@ export async function prepareProxyRequest(input: {
     };
   }
 
-  const parsed = jsonObject(bytes);
+  // Decoded once and read twice: the parse below and, where nothing rewrote
+  // the body, the outbound request itself.
+  const text = new TextDecoder().decode(bytes);
+  const parsed = jsonObjectFromText(text);
   if (match.modelFromPath) {
     requestedModel = match.modelFromPath;
   } else if (typeof parsed.model === "string" && parsed.model.length > 0) {
@@ -628,7 +651,7 @@ export async function prepareProxyRequest(input: {
     body: parsed,
   }) || bodyChanged;
   headers.set("content-type", "application/json");
-  body = bodyChanged ? JSON.stringify(parsed) : new TextDecoder().decode(bytes);
+  body = bodyChanged ? JSON.stringify(parsed) : text;
   return {
     provider: input.provider,
     providerPath,

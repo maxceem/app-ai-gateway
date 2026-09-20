@@ -5,14 +5,16 @@ import {
   clearProviderCaches,
   decryptProviderGatewaySecret,
   invalidateOrganizationProviders,
+  providerRowsCacheKeys,
   resolveProvider,
   secretCacheKeys,
+  setProviderRowsCacheLimit,
 } from "../src/core/provider-store";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { secretVault } from "../src/vault";
 import { secretContext } from "../src/vault/secrets";
-import { TEST_SERVICE_USER_ID } from "./helpers";
+import { seedProvider, TEST_SERVICE_USER_ID } from "./helpers";
 
 const ORGANIZATION_ID = "provider-store-organization";
 const PROVIDER_ID = "provider-store-openai";
@@ -249,3 +251,34 @@ it("bounds the secret cache and evicts the oldest entry first", async () => {
   expect(cached.at(-1)).toBe(keys.at(-1));
   expect(cached).not.toContain(keys[0]);
 }, 60_000);
+
+/**
+ * The row cache holds one entry per organization, so its bound is what keeps a
+ * long-lived isolate from remembering every organization it ever served. Two
+ * entries show the policy; the production bound is thousands and proving it
+ * would only cost thousands of seeded rows.
+ */
+it("bounds the provider row cache and evicts the oldest organization first", async () => {
+  const organizations = ["rows-cache-one", "rows-cache-two", "rows-cache-three"];
+  for (const organizationId of organizations) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
+       VALUES (?, 'Rows Cache Test', 'operator-test-owner', datetime('now'), datetime('now'))`,
+    ).bind(organizationId).run();
+    await seedProvider({
+      type: "openai",
+      organizationId,
+      id: `provider-rows-cache-${organizationId}`,
+      slug: PROVIDER_SLUG,
+    });
+  }
+  // After the seeding, which clears the caches and with them this bound.
+  setProviderRowsCacheLimit(2);
+
+  for (const organizationId of organizations) {
+    await expect(resolveProvider(env, organizationId, PROVIDER_SLUG))
+      .resolves.toMatchObject({ id: `provider-rows-cache-${organizationId}` });
+  }
+
+  expect(providerRowsCacheKeys()).toEqual(organizations.slice(1));
+});

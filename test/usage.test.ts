@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import prices from "../src/core/prices.json";
 import { providerModelAuthor, PROVIDER_TYPES } from "../src/core/providers";
 import {
@@ -160,6 +160,90 @@ describe("usage extraction", () => {
 
   it("reports malformed data to the caller so background bookkeeping can contain it", () => {
     expect(() => extractUsageText("not-json", "application/json", "openai")).toThrow();
+  });
+
+  /**
+   * The events that carry usage are at the ends of a stream, and the thousands
+   * in between are what a long generation is made of. Counting parses is how
+   * the walk is pinned to the ends: reading the same numbers by parsing every
+   * delta chunk would pass every other assertion in this file.
+   */
+  function parseCount(read: () => void): number {
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      read();
+      return parse.mock.calls.length;
+    } finally {
+      parse.mockRestore();
+    }
+  }
+
+  const LONG_STREAM_EVENTS = 2_000;
+
+  it("reads an OpenAI stream's usage without parsing the deltas before it", () => {
+    const body = Array.from(
+      { length: LONG_STREAM_EVENTS },
+      (_unused, index) =>
+        `data: ${JSON.stringify({
+          id: "chatcmpl-1",
+          choices: [{ index: 0, delta: { content: `chunk ${index}` } }],
+          usage: null,
+        })}\n\n`,
+    ).join("")
+      + `data: ${JSON.stringify({
+        id: "chatcmpl-1",
+        choices: [],
+        usage: { prompt_tokens: 120, completion_tokens: 80 },
+      })}\n\n`
+      + "data: [DONE]\n\n";
+
+    let usage: ReturnType<typeof extractUsageText> = null;
+    const parses = parseCount(() => {
+      usage = extractUsageText(body, "text/event-stream", "openai");
+    });
+    expect(usage).toEqual({
+      inputTokens: 120,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 80,
+    });
+    expect(parses).toBeLessThanOrEqual(5);
+  });
+
+  it("reads an Anthropic stream from both ends without parsing the deltas", () => {
+    const body = `event: message_start\ndata: ${JSON.stringify({
+      type: "message_start",
+      message: { usage: { input_tokens: 700, cache_read_input_tokens: 40, output_tokens: 1 } },
+    })}\n\n`
+      + Array.from(
+        { length: LONG_STREAM_EVENTS },
+        (_unused, index) =>
+          `event: content_block_delta\ndata: ${JSON.stringify({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: `chunk ${index}` },
+          })}\n\n`,
+      ).join("")
+      + `event: message_delta\ndata: ${JSON.stringify({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { output_tokens: 250 },
+      })}\n\n`
+      + `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`;
+
+    let usage: ReturnType<typeof extractUsageText> = null;
+    const parses = parseCount(() => {
+      usage = extractUsageText(body, "text/event-stream", "anthropic");
+    });
+    // `message_start` at the head, the last `message_delta` at the tail, and
+    // nothing between them: the input tokens are only in the first event.
+    expect(usage).toEqual({
+      inputTokens: 700,
+      cachedInputTokens: 40,
+      cacheWriteTokens: 0,
+      outputTokens: 250,
+    });
+    expect(parses).toBeLessThanOrEqual(5);
   });
 });
 
