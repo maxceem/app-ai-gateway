@@ -139,9 +139,16 @@ describe("gateway error logging", () => {
 
   it("keeps unexpected exceptions on their own code", async () => {
     await seedServerApp("log-unhandled", { issuer: {} });
+    // Deliberately bypass the write-time config validator. Drizzle's JSON
+    // decoder throws a plain SyntaxError when the request loads this row, which
+    // exercises the unexpected-error path without relying on malformed request
+    // JSON that the public endpoint now rejects before recording begins.
+    await env.DB.prepare("UPDATE app SET config_json=? WHERE id=?")
+      .bind("{ not json", "log-unhandled")
+      .run();
     const logs = captureLogs();
 
-    const response = await post("/v1/apps/log-unhandled/auth/token", "{ not json");
+    const response = await post("/v1/apps/log-unhandled/auth/token", "{}");
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "internal_error" } });

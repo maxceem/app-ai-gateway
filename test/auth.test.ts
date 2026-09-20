@@ -660,6 +660,68 @@ describe("App Attest applications identified by installation", () => {
   });
 });
 
+describe("application authentication request bodies", () => {
+  async function rawAuthRequest(
+    appId: string,
+    endpoint: "register" | "token",
+    body: string,
+    address = crypto.randomUUID(),
+  ): Promise<Response> {
+    const ctx = createExecutionContext();
+    const response = await app.fetch(
+      new Request(`https://example.test/v1/apps/${appId}/auth/${endpoint}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "cf-connecting-ip": address,
+        },
+        body,
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return response;
+  }
+
+  it.each(["register", "token"] as const)(
+    "returns invalid_request without recording malformed %s bodies",
+    async (endpoint) => {
+      const appId = `malformed-${endpoint}`;
+      await seedApp(appId);
+      for (const body of ["{", "[]", "null"]) {
+        const response = await rawAuthRequest(appId, endpoint, body);
+        expect(response.status, `${endpoint} ${body}`).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({
+          error: { code: "invalid_request" },
+        });
+      }
+      expect(
+        await env.DB.prepare("SELECT COUNT(*) n FROM app_auth_event WHERE app_id=?")
+          .bind(appId)
+          .first("n"),
+      ).toBe(0);
+    },
+  );
+
+  it("spends the token endpoint limit before parsing malformed JSON", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(RATE_WINDOW_ANCHOR);
+    const appId = "malformed-token-limit";
+    const address = crypto.randomUUID();
+    for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.app_auth_token.limit - 1; spent++) {
+      await enforceEndpointRateLimit(env, "app_auth_token", `${appId}:${address}`);
+    }
+    expect((await rawAuthRequest(appId, "token", "{", address)).status).toBe(400);
+    const refused = await rawAuthRequest(appId, "token", "{", address);
+    expect(refused.status).toBe(429);
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { code: "rate_limited" },
+    });
+    vi.useRealTimers();
+  });
+});
+
 // Ten seconds into a minute, a day out, so every refusal below reports the same
 // fifty seconds and no Durable Object alarm this suite schedules can come due
 // while the real runtime scheduler is still watching.

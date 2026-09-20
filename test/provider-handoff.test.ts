@@ -111,7 +111,12 @@ describe("provider browser submissions", () => {
     expect(
       await secretVault(env).decryptSecret(
         rows.results[0]!.secret_blob,
-        secretContext("providerKey", [TEST_ORGANIZATION_ID, rows.results[0]!.id]),
+        secretContext("providerKey", [
+          TEST_ORGANIZATION_ID,
+          rows.results[0]!.id,
+          "openai",
+          "",
+        ]),
       ),
     ).toBe("browser-provider-secret");
     const polled = await op.poll();

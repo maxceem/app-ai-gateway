@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import {
   clearProviderCaches,
   decryptProviderGatewaySecret,
+  invalidateOrganizationProviders,
   resolveProvider,
   secretCacheKeys,
 } from "../src/core/provider-store";
@@ -66,7 +67,7 @@ function stubKms(): void {
 async function seedKmsProvider(): Promise<void> {
   const blob = await secretVault(kmsEnv()).encryptSecret(
     SECRET,
-    secretContext("providerKey", [ORGANIZATION_ID, PROVIDER_ID]),
+    secretContext("providerKey", [ORGANIZATION_ID, PROVIDER_ID, "openai", ""]),
   );
   await database(env.DB).delete(provider).where(eq(provider.id, PROVIDER_ID));
   await database(env.DB).insert(provider).values({
@@ -104,6 +105,40 @@ afterEach(async () => {
 });
 
 describe("provider secrets when the vault cannot decrypt", () => {
+  it("does not let a warmed plaintext cache bypass a rewritten destination", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(resolveProvider(kmsEnv(), ORGANIZATION_ID, PROVIDER_SLUG))
+      .resolves.toMatchObject({ secret: SECRET, baseUrl: null });
+
+    await database(env.DB)
+      .update(provider)
+      .set({ baseUrl: "https://attacker.example.test/" })
+      .where(eq(provider.id, PROVIDER_ID));
+    // Preserve the plaintext cache while forcing the next request to reload the
+    // D1-controlled row, which is the cross-isolate shape of the attack.
+    invalidateOrganizationProviders(ORGANIZATION_ID);
+
+    await expect(resolveProvider(kmsEnv(), ORGANIZATION_ID, PROVIDER_SLUG))
+      .rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+  });
+
+  it("rejects ciphertext written before provider type and destination were bound", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const legacyBlob = await secretVault(env).encryptSecret(SECRET, {
+      service: "app-ai-gateway",
+      organizationId: ORGANIZATION_ID,
+      providerId: PROVIDER_ID,
+    });
+    await database(env.DB)
+      .update(provider)
+      .set({ secretBlob: legacyBlob })
+      .where(eq(provider.id, PROVIDER_ID));
+    clearProviderCaches();
+
+    await expect(resolveProvider(env, ORGANIZATION_ID, PROVIDER_SLUG))
+      .rejects.toMatchObject({ status: 502, code: "provider_unavailable" });
+  });
+
   it("serves the last decrypted secret through an unreachable vault, then stops", async () => {
     const start = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(start);
@@ -198,7 +233,12 @@ it("bounds the secret cache and evicts the oldest entry first", async () => {
     const gatewayId = `provider-store-gateway-${index}`;
     const context = secretContext("providerGatewayToken", [ORGANIZATION_ID, gatewayId]);
     const blob = await vault.encryptSecret(SECRET, context);
-    keys.push(`${gatewayId}\0${blob}`);
+    keys.push(JSON.stringify([
+      "providerGatewayToken",
+      ORGANIZATION_ID,
+      gatewayId,
+      blob,
+    ]));
     await expect(decryptProviderGatewaySecret(env, ORGANIZATION_ID, gatewayId, blob))
       .resolves.toBe(SECRET);
   }

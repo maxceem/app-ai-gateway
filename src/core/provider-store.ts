@@ -128,8 +128,19 @@ const SECRET_STALE_MAX_MS = 60 * 60_000;
 const MAX_SECRET_CACHE_ENTRIES = 5_000;
 
 const rowsCache = new Map<string, RowsEntry>();
-/** The id/blob pair makes rotation-safe entries and shares gateway decrypts. */
+/** The complete authenticated identity plus blob makes rotation-safe entries. */
 const secretCache = new Map<string, SecretEntry>();
+
+function secretCacheKey(
+  kind: "providerKey" | "providerGatewayToken",
+  identity: readonly string[],
+  blob: string,
+): string {
+  // JSON arrays are unambiguous even when a D1-controlled value contains the
+  // separator another encoding might choose. The cache must distinguish every
+  // value the vault authenticates or a warm entry could bypass that check.
+  return JSON.stringify([kind, ...identity, blob]);
+}
 
 function rememberSecret(key: string, secret: string): void {
   // Re-inserting keeps the map in insertion order, so eviction drops the entry
@@ -169,7 +180,7 @@ export function clearProviderCaches(): void {
   secretCache.clear();
 }
 
-/** Cached `id\0blob` secret keys, oldest first. Exposed for tests. */
+/** Cached authenticated secret identities, oldest first. Exposed for tests. */
 export function secretCacheKeys(): string[] {
   return [...secretCache.keys()];
 }
@@ -234,12 +245,17 @@ async function plaintextSecret(
   if (row.providerGatewayId !== null) {
     return decryptProviderGatewaySecret(env, organizationId, row.providerGatewayId, blob);
   }
-  const ownerId = row.id;
-  const key = `${ownerId}\0${blob}`;
+  const identity: [string, string, string, string] = [
+    organizationId,
+    row.id,
+    row.type,
+    row.baseUrl ?? "",
+  ];
+  const key = secretCacheKey("providerKey", identity, blob);
   const cached = secretCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.secret;
   try {
-    const secret = await openSecret(env, "providerKey", [organizationId, ownerId], blob);
+    const secret = await openSecret(env, "providerKey", identity, blob);
     rememberSecret(key, secret);
     return secret;
   } catch (error) {
@@ -266,21 +282,22 @@ async function plaintextSecret(
   }
 }
 
-/** Decrypts a reusable gateway token once per id/blob pair. */
+/** Decrypts a reusable gateway token once per authenticated identity and blob. */
 export async function decryptProviderGatewaySecret(
   env: Env,
   organizationId: string,
   providerGatewayId: string,
   secretBlob: string,
 ): Promise<string> {
-  const key = `${providerGatewayId}\0${secretBlob}`;
+  const identity: [string, string] = [organizationId, providerGatewayId];
+  const key = secretCacheKey("providerGatewayToken", identity, secretBlob);
   const cached = secretCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.secret;
   try {
     const secret = await openSecret(
       env,
       "providerGatewayToken",
-      [organizationId, providerGatewayId],
+      identity,
       secretBlob,
     );
     rememberSecret(key, secret);

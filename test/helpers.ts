@@ -113,7 +113,12 @@ export async function seedProvider(input: {
     slug,
     name: input.name ?? `Test ${input.type}`,
     secretBlob: providerGatewayId === null
-      ? await sealSecret(env, "providerKey", [organizationId, id], secret)
+      ? await sealSecret(
+          env,
+          "providerKey",
+          [organizationId, id, input.type, input.baseUrl ?? ""],
+          secret,
+        )
       : null,
     secretHint: providerGatewayId === null ? secret.slice(-4) : null,
     providerGatewayId,

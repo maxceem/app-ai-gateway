@@ -387,6 +387,67 @@ describe("CLI account lifecycle", () => {
       authorization: `Bearer ${data.credential.token}`,
     })).status).toBe(200);
   });
+
+  it("checks the submission proof before spending the operation limit", async () => {
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const human = await seedUnaffiliatedHuman();
+    const operationResponse = await request(
+      testEnv,
+      "/operations",
+      { kind: "claim", payload: {}, pollToken: random() },
+      { authorization: `Bearer ${data.credential.token}` },
+    );
+    const op = (await operationResponse.json()) as { id: string; url: string };
+    const submissionToken = new URL(op.url).hash.slice(1);
+    const headers = { origin: "https://example.test", cookie: human.cookie };
+
+    for (let attempt = 0; attempt < ENDPOINT_RATE_LIMITS.submission.limit + 2; attempt++) {
+      const rejected = await request(
+        testEnv,
+        `/browser/${op.id}/submit`,
+        { submissionToken: random(), approve: true },
+        headers,
+      );
+      expect(rejected.status, `bad proof ${attempt}`).toBe(403);
+    }
+
+    const approved = await request(
+      testEnv,
+      `/browser/${op.id}/submit`,
+      { submissionToken, approve: true },
+      headers,
+    );
+    expect(approved.status, await approved.clone().text()).toBe(200);
+  });
+
+  it("still rate limits submissions that carry the valid proof", async () => {
+    const anchor = Math.floor((Date.now() + 86_400_000) / 60_000) * 60_000 + 10_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(anchor);
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const operationResponse = await request(
+      testEnv,
+      "/operations",
+      { kind: "claim", payload: {}, pollToken: random() },
+      { authorization: `Bearer ${data.credential.token}` },
+    );
+    const op = (await operationResponse.json()) as { id: string; url: string };
+    const input = { submissionToken: new URL(op.url).hash.slice(1) };
+    const headers = { origin: "https://example.test" };
+
+    for (let attempt = 0; attempt < ENDPOINT_RATE_LIMITS.submission.limit; attempt++) {
+      const allowed = await request(testEnv, `/browser/${op.id}/details`, input, headers);
+      expect(allowed.status, `valid proof ${attempt}`).toBe(200);
+    }
+    const refused = await request(testEnv, `/browser/${op.id}/details`, input, headers);
+    expect(refused.status).toBe(429);
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { code: "rate_limited", data: { scope: "submission" } },
+    });
+    vi.useRealTimers();
+  });
   it("retires an undisclosed credential after vault failure and retries the same account", async () => {
     const testEnv = runtime();
     const input = { idempotencyKey: random(), pollToken: random() };
@@ -968,58 +1029,66 @@ it("collects expired accounts on the nightly run only where account deadlines ex
   expect(await nightly(true)).toBeNull();
 });
 
-it("rejects every browser submission on the API host before registration or OAuth cookies", async () => {
-  const baseEnv = runtime();
-  const testEnv = new Proxy(baseEnv, {
-    get: (target, key, receiver) =>
-      key === "PUBLIC_API_URL"
-        ? "https://api.example.test"
-        : Reflect.get(target, key, receiver),
-  });
-  const { data } = await start(testEnv);
-  const op = (await (
-    await request(
-      testEnv,
-      "/operations",
-      { kind: "claim", payload: {}, pollToken: random() },
-      { authorization: `Bearer ${data.credential.token}` },
-    )
-  ).json()) as { id: string; url: string };
-  const input = {
-    submissionToken: new URL(op.url).hash.slice(1),
-    email: "blocked-api@example.test",
-    password: "test-password-with-length",
-    name: "Blocked",
-    approve: true,
-  };
-  for (const action of ["details", "submit", "register", "google"]) {
-    const response = await worker.request(
-      `https://api.example.test/v1/cli/browser/${op.id}/${action}`,
-      {
-        method: "POST",
-        headers: {
-          origin: "https://example.test",
-          "content-type": "application/json",
+it("rejects browser submissions on the API host with explicit and fallback console origins", async () => {
+  for (const [label, consoleOrigin] of [
+    ["explicit", "https://example.test"],
+    ["fallback", undefined],
+  ] as const) {
+    const baseEnv = runtime();
+    const testEnv = new Proxy(baseEnv, {
+      get: (target, key, receiver) =>
+        key === "PUBLIC_API_URL"
+          ? "https://api.example.test"
+          : key === "CLI_CONSOLE_ORIGIN"
+            ? consoleOrigin
+            : Reflect.get(target, key, receiver),
+    });
+    const { data } = await start(testEnv);
+    const op = (await (
+      await request(
+        testEnv,
+        "/operations",
+        { kind: "claim", payload: {}, pollToken: random() },
+        { authorization: `Bearer ${data.credential.token}` },
+      )
+    ).json()) as { id: string; url: string };
+    const email = `blocked-api-${label}@example.test`;
+    const input = {
+      submissionToken: new URL(op.url).hash.slice(1),
+      email,
+      password: "test-password-with-length",
+      name: "Blocked",
+      approve: true,
+    };
+    for (const action of ["details", "submit", "register", "google"]) {
+      const response = await worker.request(
+        `https://api.example.test/v1/cli/browser/${op.id}/${action}`,
+        {
+          method: "POST",
+          headers: {
+            origin: "https://api.example.test",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(input),
         },
-        body: JSON.stringify(input),
-      },
-      testEnv,
-    );
-    expect(response.status).toBe(404);
-    expect(response.headers.getSetCookie()).toEqual([]);
+        testEnv,
+      );
+      expect([label, action, response.status]).toEqual([label, action, 404]);
+      expect(response.headers.getSetCookie()).toEqual([]);
+    }
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user WHERE email=?")
+        .bind(email)
+        .first("n"),
+    ).toBe(0);
+    expect(
+      (
+        await request(testEnv, `/browser/${op.id}/details`, input, {
+          origin: "https://example.test",
+        })
+      ).status,
+    ).toBe(200);
   }
-  expect(
-    await env.DB.prepare(
-      "SELECT COUNT(*) n FROM mgmt_user WHERE email='blocked-api@example.test'",
-    ).first("n"),
-  ).toBe(0);
-  expect(
-    (
-      await request(testEnv, `/browser/${op.id}/details`, input, {
-        origin: "https://example.test",
-      })
-    ).status,
-  ).toBe(200);
 });
 
 it("keeps the completed trial counter readable during recovery without renewing it", async () => {

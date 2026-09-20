@@ -51,7 +51,7 @@ import {
   type ProviderStatus,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { sealSecret } from "../../vault/secrets";
+import { openSecret, sealSecret } from "../../vault/secrets";
 import {
   databaseErrorMatches,
   providerRequestBody,
@@ -305,7 +305,12 @@ export async function createProvider(
     secretBlob:
       secret === undefined
         ? null
-        : await sealSecret(env, "providerKey", [admin.organizationId, id], secret),
+        : await sealSecret(
+            env,
+            "providerKey",
+            [admin.organizationId, id, body.type, baseUrl ?? ""],
+            secret,
+          ),
     secretHint: secret === undefined ? null : secretHint(secret),
     providerGatewayId: providerGatewayId ?? null,
     gatewayRoute,
@@ -429,6 +434,24 @@ export async function updateProvider(
     }
     baseUrl = body.baseUrl === null ? null : guardedBaseUrl(body.baseUrl);
     updates.baseUrl = baseUrl;
+
+    // Clearing an override is a legitimate origin change too. When the caller
+    // does not provide a replacement key, open it only under the old origin
+    // and immediately seal it under the new default-origin context.
+    if (body.baseUrl === null && body.secret === undefined && row.secretBlob !== null) {
+      const secret = await openSecret(
+        env,
+        "providerKey",
+        [admin.organizationId, row.id, row.type, row.baseUrl ?? ""],
+        row.secretBlob,
+      );
+      updates.secretBlob = await sealSecret(
+        env,
+        "providerKey",
+        [admin.organizationId, row.id, row.type, ""],
+        secret,
+      );
+    }
   }
 
   if (body.secret !== undefined) {
@@ -442,7 +465,7 @@ export async function updateProvider(
     updates.secretBlob = await sealSecret(
       env,
       "providerKey",
-      [admin.organizationId, row.id],
+      [admin.organizationId, row.id, row.type, baseUrl ?? ""],
       body.secret,
     );
     updates.secretHint = secretHint(body.secret);

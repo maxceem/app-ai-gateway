@@ -41,10 +41,14 @@ export interface AdminVariables extends BillingVariables {
  */
 const MEMBER_WRITABLE_OPERATIONS = new Set(["POST /v1/admin/organizations/select"]);
 
+function isAppValidation(method: string, path: string): boolean {
+  return method === "POST" && /^\/v1\/admin\/apps\/[^/]+\/validate$/u.test(path);
+}
+
 function isMutation(method: string, path: string): boolean {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
   if (MEMBER_WRITABLE_OPERATIONS.has(`${method} ${path}`)) return false;
-  return !path.endsWith("/validate");
+  return !isAppValidation(method, path);
 }
 
 export const adminAuth: MiddlewareHandler<{

@@ -64,6 +64,11 @@ rotation is a cf-kms operation and does not touch this Worker.
 
 Use Wrangler's hidden prompt or stdin so no secret value enters shell history.
 
+After upgrading to the release that binds direct provider keys to their type
+and destination, re-enter or rotate each direct provider key once. Ciphertext
+written before that change is deliberately rejected because it lacks the new
+authenticated context.
+
 ## Recover access
 
 If nobody can sign in, `pnpm recover-access` resets a password directly in the
@@ -119,6 +124,10 @@ configured for, only priced models proxy at all, and you can block a user or
 disable an app or a provider at any time. It does not bound how many requests
 there are, so a compromised app key, a looping client, or a runaway agent can
 keep spending until you notice.
+
+Disabling or deleting a provider can take up to 60 seconds to reach another
+warm Worker isolate because provider rows are cached; for an immediate
+emergency stop, revoke the key in the provider account too.
 
 Put the ceiling where the money is:
 
