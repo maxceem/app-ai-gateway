@@ -9,15 +9,17 @@
  */
 
 import {
-  ENDPOINT_PROVIDER_TYPES,
   OUTPUT_CLAMP_STYLES,
+  type EndpointApiStyle,
+  type OutputClampStyle,
+} from "@shared/capabilities";
+import {
+  ENDPOINT_PROVIDER_TYPES,
   PROVIDER_TYPES,
   providersForEndpointStyle,
-  type EndpointApiStyle,
   type EndpointProvider,
-  type OutputClampStyle,
   type ProviderType,
-} from "@shared/capabilities";
+} from "@shared/providers";
 import {
   ENDPOINT_SLUG,
   type AppAttestEnvironment,
@@ -47,14 +49,15 @@ export type {
   LimitsConfig,
 };
 
-// The capability facts come from `src/shared/capabilities.ts`, which the Worker
-// enforces from the same tables. What stays here is presentation — labels, form
-// copy, draft shapes — and the config structures the console edits.
+// The capability facts come from `src/shared/capabilities.ts` and
+// `src/shared/providers.ts`, which the Worker enforces from the same tables.
+// What stays here is presentation — labels, form copy, draft shapes — and the
+// config structures the console edits.
 export {
   ENDPOINT_API_STYLES,
-  reportsCost,
   type EndpointApiStyle,
 } from "@shared/capabilities";
+export { reportsCost } from "@shared/providers";
 
 export const PROVIDERS = PROVIDER_TYPES;
 export type Provider = ProviderType;

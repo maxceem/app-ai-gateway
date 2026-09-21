@@ -1,6 +1,5 @@
-import type { ApiStyle } from "./api-styles.ts";
+import type { ApiStyle, CredentialSource } from "./capabilities.ts";
 import { asRecord } from "./records.ts";
-import type { CredentialSource } from "../shared/capabilities.ts";
 
 /**
  * What a response said about the request that produced it, on a route that
@@ -35,7 +34,7 @@ export interface ProviderReport {
 export interface CostReport {
   /**
    * Headers this integration needs on every request for the report to be
-   * complete. Merged with the spec's own {@link ProviderSpec.requestHeaders} by
+   * complete. Merged with the descriptor's own {@link ProviderDescriptor.requestHeaders} by
    * `providerRequestHeaders`, so the sanitizer strips a client's version of them
    * exactly as it does any other declared header.
    */

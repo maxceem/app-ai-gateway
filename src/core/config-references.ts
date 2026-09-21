@@ -1,6 +1,6 @@
 import { supportsEndpointStyle } from "./capabilities";
 import type { OrganizationProviders } from "./provider-store";
-import { lookup } from "./records";
+import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "./providers";
 import { hasModelPrice, isBillable } from "./usage";
 import {

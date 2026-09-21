@@ -10,6 +10,9 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+/** Re-exported for the tables below; defined in `src/shared/capabilities.ts`. */
+export type { GatewayType } from "../shared/capabilities";
+import type { GatewayType } from "../shared/capabilities";
 import type { AppConfig, ProviderType } from "../core/types";
 
 export type AppStatus = "active" | "disabled";
@@ -27,19 +30,13 @@ export type ApiKeyStatus = "active" | "revoked";
 export type ProviderStatus = "active" | "disabled";
 export type ProviderGatewayStatus = "active" | "revoked";
 /**
- * Gateway types the `provider_gateways_type_check` CHECK admits. The DB is
- * deliberately the wider of the two: widening it is a table rebuild, so the
- * whole planned set was admitted in one wave. Runtime is authoritative — see
- * {@link ProviderGatewayType}.
+ * The `type` columns below carry {@link ProviderType} and {@link GatewayType},
+ * the runtime registries' own unions, and no CHECK narrows them: a CHECK on a
+ * value set that grows is a table rebuild per addition, and it was never the
+ * thing that decided anything. A stored name with no adapter or no descriptor is
+ * refused by the contracts on the way in and treated as unroutable on the way
+ * out — `isGatewayType` and `isProviderType` are that check, in code.
  */
-export const PROVIDER_GATEWAY_TYPE_NAMES = ["cf_aig", "vercel"] as const;
-export type ProviderGatewayTypeName = (typeof PROVIDER_GATEWAY_TYPE_NAMES)[number];
-/**
- * Gateway types that actually have an adapter, and so are the only ones that
- * can be created or can serve traffic. A name the database admits but no
- * adapter implements is rejected by the contracts, never by the CHECK.
- */
-export type ProviderGatewayType = "cf_aig" | "vercel";
 /** Non-secret configuration for the org's own Cloudflare AI Gateway. */
 export interface CfAigConfig {
   accountId: string;
@@ -53,8 +50,9 @@ export interface CfAigConfig {
 export type VercelConfig = Record<string, never>;
 /**
  * What `provider_gateway.config_json` holds, discriminated at runtime by the
- * row's `type`. The adapter registry resolves the pair — see `resolveGateway`
- * in `src/core/gateways.ts`, which is the only place the two are joined.
+ * row's `type`. The adapter registry resolves the pair — see `gatewayConfig` in
+ * `src/core/gateways.ts`, the one place a stored config is read as an adapter's
+ * own shape.
  */
 export type ProviderGatewayConfig = CfAigConfig | VercelConfig;
 /**
@@ -204,7 +202,7 @@ export const providerGateway = sqliteTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => mgmtOrganization.id),
-    type: text("type").$type<ProviderGatewayTypeName>().notNull(),
+    type: text("type").$type<GatewayType>().notNull(),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" }).$type<ProviderGatewayConfig>().notNull(),
     /** Vault blob for the gateway token; never leaves the server. */
@@ -218,9 +216,6 @@ export const providerGateway = sqliteTable(
   },
   (table) => [
     index("idx_provider_gateways_organization").on(table.organizationId),
-    // Mirrors PROVIDER_GATEWAY_TYPE_NAMES; widening one means a table rebuild,
-    // which is why the whole planned set was admitted at once.
-    check("provider_gateways_type_check", sql`${table.type} IN ('cf_aig', 'vercel')`),
     check(
       "provider_gateways_status_check",
       sql`${table.status} IN ('active', 'revoked')`,
@@ -260,7 +255,8 @@ export const provider = sqliteTable(
     /**
      * How this row is routed inside its gateway. Null on a direct row and on
      * every gateway whose adapter needs no routing configuration; the adapter
-     * named by `provider_gateway.type` validates the shape.
+     * named by `provider_gateway.type` validates the shape — see
+     * `RouteAdapter.validateRouteConfig`.
      */
     gatewayRoute: text("gateway_route_json", { mode: "json" }).$type<GatewayRouteConfig>(),
     pricing: text("pricing_json", { mode: "json" }).$type<ProviderPricing>(),
@@ -277,19 +273,6 @@ export const provider = sqliteTable(
     // never lets another instance take its place.
     uniqueIndex("providers_slug_unique").on(table.organizationId, table.slug),
     check("providers_status_check", sql`${table.status} IN ('active', 'disabled')`),
-    // Deliberately wider than PROVIDER_TYPES in src/core/providers.ts: widening
-    // it is a table rebuild, so every type on the roadmap was admitted in one
-    // wave. A type with no registry entry is rejected by the contracts long
-    // before it reaches this CHECK — the database is permissive, the runtime
-    // registry is authoritative.
-    check(
-      "providers_type_check",
-      sql`${table.type} IN (
-        'openai', 'anthropic', 'xai', 'gemini', 'perplexity',
-        'deepseek', 'groq', 'mistral', 'together', 'fireworks', 'openrouter',
-        'cerebras', 'moonshot', 'huggingface', 'baseten', 'bytedance'
-      )`,
-    ),
     check(
       "providers_secret_source_check",
       sql`(${table.providerGatewayId} IS NULL) = (${table.secretBlob} IS NOT NULL)`,
@@ -408,7 +391,7 @@ export const appUsageEvent = sqliteTable(
      */
     providerGatewayId: text("provider_gateway_id"),
     /** That gateway's type at request time, so history survives a rename. */
-    providerGatewayType: text("provider_gateway_type").$type<ProviderGatewayTypeName>(),
+    providerGatewayType: text("provider_gateway_type").$type<GatewayType>(),
     model: text("model").notNull(),
     route: text("route").notNull(),
     endpointSlug: text("endpoint_slug"),

@@ -1,22 +1,11 @@
-import type { GatewayRouteConfig, ProviderGatewayType, ProviderPricing } from "../db/schema";
 import { apiStyleFromPath, outputClampStyle, type ApiStyle } from "./api-styles";
-import {
-  assertApiStyleSupported,
-  routeWireModel,
-  type ProviderRoute,
-} from "./capabilities";
+import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
 import { DEFAULT_END_USER_HEADER, endUserHeader, endUserIssuer } from "./config";
 import { GatewayError } from "./errors";
-import { GATEWAY_ADAPTERS, gatewayBodyMutation, gatewayUpstream } from "./gateways";
 import type { ResolvedProvider } from "./provider-store";
-import {
-  costReport,
-  PROVIDER_REGISTRY,
-  PROVIDER_TYPES,
-  providerAuthValue,
-  providerRequestHeaders,
-} from "./providers";
-import { lookup } from "./records";
+import { costReport, providerDescriptor } from "./providers";
+import { ROUTE_ADAPTERS, routeWireModel } from "./routes";
+import { lookup } from "../shared/records";
 import { isBillable } from "./usage";
 import { isDefaultProxyApiStyle } from "../shared/capabilities";
 import { selectedProviderPolicies } from "../shared/app-config";
@@ -125,9 +114,10 @@ function modelIsAllowed(allowedModels: string[], requestedModel: string): boolea
 
 function matchedPath(provider: ProviderType, path: string, allowed: AllowedPath[]): MatchedPath | null {
   if (allowed.length === 0) {
-    if (provider === "gemini") {
-      // Native Gemini generation requests carry the model in the URL rather
-      // than the JSON body, so default inference paths still need a model capture.
+    if (providerDescriptor(provider).modelInPath) {
+      // A type whose native generation requests carry the model in the URL
+      // rather than the JSON body still needs a model capture on a default
+      // inference path.
       const nativeMatch = path.match(
         /^(v1(?:alpha|beta)?\/models\/)([^/]+)(:(?:generateContent|streamGenerateContent))$/u,
       );
@@ -220,7 +210,9 @@ export function validateOrInjectOutputCap(
     const hasMaxTokens = validateOutputCap(body, "max_tokens", cap);
     const hasMaxCompletionTokens = validateOutputCap(body, "max_completion_tokens", cap);
     if (hasMaxTokens || hasMaxCompletionTokens) return false;
-    body[provider === "openai" ? "max_completion_tokens" : "max_tokens"] = cap;
+    // `max_tokens` unless this type's own chat-completions surface reads
+    // something else, which OpenAI's does.
+    body[providerDescriptor(provider).chatCompletionsCapField ?? "max_tokens"] = cap;
     return true;
   }
   if (validateOutputCap(body, "max_output_tokens", cap)) return false;
@@ -244,20 +236,15 @@ export function costReportBodyMutation(
 }
 
 /**
- * Every header the gateway itself owns, derived from both registries so the two
- * can never drift: each provider spec declares the header it authenticates
- * with and any it (or its cost-report integration) needs the upstream to read,
- * each adapter declares the headers its gateway reads. A client value in any of
- * them is dropped before the upstream request is built.
+ * Every header the gateway itself owns, derived from the route adapters so it
+ * can never drift from them: each one declares the headers it sets, and the
+ * direct adapter derives its own from the provider descriptors. A client value
+ * in any of them is dropped before the upstream request is built.
  */
 export const RESERVED_UPSTREAM_HEADERS: readonly string[] = [
-  ...new Set([
-    ...PROVIDER_TYPES.flatMap((type) => [
-      PROVIDER_REGISTRY[type].auth.header,
-      ...Object.keys(providerRequestHeaders(type)),
-    ]),
-    ...Object.values(GATEWAY_ADAPTERS).flatMap((adapter) => adapter.reservedHeaders),
-  ]),
+  ...new Set(
+    Object.values(ROUTE_ADAPTERS).flatMap((adapter) => adapter.reservedHeaders),
+  ),
 ];
 
 /**
@@ -284,22 +271,27 @@ const ALWAYS_STRIPPED: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Namespaces the gateway adapters own, and the only names a client may set
- * inside one. Precomputed with the same reasoning as {@link ALWAYS_STRIPPED};
+ * Namespaces the route adapters own, and the only names a client may set
+ * inside one. A route with no namespace of its own — the direct one — has no
+ * entry, which is exactly what makes every gateway control header noise on it. Precomputed with the same reasoning as {@link ALWAYS_STRIPPED};
  * `null` for an adapter that reserves its whole namespace, which skips the
  * per-name allowlist lookup entirely.
  */
 const GATEWAY_NAMESPACES: readonly {
-  type: ProviderGatewayType;
+  kind: ProviderRoute;
   prefix: string;
   clientHeaders: ReadonlySet<string> | null;
-}[] = Object.values(GATEWAY_ADAPTERS).map((adapter) => ({
-  type: adapter.type,
-  prefix: adapter.headerPrefix,
-  clientHeaders: adapter.clientHeaders.length === 0
-    ? null
-    : new Set<string>(adapter.clientHeaders),
-}));
+}[] = Object.values(ROUTE_ADAPTERS).flatMap((adapter) =>
+  adapter.headerPrefix === null
+    ? []
+    : [{
+      kind: adapter.kind,
+      prefix: adapter.headerPrefix,
+      clientHeaders: adapter.clientHeaders.length === 0
+        ? null
+        : new Set<string>(adapter.clientHeaders),
+    }],
+);
 
 /**
  * The only client request headers a provider ever sees, outside the gateway
@@ -351,7 +343,7 @@ function isForwardedClientHeader(name: string): boolean {
  * adapters, `direct` for a provider's own API, or `pending` before the provider
  * row has been resolved and the answer is not knowable yet.
  */
-type HeaderRoute = ProviderGatewayType | "direct" | "pending";
+type HeaderRoute = ProviderRoute | "pending";
 
 /**
  * The one header-stripping rule, applied wherever a request's headers are
@@ -394,7 +386,7 @@ function stripClientHeaders(
       // A gateway's control headers mean something only to that gateway, so on
       // any other route — a direct call included — they are noise the upstream
       // might act on.
-      const usable = (route === "pending" || route === namespace.type)
+      const usable = (route === "pending" || route === namespace.kind)
         && namespace.clientHeaders?.has(name) === true;
       if (!usable) {
         headers.delete(name);
@@ -463,33 +455,35 @@ export async function prepareProxyRequest(input: {
   request: Request;
   app: AppRecord;
   userId: string | null;
-  provider: ProviderType;
-  providerSlug: string;
+  /**
+   * The organization's resolved provider row: its type, its slug, its route and
+   * its per-model prices, all of which this function judges the request
+   * against. Passed whole rather than field by field, so nothing here can be
+   * handed a route that belongs to another row.
+   */
+  resolved: ResolvedProvider;
   providerPath: string;
-  /** How the resolved row reaches the provider; the matrix judges the pair. */
-  route: ProviderRoute;
-  /** The row's stored routing configuration, if its gateway takes one. */
-  gatewayRoute?: GatewayRouteConfig | null;
   tokenHeader: string;
-  /** The resolved row's per-model overrides; they win over the global catalog. */
-  pricing: ProviderPricing | null;
 }): Promise<PreparedProxyRequest> {
+  const { resolved } = input;
+  const provider = resolved.type;
+  const route = resolved.route;
   const config = input.app.config.routing.providers.mode === "all"
     ? DEFAULT_PROVIDER_POLICY
-    : lookup(selectedProviderPolicies(input.app.config.routing), input.providerSlug);
+    : lookup(selectedProviderPolicies(input.app.config.routing), resolved.slug);
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const apiStyle = apiStyleFromPath(input.providerPath);
   if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
     throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   }
-  const match = matchedPath(input.provider, input.providerPath, config.allowed_paths);
+  const match = matchedPath(provider, input.providerPath, config.allowed_paths);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
-  assertApiStyleSupported(input.route, input.provider, apiStyle);
+  assertApiStyleSupported(route.kind, provider, apiStyle);
 
   const bytes = await readBodyLimited(input.request);
   const contentType = input.request.headers.get("content-type") ?? "";
   const isMultipart = contentType.toLowerCase().startsWith("multipart/form-data");
-  const clampStyle = match.entry.clamp ?? outputClampStyle(apiStyle, input.provider);
+  const clampStyle = match.entry.clamp ?? outputClampStyle(apiStyle, provider);
   let requestedModel: string;
   let body: BodyInit;
   let bodyChanged = false;
@@ -521,15 +515,10 @@ export async function prepareProxyRequest(input: {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
     }
     const actualModel = lookup(input.app.config.routing.model_rewrites, requestedModel) ?? requestedModel;
-    if (!isBillable(input.provider, actualModel, input.pricing)) {
-      throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
+    if (!isBillable(provider, actualModel, resolved.pricing)) {
+      throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
     }
-    const wireModel = routeWireModel(
-      input.route,
-      input.provider,
-      actualModel,
-      input.gatewayRoute,
-    );
+    const wireModel = routeWireModel(route, provider, actualModel);
     if (match.modelFromPath && wireModel !== requestedModel) {
       providerPath = match.entry.path.replace("{model}", encodeURIComponent(wireModel));
       body = bytes;
@@ -543,7 +532,7 @@ export async function prepareProxyRequest(input: {
       body = bytes;
     }
     return {
-      provider: input.provider,
+      provider,
       providerPath,
       model: actualModel,
       body,
@@ -569,12 +558,12 @@ export async function prepareProxyRequest(input: {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
   const actualModel = lookup(input.app.config.routing.model_rewrites, requestedModel) ?? requestedModel;
-  if (!isBillable(input.provider, actualModel, input.pricing)) {
-    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
+  if (!isBillable(provider, actualModel, resolved.pricing)) {
+    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
   }
   // Everything above judged the canonical model; only the outbound request
   // speaks the route's own namespace, and only where the adapter declares one.
-  const wireModel = routeWireModel(input.route, input.provider, actualModel, input.gatewayRoute);
+  const wireModel = routeWireModel(route, provider, actualModel);
   if (match.modelFromPath) {
     providerPath = wireModel === requestedModel
       ? input.providerPath
@@ -586,25 +575,25 @@ export async function prepareProxyRequest(input: {
     }
   }
   bodyChanged =
-    validateOrInjectOutputCap(clampStyle, input.provider, parsed, config.max_output_tokens)
+    validateOrInjectOutputCap(clampStyle, provider, parsed, config.max_output_tokens)
     || bodyChanged;
   // Whatever the provider type's own cost-report integration asks for, if it
   // declares a body rewrite at all. OpenRouter does not: its accounting is
   // always on, so nothing is re-serialized for it.
-  bodyChanged = costReportBodyMutation(input.provider, apiStyle, parsed) || bodyChanged;
-  // The gateway's own routing directive, applied last so it wins over anything
-  // a client put in the same field. Same-protocol: it steers the gateway, and
-  // the provider behind it sees the payload it would have seen anyway.
-  bodyChanged = gatewayBodyMutation({
-    gatewayType: input.route === "direct" ? null : input.route,
-    route: input.gatewayRoute ?? null,
+  bodyChanged = costReportBodyMutation(provider, apiStyle, parsed) || bodyChanged;
+  // The route's own routing directive, applied last so it wins over anything a
+  // client put in the same field. Same-protocol: it steers the gateway, and the
+  // provider behind it sees the payload it would have seen anyway. Absent on
+  // every route that expresses nothing in the body, the direct one included.
+  bodyChanged = (route.adapter.mutateBody?.({
+    routeConfig: route.config,
     style: apiStyle,
     body: parsed,
-  }) || bodyChanged;
+  }) ?? false) || bodyChanged;
   headers.set("content-type", "application/json");
   body = bodyChanged ? JSON.stringify(parsed) : text;
   return {
-    provider: input.provider,
+    provider,
     providerPath,
     model: actualModel,
     body,
@@ -617,14 +606,13 @@ export async function prepareProxyRequest(input: {
  * Builds the upstream URL and the final header set from the organization's
  * resolved provider row.
  *
- * - `gateway === null` — the provider's native API, path passed through
- *   verbatim, authenticated with the registry's own header. The origin is the
- *   registry's `directBaseUrl` unless the row carries an operator's own
- *   `baseUrl`, which replaces it and nothing else: the client's path and query
- *   are appended exactly as they would have been.
- * - otherwise — the gateway adapter owns the URL and its own headers, and the
- *   provider key never travels because the gateway holds it. A gateway-routed
- *   row has no `baseUrl` to consider.
+ * There is one path, whatever the route: the client's headers are narrowed to
+ * what this route allows, the adapter builds the URL and its own headers, and
+ * those headers are set last so a client can never have supplied one. What the
+ * two kinds of route differ in is entirely inside the adapter — a direct call
+ * authenticates with the provider's own header under the descriptor's origin
+ * (or the row's own `baseUrl`), a gateway authenticates with its own token and
+ * the provider key never travels because the gateway holds it.
  *
  * **Clients still never supply a URL.** `resolved.baseUrl` is an operator-only
  * column: it is written through the console or a management key, validated and
@@ -641,33 +629,22 @@ export function providerUpstream(input: {
   userId: string | null;
 }): { url: string; headers: Headers } {
   const { resolved, prepared } = input;
+  const { route } = resolved;
   const headers = new Headers(prepared.headers);
-
-  if (resolved.gateway) {
-    const upstream = gatewayUpstream({
-      gateway: resolved.gateway,
-      secret: resolved.secret,
-      provider: prepared.provider,
-      providerPath: prepared.providerPath,
-      query: prepared.query,
-      appId: input.appId,
-      userId: input.userId,
-    });
-    stripClientHeaders(headers, resolved.gateway.type);
-    for (const [name, value] of Object.entries(upstream.headers)) headers.set(name, value);
-    return { url: upstream.url, headers };
-  }
-
-  stripClientHeaders(headers, "direct");
-  const spec = PROVIDER_REGISTRY[prepared.provider];
-  headers.set(spec.auth.header, providerAuthValue(prepared.provider, resolved.secret));
-  // Set after sanitization, like the credential itself: these are the gateway's
+  stripClientHeaders(headers, route.kind);
+  const upstream = route.adapter.upstream({
+    provider: prepared.provider,
+    providerPath: prepared.providerPath,
+    query: prepared.query,
+    secret: resolved.secret,
+    baseUrl: resolved.baseUrl,
+    gatewayConfig: route.gateway?.config ?? null,
+    routeConfig: route.config,
+    appId: input.appId,
+    userId: input.userId,
+  });
+  // Set after sanitization, like the credential itself: these are the route's
   // own asks of the upstream, never a client's.
-  for (const [name, value] of Object.entries(providerRequestHeaders(prepared.provider))) {
-    headers.set(name, value);
-  }
-  return {
-    url: `${resolved.baseUrl ?? spec.directBaseUrl}${prepared.providerPath}${prepared.query}`,
-    headers,
-  };
+  for (const [name, value] of Object.entries(upstream.headers)) headers.set(name, value);
+  return { url: upstream.url, headers };
 }

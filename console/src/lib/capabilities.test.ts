@@ -3,10 +3,9 @@ import {
   API_STYLE_PATHS,
   GATEWAY_ROUTES,
   GATEWAY_TYPES,
-  PROVIDER_TYPES,
-  providerCapability,
   type ApiStyle as CoreApiStyle,
 } from "@shared/capabilities";
+import { PROVIDER_TYPES, providerCapability } from "@shared/providers";
 import { API_STYLE_LABELS, gatewayApiSurface, routeServesEndpointStyle } from "./capabilities";
 import { GATEWAY_TYPE_LABELS, PROVIDER_LABELS } from "./config-types";
 

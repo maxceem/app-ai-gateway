@@ -18,14 +18,14 @@ import {
   providerGateway,
   type CfAigConfig,
   type GatewayRouteConfig,
-  type ProviderGatewayType,
+  type GatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
 import type { ProviderType } from "../src/core/types";
 import { parseAppConfig } from "../src/shared/app-config";
 import { validateConfigurationReferences } from "../src/core/config-references";
 import type { OrganizationProviders } from "../src/core/provider-store";
-import { recordFromEntries } from "../src/core/records";
+import { recordFromEntries } from "../src/shared/records";
 import { createCfAuth } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../src/db/schema";
 
@@ -74,7 +74,7 @@ export async function seedProvider(input: {
   organizationId?: string;
   secret?: string;
   name?: string;
-  gateway?: ProviderGatewayType;
+  gateway?: GatewayType;
   gatewayConfig?: CfAigConfig;
   /** The row's gateway-type-specific routing configuration. */
   gatewayRoute?: GatewayRouteConfig;

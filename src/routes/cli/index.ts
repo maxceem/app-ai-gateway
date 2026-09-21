@@ -1,5 +1,4 @@
 import { accountMonthUsage } from "../../core/account-usage";
-import { providerCapability } from "../../shared/capabilities";
 import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
@@ -9,7 +8,11 @@ import {
   assertAccountAccess,
 } from "../../core/account-lifecycle";
 import { GatewayError } from "../../core/errors";
-import { PROVIDER_TYPES, PROVIDER_REGISTRY, type ProviderSpec } from "../../core/providers";
+import {
+  providerCapability,
+  providerDescriptor,
+  PROVIDER_TYPES,
+} from "../../core/providers";
 import { currentMonth } from "../admin/shared";
 import { bootstrap, deployment } from "./bootstrap";
 import { authState, createOperation, pollOperation } from "./operations";
@@ -36,9 +39,9 @@ cliRoutes.get("/capabilities", (c) => {
     deployment: identity,
     consoleOrigin: identity.consoleOrigin,
     providers: PROVIDER_TYPES.map((type) => {
-      // Widened from the `as const` registry, so an optional field a single
-      // entry omits is read as optional rather than as missing.
-      const spec: ProviderSpec = PROVIDER_REGISTRY[type];
+      // Widened from the `as const` table, so an optional field a single entry
+      // omits is read as optional rather than as missing.
+      const descriptor = providerDescriptor(type);
       const capability = providerCapability(type);
       // The same path the console and the CLI write their examples against,
       // from `src/shared/first-request.ts`. A type without one — Gemini, whose
@@ -50,7 +53,7 @@ cliRoutes.get("/capabilities", (c) => {
         name: type,
         apiStyles: [...capability.apiStyles],
         endpointStyles: [...capability.endpointStyles],
-        baseUrl: spec.directBaseUrl,
+        baseUrl: descriptor.directBaseUrl,
         ...(defaultPath === undefined ? {} : { defaultPath }),
       };
     }),

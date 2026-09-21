@@ -4,8 +4,8 @@ import { lookupActiveApiKeyById, verifyApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "../core/jwt";
 import { organizationProviders, type OrganizationProviders } from "../core/provider-store";
-import { PROVIDER_REGISTRY, PROVIDER_SLUG_PATTERN } from "../core/providers";
-import { lookup } from "../core/records";
+import { providerDescriptor, PROVIDER_SLUG_PATTERN } from "../core/providers";
+import { lookup } from "../shared/records";
 import type { AppRecord, GatewayIdentity, ProviderType } from "../core/types";
 import type { BillingVariables } from "../billing/gateway";
 
@@ -45,7 +45,7 @@ export function extractGatewayToken(
   customHeader: string | undefined,
 ): { token: string; headerName: string } {
   const candidates: string[] = ["authorization"];
-  if (provider) candidates.push(PROVIDER_REGISTRY[provider].auth.header);
+  if (provider) candidates.push(providerDescriptor(provider).auth.header);
   if (customHeader && !candidates.includes(customHeader.toLowerCase())) candidates.push(customHeader.toLowerCase());
   for (const name of candidates) {
     const token = tokenFromHeader(headers.get(name) ?? undefined);

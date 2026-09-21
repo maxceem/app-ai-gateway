@@ -30,18 +30,13 @@ export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
   if (!providerPath) throw new GatewayError(403, "path_not_allowed", "Provider path is required");
   const app = c.get("app");
   const resolved = await requireProvider(c.env, app.organizationId, providerSlug);
-  const provider = resolved.type;
   const preparedProxyRequest = await prepareProxyRequest({
     request: c.req.raw,
     app,
     userId: identity.userId,
-    provider,
-    providerSlug,
+    resolved,
     providerPath,
-    route: resolved.gateway?.type ?? "direct",
-    gatewayRoute: resolved.gatewayRoute,
     tokenHeader: c.get("authHeaderName"),
-    pricing: resolved.pricing,
   });
   c.set("executionPlan", {
     method: c.req.method,

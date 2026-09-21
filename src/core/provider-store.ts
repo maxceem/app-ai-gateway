@@ -6,7 +6,6 @@ import {
   type GatewayRouteConfig,
   type ProviderGatewayConfig,
   type ProviderGatewayStatus,
-  type ProviderGatewayTypeName,
   type ProviderPricing,
   type ProviderStatus,
 } from "../db/schema";
@@ -14,9 +13,14 @@ import { isVaultTransportFailure } from "../vault";
 import { openSecret } from "../vault/secrets";
 import type { ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
-import { isGatewayType, resolveGateway, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
-import { recordFromEntries } from "./records";
+import {
+  DIRECT_ROUTE,
+  isGatewayType,
+  routeThroughGateway,
+  type ResolvedRoute,
+} from "./routes";
+import { recordFromEntries } from "../shared/records";
 import type { ProviderType } from "./types";
 
 export interface ResolvedProvider {
@@ -26,12 +30,12 @@ export interface ResolvedProvider {
   /** Provider key for direct rows; gateway token for routed rows. */
   secret: string;
   /**
-   * Null for a direct row; otherwise the gateway that owns the transport, with
-   * the id of the row it came from so usage events can attribute to it.
+   * How this instance reaches its provider: the adapter that carries it, the
+   * gateway row behind it where there is one, and that row's own routing
+   * configuration. Resolved once, here, and passed around whole — nothing
+   * downstream reassembles it or asks whether a gateway is present.
    */
-  gateway: (ResolvedGateway & { id: string }) | null;
-  /** The gateway-type-specific routing config, validated when it was stored. */
-  gatewayRoute: GatewayRouteConfig | null;
+  route: ResolvedRoute;
   /**
    * The operator's own origin for this instance, replacing the provider type's
    * `directBaseUrl`. Canonicalized by the origin guard before it was stored, and
@@ -55,7 +59,7 @@ interface ProviderRow {
    * *is*, which is what configuration has to be judged against — see
    * {@link OrganizationProvider.route}.
    */
-  gatewayType: ProviderGatewayTypeName | null;
+  gatewayType: string | null;
   gatewayStatus: ProviderGatewayStatus | null;
   gatewayConfig: ProviderGatewayConfig | null;
   gatewaySecretBlob: string | null;
@@ -395,16 +399,17 @@ export async function resolveProvider(
       `Provider instance ${slug} is disabled; enable it under Providers in the console`,
     );
   }
-  // A gateway type the CHECK constraint admits but no adapter implements is
-  // unroutable here, exactly like a revoked one: the database is permissive so
-  // the constraint never needs another rebuild, the adapter registry decides.
+  // A gateway type the column admits but no adapter implements is unroutable
+  // here, exactly like a revoked one: the database is permissive, the adapter
+  // registry decides. This is the only place a stored gateway type is joined to
+  // its adapter.
   const gateway = row.providerGatewayId === null
     ? null
     : row.gatewayStatus === "active"
         && row.gatewayType
         && row.gatewayConfig
         && isGatewayType(row.gatewayType)
-      ? { id: row.providerGatewayId, ...resolveGateway(row.gatewayType, row.gatewayConfig) }
+      ? { id: row.providerGatewayId, type: row.gatewayType, config: row.gatewayConfig }
       : null;
   if (row.providerGatewayId !== null && gateway === null) {
     throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");
@@ -414,8 +419,7 @@ export async function resolveProvider(
     slug: row.slug,
     type: row.type,
     secret: await plaintextSecret(env, organizationId, row),
-    gateway,
-    gatewayRoute: row.gatewayRoute,
+    route: gateway === null ? DIRECT_ROUTE : routeThroughGateway(gateway, row.gatewayRoute),
     // Read only on a direct row. The admin routes refuse the pairing, but a row
     // that predates a gateway being attached, or one written by another tool,
     // must not quietly redirect gateway traffic somewhere else.

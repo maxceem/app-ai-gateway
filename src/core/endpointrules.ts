@@ -1,8 +1,8 @@
-import type { GatewayRouteConfig } from "../db/schema";
-import { routeWireModel, type ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
-import { gatewayBodyMutation } from "./gateways";
-import { lookup } from "./records";
+import type { ResolvedProvider } from "./provider-store";
+import { providerDescriptor } from "./providers";
+import { routeWireModel } from "./routes";
+import { lookup } from "../shared/records";
 import {
   jsonObject,
   readBodyLimited,
@@ -35,16 +35,26 @@ export interface PreparedEndpointRequest {
   form: FormData | null;
 }
 
+/**
+ * The provider's own path a named endpoint of this style posts to, from the
+ * descriptor that declares it. The key set of `endpointPaths` *is* the type's
+ * endpoint capability, so a missing entry means the capability matrix already
+ * refused this pairing: reaching here is a bug in this deployment, not a
+ * caller's mistake.
+ */
 export function endpointProviderPath(
   style: EndpointApiStyle,
   provider: ProviderType,
 ): string {
-  if (style === "transcription") {
-    // Native provider paths: OpenAI transcribes at v1/audio/transcriptions,
-    // xAI at v1/stt.
-    return provider === "openai" ? "v1/audio/transcriptions" : "v1/stt";
+  const path = providerDescriptor(provider).endpointPaths?.[style];
+  if (path === undefined) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      `Provider type ${provider} composes no ${style} endpoint`,
+    );
   }
-  return "v1/responses";
+  return path;
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -89,15 +99,14 @@ function formWithModel(source: FormData, model: string): FormData {
 export function endpointAttemptRequest(
   prepared: PreparedEndpointRequest,
   target: EndpointTarget,
-  provider: ProviderType,
-  /** How the resolved row reaches the provider; the adapter owns the wire model. */
-  route: ProviderRoute,
-  /** The row's stored routing configuration, if its gateway takes one. */
-  gatewayRoute: GatewayRouteConfig | null = null,
+  /** The row this attempt resolved to; its route owns the wire model. */
+  resolved: ResolvedProvider,
 ): Pick<PreparedProxyRequest, "body" | "headers" | "query"> {
+  const provider = resolved.type;
+  const route = resolved.route;
   // The configured model is canonical, so it is what gets priced and recorded;
   // only the body the upstream reads carries the route's namespace.
-  const wireModel = routeWireModel(route, provider, target.model, gatewayRoute);
+  const wireModel = routeWireModel(route, provider, target.model);
   let body: BodyInit;
   if (prepared.form) {
     body = formWithModel(prepared.form, wireModel);
@@ -109,9 +118,8 @@ export function endpointAttemptRequest(
       json,
       prepared.endpoint.max_output_tokens,
     );
-    gatewayBodyMutation({
-      gatewayType: route === "direct" ? null : route,
-      route: gatewayRoute,
+    route.adapter.mutateBody?.({
+      routeConfig: route.config,
       // A named endpoint of this style composes a Responses body, so the style
       // is the endpoint's contract rather than something sniffed off a path.
       style: "responses",

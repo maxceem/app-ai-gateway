@@ -1,18 +1,27 @@
 /**
  * The capability matrix, as data. One source for the Worker and the console.
  *
- * This module imports nothing, on purpose. The console bundles it directly, so
- * a single import of `drizzle-orm`, the Worker's environment types, or anything
- * else from `src/core` would pull the server into a browser build. Everything
- * here is a plain table or a pure function over one; the behaviour that reads
- * these tables — adapters, validation, request construction — stays in
- * `src/core`, and the console has its own presentation layer over them.
+ * What a *provider type* is lives next door in `./providers.ts`; this module is
+ * about the vocabulary both sides are described in — API styles, clamp styles,
+ * gateway types — and about what a gateway does to a provider it carries.
+ *
+ * This module imports nothing at runtime, on purpose. The console bundles it
+ * directly, so a single import of `drizzle-orm`, the Worker's environment
+ * types, or anything else from `src/core` would pull the server into a browser
+ * build. Everything here is a plain table or a pure function over one; the
+ * behaviour that reads these tables — adapters, validation, request
+ * construction — stays in `src/core`, and the console has its own presentation
+ * layer over them.
  *
  * The console used to hand-mirror all of it: a second provider list, a second
  * cost-reporting list, a second copy of both gateways' route tables. Every one
  * of those was a table that could drift from the backend that enforces it, and
  * a console that offers a combination the server refuses is a bug report.
  */
+
+// Type-only, and it has to stay that way: `./providers.ts` imports API_STYLES
+// from here at runtime, so a value import back would be a cycle.
+import type { ProviderType } from "./providers.ts";
 
 /**
  * Whose credential paid for a request, recorded only where the configuration
@@ -21,33 +30,12 @@
  * pooled credential. Never inferred from a successful response.
  *
  * It lives here, rather than beside the column that stores it, because the
- * contracts layer reaches it through `src/core/cost-report.ts` and the console
+ * contracts layer reaches it through `src/shared/cost-report.ts` and the console
  * reads it off a usage event. Sourcing it from `src/db/schema.ts` would put
  * Drizzle and the Worker's table definitions in the console's type graph for
  * the sake of a four-member string union.
  */
 export type CredentialSource = "direct" | "byok" | "gateway_system" | "unknown";
-
-export const PROVIDER_TYPES = [
-  "openai",
-  "anthropic",
-  "xai",
-  "gemini",
-  "perplexity",
-  "deepseek",
-  "groq",
-  "mistral",
-  "together",
-  "fireworks",
-  "cerebras",
-  "moonshot",
-  "huggingface",
-  "baseten",
-  "bytedance",
-  "openrouter",
-] as const;
-
-export type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 /**
  * The API contract a proxied request speaks. It names the *operation*, not the
@@ -142,67 +130,6 @@ export interface RouteCapability {
   apiStyles: readonly ApiStyle[];
   /** Named-endpoint styles composable for this provider on this route. */
   endpointStyles: readonly EndpointApiStyle[];
-}
-
-/**
- * What a provider type can do on its own API when nothing says otherwise. The
- * raw proxy is a pass-through, so every style reaches every provider and the
- * provider itself answers for the paths it does not have; named endpoints are
- * empty, because the gateway would have to compose those request bodies itself
- * and nothing has been verified against most providers' own request shapes.
- */
-export const PASSTHROUGH_CAPABILITY: RouteCapability = {
-  apiStyles: API_STYLES,
-  endpointStyles: [],
-};
-
-/**
- * The provider types that depart from {@link PASSTHROUGH_CAPABILITY}, and only
- * those. Every entry is a decision with a reason attached; a type with no entry
- * inherits the default, which is what keeps adding a provider type a registry
- * change rather than a matrix change.
- */
-export const PROVIDER_CAPABILITY_EXCEPTIONS = {
-  // The two types whose Responses and transcription request shapes the gateway
-  // composes itself for named endpoints.
-  openai: { apiStyles: API_STYLES, endpointStyles: ["responses", "transcription"] },
-  xai: { apiStyles: API_STYLES, endpointStyles: ["responses", "transcription"] },
-  // The one narrowed API surface, and it is a metering constraint rather than a
-  // missing one: OpenRouter also serves `/responses` and `/messages`, but only
-  // its chat-completions response carries `usage.cost`, and its slugs have no
-  // local price. Any other style would proxy traffic nothing could bill —
-  // exactly the silent $0 the fail-closed gate exists to prevent — so it is
-  // refused at the edge instead.
-  openrouter: { apiStyles: ["chat_completions"], endpointStyles: [] },
-} as const satisfies Partial<Record<ProviderType, RouteCapability>>;
-
-export function providerCapability(provider: ProviderType): RouteCapability {
-  const exceptions: Partial<Record<ProviderType, RouteCapability>> =
-    PROVIDER_CAPABILITY_EXCEPTIONS;
-  return exceptions[provider] ?? PASSTHROUGH_CAPABILITY;
-}
-
-/**
- * Provider types with a named-endpoint surface. Derived from the exception table
- * alone, which is sound by construction: the default carries no endpoint styles,
- * so a type that composes one has to say so there.
- */
-export type EndpointProvider = {
-  [Type in keyof typeof PROVIDER_CAPABILITY_EXCEPTIONS]:
-    (typeof PROVIDER_CAPABILITY_EXCEPTIONS)[Type]["endpointStyles"] extends readonly []
-      ? never
-      : Type;
-}[keyof typeof PROVIDER_CAPABILITY_EXCEPTIONS];
-
-export const ENDPOINT_PROVIDER_TYPES = PROVIDER_TYPES.filter(
-  (type): type is EndpointProvider => providerCapability(type).endpointStyles.length > 0,
-) as [EndpointProvider, ...EndpointProvider[]];
-
-/** Provider types eligible for a named endpoint style on their own API. */
-export function providersForEndpointStyle(style: EndpointApiStyle): EndpointProvider[] {
-  return ENDPOINT_PROVIDER_TYPES.filter((type) =>
-    providerCapability(type).endpointStyles.includes(style),
-  );
 }
 
 /**
@@ -363,17 +290,4 @@ export function narrowedCapability(
       ? base.endpointStyles.filter((style) => allowedEndpoints.includes(style))
       : base.endpointStyles,
   };
-}
-
-/**
- * Provider types whose own responses carry a per-request cost, so their models
- * proxy with no local price at all and the recorded cost is the upstream's own
- * figure. The Worker's registry is authoritative — the integration that parses
- * the report lives there, and a name here without one would bill nothing — so a
- * test pins this list to it.
- */
-export const COST_REPORTING_PROVIDER_TYPES: readonly ProviderType[] = ["openrouter"];
-
-export function reportsCost(type: string): boolean {
-  return (COST_REPORTING_PROVIDER_TYPES as readonly string[]).includes(type);
 }

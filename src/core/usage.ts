@@ -1,26 +1,23 @@
 import prices from "./prices.json";
 import { markApiKeyUsed } from "./apikeys";
-import { routeCanonicalModel } from "./capabilities";
-import { readProviderReport, type ProviderReport } from "./cost-report";
-import { credentialSource } from "./gateways";
+import { readProviderReport, type ProviderReport } from "../shared/cost-report";
+import { routeCanonicalModel, type ResolvedRoute } from "./routes";
 import { log } from "./log";
 import { timeOrderedId } from "./ids";
 import { storedAppVersion } from "./app-version";
 import { claimDiagnosticSample } from "./endpoint-rate-limit";
 import { projectUsageEventSpend } from "./app-usage-accounting";
 import { costReport, namespaceModelAuthor, providerModelAuthor, reportsCost } from "./providers";
-import { asRecord, lookup } from "./records";
+import { asRecord, lookup } from "../shared/records";
 import type { GatewayAuthMethod, ProviderType, UsageCounts } from "./types";
 import { database } from "../db";
 import {
   appUsageEvent,
   type CostSource,
-  type GatewayRouteConfig,
-  type ProviderGatewayType,
   type ProviderPricing,
 } from "../db/schema";
 
-export type { ProviderReport } from "./cost-report";
+export type { ProviderReport } from "../shared/cost-report";
 
 interface Price {
   input?: number;
@@ -159,17 +156,18 @@ interface UsageEventInput {
   /** Caller-visible provider instance slug at the time of the request. */
   providerSlug: string;
   /**
-   * The gateway that carried the request, or null for a direct call. Known with
-   * certainty at request time, so it is recorded for every routed event —
-   * unlike the observed fields below, which the upstream has to volunteer.
+   * How the request was routed: which adapter carried it, the gateway row
+   * behind it if any, and that row's own routing configuration. Known with
+   * certainty at request time, so the attribution it settles is recorded for
+   * every event — unlike the observed fields below, which the upstream has to
+   * volunteer. It also carries the namespace an observed model ID is stripped
+   * with, so canonicalizing inbound uses exactly the prefix the outbound
+   * rewrite used.
+   *
+   * Named for the row's route, not the request's: `route` below is the
+   * `slug/path` string this event records.
    */
-  gateway?: { id: string; type: ProviderGatewayType } | null;
-  /**
-   * That row's stored routing configuration. It carries the namespace override
-   * an observed model ID has to be stripped with, so canonicalizing inbound
-   * uses exactly the prefix the outbound rewrite used.
-   */
-  gatewayRoute?: GatewayRouteConfig | null;
+  providerRoute: ResolvedRoute;
   /** That row's per-model pricing overrides, which win over the catalog. */
   pricing?: ProviderPricing | null;
   /** Canonical model ID: the provider's own, whatever the route called it. */
@@ -1094,8 +1092,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     : unresolved
       ? "unresolved"
       : "computed";
-  const gateway = input.gateway ?? null;
-  const route = gateway?.type ?? "direct";
+  const gateway = input.providerRoute.gateway;
   // Observed values come solely from the parsed report: nothing else is entitled
   // to claim who served a request, so there is no caller-supplied alternative.
   const servedModel = report?.servedModel ?? null;
@@ -1118,11 +1115,11 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       // only the response can say, per request.
       credentialSource: reporting
         ? (report?.credentialSource ?? null)
-        : credentialSource(gateway),
+        : input.providerRoute.adapter.credentialSource,
       modelAuthor: resolveModelAuthor(input.provider, input.model),
       servedProvider: report?.servedProvider ?? null,
       servedModel: servedModel
-        ? routeCanonicalModel(route, input.provider, servedModel, input.gatewayRoute)
+        ? routeCanonicalModel(input.providerRoute, input.provider, servedModel)
         : null,
       model: input.model,
       route: input.route,

@@ -10,45 +10,64 @@ import {
   ENDPOINT_PROVIDER_TYPES,
   narrowedCapability,
   providersForEndpointStyle,
-  routeCanonicalModel,
   routeCapability,
-  routeWireModel,
   supportsApiStyle,
   supportsEndpointStyle,
   type ProviderRoute,
 } from "../src/core/capabilities";
 import { clearAppConfigCache } from "../src/core/config";
-import {
-  assertGatewayRoute,
-  canonicalModel,
-  CF_AI_GATEWAY_BASE_URL,
-  credentialSource,
-  GATEWAY_ADAPTERS,
-  gatewayBodyMutation,
-  gatewayProbe,
-  gatewayUpstream,
-  wireModel,
-} from "../src/core/gateways";
+import { CF_AI_GATEWAY_BASE_URL } from "../src/core/gateways";
 import { clearProviderCaches } from "../src/core/provider-store";
 import { probeProviderGateway } from "../src/core/provider-probe";
 import {
   providerAuthValue,
+  providerDescriptor,
   providerModelAuthor,
   providerProbeHeaders,
   providerRequestHeaders,
-  PROVIDER_REGISTRY,
   PROVIDER_TYPES,
   reportsCost,
 } from "../src/core/providers";
+import {
+  DIRECT_ROUTE,
+  routeAdapter,
+  routeCanonicalModel,
+  routeThroughGateway,
+  routeWireModel,
+  ROUTE_ADAPTERS,
+  type ResolvedRoute,
+} from "../src/core/routes";
 import { RESERVED_UPSTREAM_HEADERS } from "../src/core/proxyrules";
 import * as SHARED from "../src/shared/capabilities";
-import type { ProviderGatewayType } from "../src/db/schema";
+import * as SHARED_PROVIDERS from "../src/shared/providers";
+import type {
+  GatewayRouteConfig,
+  GatewayType,
+  ProviderGatewayConfig,
+} from "../src/db/schema";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { gatewayToken, seedApp, seedProvider } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;
+
+/**
+ * A route as `resolveProvider` builds one, so the adapter-level assertions below
+ * read the same object the proxy path does rather than a second shape.
+ */
+function routeOf(
+  kind: ProviderRoute,
+  config: GatewayRouteConfig | null = null,
+  gatewayConfig: ProviderGatewayConfig = kind === "cf_aig" ? { ...CF_AIG.config } : {},
+): ResolvedRoute {
+  return kind === "direct"
+    ? DIRECT_ROUTE
+    : routeThroughGateway(
+      { id: `gw-${kind}`, type: kind as GatewayType, config: gatewayConfig },
+      config,
+    );
+}
 
 /**
  * The provider types verified against a live Cloudflare AI Gateway. Every other
@@ -270,28 +289,52 @@ describe("capability matrix", () => {
  */
 describe("the capability matrix the console shares", () => {
   it("routes gateways from the same tables the adapters do", () => {
-    for (const type of Object.keys(GATEWAY_ADAPTERS) as ProviderGatewayType[]) {
-      expect([type, GATEWAY_ADAPTERS[type].routes]).toEqual([type, SHARED.GATEWAY_ROUTES[type]]);
+    for (const type of Object.keys(SHARED.GATEWAY_ROUTES) as GatewayType[]) {
+      const shared = SHARED.GATEWAY_ROUTES[type as keyof typeof SHARED.GATEWAY_ROUTES];
+      for (const provider of PROVIDER_TYPES) {
+        expect([type, provider, routeAdapter(type).providerRoute(provider)])
+          .toEqual([type, provider, shared[provider]]);
+      }
     }
-    expect(Object.keys(SHARED.GATEWAY_ROUTES).sort())
-      .toEqual(Object.keys(GATEWAY_ADAPTERS).sort());
+    // Every route a row can take has an adapter, and the gateways among them are
+    // exactly the ones the shared table describes.
+    expect(Object.keys(ROUTE_ADAPTERS).filter((kind) => kind !== "direct").sort())
+      .toEqual(Object.keys(SHARED.GATEWAY_ROUTES).sort());
   });
 
   it("describes each provider type with the capability the direct route enforces", () => {
     for (const type of PROVIDER_TYPES) {
-      expect([type, SHARED.providerCapability(type)])
+      expect([type, SHARED_PROVIDERS.providerCapability(type)])
         .toEqual([type, routeCapability("direct", type)]);
     }
   });
 
-  it("pins the cost-reporting list to the registry declarations that prove it", () => {
-    // The shared list is what the console reads; the declaration is what
-    // actually bills. A name on the list with no declaration would tell an
-    // operator a model needs no price, and then record every request unresolved.
-    const declared = PROVIDER_TYPES.filter((type) => reportsCost(type));
-    expect([...SHARED.COST_REPORTING_PROVIDER_TYPES].sort()).toEqual([...declared].sort());
+  /**
+   * The provider list and the descriptor table cannot drift, because the list is
+   * the table's own keys. This is what that claim is worth checking for: nothing
+   * derives a second list from a second place.
+   */
+  it("publishes exactly the descriptor keys as the provider list", () => {
+    expect([...PROVIDER_TYPES]).toEqual(Object.keys(SHARED_PROVIDERS.PROVIDER_DESCRIPTORS));
+    // And the cost-reporting set is the descriptors that declare how to read
+    // one, rather than a name list beside them.
+    expect([...SHARED_PROVIDERS.COST_REPORTING_PROVIDER_TYPES])
+      .toEqual(PROVIDER_TYPES.filter((type) => reportsCost(type)));
+  });
+
+  /**
+   * A named endpoint's path is server-composed, so the classifier has to read it
+   * back as the style that composed it: the same path is also what the
+   * capability check judges when a client calls it directly, and a mismatch
+   * would mean an endpoint posting to a path its own route refuses.
+   */
+  it("composes every named endpoint at a path that classifies back to its style", () => {
     for (const type of PROVIDER_TYPES) {
-      expect([type, SHARED.reportsCost(type)]).toEqual([type, reportsCost(type)]);
+      const paths = providerDescriptor(type).endpointPaths ?? {};
+      for (const [style, path] of Object.entries(paths)) {
+        expect([type, style, apiStyleFromPath(path)])
+          .toEqual([type, style, SHARED.ENDPOINT_STYLE_API[style as keyof typeof SHARED.ENDPOINT_STYLE_API]]);
+      }
     }
   });
 
@@ -311,19 +354,19 @@ describe("the capability matrix the console shares", () => {
   });
 
   it("shares the style and provider lists rather than restating them", () => {
-    expect(SHARED.PROVIDER_TYPES).toBe(PROVIDER_TYPES);
+    expect(SHARED_PROVIDERS.PROVIDER_TYPES).toBe(PROVIDER_TYPES);
     expect(SHARED.API_STYLES).toBe(API_STYLES);
-    expect([...SHARED.ENDPOINT_PROVIDER_TYPES]).toEqual([...ENDPOINT_PROVIDER_TYPES]);
+    expect([...SHARED_PROVIDERS.ENDPOINT_PROVIDER_TYPES]).toEqual([...ENDPOINT_PROVIDER_TYPES]);
     for (const style of ["responses", "transcription"] as const) {
-      expect([style, SHARED.providersForEndpointStyle(style)])
+      expect([style, SHARED_PROVIDERS.providersForEndpointStyle(style)])
         .toEqual([style, providersForEndpointStyle(style)]);
     }
   });
 });
 
-describe("provider registry entries", () => {
+describe("provider descriptor entries", () => {
   it.each(PROVIDER_TYPES)("reaches %s over a fixed https origin", (type) => {
-    const { directBaseUrl, auth } = PROVIDER_REGISTRY[type];
+    const { directBaseUrl, auth } = providerDescriptor(type);
     const url = new URL(directBaseUrl);
     expect(url.protocol).toBe("https:");
     // A base URL that does not end in `/` would swallow the first path
@@ -332,14 +375,13 @@ describe("provider registry entries", () => {
     expect(url.search).toBe("");
     expect(auth.header).toBe(auth.header.toLowerCase());
     // Whatever the scheme is, the credential is what follows it verbatim.
-    expect(providerAuthValue(type, "SECRET"))
-      .toBe(`${"scheme" in auth ? auth.scheme : ""}SECRET`);
+    expect(providerAuthValue(type, "SECRET")).toBe(`${auth.scheme ?? ""}SECRET`);
     // Every declared auth header is stripped off client requests on every route.
     expect(RESERVED_UPSTREAM_HEADERS).toContain(auth.header);
   });
 
   it.each(OPENAI_COMPATIBLE_PROVIDERS)("authenticates %s with a bearer token", (type) => {
-    expect(PROVIDER_REGISTRY[type].auth).toEqual({
+    expect(providerDescriptor(type).auth).toEqual({
       header: "authorization",
       scheme: "Bearer ",
     });
@@ -385,14 +427,14 @@ describe("provider registry entries", () => {
   it("reaches OpenRouter at its own origin and bills on what it reports", () => {
     // `/api/v1` is OpenRouter's documented server URL, so the client path under
     // the slug is `v1/chat/completions`.
-    expect(PROVIDER_REGISTRY.openrouter.directBaseUrl).toBe("https://openrouter.ai/api/");
-    expect(PROVIDER_REGISTRY.openrouter.auth).toEqual({
+    expect(providerDescriptor("openrouter").directBaseUrl).toBe("https://openrouter.ai/api/");
+    expect(providerDescriptor("openrouter").auth).toEqual({
       header: "authorization",
       scheme: "Bearer ",
     });
     expect(reportsCost("openrouter")).toBe(true);
     // The header that makes OpenRouter name the host it routed to. Declared on
-    // the spec, so the sanitizer strips a client's version of it everywhere.
+    // the descriptor, so the sanitizer strips a client's version everywhere.
     expect(providerRequestHeaders("openrouter")).toEqual({ "x-openrouter-metadata": "enabled" });
     expect(RESERVED_UPSTREAM_HEADERS).toContain("x-openrouter-metadata");
     for (const type of PROVIDER_TYPES.filter((value) => value !== "openrouter")) {
@@ -401,14 +443,14 @@ describe("provider registry entries", () => {
   });
 
   /**
-   * The probe reads its extra headers off the spec instead of naming a provider
-   * type, so a probe can never test a request shape the registry does not
+   * The probe reads its extra headers off the descriptor instead of naming a
+   * provider type, so a probe can never test a request shape the table does not
    * describe. Kept apart from `requestHeaders` deliberately: `anthropic-version`
    * is the *client's* API version on live traffic — every Anthropic SDK sets one
    * — and injecting it server-side would strip that choice and silently
    * downgrade every request to the oldest version.
    */
-  it("declares probe headers on the spec rather than in the probe", () => {
+  it("declares probe headers on the descriptor rather than in the probe", () => {
     expect(providerProbeHeaders("anthropic")).toEqual({ "anthropic-version": "2023-06-01" });
     // And it stays out of live traffic: not a request header, not reserved, so
     // a client's own version still reaches the upstream.
@@ -427,7 +469,12 @@ describe("provider registry entries", () => {
       seen.push(new Headers(init?.headers));
       return Response.json({ data: [] });
     });
-    await probeProviderGateway({ type: "anthropic", gateway: CF_AIG, token: "cf-token" });
+    await probeProviderGateway({
+      type: "anthropic",
+      gatewayType: "cf_aig",
+      gatewayConfig: CF_AIG.config,
+      token: "cf-token",
+    });
     expect(seen[0]?.get("anthropic-version")).toBe("2023-06-01");
     expect(seen[0]?.get("cf-aig-authorization")).toBe("Bearer cf-token");
   });
@@ -444,7 +491,8 @@ describe("provider registry entries", () => {
 describe("canonical model identity", () => {
   it("leaves models untouched on a route with no namespace of its own", () => {
     for (const type of PROVIDER_TYPES) {
-      for (const route of ["direct", "cf_aig"] as ProviderRoute[]) {
+      for (const kind of ["direct", "cf_aig"] as ProviderRoute[]) {
+        const route = routeOf(kind);
         expect(routeWireModel(route, type, "gemini-3.6-flash")).toBe("gemini-3.6-flash");
         expect(routeCanonicalModel(route, type, "gemini-3.6-flash")).toBe("gemini-3.6-flash");
       }
@@ -452,57 +500,66 @@ describe("canonical model identity", () => {
   });
 
   it("prepends and strips a route's own prefix, and only its own", () => {
-    const route = { slug: "google", modelPrefix: "google/" };
-    expect(wireModel(route, "gemini-3.6-flash")).toBe("google/gemini-3.6-flash");
-    expect(canonicalModel(route, "google/gemini-3.6-flash")).toBe("gemini-3.6-flash");
+    // Vercel's own namespace for Gemini, from the table the adapter routes with.
+    const route = routeOf("vercel");
+    expect(routeWireModel(route, "gemini", "gemini-3.6-flash")).toBe("google/gemini-3.6-flash");
+    expect(routeCanonicalModel(route, "gemini", "google/gemini-3.6-flash"))
+      .toBe("gemini-3.6-flash");
     // Another gateway's namespace is data, not a prefix to remove.
-    expect(canonicalModel(route, "vertex/gemini-3.6-flash")).toBe("vertex/gemini-3.6-flash");
+    expect(routeCanonicalModel(route, "gemini", "vertex/gemini-3.6-flash"))
+      .toBe("vertex/gemini-3.6-flash");
   });
 
   it("keeps canonical IDs that contain a slash of their own", () => {
     // "Everything before the first slash" would rename both of these; only the
-    // adapter's configured prefix may ever come off.
-    const route = { slug: "fal", modelPrefix: "fal/" };
-    expect(canonicalModel(route, "fal/fal-ai/fast-sdxl")).toBe("fal-ai/fast-sdxl");
-    expect(canonicalModel(undefined, "google/gemini-3.6-flash")).toBe("google/gemini-3.6-flash");
-    expect(wireModel(undefined, "meta-llama/llama-4")).toBe("meta-llama/llama-4");
+    // route's configured prefix may ever come off.
+    const route = routeOf("vercel", { modelPrefix: "fal/" });
+    expect(routeCanonicalModel(route, "openai", "fal/fal-ai/fast-sdxl")).toBe("fal-ai/fast-sdxl");
+    // A route with no namespace at all leaves a slashed ID exactly as it is.
+    expect(routeCanonicalModel(DIRECT_ROUTE, "openrouter", "google/gemini-3.6-flash"))
+      .toBe("google/gemini-3.6-flash");
+    expect(routeWireModel(DIRECT_ROUTE, "openrouter", "meta-llama/llama-4"))
+      .toBe("meta-llama/llama-4");
   });
 });
 
 describe("provider gateway routing configuration", () => {
   it("refuses a routing configuration for a Cloudflare gateway", () => {
-    expect(() => assertGatewayRoute("cf_aig", null)).not.toThrow();
-    expect(() => assertGatewayRoute("cf_aig", { modelPrefix: "google/" }))
+    expect(() => routeAdapter("cf_aig").validateRouteConfig(null)).not.toThrow();
+    expect(() => routeAdapter("cf_aig").validateRouteConfig({ modelPrefix: "google/" }))
       .toThrow(/takes no per-provider routing configuration/u);
   });
 
   it("refuses a routing configuration on a direct instance, which has no gateway", () => {
-    expect(() => assertGatewayRoute(null, null)).not.toThrow();
-    expect(() => assertGatewayRoute(null, { modelPrefix: "google/" }))
+    // The direct adapter answers this question like any other route does; the
+    // absence of a gateway is not a special case anybody branches on.
+    expect(() => routeAdapter("direct").validateRouteConfig(null)).not.toThrow();
+    expect(() => routeAdapter("direct").validateRouteConfig({ modelPrefix: "google/" }))
       .toThrow(/routed through a gateway/u);
   });
 
   it("names the credential a route pays with, or nothing when it is unknown", () => {
-    expect(credentialSource(null)).toBe("direct");
-    expect(credentialSource({ type: "cf_aig" })).toBe("byok");
+    expect(routeAdapter("direct").credentialSource).toBe("direct");
+    expect(routeAdapter("cf_aig").credentialSource).toBe("byok");
   });
 });
 
 describe("Cloudflare AI Gateway adapter", () => {
-  const adapter = GATEWAY_ADAPTERS.cf_aig;
+  const adapter = routeAdapter("cf_aig");
 
   it("maps only the provider types verified against a live gateway", () => {
     // Deliberately a subset of PROVIDER_TYPES: a slug read off Cloudflare's docs
     // is a guess about a URL and about whose key that gateway holds, so a type
     // stays direct-only until someone has actually run traffic through it.
-    expect(Object.keys(adapter.routes).sort()).toEqual([...CF_AIG_PROVIDERS].sort());
+    expect(PROVIDER_TYPES.filter((type) => adapter.providerRoute(type) !== undefined).sort())
+      .toEqual([...CF_AIG_PROVIDERS].sort());
     for (const type of OPENAI_COMPATIBLE_PROVIDERS) {
-      expect(adapter.routes[type]).toBeUndefined();
+      expect(adapter.providerRoute(type)).toBeUndefined();
     }
-    expect(adapter.routes.openai).toEqual({ slug: "openai", stripPathPrefix: "v1/" });
+    expect(adapter.providerRoute("openai")).toEqual({ slug: "openai", stripPathPrefix: "v1/" });
     for (const type of CF_AIG_PROVIDERS) {
       if (type === "openai") continue;
-      expect(adapter.routes[type]?.stripPathPrefix).toBeUndefined();
+      expect(adapter.providerRoute(type)?.stripPathPrefix).toBeUndefined();
     }
   });
 
@@ -523,12 +580,14 @@ describe("Cloudflare AI Gateway adapter", () => {
   ] as Array<[ProviderType, string, string]>)(
     "builds the %s upstream URL and its own auth headers",
     (type, providerPath, url) => {
-      const request = gatewayUpstream({
-        gateway: CF_AIG,
-        secret: "gateway-token",
+      const request = adapter.upstream({
         provider: type,
         providerPath,
         query: "?stream=true",
+        secret: "gateway-token",
+        baseUrl: null,
+        gatewayConfig: CF_AIG.config,
+        routeConfig: null,
         appId: "app-1",
         userId: "user-1",
       });
@@ -538,17 +597,19 @@ describe("Cloudflare AI Gateway adapter", () => {
         "cf-aig-metadata": JSON.stringify({ app_id: "app-1", user_id: "user-1" }),
       });
       // The provider's own credential header is never part of a gateway call.
-      expect(Object.keys(request.headers)).not.toContain(PROVIDER_REGISTRY[type].auth.header);
+      expect(Object.keys(request.headers)).not.toContain(providerDescriptor(type).auth.header);
     },
   );
 
   it("escapes the account and gateway identifiers it is given", () => {
-    const request = gatewayUpstream({
-      gateway: { type: "cf_aig", config: { accountId: "acct/1", gatewayId: "gw 1" } },
-      secret: "gateway-token",
+    const request = adapter.upstream({
       provider: "openai",
       providerPath: "v1/responses",
       query: "",
+      secret: "gateway-token",
+      baseUrl: null,
+      gatewayConfig: { accountId: "acct/1", gatewayId: "gw 1" },
+      routeConfig: null,
       appId: "app-1",
       userId: "user-1",
     });
@@ -556,21 +617,23 @@ describe("Cloudflare AI Gateway adapter", () => {
   });
 
   it("probes through the same URL construction live traffic uses", () => {
-    expect(gatewayProbe({
-      gateway: CF_AIG,
+    // The path is the provider's own, off its descriptor, adapted by the same
+    // rules live traffic is: `openai` is the one slug that already implies `v1/`.
+    const probe = (provider: ProviderType) => adapter.probe({
+      provider,
       secret: "gateway-token",
-      provider: "openai",
-      path: "v1/models",
-    })).toEqual({
+      baseUrl: null,
+      gatewayConfig: CF_AIG.config,
+    });
+    expect(probe("openai")).toEqual({
       url: `${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/openai/models`,
       headers: { "cf-aig-authorization": "Bearer gateway-token" },
     });
-    expect(gatewayProbe({
-      gateway: CF_AIG,
-      secret: "gateway-token",
-      provider: "anthropic",
-      path: "v1/models",
-    })?.url).toBe(`${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/anthropic/v1/models`);
+    expect(probe("anthropic")?.url)
+      .toBe(`${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/anthropic/v1/models`);
+    // Perplexity has no cheap authenticated call of its own, and Cloudflare
+    // forwards to the provider's own API, so there is nothing to call.
+    expect(probe("perplexity")).toBeNull();
   });
 
   it("sends the credential probe to the adapter's URL, never a second one", async () => {
@@ -588,7 +651,8 @@ describe("Cloudflare AI Gateway adapter", () => {
 
     await expect(probeProviderGateway({
       type: "anthropic",
-      gateway: { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } },
+      gatewayType: "cf_aig",
+      gatewayConfig: { accountId: "acct-1", gatewayId: "gw-1" },
       token: "gateway-token",
     })).resolves.toEqual({ validated: true });
     expect(urls).toEqual([`${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/anthropic/v1/models`]);
@@ -606,8 +670,7 @@ describe("Cloudflare AI Gateway adapter", () => {
  * catalog check exists — the obvious guess for xAI would 404 every request.
  */
 describe("Vercel AI Gateway adapter", () => {
-  const adapter = GATEWAY_ADAPTERS.vercel;
-  const VERCEL = { type: "vercel", config: {} } as const;
+  const adapter = routeAdapter("vercel");
   const VERCEL_PROVIDERS = [
     "openai",
     "anthropic",
@@ -619,16 +682,17 @@ describe("Vercel AI Gateway adapter", () => {
   ] as const;
 
   it("maps only the provider types whose Vercel namespace was verified", () => {
-    expect(Object.keys(adapter.routes).sort()).toEqual([...VERCEL_PROVIDERS].sort());
+    expect(PROVIDER_TYPES.filter((type) => adapter.providerRoute(type) !== undefined).sort())
+      .toEqual([...VERCEL_PROVIDERS].sort());
     // Vercel namespaces a model ID by its *author*, so a host that serves other
     // labs' weights has no namespace at all and stays direct-only — as do the
     // types whose Vercel IDs are not the provider's own.
     for (const type of ["groq", "together", "fireworks", "cerebras", "huggingface", "baseten", "mistral", "bytedance", "openrouter"] as const) {
-      expect([type, adapter.routes[type]]).toEqual([type, undefined]);
+      expect([type, adapter.providerRoute(type)]).toEqual([type, undefined]);
     }
     expect(
       Object.fromEntries(
-        VERCEL_PROVIDERS.map((type) => [type, adapter.routes[type]?.modelPrefix]),
+        VERCEL_PROVIDERS.map((type) => [type, adapter.providerRoute(type)?.modelPrefix]),
       ),
     ).toEqual({
       openai: "openai/",
@@ -643,7 +707,7 @@ describe("Vercel AI Gateway adapter", () => {
 
   it("carries three client APIs and refuses the native ones it does not have", () => {
     for (const type of VERCEL_PROVIDERS) {
-      expect([type, adapter.routes[type]?.apiStyles]).toEqual([
+      expect([type, adapter.providerRoute(type)?.apiStyles]).toEqual([
         type,
         ["responses", "chat_completions", "anthropic_messages"],
       ]);
@@ -668,12 +732,14 @@ describe("Vercel AI Gateway adapter", () => {
     ["v1/responses", "https://ai-gateway.vercel.sh/v1/responses"],
     ["v1/messages", "https://ai-gateway.vercel.sh/v1/messages"],
   ])("appends the client path %s verbatim", (providerPath, url) => {
-    const request = gatewayUpstream({
-      gateway: VERCEL,
-      secret: "vck_gateway_token",
+    const request = adapter.upstream({
       provider: "gemini",
       providerPath,
       query: "?stream=true",
+      secret: "vck_gateway_token",
+      baseUrl: null,
+      gatewayConfig: {},
+      routeConfig: null,
       appId: "app-1",
       userId: "user-1",
     });
@@ -688,12 +754,14 @@ describe("Vercel AI Gateway adapter", () => {
   });
 
   it("drops attribution Vercel would reject rather than sending a wrong value", () => {
-    const request = gatewayUpstream({
-      gateway: VERCEL,
-      secret: "vck_gateway_token",
+    const request = adapter.upstream({
       provider: "openai",
       providerPath: "v1/responses",
       query: "",
+      secret: "vck_gateway_token",
+      baseUrl: null,
+      gatewayConfig: {},
+      routeConfig: null,
       // Over Vercel's documented 256-character limit for `user`; sending a
       // truncated id would attribute the spend to somebody else, and sending
       // the full one would 400 the whole request.
@@ -719,12 +787,14 @@ describe("Vercel AI Gateway adapter", () => {
     ["a NUL", "user 1"],
     ["a delete character", "user1"],
   ])("drops %s rather than failing the request", (_name, userId) => {
-    const request = gatewayUpstream({
-      gateway: VERCEL,
-      secret: "vck_gateway_token",
+    const request = adapter.upstream({
       provider: "openai",
       providerPath: "v1/responses",
       query: "",
+      secret: "vck_gateway_token",
+      baseUrl: null,
+      gatewayConfig: {},
+      routeConfig: null,
       appId: "app-1",
       userId,
     });
@@ -738,12 +808,14 @@ describe("Vercel AI Gateway adapter", () => {
   });
 
   it("keeps a printable-ASCII id, spaces and all", () => {
-    const request = gatewayUpstream({
-      gateway: VERCEL,
-      secret: "vck_gateway_token",
+    const request = adapter.upstream({
       provider: "openai",
       providerPath: "v1/responses",
       query: "",
+      secret: "vck_gateway_token",
+      baseUrl: null,
+      gatewayConfig: {},
+      routeConfig: null,
       appId: "app-1",
       userId: "user 1 | ~tenant",
     });
@@ -754,22 +826,22 @@ describe("Vercel AI Gateway adapter", () => {
     // Provider-independent because the credential is: one Vercel key per
     // gateway, and the provider keys it may use are in Vercel's dashboard.
     for (const type of VERCEL_PROVIDERS) {
-      expect(gatewayProbe({
-        gateway: VERCEL,
-        secret: "vck_gateway_token",
+      // Perplexity has no probe path of its own; the gateway still has one.
+      expect(adapter.probe({
         provider: type,
-        // Perplexity has no probe path of its own; the gateway still has one.
-        path: type === "perplexity" ? null : "v1/models",
+        secret: "vck_gateway_token",
+        baseUrl: null,
+        gatewayConfig: {},
       })).toEqual({
         url: "https://ai-gateway.vercel.sh/v1/credits",
         headers: { authorization: "Bearer vck_gateway_token" },
       });
     }
-    expect(gatewayProbe({
-      gateway: VERCEL,
-      secret: "vck_gateway_token",
+    expect(adapter.probe({
       provider: "groq",
-      path: "openai/v1/models",
+      secret: "vck_gateway_token",
+      baseUrl: null,
+      gatewayConfig: {},
     })).toBeNull();
   });
 
@@ -778,29 +850,30 @@ describe("Vercel AI Gateway adapter", () => {
     // credentials when a stored key fails. Nothing at configuration time
     // settles which one paid, so nothing is claimed.
     expect(adapter.credentialSource).toBeNull();
-    expect(credentialSource({ type: "vercel" })).toBeNull();
+    expect(routeAdapter("vercel").credentialSource).toBeNull();
   });
 
   it("accepts the routing configuration it can honour and rejects the rest", () => {
-    expect(() => assertGatewayRoute("vercel", null)).not.toThrow();
-    expect(() => assertGatewayRoute("vercel", {})).not.toThrow();
-    expect(() => assertGatewayRoute("vercel", { modelPrefix: "google/" })).not.toThrow();
-    expect(() => assertGatewayRoute("vercel", { providerOnly: ["vertex", "google"] }))
+    expect(() => adapter.validateRouteConfig(null)).not.toThrow();
+    expect(() => adapter.validateRouteConfig({})).not.toThrow();
+    expect(() => adapter.validateRouteConfig({ modelPrefix: "google/" })).not.toThrow();
+    expect(() => adapter.validateRouteConfig({ providerOnly: ["vertex", "google"] }))
       .not.toThrow();
-    expect(() => assertGatewayRoute("vercel", {
+    expect(() => adapter.validateRouteConfig({
       modelPrefix: "google/",
       providerOnly: ["google"],
     })).not.toThrow();
     // A namespace with no separator would concatenate into a model ID nothing
     // serves, which is a 404 an operator cannot diagnose.
-    expect(() => assertGatewayRoute("vercel", { modelPrefix: "google" }))
+    expect(() => adapter.validateRouteConfig({ modelPrefix: "google" }))
       .toThrow(/end with a slash/u);
   });
 
   it("pins the serving provider in the body, on every API it carries", () => {
     for (const style of ["responses", "chat_completions", "anthropic_messages"] as const) {
       const body: Record<string, unknown> = { model: "google/gemini-2.5-flash" };
-      expect(adapter.mutateBody!({ route: { providerOnly: ["vertex"] }, style, body })).toBe(true);
+      expect(adapter.mutateBody!({ routeConfig: { providerOnly: ["vertex"] }, style, body }))
+        .toBe(true);
       expect(body).toEqual({
         model: "google/gemini-2.5-flash",
         providerOptions: { gateway: { only: ["vertex"] } },
@@ -817,7 +890,7 @@ describe("Vercel AI Gateway adapter", () => {
       },
     };
     expect(adapter.mutateBody!({
-      route: { providerOnly: ["vertex"] },
+      routeConfig: { providerOnly: ["vertex"] },
       style: "chat_completions",
       body,
     })).toBe(true);
@@ -830,24 +903,15 @@ describe("Vercel AI Gateway adapter", () => {
 
   it("leaves the body alone when no pin is configured", () => {
     const body: Record<string, unknown> = { model: "google/gemini-2.5-flash" };
-    for (const route of [null, {}, { modelPrefix: "google/" }, { providerOnly: [] }]) {
-      expect(adapter.mutateBody!({ route, style: "chat_completions", body })).toBe(false);
+    for (const routeConfig of [null, {}, { modelPrefix: "google/" }, { providerOnly: [] }]) {
+      expect(adapter.mutateBody!({ routeConfig, style: "chat_completions", body })).toBe(false);
     }
     expect(body).toEqual({ model: "google/gemini-2.5-flash" });
-    // A direct row has no gateway to steer, so nothing dispatches at all.
-    expect(gatewayBodyMutation({
-      gatewayType: null,
-      route: { providerOnly: ["vertex"] },
-      style: "chat_completions",
-      body,
-    })).toBe(false);
-    // Cloudflare declares no body mutation of its own.
-    expect(gatewayBodyMutation({
-      gatewayType: "cf_aig",
-      route: null,
-      style: "chat_completions",
-      body,
-    })).toBe(false);
+    // A direct row has nothing to steer, and Cloudflare declares no body
+    // mutation of its own: neither adapter has the hook at all, so a caller
+    // that reaches for it dispatches nowhere.
+    expect(routeAdapter("direct").mutateBody).toBeUndefined();
+    expect(routeAdapter("cf_aig").mutateBody).toBeUndefined();
     expect(body).toEqual({ model: "google/gemini-2.5-flash" });
   });
 });
@@ -860,41 +924,43 @@ describe("Vercel AI Gateway adapter", () => {
 describe("canonical model identity across routes", () => {
   it("puts one canonical ID on three different wires", () => {
     const routes: ProviderRoute[] = ["direct", "cf_aig", "vercel"];
-    expect(routes.map((route) => routeWireModel(route, "gemini", "gemini-2.5-flash"))).toEqual([
-      "gemini-2.5-flash",
-      "gemini-2.5-flash",
-      "google/gemini-2.5-flash",
-    ]);
+    expect(routes.map((kind) => routeWireModel(routeOf(kind), "gemini", "gemini-2.5-flash")))
+      .toEqual([
+        "gemini-2.5-flash",
+        "gemini-2.5-flash",
+        "google/gemini-2.5-flash",
+      ]);
     // And back again: what Vercel echoes is canonicalized by the same prefix.
-    expect(routeCanonicalModel("vercel", "gemini", "google/gemini-2.5-flash"))
+    expect(routeCanonicalModel(routeOf("vercel"), "gemini", "google/gemini-2.5-flash"))
       .toBe("gemini-2.5-flash");
     // Only the route's own prefix comes off. Another gateway's namespace, or a
     // canonical ID that contains a slash, survives intact.
-    expect(routeCanonicalModel("vercel", "gemini", "vertex/gemini-2.5-flash"))
+    expect(routeCanonicalModel(routeOf("vercel"), "gemini", "vertex/gemini-2.5-flash"))
       .toBe("vertex/gemini-2.5-flash");
-    expect(routeCanonicalModel("direct", "openrouter", "google/gemini-2.5-flash"))
+    expect(routeCanonicalModel(DIRECT_ROUTE, "openrouter", "google/gemini-2.5-flash"))
       .toBe("google/gemini-2.5-flash");
-    expect(routeCanonicalModel("vercel", "xai", "spacexai/grok-4.5")).toBe("grok-4.5");
+    expect(routeCanonicalModel(routeOf("vercel"), "xai", "spacexai/grok-4.5")).toBe("grok-4.5");
   });
 
   it("lets a row's own namespace override the adapter default, both ways", () => {
-    const override = { modelPrefix: "vertex-anthropic/" };
-    expect(routeWireModel("vercel", "anthropic", "claude-opus-5", override))
+    const override = routeOf("vercel", { modelPrefix: "vertex-anthropic/" });
+    expect(routeWireModel(override, "anthropic", "claude-opus-5"))
       .toBe("vertex-anthropic/claude-opus-5");
-    expect(routeCanonicalModel("vercel", "anthropic", "vertex-anthropic/claude-opus-5", override))
+    expect(routeCanonicalModel(override, "anthropic", "vertex-anthropic/claude-opus-5"))
       .toBe("claude-opus-5");
     // The default still applies to a row that configured nothing.
-    expect(routeWireModel("vercel", "anthropic", "claude-opus-5", null))
+    expect(routeWireModel(routeOf("vercel"), "anthropic", "claude-opus-5"))
       .toBe("anthropic/claude-opus-5");
     // A route config on a gateway with no namespace of its own is refused
     // before it can be stored, so nothing here can be reached with one.
-    expect(() => assertGatewayRoute("cf_aig", override)).toThrow();
+    expect(() => routeAdapter("cf_aig").validateRouteConfig({ modelPrefix: "vertex-anthropic/" }))
+      .toThrow();
   });
 });
 
 /**
- * The strip list is derived from the two registries, so this walks the same
- * declarations: a client value in any header the gateway or a provider
+ * The strip list is derived from the route adapters, so this walks the same
+ * declarations: a client value in any header a route or a provider
  * authenticates with must never appear upstream, on any route.
  */
 describe("declared headers are never client-controlled", () => {

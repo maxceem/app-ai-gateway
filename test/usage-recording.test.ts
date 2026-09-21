@@ -8,6 +8,7 @@ import {
   type ObservedBody,
   type UsageEvent,
 } from "../src/core/usage";
+import { DIRECT_ROUTE } from "../src/core/routes";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -167,6 +168,7 @@ describe("usage recording idempotency", () => {
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
+      providerRoute: DIRECT_ROUTE,
       model: "gpt-model-nobody-priced",
       route: "openai/v1/responses",
       appVersion: null,
@@ -232,6 +234,7 @@ describe("usage recording idempotency", () => {
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
+      providerRoute: DIRECT_ROUTE,
       // Priced per minute, so tokens stay zero and duration is the only input
       // the cost can be checked against.
       model: "whisper-1",
@@ -279,6 +282,7 @@ describe("usage recording idempotency", () => {
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
+      providerRoute: DIRECT_ROUTE,
       model: "gpt-5.6-sol",
       route: "openai/v1/responses",
       appVersion: null,
@@ -334,6 +338,7 @@ describe("usage recording idempotency", () => {
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
+      providerRoute: DIRECT_ROUTE,
       model: "gpt-5.6-sol",
       route: "openai/v1/responses",
       appVersion: null,
@@ -362,6 +367,7 @@ describe("usage recording idempotency", () => {
         provider: "openai",
         providerId: "provider-test",
         providerSlug: "openai",
+      providerRoute: DIRECT_ROUTE,
         model: "gpt-5.6-sol",
         route: "openai/v1/responses",
         appVersion: null,
@@ -406,6 +412,7 @@ describe("usage recording idempotency", () => {
       provider: "openai",
       providerId: "provider-test",
       providerSlug: "openai",
+      providerRoute: DIRECT_ROUTE,
       model: "gpt-5.6-sol",
       route: "openai/v1/responses",
       appVersion: null,

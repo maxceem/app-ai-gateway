@@ -3,8 +3,8 @@
  *
  * One source for the console's example card and the CLI's `app snippet`, which
  * used to derive the same example twice and print it in two shapes. It imports
- * nothing at runtime, for the reason `./capabilities.ts` gives: the console
- * bundles it. The one import below is a type, and so costs the bundle nothing.
+ * only from `src/shared`, for the reason `./capabilities.ts` gives: the console
+ * bundles it, so nothing from `src/core` may reach it.
  *
  * The example is always produced. An application created a minute ago has no
  * provider, no catalogued model, and sometimes a policy that allows no path
@@ -16,6 +16,8 @@
  */
 
 import type { ProviderPolicy, RoutingConfig } from "./app-config.ts";
+import { API_STYLE_PATHS } from "./capabilities.ts";
+import { isProviderType, providerDescriptor } from "./providers.ts";
 
 export const PROVIDER_PLACEHOLDER = "PROVIDER_SLUG";
 export const MODEL_PLACEHOLDER = "MODEL";
@@ -69,26 +71,29 @@ export interface RequestExample {
 /**
  * The path a provider type's first call goes to.
  *
- * The provider registry used to carry this per entry; it lives here so that the
- * console, the CLI and the deployment's published capabilities name one path
- * each. OpenAI and Anthropic get their own current surfaces, Gemini needs the
- * model in the path and so has none without one, and everything else is an
- * OpenAI-compatible chat-completions service under whichever prefix it serves
- * — which a gateway in front of it normalizes away.
+ * The provider descriptor carries the type's own answer — OpenAI and Anthropic
+ * name their current surfaces, the OpenAI-compatible hosts name whichever
+ * prefix they serve one under, and the default is the plain
+ * `v1/chat/completions` most of them use. What is decided here is the two
+ * things a descriptor cannot answer alone: a type whose native generation path
+ * carries the model in the URL has no example without one, and a gateway in
+ * front of an OpenAI-compatible host republishes it under the standard path, so
+ * the host's own prefix is normalized away. A type whose example is its own
+ * Responses or Messages API keeps it either way — every gateway here serves
+ * those too.
  */
 export function examplePath(
   type: string,
   { gatewayRouted = false, model }: { gatewayRouted?: boolean; model?: string } = {},
 ): string | undefined {
-  if (type === "openai") return "v1/responses";
-  if (type === "anthropic") return "v1/messages";
-  if (type === "gemini")
-    return model ? `v1beta/models/${model}:generateContent` : undefined;
-  if (gatewayRouted) return "v1/chat/completions";
-  if (type === "groq") return "openai/v1/chat/completions";
-  if (type === "fireworks") return "inference/v1/chat/completions";
-  if (["deepseek", "perplexity", "bytedance"].includes(type)) return "chat/completions";
-  return "v1/chat/completions";
+  const descriptor = isProviderType(type) ? providerDescriptor(type) : undefined;
+  if (descriptor?.modelInPath) {
+    return model ? API_STYLE_PATHS.gemini_native.replace("{model}", model) : undefined;
+  }
+  const own = descriptor?.examplePath ?? API_STYLE_PATHS.chat_completions;
+  return gatewayRouted && own.endsWith("chat/completions")
+    ? API_STYLE_PATHS.chat_completions
+    : own;
 }
 
 /** The request body a path takes, or null where this module knows of none. */

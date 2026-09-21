@@ -15,7 +15,7 @@ import {
   unpricedMessage,
 } from "../core/proxyrules";
 import { supportsEndpointStyle } from "../core/capabilities";
-import { lookup } from "../core/records";
+import { lookup } from "../shared/records";
 import { isBillable } from "../core/usage";
 import {
   type ExecutionAttempt,
@@ -94,8 +94,7 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
       entry = found;
       resolvedProviders.set(target.provider, entry);
     }
-    const route = entry.gateway?.type ?? "direct";
-    if (!supportsEndpointStyle(route, entry.type, endpoint.api_style)) {
+    if (!supportsEndpointStyle(entry.route.kind, entry.type, endpoint.api_style)) {
       if (primary) {
         throw new GatewayError(
           502,
@@ -125,13 +124,7 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
   const attempts = usableTargets.map((target) => {
     const resolved = resolvedProviders.get(target.provider);
     if (!resolved) throw new Error(`Resolved provider missing for ${target.provider}`);
-    const buildRequest = () => endpointAttemptRequest(
-      prepared,
-      target,
-      resolved.type,
-      resolved.gateway?.type ?? "direct",
-      resolved.gatewayRoute,
-    );
+    const buildRequest = () => endpointAttemptRequest(prepared, target, resolved);
     return {
       resolved,
       providerPath: endpointProviderPath(endpoint.api_style, resolved.type),

@@ -13,12 +13,18 @@ import type {
   ProviderGatewayTestResponse,
 } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
-import { requireGatewayAdapter, type ResolvedGateway } from "../core/gateways";
+import { requireGatewayAdapter } from "../core/routes";
 import { planCap } from "../core/plan-caps";
 import { probeGatewayPreset, type ProbeResult } from "../core/provider-probe";
 import { invalidateOrganizationProviders } from "../core/provider-store";
 import { database } from "../db";
-import { provider, providerGateway, type CfAigConfig } from "../db/schema";
+import {
+  provider,
+  providerGateway,
+  type CfAigConfig,
+  type GatewayType,
+  type ProviderGatewayConfig,
+} from "../db/schema";
 import { sealSecret } from "../vault/secrets";
 import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
 import {
@@ -57,7 +63,9 @@ function probeReport(probe: ProbeResult): ProviderGatewayTestResponse {
   };
 }
 
-function requestedGateway(body: { type: "cf_aig"; accountId: string; gatewayId: string } | { type: "vercel" }): ResolvedGateway {
+function requestedGateway(
+  body: { type: "cf_aig"; accountId: string; gatewayId: string } | { type: "vercel" },
+): { type: GatewayType; config: ProviderGatewayConfig } {
   return body.type === "cf_aig"
     ? { type: "cf_aig", config: { accountId: body.accountId, gatewayId: body.gatewayId } }
     : { type: "vercel", config: {} };

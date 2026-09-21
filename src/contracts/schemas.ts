@@ -3,9 +3,8 @@ import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
 import {
   ENDPOINT_API_STYLES,
   OUTPUT_CLAMP_STYLES,
-  PROVIDER_TYPES,
 } from "../shared/capabilities.ts";
-import { PROVIDER_CREDENTIAL_HEADERS } from "../shared/provider-auth.ts";
+import { PROVIDER_CREDENTIAL_HEADERS, PROVIDER_TYPES } from "../shared/providers.ts";
 
 /**
  * The vocabulary an application configuration is written in.
@@ -53,11 +52,10 @@ const safeKey = <T extends z.ZodString>(schema: T): T =>
   schema.refine((key) => !RESERVED_OBJECT_KEYS.has(key), { error: RESERVED_KEY_ERROR });
 
 /**
- * Registry-driven, and deliberately narrower than the database's own CHECK: the
- * column admits every provider type on the roadmap so widening it never costs
- * another table rebuild, while a type is only creatable once `PROVIDER_REGISTRY`
- * says how to reach, authenticate and price it. The database is permissive; the
- * runtime registry is authoritative.
+ * Descriptor-driven, and the only gate there is: the `provider.type` column
+ * carries whatever is stored, and a type is creatable exactly once
+ * `PROVIDER_DESCRIPTORS` says how to reach, authenticate and price it. The
+ * database is permissive; the runtime table is authoritative.
  */
 export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
 

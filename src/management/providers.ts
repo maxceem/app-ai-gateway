@@ -14,13 +14,7 @@ import type {
 } from "../contracts/responses";
 import { assertRouteServesProvider } from "../core/capabilities";
 import { GatewayError } from "../core/errors";
-import {
-  assertGatewayRoute,
-  isGatewayType,
-  requireGatewayAdapter,
-  resolveGateway,
-  type ResolvedGateway,
-} from "../core/gateways";
+import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../core/routes";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { planCap } from "../core/plan-caps";
 import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../core/provider-probe";
@@ -32,7 +26,8 @@ import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
-  type ProviderGatewayType,
+  type GatewayType,
+  type ProviderGatewayConfig,
   type ProviderStatus,
 } from "../db/schema";
 import { openSecret, sealSecret } from "../vault/secrets";
@@ -85,7 +80,7 @@ function assertReservedSlug(type: ProviderType, slug: string): void {
   }
 }
 
-async function gatewayToken(env: Env, organizationId: string, gatewayId: string): Promise<{ gateway: ResolvedGateway; token: string }> {
+async function gatewayToken(env: Env, organizationId: string, gatewayId: string): Promise<{ type: GatewayType; config: ProviderGatewayConfig; token: string }> {
   const row = await database(env.DB).query.providerGateway.findFirst({
     where: and(
       eq(providerGateway.id, gatewayId),
@@ -94,14 +89,14 @@ async function gatewayToken(env: Env, organizationId: string, gatewayId: string)
     ),
   });
   if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  const type = requireGatewayAdapter(row.type);
   return {
-    gateway: resolveGateway(type, row.config),
+    type: requireGatewayAdapter(row.type),
+    config: row.config,
     token: await decryptProviderGatewaySecret(env, organizationId, row.id, row.secretBlob),
   };
 }
 
-async function gatewayAdapterType(env: Env, organizationId: string, gatewayId: string): Promise<ProviderGatewayType> {
+async function gatewayAdapterType(env: Env, organizationId: string, gatewayId: string): Promise<GatewayType> {
   const row = await database(env.DB).query.providerGateway.findFirst({
     columns: { type: true },
     where: and(
@@ -119,7 +114,7 @@ async function gatewayRouteAdapter(
   organizationId: string,
   gatewayId: string,
   route: GatewayRouteConfig | null,
-): Promise<ProviderGatewayType | null> {
+): Promise<GatewayType | null> {
   const row = await database(env.DB).query.providerGateway.findFirst({
     columns: { type: true },
     where: and(eq(providerGateway.id, gatewayId), eq(providerGateway.organizationId, organizationId)),
@@ -140,9 +135,14 @@ export async function testProvider(env: Env, actor: ResourceWriteActor, input: u
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
     return assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl));
   }
-  const resolved = await gatewayToken(env, actor.organizationId, body.providerGatewayId!);
-  assertRouteServesProvider(resolved.gateway.type, body.type);
-  return assertNotRejected(await probeProviderGateway({ type: body.type, ...resolved }));
+  const gateway = await gatewayToken(env, actor.organizationId, body.providerGatewayId!);
+  assertRouteServesProvider(gateway.type, body.type);
+  return assertNotRejected(await probeProviderGateway({
+    type: body.type,
+    gatewayType: gateway.type,
+    gatewayConfig: gateway.config,
+    token: gateway.token,
+  }));
 }
 
 export async function createProvider(
@@ -165,7 +165,7 @@ export async function createProvider(
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
   if (body.secret !== undefined) {
-    assertGatewayRoute(null, gatewayRoute);
+    routeAdapter("direct").validateRouteConfig(gatewayRoute);
     secret = body.secret;
   } else {
     const gatewayId = body.providerGatewayId;
@@ -173,7 +173,7 @@ export async function createProvider(
     providerGatewayId = gatewayId;
     const gatewayType = await gatewayAdapterType(env, actor.organizationId, gatewayId);
     assertRouteServesProvider(gatewayType, body.type);
-    assertGatewayRoute(gatewayType, gatewayRoute);
+    routeAdapter(gatewayType).validateRouteConfig(gatewayRoute);
   }
 
   const now = new Date().toISOString();
@@ -239,7 +239,7 @@ export async function updateProvider(
   if (body.status !== undefined) updates.status = body.status;
   if (body.gatewayRoute !== undefined) {
     const gatewayType = row.providerGatewayId === null ? null : await gatewayRouteAdapter(env, actor.organizationId, row.providerGatewayId, body.gatewayRoute);
-    assertGatewayRoute(gatewayType, body.gatewayRoute);
+    routeAdapter(gatewayType ?? "direct").validateRouteConfig(body.gatewayRoute);
     updates.gatewayRoute = body.gatewayRoute;
   }
 

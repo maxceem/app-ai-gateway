@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import { API_STYLES, apiStyleFromPath, outputClampStyle } from "../src/core/api-styles";
 import { clearProviderCaches } from "../src/core/provider-store";
-import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
+import { providerDescriptor, PROVIDER_TYPES } from "../src/core/providers";
 import { costReportBodyMutation } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import {
@@ -1922,10 +1922,10 @@ describe("cost report body mutation", () => {
    * needs it.
    */
   it("calls a declared mutation without the proxy path knowing whose it is", () => {
-    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const descriptor = providerDescriptor("perplexity") as { costReport?: unknown };
     const calls: string[] = [];
     try {
-      spec.costReport = {
+      descriptor.costReport = {
         read: () => false,
         mutateBody: (input: { style: string; body: Record<string, unknown> }) => {
           calls.push(input.style);
@@ -1938,7 +1938,7 @@ describe("cost report body mutation", () => {
       expect(body).toEqual({ model: "m", hypothetical: true });
       expect(calls).toEqual(["chat_completions"]);
     } finally {
-      delete spec.costReport;
+      delete descriptor.costReport;
     }
     const after: Record<string, unknown> = { model: "m" };
     expect(costReportBodyMutation("perplexity", "chat_completions", after)).toBe(false);

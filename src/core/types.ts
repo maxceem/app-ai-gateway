@@ -4,7 +4,8 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 
-export type { EndpointApiStyle, ProviderType } from "../shared/capabilities.ts";
+export type { EndpointApiStyle } from "../shared/capabilities.ts";
+export type { ProviderType } from "../shared/providers.ts";
 export { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "../shared/app-config.ts";
 export type {
   AppAttestEnvironment,
