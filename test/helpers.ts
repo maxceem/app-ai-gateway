@@ -1,14 +1,10 @@
 import { env } from "cloudflare:workers";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
 import { issueGatewayToken } from "../src/core/jwt";
-import { clearApiKeyCache, hashApiKey } from "../src/core/apikeys";
-import { clearProviderCaches } from "../src/core/provider-store";
+import { hashApiKey } from "../src/core/apikeys";
+import { providerRowsCache, providerSecretCache } from "../src/core/provider-store";
 import { sealSecret } from "../src/vault/secrets";
-import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
-import { clearJwksCache } from "../src/core/issuer";
-import { clearAppConfigCache } from "../src/core/config";
-import { clearBillingAccessCache } from "../src/billing/gateway";
-import { clearBlockedCache } from "../src/middleware/gate";
+import { clearAllCaches } from "../src/core/ttl-cache";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import {
@@ -36,18 +32,23 @@ import { mgmtAuthTables } from "../src/db/schema";
  *
  * A suite shares one isolate with the rest of its barrel, so a row this file
  * rewrites straight in D1 is otherwise still answered from whatever an earlier
- * file left warm. Clearing them together is what keeps a new test from having
- * to know which of them the path it exercises happens to read: forgetting one
- * shows up as a test that passes alone and fails in its barrel.
+ * file left warm. Nothing is listed here: every cache registers itself with
+ * `ttlCache`, so this reaches one added tomorrow too — a hand-kept list is what
+ * used to make a new cache show up as a test that passes alone and fails in its
+ * barrel.
  */
 export function clearIsolateCaches(): void {
-  clearAppConfigCache();
-  clearProviderCaches();
-  clearApiKeyCache();
-  clearJwksCache();
-  clearBillingAccessCache();
-  clearAccountLifecycleCache();
-  clearBlockedCache();
+  clearAllCaches();
+}
+
+/**
+ * The provider caches alone, for a test that rewrote a provider row straight in
+ * D1 and wants the next read to see it without disturbing anything else this
+ * barrel has warm.
+ */
+export function clearProviderCaches(): void {
+  providerRowsCache.clear();
+  providerSecretCache.clear();
 }
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";

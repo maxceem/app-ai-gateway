@@ -7,7 +7,6 @@ import {
   BILLING_STALE_MAX_MS,
   BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS,
   billingPlanLimits,
-  clearBillingAccessCache,
   getBillingAccess,
   requireActiveBilling,
   type BillingRequestCache,
@@ -15,7 +14,8 @@ import {
 } from "../src/billing/gateway";
 import worker from "../src/index";
 import { resolveBillingQuota } from "../src/billing/quota";
-import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
+import { accountLifecycleCache } from "../src/core/account-lifecycle";
+import { clearAllCaches } from "../src/core/ttl-cache";
 import { resolveDeployment, type Deployment } from "../src/policy/deployment";
 import {
   clearIsolateCaches,
@@ -633,7 +633,7 @@ describe("billing gateway", () => {
     await expect(inactiveCreate.json()).resolves.toMatchObject({
       error: { code: "billing_payment_required" },
     });
-    clearBillingAccessCache();
+    clearAllCaches();
 
     // `maxApps` is a ceiling the plan names, so zero refuses every create. The
     // rest are the vocabulary of the limits an organization sets on its own
@@ -660,7 +660,7 @@ describe("billing gateway", () => {
       error: { code: "billing_plan_limit_reached", data: { limit: 0 } },
     });
 
-    clearBillingAccessCache();
+    clearAllCaches();
     const uncappedEnv = withBilling(
       stub({ getTenantAccess: async () => onPlan({ limits: { maxRpm: 5, maxRpd: 10 } }) }),
     );
@@ -837,7 +837,7 @@ describe("billing gateway", () => {
     ]);
     const appId = "billing-expired-app";
     const key = await seedServerApp(appId, { endUser: "none", organizationId });
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({}));
     const response = await worker.request(
       `${ORIGIN}/v1/apps/${appId}/proxy/openai/v1/responses`,
@@ -904,6 +904,6 @@ it("preserves paid trial eligibility after using the initial free plan", async (
   } finally {
     await env.DB.prepare("UPDATE mgmt_organization SET created_at=? WHERE id=?")
       .bind(created!.createdAt, TEST_ORGANIZATION_ID).run();
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
   }
 });

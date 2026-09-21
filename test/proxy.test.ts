@@ -3,11 +3,11 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import { API_STYLES, apiStyleFromPath, outputClampStyle } from "../src/core/api-styles";
-import { clearProviderCaches } from "../src/core/provider-store";
 import { providerDescriptor, PROVIDER_TYPES } from "../src/core/providers";
 import { costReportBodyMutation } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import {
+  clearProviderCaches,
   clearIsolateCaches,
   defaultProxyConfig,
   gatewayToken,

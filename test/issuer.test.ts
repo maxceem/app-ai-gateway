@@ -1,6 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearJwksCache, verifyIssuerToken } from "../src/core/issuer";
+import { jwksCache, verifyIssuerToken } from "../src/core/issuer";
 import type { IssuerAuthentication } from "../src/core/types";
 
 const ISSUER = "https://issuer.test/";
@@ -37,7 +37,7 @@ async function signingFixture(kid: string): Promise<{
   return { publicJwk, token };
 }
 
-beforeEach(() => clearJwksCache());
+beforeEach(() => jwksCache.clear());
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -324,7 +324,7 @@ describe("issuer rejection reasons", () => {
     });
 
     // A header with no kid never reaches the key lookup.
-    clearJwksCache();
+    jwksCache.clear();
     jwks();
     const noKid = await new SignJWT({ sub: "issuer-user" })
       .setProtectedHeader({ alg: "RS256" })
@@ -336,28 +336,28 @@ describe("issuer rejection reasons", () => {
       reason: "header_invalid",
     });
 
-    clearJwksCache();
+    jwksCache.clear();
     serveJwks([]);
     await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
       code: "issuer_token_rejected",
       reason: "unknown_kid",
     });
 
-    clearJwksCache();
+    jwksCache.clear();
     jwks();
     await expect(verifyIssuerToken(await fixture.token({}, -60), baseConfig)).rejects.toMatchObject({
       code: "issuer_token_rejected",
       reason: "expired",
     });
 
-    clearJwksCache();
+    jwksCache.clear();
     jwks();
     await expect(verifyIssuerToken(await fixture.token({}, 3601), baseConfig)).rejects.toMatchObject({
       code: "issuer_token_rejected",
       reason: "lifetime_exceeded",
     });
 
-    clearJwksCache();
+    jwksCache.clear();
     jwks();
     await expect(
       verifyIssuerToken(await fixture.token(), { ...baseConfig, user_id_claim: "absent" }),
@@ -374,7 +374,7 @@ describe("issuer rejection reasons", () => {
       reason: "jwks_unreachable",
     });
 
-    clearJwksCache();
+    jwksCache.clear();
     vi.spyOn(globalThis, "fetch")
       .mockImplementation(() => Promise.resolve(new Response("nope", { status: 500 })));
     await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
@@ -382,7 +382,7 @@ describe("issuer rejection reasons", () => {
       reason: "jwks_unreachable",
     });
 
-    clearJwksCache();
+    jwksCache.clear();
     serveJwks("not-an-array");
     await expect(verifyIssuerToken(await fixture.token(), baseConfig)).rejects.toMatchObject({
       status: 503,
@@ -393,7 +393,7 @@ describe("issuer rejection reasons", () => {
     // A 200 carrying an HTML error page — a captive portal, a CDN's own error
     // document — is the same failure. Left unguarded the parse error falls into
     // the catch-all and blames the caller's token for an outage upstream of it.
-    clearJwksCache();
+    jwksCache.clear();
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       Promise.resolve(new Response("<html>502 Bad Gateway</html>", {
         headers: { "content-type": "text/html" },

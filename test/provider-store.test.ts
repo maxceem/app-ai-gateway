@@ -2,19 +2,17 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clearProviderCaches,
   decryptProviderGatewaySecret,
   invalidateOrganizationProviders,
-  providerRowsCacheKeys,
+  providerRowsCache,
+  providerSecretCache,
   resolveProvider,
-  secretCacheKeys,
-  setProviderRowsCacheLimit,
 } from "../src/core/provider-store";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { secretVault } from "../src/vault";
 import { secretContext } from "../src/vault/secrets";
-import { seedProvider, TEST_SERVICE_USER_ID } from "./helpers";
+import { clearProviderCaches, seedProvider, TEST_SERVICE_USER_ID } from "./helpers";
 
 const ORGANIZATION_ID = "provider-store-organization";
 const PROVIDER_ID = "provider-store-openai";
@@ -245,7 +243,7 @@ it("bounds the secret cache and evicts the oldest entry first", async () => {
       .resolves.toBe(SECRET);
   }
 
-  const cached = secretCacheKeys();
+  const cached = providerSecretCache.keys();
   expect(cached).toHaveLength(5_000);
   expect(cached[0]).toBe(keys[1]);
   expect(cached.at(-1)).toBe(keys.at(-1));
@@ -272,13 +270,13 @@ it("bounds the provider row cache and evicts the oldest organization first", asy
       slug: PROVIDER_SLUG,
     });
   }
-  // After the seeding, which clears the caches and with them this bound.
-  setProviderRowsCacheLimit(2);
+  // After the seeding, which clears the caches this is about to fill.
+  providerRowsCache.setLimit(2);
 
   for (const organizationId of organizations) {
     await expect(resolveProvider(env, organizationId, PROVIDER_SLUG))
       .resolves.toMatchObject({ id: `provider-rows-cache-${organizationId}` });
   }
 
-  expect(providerRowsCacheKeys()).toEqual(organizations.slice(1));
+  expect(providerRowsCache.keys()).toEqual(organizations.slice(1));
 });

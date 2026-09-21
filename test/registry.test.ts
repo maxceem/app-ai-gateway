@@ -15,9 +15,8 @@ import {
   supportsEndpointStyle,
   type ProviderRoute,
 } from "../src/core/capabilities";
-import { clearAppConfigCache } from "../src/core/config";
+import { appConfigCache } from "../src/core/config";
 import { CF_AI_GATEWAY_BASE_URL } from "../src/core/gateways";
-import { clearProviderCaches } from "../src/core/provider-store";
 import { probeProviderGateway } from "../src/core/provider-probe";
 import {
   providerAuthValue,
@@ -48,7 +47,7 @@ import type {
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
-import { gatewayToken, seedApp, seedProvider } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;
 
@@ -94,7 +93,7 @@ let pending: ExecutionContext[] = [];
 
 beforeEach(() => {
   clearProviderCaches();
-  clearAppConfigCache();
+  appConfigCache.clear();
 });
 
 afterEach(async () => {
@@ -102,7 +101,7 @@ afterEach(async () => {
   pending = [];
   vi.restoreAllMocks();
   clearProviderCaches();
-  clearAppConfigCache();
+  appConfigCache.clear();
 });
 
 describe("API style classification", () => {

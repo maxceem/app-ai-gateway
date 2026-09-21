@@ -4,10 +4,10 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearApiKeyCache } from "../src/core/apikeys";
+import { apiKeyCache } from "../src/core/apikeys";
 import { appAttestEnvironment } from "../src/core/appattest";
 import { pruneAuthChallenges } from "../src/core/auth-events";
-import { clearAppConfigCache } from "../src/core/config";
+import { appConfigCache } from "../src/core/config";
 import {
   ENDPOINT_RATE_LIMITS,
   enforceEndpointRateLimit,
@@ -123,7 +123,7 @@ describe("issuer-backed API key exchange", () => {
       .where(eq(appApiKey.id, "key_api-key-revoked"));
 
     for (const key of [revokedKey, wrongAppKey]) {
-      clearApiKeyCache();
+      apiKeyCache.clear();
       const response = await exchangeToken("api-key-revoked", {
         api_key: key,
         issuer_token: "not-a-jwt",
@@ -309,7 +309,7 @@ describe("issuer-backed API key exchange", () => {
     )
       .bind("issuer-unscoped")
       .run();
-    clearAppConfigCache();
+    appConfigCache.clear();
 
     const response = await exchangeToken("issuer-unscoped", {
       api_key: key,

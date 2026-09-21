@@ -3,6 +3,7 @@ import type { Deployment } from "../policy/deployment";
 import type { GatewayBillingAccess, PlanLimits } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
+import { ttlCache } from "../core/ttl-cache";
 
 /**
  * This product's id in the billing service.
@@ -70,19 +71,30 @@ export type { GatewayBillingAccess };
 
 export type BillingRequestCache = Map<string, Promise<GatewayBillingAccess>>;
 
-interface BillingAccessCacheEntry {
-  expiresAt: number;
-  value: Promise<GatewayBillingAccess>;
-}
-
-const billingAccessCache = new Map<string, BillingAccessCacheEntry>();
+/**
+ * The pending or settled answer per organization. The promise itself is what is
+ * stored, so concurrent requests for one organization share a single RPC.
+ *
+ * Keyed by organization ids that came from D1, so it is not attacker-growable;
+ * the bound only stops a long-lived isolate in a large deployment from keeping
+ * an entry per organization it ever served.
+ */
+const billingAccessCache = ttlCache<string, Promise<GatewayBillingAccess>>({
+  name: "billing-access",
+  ttlMs: BILLING_ACCESS_CACHE_TTL_MS,
+  maxEntries: 5_000,
+});
 
 /**
- * The last reading the billing service actually gave, per organization, kept beyond the
- * TTL cache so an outage can be answered with it. Keyed by organization ids
- * that came from D1, so it is not attacker-growable and needs no bound.
+ * The last reading the billing service actually gave, per organization, kept
+ * beyond the TTL cache so an outage can be answered with it. Its own TTL is the
+ * stale window: an entry that is still fresh is one still worth serving.
  */
-const lastKnownAccess = new Map<string, { value: GatewayBillingAccess & { state: "billed" }; at: number }>();
+const lastKnownAccess = ttlCache<string, GatewayBillingAccess & { state: "billed" }>({
+  name: "billing-last-known",
+  ttlMs: BILLING_STALE_MAX_MS,
+  maxEntries: 5_000,
+});
 
 export function invalidateBillingAccess(organizationId: string): void {
   billingAccessCache.delete(organizationId);
@@ -96,11 +108,6 @@ export function invalidateBillingRequestAccess(
   billingAccessCache.delete(organizationId);
   lastKnownAccess.delete(organizationId);
   cache?.delete(organizationId);
-}
-
-export function clearBillingAccessCache(): void {
-  billingAccessCache.clear();
-  lastKnownAccess.clear();
 }
 
 function entitlementEndsAt(access: GatewayBillingAccess): number | null {
@@ -139,7 +146,7 @@ async function loadBillingAccess(
       }));
       return { state: "unavailable" };
     }
-    lastKnownAccess.set(organizationId, { value, at: now });
+    lastKnownAccess.set(organizationId, value, { storedAt: now });
     return value;
   } catch (error) {
     const code = billingErrorCodeOf(error);
@@ -153,14 +160,16 @@ async function loadBillingAccess(
      * Fail closed on an unknown allowance, not on a known one. An organization
      * this isolate has read before keeps the plan it had; one it has never
      * seen still waits, because admitting it would mean guessing an allowance.
+     * Still fresh here means still inside the stale window, which is exactly
+     * what that cache's TTL is.
      */
     const known = lastKnownAccess.get(organizationId);
     if (known) {
-      const ageMs = Date.now() - known.at;
-      const endsAt = entitlementEndsAt(known.value);
-      if (ageMs < BILLING_STALE_MAX_MS && (endsAt === null || endsAt > Date.now())) {
+      const endsAt = entitlementEndsAt(known);
+      if (endsAt === null || endsAt > Date.now()) {
+        const ageMs = Date.now() - (lastKnownAccess.peek(organizationId)?.storedAt ?? 0);
         log("warn", "billing_access_stale", { organizationId, ageMs, billingErrorCode: code });
-        return { ...known.value, stale: true, ...(code ? { billingErrorCode: code } : {}) };
+        return { ...known, stale: true, ...(code ? { billingErrorCode: code } : {}) };
       }
     }
     return {
@@ -187,18 +196,15 @@ export function getBillingAccess(
   if (requestValue) return requestValue;
 
   const now = Date.now();
-  const cached = billingAccessCache.get(organizationId);
-  if (cached && cached.expiresAt > now) {
-    cache?.set(organizationId, cached.value);
-    return cached.value;
+  const cached = billingAccessCache.get(organizationId, now);
+  if (cached) {
+    cache?.set(organizationId, cached);
+    return cached;
   }
-  if (cached) billingAccessCache.delete(organizationId);
+  billingAccessCache.delete(organizationId);
 
   const pending = loadBillingAccess(deployment.billing, organizationId);
-  billingAccessCache.set(organizationId, {
-    expiresAt: now + BILLING_ACCESS_CACHE_TTL_MS,
-    value: pending,
-  });
+  billingAccessCache.set(organizationId, pending, { storedAt: now });
   /*
    * A fresh answer from billing keeps the full TTL. Anything else — unavailable,
    * or the last known reading served stale — is held only for the retry
@@ -209,17 +215,22 @@ export function getBillingAccess(
    * A binding is present here, so `self_hosted` cannot occur.
    */
   void pending.then((access) => {
-    const current = billingAccessCache.get(organizationId);
+    // Only this entry's own answer may shorten it: another request may already
+    // have replaced it, and that one carries its own window.
+    if (billingAccessCache.peek(organizationId)?.value !== pending) return;
     if (access.state === "billed" && !access.stale) {
       const endsAt = entitlementEndsAt(access);
-      if (current?.value === pending && endsAt !== null) {
-        current.expiresAt = Math.min(current.expiresAt, endsAt);
-      }
+      if (endsAt === null) return;
+      billingAccessCache.set(organizationId, pending, {
+        storedAt: now,
+        ttlMs: Math.min(BILLING_ACCESS_CACHE_TTL_MS, endsAt - now),
+      });
       return;
     }
-    if (current?.value === pending) {
-      current.expiresAt = now + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000;
-    }
+    billingAccessCache.set(organizationId, pending, {
+      storedAt: now,
+      ttlMs: BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000,
+    });
   });
   cache?.set(organizationId, pending);
   return pending;

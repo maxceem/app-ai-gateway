@@ -18,7 +18,7 @@ import {
 import type { BillingRuntime } from "../src/billing/contract";
 import {
   assertAccountAccess,
-  clearAccountLifecycleCache,
+  accountLifecycleCache,
   pruneExpiredAccounts,
 } from "../src/core/account-lifecycle";
 import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
@@ -207,7 +207,7 @@ describe("CLI account lifecycle", () => {
     ]);
     // Claiming through the CLI drops the cached row itself; this one is written
     // straight into D1, so the isolate has to be told.
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     expect((await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
     })).status).toBe(403);
@@ -927,7 +927,7 @@ describe("CLI account lifecycle", () => {
       )
       .run();
     // Only a test moves an account's own instants; the gate caches the row.
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     await expect(
       assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "proxy"),
     ).rejects.toMatchObject({ code: "billing_trial_expired" });
@@ -939,7 +939,7 @@ describe("CLI account lifecycle", () => {
     )
       .bind(new Date(now - 1).toISOString(), data.account.id)
       .run();
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     await expect(
       assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "claim"),
     ).rejects.toMatchObject({ code: "account_expired" });
@@ -1113,7 +1113,7 @@ it("keeps the completed trial counter readable during recovery without renewing 
   await env.DB.prepare("UPDATE mgmt_organization SET created_at=? WHERE id=?")
     .bind(origin, data.account.id).run();
   // Only this test moves an account's creation instant; the gate caches the row.
-  clearAccountLifecycleCache();
+  accountLifecycleCache.clear();
   const response = await request(testEnv, "/account", undefined, headers);
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({

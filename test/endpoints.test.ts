@@ -2,8 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { clearProviderCaches } from "../src/core/provider-store";
-import { gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
   url: string;

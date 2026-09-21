@@ -2,6 +2,7 @@ import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { database, type Database } from "../db";
 import { appApiKey } from "../db/schema";
 import { GatewayError } from "./errors";
+import { ttlCache } from "./ttl-cache";
 import type { GatewayIdentity } from "./types";
 
 interface ApiKeyRecord {
@@ -9,32 +10,43 @@ interface ApiKeyRecord {
   appId: string;
 }
 
-interface CachedApiKey {
-  expiresAt: number;
-  value: ApiKeyRecord | null;
-}
-
 type ApiKeyCacheKey = `hash:${string}` | `id:${string}`;
 
-// Misses are cached too, so an unauthenticated caller controls the keys of this
-// map. It is bounded and evicts insertion-oldest first, and misses expire much
-// sooner than hits so a freshly created key is not refused for a whole minute.
-const apiKeyCache = new Map<ApiKeyCacheKey, CachedApiKey>();
 const encoder = new TextEncoder();
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
 const HIT_TTL_MS = 60_000;
 const MISS_TTL_MS = 10_000;
 const MAX_API_KEY_CACHE_ENTRIES = 10_000;
+
+/**
+ * Resolved credentials, `null` for one that resolved to nothing.
+ *
+ * Misses are cached too, so an unauthenticated caller controls the keys of this
+ * cache. It is bounded and evicts insertion-oldest first, and misses are stored
+ * with a much shorter TTL than hits so a freshly created key is not refused for
+ * a whole minute.
+ *
+ * Exported for the tests that read its keys and narrow its bound; nothing in
+ * the Worker reads it but this file.
+ */
+export const apiKeyCache = ttlCache<ApiKeyCacheKey, ApiKeyRecord | null>({
+  name: "api-key",
+  ttlMs: HIT_TTL_MS,
+  maxEntries: MAX_API_KEY_CACHE_ENTRIES,
+});
+
 /**
  * How often a key's `last_used_at` is worth rewriting, and the interval the
  * statement in {@link markApiKeyUsed} matches in SQL.
  */
 const MARK_USED_INTERVAL_MS = 3_600_000;
 /**
- * When this isolate last issued that statement, per key id. Without it the
- * recorder pays a D1 round trip on every single request to be told the row is
- * already current, which it is for fifty-nine minutes out of sixty.
+ * Whether this isolate has already issued that statement for a key inside the
+ * current interval — the entry is the claim, and its expiry is the interval
+ * elapsing. Without it the recorder pays a D1 round trip on every single
+ * request to be told the row is already current, which it is for fifty-nine
+ * minutes out of sixty.
  *
  * Remembering it per isolate does not make the column any less accurate: every
  * isolate still issues at most one statement an hour per key, and the SQL
@@ -42,13 +54,14 @@ const MARK_USED_INTERVAL_MS = 3_600_000;
  * still within an hour of the truth however many isolates are serving the key.
  *
  * The ids come back from D1, so no caller invents them, but a deployment with
- * many keys still accumulates entries: the map is bounded like the cache above
- * and evicts insertion-oldest first. Losing an entry costs one no-op UPDATE.
+ * many keys still accumulates entries: it is bounded like the cache above and
+ * evicts insertion-oldest first. Losing an entry costs one no-op UPDATE.
  */
-const lastMarkedAt = new Map<string, number>();
-// Narrowed only by `setApiKeyCacheLimit` below, and restored by
-// `clearApiKeyCache`, so nothing but a test can be running on another bound.
-let apiKeyCacheLimit = MAX_API_KEY_CACHE_ENTRIES;
+const lastMarkedAt = ttlCache<string, true>({
+  name: "api-key-marked",
+  ttlMs: MARK_USED_INTERVAL_MS,
+  maxEntries: MAX_API_KEY_CACHE_ENTRIES,
+});
 
 function randomString(length: number, alphabet: string): string {
   const limit = 256 - (256 % alphabet.length);
@@ -117,40 +130,30 @@ export async function lookupApiKeyUncached(
   return lookupApiKeyHash(database(env.DB), await hashApiKey(credential));
 }
 
-function rememberApiKey(
-  cacheKey: ApiKeyCacheKey,
-  value: ApiKeyRecord | null,
-  lookupStartedAt: number,
-): void {
-  // Re-inserting keeps the map in least-recently-used order.
-  apiKeyCache.delete(cacheKey);
-  apiKeyCache.set(cacheKey, {
-    // A slow read must not add its own duration to the revocation window.
-    expiresAt: lookupStartedAt + (value ? HIT_TTL_MS : MISS_TTL_MS),
-    value,
-  });
-  if (apiKeyCache.size > apiKeyCacheLimit) {
-    const oldest = apiKeyCache.keys().next();
-    if (!oldest.done) apiKeyCache.delete(oldest.value);
-  }
-}
-
 async function lookupCachedApiKey(
   cacheKey: ApiKeyCacheKey,
   lookup: () => Promise<ApiKeyRecord | null>,
 ): Promise<ApiKeyRecord | null> {
   const now = Date.now();
-  const cached = apiKeyCache.get(cacheKey);
+  const cached = apiKeyCache.peek(cacheKey);
   if (cached && cached.expiresAt > now) {
-    apiKeyCache.delete(cacheKey);
-    apiKeyCache.set(cacheKey, cached);
+    // Re-storing on its own window keeps the cache in least-recently-used
+    // order without moving the expiry a hit is serving under.
+    apiKeyCache.set(cacheKey, cached.value, {
+      storedAt: cached.storedAt,
+      ttlMs: cached.expiresAt - cached.storedAt,
+    });
     return cached.value;
   }
 
   apiKeyCache.delete(cacheKey);
   const lookupStartedAt = Date.now();
   const value = await lookup();
-  rememberApiKey(cacheKey, value, lookupStartedAt);
+  apiKeyCache.set(cacheKey, value, {
+    // A slow read must not add its own duration to the revocation window.
+    storedAt: lookupStartedAt,
+    ttlMs: value ? HIT_TTL_MS : MISS_TTL_MS,
+  });
   return value;
 }
 
@@ -199,18 +202,12 @@ export async function verifyApiKey(
 }
 
 export async function markApiKeyUsed(env: Env, apiKeyId: string): Promise<void> {
-  const now = Date.now();
-  const marked = lastMarkedAt.get(apiKeyId);
-  if (marked !== undefined && now - marked < MARK_USED_INTERVAL_MS) return;
+  // A fresh entry is this isolate saying it has already issued the statement
+  // inside the current interval; the entry expiring is the interval elapsing.
+  if (lastMarkedAt.get(apiKeyId)) return;
   // Claimed before the statement is awaited, so a burst of concurrent requests
   // on this isolate issues one UPDATE between them rather than one each.
-  // Re-inserting keeps the map in least-recently-written order.
-  lastMarkedAt.delete(apiKeyId);
-  lastMarkedAt.set(apiKeyId, now);
-  if (lastMarkedAt.size > MAX_API_KEY_CACHE_ENTRIES) {
-    const oldest = lastMarkedAt.keys().next();
-    if (!oldest.done) lastMarkedAt.delete(oldest.value);
-  }
+  lastMarkedAt.set(apiKeyId, true);
   try {
     await database(env.DB)
       .update(appApiKey)
@@ -235,29 +232,4 @@ export async function markApiKeyUsed(env: Env, apiKeyId: string): Promise<void> 
     lastMarkedAt.delete(apiKeyId);
     throw error;
   }
-}
-
-export function clearApiKeyCache(): void {
-  apiKeyCache.clear();
-  lastMarkedAt.clear();
-  apiKeyCacheLimit = MAX_API_KEY_CACHE_ENTRIES;
-}
-
-/**
- * Narrows the cache bound. Exposed for tests: what wants covering is that the
- * bound holds and that eviction is insertion-oldest first, neither of which
- * depends on the number. Filling the real 10,000 costs as many D1 lookups and
- * about thirty seconds, which is most of what this file spends. Every caller
- * of this already resets the cache between tests, and that restores the
- * production bound with it.
- */
-export function setApiKeyCacheLimit(limit: number): void {
-  apiKeyCacheLimit = limit;
-}
-
-/** Cached credential hashes, oldest first. Exposed for tests. */
-export function apiKeyCacheHashes(): string[] {
-  return [...apiKeyCache.keys()]
-    .filter((key) => key.startsWith("hash:"))
-    .map((key) => key.slice("hash:".length));
 }

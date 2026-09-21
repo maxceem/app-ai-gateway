@@ -1,4 +1,5 @@
 import { GatewayError } from "./errors";
+import { ttlCache } from "./ttl-cache";
 import type { QueryBudget } from "./query-budget";
 import {
   accountAccessDenial,
@@ -32,26 +33,31 @@ import {
  * the TTL. Nothing here decides the claim itself: that is settled by the
  * guarded D1 writes in the handoff.
  *
- * Keys are organization ids that came out of D1, so the map is not
- * attacker-growable and needs no bound.
+ * Keys are organization ids that came out of D1, so the cache is not
+ * attacker-growable; the bound is only so that a long-lived isolate in a large
+ * deployment cannot keep one entry per account it ever served, and it sits far
+ * above what any isolate reads inside a ten-second window.
+ *
+ * Exported for the tests that clear it on its own; nothing in the Worker reads
+ * it but this file.
  */
-const lifecycleCache = new Map<string, { value: AccountLifecycle; expiresAt: number }>();
 const LIFECYCLE_CACHE_TTL_MS = 10_000;
+export const accountLifecycleCache = ttlCache<string, AccountLifecycle>({
+  name: "account-lifecycle",
+  ttlMs: LIFECYCLE_CACHE_TTL_MS,
+  maxEntries: 5_000,
+});
 
 export function invalidateAccountLifecycle(id: string): void {
-  lifecycleCache.delete(id);
-}
-
-export function clearAccountLifecycleCache(): void {
-  lifecycleCache.clear();
+  accountLifecycleCache.delete(id);
 }
 
 export async function accountLifecycle(
   env: Env,
   id: string,
 ): Promise<AccountLifecycle> {
-  const cached = lifecycleCache.get(id);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const cached = accountLifecycleCache.get(id);
+  if (cached) return cached;
   // Fill from the authoritative primary. The ten-second TTL is the entire
   // intentional lifecycle staleness window. The raw statement is used rather
   // than drizzle because the claim predicate is a correlated EXISTS.
@@ -65,7 +71,7 @@ export async function accountLifecycle(
     .first<AccountLifecycle>();
   if (!row) throw new GatewayError(404, "not_found", "Account was not found");
   const value = { ...row, claimed: Boolean(row.claimed) };
-  lifecycleCache.set(id, { value, expiresAt: Date.now() + LIFECYCLE_CACHE_TTL_MS });
+  accountLifecycleCache.set(id, value);
   return value;
 }
 

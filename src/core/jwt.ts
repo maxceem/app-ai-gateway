@@ -1,5 +1,6 @@
 import { jwtVerify, SignJWT } from "jose";
 import { GatewayError } from "./errors";
+import { ttlCache } from "./ttl-cache";
 import type { GatewayAuthMethod, GatewayIdentity } from "./types";
 
 const encoder = new TextEncoder();
@@ -16,7 +17,13 @@ const MAX_KEY_CACHE_ENTRIES = 8;
  * import a `CryptoKey` on every sign and every verify, and a verify is on the
  * hot path of every proxied request.
  */
-const keyCache = new Map<string, Promise<CryptoKey>>();
+const keyCache = ttlCache<string, Promise<CryptoKey>>({
+  name: "jwt-hmac-key",
+  // An imported key never goes stale: the cache key is the secret itself, so a
+  // rotated secret is a different entry. Only the bound retires anything.
+  ttlMs: Number.POSITIVE_INFINITY,
+  maxEntries: MAX_KEY_CACHE_ENTRIES,
+});
 
 function importKey(secret: string): Promise<CryptoKey> {
   const bytes = encoder.encode(secret);
@@ -38,16 +45,13 @@ function key(secret: string): Promise<CryptoKey> {
   if (cached) return cached;
   const imported: Promise<CryptoKey> = importKey(secret).catch((error: unknown) => {
     // An import that failed is not a key: forget it, so the next call tries
-    // again instead of being served the same rejection forever.
+    // again instead of being served the same rejection forever. Only if it is
+    // still the stored promise — a later import may have replaced it.
     if (keyCache.get(secret) === imported) keyCache.delete(secret);
     throw error;
   });
-  keyCache.set(secret, imported);
   // Insertion order is eviction order, so the oldest secret goes first.
-  if (keyCache.size > MAX_KEY_CACHE_ENTRIES) {
-    const oldest = keyCache.keys().next();
-    if (!oldest.done) keyCache.delete(oldest.value);
-  }
+  keyCache.set(secret, imported);
   return imported;
 }
 

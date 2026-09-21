@@ -1,11 +1,8 @@
 import { env, exports } from "cloudflare:workers";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearAppConfigCache, loadApp } from "../src/core/config";
-import {
-  clearProviderCaches,
-  organizationProviders,
-} from "../src/core/provider-store";
+import { appConfigCache, loadApp } from "../src/core/config";
+import { organizationProviders } from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import type { AdminVariables } from "../src/middleware/admin";
@@ -14,6 +11,7 @@ import { resolveDeployment } from "../src/policy/deployment";
 import { appRoutes } from "../src/routes/admin/apps";
 import {
   appleConfig,
+  clearProviderCaches,
   defaultProxyConfig,
   seedApp,
   seedProvider,
@@ -686,7 +684,7 @@ describe("authoritative admin configuration", () => {
       .bind(...appIds)
       .run();
     await env.DB.prepare("DELETE FROM provider WHERE id = ?").bind(providerId).run();
-    clearAppConfigCache();
+    appConfigCache.clear();
     clearProviderCaches();
   });
 
@@ -713,7 +711,7 @@ describe("authoritative admin configuration", () => {
       status: "active",
       config: { authentication: { type: "apple_app_attest" } },
     });
-    clearAppConfigCache();
+    appConfigCache.clear();
   });
 
   it("resolves PUT from the row returned by its write with a warm runtime cache", async () => {
@@ -811,7 +809,7 @@ describe("authoritative admin configuration", () => {
     });
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({ name: "Primary mode key" });
-    clearAppConfigCache();
+    appConfigCache.clear();
   });
 
   it("validates provider pricing from current rows despite a stale runtime cache", async () => {

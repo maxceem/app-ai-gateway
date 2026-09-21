@@ -7,18 +7,38 @@ import {
   type JWK,
 } from "jose";
 import { GatewayError } from "./errors";
+import { ttlCache } from "./ttl-cache";
 import type { ClaimRequirement, IssuerAuthentication } from "./types";
 
 interface JwksCacheEntry {
-  fetchedAt: number;
-  expiresAt: number;
   keys: JWK[];
   /** Set while a fetch for this URL is running, so concurrent callers share it. */
   inFlight?: Promise<JWK[]>;
 }
 
-const jwksCache = new Map<string, JwksCacheEntry>();
 const JWKS_TTL_MS = 10 * 60_000;
+
+/**
+ * The keys each issuer URL last served, and the fetch running for it.
+ *
+ * The entry object is mutated in place and re-stored, because `inFlight` has to
+ * stay reachable to every caller that is already waiting on it while the window
+ * around the keys is refreshed. `storedAt` is when the keys last arrived, which
+ * is what the refetch cooldown is measured from.
+ *
+ * URLs come from stored application configuration, not from callers, so this is
+ * not attacker-growable; the bound only keeps a long-lived isolate from holding
+ * a key set for every issuer it ever saw.
+ *
+ * Exported for the tests that clear it on its own; nothing in the Worker reads
+ * it but this file.
+ */
+export const jwksCache = ttlCache<string, JwksCacheEntry>({
+  name: "jwks",
+  ttlMs: JWKS_TTL_MS,
+  maxEntries: 1_000,
+});
+
 /**
  * How long an unknown `kid` has to wait before it may cost another round trip.
  * Without it a caller sending random `kid`s makes the gateway hammer the issuer
@@ -77,17 +97,20 @@ async function loadJwks(url: string, entry: JwksCacheEntry): Promise<JWK[]> {
   const keys = body.keys.filter((key): key is JWK => typeof key === "object" && key !== null);
   // Only a successful read replaces what is cached: a failed refetch leaves the
   // last known keys serving until their TTL runs out.
-  entry.fetchedAt = Date.now();
-  entry.expiresAt = entry.fetchedAt + JWKS_TTL_MS;
   entry.keys = keys;
+  // Re-stored rather than replaced, so the shared `inFlight` promise survives
+  // the refresh and the window restarts from this arrival.
+  jwksCache.set(url, entry);
   return keys;
 }
 
 function cacheEntry(url: string): JwksCacheEntry {
-  const existing = jwksCache.get(url);
+  const existing = jwksCache.peek(url)?.value;
   if (existing) return existing;
-  const entry: JwksCacheEntry = { fetchedAt: 0, expiresAt: 0, keys: [] };
-  jwksCache.set(url, entry);
+  const entry: JwksCacheEntry = { keys: [] };
+  // Stored at the epoch, so it is already expired and the cooldown treats this
+  // URL as never fetched: it exists only to carry `inFlight`.
+  jwksCache.set(url, entry, { storedAt: 0 });
   return entry;
 }
 
@@ -103,14 +126,16 @@ function fetchJwks(url: string): Promise<JWK[]> {
 
 async function keysFor(url: string): Promise<JWK[]> {
   const cached = jwksCache.get(url);
-  if (cached && cached.expiresAt > Date.now()) return cached.keys;
+  if (cached) return cached.keys;
   return fetchJwks(url);
 }
 
 /** Whether an unknown `kid` may pay for a refetch, or is simply unknown. */
 function refetchAllowed(url: string): boolean {
-  const cached = jwksCache.get(url);
-  return cached === undefined || Date.now() - cached.fetchedAt >= JWKS_REFETCH_COOLDOWN_MS;
+  // Read past the TTL: what this asks is when the keys last arrived, which an
+  // expired entry answers as well as a fresh one.
+  const cached = jwksCache.peek(url);
+  return cached === undefined || Date.now() - cached.storedAt >= JWKS_REFETCH_COOLDOWN_MS;
 }
 
 function claimAtPath(payload: JWTPayload, path: string): unknown {
@@ -240,8 +265,4 @@ export async function verifyIssuerToken(
     }
     return reject("bad_signature");
   }
-}
-
-export function clearJwksCache(): void {
-  jwksCache.clear();
 }

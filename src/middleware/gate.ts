@@ -8,6 +8,7 @@ import { resolveBillingQuota } from "../billing/quota";
 import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
 import { monthlyBudgetMicrousd } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
+import { ttlCache } from "../core/ttl-cache";
 import { recordBlockedUsageEvent } from "../core/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
@@ -57,6 +58,8 @@ import type { RequestVariables } from "./request-scope";
  * whose allowance is monthly.
  */
 
+const BLOCK_CACHE_TTL_MS = 10_000;
+
 /**
  * The cached block flag, and the answer only for applications that set no
  * per-user limits. Where per-user limits exist the gate calls the very same
@@ -74,31 +77,25 @@ import type { RequestVariables } from "./request-scope";
  * The isolate that serves a block clears its own entry
  * ({@link invalidateBlockedCache}); every other isolate converges within the
  * TTL. Token exchange reads `app_user` in D1 and is not affected by this cache.
+ *
+ * Exported for the tests that clear it on its own; nothing in the Worker reads
+ * it but this file.
  */
-const blockedCache = new Map<string, { blocked: boolean; expiresAt: number }>();
-const BLOCK_CACHE_TTL_MS = 10_000;
-const MAX_BLOCK_CACHE_ENTRIES = 50_000;
+export const blockedUserCache = ttlCache<string, boolean>({
+  name: "blocked-user",
+  ttlMs: BLOCK_CACHE_TTL_MS,
+  maxEntries: 50_000,
+});
 
 export function invalidateBlockedCache(appId: string, userId: string): void {
-  blockedCache.delete(`${appId}:${userId}`);
-}
-
-/** Drops every cached flag at once. Tests share one isolate across a suite. */
-export function clearBlockedCache(): void {
-  blockedCache.clear();
+  blockedUserCache.delete(`${appId}:${userId}`);
 }
 
 async function isUserBlocked(env: Env, name: string): Promise<boolean> {
-  const cached = blockedCache.get(name);
-  if (cached && cached.expiresAt > Date.now()) return cached.blocked;
+  const cached = blockedUserCache.get(name);
+  if (cached !== undefined) return cached;
   const blocked = await env.USER_LIMITER.getByName(name).isBlocked();
-  // Re-inserting keeps the map in least-recently-used order.
-  blockedCache.delete(name);
-  blockedCache.set(name, { blocked, expiresAt: Date.now() + BLOCK_CACHE_TTL_MS });
-  if (blockedCache.size > MAX_BLOCK_CACHE_ENTRIES) {
-    const oldest = blockedCache.keys().next();
-    if (!oldest.done) blockedCache.delete(oldest.value);
-  }
+  blockedUserCache.set(name, blocked);
   return blocked;
 }
 

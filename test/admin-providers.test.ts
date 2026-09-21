@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { supportsEndpointStyle } from "../src/core/capabilities";
 import {
-  clearProviderCaches,
   organizationProviders,
   resolveProvider,
 } from "../src/core/provider-store";
@@ -18,6 +17,7 @@ import { secretContext } from "../src/vault/secrets";
 import { resolveDeployment } from "../src/policy/deployment";
 import type { BillingRequestCache } from "../src/billing/gateway";
 import {
+  clearProviderCaches,
   TEST_ORGANIZATION_ID,
   seedAllProviders,
   seedProvider,

@@ -3,7 +3,6 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearProviderCaches } from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import type { ProviderType } from "../src/core/types";
 import { database } from "../src/db";
@@ -11,6 +10,7 @@ import { provider } from "../src/db/schema";
 import {
   TEST_ORGANIZATION_ID,
   clearIsolateCaches,
+  clearProviderCaches,
   gatewayToken,
   seedApp,
   seedProvider,

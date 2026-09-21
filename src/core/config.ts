@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { database } from "../db";
 import { app } from "../db/schema";
 import { GatewayError } from "./errors";
+import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
 import { referencedProviderSlugs as referencedSlugs } from "./config-references";
 import type { AppRecord } from "./types";
@@ -16,13 +17,25 @@ export {
   identifiesEndUsers,
 } from "../shared/app-config";
 
-interface CacheEntry {
-  expiresAt: number;
-  value: AppRecord;
-}
-
-const appCache = new Map<string, CacheEntry>();
 const CONFIG_CACHE_TTL_MS = 60_000;
+
+/**
+ * Every application configuration this isolate has read.
+ *
+ * App ids come from an authenticated request against a row that exists in D1,
+ * so this is not caller-growable, but a long-lived isolate in a large
+ * deployment would otherwise keep one entry per app it ever served. The bound
+ * is far above any single deployment's app count, so it costs a warm isolate
+ * nothing.
+ *
+ * Exported for the tests that clear it on its own; nothing in the Worker reads
+ * it but this file.
+ */
+export const appConfigCache = ttlCache<string, AppRecord>({
+  name: "app-config",
+  ttlMs: CONFIG_CACHE_TTL_MS,
+  maxEntries: 10_000,
+});
 
 /**
  * One authoritative stored row as the Worker reads it.
@@ -52,23 +65,19 @@ export function appRecordFromRow(row: typeof app.$inferSelect): AppRecord {
 }
 
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
-  const cached = appCache.get(appId);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const cached = appConfigCache.get(appId);
+  if (cached) return cached;
   // Fill from the authoritative primary. This TTL is the only intentional
   // configuration staleness window and must not be extended by replica lag.
   const row = await database(env.DB).query.app.findFirst({ where: eq(app.id, appId) });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   const value = appRecordFromRow(row);
-  appCache.set(appId, { expiresAt: Date.now() + CONFIG_CACHE_TTL_MS, value });
+  appConfigCache.set(appId, value);
   return value;
 }
 
 export function invalidateAppConfig(appId: string): void {
-  appCache.delete(appId);
-}
-
-export function clearAppConfigCache(): void {
-  appCache.clear();
+  appConfigCache.delete(appId);
 }
 
 /**
