@@ -8,6 +8,11 @@ import {
 import { GatewayError } from "../../core/errors";
 import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { CliOperationRequestSchema } from "../../contracts/cli";
+import type {
+  CliOperationResponse,
+  CliOperationResult,
+  CliPollResponse,
+} from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
 import { deployment } from "./bootstrap";
 import {
@@ -62,7 +67,7 @@ function nonSecretPayload(value: unknown): void {
       nonSecretPayload(item);
     }
 }
-export async function createOperation(c: CliContext): Promise<Response> {
+export async function createOperation(c: CliContext): Promise<CliOperationResponse> {
   const input = schemaBody(
     CliOperationRequestSchema,
     await cliJson(c.req.raw),
@@ -230,7 +235,7 @@ export async function createOperation(c: CliContext): Promise<Response> {
         "Too many pending operations",
       );
   }
-  return c.json({
+  return {
     id,
     url: `${meta.consoleOrigin}${browserPath(id)}#${submissionToken}`,
     expiresAt: new Date(row.expires_at).toISOString(),
@@ -240,9 +245,9 @@ export async function createOperation(c: CliContext): Promise<Response> {
         ? "expired"
         : "pending",
     deployment: meta,
-  });
+  };
 }
-export async function pollOperation(c: CliContext): Promise<Response> {
+export async function pollOperation(c: CliContext): Promise<CliPollResponse> {
   const row = await challenge(c);
   const token = c.req.header("authorization")?.replace(/^Bearer /, "");
   if (!(await proofMatches(token, row.poll_proof_hash)))
@@ -252,16 +257,17 @@ export async function pollOperation(c: CliContext): Promise<Response> {
     deployment: deployment(c),
     expiresAt: new Date(row.expires_at).toISOString(),
   };
-  if (row.expires_at <= Date.now())
-    return c.json({ ...base, state: "expired" });
-  if (!row.consumed_at) return c.json({ ...base, state: "pending" });
-  const result = row.outcome ? JSON.parse(row.outcome) : {};
+  if (row.expires_at <= Date.now()) return { ...base, state: "expired" };
+  if (!row.consumed_at) return { ...base, state: "pending" };
+  const result = (row.outcome ? JSON.parse(row.outcome) : {}) as CliOperationResult & {
+    accountId?: string;
+  };
   const accountId = result.accountId ?? row.organization_id;
   const account = accountId ? await accountLifecycle(c.env, accountId) : null;
-  return c.json({
+  return {
     ...base,
     state: "completed",
     result,
     account,
-  });
+  };
 }

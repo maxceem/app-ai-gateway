@@ -59,6 +59,33 @@ export const AppAttestChallengeResponseSchema = z.object({
 
 export const AppAttestRegisterResponseSchema = z.object({ user_id: z.string() });
 
+export const GatewayTokenResponseSchema = z.object({
+  access_token: z.string(),
+  expires_in: z.number(),
+});
+
+/**
+ * Where one end user stands against the limits their application sets.
+ *
+ * The account's request allowance is deliberately absent: that is the
+ * organization's arrangement with the gateway rather than its users' business,
+ * and it is reported on the rejection that spends it.
+ */
+export const CurrentUserResponseSchema = z.object({
+  user_id: z.string(),
+  limits: z.object({
+    requests_today: z.number().int().nullable().meta({ description: "Requests this user has made so far in the current UTC day. Null when the application sets no per-user limit, in which case requests are not counted at all." }),
+    requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
+    requests_per_minute: z.number().nullable().meta({ description: "The per-user per-minute limit this app sets. Null means unlimited." }),
+    requests_per_day: z.number().nullable().meta({ description: "The per-user per-day limit this app sets. Null means unlimited." }),
+    monthly_cost_usd: z.number().meta({ description: "What this user's traffic has cost so far in the current UTC calendar month." }),
+    monthly_budget_usd: z.number().nullable().meta({ description: "The per-user monthly spending budget this app sets. Null means unlimited." }),
+    blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
+  }).meta({
+    description: "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it.",
+  }),
+});
+
 export const UsageEventSchema = z.object({
   id: z.number().int(),
   /** Null for an application that identifies no end users. */
@@ -419,6 +446,8 @@ export const OrganizationListResponseSchema = z.object({
 
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
+export type GatewayTokenResponse = z.infer<typeof GatewayTokenResponseSchema>;
+export type CurrentUserResponse = z.infer<typeof CurrentUserResponseSchema>;
 export type ConsoleCapabilitiesResponse = z.infer<typeof ConsoleCapabilitiesResponseSchema>;
 export type UsageEvent = z.infer<typeof UsageEventSchema>;
 export type UsageEventList = z.infer<typeof UsageEventListSchema>;
@@ -449,11 +478,10 @@ export type IdentitySession = z.infer<typeof IdentitySessionSchema>;
 export type OrganizationListResponse = z.infer<typeof OrganizationListResponseSchema>;
 
 /**
- * Response shapes the console and the CLI consume that the published document
- * still describes loosely (`z.unknown()` on the generic admin operations). The
- * definition lives here either way, so a handler, the console and the CLI move
- * together; widening the published document to match is a separate change,
- * because it rewrites `openapi/openapi.json` and the generated endpoint pages.
+ * The rest of the admin surface. These used to be `z.unknown()` in the
+ * published document while the console and the CLI read real fields off them;
+ * they are now what `./catalog.ts` documents each operation with, so the
+ * handler, the document, the console and the CLI all move together.
  */
 export const UsageTotalsSchema = z.object({
   requests: z.number(),
@@ -489,7 +517,10 @@ export const AppSummarySchema = z.object({
 
 export const AppListResponseSchema = z.object({
   month: z.string(),
-  has_proxied_requests: z.boolean(),
+  has_proxied_requests: z.boolean().meta({
+    description:
+      "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
+  }),
   apps: z.array(AppSummarySchema),
 });
 
@@ -599,6 +630,35 @@ export const BreakdownResponseSchema = z.object({
   rows: z.array(BreakdownRowSchema),
 });
 
+/**
+ * What a repricing run would change, or did.
+ *
+ * `applied` is the difference between a dry run and a write: a dry run is the
+ * only one that can report `unpriced_events`, because an apply refuses outright
+ * rather than leaving some events at a stale figure.
+ */
+export const UsageRepriceResponseSchema = z.object({
+  app_id: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  month: z.string(),
+  applied: z.boolean(),
+  matched_events: z.number().int(),
+  unmetered_events: z.number().int().meta({
+    description: "Matched events that carried no readable usage, and so were repriced to the zero their zero counts imply while keeping whatever cost_source they had. A non-zero number means the month contains spend nothing could meter, which repricing cannot fix and must not appear to have fixed.",
+  }),
+  unpriced_events: z.number().int().meta({
+    description: "Dry-run only: matched events whose serving instance can no longer price them.",
+  }),
+  unpriced_cost_usd: z.number(),
+  previous_cost_usd: z.number(),
+  recalculated_cost_usd: z.number(),
+  delta_usd: z.number(),
+  reconciled_users: z.number().int().meta({
+    description: "End-user spend ledgers reprojected inside this request; the rest are left to scheduled recovery.",
+  }),
+});
+
 export const ModelPriceSchema = z.object({
   input: z.number().optional(),
   output: z.number().optional(),
@@ -637,3 +697,4 @@ export type BreakdownRow = z.infer<typeof BreakdownRowSchema>;
 export type BreakdownResponse = z.infer<typeof BreakdownResponseSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type PricesResponse = z.infer<typeof PricesResponseSchema>;
+export type UsageRepriceResponse = z.infer<typeof UsageRepriceResponseSchema>;

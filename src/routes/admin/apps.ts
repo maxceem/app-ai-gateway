@@ -30,12 +30,8 @@ import {
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { AppUpdateSchema, AppWriteSchema } from "../../contracts/schemas";
-import type {
-  AppDeleteResponse,
-  AppListResponse,
-  AppResponse,
-  AppValidateResponse,
-} from "../../contracts/responses";
+import type { CreatedAppResponse } from "../../contracts/responses";
+import { catalogRouter } from "../catalog-router";
 import { assertMonth, currentMonth, organizationMonthUsage } from "./shared";
 
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
@@ -226,6 +222,7 @@ function serializeRow(row: typeof app.$inferSelect) {
 type AppRouteEnv = { Bindings: Env; Variables: AdminVariables };
 
 export const appRoutes = new Hono<AppRouteEnv>();
+const routes = catalogRouter(appRoutes, "/v1/admin");
 
 /**
  * Refuses the write unless the organization may currently use the product.
@@ -242,7 +239,7 @@ async function requireEntitlement(c: Context<AppRouteEnv>): Promise<void> {
   ));
 }
 
-appRoutes.get("/apps", async (c) => {
+routes.handle("listApps", async (c) => {
   const month = c.req.query("month") ?? currentMonth();
   assertMonth(month);
   const db = database(c.env.DB);
@@ -309,7 +306,7 @@ appRoutes.get("/apps", async (c) => {
     LIMIT 1
   `).bind(organizationId, organizationId).first();
 
-  const listed = {
+  return {
     month,
     has_proxied_requests: proxied !== null,
     apps: rows.map((row) => {
@@ -357,11 +354,10 @@ appRoutes.get("/apps", async (c) => {
         },
       };
     }),
-  } satisfies AppListResponse;
-  return c.json(listed);
+  };
 });
 
-appRoutes.post("/apps", async (c) => {
+routes.handle("createApp", async (c) => {
   await requireEntitlement(c);
   const value = await c.req.json();
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -369,7 +365,7 @@ appRoutes.post("/apps", async (c) => {
   }
   const body = appBody(value);
   const receipt = await prepareResourceReceipt(c, "app.add", body);
-  if (receipt?.result) return c.json(receipt.result, 201);
+  if (receipt?.result) return receipt.result as CreatedAppResponse;
   const name = body.name.trim();
   if (name.length === 0 || name.length > 100) throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
   const organizationId = c.get("admin").organizationId;
@@ -420,7 +416,7 @@ appRoutes.post("/apps", async (c) => {
       }
     }
   } catch (error) {
-    if (receipt && await receipt.read()) return c.json(receipt.result!, 201);
+    if (receipt && await receipt.read()) return receipt.result as CreatedAppResponse;
     if (databaseErrorMatches(error, /UNIQUE constraint failed: app\.id/u)) continue;
     // Both guards refuse by matching no rows, so the failure above says nothing
     // about which one did. Counting again, on this path alone, separates a
@@ -429,12 +425,12 @@ appRoutes.post("/apps", async (c) => {
     throw error;
   }
   invalidateAppConfig(appId);
-  return c.json(receipt?.result ?? outcome, 201);
+  return (receipt?.result as CreatedAppResponse | undefined) ?? outcome;
   }
   throw new GatewayError(409, "conflict", "Could not allocate a unique app ID; retry the same request");
 });
 
-appRoutes.get("/apps/:app", async (c) => {
+routes.handle("getApp", async (c) => {
   const row = c.get("adminApp");
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   // A row is answered exactly as it is stored, parseable or not: `config_error`
@@ -445,10 +441,10 @@ appRoutes.get("/apps/:app", async (c) => {
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
   }
-  return c.json({ app: serializeRow(row), config_error: configError } satisfies AppResponse);
+  return { app: serializeRow(row), config_error: configError };
 });
 
-appRoutes.post("/apps/:app/validate", async (c) => {
+routes.handle("validateApp", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appBody(await c.req.json());
@@ -458,10 +454,10 @@ appRoutes.post("/apps/:app/validate", async (c) => {
     await authoritativeOrganizationProviders(c.env, c.get("admin").organizationId),
     existing ? referencedProviderSlugs(existing.config) : undefined,
   );
-  return c.json({ valid: true, app_id: appId, exists: existing !== undefined } satisfies AppValidateResponse);
+  return { valid: true, app_id: appId, exists: existing !== undefined };
 });
 
-appRoutes.put("/apps/:app", async (c) => {
+routes.handle("updateApp", async (c) => {
   await requireEntitlement(c);
   const appId = assertAppId(c.req.param("app"));
   const body = appUpdateBody(await c.req.json());
@@ -499,13 +495,10 @@ appRoutes.put("/apps/:app", async (c) => {
   const written = await updateApp(c.env.DB, values);
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
-  return c.json(
-    { app: serializeRow(written), config_error: null } satisfies AppResponse,
-    200,
-  );
+  return { app: serializeRow(written), config_error: null };
 });
 
-appRoutes.delete("/apps/:app", async (c) => {
+routes.handle("deleteApp", async (c) => {
   const appId = c.req.param("app");
   if (c.req.query("confirm") !== appId) throw new GatewayError(400, "invalid_request", "Pass ?confirm=<app-id> to delete an app");
   const db = database(c.env.DB);
@@ -528,10 +521,10 @@ appRoutes.delete("/apps/:app", async (c) => {
     eq(app.organizationId, c.get("admin").organizationId),
   ));
   invalidateAppConfig(appId);
-  return c.json({
+  return {
     deleted: true,
     app_id: appId,
     removed_users: removedUsers.length,
     usage_events_retained: true,
-  } satisfies AppDeleteResponse);
+  };
 });

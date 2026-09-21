@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AppWriteSchema, type AppWrite } from "../../src/contracts/schemas.ts";
-import { operations } from "../../src/contracts/operations.ts";
+import { operationPath } from "../../src/contracts/catalog.ts";
 import type {
   ApiKeyListResponse,
   ApiKeyRevokeResponse,
@@ -223,7 +223,7 @@ async function remoteValidation(
         "Provider references, pricing, and saved configuration checks require login.",
       ],
     };
-  const { data } = await ctx.call("validateApp", [id], { body: doc });
+  const { data } = await ctx.call("validateApp", { params: { app: id }, body: doc });
   return { local: true, remote: true, ...data };
 }
 
@@ -257,7 +257,7 @@ export async function saveKey(
     }
     let revoked = false;
     try {
-      await ctx.call("revokeAppKey", [appId, keyRecord.id]);
+      await ctx.call("revokeAppKey", { params: { app: appId, key: keyRecord.id } });
       revoked = true;
     } catch {
       /* Left unverified on purpose; the refusal below says so. */
@@ -295,7 +295,7 @@ export async function appCommand(
   flags: Flags,
 ): Promise<AppResult> {
   const action = command.slice(4);
-  if (action === "list") return (await ctx.call("listApps", [])).data;
+  if (action === "list") return (await ctx.call("listApps")).data;
   if (action === "validate") {
     const doc = localApp(await jsonFile(await required(flags, "file")));
     return { definition: doc, validation: await remoteValidation(ctx, doc) };
@@ -309,7 +309,7 @@ export async function appCommand(
     let revision = 0;
     const appId = args[0] ?? "";
     if (action === "update") {
-      const r = await ctx.call("getApp", [appId]);
+      const r = await ctx.call("getApp", { params: { app: appId } });
       current = documentOf(r.data.app);
       revision = r.data.app.revision;
       if (!revision && !flags["dry-run"])
@@ -337,7 +337,7 @@ export async function appCommand(
       };
     const output =
       action === "add" && doc.config.authentication.type === "api_key"
-        ? await ctx.keyOutput(operations.createApp.path(), doc, flags["key-output"])
+        ? await ctx.keyOutput(operationPath("createApp"), doc, flags["key-output"])
         : null;
     try {
       let app: AppResponse["app"];
@@ -345,7 +345,7 @@ export async function appCommand(
       let key: StoredKeyMetadata | undefined;
       if (action === "add") {
         await ctx.bootstrap();
-        const created = await ctx.create("createApp", [], doc);
+        const created = await ctx.create("createApp", { body: doc });
         ({ app, config_error: configError } = created.data);
         if (output) {
           if (created.keyMetadata) key = created.keyMetadata;
@@ -364,7 +364,8 @@ export async function appCommand(
         }
         await created.complete();
       } else {
-        const updated = await ctx.call("updateApp", [appId], {
+        const updated = await ctx.call("updateApp", {
+          params: { app: appId },
           body: { ...doc, revision },
         });
         ({ app, config_error: configError } = updated.data);
@@ -401,31 +402,31 @@ export async function appCommand(
   if (action.startsWith("key ")) {
     const sub = action.slice(4);
     const appId = args[0] ?? "";
-    const { data: app } = await ctx.call("getApp", [appId]);
+    const { data: app } = await ctx.call("getApp", { params: { app: appId } });
     if (documentOf(app.app).config.authentication.type !== "api_key")
       fail(
         "invalid_input",
         "Only server applications support application keys.",
       );
-    if (sub === "list") return (await ctx.call("listAppKeys", [appId])).data;
+    if (sub === "list") return (await ctx.call("listAppKeys", { params: { app: appId } })).data;
     if (sub === "revoke") {
       const keyId = args[1] ?? "";
       await confirm(
         `Revoke key ${keyId} for app ${appId}? Clients using it will lose access.`,
         flags,
       );
-      return (await ctx.call("revokeAppKey", [appId, keyId])).data;
+      return (await ctx.call("revokeAppKey", { params: { app: appId, key: keyId } })).data;
     }
     const name = await required(flags, "name");
     if (!name.trim() || name.length > 100)
       fail("invalid_input", "Key name must be 1–100 characters.");
     const output = await ctx.keyOutput(
-      operations.createAppKey.path(appId),
+      operationPath("createAppKey", { app: appId }),
       { name },
       flags["key-output"],
     );
     try {
-      const created = await ctx.create("createAppKey", [appId], { name });
+      const created = await ctx.create("createAppKey", { params: { app: appId }, body: { name } });
       let applicationKey = created.keyMetadata;
       if (!applicationKey) {
         const minted = mintedKey(created.data);
@@ -446,7 +447,7 @@ export async function appCommand(
     }
   }
   const appId = args[0] ?? "";
-  const { data } = await ctx.call("getApp", [appId]);
+  const { data } = await ctx.call("getApp", { params: { app: appId } });
   if (action === "show") return data;
   const doc = documentOf(data.app);
   if (action === "remove") {
@@ -454,11 +455,11 @@ export async function appCommand(
       `Delete app ${data.app.name} (${appId})? Its keys, users and authentication state will be removed and clients will lose access.`,
       flags,
     );
-    return (await ctx.call("deleteApp", [appId])).data;
+    return (await ctx.call("deleteApp", { params: { app: appId }, query: { confirm: appId } })).data;
   }
   if (action === "check") {
     const validation = await remoteValidation(ctx, doc, appId);
-    const { data: providers } = await ctx.call("listProviders", []);
+    const { data: providers } = await ctx.call("listProviders");
     const allowed = selectedProviderPolicies(doc.config.routing);
     const selected =
       doc.config.routing.providers.mode === "all"
@@ -517,7 +518,7 @@ export async function appCommand(
     } else {
       const routing = doc.config.routing;
       const allowed = selectedProviderPolicies(routing);
-      const { data: all } = await ctx.call("listProviders", []);
+      const { data: all } = await ctx.call("listProviders");
       // What this application may send to today, which is narrower than what
       // the account holds: a disabled provider serves nothing, and a selected
       // routing policy names the rest out.
@@ -537,7 +538,7 @@ export async function appCommand(
             : "No provider has that slug.",
           "Run agw provider list for the slugs, and agw app show <id> for the policy.",
         );
-      const { data: catalog } = await ctx.call("listModelPrices", []);
+      const { data: catalog } = await ctx.call("listModelPrices");
       const providers = requested
         ? reachable.filter((p) => p.slug === requested)
         : reachable;

@@ -1,10 +1,5 @@
 import { Hono } from "hono";
-import type {
-  ProviderGatewayDeleteResponse,
-  ProviderGatewayListResponse,
-  ProviderGatewayResponse,
-  ProviderGatewayTestResponse,
-} from "../../contracts/responses";
+import type { ProviderGatewayResponse } from "../../contracts/responses";
 import {
   createProviderGateway,
   deleteProviderGateway,
@@ -14,41 +9,38 @@ import {
   updateProviderGateway,
 } from "../../management/provider-gateways";
 import type { AdminVariables } from "../../middleware/admin";
-import { providerRequestBody } from "./provider-shared";
+import { catalogRouter } from "../catalog-router";
+import { jsonBody } from "./body";
 import { prepareResourceReceipt } from "./resource-receipt";
 
 type ProviderGatewayEnv = { Bindings: Env; Variables: AdminVariables };
 export const providerGatewayRoutes = new Hono<ProviderGatewayEnv>();
+const routes = catalogRouter(providerGatewayRoutes, "/v1/admin");
 
-providerGatewayRoutes.post("/provider-gateways/test", async (c) =>
-  c.json(await testProviderGateway(await providerRequestBody(c)) satisfies ProviderGatewayTestResponse),
-);
+routes.handle("testProviderGateway", async (c) =>
+  testProviderGateway(await jsonBody(c)));
 
-providerGatewayRoutes.get("/provider-gateways", async (c) =>
-  c.json(await listProviderGateways(c.env, c.get("admin")) satisfies ProviderGatewayListResponse),
-);
+routes.handle("listProviderGateways", (c) =>
+  listProviderGateways(c.env, c.get("admin")));
 
-providerGatewayRoutes.post("/provider-gateways", async (c) => {
-  const body = await providerRequestBody(c);
+routes.handle("createProviderGateway", async (c) => {
+  const body = await jsonBody(c);
   const receipt = await prepareResourceReceipt(c, "provider-gateway.add", body);
-  if (receipt?.result) return c.json(receipt.result as ProviderGatewayResponse, 201);
+  if (receipt?.result) return receipt.result as ProviderGatewayResponse;
   try {
     const outcome = await createProviderGateway(c.env, c.get("admin"), body, receipt);
-    return c.json((receipt?.result ?? outcome) as ProviderGatewayResponse, 201);
+    return (receipt?.result ?? outcome) as ProviderGatewayResponse;
   } catch (error) {
-    if (receipt && (await receipt.read())) return c.json(receipt.result as ProviderGatewayResponse, 201);
+    if (receipt && (await receipt.read())) return receipt.result as ProviderGatewayResponse;
     throw error;
   }
 });
 
-providerGatewayRoutes.patch("/provider-gateways/:id", async (c) =>
-  c.json(await updateProviderGateway(c.env, c.get("admin"), c.req.param("id"), await providerRequestBody(c)) satisfies ProviderGatewayResponse),
-);
+routes.handle("updateProviderGateway", async (c) =>
+  updateProviderGateway(c.env, c.get("admin"), c.req.param("id"), await jsonBody(c)));
 
-providerGatewayRoutes.post("/provider-gateways/:id/rotate", async (c) =>
-  c.json(await rotateProviderGateway(c.env, c.get("admin"), c.req.param("id"), await providerRequestBody(c)) satisfies ProviderGatewayResponse),
-);
+routes.handle("rotateProviderGateway", async (c) =>
+  rotateProviderGateway(c.env, c.get("admin"), c.req.param("id"), await jsonBody(c)));
 
-providerGatewayRoutes.delete("/provider-gateways/:id", async (c) =>
-  c.json(await deleteProviderGateway(c.env, c.get("admin"), c.req.param("id")) satisfies ProviderGatewayDeleteResponse),
-);
+routes.handle("deleteProviderGateway", (c) =>
+  deleteProviderGateway(c.env, c.get("admin"), c.req.param("id")));

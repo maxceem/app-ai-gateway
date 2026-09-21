@@ -1,9 +1,5 @@
-import {
-  billingErrorCodeOf,
-  type BillingRuntime,
-  type EntitledPlan,
-  type SubscriptionState,
-} from "./contract";
+import { billingErrorCodeOf, type BillingRuntime } from "./contract";
+import type { GatewayBillingAccess, PlanLimits } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 
@@ -38,13 +34,9 @@ export const BILLING_STALE_MAX_MS = 60 * 60_000;
 export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
 /**
- * What a plan allows, read out of its opaque `limits` JSON.
- *
- * Every limit is a whole count and every one is optional; absent means
- * unlimited, which is what a self-hosted deployment, a plan with no `limits`
- * block, and a plan that simply does not mention the key all get. Adding a
- * ceiling to a plan is therefore plan data alone — nothing here knows which
- * plan carries which number, and no plan is named anywhere in this Worker.
+ * What a plan allows, read out of its opaque `limits` JSON — declared as
+ * `PlanLimitsSchema` in `src/contracts/billing.ts`, because the billing status
+ * endpoint publishes the same object the write path enforces.
  *
  * `maxRequestsPerMonth` is spent on the data plane. The rest are ceilings on
  * stored configuration, enforced by the write that would exceed them; see
@@ -54,18 +46,7 @@ export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
  * the limits an organization sets on its own app's end users — those are
  * `app_*` codes and `src/do/UserLimiter.ts`, and no value here may cap them.
  */
-export interface PlanLimits {
-  /** Requests admitted for provider dispatch per allowance period, per organization. */
-  maxRequestsPerMonth?: number;
-  /** Applications the organization may own, in any status. */
-  maxApps?: number;
-  /** Providers the organization may own, in any status. */
-  maxProviders?: number;
-  /** Provider gateways the organization may own, in any status. */
-  maxProviderGateways?: number;
-  /** Counted per application, over its `active` keys alone. */
-  maxActiveKeysPerApp?: number;
-}
+export type { PlanLimits };
 
 const PLAN_LIMIT_KEYS = [
   "maxRequestsPerMonth",
@@ -76,33 +57,15 @@ const PLAN_LIMIT_KEYS = [
 ] as const satisfies readonly (keyof PlanLimits)[];
 
 /**
- * the billing service's answer, plus the two states only the gateway can be in.
+ * The billing service's answer, plus the two states only the gateway can be in
+ * — declared as `GatewayBillingAccessSchema` in `src/contracts/billing.ts`,
+ * because the console reads this union off the billing status endpoint.
  *
- * `state` is the discriminant the whole gateway and console read: the service
- * itself has no notion of a deployment without billing, nor of its own
- * unreachability, and both have to be distinguishable from "this organization
- * has no plan" — one is unlimited, one is temporary, one is a paywall.
+ * A stale reading is served for {@link BILLING_STALE_MAX_MS} after the billing
+ * service stops answering. Entitlement decisions are unchanged by it: a stale
+ * `plan === null` is still a paywall.
  */
-export type GatewayBillingAccess =
-  /** No `BILLING` binding: self-hosted, unlimited, never refused. */
-  | { state: "self_hosted" }
-  /** The billing RPC failed. The allowance is unknown, so traffic waits. */
-  | { state: "unavailable"; billingErrorCode?: string }
-  /** The billing service answered. `plan === null` means no entitlement at all. */
-  | {
-      state: "billed";
-      plan: EntitledPlan | null;
-      subscription: SubscriptionState | null;
-      /**
-       * Set when the billing service could not be reached and this is the last reading
-       * it gave for the organization, still inside {@link BILLING_STALE_MAX_MS}.
-       * Entitlement decisions are unchanged: a stale `plan === null` is still a
-       * paywall.
-       */
-      stale?: true;
-      /** Why the refresh failed, on a stale reading. */
-      billingErrorCode?: string;
-    };
+export type { GatewayBillingAccess };
 
 export type BillingRequestCache = Map<string, Promise<GatewayBillingAccess>>;
 

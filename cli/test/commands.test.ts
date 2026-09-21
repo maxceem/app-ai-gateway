@@ -4,9 +4,9 @@ import { mkdtemp, rm, readFile, stat, writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AppWrite } from "../../src/contracts/schemas.ts";
-import { operations } from "../../src/contracts/operations.ts";
+import { operationPath } from "../../src/contracts/catalog.ts";
 import { parseAppConfig, selectedProviderPolicies } from "../../src/shared/app-config.ts";
-import { CliErrorDetailsSchema } from "../../src/contracts/operation-schemas.ts";
+import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
 import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
 import {
@@ -106,10 +106,10 @@ test("file mode defaults omitted environments and refuses type conversion", asyn
 });
 
 test("app remove supplies required confirmation query and full writes supply the revision", async () => {
-  const calls: { name: string; params: unknown[]; options?: Record<string, unknown> }[] = [];
+  const calls: { name: string; options?: Record<string, unknown> }[] = [];
   const ctx = stubContext({
-    call: async (name: string, params: unknown[], options?: Record<string, unknown>) => {
-      calls.push({ name, params, ...(options ? { options } : {}) });
+    call: async (name: string, options?: Record<string, unknown>) => {
+      calls.push({ name, ...(options ? { options } : {}) });
       return {
         data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null },
       };
@@ -117,8 +117,11 @@ test("app remove supplies required confirmation query and full writes supply the
   });
   await appCommand(ctx, "app remove", ["app-1"], { yes: true });
   assert.equal(calls[1]?.name, "deleteApp");
-  // The confirmation query is the descriptor's, so it is asserted there.
-  assert.equal(operations.deleteApp.path("app-1"), "/v1/admin/apps/app-1?confirm=app-1");
+  // The confirmation query is the catalog's, so it is asserted there.
+  assert.equal(
+    operationPath("deleteApp", { app: "app-1" }, { confirm: "app-1" }),
+    "/v1/admin/apps/app-1?confirm=app-1",
+  );
   calls.length = 0;
   await appCommand(ctx, "app update", ["app-1"], { name: "Renamed" });
   assert.equal(calls[1]?.name, "updateApp");
@@ -349,7 +352,7 @@ test("provider and gateway updates forward the revision that was listed", async 
     createdAt: "now", updatedAt: "now", createdBy: "me",
   };
   const ctx = stubContext({
-    call: async (name: string, _params: string[], options?: { body?: Record<string, unknown> }) => {
+    call: async (name: string, options?: { body?: Record<string, unknown> }) => {
       calls.push({ name, ...(options ? { options } : {}) });
       if (name === "listProviders") return { data: { providers: [provider] } };
       if (name === "listProviderGateways") return { data: { gateways: [gateway] } };
@@ -479,7 +482,7 @@ test("ready setup does not replay secrets or retired bootstrap credentials", asy
         return adopt ?? "generated";
       },
     },
-    publicCall: async (name: string, _params: unknown[], options: { url?: string }) => {
+    publicCall: async (name: string, options: { url?: string }) => {
       publicCalls++;
       assert.equal(name, "getCliCapabilities");
       assert.equal(options.url, journal.url);
@@ -1219,7 +1222,7 @@ async function freshInstall(
       directory,
       vaultKey: async () => "SENTINEL-KEK",
     },
-    publicCall: async (name: string, _params: unknown[], options: { body?: unknown }) => {
+    publicCall: async (name: string, options: { body?: unknown }) => {
       if (name === "getCliCapabilities")
         return { data: { deployment: { id: installedId() }, serverVersion: "0.1.0" } };
       assert.equal(name, "bootstrapCliAccount");

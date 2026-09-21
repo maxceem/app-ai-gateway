@@ -15,24 +15,30 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 
 ## API contract changes
 
-- Treat `src/contracts/schemas.ts` as the source for public request schemas,
-  `src/contracts/responses.ts` for response bodies, and
-  `src/contracts/openapi.ts` as the source for documented operations.
+- `src/contracts/catalog.ts` is the one place an operation is declared: its
+  method, its path, the parameters, query and body it takes, the body it
+  answers with, and the prose the document carries. `schemas.ts` (requests),
+  `responses.ts` (response bodies), `cli.ts` and `billing.ts` hold the schemas
+  it composes. Nothing else may write a path, a method or a second copy of a
+  shape.
+- Everything else is derived from that table: the OpenAPI document
+  (`openapi.ts`, one loop), the console's `call` and the CLI's
+  `call`/`publicCall`/`create`, the schema the CLI parses each response with,
+  and the server's own mounts. Adding an endpoint is one catalog entry plus one
+  `catalogRouter(...).handle("<name>", …)`, and there is nothing else to keep in
+  step; `test/catalog.test.ts` fails if a documented admin or CLI operation is
+  not mounted.
 - `AppConfigSchema` in `src/contracts/schemas.ts` is the only parser of an
   application configuration, and its output is what is stored. The server, the
   console and the CLI all reach it through `parseAppConfig` in
   `src/shared/app-config.ts`, which is also the one place a rejection is worded.
   Add a rule there and nowhere else; a check written beside a caller is a second
   grammar, and this project has had one before.
-- `src/contracts/operations.ts` is the descriptor table the console and the CLI
-  both call through: method, path builder, request and response types. It is
-  runtime-light and imports every schema with `import type`; the runtime schemas
-  the CLI parses with live in `src/contracts/operation-schemas.ts`, which only
-  the CLI loads. Adding an endpoint either client uses means adding an entry to
-  both.
-- Answer a documented response with `satisfies` on its inferred type, so the
-  handler fails `pnpm run check` when it drifts from its own document. Never add
-  runtime parsing to a server response.
+- A catalog-mounted handler returns the operation's response body; its type is
+  the catalog's, so a handler that drifts from its own document fails
+  `pnpm run check` at its `return`. `satisfies` is for the few routes mounted
+  outside the catalog — health, the gateway proxy, endpoints, `me` and the
+  application-auth surface. Never add runtime parsing to a server response.
 - Never edit `openapi/openapi.json` manually.
 - Run `pnpm run openapi:generate` after changing a route contract.
 - Run `pnpm run openapi:check` to detect generated-document drift.

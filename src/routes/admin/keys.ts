@@ -1,29 +1,17 @@
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { generateApiKey } from "../../core/apikeys";
+import { ApiKeyCreateRequestSchema } from "../../contracts/schemas";
+import { schemaBody } from "../../management/validation";
+import { jsonBody } from "./body";
+import { catalogRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { andCondition, planCap } from "../../core/plan-caps";
 import { prepareResourceReceipt } from "./resource-receipt";
 import { database } from "../../db";
 import { appApiKey } from "../../db/schema";
-import type {
-  ApiKey,
-  ApiKeyListResponse,
-  ApiKeyRevokeResponse,
-  CreatedApiKey,
-} from "../../contracts/responses";
+import type { ApiKey, CreatedApiKey } from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
-
-function keyName(value: unknown): string {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new GatewayError(400, "invalid_request", "A JSON object is required");
-  }
-  const name = (value as Record<string, unknown>).name;
-  if (typeof name !== "string" || name.trim().length === 0 || name.trim().length > 100) {
-    throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
-  }
-  return name.trim();
-}
 
 /**
  * Read off the column rather than the configuration: what kind of application
@@ -49,13 +37,14 @@ function serialized(row: typeof appApiKey.$inferSelect): ApiKey {
 }
 
 export const keyRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+const routes = catalogRouter(keyRoutes, "/v1/admin");
 
-keyRoutes.post("/apps/:app/keys", async (c) => {
+routes.handle("createAppKey", async (c) => {
   const appId = c.req.param("app");
   assertApiKeyApp(c.get("adminApp"));
-  const name = keyName(await c.req.json());
+  const { name } = schemaBody(ApiKeyCreateRequestSchema, await jsonBody(c));
   const receipt = await prepareResourceReceipt(c, "app.key.add", { name });
-  if (receipt?.result) return c.json(receipt.result, 201);
+  if (receipt?.result) return receipt.result as CreatedApiKey;
   const generated = await generateApiKey();
   const now = new Date().toISOString();
   const outcome: CreatedApiKey = {
@@ -88,10 +77,10 @@ keyRoutes.post("/apps/:app/keys", async (c) => {
       throw new GatewayError(409, "conflict", "The application changed before key creation");
     }
   }
-  return c.json(receipt?.result ?? outcome, 201);
+  return (receipt?.result as CreatedApiKey | undefined) ?? outcome;
 });
 
-keyRoutes.get("/apps/:app/keys", async (c) => {
+routes.handle("listAppKeys", async (c) => {
   const appId = c.req.param("app");
   assertApiKeyApp(c.get("adminApp"));
   const rows = await database(c.env.DB)
@@ -99,17 +88,17 @@ keyRoutes.get("/apps/:app/keys", async (c) => {
     .from(appApiKey)
     .where(eq(appApiKey.appId, appId))
     .orderBy(desc(appApiKey.createdAt));
-  return c.json({ app_id: appId, keys: rows.map(serialized) } satisfies ApiKeyListResponse);
+  return { app_id: appId, keys: rows.map(serialized) };
 });
 
-keyRoutes.post("/apps/:app/keys/:id/revoke", async (c) => {
+routes.handle("revokeAppKey", async (c) => {
   const appId = c.req.param("app");
   assertApiKeyApp(c.get("adminApp"));
   const [row] = await database(c.env.DB)
     .update(appApiKey)
     .set({ status: "revoked" })
-    .where(and(eq(appApiKey.appId, appId), eq(appApiKey.id, c.req.param("id"))))
+    .where(and(eq(appApiKey.appId, appId), eq(appApiKey.id, c.req.param("key"))))
     .returning();
   if (!row) throw new GatewayError(404, "invalid_request", "API key was not found");
-  return c.json({ app_id: appId, key: serialized(row) } satisfies ApiKeyRevokeResponse);
+  return { app_id: appId, key: serialized(row) };
 });

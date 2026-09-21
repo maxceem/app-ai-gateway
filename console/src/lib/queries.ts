@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { operations } from "@contracts/operations";
-import { api, call } from "./api";
+import { call } from "./api";
 import { fromWireApp, toAppWrite } from "./config-conversion";
 import {
   changePassword,
@@ -15,8 +14,6 @@ import { checkoutReturnPathFor } from "./auth-redirect";
 import type {
   AppCreateBody,
   AppUpsertBody,
-  BillingPlansResponse,
-  BillingStatusResponse,
   CreatedApp,
   ProviderCreateBody,
   ProviderGatewayCreateBody,
@@ -55,7 +52,7 @@ export const keys = {
 export function useCapabilities() {
   return useQuery({
     queryKey: keys.capabilities,
-    queryFn: () => call(operations.getConsoleCapabilities, []),
+    queryFn: () => call("getConsoleCapabilities"),
     staleTime: Number.POSITIVE_INFINITY,
     retry: 1,
   });
@@ -70,7 +67,7 @@ export function useCapabilities() {
 export function useSession() {
   return useQuery({
     queryKey: keys.session,
-    queryFn: async () => (await call(operations.getAdminSession, [])).session,
+    queryFn: async () => (await call("getAdminSession")).session,
     retry: false,
     staleTime: 60_000,
   });
@@ -123,7 +120,7 @@ export function useChangePassword() {
 export function useOrganizations(enabled = true) {
   return useQuery({
     queryKey: keys.organizations,
-    queryFn: () => call(operations.listOrganizations, []),
+    queryFn: () => call("listOrganizations"),
     enabled,
   });
 }
@@ -132,7 +129,7 @@ export function useSelectOrganization() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (organizationId: string) =>
-      call(operations.selectOrganization, [], { organizationId }),
+      call("selectOrganization", { body: { organizationId } }),
     onSuccess: (result) => {
       // Every cached list is scoped to the previous organization.
       client.clear();
@@ -144,14 +141,14 @@ export function useSelectOrganization() {
 export function useManagementKeys() {
   return useQuery({
     queryKey: keys.managementKeys,
-    queryFn: () => call(operations.listManagementKeys, []),
+    queryFn: () => call("listManagementKeys"),
   });
 }
 
 export function useCreateManagementKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => call(operations.createManagementKey, [], { name }),
+    mutationFn: (name: string) => call("createManagementKey", { body: { name } }),
     // The result holds the only copy of a live credential. Without this the
     // cached mutation outlives `reset()` and keeps the plaintext in memory.
     gcTime: 0,
@@ -162,7 +159,7 @@ export function useCreateManagementKey() {
 export function useRevokeManagementKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (keyId: string) => call(operations.revokeManagementKey, [keyId]),
+    mutationFn: (keyId: string) => call("revokeManagementKey", { params: { id: keyId } }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.managementKeys }),
   });
 }
@@ -170,7 +167,7 @@ export function useRevokeManagementKey() {
 export function useProviders() {
   return useQuery({
     queryKey: keys.providers,
-    queryFn: () => call(operations.listProviders, []),
+    queryFn: () => call("listProviders"),
   });
 }
 
@@ -186,7 +183,7 @@ export function useProviders() {
 export function useProviderInstances() {
   return useQuery({
     queryKey: keys.providers,
-    queryFn: () => call(operations.listProviders, []),
+    queryFn: () => call("listProviders"),
     select: (data) => data.providers,
   });
 }
@@ -209,7 +206,7 @@ function invalidateProviderLists(client: ReturnType<typeof useQueryClient>): voi
 export function useCreateProvider() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: ProviderCreateBody) => call(operations.createProvider, [], body),
+    mutationFn: (body: ProviderCreateBody) => call("createProvider", { body }),
     gcTime: 0,
     onSuccess: (_result, body) => {
       // The provider type and the route it takes; `body.secret` stays here.
@@ -226,14 +223,14 @@ export function useCreateProvider() {
  */
 export function useTestProvider() {
   return useMutation({
-    mutationFn: (body: ProviderTestBody) => call(operations.testProvider, [], body),
+    mutationFn: (body: ProviderTestBody) => call("testProviderCredential", { body }),
     gcTime: 0,
   });
 }
 
 export function useTestProviderGateway() {
   return useMutation({
-    mutationFn: (body: ProviderGatewayTestBody) => call(operations.testProviderGateway, [], body),
+    mutationFn: (body: ProviderGatewayTestBody) => call("testProviderGateway", { body }),
     gcTime: 0,
   });
 }
@@ -246,7 +243,7 @@ export function useTestProviderGateway() {
 export function useProviderGateways(enabled = true) {
   return useQuery({
     queryKey: keys.providerGateways,
-    queryFn: () => call(operations.listProviderGateways, []),
+    queryFn: () => call("listProviderGateways"),
     enabled,
   });
 }
@@ -269,25 +266,25 @@ function useGatewayMutation<TVariables, TData>(
 
 export function useCreateProviderGateway() {
   return useGatewayMutation((body: ProviderGatewayCreateBody) =>
-    call(operations.createProviderGateway, [], body),
+    call("createProviderGateway", { body }),
   );
 }
 
 export function useRenameProviderGateway() {
   return useGatewayMutation(({ id, name, revision }: { id: string; name: string; revision: number }) =>
-    call(operations.updateProviderGateway, [id], { name, revision }),
+    call("updateProviderGateway", { params: { id }, body: { name, revision } }),
   );
 }
 
 /** A single re-encryption, shared by every provider behind the gateway. */
 export function useRotateProviderGateway() {
   return useGatewayMutation(({ id, token, revision }: { id: string; token: string; revision: number }) =>
-    call(operations.rotateProviderGateway, [id], { token, revision }),
+    call("rotateProviderGateway", { params: { id }, body: { token, revision } }),
   );
 }
 
 export function useDeleteProviderGateway() {
-  return useGatewayMutation((id: string) => call(operations.deleteProviderGateway, [id]));
+  return useGatewayMutation((id: string) => call("deleteProviderGateway", { params: { id } }));
 }
 
 /**
@@ -300,7 +297,7 @@ export function useUpdateProvider() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: ProviderUpdateBody }) =>
-      call(operations.updateProvider, [id], body),
+      call("updateProvider", { params: { id }, body }),
     gcTime: 0,
     onSuccess: (_result, variables) => {
       void client.invalidateQueries({ queryKey: keys.providers });
@@ -314,19 +311,13 @@ export function useUpdateProvider() {
 export function useDeleteProvider() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => call(operations.deleteProvider, [id]),
+    mutationFn: (id: string) => call("deleteProvider", { params: { id } }),
     onSuccess: () => invalidateProviderLists(client),
   });
 }
 
 /**
  * Billing hooks stay disabled unless the deployment reports the capability.
- *
- * These are the only hooks here that still name a path. Their shapes belong to
- * the optional billing Worker this gateway may be bound to, which declares them
- * in `src/billing/` alongside its own error and logging modules — not something
- * a browser build can import, and not something to move while the two quota
- * systems are as easy to conflate as they are. See `lib/types.ts`.
  *
  * A subscription can lapse while the console is open — a card expires, a trial
  * ends — and the data plane starts answering 402. Polling and refetching on
@@ -336,7 +327,7 @@ export function useDeleteProvider() {
 export function useBillingStatus(enabled: boolean) {
   return useQuery({
     queryKey: keys.billingStatus,
-    queryFn: () => api.get<BillingStatusResponse>("/v1/admin/billing/status"),
+    queryFn: () => call("getBillingStatus"),
     enabled,
     staleTime: 30_000,
     refetchInterval: enabled ? 5 * 60_000 : false,
@@ -347,7 +338,7 @@ export function useBillingStatus(enabled: boolean) {
 export function useBillingPlans(enabled: boolean) {
   return useQuery({
     queryKey: keys.billingPlans,
-    queryFn: () => api.get<BillingPlansResponse>("/v1/admin/billing/plans"),
+    queryFn: () => call("listBillingPlans"),
     enabled,
     staleTime: Number.POSITIVE_INFINITY,
   });
@@ -356,7 +347,7 @@ export function useBillingPlans(enabled: boolean) {
 export function useStartCheckout() {
   return useMutation({
     mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
-      api.post<{ url: string }>("/v1/admin/billing/checkout", {
+      call("startCheckout", { body: {
         ...input,
         // The landing announces the purchase; an abandoned checkout comes back
         // to the plans instead, which is where it would be resumed. The plan
@@ -364,7 +355,7 @@ export function useStartCheckout() {
         // landing reports which plan was bought.
         successUrl: `${window.location.origin}${checkoutReturnPathFor(input.planKey)}`,
         cancelUrl: `${window.location.origin}/billing`,
-      }),
+      } }),
   });
 }
 
@@ -379,7 +370,7 @@ export function useChangePlan() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
-      api.post<{ ok: true; requiredActionUrl?: string }>("/v1/admin/billing/change", input),
+      call("changePlan", { body: input }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
 }
@@ -387,7 +378,7 @@ export function useChangePlan() {
 export function useCancelSubscription() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<{ ok: true }>("/v1/admin/billing/cancel"),
+    mutationFn: () => call("cancelSubscription"),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
 }
@@ -396,7 +387,7 @@ export function useResumeSubscription() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
-      api.post<{ ok: true; requiredActionUrl?: string }>("/v1/admin/billing/resume", input),
+      call("resumeSubscription", { body: input }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
 }
@@ -410,7 +401,7 @@ export function useResumeSubscription() {
 export function useApps(month: string, refetchInterval?: number) {
   return useQuery({
     queryKey: keys.apps(month),
-    queryFn: () => call(operations.listApps, [{ month }]),
+    queryFn: () => call("listApps", { query: { month } }),
     ...(refetchInterval === undefined ? {} : { refetchInterval }),
   });
 }
@@ -418,7 +409,7 @@ export function useApps(month: string, refetchInterval?: number) {
 export function useApp(appId: string) {
   return useQuery({
     queryKey: keys.app(appId),
-    queryFn: async () => fromWireApp(await call(operations.getApp, [appId])),
+    queryFn: async () => fromWireApp(await call("getApp", { params: { app: appId } })),
   });
 }
 
@@ -427,7 +418,7 @@ export function useSaveApp(appId: string) {
   return useMutation({
     mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) => {
       const result = fromWireApp(
-        await call(operations.updateApp, [appId], { ...toAppWrite(body), revision }),
+        await call("updateApp", { params: { app: appId }, body: { ...toAppWrite(body), revision } }),
       );
       if (result.kind !== "valid") throw new Error(result.config_error);
       return result;
@@ -443,7 +434,7 @@ export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (body: AppCreateBody): Promise<CreatedApp> => {
-      const created = await call(operations.createApp, [], toAppWrite(body));
+      const created = await call("createApp", { body: toAppWrite(body) });
       const converted = fromWireApp(created);
       if (converted.kind !== "valid") throw new Error(converted.config_error);
       // The one-time initial key an API-key application is born with, which is
@@ -463,7 +454,7 @@ export function useCreateApp() {
 export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (appId: string) => call(operations.deleteApp, [appId]),
+    mutationFn: (appId: string) => call("deleteApp", { params: { app: appId }, query: { confirm: appId } }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["apps"] }),
   });
 }
@@ -472,14 +463,14 @@ export function useApiKeys(appId: string, enabled = true) {
   return useQuery({
     enabled,
     queryKey: keys.apiKeys(appId),
-    queryFn: () => call(operations.listAppKeys, [appId]),
+    queryFn: () => call("listAppKeys", { params: { app: appId } }),
   });
 }
 
 export function useCreateApiKey(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => call(operations.createAppKey, [appId], { name }),
+    mutationFn: (name: string) => call("createAppKey", { params: { app: appId }, body: { name } }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.apiKeys(appId) }),
   });
 }
@@ -487,7 +478,7 @@ export function useCreateApiKey(appId: string) {
 export function useRevokeApiKey(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (keyId: string) => call(operations.revokeAppKey, [appId, keyId]),
+    mutationFn: (keyId: string) => call("revokeAppKey", { params: { app: appId, key: keyId } }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.apiKeys(appId) }),
   });
 }
@@ -503,7 +494,7 @@ export interface UserQuery {
 export function useUsers(appId: string, params: UserQuery) {
   return useQuery({
     queryKey: keys.users(appId, params),
-    queryFn: () => call(operations.listAppUsers, [appId, params]),
+    queryFn: () => call("listAppUsers", { params: { app: appId }, query: params }),
     placeholderData: (previous) => previous,
   });
 }
@@ -512,7 +503,9 @@ export function useUserAction(appId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ userId, blocked }: { userId: string; blocked: boolean }) =>
-      call(operations.setAppUserBlocked, [appId, userId, blocked]),
+      call(blocked ? "blockAppUser" : "unblockAppUser", {
+        params: { app: appId, user: userId },
+      }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["users", appId] });
       void client.invalidateQueries({ queryKey: ["apps"] });
@@ -523,21 +516,21 @@ export function useUserAction(appId: string) {
 export function useMonthlyUsage(appId: string, month: string) {
   return useQuery({
     queryKey: keys.usage(appId, month),
-    queryFn: () => call(operations.getAppUsage, [appId, { month }]),
+    queryFn: () => call("getAppUsage", { params: { app: appId }, query: { month } }),
   });
 }
 
 export function useTimeseries(appId: string, from: string, to: string) {
   return useQuery({
     queryKey: keys.timeseries(appId, from, to),
-    queryFn: () => call(operations.getAppUsageTimeseries, [appId, { from, to }]),
+    queryFn: () => call("getAppUsageTimeseries", { params: { app: appId }, query: { from, to } }),
   });
 }
 
 export function useBreakdown(appId: string, by: string, from: string, to: string) {
   return useQuery({
     queryKey: keys.breakdown(appId, by, from, to),
-    queryFn: () => call(operations.getAppUsageBreakdown, [appId, { by, from, to }]),
+    queryFn: () => call("getAppUsageBreakdown", { params: { app: appId }, query: { by, from, to } }),
   });
 }
 
@@ -553,7 +546,7 @@ export interface EventQuery {
 export function useEvents(appId: string, params: EventQuery) {
   return useQuery({
     queryKey: keys.events(appId, params),
-    queryFn: () => call(operations.listAppEvents, [appId, { ...params }]),
+    queryFn: () => call("listAppEvents", { params: { app: appId }, query: { ...params } }),
     placeholderData: (previous) => previous,
   });
 }
@@ -566,7 +559,7 @@ export function useEvents(appId: string, params: EventQuery) {
 export function useAuthEventSummary(appId: string, days: number) {
   return useQuery({
     queryKey: keys.authEventSummary(appId, days),
-    queryFn: () => call(operations.getAppAuthEventSummary, [appId, { days }]),
+    queryFn: () => call("getAppAuthEventSummary", { params: { app: appId }, query: { days } }),
     staleTime: 30_000,
   });
 }
@@ -582,7 +575,7 @@ export interface AuthEventQuery {
 export function useAuthEvents(appId: string, params: AuthEventQuery) {
   return useQuery({
     queryKey: keys.authEvents(appId, params),
-    queryFn: () => call(operations.listAppAuthEvents, [appId, { ...params }]),
+    queryFn: () => call("listAppAuthEvents", { params: { app: appId }, query: { ...params } }),
     placeholderData: (previous) => previous,
   });
 }
@@ -590,7 +583,7 @@ export function useAuthEvents(appId: string, params: AuthEventQuery) {
 export function usePrices() {
   return useQuery({
     queryKey: keys.prices,
-    queryFn: () => call(operations.listModelPrices, []),
+    queryFn: () => call("listModelPrices"),
     staleTime: Number.POSITIVE_INFINITY,
   });
 }

@@ -1,9 +1,11 @@
 import type { AuthState } from "@maxceem/cf-auth";
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import { rethrowCfAuthError } from "../../auth/identity";
 import { OrganizationSelectRequestSchema } from "../../contracts/schemas";
-import type { IdentitySession, OrganizationListResponse } from "../../contracts/responses";
-import { GatewayError } from "../../core/errors";
+import type { IdentitySession } from "../../contracts/responses";
+import { schemaBody } from "../../management/validation";
+import { jsonBody } from "./body";
+import { catalogRouter } from "../catalog-router";
 import type { AdminVariables } from "../../middleware/admin";
 
 type OrganizationEnv = { Bindings: Env; Variables: AdminVariables };
@@ -16,32 +18,7 @@ type OrganizationEnv = { Bindings: Env; Variables: AdminVariables };
  * calls and cf-auth errors into the gateway error envelope.
  */
 export const organizationRoutes = new Hono<OrganizationEnv>();
-
-async function requestBody(c: Context<OrganizationEnv>): Promise<unknown> {
-  try {
-    return await c.req.json();
-  } catch {
-    throw new GatewayError(400, "invalid_request", "A JSON object is required");
-  }
-}
-
-function schemaBody<T>(
-  schema: {
-    safeParse(value: unknown):
-      | { success: true; data: T }
-      | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } };
-  },
-  value: unknown,
-): T {
-  const parsed = schema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  const issue = parsed.error.issues[0];
-  throw new GatewayError(
-    400,
-    "invalid_request",
-    issue ? `${issue.path.join(".") || "body"}: ${issue.message}` : "Invalid request body",
-  );
-}
+const routes = catalogRouter(organizationRoutes, "/v1/admin");
 
 /**
  * The console's identity bootstrap. `GET /v1/auth/get-session` only reports
@@ -60,15 +37,15 @@ function sessionPayload(state: AuthState, admin: AdminVariables["admin"]): Ident
   };
 }
 
-organizationRoutes.get("/session", (c) =>
-  c.json({ session: sessionPayload(c.get("authState"), c.get("admin")) } satisfies IdentitySession));
+routes.handle("getAdminSession", (c) =>
+  ({ session: sessionPayload(c.get("authState"), c.get("admin")) }));
 
-organizationRoutes.get("/organizations", async (c) => {
+routes.handle("listOrganizations", async (c) => {
   try {
     const organizations = await c
       .get("identityAuth")
       .service.listOrganizations(c.get("authState"));
-    return c.json({ organizations } satisfies OrganizationListResponse);
+    return { organizations };
   } catch (error) {
     rethrowCfAuthError(error);
   }
@@ -85,12 +62,9 @@ organizationRoutes.get("/organizations", async (c) => {
  * library's own rule that such a credential may not read or move between the
  * others its owner belongs to.
  */
-organizationRoutes.post("/organizations/select", async (c) => {
+routes.handle("selectOrganization", async (c) => {
   const admin = c.get("admin");
-  const { organizationId } = schemaBody(
-    OrganizationSelectRequestSchema,
-    await requestBody(c),
-  );
+  const { organizationId } = schemaBody(OrganizationSelectRequestSchema, await jsonBody(c));
 
   const identityAuth = c.get("identityAuth");
   try {
@@ -99,13 +73,13 @@ organizationRoutes.post("/organizations/select", async (c) => {
       organizationId,
     );
     await identityAuth.currentOrganizationCookie.write(c, organizationId);
-    return c.json({
+    return {
       session: sessionPayload(state, {
         ...admin,
         organizationId: state.organization?.id ?? admin.organizationId,
         role: state.role ?? admin.role,
       }),
-    } satisfies IdentitySession);
+    };
   } catch (error) {
     rethrowCfAuthError(error);
   }

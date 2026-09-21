@@ -698,6 +698,19 @@ export const OrganizationSelectRequestSchema = z.object({
   organizationId: z.string().trim().min(1),
 }).meta({ id: "OrganizationSelectRequest" });
 
+/**
+ * The one field a credential is created with. Both key surfaces take a name and
+ * nothing else — the token itself is minted here, never supplied — so they
+ * share one shape rather than two that could drift apart.
+ */
+export const CredentialNameRequestSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+});
+export const ManagementKeyCreateRequestSchema = CredentialNameRequestSchema
+  .meta({ id: "ManagementKeyCreateRequest" });
+export const ApiKeyCreateRequestSchema = CredentialNameRequestSchema
+  .meta({ id: "ApiKeyCreateRequest" });
+
 /** Inferred request bodies, so a consumer never re-describes one by hand. */
 export type AppWrite = z.output<typeof AppWriteSchema>;
 /** The same body as a client composes it, before the schema's defaults apply. */
@@ -736,3 +749,5 @@ export type ProviderGatewayTestRequest = z.infer<typeof ProviderGatewayTestReque
 export type ProviderGatewayUpdateRequest = z.infer<typeof ProviderGatewayUpdateRequestSchema>;
 export type ProviderGatewayRotateRequest = z.infer<typeof ProviderGatewayRotateRequestSchema>;
 export type UsageRepriceRequest = z.infer<typeof UsageRepriceRequestSchema>;
+export type ManagementKeyCreateRequest = z.infer<typeof ManagementKeyCreateRequestSchema>;
+export type ApiKeyCreateRequest = z.infer<typeof ApiKeyCreateRequestSchema>;

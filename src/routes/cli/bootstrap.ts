@@ -8,6 +8,7 @@ import {
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
 import { CliBootstrapRequestSchema } from "../../contracts/cli";
+import type { CliBootstrapResponse } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
 import { accountTrialDeadline } from "../../policy/accounts";
 import {
@@ -87,7 +88,7 @@ async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow |
     .first<BootstrapReceiptRow>();
 }
 
-export async function bootstrap(c: CliContext): Promise<Response> {
+export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
   const input = schemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
   const meta = deployment(c);
   const policy = deploymentPolicy(c.env);
@@ -268,10 +269,10 @@ export async function bootstrap(c: CliContext): Promise<Response> {
       ...(quota.limit === undefined ? {} : { limit: quota.limit }),
     };
   }
-  return c.json({
+  return {
     deployment: meta,
     account: await accountLifecycle(c.env, account.id),
     credential: await openCredential(c.env, id, proofHash, row.protected_credential),
     trial,
-  });
+  };
 }

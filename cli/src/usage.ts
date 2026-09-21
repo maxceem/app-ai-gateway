@@ -56,8 +56,8 @@ export async function usageCommand(
   if (command === "usage show") {
     const m = month(flags.month ?? new Date().toISOString().slice(0, 7));
     return flags.app
-      ? (await ctx.call("getAppUsage", [flags.app, { month: m }])).data
-      : (await ctx.call("getCliUsage", [{ month: m }])).data;
+      ? (await ctx.call("getAppUsage", { params: { app: flags.app }, query: { month: m } })).data
+      : (await ctx.call("getCliUsage", { query: { month: m } })).data;
   }
   const app = await required(flags, "app");
   const by = flags.by ?? "model";
@@ -71,7 +71,9 @@ export async function usageCommand(
   if (from > to) fail("invalid_input", "--from must not be later than --to.");
   const limit = positive(flags.limit ?? 50, 200);
   return {
-    ...(await ctx.call("getAppUsageBreakdown", [app, { from, to, by, limit }])).data,
+    ...(await ctx.call("getAppUsageBreakdown", {
+      params: { app }, query: { from, to, by, limit },
+    })).data,
     coverage: {
       from,
       to,

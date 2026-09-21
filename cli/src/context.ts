@@ -19,14 +19,15 @@ import {
   ProviderResponseSchema,
   type CreatedApiKey,
 } from "../../src/contracts/responses.ts";
-import { responseSchemaFor } from "../../src/contracts/operation-schemas.ts";
 import {
-  operations,
-  type HttpMethod,
+  CATALOG,
+  operationPath,
+  type OperationName,
   type OperationParams,
+  type OperationQuery,
   type OperationRequest,
   type OperationResponse,
-} from "../../src/contracts/operations.ts";
+} from "../../src/contracts/catalog.ts";
 import { CliError, CLOUD, fail, origin, randomToken } from "./common.ts";
 import { secret } from "./input.ts";
 import type { Flags } from "./parser.ts";
@@ -42,8 +43,7 @@ import type {
 } from "./state.ts";
 import type { Transport } from "./transport.ts";
 
-export type OperationName = keyof typeof operations;
-type Descriptor<K extends OperationName> = (typeof operations)[K];
+export type { OperationName };
 
 /** The `/v1/cli` half of the table, which a deployment connection cannot reach. */
 const CLI_OPERATIONS = new Set<OperationName>([
@@ -56,7 +56,10 @@ const CLI_OPERATIONS = new Set<OperationName>([
 ]);
 
 export interface CallOptions<K extends OperationName> {
-  body?: OperationRequest<Descriptor<K>>;
+  /** The `{name}` segments of the operation's path, if it has any. */
+  params?: OperationParams<K>;
+  query?: OperationQuery<K>;
+  body?: OperationRequest<K>;
   /** Overrides the connection credential; used by the poll and login proofs. */
   key?: string | undefined;
   url?: string;
@@ -132,6 +135,19 @@ export interface Onboarding {
   trial: { endsAt: string; limit?: number } | null;
   deployment: CliDeployment;
 }
+
+/**
+ * The catalog's own path builder, reached generically.
+ *
+ * One cast, because `operationPath` takes the parameters an operation's own
+ * template declares, and a generic name stands for every template at once. The
+ * types a caller sees are the catalog's; this only erases them internally.
+ */
+const pathFor = operationPath as (
+  name: OperationName,
+  params?: Record<string, string>,
+  query?: object,
+) => string;
 
 /** Refused now, but the same request may still be accepted later. */
 const RETRYABLE_STATUS = new Set([408, 425, 429]);
@@ -221,21 +237,13 @@ export class Context {
    */
   async publicCall<K extends OperationName>(
     name: K,
-    params: OperationParams<Descriptor<K>>,
-    { body, key, url, headers }: CallOptions<K> = {},
-  ): Promise<CallResult<OperationResponse<Descriptor<K>>>> {
-    // One cast, because indexing the table with a generic name yields a union of
-    // path builders that no single signature can describe. The types the caller
-    // sees come from the descriptor, which is what this erases.
-    const descriptor = operations[name] as unknown as {
-      method: HttpMethod;
-      path: (...params: readonly unknown[]) => string;
-    };
+    { params, query, body, key, url, headers }: CallOptions<K> = {},
+  ): Promise<CallResult<OperationResponse<K>>> {
     const wire = await this.transport.request(
       url ?? this.url,
-      descriptor.path(...(params as readonly unknown[])),
+      pathFor(name, params as Record<string, string> | undefined, query as object | undefined),
       {
-        method: descriptor.method,
+        method: CATALOG[name].method,
         ...(body === undefined ? {} : { body }),
         ...(key === undefined ? {} : { key }),
         ...(headers === undefined ? {} : { headers }),
@@ -247,8 +255,8 @@ export class Context {
   private parse<K extends OperationName>(
     name: K,
     data: unknown,
-  ): OperationResponse<Descriptor<K>> {
-    const parsed = responseSchemaFor[name].safeParse(data);
+  ): OperationResponse<K> {
+    const parsed = (CATALOG[name].response as z.ZodType).safeParse(data);
     if (!parsed.success)
       fail(
         "invalid_response",
@@ -256,10 +264,10 @@ export class Context {
         "Check that the CLI and the deployment are the same release.",
         3,
       );
-    // The map is declared as `ResponseSchemaMap`, so the schema really is the
-    // one this operation's response type calls for; zod's own output type just
-    // cannot be resolved through the generic index.
-    return parsed.data as OperationResponse<Descriptor<K>>;
+    // The schema really is the one this operation's response type is inferred
+    // from; zod's own output type just cannot be resolved through the generic
+    // index into the catalog.
+    return parsed.data as OperationResponse<K>;
   }
 
   /** A completed creation's recorded copy, re-checked as it is read back. */
@@ -281,13 +289,9 @@ export class Context {
   /** The same call, with the connection's management credential attached. */
   async call<K extends OperationName>(
     name: K,
-    params: OperationParams<Descriptor<K>>,
     options: CallOptions<K> = {},
-  ): Promise<CallResult<OperationResponse<Descriptor<K>>>> {
-    return this.publicCall(name, params, {
-      ...options,
-      key: options.key ?? this.credential(name),
-    });
+  ): Promise<CallResult<OperationResponse<K>>> {
+    return this.publicCall(name, { ...options, key: options.key ?? this.credential(name) });
   }
 
   /**
@@ -399,9 +403,8 @@ export class Context {
    */
   async create<K extends CreateOperationName>(
     name: K,
-    params: OperationParams<Descriptor<K>>,
-    body: OperationRequest<Descriptor<K>>,
-  ): Promise<CreateOutcome<OperationResponse<Descriptor<K>>, RecordedResult<K>>> {
+    { params, body }: { params?: OperationParams<K>; body: OperationRequest<K> },
+  ): Promise<CreateOutcome<OperationResponse<K>, RecordedResult<K>>> {
     if (!this.active?.credential)
       fail(
         "login_required",
@@ -409,10 +412,7 @@ export class Context {
         "Run agw account login.",
         4,
       );
-    const descriptor = operations[name] as unknown as {
-      path: (...params: readonly unknown[]) => string;
-    };
-    const path = descriptor.path(...(params as readonly unknown[]));
+    const path = pathFor(name, params);
     const mutation = await this.prepareCreate(path, body);
     if (mutation.accountId === null) {
       mutation.accountId = this.active.account?.id ?? null;
@@ -447,13 +447,13 @@ export class Context {
         "Inspect your apps and keys and recover the existing resource explicitly; this command will not create another one.",
         4,
       );
-    let data: OperationResponse<Descriptor<K>>;
+    let data: OperationResponse<K>;
     if (mutation.response !== undefined) {
       const recovered = this.parse(name, mutation.response);
       const keyRecord = recoveredKey(name, recovered);
       if (keyRecord) {
         const appId = recoveredAppId(name, recovered, params);
-        const { data: existing } = await this.call("listAppKeys", [appId]);
+        const { data: existing } = await this.call("listAppKeys", { params: { app: appId } });
         if (
           !existing.keys.some(
             (key) => key.id === keyRecord.id && key.status === "active",
@@ -473,7 +473,8 @@ export class Context {
       }
       data = recovered;
     } else {
-      const response = await this.call(name, params, {
+      const response = await this.call(name, {
+        ...(params === undefined ? {} : { params }),
         body,
         headers: {
           "Idempotency-Key": mutation.id,
@@ -569,11 +570,10 @@ export class Context {
         4,
       );
     const { idempotencyKey, pollToken } = reservation;
-    const { data } = await this.publicCall(
-      "bootstrapCliAccount",
-      [],
-      { body: { idempotencyKey, pollToken }, url: CLOUD },
-    ).catch(async (error: unknown) => {
+    const { data } = await this.publicCall("bootstrapCliAccount", {
+      body: { idempotencyKey, pollToken },
+      url: CLOUD,
+    }).catch(async (error: unknown) => {
       // The same rule as a refused creation: a definitive refusal leaves no
       // account behind this key, so keeping it would only turn the next first
       // command into a stale pending bootstrap.
@@ -624,7 +624,7 @@ export class Context {
     const token = await secret(this.flags, "Management API key");
     if (!token)
       fail("input_required", "A management API key is required.", "Supply it with --key-stdin.");
-    const { data } = await this.publicCall("getCliAccount", [], { key: token, url });
+    const { data } = await this.publicCall("getCliAccount", { key: token, url });
     await this.select(url, { ...data, credential: { token } });
     return { connected: true, ...data };
   }
@@ -663,10 +663,10 @@ export class Context {
       await this.save();
     }
     const operation = this.state.operations[localId]!;
-    const { data: capabilities } = await this.publicCall("getCliCapabilities", [], {
+    const { data: capabilities } = await this.publicCall("getCliCapabilities", {
       url: target,
     });
-    const { data } = await this.publicCall("createCliOperation", [], {
+    const { data } = await this.publicCall("createCliOperation", {
       body: { kind, payload, pollToken: operation.pollToken },
       url: target,
       ...(authenticated ? { key: this.active?.credential } : {}),
@@ -712,7 +712,8 @@ export class Context {
         "Reconnect explicitly to the operation’s originating deployment.",
         4,
       );
-    const { data } = await this.publicCall("pollCliOperation", [id], {
+    const { data } = await this.publicCall("pollCliOperation", {
+      params: { id },
       key: operation.pollToken,
       url: operation.url,
     });
@@ -775,10 +776,10 @@ function recoveredKey(name: CreateOperationName, data: unknown): CreatedApiKey |
 function recoveredAppId(
   name: CreateOperationName,
   data: unknown,
-  params: readonly unknown[],
+  params: { app?: string } | undefined,
 ): string {
   if (name === "createApp") return (data as { app: { id: string } }).app.id;
-  return String(params[0]);
+  return String(params?.app);
 }
 
 export async function openBrowser(url: string): Promise<void> {

@@ -1,6 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { Hono, type Context, type Next } from "hono";
 import prices from "../../core/prices.json";
+import { operationPath } from "../../contracts/catalog";
+import { catalogRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { app } from "../../db/schema";
@@ -31,9 +33,9 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
 
   if (!row) {
     const validationOnly = c.req.method === "POST"
-      && c.req.path === `/v1/admin/apps/${appId}/validate`;
+      && c.req.path === operationPath("validateApp", { app: appId });
     const upsertOnly = (c.req.method === "POST" || c.req.method === "PUT")
-      && c.req.path === `/v1/admin/apps/${appId}`;
+      && c.req.path === operationPath("updateApp", { app: appId });
     if (validationOnly || upsertOnly) {
       const occupied = await database(c.env.DB).query.app.findFirst({
         columns: { id: true },
@@ -61,7 +63,7 @@ adminRoutes.use("/billing/*", async (c, next) => {
 });
 
 /** Supplies the priced model catalog used by the proxy-policy editor. */
-adminRoutes.get("/prices", (c) => c.json({ prices }));
+catalogRouter(adminRoutes, "/v1/admin").handle("listModelPrices", () => ({ prices }));
 
 adminRoutes.route("/", appRoutes);
 adminRoutes.route("/", keyRoutes);

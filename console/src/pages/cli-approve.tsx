@@ -2,7 +2,6 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Loader2 } from "lucide-react";
-import { operations } from "@contracts/operations";
 import type {
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
@@ -144,7 +143,7 @@ export function CliApprovePage() {
 
   const details = useQuery({
     queryKey: ["cli-approve", id],
-    queryFn: () => call(operations.cliBrowserDetails, [id], { submissionToken: token }),
+    queryFn: () => call("cliBrowserDetails", { params: { id }, body: { submissionToken: token } }),
     enabled: Boolean(token),
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
@@ -161,7 +160,7 @@ export function CliApprovePage() {
   const [outcome, setOutcome] = useState<CliBrowserSubmitResponse | null>(null);
   const submit = useMutation({
     mutationFn: (body: { approve: true; secret?: string }) =>
-      call(operations.cliBrowserSubmit, [id], { submissionToken: token, ...body }),
+      call("cliBrowserSubmit", { params: { id }, body: { submissionToken: token, ...body } }),
     onSuccess: (result) => {
       clearStoredProof(storageKey);
       setOutcome(result);
@@ -380,7 +379,7 @@ function ClaimRegister({
   const signIn = useSignIn();
   const register = useMutation({
     mutationFn: (input: { name: string; email: string; password: string }) =>
-      call(operations.cliBrowserRegister, [id], { submissionToken: token, ...input }),
+      call("cliBrowserRegister", { params: { id }, body: { submissionToken: token, ...input } }),
   });
   /* Entered only from the refusal below, which is why nothing sets it back. */
   const [recovering, setRecovering] = useState(false);
@@ -412,7 +411,7 @@ function ClaimRegister({
   };
 
   const startGoogle = async () => {
-    const result = await call(operations.cliBrowserGoogle, [id], { submissionToken: token });
+    const result = await call("cliBrowserGoogle", { params: { id }, body: { submissionToken: token } });
     if (!result.url) throw new Error("Google sign-in is unavailable right now.");
     window.location.assign(result.url);
   };

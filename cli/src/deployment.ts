@@ -554,7 +554,7 @@ async function verifyDeployment(
 ): Promise<CliCapabilitiesResponse> {
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      const { data } = await ctx.publicCall("getCliCapabilities", [], { url });
+      const { data } = await ctx.publicCall("getCliCapabilities", { url });
       if (data.deployment.id !== id)
         fail(
           "deployment_identity_mismatch",
@@ -825,7 +825,7 @@ async function matchExisting(
       `Bind deployment ${deploymentId} to Cloudflare account ${accountId}, Worker ${name} and D1 ${db.id}?`,
       flags,
     );
-  const { data: capabilities } = await ctx.publicCall("getCliCapabilities", []);
+  const { data: capabilities } = await ctx.publicCall("getCliCapabilities");
   const inventory = await currentInventory(cf, accountId, name, settings);
   journal = {
     id: deploymentId,
@@ -1077,7 +1077,7 @@ export async function deploymentCommand(
       pollToken: journal.bootstrap!.pollToken,
     };
     const { data } = await whileWarming(() =>
-      ctx.publicCall("bootstrapCliAccount", [], { body: proofs, url }),
+      ctx.publicCall("bootstrapCliAccount", { body: proofs, url }),
     );
     await ctx.select(url, data);
     journal.phase = "ready";

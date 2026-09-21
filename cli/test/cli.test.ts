@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
-import { responseSchemas } from "../../src/contracts/operation-schemas.ts";
+import { CATALOG } from "../../src/contracts/catalog.ts";
 import { parseAppConfig } from "../../src/shared/app-config.ts";
 import { parse, commands, type CommandName } from "../src/parser.ts";
 import {
@@ -256,7 +256,7 @@ test("stale authentication operation refuses activating account after connection
 });
 
 test("response parsing emits only declared fields, so no unknown credential reaches stdout", () => {
-  const key = responseSchemas.listAppKeys.parse({
+  const key = CATALOG.listAppKeys.response.parse({
     app_id: "app",
     keys: [
       {
@@ -275,7 +275,7 @@ test("response parsing emits only declared fields, so no unknown credential reac
   assert.equal(JSON.stringify(key).includes("SENTINEL"), false);
   assert.deepEqual(Object.keys(key), ["app_id", "keys"]);
 
-  const provider = responseSchemas.listProviders.parse({
+  const provider = CATALOG.listProviders.response.parse({
     providers: [
       {
         id: "p",
@@ -343,7 +343,7 @@ test("a completed key creation leaves no plaintext in protected state, and repla
           },
   };
   const ctx = new Context(store, state, transport, {});
-  const created = await ctx.create("createAppKey", ["app-1"], { name: "CI" });
+  const created = await ctx.create("createAppKey", { params: { app: "app-1" }, body: { name: "CI" } });
   assert.equal("key" in created.data && created.data.key, minted.key);
   const stored: StoredKeyMetadata = {
     id: minted.id,
@@ -376,7 +376,7 @@ test("a completed key creation leaves no plaintext in protected state, and repla
 
   // A replay before acknowledgment still answers, from the recorded metadata.
   const resumed = new Context(store, state, transport, {});
-  const replayed = await resumed.create("createAppKey", ["app-1"], { name: "CI" });
+  const replayed = await resumed.create("createAppKey", { params: { app: "app-1" }, body: { name: "CI" } });
   assert.deepEqual(replayed.keyMetadata, stored);
   assert.equal("key" in replayed.data, false);
   assert.equal(JSON.stringify(replayed.data).includes("SENTINEL"), false);
@@ -468,15 +468,15 @@ test("resource creates reuse pre-persisted idempotency authorization after a los
     },
     {},
   );
-  await assert.rejects(() => ctx.create("createApp", [], appBody()));
-  const result = await ctx.create("createApp", [], appBody());
+  await assert.rejects(() => ctx.create("createApp", { body: appBody() }));
+  const result = await ctx.create("createApp", { body: appBody() });
   assert.deepEqual(headers[0], headers[1]);
   assert.equal(Object.keys(state.mutations ?? {}).length, 1);
   await result.complete();
   const mutation = Object.values(state.mutations ?? {})[0]!;
   assert.ok(mutation.completedAt);
   assert.equal(mutation.response, undefined);
-  await ctx.create("createApp", [], appBody());
+  await ctx.create("createApp", { body: appBody() });
   assert.equal(attempts, 2);
 });
 
@@ -507,13 +507,13 @@ test("a rate limited creation keeps its receipt, a refused one leaves none behin
 
   // Refused for now, so the receipt stays and the retry arrives under the same
   // authorization rather than as a second creation.
-  await assert.rejects(() => ctx.create("createApp", [], appBody()), hasCode("rate_limited"));
+  await assert.rejects(() => ctx.create("createApp", { body: appBody() }), hasCode("rate_limited"));
   assert.equal(Object.keys(state.mutations ?? {}).length, 1);
 
   // Refused for good: nothing was created, the deployment committed no receipt
   // of its own, and keeping this one would only refuse the same command as an
   // unfinished creation once it is ninety days old.
-  await assert.rejects(() => ctx.create("createApp", [], appBody()), hasCode("invalid_request"));
+  await assert.rejects(() => ctx.create("createApp", { body: appBody() }), hasCode("invalid_request"));
   assert.equal(authorizations[0], authorizations[1]);
   assert.deepEqual(state.mutations, {});
 });
@@ -569,7 +569,7 @@ test("advanced public app config and provider gateway IDs survive response parsi
       },
     },
   };
-  const parsed = responseSchemas.getApp.parse({
+  const parsed = CATALOG.getApp.response.parse({
     app: {
       id: "test",
       revision: 1,
@@ -585,7 +585,7 @@ test("advanced public app config and provider gateway IDs survive response parsi
   // named survives them untouched.
   assert.deepEqual(parsed.app.config, parseAppConfig(config));
 
-  const gateway = responseSchemas.listProviderGateways.parse({
+  const gateway = CATALOG.listProviderGateways.response.parse({
     gateways: [
       {
         id: "g",
@@ -661,7 +661,7 @@ test("expired local creation proofs never retry a forgotten remote mutation", as
   const pending = await ctx.prepareCreate("/v1/admin/apps", appBody());
   pending.createdAt = "2020-01-01T00:00:00Z";
   await assert.rejects(
-    () => ctx.create("createApp", [], appBody()),
+    () => ctx.create("createApp", { body: appBody() }),
     hasCode("resource_retry_expired"),
   );
 });
@@ -794,7 +794,7 @@ test("retained account usage preserves deleted app attribution and actual backen
         "Earlier unowned history cannot be assigned or counted for this account.",
     },
   };
-  assert.deepEqual(responseSchemas.getCliUsage.parse(response), response);
+  assert.deepEqual(CATALOG.getCliUsage.response.parse(response), response);
 });
 
 test("successful stdout acknowledges creation so delete and re-add makes a new request", async () => {
@@ -891,15 +891,15 @@ test("pre-output crash replays completed creation once, then acknowledgment perm
     },
   };
   const first = new Context(makeStore(), state, transport, {});
-  await (await first.create("createProvider", [], providerBody())).complete();
+  await (await first.create("createProvider", { body: providerBody() })).complete();
   const resumed = new Context(makeStore(), state, transport, {});
   assert.equal(
-    (await resumed.create("createProvider", [], providerBody())).data.provider.id,
+    (await resumed.create("createProvider", { body: providerBody() })).data.provider.id,
     "provider-1",
   );
   assert.equal(posts, 1);
   await resumed.acknowledgeOutput();
-  await resumed.create("createProvider", [], providerBody());
+  await resumed.create("createProvider", { body: providerBody() });
   assert.equal(posts, 2);
 });
 
@@ -946,7 +946,7 @@ test("failed stdout acknowledgment retains the completed receipt without failing
     { request: async () => ({ data: { provider: providerRow("provider") } }) },
     {},
   );
-  await (await ctx.create("createProvider", [], providerBody())).complete();
+  await (await ctx.create("createProvider", { body: providerBody() })).complete();
   failSave = true;
   await ctx.acknowledgeOutput();
   assert.equal(Object.keys(state.mutations ?? {}).length, 1);

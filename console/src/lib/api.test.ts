@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, isForbidden, isPaymentRequired, isUnauthorized, query } from "./api";
+import { ApiError, call, isForbidden, isPaymentRequired, isUnauthorized } from "./api";
+import { signInWithPassword } from "./auth";
 
 function mockFetch(response: { status?: number; body?: string }) {
   const fetchMock = vi.fn().mockResolvedValue(
@@ -16,7 +17,7 @@ afterEach(() => {
 describe("request headers", () => {
   it("sends the console CSRF header and cookies on every admin call", async () => {
     const fetchMock = mockFetch({ body: JSON.stringify({ ok: true }) });
-    await api.get("/v1/admin/apps");
+    await call("listApps");
 
     const [, init] = fetchMock.mock.calls[0]!;
     expect(new Headers(init.headers).get("x-console-request")).toBe("1");
@@ -25,14 +26,36 @@ describe("request headers", () => {
 
   it("sets a JSON content type only when there is a body", async () => {
     const fetchMock = mockFetch({ body: "{}" });
-    await api.post("/v1/admin/keys", { name: "CI" });
+    await call("createManagementKey", { body: { name: "CI" } });
     expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("content-type"))
       .toBe("application/json");
 
     vi.unstubAllGlobals();
     const bodyless = mockFetch({ body: "{}" });
-    await api.post("/v1/admin/keys/abc/revoke");
+    await call("revokeManagementKey", { params: { id: "abc" } });
     expect(new Headers(bodyless.mock.calls[0]![1].headers).get("content-type")).toBeNull();
+  });
+});
+
+describe("paths", () => {
+  it("builds each operation's URL from the catalog, encoding what it fills in", async () => {
+    const fetchMock = mockFetch({ body: "{}" });
+    await call("revokeAppKey", { params: { app: "my app", key: "k/1" } });
+    expect(fetchMock.mock.calls[0]![0]).toBe("/v1/admin/apps/my%20app/keys/k%2F1/revoke");
+
+    vi.unstubAllGlobals();
+    const listing = mockFetch({ body: "{}" });
+    await call("listAppUsers", {
+      params: { app: "a" },
+      query: { month: "2026-08", status: undefined, query: "", limit: 50 },
+    });
+    expect(listing.mock.calls[0]![0]).toBe("/v1/admin/apps/a/users?month=2026-08&limit=50");
+  });
+
+  it("refuses to send a request whose path parameter is missing", async () => {
+    mockFetch({ body: "{}" });
+    expect(() => call("getApp", { params: {} as { app: string } }))
+      .toThrow(/needs a "app" path parameter/);
   });
 });
 
@@ -43,7 +66,7 @@ describe("error normalization", () => {
       body: JSON.stringify({ error: { code: "forbidden", message: "Members cannot mutate" } }),
     });
 
-    const error = await api.get("/v1/admin/apps").catch((thrown: unknown) => thrown);
+    const error = await call("listApps").catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 403, code: "forbidden", message: "Members cannot mutate" });
   });
@@ -54,14 +77,15 @@ describe("error normalization", () => {
       body: JSON.stringify({ code: "INVALID_EMAIL_OR_PASSWORD", message: "Invalid email or password" }),
     });
 
-    const error = await api.post("/v1/auth/sign-in/email", {}).catch((thrown: unknown) => thrown);
+    const error = await signInWithPassword({ email: "", password: "" })
+      .catch((thrown: unknown) => thrown);
     expect(error).toMatchObject({ status: 401, code: "INVALID_EMAIL_OR_PASSWORD" });
   });
 
   it("does not turn a non-JSON error page into a SyntaxError", async () => {
     mockFetch({ status: 502, body: "<html>Bad gateway</html>" });
 
-    const error = await api.get("/v1/admin/apps").catch((thrown: unknown) => thrown);
+    const error = await call("listApps").catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 502, code: "unknown" });
   });
@@ -72,13 +96,5 @@ describe("error normalization", () => {
     expect(isPaymentRequired(new ApiError(402, "payment_required", ""))).toBe(true);
     expect(isUnauthorized(new ApiError(403, "forbidden", ""))).toBe(false);
     expect(isPaymentRequired(new Error("boom"))).toBe(false);
-  });
-});
-
-describe("query", () => {
-  it("omits empty values and encodes the rest", () => {
-    expect(query({ month: "2026-08", status: undefined, q: "", limit: 50 }))
-      .toBe("?month=2026-08&limit=50");
-    expect(query({})).toBe("");
   });
 });

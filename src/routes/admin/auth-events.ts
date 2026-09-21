@@ -4,9 +4,11 @@ import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { appAuthEvent, appUsageEvent, appUser } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
+import { catalogRouter } from "../catalog-router";
 import { parseLimit, parseRange } from "./shared";
 
 export const authEventRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+const routes = catalogRouter(authEventRoutes, "/v1/admin");
 
 /** `created_at` is `YYYY-MM-DD HH:MM:SS`, so the day prefix compares lexically. */
 const authEventDay = sql<string>`substr(${appAuthEvent.createdAt}, 1, 10)`;
@@ -42,7 +44,7 @@ function percentile(sorted: number[], fraction: number): number | null {
  * asking "what is broken for my users?" should not have to know which of two
  * tables a given failure landed in.
  */
-authEventRoutes.get("/apps/:app/auth-events/summary", async (c) => {
+routes.handle("getAppAuthEventSummary", async (c) => {
   const appId = c.req.param("app");
   const days = parseDays(c.req.query("days"));
   const range = parseRange(undefined, undefined, days);
@@ -114,7 +116,7 @@ authEventRoutes.get("/apps/:app/auth-events/summary", async (c) => {
 
   const total = exchanges?.total ?? 0;
   const ok = exchanges?.ok ?? 0;
-  return c.json({
+  return {
     app_id: appId,
     days,
     ...range,
@@ -136,11 +138,11 @@ authEventRoutes.get("/apps/:app/auth-events/summary", async (c) => {
       p95_ms: percentile(delays, 0.95),
     },
     pending_users: pending?.count ?? 0,
-  });
+  };
 });
 
 /** Raw rows for drill-down, newest first, paged the way usage events are. */
-authEventRoutes.get("/apps/:app/auth-events", async (c) => {
+routes.handle("listAppAuthEvents", async (c) => {
   const appId = c.req.param("app");
   const limit = parseLimit(c.req.query("limit"), 50, 200);
   const filters = [eq(appAuthEvent.appId, appId)];
@@ -173,7 +175,7 @@ authEventRoutes.get("/apps/:app/auth-events", async (c) => {
     .orderBy(desc(appAuthEvent.id))
     .limit(limit);
 
-  return c.json({
+  return {
     app_id: appId,
     limit,
     next_before_id: rows.length === limit ? rows[rows.length - 1]!.id : null,
@@ -189,5 +191,5 @@ authEventRoutes.get("/apps/:app/auth-events", async (c) => {
       claim_delay_ms: row.claimDelayMs,
       created_at: row.createdAt,
     })),
-  });
+  };
 });

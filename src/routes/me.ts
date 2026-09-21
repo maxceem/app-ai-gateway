@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { hasUserLevelLimits } from "../core/config";
+import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
 
@@ -55,5 +56,5 @@ meRoutes.get("/", async (c) => {
       monthly_budget_usd: perUser.spending.monthly_usd,
       blocked: status.blocked,
     },
-  });
+  } satisfies CurrentUserResponse);
 });

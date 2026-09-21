@@ -1,4 +1,4 @@
-import type { BillingPeriod, BillingRuntime } from "../../billing/contract";
+import type { BillingRuntime } from "../../billing/contract";
 import { Hono, type Context } from "hono";
 import {
   BILLING_SERVICE_ID,
@@ -9,6 +9,15 @@ import {
   invalidateBillingRequestAccess,
 } from "../../billing/gateway";
 import { getBillingQuotaResolution } from "../../billing/quota";
+import {
+  BillingCheckoutRequestSchema,
+  BillingPlanSelectionSchema,
+  BillingTrialRequestSchema,
+  type BillingStatusResponse,
+} from "../../contracts/billing";
+import { schemaBody } from "../../management/validation";
+import { jsonBody } from "./body";
+import { catalogRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
 
@@ -18,31 +27,11 @@ type BillingRouteEnv = {
 };
 
 export const billingRoutes = new Hono<BillingRouteEnv>();
+const routes = catalogRouter(billingRoutes, "/v1/admin/billing");
 
 function binding(env: Env): BillingRuntime {
   const value = billingBinding(env);
   if (!value) throw new GatewayError(404, "not_found", "Billing is not configured");
-  return value;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new GatewayError(400, "invalid_request", "A JSON object is required");
-  }
-  return value as Record<string, unknown>;
-}
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new GatewayError(400, "invalid_request", `${name} is required`);
-  }
-  return value.trim();
-}
-
-function billingPeriod(value: unknown): BillingPeriod {
-  if (value !== "month" && value !== "year") {
-    throw new GatewayError(400, "invalid_request", "billingPeriod must be month or year");
-  }
   return value;
 }
 
@@ -54,23 +43,9 @@ async function rpc<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-billingRoutes.get("/plans", async (c) => c.json(await rpc(() => binding(c.env).listPlans({
+routes.handle("listBillingPlans", (c) => rpc(() => binding(c.env).listPlans({
   serviceId: BILLING_SERVICE_ID,
-}))));
-
-/** What the organization has spent of the allowance it pays for. */
-export interface OrganizationQuotaStatus {
-  /** Stable identifier for this allowance period and schedule. */
-  periodId: string;
-  periodStart: string;
-  periodEnd: string;
-  /** Requests dispatched to a provider this period, organization-wide. */
-  used: number;
-  /** The plan's `maxRequestsPerMonth`. Absent means the plan sets no ceiling. */
-  limit?: number;
-  /** The instant a fresh allowance begins, ISO-8601 in UTC. */
-  resetAt: string;
-}
+})));
 
 /**
  * Reads the live count out of the organization's quota object.
@@ -88,7 +63,7 @@ export interface OrganizationQuotaStatus {
  * is already refusing every request for that reason, and the operator reading
  * this page is exactly who needs to see why.
  */
-async function status(c: Context<BillingRouteEnv>) {
+async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusResponse> {
   const organizationId = c.get("admin").organizationId;
   let resolved = await getBillingQuotaResolution(
     c.env,
@@ -106,84 +81,81 @@ async function status(c: Context<BillingRouteEnv>) {
    * plan with no ceilings and for a self-hosted deployment alike.
    */
   const limits = billingPlanLimits(resolved.access);
-  if (!resolved.period) return c.json({ access: resolved.access, limits, quota: null });
+  if (!resolved.period) return { access: resolved.access, limits, quota: null };
   const quota = c.env.ORG_QUOTA.getByName(organizationId);
   let usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   if ("superseded" in usage && usage.superseded) {
     invalidateBillingRequestAccess(organizationId, c.get("billingRequestCache"));
     resolved = await getBillingQuotaResolution(c.env, organizationId, c.get("billingRequestCache"));
-    if (!resolved.period) return c.json({ access: resolved.access, limits, quota: null });
+    if (!resolved.period) return { access: resolved.access, limits, quota: null };
     usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   }
   if ("superseded" in usage && usage.superseded) {
     throw new GatewayError(503, "billing_unavailable", "Billing changed while status was being read");
   }
-  return c.json({
+  return {
     access: resolved.access,
     limits,
     quota: { ...usage, ...(resolved.limit === undefined ? {} : { limit: resolved.limit }) },
-  });
+  };
 }
 
-billingRoutes.get("/status", status);
-// The billing contract has no standalone portal-URL call. This alias gives the
-// console one stable portal/status polling endpoint without inventing a URL.
-billingRoutes.get("/portal/status", status);
+routes.handle("getBillingStatus", status);
 
-billingRoutes.post("/checkout", async (c) => {
-  const body = record(await c.req.json());
+routes.handle("startCheckout", async (c) => {
+  const input = schemaBody(BillingCheckoutRequestSchema, await jsonBody(c));
   const result = await rpc(() => binding(c.env).createCheckout({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
-    planKey: requiredString(body.planKey, "planKey"),
-    billingPeriod: billingPeriod(body.billingPeriod),
-    ...(typeof body.successUrl === "string" ? { successUrl: body.successUrl } : {}),
-    ...(typeof body.cancelUrl === "string" ? { cancelUrl: body.cancelUrl } : {}),
+    planKey: input.planKey,
+    billingPeriod: input.billingPeriod,
+    ...(input.successUrl === undefined ? {} : { successUrl: input.successUrl }),
+    ...(input.cancelUrl === undefined ? {} : { cancelUrl: input.cancelUrl }),
   }));
   invalidateBillingAccess(c.get("admin").organizationId);
-  return c.json(result);
+  return result;
 });
 
-billingRoutes.post("/change", async (c) => {
-  const body = record(await c.req.json());
+routes.handle("changePlan", async (c) => {
+  const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
   const result = await rpc(() => binding(c.env).changePlan({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
-    planKey: requiredString(body.planKey, "planKey"),
-    billingPeriod: billingPeriod(body.billingPeriod),
+    planKey: input.planKey,
+    billingPeriod: input.billingPeriod,
   }));
   invalidateBillingAccess(c.get("admin").organizationId);
-  return c.json(result);
+  return result;
 });
 
-billingRoutes.post("/cancel", async (c) => {
+routes.handle("cancelSubscription", async (c) => {
   const result = await rpc(() => binding(c.env).cancelSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
   }));
   invalidateBillingAccess(c.get("admin").organizationId);
-  return c.json(result);
+  return result;
 });
 
-billingRoutes.post("/resume", async (c) => {
-  const body = record(await c.req.json());
+routes.handle("resumeSubscription", async (c) => {
+  const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
   const result = await rpc(() => binding(c.env).resumeSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
-    planKey: requiredString(body.planKey, "planKey"),
-    billingPeriod: billingPeriod(body.billingPeriod),
+    planKey: input.planKey,
+    billingPeriod: input.billingPeriod,
   }));
   invalidateBillingAccess(c.get("admin").organizationId);
-  return c.json(result);
+  return result;
 });
 
-billingRoutes.post("/trial", async (c) => {
-  const body = record(await c.req.json());
+routes.handle("startTrial", async (c) => {
+  const input = schemaBody(BillingTrialRequestSchema, await jsonBody(c));
   const result = await rpc(() => binding(c.env).startTrial({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("admin").organizationId,
-    planKey: requiredString(body.planKey, "planKey"),
+    planKey: input.planKey,
   }));
   invalidateBillingAccess(c.get("admin").organizationId);
-  return c.json(result);
+  return result;
 });

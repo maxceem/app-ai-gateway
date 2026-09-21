@@ -72,7 +72,7 @@ export async function required(
 }
 
 export async function resolveProvider(ctx: Context, id: string): Promise<ProviderSummary> {
-  const { data } = await ctx.call("listProviders", []);
+  const { data } = await ctx.call("listProviders");
   const matches = data.providers.filter((p) => p.id === id || p.slug === id);
   if (matches.length !== 1 || !matches[0])
     fail("provider_not_found", "Choose one exact provider ID or slug.");
@@ -83,7 +83,7 @@ export async function resolveGateway(
   ctx: Context,
   id: string,
 ): Promise<ProviderGatewaySummary> {
-  const { data } = await ctx.call("listProviderGateways", []);
+  const { data } = await ctx.call("listProviderGateways");
   const value = data.gateways.find((g) => g.id === id);
   if (!value)
     fail("provider_gateway_not_found", "Provider gateway ID was not found.");
@@ -116,7 +116,7 @@ export async function resourceCommand(
   const [group, action] = command.split(" ");
   const gateway = group === "provider-gateway";
   if (action === "types") {
-    const { data } = await ctx.publicCall("getCliCapabilities", []);
+    const { data } = await ctx.publicCall("getCliCapabilities");
     return gateway
       ? data.providerGateways.map((entry) => ({
           ...entry,
@@ -126,8 +126,8 @@ export async function resourceCommand(
   }
   if (action === "list")
     return gateway
-      ? (await ctx.call("listProviderGateways", [])).data
-      : (await ctx.call("listProviders", [])).data;
+      ? (await ctx.call("listProviderGateways")).data
+      : (await ctx.call("listProviders")).data;
 
   let existingProvider: ProviderSummary | undefined;
   let existingGateway: ProviderGatewaySummary | undefined;
@@ -148,14 +148,14 @@ export async function resourceCommand(
         `Delete ${group} ${existingGateway.name} (${existingGateway.id})? Referenced by ${existingGateway.referencedCount} providers; deletion is refused until all references are removed.`,
         flags,
       );
-      return (await ctx.call("deleteProviderGateway", [existingGateway.id])).data;
+      return (await ctx.call("deleteProviderGateway", { params: { id: existingGateway.id } })).data;
     }
     if (!existingProvider) fail("invalid_arguments", "Supply the resource to remove.");
     await confirm(
       `Delete ${group} ${existingProvider.name} (${existingProvider.id})? Apps referencing this provider lose access through this slug.`,
       flags,
     );
-    return (await ctx.call("deleteProvider", [existingProvider.id])).data;
+    return (await ctx.call("deleteProvider", { params: { id: existingProvider.id } })).data;
   }
   if (action === "add") {
     const type = await required(
@@ -195,7 +195,7 @@ export async function resourceCommand(
       await ctx.bootstrap();
       if (flags.browser)
         return ctx.operation("provider-gateway.add", { ...draft });
-      const created = await ctx.create("createProviderGateway", [], body!);
+      const created = await ctx.create("createProviderGateway", { body: body! });
       await created.complete();
       return created.data;
     }
@@ -238,7 +238,7 @@ export async function resourceCommand(
     if (!flags.browser) body = validate(ProviderCreateRequestSchema, draft);
     await ctx.bootstrap();
     if (flags.browser) return ctx.operation("provider.add", { ...draft });
-    const created = await ctx.create("createProvider", [], body!);
+    const created = await ctx.create("createProvider", { body: body! });
     await created.complete();
     return created.data;
   }
@@ -249,7 +249,8 @@ export async function resourceCommand(
       if (flags.browser)
         return ctx.operation("provider-gateway.rotate-key", { id: existingGateway.id, revision: existingGateway.revision });
       return (
-        await ctx.call("rotateProviderGateway", [existingGateway.id], {
+        await ctx.call("rotateProviderGateway", {
+          params: { id: existingGateway.id },
           body: { token: value!, revision: existingGateway.revision },
         })
       ).data;
@@ -264,7 +265,8 @@ export async function resourceCommand(
     if (flags.browser)
       return ctx.operation("provider.rotate-key", { id: existingProvider.id, revision: existingProvider.revision });
     return (
-      await ctx.call("updateProvider", [existingProvider.id], {
+      await ctx.call("updateProvider", {
+        params: { id: existingProvider.id },
         body: { secret: value!, revision: existingProvider.revision },
       })
     ).data;
@@ -277,7 +279,7 @@ export async function resourceCommand(
         revision: existingGateway.revision,
       });
       return (
-        await ctx.call("updateProviderGateway", [existingGateway.id], { body })
+        await ctx.call("updateProviderGateway", { params: { id: existingGateway.id }, body })
       ).data;
     }
     if (!existingProvider) fail("invalid_arguments", "Supply the provider to update.");
@@ -325,7 +327,7 @@ export async function resourceCommand(
     });
     if (flags.browser)
       return ctx.operation("provider.update", { id: existingProvider.id, revision: existingProvider.revision, ...draft });
-    return (await ctx.call("updateProvider", [existingProvider.id], { body })).data;
+    return (await ctx.call("updateProvider", { params: { id: existingProvider.id }, body })).data;
   }
   fail("unknown_command", "Unknown command.");
 }
@@ -336,7 +338,7 @@ async function assertSupportedType(
   gateway: boolean,
   type: string,
 ): Promise<void> {
-  const { data: capabilities } = await ctx.publicCall("getCliCapabilities", []);
+  const { data: capabilities } = await ctx.publicCall("getCliCapabilities");
   const supported: { type: string }[] = gateway
     ? capabilities.providerGateways
     : capabilities.providers;

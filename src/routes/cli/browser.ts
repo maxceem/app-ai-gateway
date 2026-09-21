@@ -83,7 +83,7 @@ export async function verifiedSubmission(c: CliContext) {
   await assertAccountAccess(c.env, row.organization_id, row.kind === "claim" ? "claim" : "read");
   return { input, row };
 }
-export async function browserDetails(c: CliContext): Promise<Response> {
+export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsResponse> {
   const { row } = await verifiedSubmission(c);
   const state = await authState(c, true);
   const visiblePayload = JSON.parse(row.request_json) as Record<string, unknown>;
@@ -99,7 +99,7 @@ export async function browserDetails(c: CliContext): Promise<Response> {
       delete (snapshot as Record<string, unknown>).expectedRevision;
     }
   }
-  return c.json({
+  return {
     kind: row.kind as CliOperationKind,
     payload: visiblePayload,
     account: await accountLifecycle(c.env, row.organization_id),
@@ -112,7 +112,7 @@ export async function browserDetails(c: CliContext): Promise<Response> {
     blockedBy: refusalFor(row, state),
     googleEnabled: googleAuthEnabled(c.env),
     expiresAt: new Date(row.expires_at).toISOString(),
-  } satisfies CliBrowserDetailsResponse);
+  };
 }
 export async function browserRegister(c: CliContext): Promise<Response> {
   const { row, input } = await verifiedSubmission(c);
@@ -139,7 +139,7 @@ export async function browserRegister(c: CliContext): Promise<Response> {
   return response;
 }
 
-export async function browserSubmit(c: CliContext): Promise<Response> {
+export async function browserSubmit(c: CliContext): Promise<CliBrowserSubmitResponse> {
   const { row, input } = await verifiedSubmission(c);
   if (input.approve !== true)
     throw new GatewayError(
@@ -152,5 +152,5 @@ export async function browserSubmit(c: CliContext): Promise<Response> {
   } else {
     await completeProviderSubmission(c, row, input.secret);
   }
-  return c.json(outcomeFor(row.kind as CliOperationKind) satisfies CliBrowserSubmitResponse);
+  return outcomeFor(row.kind as CliOperationKind);
 }

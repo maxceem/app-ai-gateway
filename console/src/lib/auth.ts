@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { request } from "./api";
 import { noteAuthMethod } from "./analytics";
 import { DEFAULT_LANDING, isSafeReturnPath, loginUrlFor } from "./auth-redirect";
 
@@ -20,12 +20,17 @@ export interface SignUpInput extends SignInInput {
   name: string;
 }
 
+/** Better Auth's endpoints all take a JSON body and answer with one. */
+function post<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
 export function signInWithPassword(input: SignInInput): Promise<unknown> {
-  return api.post(`${AUTH_BASE}/sign-in/email`, { ...input, rememberMe: true });
+  return post(`${AUTH_BASE}/sign-in/email`, { ...input, rememberMe: true });
 }
 
 export function signUpWithPassword(input: SignUpInput): Promise<unknown> {
-  return api.post(`${AUTH_BASE}/sign-up/email`, input);
+  return post(`${AUTH_BASE}/sign-up/email`, input);
 }
 
 /**
@@ -34,7 +39,7 @@ export function signUpWithPassword(input: SignUpInput): Promise<unknown> {
  * parse. Sign-out takes no input, so it is sent as an empty JSON object.
  */
 export function signOut(): Promise<unknown> {
-  return api.post(`${AUTH_BASE}/sign-out`, {});
+  return post(`${AUTH_BASE}/sign-out`, {});
 }
 
 export function changePassword(input: {
@@ -42,7 +47,7 @@ export function changePassword(input: {
   newPassword: string;
   revokeOtherSessions?: boolean;
 }): Promise<unknown> {
-  return api.post(`${AUTH_BASE}/change-password`, input);
+  return post(`${AUTH_BASE}/change-password`, input);
 }
 
 /**
@@ -62,7 +67,7 @@ export async function startGoogleSignIn(returnPath?: string): Promise<void> {
   // Recorded now because the provider's redirect is what returns the operator,
   // and it carries no indication of how they got here.
   noteAuthMethod("google");
-  const result = await api.post<{ url?: string; redirect?: boolean }>(
+  const result = await post<{ url?: string; redirect?: boolean }>(
     `${AUTH_BASE}/sign-in/social`,
     {
       provider: "google",

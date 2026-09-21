@@ -6,12 +6,7 @@ import { log } from "../../core/log";
 import type { ProviderType } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
-import type {
-  BreakdownResponse,
-  MonthlyUsageResponse,
-  TimeseriesResponse,
-  UsageEventList,
-} from "../../contracts/responses";
+import { catalogRouter } from "../catalog-router";
 import { database } from "../../db";
 import { appUsageEvent, provider as providerTable } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -28,6 +23,7 @@ import {
 } from "./shared";
 
 export const usageRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+const routes = catalogRouter(usageRoutes, "/v1/admin");
 
 const BREAKDOWN_COLUMNS = {
   model: appUsageEvent.model,
@@ -87,7 +83,7 @@ const EMPTY_MONTH_TOTALS = {
   cost_usd: 0,
 };
 
-usageRoutes.get("/apps/:app/usage", async (c) => {
+routes.handle("getAppUsage", async (c) => {
   const appId = c.req.param("app");
   const month = c.req.query("month") ?? currentMonth();
   if (!/^\d{4}-\d{2}$/u.test(month)) {
@@ -98,10 +94,10 @@ usageRoutes.get("/apps/:app/usage", async (c) => {
   // shape holds even if that ever stops being true: six zeros is the honest
   // answer for a month with nothing in it.
   const row = (await usageMonthTotals(c.env.DB, appId, month)) ?? EMPTY_MONTH_TOTALS;
-  return c.json({ app_id: appId, month, ...row } satisfies MonthlyUsageResponse);
+  return { app_id: appId, month, ...row };
 });
 
-usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
+routes.handle("repriceAppUsage", async (c) => {
   const appId = c.req.param("app");
   let value: unknown;
   try {
@@ -252,7 +248,7 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     }
   }
 
-  return c.json({
+  return {
     app_id: appId,
     provider,
     model,
@@ -275,18 +271,18 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     recalculated_cost_usd: recalculatedCostUsd,
     delta_usd: recalculatedCostUsd - previousCostUsd,
     reconciled_users: reconciledUsers,
-  });
+  };
 });
 
 /** Daily buckets split by provider; the console pivots them into a stacked chart. */
-usageRoutes.get("/apps/:app/usage/timeseries", async (c) => {
+routes.handle("getAppUsageTimeseries", async (c) => {
   const appId = c.req.param("app");
   const range = parseRange(c.req.query("from"), c.req.query("to"));
   const { results } = await usageTimeseries(c.env.DB, appId, range);
-  return c.json({ app_id: appId, ...range, buckets: results } satisfies TimeseriesResponse);
+  return { app_id: appId, ...range, buckets: results };
 });
 
-usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
+routes.handle("getAppUsageBreakdown", async (c) => {
   const appId = c.req.param("app");
   const range = parseRange(c.req.query("from"), c.req.query("to"));
   const by = c.req.query("by") ?? "model";
@@ -303,7 +299,7 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
   // only through the retention window.
   if (isRollupDimension(by)) {
     const { results } = await usageBreakdown(c.env.DB, appId, range, by, limit);
-    return c.json({ app_id: appId, by, ...range, rows: results } satisfies BreakdownResponse);
+    return { app_id: appId, by, ...range, rows: results };
   }
   const column = BREAKDOWN_COLUMNS[by as BreakdownKey];
   const rows = await database(c.env.DB)
@@ -313,10 +309,10 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
     .groupBy(column)
     .orderBy(desc(usageTotals.requests))
     .limit(limit);
-  return c.json({ app_id: appId, by, ...range, rows } satisfies BreakdownResponse);
+  return { app_id: appId, by, ...range, rows };
 });
 
-usageRoutes.get("/apps/:app/events", async (c) => {
+routes.handle("listAppEvents", async (c) => {
   const appId = c.req.param("app");
   const limit = parseLimit(c.req.query("limit"), 50, 200);
   const filters = [eq(appUsageEvent.appId, appId)];
@@ -351,7 +347,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
     .orderBy(desc(appUsageEvent.id))
     .limit(limit);
 
-  return c.json({
+  return {
     app_id: appId,
     limit,
     next_before_id: rows.length === limit ? rows[rows.length - 1]!.id : null,
@@ -384,5 +380,5 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       latency_ms: row.latencyMs,
       created_at: row.createdAt,
     })),
-  } satisfies UsageEventList);
+  };
 });
