@@ -2,13 +2,19 @@ import {
   compactUsageEvents,
   foldUsageRollupMonths,
 } from "../src/core/usage-retention";
-import { recordBlockedUsageEvent } from "../src/core/usage";
+import { recordBlockedUsageEvent } from "../src/core/usage-record";
 import { claimOAuthAuthorized } from "../src/routes/cli/oauth";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearIsolateCaches, seedHuman, seedUnaffiliatedHuman } from "./helpers";
+import {
+  clearIsolateCaches,
+  seedHuman,
+  seedUnaffiliatedHuman,
+  testAttribution,
+  testIdentity,
+} from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
   assertAccountAccess,
@@ -671,12 +677,8 @@ describe("CLI account lifecycle", () => {
     await recordBlockedUsageEvent({
       env: testEnv,
       organizationId: data.account.id,
-      appId,
-      userId: null,
-      authMethod: "api_key",
-      provider: "openai",
-      model: "test",
-      route: "test",
+      identity: testIdentity({ appId, userId: null }),
+      attribution: testAttribution({ model: "test", route: "test" }),
       appVersion: null,
       status: "blocked_billing",
       latencyMs: 0,

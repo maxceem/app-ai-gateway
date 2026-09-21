@@ -2,8 +2,9 @@ import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { clientResponseHeaders, providerUpstream } from "../core/proxyrules";
 import type { AppRecord, GatewayIdentity } from "../core/types";
-import { observeUpstreamBody, recordUsageEvent, type ObservedBody } from "../core/usage";
-import type { ExecutionAttempt, ExecutionPlan } from "./plan";
+import { observeUpstreamBody, type ObservedBody } from "../core/body-observer";
+import { recordUsageEvent } from "../core/usage-record";
+import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan } from "./plan";
 import {
   fetchWithTtfbTimeout,
   providerTtfbTimeoutMs,
@@ -39,23 +40,13 @@ function record(
     latencyMs: number;
   },
 ): void {
-  const { attempt } = input;
   context.waitUntil(recordUsageEvent({
     organizationId: context.app.organizationId,
     env: context.env,
     observed: input.observed,
     contentType: input.contentType,
-    appId: context.app.id,
-    userId: context.identity.userId,
-    authMethod: context.identity.authMethod,
-    apiKeyId: context.identity.apiKeyId,
-    provider: attempt.resolved.type,
-    providerId: attempt.resolved.id,
-    providerSlug: attempt.resolved.slug,
-    providerRoute: attempt.resolved.route,
-    pricing: attempt.resolved.pricing,
-    model: attempt.model,
-    route: route(attempt),
+    identity: context.identity,
+    attribution: attemptAttribution(input.attempt),
     endpointSlug: plan.endpointSlug,
     appVersion: context.appVersion,
     status: input.status,
@@ -112,14 +103,9 @@ export async function execute(
     const request = attempt.buildRequest();
     const upstreamRequest = providerUpstream({
       resolved: attempt.resolved,
-      prepared: {
-        provider: attempt.resolved.type,
-        providerPath: attempt.providerPath,
-        model: attempt.model,
-        body: request.body,
-        headers: request.headers,
-        query: request.query,
-      },
+      providerPath: attempt.providerPath,
+      query: request.query,
+      headers: request.headers,
       appId: context.app.id,
       userId: context.identity.userId,
     });

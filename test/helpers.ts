@@ -21,7 +21,9 @@ import {
   type GatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
-import type { ProviderType } from "../src/core/types";
+import type { GatewayIdentity, ProviderType } from "../src/core/types";
+import { DIRECT_ROUTE } from "../src/core/routes";
+import type { AttemptAttribution } from "../src/core/usage-record";
 import { parseAppConfig } from "../src/shared/app-config";
 import { validateConfigurationReferences } from "../src/core/config-references";
 import type { OrganizationProviders } from "../src/core/provider-store";
@@ -49,6 +51,42 @@ export function clearIsolateCaches(): void {
 }
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
+
+/**
+ * A caller, for the tests that record a usage row directly instead of proxying
+ * one. The gateway builds this from a verified credential; here it is the small
+ * set of fields a usage row actually reads off it.
+ */
+export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayIdentity {
+  return {
+    appId: "test-app",
+    userId: "user-1",
+    jti: "test-jti",
+    expiresAt: 0,
+    authMethod: "api_key",
+    credentialType: "api_key",
+    ...overrides,
+  };
+}
+
+/**
+ * What an attempt would have said about itself. The real one comes from
+ * `attemptAttribution` over a resolved provider row, which is more machinery
+ * than a recorder test needs: nothing below the recorder reads a provider row.
+ */
+export function testAttribution(overrides: Partial<AttemptAttribution> = {}): AttemptAttribution {
+  return {
+    provider: "openai",
+    providerId: "provider-test",
+    providerSlug: "openai",
+    providerRoute: DIRECT_ROUTE,
+    pricing: null,
+    model: "gpt-5.6-sol",
+    apiStyle: "responses",
+    route: "openai/v1/responses",
+    ...overrides,
+  };
+}
 export const TEST_SERVICE_USER_ID = "operator-test-owner";
 
 /**

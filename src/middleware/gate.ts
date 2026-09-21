@@ -8,10 +8,10 @@ import { resolveBillingQuota } from "../billing/quota";
 import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
 import { monthlyBudgetMicrousd } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
-import { recordBlockedUsageEvent } from "../core/usage";
+import { recordBlockedUsageEvent } from "../core/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
-import type { ExecutionVariables } from "../execution/plan";
+import { attemptAttribution, type ExecutionVariables } from "../execution/plan";
 import type { GatewayVariables } from "./auth";
 import type { Deployment } from "../policy/deployment";
 import type { RequestVariables } from "./request-scope";
@@ -132,15 +132,8 @@ export const quotaGate: MiddlewareHandler<{
       recordBlockedUsageEvent({
         organizationId: app.organizationId,
         env: c.env,
-        appId: identity.appId,
-        userId: identity.userId,
-        authMethod: identity.authMethod,
-        apiKeyId: identity.apiKeyId,
-        provider: firstAttempt.resolved.type,
-        providerId: firstAttempt.resolved.id,
-        providerSlug: firstAttempt.resolved.slug,
-        model: firstAttempt.model,
-        route: `${firstAttempt.resolved.slug}/${firstAttempt.providerPath}`,
+        identity,
+        attribution: attemptAttribution(firstAttempt),
         endpointSlug: plan.endpointSlug,
         appVersion: c.req.header("x-app-version") ?? null,
         status,

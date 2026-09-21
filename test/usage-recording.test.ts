@@ -1,14 +1,15 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { observeUpstreamBody, type ObservedBody } from "../src/core/body-observer";
 import {
-  observeUpstreamBody,
   persistUsageEvent,
   recordBlockedUsageEvent,
   recordUsageEvent,
-  type ObservedBody,
+  type AttemptAttribution,
   type UsageEvent,
-} from "../src/core/usage";
-import { DIRECT_ROUTE } from "../src/core/routes";
+} from "../src/core/usage-record";
+import { testAttribution, testIdentity } from "./helpers";
+import type { GatewayIdentity } from "../src/core/types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -158,19 +159,11 @@ describe("usage recording idempotency", () => {
 
     await recordUsageEvent({
       organizationId: "operator-test-organization",
-
       env,
       observed: observedBody(JSON.stringify({ usage: { input_tokens: 5, output_tokens: 7 } })),
       contentType: "application/json",
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-      model: "gpt-model-nobody-priced",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution({ model: "gpt-model-nobody-priced", route: "openai/v1/responses" }),
       appVersion: null,
       status: "ok",
       latencyMs: 9,
@@ -224,21 +217,17 @@ describe("usage recording idempotency", () => {
 
     await recordUsageEvent({
       organizationId: "operator-test-organization",
-
       env,
       observed: observedBody(JSON.stringify({ text: "hello", duration: 90 })),
       contentType: "application/json",
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-      // Priced per minute, so tokens stay zero and duration is the only input
-      // the cost can be checked against.
-      model: "whisper-1",
-      route: "openai/v1/audio/transcriptions",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution({
+        // Priced per minute, so tokens stay zero and duration is the only input
+        // the cost can be checked against.
+        model: "whisper-1",
+        route: "openai/v1/audio/transcriptions",
+        apiStyle: "audio_transcription",
+      }),
       appVersion: null,
       status: "ok",
       latencyMs: 40,
@@ -269,22 +258,14 @@ describe("usage recording idempotency", () => {
 
     await recordUsageEvent({
       organizationId: "operator-test-organization",
-
       env,
       // Cohere's shape: the request proxied fine, and nothing here is priceable.
       observed: observedBody(
         JSON.stringify({ text: "hello", usage: { billed_units: { input_tokens: 120 } } }),
       ),
       contentType: "application/json",
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "ok",
       latencyMs: 11,
@@ -328,19 +309,11 @@ describe("usage recording idempotency", () => {
 
     await recordUsageEvent({
       organizationId: "operator-test-organization",
-
       env,
       observed: observedBody(JSON.stringify({ usage: { input_tokens: 0, output_tokens: 0 } })),
       contentType: "application/json",
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "ok",
       latencyMs: 5,
@@ -357,19 +330,12 @@ describe("usage recording idempotency", () => {
     const usage = '"usage":{"prompt_tokens":11,"completion_tokens":3}';
     const record = (appId: string, body: string) =>
       recordUsageEvent({
-      organizationId: "operator-test-organization",
+        organizationId: "operator-test-organization",
         env,
         observed: observedBody(body),
         contentType: "application/json",
-        appId,
-        userId: "user-1",
-        authMethod: "api_key",
-        provider: "openai",
-        providerId: "provider-test",
-        providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-        model: "gpt-5.6-sol",
-        route: "openai/v1/responses",
+        identity: testIdentity({ appId, userId: "user-1" }),
+        attribution: testAttribution(),
         appVersion: null,
         status: "ok",
         latencyMs: 9,
@@ -402,19 +368,11 @@ describe("usage recording idempotency", () => {
 
     await recordUsageEvent({
       organizationId: "operator-test-organization",
-
       env,
       observed: observedBody(JSON.stringify({ error: { message: "rate limited" } })),
       contentType: "application/json",
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "provider_error",
       latencyMs: 7,
@@ -432,14 +390,8 @@ describe("usage recording idempotency", () => {
     await recordBlockedUsageEvent({
       organizationId: "operator-test-organization",
       env,
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "blocked_app_rate",
       latencyMs: 2,
@@ -456,14 +408,8 @@ describe("usage recording idempotency", () => {
     await recordBlockedUsageEvent({
       organizationId: "operator-test-organization",
       env,
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "blocked_user",
       latencyMs: 3,
@@ -495,42 +441,45 @@ describe("usage recording idempotency", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(anchor);
     const appId = "usage-record-blocked-sampled";
-    const blocked = (overrides: Partial<Parameters<typeof recordBlockedUsageEvent>[0]> = {}) =>
+    const blocked = (overrides: {
+      identity?: Partial<GatewayIdentity>;
+      attribution?: Partial<AttemptAttribution>;
+      appVersion?: string;
+      status?: Parameters<typeof recordBlockedUsageEvent>[0]["status"];
+    } = {}) =>
       recordBlockedUsageEvent({
         organizationId: "operator-test-organization",
         env,
-        appId,
-        userId: "sampled-user",
-        authMethod: "api_key",
-        provider: "openai",
-        providerId: "provider-test",
-        providerSlug: "openai",
-        model: "gpt-5.6-sol",
-        route: "openai/v1/responses",
-        appVersion: `release-${"x".repeat(100)}`,
-        status: "blocked_user",
+        identity: testIdentity({ appId, userId: "sampled-user", ...overrides.identity }),
+        attribution: testAttribution(overrides.attribution),
+        appVersion: overrides.appVersion ?? `release-${"x".repeat(100)}`,
+        status: overrides.status ?? "blocked_user",
         latencyMs: 2,
-        ...overrides,
       });
 
     await blocked();
     await Promise.all([
       blocked({
-        model: "caller-varied-model",
-        route: "caller-varied/route",
+        attribution: { model: "caller-varied-model", route: "caller-varied/route" },
         appVersion: "caller-varied-version",
         status: "blocked_app_rate",
       }),
-      blocked({ route: "another/varied-route", status: "blocked_app_budget" }),
+      blocked({ attribution: { route: "another/varied-route" }, status: "blocked_app_budget" }),
     ]);
     await Promise.all([
-      blocked({ userId: "concurrent-user" }),
-      blocked({ userId: "concurrent-user", model: "concurrent-varied-model" }),
+      blocked({ identity: { userId: "concurrent-user" } }),
+      blocked({
+        identity: { userId: "concurrent-user" },
+        attribution: { model: "concurrent-varied-model" },
+      }),
     ]);
-    await blocked({ userId: null, apiKeyId: "key-a" });
-    await blocked({ userId: null, apiKeyId: "key-a", route: "key-varied/route" });
-    await blocked({ userId: null, apiKeyId: "key-b" });
-    await blocked({ appId: `${appId}-other` });
+    await blocked({ identity: { userId: null, apiKeyId: "key-a" } });
+    await blocked({
+      identity: { userId: null, apiKeyId: "key-a" },
+      attribution: { route: "key-varied/route" },
+    });
+    await blocked({ identity: { userId: null, apiKeyId: "key-b" } });
+    await blocked({ identity: { appId: `${appId}-other` } });
     vi.setSystemTime(anchor + 60_000);
     await blocked();
 
@@ -574,15 +523,8 @@ describe("usage recording idempotency", () => {
     await recordBlockedUsageEvent({
       organizationId: "operator-test-organization",
       env: testEnv,
-      appId,
-      userId: "user-1",
-      authMethod: "api_key",
-      apiKeyId: "suppressed-key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: "user-1", apiKeyId: "suppressed-key" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "blocked_app_rate",
       latencyMs: 2,
@@ -616,15 +558,8 @@ describe("usage recording idempotency", () => {
     await recordBlockedUsageEvent({
       organizationId: "operator-test-organization",
       env: testEnv,
-      appId,
-      userId: null,
-      authMethod: "api_key",
-      apiKeyId: "spent-sample-key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: null, apiKeyId: "spent-sample-key" }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "blocked_app_rate",
       latencyMs: 2,

@@ -6,7 +6,7 @@ import type { ResolvedProvider } from "./provider-store";
 import { costReport, providerDescriptor } from "./providers";
 import { ROUTE_ADAPTERS, routeWireModel } from "./routes";
 import { lookup } from "../shared/records";
-import { isBillable } from "./usage";
+import { isBillable } from "./pricing";
 import { isDefaultProxyApiStyle } from "../shared/capabilities";
 import { selectedProviderPolicies } from "../shared/app-config";
 import type {
@@ -32,6 +32,12 @@ export interface PreparedProxyRequest {
    * the usage event records. The route may put a different string on the wire.
    */
   model: string;
+  /**
+   * The API this request speaks, classified from the path here and carried
+   * through to the attempt: the response reader is chosen by it, so the answer
+   * is never sniffed for a shape the request already named.
+   */
+  apiStyle: ApiStyle;
   body: BodyInit | null;
   headers: Headers;
   query: string;
@@ -451,6 +457,46 @@ export function clientResponseHeaders(upstream: Response): Headers {
   return headers;
 }
 
+/**
+ * The one model decision, for both shapes of proxied request.
+ *
+ * Which model a request is for, whether the app may ask for it, what the
+ * organization rewrote it to, whether that can be billed, and what the route
+ * puts on the wire — in that order, because each step judges the answer the one
+ * before it settled. It used to be written out once per body shape, where the
+ * multipart copy and the JSON copy could drift into two policies.
+ */
+function resolveModel(input: {
+  match: MatchedPath;
+  /** The model the body named, where the body is where this shape carries it. */
+  bodyModel: string | undefined;
+  policy: ProviderPolicy;
+  rewrites: Record<string, string> | undefined;
+  resolved: ResolvedProvider;
+}): { requestedModel: string; actualModel: string; wireModel: string } {
+  const provider = input.resolved.type;
+  const requestedModel = input.match.modelFromPath
+    ?? input.bodyModel
+    ?? input.match.entry.fixed_model;
+  if (!requestedModel) {
+    throw new GatewayError(400, "invalid_request", "Request model could not be resolved");
+  }
+  if (!modelIsAllowed(input.policy.allowed_models, requestedModel)) {
+    throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
+  }
+  const actualModel = lookup(input.rewrites, requestedModel) ?? requestedModel;
+  if (!isBillable(provider, actualModel, input.resolved.pricing)) {
+    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
+  }
+  // Everything above judged the canonical model; only the outbound request
+  // speaks the route's own namespace, and only where the adapter declares one.
+  return {
+    requestedModel,
+    actualModel,
+    wireModel: routeWireModel(input.resolved.route, provider, actualModel),
+  };
+}
+
 export async function prepareProxyRequest(input: {
   request: Request;
   app: AppRecord;
@@ -484,17 +530,17 @@ export async function prepareProxyRequest(input: {
   const contentType = input.request.headers.get("content-type") ?? "";
   const isMultipart = contentType.toLowerCase().startsWith("multipart/form-data");
   const clampStyle = match.entry.clamp ?? outputClampStyle(apiStyle, provider);
-  let requestedModel: string;
   let body: BodyInit;
   let bodyChanged = false;
   let providerPath = input.providerPath;
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
 
   if (isMultipart) {
+    // Parsed only where the form is where the model could be: a path capture
+    // already names it, and parsing the upload to confirm that would copy every
+    // byte of it for nothing.
     let parsed: FormData | null = null;
-    if (match.modelFromPath) {
-      requestedModel = match.modelFromPath;
-    } else {
+    if (!match.modelFromPath) {
       parsed = await new Request("https://local.invalid", {
         method: "POST",
         headers: { "content-type": contentType },
@@ -502,23 +548,15 @@ export async function prepareProxyRequest(input: {
         // array, and copying it to parse the form copied the whole upload.
         body: bytes,
       }).formData();
-      const modelField = parsed.get("model");
-      if (typeof modelField === "string" && modelField.length > 0) {
-        requestedModel = modelField;
-      } else if (match.entry.fixed_model) {
-        requestedModel = match.entry.fixed_model;
-      } else {
-        throw new GatewayError(400, "invalid_request", "Request model could not be resolved");
-      }
     }
-    if (!modelIsAllowed(config.allowed_models, requestedModel)) {
-      throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
-    }
-    const actualModel = lookup(input.app.config.routing.model_rewrites, requestedModel) ?? requestedModel;
-    if (!isBillable(provider, actualModel, resolved.pricing)) {
-      throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
-    }
-    const wireModel = routeWireModel(route, provider, actualModel);
+    const modelField = parsed?.get("model");
+    const { requestedModel, actualModel, wireModel } = resolveModel({
+      match,
+      bodyModel: typeof modelField === "string" && modelField.length > 0 ? modelField : undefined,
+      policy: config,
+      rewrites: input.app.config.routing.model_rewrites,
+      resolved,
+    });
     if (match.modelFromPath && wireModel !== requestedModel) {
       providerPath = match.entry.path.replace("{model}", encodeURIComponent(wireModel));
       body = bytes;
@@ -535,6 +573,7 @@ export async function prepareProxyRequest(input: {
       provider,
       providerPath,
       model: actualModel,
+      apiStyle,
       body,
       headers,
       query: sanitizedQuery(input.request),
@@ -545,25 +584,15 @@ export async function prepareProxyRequest(input: {
   // the body, the outbound request itself.
   const text = new TextDecoder().decode(bytes);
   const parsed = jsonObjectFromText(text);
-  if (match.modelFromPath) {
-    requestedModel = match.modelFromPath;
-  } else if (typeof parsed.model === "string" && parsed.model.length > 0) {
-    requestedModel = parsed.model;
-  } else if (match.entry.fixed_model) {
-    requestedModel = match.entry.fixed_model;
-  } else {
-    throw new GatewayError(400, "invalid_request", "Request model could not be resolved");
-  }
-  if (!modelIsAllowed(config.allowed_models, requestedModel)) {
-    throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
-  }
-  const actualModel = lookup(input.app.config.routing.model_rewrites, requestedModel) ?? requestedModel;
-  if (!isBillable(provider, actualModel, resolved.pricing)) {
-    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
-  }
-  // Everything above judged the canonical model; only the outbound request
-  // speaks the route's own namespace, and only where the adapter declares one.
-  const wireModel = routeWireModel(route, provider, actualModel);
+  const { requestedModel, actualModel, wireModel } = resolveModel({
+    match,
+    bodyModel: typeof parsed.model === "string" && parsed.model.length > 0
+      ? parsed.model
+      : undefined,
+    policy: config,
+    rewrites: input.app.config.routing.model_rewrites,
+    resolved,
+  });
   if (match.modelFromPath) {
     providerPath = wireModel === requestedModel
       ? input.providerPath
@@ -596,6 +625,7 @@ export async function prepareProxyRequest(input: {
     provider,
     providerPath,
     model: actualModel,
+    apiStyle,
     body,
     headers,
     query: sanitizedQuery(input.request),
@@ -624,18 +654,20 @@ export async function prepareProxyRequest(input: {
  */
 export function providerUpstream(input: {
   resolved: ResolvedProvider;
-  prepared: PreparedProxyRequest;
+  providerPath: string;
+  query: string;
+  headers: Headers;
   appId: string;
   userId: string | null;
 }): { url: string; headers: Headers } {
-  const { resolved, prepared } = input;
+  const { resolved } = input;
   const { route } = resolved;
-  const headers = new Headers(prepared.headers);
+  const headers = new Headers(input.headers);
   stripClientHeaders(headers, route.kind);
   const upstream = route.adapter.upstream({
-    provider: prepared.provider,
-    providerPath: prepared.providerPath,
-    query: prepared.query,
+    provider: resolved.type,
+    providerPath: input.providerPath,
+    query: input.query,
     secret: resolved.secret,
     baseUrl: resolved.baseUrl,
     gatewayConfig: route.gateway?.config ?? null,

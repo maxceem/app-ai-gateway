@@ -2,7 +2,7 @@ import { supportsEndpointStyle } from "./capabilities";
 import type { OrganizationProviders } from "./provider-store";
 import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "./providers";
-import { hasModelPrice, isBillable } from "./usage";
+import { hasModelPrice, isBillable } from "./pricing";
 import {
   ConfigError,
   selectedProviderPolicies,

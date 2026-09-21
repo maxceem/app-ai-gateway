@@ -10,13 +10,9 @@ import {
   PROVIDER_TYPES,
   reportsCost,
 } from "../src/core/providers";
-import {
-  isBillable,
-  hasModelPrice,
-  observeResponse,
-  resolveModelAuthor,
-  wholeBody,
-} from "../src/core/usage";
+import { wholeBody } from "../src/core/body-observer";
+import { hasModelPrice, isBillable, resolveModelAuthor } from "../src/core/pricing";
+import { observeResponse } from "../src/core/usage-readers";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { clearIsolateCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
@@ -721,11 +717,16 @@ describe("billability", () => {
           return true;
         },
       };
-      const other = observeResponse(wholeBody(openRouterShaped), "application/json", "perplexity");
+      const other = observeResponse(
+        wholeBody(openRouterShaped),
+        "application/json",
+        "perplexity",
+        "chat_completions",
+      );
       // Its own parser ran; OpenRouter's `usage.cost` and metadata were not read.
       expect(seen).toEqual(["read"]);
       expect(other.report).toBeNull();
-      // Usage parsing is shape-sniffed and unaffected, as it always was.
+      // Usage parsing reads the style's own shape and is unaffected.
       expect(other.usage?.inputTokens).toBe(10);
 
       // The same declaration, given the body it does understand.
@@ -735,14 +736,21 @@ describe("billability", () => {
         ),
         "application/json",
         "perplexity",
+        "chat_completions",
       );
       expect(own.report?.costUsd).toBe(7);
     } finally {
       delete descriptor.costReport;
     }
     // And OpenRouter's own parser still reads OpenRouter's own body.
-    expect(observeResponse(wholeBody(openRouterShaped), "application/json", "openrouter").report)
-      .toMatchObject({ costUsd: 9.99, servedProvider: "Someone Else" });
+    expect(
+      observeResponse(
+        wholeBody(openRouterShaped),
+        "application/json",
+        "openrouter",
+        "chat_completions",
+      ).report,
+    ).toMatchObject({ costUsd: 9.99, servedProvider: "Someone Else" });
   });
 
   /**

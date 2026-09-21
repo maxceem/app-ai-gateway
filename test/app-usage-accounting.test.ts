@@ -8,14 +8,13 @@ import {
   recoverPendingUsageSpend,
   USAGE_SPEND_RECOVERY_BATCH,
 } from "../src/core/app-usage-accounting";
+import { wholeBody, type ObservedBody } from "../src/core/body-observer";
 import {
   persistUsageEvent,
   recordUsageEvent,
-  wholeBody,
-  type ObservedBody,
   type UsageEvent,
-} from "../src/core/usage";
-import { DIRECT_ROUTE } from "../src/core/routes";
+} from "../src/core/usage-record";
+import { testAttribution, testIdentity } from "./helpers";
 import app, { scheduledMaintenance } from "../src/index";
 
 const PREFIX = "accounting-";
@@ -322,15 +321,8 @@ describe("app usage accounting", () => {
       organizationId: "operator-test-organization",
       observed,
       contentType: "application/json",
-      appId,
-      userId: null,
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      providerRoute: DIRECT_ROUTE,
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: null }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "ok",
       latencyMs: 1,

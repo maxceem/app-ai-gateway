@@ -1,12 +1,21 @@
+import { supportsEndpointStyle } from "./capabilities";
 import { GatewayError } from "./errors";
-import type { ResolvedProvider } from "./provider-store";
+import { isBillable } from "./pricing";
+import {
+  requireProvider,
+  resolveProvider,
+  type ResolvedProvider,
+} from "./provider-store";
 import { providerDescriptor } from "./providers";
 import { routeWireModel } from "./routes";
 import { lookup } from "../shared/records";
+import { ENDPOINT_STYLE_API } from "../shared/capabilities";
+import type { ExecutionAttempt } from "../execution/plan";
 import {
   jsonObject,
   readBodyLimited,
   sanitizedHeaders,
+  unpricedMessage,
   validateOrInjectOutputCap,
   type PreparedProxyRequest,
 } from "./proxyrules";
@@ -134,6 +143,104 @@ export function endpointAttemptRequest(
     // query parameters are never forwarded upstream.
     query: "",
   };
+}
+
+/**
+ * The fallback chain as attempts, with every target that cannot serve this
+ * endpoint dropped.
+ *
+ * Every target needs its own credential, because a fallback may point at a
+ * different provider. The primary target must work; a fallback the
+ * organization has not configured, cannot decrypt, or cannot price is simply
+ * dropped from the chain rather than turned into a request that is certain to
+ * fail. Resolution itself can throw — an unreadable secret, or a gateway that
+ * was revoked out from under the row — and on a fallback that is still just a
+ * reason to skip it.
+ *
+ * A *disabled* primary is the one exception: disabling is a deliberate pause,
+ * so the chain falls through to its fallbacks exactly as an upstream failure
+ * would. Only when no fallback survives does the pause itself get reported.
+ */
+export async function resolveEndpointAttempts(
+  env: Env,
+  app: AppRecord,
+  endpoint: EndpointConfig,
+  prepared: PreparedEndpointRequest,
+): Promise<[ExecutionAttempt, ...ExecutionAttempt[]]> {
+  const resolvedProviders = new Map<string, ResolvedProvider>();
+  const usableTargets: typeof prepared.targets = [];
+  let disabledPrimary: GatewayError | undefined;
+  for (const [index, target] of prepared.targets.entries()) {
+    const primary = index === 0;
+    let entry = resolvedProviders.get(target.provider);
+    if (!entry) {
+      let found: ResolvedProvider | null;
+      try {
+        found = primary
+          ? await requireProvider(env, app.organizationId, target.provider)
+          : await resolveProvider(env, app.organizationId, target.provider);
+      } catch (error) {
+        if (primary) {
+          if (error instanceof GatewayError && error.code === "provider_disabled") {
+            disabledPrimary = error;
+            continue;
+          }
+          throw error;
+        }
+        continue;
+      }
+      if (!found) continue;
+      entry = found;
+      resolvedProviders.set(target.provider, entry);
+    }
+    if (!supportsEndpointStyle(entry.route.kind, entry.type, endpoint.api_style)) {
+      if (primary) {
+        throw new GatewayError(
+          502,
+          "provider_unavailable",
+          `Provider instance ${target.provider} does not support ${endpoint.api_style} endpoints`,
+        );
+      }
+      continue;
+    }
+    if (!isBillable(entry.type, target.model, entry.pricing)) {
+      if (primary) {
+        throw new GatewayError(
+          400,
+          "pricing_not_configured",
+          unpricedMessage(entry.type, target.model),
+        );
+      }
+      continue;
+    }
+    usableTargets.push(target);
+  }
+  // A skipped disabled primary is the only way the chain can end up empty: on
+  // every other primary failure the loop threw above. With nothing left to try,
+  // the pause is the answer.
+  if (usableTargets.length === 0 && disabledPrimary) throw disabledPrimary;
+
+  const attempts = usableTargets.map((target) => {
+    const resolved = resolvedProviders.get(target.provider);
+    if (!resolved) throw new Error(`Resolved provider missing for ${target.provider}`);
+    const buildRequest = () => endpointAttemptRequest(prepared, target, resolved);
+    return {
+      resolved,
+      providerPath: endpointProviderPath(endpoint.api_style, resolved.type),
+      model: target.model,
+      // The endpoint's own style settles the API, so the answer is read by the
+      // reader for the contract this gateway composed rather than a guess.
+      apiStyle: ENDPOINT_STYLE_API[endpoint.api_style],
+      buildRequest,
+    } satisfies ExecutionAttempt;
+  });
+  const first = attempts[0];
+  if (!first) throw disabledPrimary ?? new Error("Endpoint execution plan is empty");
+  // Validate and materialize the primary before admission. Fallback builders
+  // stay lazy so a multipart upload is copied only for targets actually tried.
+  const primaryRequest = first.buildRequest();
+  const primary: ExecutionAttempt = { ...first, buildRequest: () => primaryRequest };
+  return [primary, ...attempts.slice(1)];
 }
 
 export async function prepareEndpointRequest(input: {

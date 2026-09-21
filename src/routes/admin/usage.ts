@@ -4,7 +4,7 @@ import { projectPendingAppMonthSpend } from "../../core/app-usage-accounting";
 import { GatewayError } from "../../core/errors";
 import { log } from "../../core/log";
 import type { ProviderType } from "../../core/types";
-import { computeCost, hasTokenModelPrice } from "../../core/usage";
+import { computeCost, hasTokenModelPrice } from "../../core/pricing";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
 import { adminRouter } from "../catalog-router";
 import { jsonBody } from "./body";
