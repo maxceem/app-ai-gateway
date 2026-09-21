@@ -587,8 +587,7 @@ describe("admin API", () => {
     );
     expect(stored.status).toBe(200);
     await expect(stored.json()).resolves.toMatchObject({
-      resolved: null,
-      config_error: expect.stringContaining("authentication.issuer.issuer"),
+      config_error: expect.stringContaining("authentication.end_user.issuer.issuer"),
     });
   });
 

@@ -6,6 +6,7 @@ import {
 } from "../billing/gateway";
 import { resolveBillingQuota } from "../billing/quota";
 import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
+import { monthlyBudgetMicrousd } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
 import { recordBlockedUsageEvent } from "../core/usage";
 import { nextUtcMonthStart } from "../core/time";
@@ -116,7 +117,7 @@ export const quotaGate: MiddlewareHandler<{
   Variables: GatewayVariables & ExecutionVariables & BillingVariables;
 }> = async (c, next) => {
   const start = performance.now();
-  const app = c.get("appConfig");
+  const app = c.get("app");
   const identity = c.get("identity");
   const plan = c.get("executionPlan");
   const firstAttempt = plan.attempts[0];
@@ -218,7 +219,7 @@ export const quotaGate: MiddlewareHandler<{
      * per-user check runs before the app-wide one, so a blocked user still
      * drains nothing of the window their app shares.
      */
-    identity.userId === null || hasUserLevelLimits(app)
+    identity.userId === null || hasUserLevelLimits(app.config)
       ? Promise.resolve(false)
       : isUserBlocked(c.env, `${identity.appId}:${identity.userId}`),
     monthlyRequestAllowance(c.env, app.organizationId, c.get("billingRequestCache")),
@@ -249,23 +250,23 @@ export const quotaGate: MiddlewareHandler<{
   // `identity.userId` is non-null whenever per-user limits exist: configuring
   // them on an application that identifies no end users is refused when the
   // configuration is parsed, so this is a narrowing, not a second policy.
-  if (hasUserLevelLimits(app) && identity.userId !== null) {
+  if (hasUserLevelLimits(app.config) && identity.userId !== null) {
     const result = await c.env.USER_LIMITER
       .getByName(`${identity.appId}:${identity.userId}`)
       .checkAndIncrement({
         now,
-        rpm: app.limits.perUser.requestsPerMinute,
-        rpd: app.limits.perUser.requestsPerDay,
-        monthlyBudgetMicrousd: app.limits.perUser.monthlyBudgetMicrousd,
+        rpm: app.config.limits.per_user.requests.per_minute,
+        rpd: app.config.limits.per_user.requests.per_day,
+        monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_user),
       });
     if (!result.allowed) refuseByAppLimits(result, "user", now);
   }
-  if (hasAppLevelLimits(app)) {
+  if (hasAppLevelLimits(app.config)) {
     const result = await c.env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
       now,
-      rpm: app.limits.perApp.requestsPerMinute,
-      rpd: app.limits.perApp.requestsPerDay,
-      monthlyBudgetMicrousd: app.limits.perApp.monthlyBudgetMicrousd,
+      rpm: app.config.limits.per_app.requests.per_minute,
+      rpd: app.config.limits.per_app.requests.per_day,
+      monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
     });
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }

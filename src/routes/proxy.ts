@@ -28,7 +28,7 @@ export const proxyPrepare: MiddlewareHandler<ProxyEnv> = async (c, next) => {
   const markerIndex = c.req.path.indexOf(marker);
   const providerPath = markerIndex === -1 ? undefined : c.req.path.slice(markerIndex + marker.length);
   if (!providerPath) throw new GatewayError(403, "path_not_allowed", "Provider path is required");
-  const app = c.get("appConfig");
+  const app = c.get("app");
   const resolved = await requireProvider(c.env, app.organizationId, providerSlug);
   const provider = resolved.type;
   const preparedProxyRequest = await prepareProxyRequest({

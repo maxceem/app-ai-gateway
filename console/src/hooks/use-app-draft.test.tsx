@@ -6,6 +6,7 @@ import { useAppDraft } from "./use-app-draft";
 import { stubApi, testQueryClient } from "@/test/render";
 import { emptyIssuer, type AuthenticationDraft } from "@/lib/config-types";
 import { fromWireApp } from "@/lib/config-conversion";
+import { parseAppConfig } from "@shared/app-config";
 
 const APP_ID = "my-app";
 
@@ -24,7 +25,11 @@ const APPLE_ISSUER = {
 
 const APPLE_AUTH: AuthenticationDraft = {
   type: "apple_app_attest",
-  app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
+  app_attest: {
+    team_id: "AAAAAAAAAA",
+    bundle_id: "com.example.test",
+    environments: ["production"] as const,
+  },
   end_user: { source: "issuer", issuer: APPLE_ISSUER },
 };
 
@@ -46,7 +51,7 @@ function appRow(authentication: AuthenticationDraft) {
 async function loadedDraft(authentication: AuthenticationDraft) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(authentication), resolved: null, config_error: null },
+      body: { app: appRow(authentication), config_error: null },
     },
   });
   const client = testQueryClient();
@@ -208,7 +213,6 @@ describe("choosing an end-user source on an api_key draft", () => {
               },
             },
           },
-          resolved: null,
           config_error: null,
         },
       },
@@ -227,7 +231,7 @@ describe("choosing an end-user source on an api_key draft", () => {
       spending: { monthly_usd: null },
     });
     // The application-wide limits are untouched: they still mean something.
-    expect(view.result.current.draft!.config.limits!.per_app.requests.per_minute).toBe(100);
+    expect(view.result.current.draft!.config.limits!.per_app!.requests.per_minute).toBe(100);
   });
 
   it("forgets a draft-only issuer once the edits are discarded", async () => {
@@ -320,7 +324,7 @@ describe("application revision protection", () => {
         writtenBody = JSON.parse(String(init.body)) as Record<string, unknown>;
         return new Response(JSON.stringify({ error: { code: "app_revision_conflict", message: "Reload before saving" } }), { status: 409 });
       }
-      return new Response(JSON.stringify({ app: initial, resolved: null, config_error: null }));
+      return new Response(JSON.stringify({ app: initial, config_error: null }));
     }));
     const client = testQueryClient();
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
@@ -329,7 +333,6 @@ describe("application revision protection", () => {
     act(() => view.result.current.update({ name: "My unsaved edit" }));
     act(() => client.setQueryData(["app", APP_ID], fromWireApp({
       app: { ...initial, name: "Other editor", revision: 2 },
-      resolved: null,
       config_error: null,
     })));
     await waitFor(() => expect(view.result.current.query.data?.kind).toBe("valid"));
@@ -346,7 +349,7 @@ describe("application revision protection", () => {
     const put = new Promise<Response>((resolve) => { finishPut = resolve; });
     vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
       if (init?.method === "PUT") return put;
-      return new Response(JSON.stringify({ app: initial, resolved: null, config_error: null }));
+      return new Response(JSON.stringify({ app: initial, config_error: null }));
     }));
     const client = testQueryClient();
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -360,7 +363,6 @@ describe("application revision protection", () => {
     act(() => view.result.current.update({ name: "Newer unsaved name" }));
     finishPut(new Response(JSON.stringify({
       app: { ...initial, name: "Submitted name", revision: 2 },
-      resolved: null,
       config_error: null,
     })));
     await act(async () => { expect(await saving).toBe(true); });
@@ -391,7 +393,6 @@ describe("malformed configuration repair", () => {
   it("keeps raw edits and the opened revision across a valid background refresh", async () => {
     const invalid = fromWireApp({
       app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-      resolved: null,
       config_error: "Invalid routing configuration",
     });
     const client = testQueryClient();
@@ -406,7 +407,6 @@ describe("malformed configuration repair", () => {
 
     act(() => client.setQueryData(["app", APP_ID], fromWireApp({
       app: wireApp(APP_ID, 8, VALID_CONFIG),
-      resolved: {},
       config_error: null,
     })));
     await waitFor(() => expect(view.result.current.query.data?.kind).toBe("valid"));
@@ -420,7 +420,6 @@ describe("malformed configuration repair", () => {
     const client = testQueryClient();
     client.setQueryData(["app", APP_ID], fromWireApp({
       app: wireApp(APP_ID, 7, VALID_CONFIG),
-      resolved: {},
       config_error: null,
     }));
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -432,7 +431,6 @@ describe("malformed configuration repair", () => {
 
     act(() => client.setQueryData(["app", APP_ID], fromWireApp({
       app: wireApp(APP_ID, 8, { authentication: { type: "api_key" } }),
-      resolved: null,
       config_error: "Invalid routing configuration",
     })));
     await waitFor(() => expect(view.result.current.query.data?.kind).toBe("invalid"));
@@ -449,13 +447,11 @@ describe("malformed configuration repair", () => {
         written = JSON.parse(String(init.body)) as Record<string, unknown>;
         return new Response(JSON.stringify({
           app: wireApp(APP_ID, 8, VALID_CONFIG),
-          resolved: {},
           config_error: null,
         }));
       }
       return new Response(JSON.stringify({
         app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-        resolved: null,
         config_error: "Invalid routing configuration",
       }));
     }));
@@ -470,7 +466,8 @@ describe("malformed configuration repair", () => {
     await act(async () => { expect(await view.result.current.saveRepair()).toBe(true); });
 
     expect(written?.revision).toBe(7);
-    expect(view.result.current.draft?.config).toEqual(VALID_CONFIG);
+    // What is held afterwards is the parse of what was typed, defaults included.
+    expect(view.result.current.draft?.config).toEqual(parseAppConfig(VALID_CONFIG));
     expect(view.result.current.repair).toBeNull();
   });
 
@@ -481,7 +478,6 @@ describe("malformed configuration repair", () => {
       if (init?.method === "PUT") return put;
       return new Response(JSON.stringify({
         app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-        resolved: null,
         config_error: "Invalid routing configuration",
       }));
     }));
@@ -499,7 +495,6 @@ describe("malformed configuration repair", () => {
     act(() => view.result.current.updateRepair(newer));
     finishPut(new Response(JSON.stringify({
       app: wireApp(APP_ID, 8, VALID_CONFIG),
-      resolved: {},
       config_error: null,
     })));
     await act(async () => { expect(await saving).toBe(true); });
@@ -517,11 +512,9 @@ describe("malformed configuration repair", () => {
       const id = path.includes("other-app") ? "other-app" : APP_ID;
       return new Response(JSON.stringify(id === APP_ID ? {
         app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-        resolved: null,
         config_error: "Invalid routing configuration",
       } : {
         app: wireApp(id, 2, VALID_CONFIG),
-        resolved: {},
         config_error: null,
       }));
     }));
@@ -541,7 +534,6 @@ describe("malformed configuration repair", () => {
     await waitFor(() => expect(view.result.current.draft?.name).toBe("App other-app"));
     finishPut(new Response(JSON.stringify({
       app: wireApp(APP_ID, 8, VALID_CONFIG),
-      resolved: {},
       config_error: null,
     })));
     await act(async () => { await saving; });

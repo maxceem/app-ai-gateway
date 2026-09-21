@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { accountLifecycle } from "../src/core/account-lifecycle";
 import { verifyApiKey } from "../src/core/apikeys";
-import { loadAppConfig } from "../src/core/config";
+import { loadApp } from "../src/core/config";
 import { organizationProviders } from "../src/core/provider-store";
 import {
   clearIsolateCaches,
@@ -44,7 +44,7 @@ describe("authoritative security cache fills", () => {
     clearIsolateCaches();
     const primary = primaryOnlyEnv();
 
-    await expect(loadAppConfig(primary.value, appId)).resolves.toMatchObject({ id: appId });
+    await expect(loadApp(primary.value, appId)).resolves.toMatchObject({ id: appId });
     await expect(verifyApiKey(key, primary.value, appId, null)).resolves.toMatchObject({
       apiKeyId: `key_${appId}`,
     });

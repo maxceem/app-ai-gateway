@@ -13,11 +13,17 @@ import {
   type BillingRequestCache,
   type GatewayBillingAccess,
 } from "../src/billing/gateway";
-import { validateAppConfigJson } from "../src/core/config";
 import worker from "../src/index";
 import { resolveBillingQuota } from "../src/billing/quota";
 import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
-import { clearIsolateCaches, seedHuman, seedServerApp, serverConfig, TEST_ORGANIZATION_ID } from "./helpers";
+import {
+  clearIsolateCaches,
+  seedHuman,
+  seedServerApp,
+  serverConfig,
+  TEST_ORGANIZATION_ID,
+  validateConfig,
+} from "./helpers";
 
 const ORIGIN = "https://example.test";
 const MANAGEMENT_HEADERS = {
@@ -211,7 +217,7 @@ describe("billing gateway", () => {
    * large, which is what keeps the two quota systems independent.
    */
   it("imposes no plan ceiling on an application's own limits", () => {
-    expect(() => validateAppConfigJson(serverConfig())).not.toThrow();
+    expect(() => validateConfig(serverConfig())).not.toThrow();
     const generous = {
       // Per-user limits need somebody to apply to, so this app identifies its
       // users. What matters here is that no plan value refuses the numbers.
@@ -232,7 +238,7 @@ describe("billing gateway", () => {
         },
       },
     };
-    expect(validateAppConfigJson(generous)).toHaveProperty("limits");
+    expect(validateConfig(generous)).toHaveProperty("limits");
   });
 
   const billed = (limits?: unknown) =>

@@ -78,7 +78,13 @@ describe("initial database migration", () => {
       "status",
       "created_at",
       "updated_at",
+      // Added by 0003 and backfilled from config_json: what kind of application
+      // this is, lifted out of the JSON so the queries that only need that
+      // never parse a configuration.
+      "auth_type",
     ]);
+    expect(appColumns.results.find((column) => column.name === "auth_type"))
+      .toMatchObject({ notnull: 1, dflt_value: "''" });
     expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
     expect(spendColumns.results.map((column) => column.name)).toEqual([
       "id",

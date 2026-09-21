@@ -24,7 +24,7 @@ import {
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   ProviderPricingSchema,
-  SlugSchema,
+  StoredSlugSchema,
 } from "./schemas.ts";
 
 export const ErrorResponseSchema = z.object({
@@ -191,18 +191,18 @@ export const AppResponseSchema = z.object({
     id: z.string().meta({ description: "The gateway-assigned id, and the `{app}` segment of every URL for this application." }),
     name: z.string(),
     /**
-     * An `AppConfig`, except on the one row this shape's own `config_error`
-     * describes: a configuration written before a schema change is returned as
-     * it is stored, so an operator can read and repair it. Declared as the
-     * union rather than as `AppConfig` alone because a client that parses this
-     * response must still be able to read such a row.
+     * An `AppConfig` — the parsed one, which is also the stored one: what the
+     * gateway accepts is what it keeps, so there is no second "resolved" view
+     * of it to publish. The one exception is the row this shape's own
+     * `config_error` describes: a configuration written before a schema change
+     * is returned as it is stored, so an operator can read and repair it, and
+     * that is why this is declared as the union rather than as `AppConfig`.
      */
     config: z.union([AppConfigSchema, z.record(z.string(), z.unknown())]),
     status: z.enum(["active", "disabled"]),
     created_at: z.string(),
     updated_at: z.string(),
   }),
-  resolved: z.record(z.string(), z.unknown()).nullable().meta({ description: "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig." }),
   config_error: z.string().nullable().meta({ description: "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write." }),
 }).meta({ id: "AppResponse" });
 
@@ -244,7 +244,7 @@ export const ManagementKeyResponseSchema = z.object({ key: ManagementKeySummaryS
 export const ProviderSummarySchema = z.object({
   id: z.string(),
   type: z.enum(PROVIDER_TYPES),
-  slug: SlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
+  slug: StoredSlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
   name: z.string(),
   secretHint: z.string().nullable().meta({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",

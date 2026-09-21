@@ -14,7 +14,7 @@ import {
   type AppConfigDraft,
 } from "@/lib/config-types";
 import { useApp, useSaveApp } from "@/lib/queries";
-import { decodeStoredAppConfig } from "@shared/app-config";
+import { identifiesEndUsers, parseAppConfig } from "@shared/app-config";
 import type { AppRow, AppUpsertBody, InvalidAppResponse } from "@/lib/types";
 
 export interface Draft {
@@ -192,8 +192,7 @@ export function useAppDraft(appId: string) {
        * the card once there is no source — so leaving the numbers behind would
        * be a save that fails against fields the operator can no longer see.
        */
-      const identifiesUsers = next.type !== "api_key" || next.end_user !== undefined;
-      const config = identifiesUsers || current.config.limits === undefined
+      const config = identifiesEndUsers(next)
         ? current.config
         : {
           ...current.config,
@@ -314,7 +313,7 @@ export function useAppDraft(appId: string) {
       return false;
     }
     try {
-      const config = decodeStoredAppConfig(raw);
+      const config = parseAppConfig(raw);
       const saved = await saveMutation.mutateAsync({
         body: { name: activeRepair.row.name, status: activeRepair.row.status, config },
         revision: submittedRevision,

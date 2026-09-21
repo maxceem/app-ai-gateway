@@ -13,7 +13,7 @@
  * `./config-types` because it is a form, not a wire format.
  */
 import type { AppConfigDraft } from "./config-types";
-import type { StoredAppConfig, ResolvedAppConfig } from "@shared/app-config";
+import type { AppConfig } from "@shared/app-config";
 import type { AppResponse as WireAppResponse, CreatedApiKey } from "@contracts/responses";
 
 export type {
@@ -118,20 +118,17 @@ export type UsageFailureBucket = AuthEventSummary["usage_failures"][number];
  * contract's, and `client-api.ts` is where the two meet.
  */
 type AppMetadata = Omit<WireAppResponse["app"], "config">;
-export type AppRow = AppMetadata & { config: StoredAppConfig };
-export type ResolvedConfig = ResolvedAppConfig & Pick<AppMetadata, "id" | "name" | "status">;
+export type AppRow = AppMetadata & { config: AppConfig };
 
 export interface ValidAppResponse {
   kind: "valid";
   app: AppRow;
-  resolved: ResolvedConfig;
   config_error: null;
 }
 
 export interface InvalidAppResponse {
   kind: "invalid";
   app: AppMetadata & { config: Record<string, unknown> };
-  resolved: null;
   config_error: string;
 }
 

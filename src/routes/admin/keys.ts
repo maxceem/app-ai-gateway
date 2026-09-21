@@ -1,7 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { generateApiKey } from "../../core/apikeys";
-import { appConfigFromRow } from "../../core/config";
 import { GatewayError } from "../../core/errors";
 import { andCondition, planCap } from "../../core/plan-caps";
 import { prepareResourceReceipt } from "./resource-receipt";
@@ -26,10 +25,14 @@ function keyName(value: unknown): string {
   return name.trim();
 }
 
+/**
+ * Read off the column rather than the configuration: what kind of application
+ * this is does not need the whole grammar run over it, and a row whose stored
+ * configuration no longer parses is still unambiguously one kind or the other.
+ */
 function assertApiKeyApp(row: AdminVariables["adminApp"]): void {
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const app = appConfigFromRow(row);
-  if (app.authentication.type !== "api_key") {
+  if (row.authType !== "api_key") {
     throw new GatewayError(400, "invalid_request", "API keys can only be managed for api_key apps");
   }
 }
@@ -66,7 +69,7 @@ keyRoutes.post("/apps/:app/keys", async (c) => {
     `INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
      SELECT ?,?,?,?,?,'active',? WHERE ${condition.sql}
      AND EXISTS (SELECT 1 FROM app WHERE id = ? AND organization_id = ?
-       AND json_extract(config_json,'$.authentication.type') = 'api_key')`,
+       AND auth_type = 'api_key')`,
   ).bind(generated.id, appId, name, generated.keyHash, generated.keyPrefix, now,
     ...condition.params, appId, organizationId);
   // Every guard on this statement refuses the same way — no rows changed — so

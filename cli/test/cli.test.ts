@@ -5,6 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { responseSchemas } from "../../src/contracts/operation-schemas.ts";
+import { parseAppConfig } from "../../src/shared/app-config.ts";
 import { parse, commands, type CommandName } from "../src/parser.ts";
 import {
   StateStore,
@@ -539,10 +540,10 @@ test("a refused bootstrap leaves no pending account reservation", async () => {
 function appBody() {
   return {
     name: "Test",
-    config: {
-      authentication: { type: "api_key" as const },
-      routing: { providers: { mode: "all" as const }, model_rewrites: {} },
-    },
+    config: parseAppConfig({
+      authentication: { type: "api_key" },
+      routing: { providers: { mode: "all" }, model_rewrites: {} },
+    }),
   };
 }
 
@@ -578,10 +579,11 @@ test("advanced public app config and provider gateway IDs survive response parsi
       created_at: "now",
       updated_at: "now",
     },
-    resolved: null,
     config_error: null,
   });
-  assert.deepEqual(parsed.app.config, config);
+  // Parsed, so the schema's own defaults are there too; everything the body
+  // named survives them untouched.
+  assert.deepEqual(parsed.app.config, parseAppConfig(config));
 
   const gateway = responseSchemas.listProviderGateways.parse({
     gateways: [

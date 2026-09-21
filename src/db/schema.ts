@@ -10,7 +10,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import type { ProviderType, StoredAppConfig } from "../core/types";
+import type { AppConfig, ProviderType } from "../core/types";
 
 export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
@@ -172,8 +172,19 @@ export const app = sqliteTable(
       .references(() => mgmtOrganization.id),
     name: text("name").notNull(),
     config: text("config_json", { mode: "json" })
-      .$type<StoredAppConfig>()
+      .$type<AppConfig>()
       .notNull(),
+    /**
+     * `config.authentication.type`, lifted out so the queries that only need to
+     * know what kind of application this is never parse the configuration —
+     * and never reach into the JSON with `json_extract`, which is an index
+     * nothing can use and a path that silently answers null if the shape moves.
+     *
+     * Written by `src/core/app-writes.ts` alone, from the parsed configuration.
+     * No CHECK: the database is permissive and the runtime is authoritative,
+     * which is this schema's standing position.
+     */
+    authType: text("auth_type").notNull().default(""),
     revision: integer("revision").notNull().default(1),
     status: text("status").$type<AppStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),

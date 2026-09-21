@@ -118,7 +118,7 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
   // An app with no provider yet still gets an example, with placeholders where
   // its own configuration cannot fill one in — see `@shared/first-request`.
   const example = firstRequest(
-    details.data?.resolved?.routing,
+    details.data?.kind === "valid" ? details.data.app.config.routing : undefined,
     providers.data?.providers ?? [],
     prices.data?.prices ?? {},
   );

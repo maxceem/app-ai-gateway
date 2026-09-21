@@ -1,16 +1,16 @@
 import type { MiddlewareHandler } from "hono";
-import { assertAppActive, endUserHeader, endUserIssuer, loadAppConfig } from "../core/config";
+import { assertAppActive, endUserHeader, endUserIssuer, loadApp } from "../core/config";
 import { lookupActiveApiKeyById, verifyApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
 import { verifyGatewayToken } from "../core/jwt";
 import { organizationProviders, type OrganizationProviders } from "../core/provider-store";
 import { PROVIDER_REGISTRY, PROVIDER_SLUG_PATTERN } from "../core/providers";
 import { lookup } from "../core/records";
-import type { AppConfig, GatewayIdentity, ProviderType } from "../core/types";
+import type { AppRecord, GatewayIdentity, ProviderType } from "../core/types";
 import type { BillingVariables } from "../billing/gateway";
 
 export interface GatewayVariables extends BillingVariables {
-  appConfig: AppConfig;
+  app: AppRecord;
   identity: GatewayIdentity;
   authHeaderName: string;
   authDurationMs: number;
@@ -96,7 +96,7 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   const start = performance.now();
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadAppConfig(c.env, appId);
+  const app = await loadApp(c.env, appId);
   assertAppActive(app);
   /*
    * The organization's provider rows, started here and awaited as late as the
@@ -136,7 +136,7 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
       c.req.param("provider"),
       providersWarm,
     ),
-    endUserIssuer(app.authentication)?.token_header,
+    endUserIssuer(app.config.authentication)?.token_header,
   );
   /*
    * How the client proved itself and who it acts for are two different
@@ -145,14 +145,14 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
    * read from the request at all — an issuer-sourced or app-install one was
    * settled when the gateway token was minted, and is carried in its subject.
    */
-  const header = endUserHeader(app.authentication);
+  const header = endUserHeader(app.config.authentication);
   let verify: () => Promise<GatewayIdentity>;
   if (header !== undefined) {
     // Read before the verification starts, as it always has been: a request
     // that names no user is refused for that, not for its credential.
     const userId = requiredEndUserId(c.req.raw.headers, header);
     verify = () => verifyApiKey(credential.token, c.env, appId, userId);
-  } else if (app.authentication.type === "api_key" && app.authentication.end_user === undefined) {
+  } else if (app.config.authentication.type === "api_key" && app.config.authentication.end_user === undefined) {
     // No end users: the key is the whole identity, and `null` says so rather
     // than standing in for a user that does not exist.
     verify = () => verifyApiKey(credential.token, c.env, appId, null);
@@ -186,7 +186,7 @@ export const gatewayAuth: MiddlewareHandler<{ Bindings: Env; Variables: GatewayV
   const [verified] = await Promise.allSettled([verify(), providersWarm ?? Promise.resolve()]);
   if (verified.status === "rejected") throw verified.reason;
   const identity = verified.value;
-  c.set("appConfig", app);
+  c.set("app", app);
   c.set("identity", identity);
   c.set("authHeaderName", credential.headerName);
   c.set("authDurationMs", performance.now() - start);

@@ -6,7 +6,7 @@ import type { GatewayVariables } from "../middleware/auth";
 export const meRoutes = new Hono<{ Bindings: Env; Variables: GatewayVariables }>();
 
 meRoutes.get("/", async (c) => {
-  const app = c.get("appConfig");
+  const app = c.get("app");
   const identity = c.get("identity");
   /*
    * "Where do I stand" has no answer for a caller who is nobody. An application
@@ -22,7 +22,7 @@ meRoutes.get("/", async (c) => {
       "This application identifies no end users, so there is no per-user standing to report",
     );
   }
-  const perUser = app.limits.perUser;
+  const perUser = app.config.limits.per_user;
   const status = await c.env.USER_LIMITER
     .getByName(`${app.id}:${userId}`)
     .getStatus(Date.now());
@@ -32,7 +32,7 @@ meRoutes.get("/", async (c) => {
    * unlimited case free. Reporting the resulting zero as a day's traffic would
    * be a lie, so an uncounted day is `null` — unknown, not none.
    */
-  const counted = hasUserLevelLimits(app);
+  const counted = hasUserLevelLimits(app.config);
   return c.json({
     user_id: userId,
     /*
@@ -46,15 +46,13 @@ meRoutes.get("/", async (c) => {
      */
     limits: {
       requests_today: counted ? status.requestsToday : null,
-      requests_remaining: perUser.requestsPerDay === null
+      requests_remaining: perUser.requests.per_day === null
         ? null
-        : Math.max(0, perUser.requestsPerDay - status.requestsToday),
-      requests_per_minute: perUser.requestsPerMinute,
-      requests_per_day: perUser.requestsPerDay,
+        : Math.max(0, perUser.requests.per_day - status.requestsToday),
+      requests_per_minute: perUser.requests.per_minute,
+      requests_per_day: perUser.requests.per_day,
       monthly_cost_usd: status.monthlyCostMicrousd / 1_000_000,
-      monthly_budget_usd: perUser.monthlyBudgetMicrousd === null
-        ? null
-        : perUser.monthlyBudgetMicrousd / 1_000_000,
+      monthly_budget_usd: perUser.spending.monthly_usd,
       blocked: status.blocked,
     },
   });

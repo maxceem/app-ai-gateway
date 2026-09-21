@@ -15,20 +15,11 @@ const APP = {
   },
 };
 
-const RESOLVED = {
-  id: APP.id,
-  name: APP.name,
-  authentication: APP.config.authentication,
-  routing: { providerMode: "all", providers: undefined, modelRewrites: {} },
-  endpoints: {},
-  status: APP.status,
-};
-
 /** Rendered through the page, so the tab is reached the way the sidebar reaches it. */
 function renderSettings(role: "owner" | "member", tab = "settings") {
   stubApi({
     "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
-    "/v1/admin/apps/my-app": { body: { app: APP, resolved: RESOLVED, config_error: null } },
+    "/v1/admin/apps/my-app": { body: { app: APP, config_error: null } },
   });
   return renderAuthenticated(
     <Routes>

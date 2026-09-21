@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../core/auth-events";
-import { assertAppActive, endUserIssuer, loadAppConfig } from "../core/config";
+import { assertAppActive, endUserIssuer, loadApp } from "../core/config";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
@@ -11,7 +11,7 @@ import { issueGatewayToken } from "../core/jwt";
 import type {
   AppAttestEndUser,
   AppAttestEnvironment,
-  AppConfig,
+  AppRecord,
   AppleAppAttestAuthentication,
 } from "../core/types";
 import { database } from "../db";
@@ -74,15 +74,15 @@ function accessTtl(): number {
   return GATEWAY_TOKEN_TTL_SECONDS;
 }
 
-function appleAuth(app: AppConfig): AppleAppAttestAuthentication {
-  if (app.authentication.type !== "apple_app_attest") {
+function appleAuth(app: AppRecord): AppleAppAttestAuthentication {
+  if (app.config.authentication.type !== "apple_app_attest") {
     throw new GatewayError(
       403,
       "auth_method_not_supported",
       "Issuer token exchange is not supported for this app",
     );
   }
-  return app.authentication;
+  return app.config.authentication;
 }
 
 /**
@@ -367,7 +367,7 @@ authRoutes.post("/challenge", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_challenge");
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadAppConfig(c.env, appId);
+  const app = await loadApp(c.env, appId);
   assertAppActive(app);
   appleAuth(app);
   const bytes = new Uint8Array(32);
@@ -399,7 +399,7 @@ authRoutes.post("/register", async (c) => {
   return recorded(c, "register", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-    const app = await loadAppConfig(c.env, appId);
+    const app = await loadApp(c.env, appId);
     assertAppActive(app);
     const auth = appleAuth(app);
     attempt.authMethod = "attest";
@@ -443,17 +443,17 @@ authRoutes.post("/token", async (c) => {
   return recorded(c, "token_exchange", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-    const app = await loadAppConfig(c.env, appId);
+    const app = await loadApp(c.env, appId);
     assertAppActive(app);
     if ("api_key" in rawBody) {
-      if (app.authentication.type !== "api_key") {
+      if (app.config.authentication.type !== "api_key") {
         throw new GatewayError(
           400,
           "auth_method_not_supported",
           "API key token exchange is not supported for this app",
         );
       }
-      const issuer = endUserIssuer(app.authentication);
+      const issuer = endUserIssuer(app.config.authentication);
       if (!issuer) {
         throw new GatewayError(
           400,
@@ -487,11 +487,11 @@ authRoutes.post("/token", async (c) => {
       return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
     }
 
-    if (app.authentication.type === "api_key") {
+    if (app.config.authentication.type === "api_key") {
       throw new GatewayError(
         400,
         "invalid_request",
-        endUserIssuer(app.authentication)
+        endUserIssuer(app.config.authentication)
           ? "api_key and issuer_token are required"
           : "API key token exchange requires an issuer end-user source",
       );

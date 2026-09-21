@@ -10,6 +10,7 @@ import { MissingProvidersAlert } from "@/components/missing-providers-alert";
 import { MonthPicker } from "@/components/pickers";
 import { useAppDraft } from "@/hooks/use-app-draft";
 import { APP_SECTIONS, DEFAULT_APP_SECTION } from "@/lib/app-sections";
+import { draftLimits } from "@/lib/config-types";
 import { draftProblem } from "@/lib/draft-problems";
 import { currentMonth } from "@/lib/format";
 import { useConsoleSession } from "@/lib/console-session";
@@ -183,7 +184,7 @@ export function AppDetailPage() {
         // no limits block is unlimited.
         <UsersTab
           appId={appId}
-          monthlyBudgetUsd={draft.config.limits?.per_user.spending.monthly_usd ?? null}
+          monthlyBudgetUsd={draftLimits(draft.config.limits).per_user.spending.monthly_usd}
         />
       ) : tab === "errors" ? (
         <ErrorsTab appId={appId} />

@@ -104,7 +104,6 @@ function renderApps(
           },
         },
       },
-      resolved: { routing: { providerMode: "selected", providers: { openai: { allowed_paths: ["v1/responses"], allowed_models: ["configured-model"] } } } },
       config_error: null,
     } }])),
     "/v1/admin/prices": { body: { prices: {} } },

@@ -1,8 +1,7 @@
 import type {
-  AuthenticationConfig,
-  EndpointsConfig,
-  ResolvedLimitsConfig,
-  ResolvedRoutingConfig,
+  AppConfig,
+  EndpointConfig,
+  ProviderPolicy,
 } from "../shared/app-config.ts";
 
 export type { EndpointApiStyle, ProviderType } from "../shared/capabilities.ts";
@@ -10,54 +9,46 @@ export { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "../shared/app-config.ts";
 export type {
   AppAttestEnvironment,
   AppAttestEndUser,
-  AppInstallEndUser,
   AppleAppAttestAuthentication,
   ApiKeyEndUser,
   ApiKeyAuthentication,
+  AppConfig,
   AuthenticationConfig,
   ClaimRequirement,
   EndpointConfig,
   EndpointsConfig,
   EntitlementCheck,
-  EndUserIdentity,
-  HeaderEndUser,
-  IssuerAuthConfig,
-  IssuerEndUser,
+  IssuerAuthentication,
   IssuerProvider,
   LimitScopeConfig,
   LimitsConfig,
-  ProviderProxyConfig,
-  ResolvedLimitScope,
-  ResolvedLimitsConfig,
-  ResolvedRoutingConfig,
+  ProviderPolicy,
   RoutingConfig,
-  StoredAppConfig,
-  StoredAppleAppAttestAuthentication,
-  StoredAuthenticationConfig,
 } from "../shared/app-config.ts";
 export type { OutputClampStyle } from "../shared/capabilities.ts";
 
 export type GatewayAuthMethod = "attest" | "api_key";
 
-export type AllowedPathConfig = Exclude<
-  import("../contracts/schemas.ts").ProviderPolicy["allowed_paths"][number],
-  string
->;
-export type AllowedPath = import("../contracts/schemas.ts").ProviderPolicy["allowed_paths"][number];
-export type EndpointTarget = Pick<
-  import("../contracts/schemas.ts").EndpointConfig,
-  "provider" | "model"
->;
+export type AllowedPath = ProviderPolicy["allowed_paths"][number];
+export type AllowedPathConfig = Exclude<AllowedPath, string>;
+export type EndpointTarget = Pick<EndpointConfig, "provider" | "model">;
 
-export interface AppConfig {
+/**
+ * One stored application, as everything inside the Worker reads it.
+ *
+ * `config` is the parsed configuration itself — the same shape the API accepts
+ * and the database holds — rather than a projection of it. There used to be
+ * three: the wire type, a normalized "stored" type and a camelCase "resolved"
+ * one, and a reader had to know which of them it had been handed. The row's own
+ * columns stay beside it, because an app is a row as much as a configuration.
+ */
+export interface AppRecord {
   id: string;
   organizationId: string;
   name: string;
-  authentication: AuthenticationConfig;
-  routing: ResolvedRoutingConfig;
-  limits: ResolvedLimitsConfig;
-  endpoints: EndpointsConfig;
   status: "active" | "disabled";
+  revision: number;
+  config: AppConfig;
 }
 
 export interface GatewayIdentity {

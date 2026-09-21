@@ -750,16 +750,15 @@ describe("provider-native proxy", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["omitted", undefined],
-    ["empty", []],
-  ])("requires pricing even when allowed_models is %s", async (suffix, allowedModels) => {
-    const appId = `proxy-models-${suffix}`;
+  // An empty list is how a policy says "no restriction"; it is not how it says
+  // nothing at all, which the grammar refuses outright.
+  it("requires pricing even when allowed_models is empty", async () => {
+    const appId = "proxy-models-empty";
     const openai: Record<string, unknown> = {
       allowed_paths: ["v1/responses"],
+      allowed_models: [],
       max_output_tokens: 128,
     };
-    if (allowedModels !== undefined) openai.allowed_models = allowedModels;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
     const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
@@ -786,16 +785,13 @@ describe("provider-native proxy", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it.each([
-    ["omitted", undefined],
-    ["empty", []],
-  ])("allows default inference paths when allowed_paths is %s", async (suffix, allowedPaths) => {
-    const appId = `proxy-paths-${suffix}`;
+  it("allows default inference paths when allowed_paths is empty", async () => {
+    const appId = "proxy-paths-empty";
     const openai: Record<string, unknown> = {
+      allowed_paths: [],
       allowed_models: [],
       max_output_tokens: 128,
     };
-    if (allowedPaths !== undefined) openai.allowed_paths = allowedPaths;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
     const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
@@ -819,20 +815,15 @@ describe("provider-native proxy", () => {
     expect(captured[0]?.url).toBe("https://api.openai.com/v1/chat/completions");
   });
 
-  it.each([
-    ["omitted", undefined, "generateContent"],
-    ["empty", [], "streamGenerateContent"],
-  ])("resolves native Gemini URL models when allowed_paths is %s", async (
-    suffix,
-    allowedPaths,
-    operation,
-  ) => {
-    const appId = `proxy-gemini-paths-${suffix}`;
+  it.each(["generateContent", "streamGenerateContent"])(
+    "resolves native Gemini URL models under %s with an empty allowed_paths",
+    async (operation) => {
+    const appId = `proxy-gemini-paths-${operation}`;
     const gemini: Record<string, unknown> = {
+      allowed_paths: [],
       allowed_models: [],
       max_output_tokens: 128,
     };
-    if (allowedPaths !== undefined) gemini.allowed_paths = allowedPaths;
     await seedApp(appId, {
       proxy: {
         gemini,

@@ -117,7 +117,7 @@ function renderTab(
 ) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(endpoints), resolved: null, config_error: null },
+      body: { app: appRow(endpoints), config_error: null },
     },
     "/v1/admin/providers": { body: { providers } },
     "/v1/admin/provider-gateways": { body: { gateways } },
@@ -185,7 +185,7 @@ describe("EndpointsTab", () => {
   it("withholds gateway-routed instances until their routes are known", async () => {
     stubApi({
       [`/v1/admin/apps/${APP_ID}`]: {
-        body: { app: appRow(CHAT), resolved: null, config_error: null },
+        body: { app: appRow(CHAT), config_error: null },
       },
       "/v1/admin/providers": { body: { providers: [...PROVIDERS, OPENAI_VIA_VERCEL] } },
       // The one query that fails; everything else answers normally.

@@ -236,12 +236,13 @@ describe("provider resolution on the hot path", () => {
         model_rewrites: {},
       },
     });
+    // All-mode, because a configuration can no longer *name* `constructor` as a
+    // policy key at all: the grammar refuses the reserved keys outright. What
+    // has to hold here is the other half — that reaching the slug on the hot
+    // path resolves the organization's own row and never Object.prototype.
     await seedApp("prototype-slug-allowed", {
       organizationId: OTHER_ORGANIZATION_ID,
-      proxy: {
-        constructor: { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-sol"] },
-        model_rewrites: {},
-      },
+      proxy: { model_rewrites: {} },
     });
     const captured = captureUpstream();
 
@@ -256,16 +257,19 @@ describe("provider resolution on the hot path", () => {
       error: { code: "path_not_allowed", message: "Provider is disabled for this app" },
     });
 
-    // A model named "constructor" must not resolve through model_rewrites either.
+    // A model named "constructor" must not resolve through model_rewrites
+    // either: an unguarded lookup would hand the proxy Object's constructor and
+    // send it upstream as a model name. It stays the literal string, which has
+    // no price, and the request is refused before anything is sent.
     const rewrittenModel = await proxy({
       appId: "prototype-slug-allowed",
       token: await gatewayToken("prototype-slug-allowed"),
       path: "constructor/v1/responses",
       body: { model: "constructor", input: "hello" },
     });
-    expect(rewrittenModel.status).toBe(403);
+    expect(rewrittenModel.status).toBe(400);
     await expect(rewrittenModel.json()).resolves.toMatchObject({
-      error: { code: "model_not_allowed" },
+      error: { code: "pricing_not_configured" },
     });
 
     // The slug still works when the app really does allow it.

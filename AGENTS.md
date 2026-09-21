@@ -18,12 +18,18 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Treat `src/contracts/schemas.ts` as the source for public request schemas,
   `src/contracts/responses.ts` for response bodies, and
   `src/contracts/openapi.ts` as the source for documented operations.
+- `AppConfigSchema` in `src/contracts/schemas.ts` is the only parser of an
+  application configuration, and its output is what is stored. The server, the
+  console and the CLI all reach it through `parseAppConfig` in
+  `src/shared/app-config.ts`, which is also the one place a rejection is worded.
+  Add a rule there and nowhere else; a check written beside a caller is a second
+  grammar, and this project has had one before.
 - `src/contracts/operations.ts` is the descriptor table the console and the CLI
   both call through: method, path builder, request and response types. It is
-  runtime-light and imports every schema with `import type`, because the console
-  bundle must not gain zod; the runtime schemas the CLI parses with live in
-  `src/contracts/operation-schemas.ts`, which only the CLI loads. Adding an
-  endpoint either client uses means adding an entry to both.
+  runtime-light and imports every schema with `import type`; the runtime schemas
+  the CLI parses with live in `src/contracts/operation-schemas.ts`, which only
+  the CLI loads. Adding an endpoint either client uses means adding an entry to
+  both.
 - Answer a documented response with `satisfies` on its inferred type, so the
   handler fails `pnpm run check` when it drifts from its own document. Never add
   runtime parsing to a server response.

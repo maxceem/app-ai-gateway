@@ -1,4 +1,12 @@
-/** Mirrors the shapes `src/core/config.ts` parses on the Worker side. */
+/**
+ * The console's own view of an application configuration.
+ *
+ * The wire shapes are not restated here: they come from `@shared/app-config`,
+ * which is the one grammar the Worker parses with and the console now runs
+ * directly. What this file adds is the *draft* — the partially filled, named
+ * intermediate states a form passes through and a saved configuration has no
+ * vocabulary for — plus the labels and copy that go around them.
+ */
 
 import {
   ENDPOINT_PROVIDER_TYPES,
@@ -13,18 +21,18 @@ import {
 import {
   ENDPOINT_SLUG,
   type AppAttestEnvironment,
+  type AppConfigInput,
+  type AuthenticationConfigInput,
   type ClaimRequirement,
   type EndpointConfig,
   type EndpointsConfig,
   type EntitlementCheck,
-  type IssuerAuthConfig,
+  type IssuerAuthenticationInput,
   type IssuerProvider,
   type LimitScopeConfig,
   type LimitsConfig,
-  type ProviderProxyConfig,
+  type ProviderPolicy,
   type RoutingConfig,
-  type StoredAppConfig as NormalizedAppConfig,
-  type StoredAuthenticationConfig,
 } from "@shared/app-config";
 
 export { DEFAULT_END_USER_HEADER, ENDPOINT_SLUG } from "@shared/app-config";
@@ -115,11 +123,12 @@ export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["val
 export const CLAMP_STYLES = OUTPUT_CLAMP_STYLES;
 export type ClampStyle = OutputClampStyle;
 
-/** Incomplete issuer state while the form is being edited. */
-export type IssuerDraft = Partial<Omit<IssuerAuthConfig, "issuer" | "audience">> & {
-  issuer?: string | string[];
-  audience?: string | string[];
-};
+/**
+ * Incomplete issuer state while the form is being edited. Built on the schema's
+ * *input* type, because a half-typed form is exactly a body that has not been
+ * parsed yet — and a saved one round-trips through it unchanged.
+ */
+export type IssuerDraft = Partial<IssuerAuthenticationInput>;
 /** Stable compatibility name for existing form components. */
 export type AuthConfig = IssuerDraft;
 
@@ -131,18 +140,33 @@ export type AppAttestEndUserDraft = IssuerEndUserDraft | AppInstallEndUserDraft;
 export type EndUserIdentity = ApiKeyEndUserDraft | AppAttestEndUserDraft;
 
 export type AuthenticationDraft =
-  | (Omit<Extract<StoredAuthenticationConfig, { type: "apple_app_attest" }>, "end_user"> & {
+  | (Omit<Extract<AuthenticationConfigInput, { type: "apple_app_attest" }>, "end_user"> & {
       end_user: AppAttestEndUserDraft;
     })
-  | (Omit<Extract<StoredAuthenticationConfig, { type: "api_key" }>, "end_user"> & {
+  | (Omit<Extract<AuthenticationConfigInput, { type: "api_key" }>, "end_user"> & {
       end_user?: ApiKeyEndUserDraft;
     });
 
-export type AllowedPath = ProviderProxyConfig["allowed_paths"][number];
+/** A limits block as the form holds it: either scope may not have been written yet. */
+export type LimitsDraft = NonNullable<AppConfigInput["limits"]>;
+
+/** No limit of any kind, which is what an unwritten scope means. */
+export const UNLIMITED_SCOPE: LimitScopeConfig = {
+  requests: { per_minute: null, per_day: null },
+  spending: { monthly_usd: null },
+};
+
+/** A draft's limits with both scopes present, which is what every form field reads. */
+export const draftLimits = (limits: LimitsDraft | undefined): LimitsConfig => ({
+  per_user: limits?.per_user ?? UNLIMITED_SCOPE,
+  per_app: limits?.per_app ?? UNLIMITED_SCOPE,
+});
+
+export type AllowedPath = ProviderPolicy["allowed_paths"][number];
 export type AllowedPathObject = Exclude<AllowedPath, string>;
 export type EndpointTarget = Pick<EndpointConfig, "provider" | "model">;
 
-export interface ProviderConfig extends Partial<ProviderProxyConfig> {
+export interface ProviderConfig extends Partial<ProviderPolicy> {
   /** Missing or empty allows the default inference APIs; a non-empty list replaces that default. */
   allowed_paths?: AllowedPath[];
   /** Missing or empty allows every model; a non-empty list restricts access. */
@@ -186,9 +210,15 @@ export function instanceModels(
   return [...priced, ...overrides.filter((model) => !priced.includes(model))];
 }
 
-export interface ProxyConfig extends Omit<RoutingConfig, "providers" | "model_rewrites"> {
-  providers: Omit<RoutingConfig["providers"], "selected"> & {
-    mode: "all" | "selected";
+/**
+ * The routing block as the form holds it: one flat object rather than the
+ * saved discriminated union, because the mode toggle and the per-instance
+ * policies are edited independently and a half-edited draft has to be able to
+ * carry both. `normalizeAppConfigDraft` is where it becomes the union again.
+ */
+export interface ProxyConfig {
+  providers: {
+    mode: RoutingConfig["providers"]["mode"];
     /** Keyed by provider instance slug, matching `/proxy/{slug}/…`. */
     selected?: Partial<Record<string, ProviderConfig>>;
   };
@@ -222,8 +252,15 @@ export function endpointInstances<T extends ProviderInstance>(
   );
 }
 
-/** The explicitly incomplete shape edited by the structured form. */
-export interface AppConfigDraft extends Omit<NormalizedAppConfig, "authentication" | "routing"> {
+/**
+ * The explicitly incomplete shape edited by the structured form.
+ *
+ * Built on the schema's *input* type rather than its output: a form holds a
+ * configuration on its way to being one, so everything the schema defaults —
+ * `limits`, `endpoints`, the App Attest environments — is still optional here,
+ * and a saved configuration is simply an input that needs nothing filled in.
+ */
+export interface AppConfigDraft extends Omit<AppConfigInput, "authentication" | "routing"> {
   authentication: AuthenticationDraft;
   routing: ProxyConfig;
 }

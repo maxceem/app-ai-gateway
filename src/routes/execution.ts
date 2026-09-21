@@ -8,7 +8,7 @@ export const executionHandler: Handler<{
   Variables: GatewayVariables & ExecutionVariables;
 }> = (c) => execute(c.get("executionPlan"), {
   env: c.env,
-  app: c.get("appConfig"),
+  app: c.get("app"),
   identity: c.get("identity"),
   appVersion: c.req.header("x-app-version") ?? null,
   authDurationMs: c.get("authDurationMs"),

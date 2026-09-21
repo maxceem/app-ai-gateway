@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearAppConfigCache, loadAppConfig } from "../src/core/config";
+import { clearAppConfigCache, loadApp } from "../src/core/config";
 import {
   clearProviderCaches,
   organizationProviders,
@@ -380,8 +380,14 @@ describe("admin console API", () => {
     });
     expect(created.status).toBe(201);
     const body = await created.json<{
-      app: { id: string; name: string; status: string; created_at: string; updated_at: string };
-      resolved: { routing: { providerMode: string } };
+      app: {
+        id: string;
+        name: string;
+        status: string;
+        created_at: string;
+        updated_at: string;
+        config: { routing: { providers: { mode: string } } };
+      };
       config_error: string | null;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
@@ -392,7 +398,6 @@ describe("admin console API", () => {
     // A create answers with the application, in the shape a read answers with.
     const readBack = await get(`/v1/admin/apps/${body.app.id}`);
     expect(body.app).toEqual(readBack.body.app);
-    expect(body.resolved).toEqual(readBack.body.resolved);
     expect(body.config_error).toBeNull();
 
     const original = await get("/v1/admin/apps/calorie-tracker");
@@ -404,7 +409,9 @@ describe("admin console API", () => {
     ]);
     expect(JSON.stringify(keyList.body)).not.toContain(body.api_key.key);
 
-    expect(body.resolved.routing.providerMode).toBe("all");
+    // Stored is resolved: the response carries the configuration itself, and
+    // there is no second view of it to compare against.
+    expect(body.app.config.routing.providers.mode).toBe("all");
     const appList = await get("/v1/admin/apps");
     // The fixture configures one instance of every provider type, and an
     // all-providers app reaches all of them.
@@ -437,7 +444,8 @@ describe("admin console API", () => {
       .run();
     const { status, body } = await get("/v1/admin/apps/broken-config");
     expect(status).toBe(200);
-    expect(body.resolved).toBeNull();
+    // Returned as it is stored, so the repair editor has something to open.
+    expect(body.app.config).toEqual({ authentication: {}, routing: {}, limits: {} });
     expect(body.config_error).toContain("authentication.type");
     expect(body.app.name).toBe("Broken");
   });
@@ -683,8 +691,8 @@ describe("authoritative admin configuration", () => {
   it("resolves GET from its scoped primary row while the runtime cache is stale", async () => {
     const appId = "admin-primary-get";
     await seedApp(appId);
-    const cached = await loadAppConfig(env, appId);
-    expect(cached.authentication.type).toBe("apple_app_attest");
+    const cached = await loadApp(env, appId);
+    expect(cached.config.authentication.type).toBe("apple_app_attest");
 
     await env.DB.prepare(
       "UPDATE app SET name = ?, config_json = ?, status = 'disabled' WHERE id = ?",
@@ -692,17 +700,16 @@ describe("authoritative admin configuration", () => {
 
     const current = await get(`/v1/admin/apps/${appId}`);
     expect(current.status).toBe(200);
-    expect(current.body.app).toMatchObject({ name: "Current primary row", status: "disabled" });
-    expect(current.body.resolved).toMatchObject({
+    expect(current.body.app).toMatchObject({
       name: "Current primary row",
       status: "disabled",
-      authentication: { type: "api_key" },
+      config: { authentication: { type: "api_key" } },
     });
     // The admin response did not refresh or consult the still-stale runtime cache.
-    await expect(loadAppConfig(env, appId)).resolves.toMatchObject({
+    await expect(loadApp(env, appId)).resolves.toMatchObject({
       name: `Test ${appId}`,
       status: "active",
-      authentication: { type: "apple_app_attest" },
+      config: { authentication: { type: "apple_app_attest" } },
     });
     clearAppConfigCache();
   });
@@ -710,8 +717,8 @@ describe("authoritative admin configuration", () => {
   it("resolves PUT from the row returned by its write with a warm runtime cache", async () => {
     const appId = "admin-primary-put";
     await seedApp(appId);
-    await expect(loadAppConfig(env, appId)).resolves.toMatchObject({
-      authentication: { type: "apple_app_attest" },
+    await expect(loadApp(env, appId)).resolves.toMatchObject({
+      config: { authentication: { type: "apple_app_attest" } },
     });
 
     const scopedRow = await database(env.DB).query.app.findFirst({
@@ -760,11 +767,11 @@ describe("authoritative admin configuration", () => {
     }, requestEnv);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      app: { name: "Written primary row", status: "disabled", revision: 2 },
-      resolved: {
+      app: {
         name: "Written primary row",
         status: "disabled",
-        authentication: { type: "api_key" },
+        revision: 2,
+        config: { authentication: { type: "api_key" } },
       },
       config_error: null,
     });
@@ -774,8 +781,11 @@ describe("authoritative admin configuration", () => {
   it("uses the scoped primary row when deciding whether an app can create API keys", async () => {
     const appId = "admin-primary-key-mode";
     await seedApp(appId);
-    await loadAppConfig(env, appId);
-    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?")
+    await loadApp(env, appId);
+    // `auth_type` travels with the configuration it is lifted from, which is
+    // what the key routes read: they ask what kind of application this is, not
+    // what its whole configuration says.
+    await env.DB.prepare("UPDATE app SET config_json = ?, auth_type = 'api_key' WHERE id = ?")
       .bind(JSON.stringify(serverConfig()), appId)
       .run();
 

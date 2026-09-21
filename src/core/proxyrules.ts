@@ -19,17 +19,18 @@ import {
 import { lookup } from "./records";
 import { isBillable } from "./usage";
 import { isDefaultProxyApiStyle } from "../shared/capabilities";
+import { selectedProviderPolicies } from "../shared/app-config";
 import type {
   AllowedPath,
   AllowedPathConfig,
-  AppConfig,
+  AppRecord,
   OutputClampStyle,
   ProviderType,
-  ProviderProxyConfig,
+  ProviderPolicy,
 } from "./types";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
-const DEFAULT_PROVIDER_POLICY: ProviderProxyConfig = {
+const DEFAULT_PROVIDER_POLICY: ProviderPolicy = {
   allowed_paths: [],
   allowed_models: [],
 };
@@ -418,15 +419,15 @@ function stripClientHeaders(
  */
 export function sanitizedHeaders(
   request: Request,
-  app: AppConfig,
+  app: AppRecord,
   tokenHeader: string,
 ): Headers {
   const headers = new Headers(request.headers);
   stripClientHeaders(headers, "pending", [
-    endUserIssuer(app.authentication)?.token_header,
+    endUserIssuer(app.config.authentication)?.token_header,
     // The header this application reads its end-user id from. Consumed by the
     // gateway, so it stops here even when it is not the conventional name.
-    endUserHeader(app.authentication),
+    endUserHeader(app.config.authentication),
     tokenHeader,
   ]);
   return headers;
@@ -460,7 +461,7 @@ export function clientResponseHeaders(upstream: Response): Headers {
 
 export async function prepareProxyRequest(input: {
   request: Request;
-  app: AppConfig;
+  app: AppRecord;
   userId: string | null;
   provider: ProviderType;
   providerSlug: string;
@@ -473,9 +474,9 @@ export async function prepareProxyRequest(input: {
   /** The resolved row's per-model overrides; they win over the global catalog. */
   pricing: ProviderPricing | null;
 }): Promise<PreparedProxyRequest> {
-  const config = input.app.routing.providerMode === "all"
+  const config = input.app.config.routing.providers.mode === "all"
     ? DEFAULT_PROVIDER_POLICY
-    : lookup(input.app.routing.providers, input.providerSlug);
+    : lookup(selectedProviderPolicies(input.app.config.routing), input.providerSlug);
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const apiStyle = apiStyleFromPath(input.providerPath);
   if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
@@ -519,7 +520,7 @@ export async function prepareProxyRequest(input: {
     if (!modelIsAllowed(config.allowed_models, requestedModel)) {
       throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
     }
-    const actualModel = lookup(input.app.routing.modelRewrites, requestedModel) ?? requestedModel;
+    const actualModel = lookup(input.app.config.routing.model_rewrites, requestedModel) ?? requestedModel;
     if (!isBillable(input.provider, actualModel, input.pricing)) {
       throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
     }
@@ -567,7 +568,7 @@ export async function prepareProxyRequest(input: {
   if (!modelIsAllowed(config.allowed_models, requestedModel)) {
     throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
   }
-  const actualModel = lookup(input.app.routing.modelRewrites, requestedModel) ?? requestedModel;
+  const actualModel = lookup(input.app.config.routing.model_rewrites, requestedModel) ?? requestedModel;
   if (!isBillable(input.provider, actualModel, input.pricing)) {
     throw new GatewayError(400, "pricing_not_configured", unpricedMessage(input.provider, actualModel));
   }

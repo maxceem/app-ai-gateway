@@ -173,6 +173,24 @@ describe("admin provider instances", () => {
       .toEqual(["openai", "openai-dev"]);
   });
 
+  /*
+   * `constructor` and `prototype` match the slug pattern and are legal keys on
+   * every plain object, so a row holding one would name a slug no application
+   * policy could ever reference — the configuration grammar refuses those keys.
+   * Refusing them here is what keeps the two ends agreeing.
+   */
+  it.each(["constructor", "prototype"])("refuses the reserved slug %s", async (slug) => {
+    stubProbe();
+    const response = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug,
+      name: "Reserved slug",
+      secret: "secret",
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("invalid_request");
+  });
+
   it("rejects cross-type use of a reserved default slug", async () => {
     stubProbe();
     const response = await call("POST", "/v1/admin/providers", {

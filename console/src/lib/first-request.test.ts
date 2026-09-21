@@ -4,14 +4,19 @@ import {
   exampleNotes,
   firstRequest,
   swiftSnippet,
+  type ExamplePolicy,
   type ExampleProvider,
   type ExampleRouting,
   type RequestExample,
 } from "@shared/first-request";
 
-const routing = (policy: object = {}): ExampleRouting => ({
-  providerMode: "selected",
-  providers: { custom: policy },
+/** An application that selects one instance, under whatever policy a case needs. */
+const routing = (policy: Partial<ExamplePolicy> = {}): ExampleRouting => ({
+  providers: {
+    mode: "selected",
+    selected: { custom: { allowed_paths: [], allowed_models: [], ...policy } },
+  },
+  model_rewrites: {},
 });
 const provider = (type = "openai"): ExampleProvider => ({ slug: "custom", type, status: "active" });
 const prices = { openai: { "text-model": { input: 1, output: 2 } } };

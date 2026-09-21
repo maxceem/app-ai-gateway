@@ -199,7 +199,7 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | Call | Body | Notes |
 | --- | --- | --- |
 | `GET /v1/admin/apps` | | `apps[]` with each app's month-to-date usage |
-| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at }, resolved, config_error }` |
+| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at }, config_error }` |
 | `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id, exists }` or a 400 naming the problem. Works for an ID that does not exist yet |
 | `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
 | `PUT /v1/admin/apps/{app}` | `{ name, config, status?, revision }` | Full replace; `revision` must be the one the last read returned |

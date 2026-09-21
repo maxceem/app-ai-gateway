@@ -5,7 +5,7 @@ import {
   requireActiveBilling,
   type BillingVariables,
 } from "../billing/gateway";
-import { loadAppConfig } from "../core/config";
+import { loadApp } from "../core/config";
 import { GatewayError } from "../core/errors";
 import { organizationProviders } from "../core/provider-store";
 import { deploymentPolicy } from "../policy/deployment";
@@ -27,7 +27,7 @@ export const billingEntitlementGate: MiddlewareHandler<{
 
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadAppConfig(c.env, appId);
+  const app = await loadApp(c.env, appId);
   const served = c.req.path.includes("/proxy/") || c.req.path.includes("/endpoints/");
   /*
    * The account's own deadlines, first and on every application route. An

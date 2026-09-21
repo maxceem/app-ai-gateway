@@ -3,7 +3,8 @@
  *
  * One source for the console's example card and the CLI's `app snippet`, which
  * used to derive the same example twice and print it in two shapes. It imports
- * nothing, for the reason `./capabilities.ts` gives: the console bundles it.
+ * nothing at runtime, for the reason `./capabilities.ts` gives: the console
+ * bundles it. The one import below is a type, and so costs the bundle nothing.
  *
  * The example is always produced. An application created a minute ago has no
  * provider, no catalogued model, and sometimes a policy that allows no path
@@ -13,6 +14,8 @@
  * ever invents a provider slug or a model ID that would fail on arrival while
  * looking like configuration.
  */
+
+import type { ProviderPolicy, RoutingConfig } from "./app-config.ts";
 
 export const PROVIDER_PLACEHOLDER = "PROVIDER_SLUG";
 export const MODEL_PLACEHOLDER = "MODEL";
@@ -27,17 +30,15 @@ export const EXAMPLE_GAP_NOTES: Record<ExampleGap, string> = {
   body: `This app allows no path whose request shape is known here, so ${BODY_PLACEHOLDER} stands in for the body the provider documents.`,
 };
 
-/** One entry of an app's proxy policy, as both the stored and resolved form carry it. */
-export interface ExamplePolicy {
-  allowed_paths?: (string | { path: string; fixed_model?: string })[] | null;
-  allowed_models?: string[] | null;
-}
+/** One entry of an app's proxy policy, as the configuration carries it. */
+export type ExamplePolicy = ProviderPolicy;
 
-/** Which providers an app may reach, and under what policy. */
-export interface ExampleRouting {
-  providerMode: "all" | "selected";
-  providers?: Record<string, ExamplePolicy | undefined> | null;
-}
+/**
+ * Which providers an app may reach, and under what policy: the application's
+ * own routing block, not a projection of it. There is one shape for this and
+ * this module reads it directly.
+ */
+export type ExampleRouting = RoutingConfig;
 
 /** As much of a provider as an example needs: where it sits and what it prices. */
 export interface ExampleProvider {
@@ -132,8 +133,9 @@ export function firstRequest(
   let fallback: RequestExample | undefined;
   for (const provider of providers) {
     if (provider.status !== "active") continue;
-    const policy = routing?.providers?.[provider.slug];
-    if (routing?.providerMode === "selected" && !policy) continue;
+    const selected = routing?.providers.mode === "selected" ? routing.providers.selected : undefined;
+    const policy = selected?.[provider.slug];
+    if (selected !== undefined && !policy) continue;
     const models = modelsFor(provider, policy, prices);
     const model = models[0] ?? MODEL_PLACEHOLDER;
     const gaps: ExampleGap[] = models.length ? [] : ["model"];

@@ -1,13 +1,15 @@
 import { Hono, type Context } from "hono";
 import { and, eq } from "drizzle-orm";
 import { getBillingAccess, requireActiveBilling } from "../../billing/gateway";
+import { invalidateAppConfig, referencedProviderSlugs } from "../../core/config";
+import { validateConfigurationReferences } from "../../core/config-references";
 import {
-  appConfigFromRow,
-  invalidateAppConfig,
-  parseStoredAppConfig,
-  referencedProviderSlugs,
-  validateAppConfigJson,
-} from "../../core/config";
+  ConfigError,
+  configErrorFor,
+  parseAppConfig,
+  selectedProviderPolicies,
+  type AppConfig,
+} from "../../shared/app-config";
 import { generateApiKey } from "../../core/apikeys";
 import { GatewayError } from "../../core/errors";
 import {
@@ -27,7 +29,7 @@ import {
   appUser,
 } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { APP_ID_IS_SERVER_ASSIGNED, AppUpdateSchema, AppWriteSchema } from "../../contracts/schemas";
+import { AppUpdateSchema, AppWriteSchema } from "../../contracts/schemas";
 import type {
   AppDeleteResponse,
   AppListResponse,
@@ -35,15 +37,6 @@ import type {
   AppValidateResponse,
 } from "../../contracts/responses";
 import { assertMonth, currentMonth, organizationMonthUsage } from "./shared";
-
-/**
- * The resolved configuration as it is published: a JSON object, which is all
- * the contract says about it. TypeScript will not assign an interface to an
- * index-signature type even when every one of its members is JSON, so this
- * names the widening in one place instead of at each response.
- */
-const asJsonObject = (value: object): Record<string, unknown> =>
-  value as Record<string, unknown>;
 
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const APP_ID_MAX_LENGTH = 63;
@@ -74,7 +67,7 @@ const APP_ID_SUFFIX_LENGTH = 12;
 
 interface AppWriteBody {
   name: string;
-  config: Record<string, unknown>;
+  config: AppConfig;
   status?: "active" | "disabled";
 }
 
@@ -109,19 +102,9 @@ const APP_REVISION_REQUIRED =
 
 function appBody(value: unknown): AppWriteBody {
   const parsed = AppWriteSchema.safeParse(value);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    // The one rejection a client is likely to hit while catching up with the
-    // contract, and "unrecognized key" would not tell it what to do instead.
-    if (issue?.code === "unrecognized_keys" && issue.keys.includes("id")) {
-      throw new GatewayError(400, "invalid_request", APP_ID_IS_SERVER_ASSIGNED);
-    }
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      issue ? `${issue.path.join(".") || "body"}: ${issue.message}` : "Invalid application body",
-    );
-  }
+  // One formatter, shared with the console and the CLI, so a body rejected here
+  // reads the same wherever it was composed.
+  if (!parsed.success) throw new GatewayError(400, "invalid_request", configErrorFor(parsed.error).message);
   const body = parsed.data;
   return {
     name: body.name,
@@ -170,11 +153,6 @@ function generatedAppId(name: string): string {
   return `${stem}-${suffix}`;
 }
 
-function asBadRequest(error: unknown): never {
-  if (error instanceof GatewayError) throw new GatewayError(400, "invalid_request", error.message);
-  throw error;
-}
-
 /**
  * Writes are validated against the global price catalog merged with this
  * organization's own overrides, so a model the operator has priced under
@@ -182,42 +160,45 @@ function asBadRequest(error: unknown): never {
  * app's stored configuration already names, which an update may keep even if
  * the instance behind one has since been deleted; creates pass nothing.
  */
+const NO_GRANDFATHERED_SLUGS: ReadonlySet<string> = new Set();
+
 function validatedConfig(
-  next: Record<string, unknown>,
+  next: AppConfig,
   providers: OrganizationProviders,
-  grandfathered?: ReadonlySet<string>,
-): ReturnType<typeof validateAppConfigJson> {
+  grandfathered: ReadonlySet<string> = NO_GRANDFATHERED_SLUGS,
+): AppConfig {
   try {
-    return validateAppConfigJson(next, providers, grandfathered);
+    validateConfigurationReferences(next, { instances: providers, grandfathered });
+    return next;
   } catch (error) {
-    asBadRequest(error);
+    if (error instanceof ConfigError) {
+      throw new GatewayError(400, "invalid_request", error.message);
+    }
+    throw error;
   }
 }
 
-function summary(
-  config: ReturnType<typeof validateAppConfigJson>,
-  providerIndex: OrganizationProviders,
-) {
+function summary(config: AppConfig, providerIndex: OrganizationProviders) {
   // Disabled instances are excluded from the all-mode expansion: the summary
   // says what the app can reach, and a paused slug is not reachable.
+  const selected = selectedProviderPolicies(config.routing);
   const providerSlugs = config.routing.providers.mode === "all"
     ? Object.keys(providerIndex).filter((slug) => providerIndex[slug]?.status === "active")
-    : Object.keys(config.routing.providers.selected ?? {});
+    : Object.keys(selected);
   const models = new Set<string>();
-  for (const provider of Object.values(config.routing.providers.selected ?? {})) {
-    for (const model of provider?.allowed_models ?? []) models.add(model);
+  for (const provider of Object.values(selected)) {
+    for (const model of provider.allowed_models) models.add(model);
   }
   // The slugs this configuration names outright — selected policies and
   // endpoint targets — as opposed to `providers`, which an all-mode app expands
   // to everything. This is what "which apps use this provider?" means when a
   // delete or disable is about to be confirmed.
-  const referenced = new Set<string>(Object.keys(config.routing.providers.selected ?? {}));
-  for (const endpoint of Object.values(config.endpoints ?? {})) {
+  const referenced = new Set<string>(Object.keys(selected));
+  for (const endpoint of Object.values(config.endpoints)) {
     referenced.add(endpoint.provider);
     for (const fallback of endpoint.fallback ?? []) referenced.add(fallback.provider);
   }
   return {
-    authentication_type: config.authentication.type,
     apple_bundle_id: config.authentication.type === "apple_app_attest"
       ? config.authentication.app_attest.bundle_id
       : null,
@@ -226,7 +207,7 @@ function summary(
     allowed_model_count: models.size,
     // What the whole app may spend this month, so the list can show the
     // month's cost against it. `null` is unlimited, as everywhere in limits.
-    monthly_budget_usd: config.limits?.per_app.spending.monthly_usd ?? null,
+    monthly_budget_usd: config.limits.per_app.spending.monthly_usd,
   };
 }
 
@@ -335,7 +316,6 @@ appRoutes.get("/apps", async (c) => {
       const totals = usageByApp.get(row.id);
       const userCounts = countsByApp.get(row.id);
       let configSummary: ReturnType<typeof summary> | {
-        authentication_type: "invalid";
         apple_bundle_id: null;
         providers: string[];
         referenced_providers: string[];
@@ -343,10 +323,9 @@ appRoutes.get("/apps", async (c) => {
         monthly_budget_usd: null;
       };
       try {
-        configSummary = summary(parseStoredAppConfig(row.config, null).stored, providerIndex);
+        configSummary = summary(parseAppConfig(row.config), providerIndex);
       } catch {
         configSummary = {
-          authentication_type: "invalid",
           apple_bundle_id: null,
           providers: [],
           referenced_providers: [],
@@ -359,6 +338,11 @@ appRoutes.get("/apps", async (c) => {
         name: row.name,
         status: row.status,
         created_at: row.createdAt,
+        // Off the column, so a row whose configuration no longer parses still
+        // says what kind of application it is rather than "invalid".
+        authentication_type: row.authType === "apple_app_attest" || row.authType === "api_key"
+          ? row.authType
+          : "invalid" as const,
         ...configSummary,
         users: { total: userCounts?.total ?? 0, blocked: userCounts?.blocked ?? 0 },
         usage: {
@@ -405,7 +389,6 @@ appRoutes.post("/apps", async (c) => {
   } : null;
   const outcome = {
     app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now },
-    resolved: { id: appId, organizationId, name, status, ...parseStoredAppConfig(config, null).resolved },
     config_error: null,
     api_key: createdKey,
   };
@@ -454,14 +437,15 @@ appRoutes.post("/apps", async (c) => {
 appRoutes.get("/apps/:app", async (c) => {
   const row = c.get("adminApp");
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
-  let resolved: Record<string, unknown> | null = null;
+  // A row is answered exactly as it is stored, parseable or not: `config_error`
+  // is what tells the console to open the repair editor over the raw JSON.
   let configError: string | null = null;
   try {
-    resolved = asJsonObject(appConfigFromRow(row));
+    parseAppConfig(row.config);
   } catch (error) {
     configError = error instanceof Error ? error.message : String(error);
   }
-  return c.json({ app: serializeRow(row), resolved, config_error: configError } satisfies AppResponse);
+  return c.json({ app: serializeRow(row), config_error: configError } satisfies AppResponse);
 });
 
 appRoutes.post("/apps/:app/validate", async (c) => {
@@ -515,9 +499,8 @@ appRoutes.put("/apps/:app", async (c) => {
   const written = await updateApp(c.env.DB, values);
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
-  const resolved = appConfigFromRow(written);
   return c.json(
-    { app: serializeRow(written), resolved: asJsonObject(resolved), config_error: null } satisfies AppResponse,
+    { app: serializeRow(written), config_error: null } satisfies AppResponse,
     200,
   );
 });

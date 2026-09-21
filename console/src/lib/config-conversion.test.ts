@@ -25,7 +25,7 @@ describe("console configuration conversion", () => {
     };
 
     expect(() => toAppWrite({ name: "My app", config: draft }))
-      .toThrowError("authentication.issuer.user_id_claim must be a non-empty string");
+      .toThrowError("authentication.end_user.issuer.user_id_claim: Invalid input");
   });
 
   it("materializes editable maps and filters deselected provider entries", () => {

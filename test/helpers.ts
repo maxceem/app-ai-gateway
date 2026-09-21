@@ -21,7 +21,11 @@ import {
   type ProviderGatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
-import type { ProviderType, StoredAppConfig } from "../src/core/types";
+import type { ProviderType } from "../src/core/types";
+import { parseAppConfig } from "../src/shared/app-config";
+import { validateConfigurationReferences } from "../src/core/config-references";
+import type { OrganizationProviders } from "../src/core/provider-store";
+import { recordFromEntries } from "../src/core/records";
 import { createCfAuth } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../src/db/schema";
 
@@ -143,9 +147,8 @@ export interface SeedOptions {
   auth?: Record<string, unknown>;
   endpoints?: Record<string, unknown>;
   /**
-   * The app's own limits on its end users. Omitted entirely when no field is
-   * given, so the seeded config matches an app that never set one and the
-   * request path skips the limiter exactly as it does in production.
+   * The app's own limits on its end users. Every field defaults to null, which
+   * is an app that limits nothing and skips the limiter Durable Object.
    */
   limits?: { rpm?: number | null; rpd?: number | null; app_rpm?: number | null; app_rpd?: number | null };
   budgetUsd?: number | null;
@@ -153,15 +156,11 @@ export interface SeedOptions {
 }
 
 /**
- * The `limits` block for a seeded app, or nothing at all when the test asked
- * for no limits. Absent is not the same as all-null to the request path: one
- * skips the Durable Object, the other would still be a configured scope.
+ * The `limits` block for a seeded app. Always written in full, because that is
+ * what the schema produces now: an app that sets nothing is the one whose every
+ * number is null, and the request path reads exactly that.
  */
 export function limitsConfig(options: SeedOptions): Record<string, unknown> {
-  const wanted = options.limits !== undefined
-    || options.budgetUsd !== undefined
-    || options.appBudgetUsd !== undefined;
-  if (!wanted) return {};
   return {
     limits: {
       per_user: {
@@ -192,14 +191,43 @@ export function serverConfig(input: {
   proxy?: Record<string, unknown>;
   authentication?: Record<string, unknown>;
   endpoints?: Record<string, unknown>;
+  limits?: Record<string, unknown>;
 } = {}): Record<string, unknown> {
   return {
-    ...(input.endpoints === undefined ? {} : { endpoints: input.endpoints }),
+    endpoints: input.endpoints ?? {},
     // No end users unless a test says otherwise: it is the smallest valid
     // server application, and the shape most configuration tests care about.
     authentication: input.authentication ?? { type: "api_key" },
     routing: routingConfig(input.proxy ?? {}),
+    limits: input.limits ?? limitsConfig({}).limits,
   };
+}
+
+/**
+ * Every provider type as though the organization ran one instance of it under
+ * its own name. The reference checks are organization-scoped, and a
+ * configuration test that is not about provider rows wants the permissive
+ * index rather than a fixture per case.
+ */
+export const WELL_KNOWN_PROVIDER_INSTANCES: OrganizationProviders = recordFromEntries(
+  PROVIDER_TYPES.map((type) => [
+    type,
+    { id: type, slug: type, type, route: "direct" as const, pricing: null, status: "active" as const },
+  ] as const),
+);
+
+/**
+ * A configuration as a management write judges it: the grammar first, then the
+ * organization-scoped reference, capability and price checks.
+ */
+export function validateConfig(
+  raw: unknown,
+  instances: OrganizationProviders = WELL_KNOWN_PROVIDER_INSTANCES,
+  grandfathered: ReadonlySet<string> = new Set(),
+) {
+  const config = parseAppConfig(raw);
+  validateConfigurationReferences(config, { instances, grandfathered });
+  return config;
 }
 
 export function appleConfig(
@@ -226,6 +254,8 @@ export function appleConfig(
       },
     },
     routing: routingConfig(input.proxy ?? {}),
+    limits: limitsConfig({}).limits,
+    endpoints: {},
   };
 }
 
@@ -270,7 +300,7 @@ export async function seedApp(
       ? TEST_ORGANIZATION_ID
       : options.organizationId,
     name: `Test ${appId}`,
-    config: {
+    config: parseAppConfig({
       authentication: {
         type: "apple_app_attest",
         app_attest: {
@@ -294,8 +324,9 @@ export async function seedApp(
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       ...limitsConfig(options),
-      ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
-    } as unknown as StoredAppConfig,
+      endpoints: options.endpoints ?? {},
+    }),
+    authType: "apple_app_attest",
     status: "active",
   });
 }
@@ -322,7 +353,7 @@ export async function seedServerApp(
       ? TEST_ORGANIZATION_ID
       : options.organizationId,
     name: `Test ${appId}`,
-    config: {
+    config: parseAppConfig({
       authentication: {
         type: "api_key",
         /*
@@ -350,8 +381,9 @@ export async function seedServerApp(
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       ...limitsConfig(options),
-      ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
-    } as unknown as StoredAppConfig,
+      endpoints: options.endpoints ?? {},
+    }),
+    authType: "api_key",
     status: "active",
   });
   await database(env.DB).insert(appApiKey).values({

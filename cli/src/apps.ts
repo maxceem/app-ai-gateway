@@ -26,6 +26,7 @@ import {
   swiftSnippet,
   type RequestExample,
 } from "../../src/shared/first-request.ts";
+import { selectedProviderPolicies } from "../../src/shared/app-config.ts";
 
 const unlimited = () => ({
   requests: { per_minute: null, per_day: null },
@@ -51,7 +52,6 @@ export type ValidationResult =
 export interface AppWriteResult {
   snippet?: string;
   app: AppResponse["app"];
-  resolved: AppResponse["resolved"];
   config_error: AppResponse["config_error"];
   applicationKey?: StoredKeyMetadata;
   guidance: string;
@@ -92,31 +92,17 @@ export function documentOf(app: AppResponse["app"]): AppWrite {
   return localApp({ name: app.name, config: app.config, status: app.status });
 }
 
+/**
+ * A write body as the gateway's own grammar defines it.
+ *
+ * Nothing is checked here beyond the schema: the App Attest identifier formats
+ * and the rule that per-user limits need an end-user source used to be
+ * re-implemented in this file, and they now live in the schema the server
+ * parses with, so `agw` refuses exactly what the deployment would and says it
+ * in the same words.
+ */
 export function localApp(value: unknown): AppWrite {
-  const doc = validate(AppWriteSchema, value);
-  const auth = doc.config.authentication;
-  if (auth.type === "apple_app_attest") {
-    if (!/^[A-Z0-9]{10}$/.test(auth.app_attest.team_id))
-      fail(
-        "invalid_input",
-        "App Attest team_id must contain ten uppercase letters or digits.",
-      );
-    if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(auth.app_attest.bundle_id))
-      fail(
-        "invalid_input",
-        "App Attest bundle_id must be a reverse DNS identifier.",
-      );
-  }
-  if (
-    auth.type === "api_key" &&
-    !auth.end_user &&
-    doc.config.limits?.per_user &&
-    (doc.config.limits.per_user.requests.per_minute !== null ||
-      doc.config.limits.per_user.requests.per_day !== null ||
-      doc.config.limits.per_user.spending.monthly_usd !== null)
-  )
-    fail("invalid_input", "User limits require an end-user identity source.");
-  return doc;
+  return validate(AppWriteSchema, value);
 }
 
 export async function appDocument(flags: Flags, current?: AppWrite): Promise<AppWrite> {
@@ -212,7 +198,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   }
   const selectedProviders = flagList(flags.provider);
   if (selectedProviders.length) {
-    const previous = doc.config.routing.providers.selected ?? {};
+    const previous = selectedProviderPolicies(doc.config.routing);
     doc.config.routing.providers = {
       mode: "selected",
       selected: Object.fromEntries(
@@ -355,13 +341,12 @@ export async function appCommand(
         : null;
     try {
       let app: AppResponse["app"];
-      let resolved: AppResponse["resolved"];
       let configError: AppResponse["config_error"];
       let key: StoredKeyMetadata | undefined;
       if (action === "add") {
         await ctx.bootstrap();
         const created = await ctx.create("createApp", [], doc);
-        ({ app, resolved, config_error: configError } = created.data);
+        ({ app, config_error: configError } = created.data);
         if (output) {
           if (created.keyMetadata) key = created.keyMetadata;
           else {
@@ -382,7 +367,7 @@ export async function appCommand(
         const updated = await ctx.call("updateApp", [appId], {
           body: { ...doc, revision },
         });
-        ({ app, resolved, config_error: configError } = updated.data);
+        ({ app, config_error: configError } = updated.data);
       }
       // The request this application can now send, written against whatever it
       // has: a provider it can reach and a priced model where those exist, and
@@ -402,7 +387,6 @@ export async function appCommand(
       return {
         ...(snippet ? { snippet } : {}),
         app,
-        resolved,
         config_error: configError,
         ...(key ? { applicationKey: key } : {}),
         guidance:
@@ -475,12 +459,11 @@ export async function appCommand(
   if (action === "check") {
     const validation = await remoteValidation(ctx, doc, appId);
     const { data: providers } = await ctx.call("listProviders", []);
+    const allowed = selectedProviderPolicies(doc.config.routing);
     const selected =
       doc.config.routing.providers.mode === "all"
         ? providers.providers
-        : providers.providers.filter((p) =>
-            Object.hasOwn(doc.config.routing.providers.selected ?? {}, p.slug),
-          );
+        : providers.providers.filter((p) => Object.hasOwn(allowed, p.slug));
     return {
       appId,
       validation,
@@ -519,7 +502,7 @@ export async function appCommand(
     const notes: string[] = [];
     let example: RequestExample;
     if (flags.endpoint) {
-      const endpoint = doc.config.endpoints?.[flags.endpoint];
+      const endpoint = doc.config.endpoints[flags.endpoint];
       if (!endpoint)
         fail("endpoint_not_found", "Choose an existing named endpoint.");
       // A named endpoint holds the provider, the model and the parameters, so
@@ -532,10 +515,8 @@ export async function appCommand(
         gaps: responses ? [] : ["body"],
       };
     } else {
-      const routing = {
-        providerMode: doc.config.routing.providers.mode,
-        providers: doc.config.routing.providers.selected,
-      };
+      const routing = doc.config.routing;
+      const allowed = selectedProviderPolicies(routing);
       const { data: all } = await ctx.call("listProviders", []);
       // What this application may send to today, which is narrower than what
       // the account holds: a disabled provider serves nothing, and a selected
@@ -543,8 +524,7 @@ export async function appCommand(
       const reachable = all.providers.filter(
         (p) =>
           p.status === "active" &&
-          (routing.providerMode === "all" ||
-            Object.hasOwn(routing.providers ?? {}, p.slug)),
+          (routing.providers.mode === "all" || Object.hasOwn(allowed, p.slug)),
       );
       const requested = typeof flags.provider === "string" ? flags.provider : undefined;
       if (requested && !reachable.some((p) => p.slug === requested))

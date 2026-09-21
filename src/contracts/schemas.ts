@@ -1,13 +1,56 @@
 import { z } from "zod";
 import { MAX_BASE_URL_LENGTH } from "../core/origin-guard.ts";
-import { PROVIDER_TYPES } from "../shared/capabilities.ts";
 import {
-  ENDPOINT_SLUG,
-  ENTITLEMENT_CHECKS,
-  HTTP_FIELD_NAME,
-  ISSUER_PROVIDERS,
-  PROVIDER_SLUG_PATTERN,
-} from "../shared/app-config.ts";
+  ENDPOINT_API_STYLES,
+  OUTPUT_CLAMP_STYLES,
+  PROVIDER_TYPES,
+} from "../shared/capabilities.ts";
+import { PROVIDER_CREDENTIAL_HEADERS } from "../shared/provider-auth.ts";
+
+/**
+ * The vocabulary an application configuration is written in.
+ *
+ * It lives beside the schema that enforces it rather than in `src/shared`,
+ * because the schema *is* the grammar now: one parser, one set of patterns, and
+ * nothing that can drift from it. `src/shared/app-config.ts` re-exports these
+ * for the callers that have always read them from there.
+ */
+export const ISSUER_PROVIDERS = ["firebase", "supabase", "auth0", "clerk", "custom"] as const;
+export const ENTITLEMENT_CHECKS = ["revenuecat", "custom"] as const;
+export const APP_ATTEST_ENVIRONMENTS = ["production", "development"] as const;
+export const DEFAULT_END_USER_HEADER = "x-end-user-id";
+export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
+export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const HTTP_FIELD_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+
+/** Apple's ten-character team identifier, as the developer portal prints it. */
+const APPLE_TEAM_ID = /^[A-Z0-9]{10}$/;
+/** A reverse-DNS bundle identifier: at least two dot-separated labels. */
+const APPLE_BUNDLE_ID = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+
+/**
+ * Keys a configuration may never name, wherever it supplies its own.
+ *
+ * Every one of them is a legal own property on a JSON object and a member of
+ * `Object.prototype`, so a lookup that reached the prototype would resolve a
+ * provider, a rewrite or an endpoint nobody configured. The reads themselves
+ * are already own-property-only; refusing the keys means the question never
+ * arises, and no stored configuration can be written to pose it.
+ *
+ * `__proto__` is refused in the same breath, but zod removes it from a record
+ * before any check can see it — which is the same outcome by a shorter route:
+ * it is never parsed, and so never stored.
+ */
+const RESERVED_OBJECT_KEYS: ReadonlySet<string> = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+
+const RESERVED_KEY_ERROR = "key cannot be __proto__, constructor or prototype";
+
+const safeKey = <T extends z.ZodString>(schema: T): T =>
+  schema.refine((key) => !RESERVED_OBJECT_KEYS.has(key), { error: RESERVED_KEY_ERROR });
 
 /**
  * Registry-driven, and deliberately narrower than the database's own CHECK: the
@@ -24,24 +67,89 @@ export const ProviderTypeSchema = z.enum(PROVIDER_TYPES);
  */
 const NullableRequestLimit = z.number().int().positive().nullable();
 
-/** A spending limit in USD, or null for unlimited. Zero is allowed and means no spend. */
-const NullableSpendLimit = z.number().nonnegative().nullable();
-export const SlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
+/**
+ * A spending limit in USD, or null for unlimited. Zero is allowed and means no
+ * spend. Bounded above by what survives the conversion to whole microdollars
+ * the limiter counts in: past that a budget silently stops being the number
+ * that was typed.
+ */
+const NullableSpendLimit = z.number()
+  .nonnegative()
+  .refine((usd) => Number.isSafeInteger(Math.round(usd * 1_000_000)), {
+    error: "monthly_usd is too large",
+  })
+  .nullable();
+/**
+ * A provider instance slug: the `{slug}` segment of `/proxy/{slug}/…`, and the
+ * key an application's routing policy names an instance by.
+ *
+ * Reserved keys are refused here rather than where the policy is keyed, so a
+ * slug that no configuration could ever reference cannot be claimed in the
+ * first place. `__proto__` never reaches the check — the pattern has no
+ * underscore — leaving `constructor` and `prototype`, which the pattern does
+ * admit and which every plain object already answers to.
+ */
+export const SlugSchema = safeKey(
+  z.string().regex(PROVIDER_SLUG_PATTERN).meta({
+    description:
+      "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved.",
+  }),
+);
+
+/**
+ * The same slug on the way out, without the reserved-name refusal.
+ *
+ * A row created before that rule existed still has to be readable: a client
+ * that parses responses — the CLI does — would otherwise fail to list an
+ * organization's providers because one of them holds a name it may no longer
+ * choose. Refusing on the way in is what makes the rule; refusing on the way
+ * out would only hide the row that needs renaming.
+ */
+export const StoredSlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
 
 const ClaimRequirementSchema = z.object({
-  path: z.string(),
+  path: z.string().min(1),
   contains: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
   equals: z.union([z.string(), z.number(), z.boolean()]).optional(),
+}).strict().superRefine((value, context) => {
+  // Exactly one: a requirement with both says two different things about the
+  // same claim, and one with neither says nothing and would admit everybody.
+  if ((value.contains === undefined) === (value.equals === undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: "Claim requirements need exactly one of contains or equals",
+    });
+  }
 });
 
 /**
  * One value or a list of alternatives, for the two claims that scope an app to
  * a tenant. A list covers a migration between two issuers or bundle ids.
+ *
+ * Stored as a list either way: the gateway compares against a set, and a single
+ * string is just the one-element case of it. Writing that normalization here
+ * rather than at each read is what lets the stored form be the parsed form.
  */
-const IssuerClaimValuesSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+const IssuerClaimValuesSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+  .transform((value) => (typeof value === "string" ? [value] : value));
 
 const IssuerAuthenticationSchema = z.object({
-  jwks_url: z.url(),
+  /**
+   * HTTPS only, and stored in the canonical form `URL` prints: the gateway
+   * fetches this on the authentication path, so a plaintext origin would put
+   * the keys that verify every token on the wire for anyone to replace.
+   */
+  jwks_url: z.url({ protocol: /^https$/, error: "Issuer JWKS URLs must be valid and use HTTPS" })
+    // Guarded, because a check still runs on a value the format check has
+    // already rejected, and `new URL` on one of those throws out of the parse.
+    .overwrite((value) => {
+      try {
+        return new URL(value).toString();
+      } catch {
+        return value;
+      }
+    })
+    .meta({ description: "An https URL. Stored in the canonical form `URL` prints." }),
   /**
    * Required: several issuers publish one JWKS for every customer — Firebase
    * signs all projects with the same keys — so without `iss` and `aud` a token
@@ -49,8 +157,9 @@ const IssuerAuthenticationSchema = z.object({
    */
   issuer: IssuerClaimValuesSchema,
   audience: IssuerClaimValuesSchema,
-  user_id_claim: z.string(),
-  token_header: z.string().optional(),
+  user_id_claim: z.string().min(1),
+  /** Lowercased, because header lookups ignore case. */
+  token_header: z.string().min(1).toLowerCase().optional(),
   required_claims: z.array(ClaimRequirementSchema),
   max_token_lifetime_seconds: z.number().int().positive(),
   /**
@@ -58,21 +167,49 @@ const IssuerAuthenticationSchema = z.object({
    * which kind of paid-user check `required_claims` implements. Bookkeeping for
    * the console, so it can show "Firebase, project X" and reopen the same
    * form: the gateway verifies tokens from the fields above and reads neither.
+   *
+   * Refused rather than dropped when this build does not know the name. The
+   * hand-written store-side parser used to drop one silently, but the write
+   * path never let one through — the public schema has always been checked
+   * first — so refusing is what the API already did, said once.
    */
   provider: z.enum(ISSUER_PROVIDERS).optional(),
   entitlement: z.enum(ENTITLEMENT_CHECKS).optional(),
 }).strict();
 
 /**
+ * Headers the gateway already owns, which an application may therefore not read
+ * its end-user id from. Naming a credential carrier would read the caller's own
+ * key as a user id and then store and display it.
+ */
+const RESERVED_END_USER_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  ...PROVIDER_CREDENTIAL_HEADERS,
+  "x-app-version",
+  "content-type",
+  "content-length",
+  "host",
+]);
+
+/**
  * A header name, as HTTP defines one (RFC 9110 field names). Bounded because it
- * is echoed into error messages and compared on every request, and lowercased by
- * the parser since header lookups ignore case.
+ * is echoed into error messages and compared on every request, and lowercased
+ * here since header lookups ignore case.
  */
 const EndUserHeaderSchema = z.string()
   .trim()
+  .toLowerCase()
   .min(1)
   .max(64)
-  .regex(HTTP_FIELD_NAME, { error: "header must be a valid HTTP header name" });
+  .regex(HTTP_FIELD_NAME, { error: "must be a valid HTTP header name" })
+  .superRefine((header, context) => {
+    if (RESERVED_END_USER_HEADERS.has(header)) {
+      context.addIssue({
+        code: "custom",
+        message: `cannot be ${header}: the gateway already uses that header`,
+      });
+    }
+  });
 
 const HeaderEndUserSchema = z.object({
   source: z.literal("header"),
@@ -108,22 +245,26 @@ const AppleAppAttestAuthenticationSchema = z.object({
   type: z.literal("apple_app_attest"),
   end_user: AppAttestEndUserSchema,
   app_attest: z.object({
-    team_id: z.string(),
-    bundle_id: z.string(),
+    team_id: z.string().regex(APPLE_TEAM_ID, {
+      error: "team_id must contain ten uppercase letters or digits",
+    }),
+    bundle_id: z.string().regex(APPLE_BUNDLE_ID, {
+      error: "bundle_id must be a reverse DNS identifier",
+    }),
     /**
      * Which of Apple's two App Attest environments this application accepts.
-     * Omitted means `["production"]` alone, because a development-signed build
+     * Defaulted to `["production"]` alone, because a development-signed build
      * stamps a different aaguid and is debuggable on any device carrying the
      * team's provisioning profile. Accepting one is therefore a deliberate
      * per-application opt-in, and belongs on a development bundle id rather
      * than the one shipped to the App Store.
      */
-    environments: z.array(z.enum(["production", "development"]))
-      .min(1)
+    environments: z.array(z.enum(APP_ATTEST_ENVIRONMENTS))
+      .min(1, { error: "environments must name at least one environment" })
       .refine((values) => new Set(values).size === values.length, {
         error: "environments cannot repeat a value",
       })
-      .optional(),
+      .prefault(["production"]),
   }).strict(),
 }).strict();
 
@@ -138,18 +279,25 @@ const ApiKeyAuthenticationSchema = z.object({
   end_user: ApiKeyEndUserSchema.optional(),
 }).strict();
 
+const AllowedPathSchema = z.union([
+  z.string().min(1),
+  z.object({
+    path: z.string().min(1),
+    fixed_model: z.string().min(1).optional(),
+    clamp: z.enum(OUTPUT_CLAMP_STYLES).optional(),
+  }).strict(),
+]);
+
+/**
+ * What one provider instance may be asked for. Both lists are required on the
+ * wire — empty means "no restriction", which is a different statement from
+ * "unspecified", and the console's draft layer materializes them.
+ */
 const ProviderPolicySchema = z.object({
-  allowed_paths: z.array(z.union([
-    z.string(),
-    z.object({
-      path: z.string(),
-      fixed_model: z.string().optional(),
-      clamp: z.enum(["responses", "chat_completions", "gemini_native", "anthropic", "none"]).optional(),
-    }),
-  ])),
-  allowed_models: z.array(z.string()),
+  allowed_paths: z.array(AllowedPathSchema),
+  allowed_models: z.array(z.string().min(1)),
   max_output_tokens: z.number().int().positive().optional(),
-});
+}).strict();
 
 const EndpointTargetSchema = z.object({
   provider: SlugSchema,
@@ -157,42 +305,124 @@ const EndpointTargetSchema = z.object({
 });
 
 const EndpointSchema = EndpointTargetSchema.extend({
-  api_style: z.enum(["responses", "transcription"]),
+  api_style: z.enum(ENDPOINT_API_STYLES),
   params: z.record(z.string(), z.unknown()).optional(),
   max_output_tokens: z.number().int().positive().optional(),
   fallback: z.array(EndpointTargetSchema).optional(),
-});
+}).strict();
 
 const LimitScopeSchema = z.object({
   requests: z.object({
     per_minute: NullableRequestLimit,
     per_day: NullableRequestLimit,
-  }),
-  spending: z.object({ monthly_usd: NullableSpendLimit }),
-});
+  }).strict(),
+  spending: z.object({ monthly_usd: NullableSpendLimit }).strict(),
+}).strict();
 
+/** No limit of any kind, which is what an unwritten scope means. */
+const UNLIMITED_SCOPE = {
+  requests: { per_minute: null, per_day: null },
+  spending: { monthly_usd: null },
+} as const;
+
+/**
+ * Whether an application identifies its end users at all. An App Attest app
+ * always does; an `api_key` app does only once it names a source.
+ */
+export function identifiesEndUsers(
+  authentication: { type: string; end_user?: unknown },
+): boolean {
+  return authentication.type !== "api_key" || authentication.end_user !== undefined;
+}
+
+/** Whether a scope sets any limit at all, as opposed to being written out in full as unlimited. */
+export const scopeHasLimits = (scope: LimitScopeConfig): boolean =>
+  scope.requests.per_minute !== null
+  || scope.requests.per_day !== null
+  || scope.spending.monthly_usd !== null;
+
+/**
+ * An application's configuration: the one grammar, and the one shape.
+ *
+ * What this schema accepts is what the gateway stores, and what it produces is
+ * what every reader — the request path, the console, the CLI — works on. There
+ * is no second parser and no resolved projection: the defaults below are
+ * applied once, here, so `limits`, `endpoints` and the App Attest environments
+ * are always present on a parsed configuration and nobody downstream has to ask
+ * whether they were written.
+ *
+ * Every object is strict. A key this grammar does not define is a client that
+ * has misread the contract or a field that has been removed, and both are
+ * better answered by name than silently dropped.
+ */
 export const AppConfigSchema = z.object({
   authentication: z.discriminatedUnion("type", [
     AppleAppAttestAuthenticationSchema,
     ApiKeyAuthenticationSchema,
   ]),
   routing: z.object({
-    providers: z.object({
-      mode: z.enum(["all", "selected"]),
-      selected: z.record(SlugSchema, ProviderPolicySchema).optional(),
+    /**
+     * Discriminated, because the two modes carry different fields: `all` names
+     * nothing and `selected` must name its policies. Declaring `selected` as an
+     * optional member of one object made "all mode with a selection" and
+     * "selected mode with nothing selected" both expressible, and only the
+     * hand-written parser refused them.
+     */
+    providers: z.discriminatedUnion("mode", [
+      z.object({ mode: z.literal("all") }).strict(),
+      z.object({
+        mode: z.literal("selected"),
+        selected: z.record(SlugSchema, ProviderPolicySchema, {
+          error: "routing.providers.selected must be keyed by provider instance slug",
+        }),
+      }).strict(),
+    ], { error: "routing.providers.mode must be all or selected" }),
+    model_rewrites: z.record(safeKey(z.string().min(1)), z.string().min(1), {
+      error: "routing.model_rewrites must be keyed by a model name",
     }),
-    model_rewrites: z.record(z.string(), z.string()),
-  }),
+  }).strict(),
   /**
-   * The organization's own limits on its app's end users. Optional: an absent
-   * block is unlimited, so an app that never sets one stores nothing.
+   * The organization's own limits on its app's end users, always present on a
+   * parsed configuration: an unwritten block is the unlimited one.
    */
   limits: z.object({
-    per_user: LimitScopeSchema,
-    per_app: LimitScopeSchema,
-  }).optional(),
-  endpoints: z.record(z.string().regex(ENDPOINT_SLUG), EndpointSchema).optional(),
+    per_user: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
+    per_app: LimitScopeSchema.prefault(UNLIMITED_SCOPE),
+  }).strict().prefault({}),
+  endpoints: z.record(
+    safeKey(z.string().regex(ENDPOINT_SLUG)),
+    EndpointSchema,
+    { error: "is not a valid slug; use 1-64 characters from a-z, 0-9, and -" },
+  ).prefault({}),
+}).strict().superRefine((config, context) => {
+  /*
+   * Per-user limits need somebody to apply to. An application that identifies
+   * no end users has nobody, so a configured `per_user` scope would be a limit
+   * that never applies — and an operator who believes they have capped their
+   * users. `per_app` is what such an application caps instead.
+   */
+  // Defensive reads: zod still runs a whole-object check when a member has
+  // already been rejected, and then neither of these has been parsed.
+  const authentication = config.authentication as AuthenticationConfig | undefined;
+  const perUser = config.limits?.per_user as LimitScopeConfig | undefined;
+  if (
+    authentication !== undefined
+    && perUser !== undefined
+    && !identifiesEndUsers(authentication)
+    && scopeHasLimits(perUser)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["limits", "per_user"],
+      message:
+        "needs an authentication.end_user source: this application identifies no end users, so use limits.per_app",
+    });
+  }
 }).meta({ id: "AppConfig" });
+
+/** What a client may send, and what a parse of it produces. They differ: see the defaults above. */
+export type AppConfig = z.output<typeof AppConfigSchema>;
+export type AppConfigInput = z.input<typeof AppConfigSchema>;
 
 /**
  * The body of every application write. It carries no `id`: the gateway derives
@@ -471,23 +701,31 @@ export const OrganizationSelectRequestSchema = z.object({
 }).meta({ id: "OrganizationSelectRequest" });
 
 /** Inferred request bodies, so a consumer never re-describes one by hand. */
-export type AppConfig = z.infer<typeof AppConfigSchema>;
-export type AppWrite = z.infer<typeof AppWriteSchema>;
-export type ClaimRequirement = z.infer<typeof ClaimRequirementSchema>;
-export type IssuerAuthentication = z.infer<typeof IssuerAuthenticationSchema>;
-export type IssuerProvider = NonNullable<IssuerAuthentication["provider"]>;
-export type EntitlementCheck = NonNullable<IssuerAuthentication["entitlement"]>;
-export type ApiKeyEndUser = z.infer<typeof ApiKeyEndUserSchema>;
-export type AppAttestEndUser = z.infer<typeof AppAttestEndUserSchema>;
-export type AppAttestEnvironment = NonNullable<
-  z.infer<typeof AppleAppAttestAuthenticationSchema>["app_attest"]["environments"]
->[number];
-export type ProviderPolicy = z.infer<typeof ProviderPolicySchema>;
+export type AppWrite = z.output<typeof AppWriteSchema>;
+/** The same body as a client composes it, before the schema's defaults apply. */
+export type AppWriteInput = z.input<typeof AppWriteSchema>;
+export type ClaimRequirement = z.output<typeof ClaimRequirementSchema>;
+export type IssuerAuthentication = z.output<typeof IssuerAuthenticationSchema>;
+export type IssuerAuthenticationInput = z.input<typeof IssuerAuthenticationSchema>;
+export type IssuerProvider = (typeof ISSUER_PROVIDERS)[number];
+export type EntitlementCheck = (typeof ENTITLEMENT_CHECKS)[number];
+export type ApiKeyEndUser = z.output<typeof ApiKeyEndUserSchema>;
+export type AppAttestEndUser = z.output<typeof AppAttestEndUserSchema>;
+export type AppAttestEnvironment = (typeof APP_ATTEST_ENVIRONMENTS)[number];
+export type AuthenticationConfig = AppConfig["authentication"];
+/** The same block as a client may send it, which is what a half-filled form is. */
+export type AuthenticationConfigInput = AppConfigInput["authentication"];
+export type AppleAppAttestAuthentication = Extract<
+  AuthenticationConfig,
+  { type: "apple_app_attest" }
+>;
+export type ApiKeyAuthentication = Extract<AuthenticationConfig, { type: "api_key" }>;
+export type ProviderPolicy = z.output<typeof ProviderPolicySchema>;
 export type RoutingConfig = AppConfig["routing"];
-export type LimitScopeConfig = z.infer<typeof LimitScopeSchema>;
-export type LimitsConfig = NonNullable<AppConfig["limits"]>;
-export type EndpointConfig = z.infer<typeof EndpointSchema>;
-export type EndpointsConfig = NonNullable<AppConfig["endpoints"]>;
+export type LimitScopeConfig = z.output<typeof LimitScopeSchema>;
+export type LimitsConfig = AppConfig["limits"];
+export type EndpointConfig = z.output<typeof EndpointSchema>;
+export type EndpointsConfig = AppConfig["endpoints"];
 export type GatewayRouteConfigInput = z.infer<typeof GatewayRouteConfigSchema>;
 export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;
 export type OrganizationSelectRequest = z.infer<typeof OrganizationSelectRequestSchema>;

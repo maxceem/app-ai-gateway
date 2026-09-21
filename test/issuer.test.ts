@@ -1,12 +1,12 @@
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearJwksCache, verifyIssuerToken } from "../src/core/issuer";
-import type { IssuerAuthConfig } from "../src/core/types";
+import type { IssuerAuthentication } from "../src/core/types";
 
 const ISSUER = "https://issuer.test/";
 const AUDIENCE = "test-audience";
 
-const baseConfig: IssuerAuthConfig = {
+const baseConfig: IssuerAuthentication = {
   jwks_url: "https://issuer.test/.well-known/jwks.json",
   issuer: [ISSUER],
   audience: [AUDIENCE],
@@ -55,7 +55,7 @@ describe("issuer JWT verification", () => {
   it("matches audience, scope, and nested array requirements uniformly", async () => {
     const fixture = await signingFixture("key-claims");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
-    const config: IssuerAuthConfig = {
+    const config: IssuerAuthentication = {
       ...baseConfig,
       // `mobile` is what the configured audience admits; the narrower
       // `app-ai-gateway` is a claim requirement on top of it, so both tokens below
@@ -91,7 +91,7 @@ describe("issuer JWT verification", () => {
   it("accepts any listed value when contains is an array of alternatives", async () => {
     const fixture = await signingFixture("key-any-of");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
-    const config: IssuerAuthConfig = {
+    const config: IssuerAuthentication = {
       ...baseConfig,
       required_claims: [{ path: "revenueCatEntitlements", contains: ["pro", "pro_test"] }],
     };
@@ -106,7 +106,7 @@ describe("issuer JWT verification", () => {
   it("accepts only Firebase-shaped tokens from the configured project with the pro entitlement", async () => {
     const fixture = await signingFixture("firebase-key");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
-    const firebaseConfig: IssuerAuthConfig = {
+    const firebaseConfig: IssuerAuthentication = {
       ...baseConfig,
       jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
       issuer: ["https://securetoken.google.com/example-production"],
@@ -170,7 +170,7 @@ describe("issuer JWT verification", () => {
     const fixture = await signingFixture("key-multi");
     vi.spyOn(globalThis, "fetch")
       .mockImplementation(() => Promise.resolve(Response.json({ keys: [fixture.publicJwk] })));
-    const config: IssuerAuthConfig = {
+    const config: IssuerAuthentication = {
       ...baseConfig,
       issuer: ["https://old-issuer.test/", ISSUER],
       audience: ["old-audience", AUDIENCE],
@@ -412,7 +412,7 @@ describe("issuer rejection reasons", () => {
     // the right user instead of guessing from an unverified body.
     const fixture = await signingFixture("claims-user");
     serveJwks([fixture.publicJwk]);
-    const config: IssuerAuthConfig = {
+    const config: IssuerAuthentication = {
       ...baseConfig,
       required_claims: [{ path: "entitlements", contains: "pro" }],
     };

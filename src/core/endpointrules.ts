@@ -11,7 +11,7 @@ import {
   type PreparedProxyRequest,
 } from "./proxyrules";
 import type {
-  AppConfig,
+  AppRecord,
   EndpointApiStyle,
   EndpointConfig,
   EndpointTarget,
@@ -130,7 +130,7 @@ export function endpointAttemptRequest(
 
 export async function prepareEndpointRequest(input: {
   request: Request;
-  app: AppConfig;
+  app: AppRecord;
   slug: string;
   endpoint: EndpointConfig;
   tokenHeader: string;

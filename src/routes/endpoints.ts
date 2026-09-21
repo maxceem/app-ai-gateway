@@ -41,10 +41,10 @@ export const endpointPrepare: MiddlewareHandler<EndpointEnv> = async (c, next) =
     throw new GatewayError(400, "invalid_request", "X-App-Version header is required");
   }
   const slug = c.req.param("slug") ?? "";
-  const app = c.get("appConfig");
+  const app = c.get("app");
   // Own-property lookup only: a path segment must never reach Object.prototype.
-  const endpoint = ENDPOINT_SLUG.test(slug) && Object.hasOwn(app.endpoints, slug)
-    ? lookup(app.endpoints, slug)
+  const endpoint = ENDPOINT_SLUG.test(slug) && Object.hasOwn(app.config.endpoints, slug)
+    ? lookup(app.config.endpoints, slug)
     : undefined;
   if (!endpoint) {
     throw new GatewayError(404, "endpoint_not_found", "Endpoint is not configured for this app");

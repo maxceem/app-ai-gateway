@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AppWrite } from "../../src/contracts/schemas.ts";
 import { operations } from "../../src/contracts/operations.ts";
+import { parseAppConfig, selectedProviderPolicies } from "../../src/shared/app-config.ts";
 import { CliErrorDetailsSchema } from "../../src/contracts/operation-schemas.ts";
 import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
@@ -28,10 +29,10 @@ import { errorOf, hasCode, stubContext } from "./helpers.ts";
 const server: AppWrite = {
   name: "Server",
   status: "active",
-  config: {
+  config: parseAppConfig({
     authentication: { type: "api_key" },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
-  },
+  }),
 };
 const iosFlags: Flags = {
   type: "ios",
@@ -63,16 +64,14 @@ test("quickstart and JSON defaults remain distinct, and retained provider polici
     },
   };
   const updated = await appDocument({ provider: ["openai", "other"] }, previous);
+  const policies = selectedProviderPolicies(updated.config.routing);
   assert.deepEqual(
-    updated.config.routing.providers.selected?.["openai"],
-    previous.config.routing.providers.selected?.["openai"],
+    policies["openai"],
+    selectedProviderPolicies(previous.config.routing)["openai"],
   );
   // Unrestricted is the empty list: the gateway has no wildcard, and a literal
   // "*" both fails the save-time price check and matches no request.
-  assert.deepEqual(
-    updated.config.routing.providers.selected?.["other"],
-    { allowed_paths: [], allowed_models: [] },
-  );
+  assert.deepEqual(policies["other"], { allowed_paths: [], allowed_models: [] });
   await assert.rejects(() =>
     appDocument({
       type: "server",
@@ -83,14 +82,19 @@ test("quickstart and JSON defaults remain distinct, and retained provider polici
   );
 });
 
-test("file mode honors omission of environments and refuses type conversion", async (t) => {
+test("file mode defaults omitted environments and refuses type conversion", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-app-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const doc = await appDocument(iosFlags);
-  delete attest(doc).environments;
+  const { environments: _omitted, ...appAttest } = attest(doc);
   const path = join(dir, "app.json");
-  await writeFile(path, JSON.stringify(doc));
-  assert.equal(attest(await appDocument({ file: path })).environments, undefined);
+  // A file that names no environments accepts production alone, which is the
+  // schema's own default and the safe half of the pair.
+  await writeFile(path, JSON.stringify({
+    ...doc,
+    config: { ...doc.config, authentication: { ...doc.config.authentication, app_attest: appAttest } },
+  }));
+  assert.deepEqual(attest(await appDocument({ file: path })).environments, ["production"]);
   await assert.rejects(
     () => appDocument({ file: path }, server),
     hasCode("app_type_immutable"),

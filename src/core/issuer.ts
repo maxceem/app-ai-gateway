@@ -7,7 +7,7 @@ import {
   type JWK,
 } from "jose";
 import { GatewayError } from "./errors";
-import type { ClaimRequirement, IssuerAuthConfig } from "./types";
+import type { ClaimRequirement, IssuerAuthentication } from "./types";
 
 interface JwksCacheEntry {
   fetchedAt: number;
@@ -175,7 +175,7 @@ function reject(reason: IssuerRejectionReason, userId?: string): never {
 
 export async function verifyIssuerToken(
   token: string,
-  config: IssuerAuthConfig,
+  config: IssuerAuthentication,
   options: { skipRequiredClaims?: boolean } = {},
 ): Promise<{ userId: string; payload: JWTPayload }> {
   try {

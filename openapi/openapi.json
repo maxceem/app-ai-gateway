@@ -243,7 +243,8 @@
                             "properties": {
                               "jwks_url": {
                                 "type": "string",
-                                "format": "uri"
+                                "format": "uri",
+                                "description": "An https URL. Stored in the canonical form `URL` prints."
                               },
                               "issuer": {
                                 "anyOf": [
@@ -278,10 +279,12 @@
                                 ]
                               },
                               "user_id_claim": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "token_header": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "required_claims": {
                                 "type": "array",
@@ -289,7 +292,8 @@
                                   "type": "object",
                                   "properties": {
                                     "path": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "minLength": 1
                                     },
                                     "contains": {
                                       "anyOf": [
@@ -321,7 +325,8 @@
                                   },
                                   "required": [
                                     "path"
-                                  ]
+                                  ],
+                                  "additionalProperties": false
                                 }
                               },
                               "max_token_lifetime_seconds": {
@@ -384,10 +389,12 @@
                     "type": "object",
                     "properties": {
                       "team_id": {
-                        "type": "string"
+                        "type": "string",
+                        "pattern": "^[A-Z0-9]{10}$"
                       },
                       "bundle_id": {
-                        "type": "string"
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$"
                       },
                       "environments": {
                         "type": "array",
@@ -398,7 +405,10 @@
                             "development"
                           ]
                         },
-                        "minItems": 1
+                        "minItems": 1,
+                        "default": [
+                          "production"
+                        ]
                       }
                     },
                     "required": [
@@ -462,7 +472,8 @@
                             "properties": {
                               "jwks_url": {
                                 "type": "string",
-                                "format": "uri"
+                                "format": "uri",
+                                "description": "An https URL. Stored in the canonical form `URL` prints."
                               },
                               "issuer": {
                                 "anyOf": [
@@ -497,10 +508,12 @@
                                 ]
                               },
                               "user_id_claim": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "token_header": {
-                                "type": "string"
+                                "type": "string",
+                                "minLength": 1
                               },
                               "required_claims": {
                                 "type": "array",
@@ -508,7 +521,8 @@
                                   "type": "object",
                                   "properties": {
                                     "path": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "minLength": 1
                                     },
                                     "contains": {
                                       "anyOf": [
@@ -540,7 +554,8 @@
                                   },
                                   "required": [
                                     "path"
-                                  ]
+                                  ],
+                                  "additionalProperties": false
                                 }
                               },
                               "max_token_lifetime_seconds": {
@@ -596,87 +611,115 @@
             "type": "object",
             "properties": {
               "providers": {
-                "type": "object",
-                "properties": {
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "all",
-                      "selected"
-                    ]
-                  },
-                  "selected": {
+                "oneOf": [
+                  {
                     "type": "object",
-                    "additionalProperties": {
-                      "type": "object",
-                      "properties": {
-                        "allowed_paths": {
-                          "type": "array",
-                          "items": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "object",
-                                "properties": {
-                                  "path": {
-                                    "type": "string"
-                                  },
-                                  "fixed_model": {
-                                    "type": "string"
-                                  },
-                                  "clamp": {
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "all"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "mode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "selected"
+                        ]
+                      },
+                      "selected": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "allowed_paths": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
                                     "type": "string",
-                                    "enum": [
-                                      "responses",
-                                      "chat_completions",
-                                      "gemini_native",
-                                      "anthropic",
-                                      "none"
-                                    ]
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "fixed_model": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "clamp": {
+                                        "type": "string",
+                                        "enum": [
+                                          "responses",
+                                          "chat_completions",
+                                          "gemini_native",
+                                          "anthropic",
+                                          "none"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "path"
                                 ]
                               }
-                            ]
-                          }
-                        },
-                        "allowed_models": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "max_output_tokens": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0
+                            },
+                            "allowed_models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "max_output_tokens": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            }
+                          },
+                          "required": [
+                            "allowed_paths",
+                            "allowed_models"
+                          ],
+                          "additionalProperties": false
                         }
-                      },
-                      "required": [
-                        "allowed_paths",
-                        "allowed_models"
-                      ]
-                    }
+                      }
+                    },
+                    "required": [
+                      "mode",
+                      "selected"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "mode"
                 ]
               },
               "model_rewrites": {
                 "type": "object",
                 "additionalProperties": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 }
               }
             },
             "required": [
               "providers",
               "model_rewrites"
-            ]
+            ],
+            "additionalProperties": false
           },
           "limits": {
             "type": "object",
@@ -705,7 +748,8 @@
                     "required": [
                       "per_minute",
                       "per_day"
-                    ]
+                    ],
+                    "additionalProperties": false
                   },
                   "spending": {
                     "type": "object",
@@ -720,13 +764,24 @@
                     },
                     "required": [
                       "monthly_usd"
-                    ]
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "default": {
+                  "requests": {
+                    "per_minute": null,
+                    "per_day": null
+                  },
+                  "spending": {
+                    "monthly_usd": null
                   }
                 },
                 "required": [
                   "requests",
                   "spending"
-                ]
+                ],
+                "additionalProperties": false
               },
               "per_app": {
                 "type": "object",
@@ -752,7 +807,8 @@
                     "required": [
                       "per_minute",
                       "per_day"
-                    ]
+                    ],
+                    "additionalProperties": false
                   },
                   "spending": {
                     "type": "object",
@@ -767,19 +823,28 @@
                     },
                     "required": [
                       "monthly_usd"
-                    ]
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "default": {
+                  "requests": {
+                    "per_minute": null,
+                    "per_day": null
+                  },
+                  "spending": {
+                    "monthly_usd": null
                   }
                 },
                 "required": [
                   "requests",
                   "spending"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
-            "required": [
-              "per_user",
-              "per_app"
-            ]
+            "default": {},
+            "additionalProperties": false
           },
           "endpoints": {
             "type": "object",
@@ -788,7 +853,8 @@
               "properties": {
                 "provider": {
                   "type": "string",
-                  "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                  "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
                 },
                 "model": {
                   "type": "string",
@@ -816,7 +882,8 @@
                     "properties": {
                       "provider": {
                         "type": "string",
-                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                        "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
                       },
                       "model": {
                         "type": "string",
@@ -834,14 +901,17 @@
                 "provider",
                 "model",
                 "api_style"
-              ]
-            }
+              ],
+              "additionalProperties": false
+            },
+            "default": {}
           }
         },
         "required": [
           "authentication",
           "routing"
-        ]
+        ],
+        "additionalProperties": false
       },
       "AppWrite": {
         "type": "object",
@@ -920,14 +990,6 @@
               "updated_at"
             ]
           },
-          "resolved": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": {},
-            "description": "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig."
-          },
           "config_error": {
             "type": [
               "string",
@@ -938,7 +1000,6 @@
         },
         "required": [
           "app",
-          "resolved",
           "config_error"
         ]
       },
@@ -1146,7 +1207,8 @@
           },
           "slug": {
             "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
           },
           "secret": {
             "type": "string",
@@ -3627,14 +3689,6 @@
                         "updated_at"
                       ]
                     },
-                    "resolved": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "additionalProperties": {},
-                      "description": "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig."
-                    },
                     "config_error": {
                       "type": [
                         "string",
@@ -3646,7 +3700,6 @@
                   },
                   "required": [
                     "app",
-                    "resolved",
                     "config_error"
                   ]
                 }

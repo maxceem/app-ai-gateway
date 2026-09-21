@@ -1,7 +1,7 @@
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { clientResponseHeaders, providerUpstream } from "../core/proxyrules";
-import type { AppConfig, GatewayIdentity } from "../core/types";
+import type { AppRecord, GatewayIdentity } from "../core/types";
 import { observeUpstreamBody, recordUsageEvent, type ObservedBody } from "../core/usage";
 import type { ExecutionAttempt, ExecutionPlan } from "./plan";
 import {
@@ -12,7 +12,7 @@ import {
 
 export interface ExecutionContext {
   env: Env;
-  app: Pick<AppConfig, "id" | "organizationId">;
+  app: Pick<AppRecord, "id" | "organizationId">;
   identity: GatewayIdentity;
   appVersion: string | null;
   authDurationMs: number;
