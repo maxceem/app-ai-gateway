@@ -2,9 +2,9 @@ import { Hono } from "hono";
 import type { ConsoleCapabilitiesResponse } from "../contracts/responses";
 import { googleAuthEnabled, registrationOpen } from "../auth/identity";
 import { publicApiOrigin } from "../core/public-api-url";
-import { deploymentPolicy } from "../policy/deployment";
+import type { RequestVariables } from "../middleware/request-scope";
 
-export const consoleRoutes = new Hono<{ Bindings: Env }>();
+export const consoleRoutes = new Hono<{ Bindings: Env; Variables: RequestVariables }>();
 
 function optionalUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -12,8 +12,8 @@ function optionalUrl(value: string | undefined): string | undefined {
 }
 
 consoleRoutes.get("/capabilities", async (c) => c.json({
-  billing: deploymentPolicy(c.env).mode === "cloud",
-  registrationOpen: await registrationOpen(c.env),
+  billing: c.get("deployment").mode === "cloud",
+  registrationOpen: await registrationOpen(c.get("deployment"), c.env),
   googleAuth: googleAuthEnabled(c.env),
   // Legal documents are deployment-specific. The console shows the sign-up
   // consent line only when the operator configured both links.

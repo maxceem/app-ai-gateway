@@ -5,6 +5,7 @@ import { createIdentityAuth } from "../src/auth/identity";
 import { TEST_ORGANIZATION_ID } from "./helpers";
 import { secretVault } from "../src/vault";
 import { secretContext } from "../src/vault/secrets";
+import { resolveDeployment } from "../src/policy/deployment";
 
 const origin = "https://example.test";
 const runtime = new Proxy(env, {
@@ -15,7 +16,7 @@ const runtime = new Proxy(env, {
   },
 });
 async function operation(kind: string, payload: Record<string, unknown>, operationEnv: Env = runtime) {
-  const auth = createIdentityAuth(operationEnv, origin);
+  const auth = createIdentityAuth(resolveDeployment(operationEnv), operationEnv, origin);
   const user = await auth.service.createServiceIdentity({ name: "Handoff test" });
   await auth.repository.addOrganizationUser({
     organizationId: TEST_ORGANIZATION_ID,
@@ -285,7 +286,7 @@ describe("provider browser submissions", () => {
 
 describe("direct provider creation receipts", () => {
   it("returns the winning provider and gateway after concurrent retries without duplicates", async () => {
-    const auth = createIdentityAuth(runtime, origin);
+    const auth = createIdentityAuth(resolveDeployment(runtime), runtime, origin);
     const user = await auth.service.createServiceIdentity({ name: "Receipt service" });
     await auth.repository.addOrganizationUser({
       organizationId: TEST_ORGANIZATION_ID,

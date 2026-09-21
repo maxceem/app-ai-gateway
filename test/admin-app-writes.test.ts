@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { insertApp, updateApp, type AtomicAppWrite } from "../src/core/app-writes";
+import { insertApp, updateApp, type AtomicAppWrite } from "../src/management/app-writes";
 import { parseAppConfig } from "../src/shared/app-config";
 import { serverConfig } from "./helpers";
 

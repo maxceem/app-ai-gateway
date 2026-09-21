@@ -1,5 +1,5 @@
 import type { CfAuth } from "@maxceem/cf-auth";
-import { createIdentityAuth, rethrowCfAuthError } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
 import { resolveBillingQuota } from "../../billing/quota";
 import {
   accountLifecycle,
@@ -11,10 +11,7 @@ import { CliBootstrapRequestSchema } from "../../contracts/cli";
 import type { CliBootstrapResponse } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
 import { accountTrialDeadline } from "../../policy/accounts";
-import {
-  bootstrapDecision,
-  deploymentPolicy,
-} from "../../policy/deployment";
+import { bootstrapDecision } from "../../policy/deployment";
 import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
 import {
   cliJson,
@@ -25,6 +22,15 @@ import {
   TTL,
 } from "./security";
 import type { CliContext } from "./types";
+
+/**
+ * How the CLI is told which deployment answered: its public identity, plus the
+ * one thing about it a client behaves differently for.
+ */
+export function deploymentMeta(c: CliContext) {
+  const deployment = c.get("deployment");
+  return { ...deployment.identity(), mode: deployment.mode };
+}
 
 interface BootstrapReceiptRow {
   id: string;
@@ -50,36 +56,7 @@ async function retireKey(
   organizationId: string,
   apiKeyId: string,
 ): Promise<void> {
-  try {
-    await identity.service.revokeServiceApiKey({ apiKeyId, organizationId });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
-}
-
-export function deployment(c: CliContext) {
-  const id = c.env.DEPLOYMENT_ID;
-  if (!id)
-    throw new GatewayError(503, "invalid_request", "Deployment identity is not configured");
-  const configuredOrigin = new URL(c.env.CLI_CONSOLE_ORIGIN ?? c.req.url);
-  const loopback =
-    configuredOrigin.hostname === "localhost" ||
-    configuredOrigin.hostname.endsWith(".localhost") ||
-    configuredOrigin.hostname === "127.0.0.1";
-  if (
-    (configuredOrigin.protocol !== "https:" &&
-      !(configuredOrigin.protocol === "http:" && loopback)) ||
-    configuredOrigin.username ||
-    configuredOrigin.password
-  )
-    throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
-  const consoleOrigin = configuredOrigin.origin;
-  return {
-    id,
-    mode: deploymentPolicy(c.env).mode,
-    apiUrl: c.env.PUBLIC_API_URL ?? consoleOrigin,
-    consoleOrigin,
-  };
+  await identity.service.revokeServiceApiKey({ apiKeyId, organizationId });
 }
 
 async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow | null> {
@@ -90,13 +67,13 @@ async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow |
 
 export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
   const input = schemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
-  const meta = deployment(c);
-  const policy = deploymentPolicy(c.env);
+  const deployment = c.get("deployment");
+  const meta = deploymentMeta(c);
   const hash = await digest(input.idempotencyKey);
   const proofHash = await digest(input.pollToken);
   const id = `cli-bootstrap:${meta.id}:${hash}`;
   const now = Date.now();
-  const decision = bootstrapDecision(policy, {
+  const decision = bootstrapDecision(deployment, {
     deploymentId: meta.id,
     requestHash: hash,
     nowMs: now,
@@ -184,11 +161,11 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
 
   if (!row.organization_id || !row.initiating_user_id)
     throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
-  const account = await assertAccountAccess(c.env, row.organization_id, "read");
+  const account = await assertAccountAccess(deployment, c.env, row.organization_id, "read");
   if (account.claimed || row.consumed_at)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
-  const identity = createIdentityAuth(c.env, c.req.url);
+  const identity = identityAuthFor(c);
 
   if (!row.protected_credential || (row.protected_credential_expires_at ?? 0) <= now) {
     // No expiry of its own: the account's `expires_at` is the one deadline, and
@@ -244,17 +221,13 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
   const credentialId = committedCredentialId(row);
   if (!credentialId)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
-  try {
-    await identity.service.enableServiceApiKey({
-      apiKeyId: credentialId,
-      organizationId: account.id,
-    });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+  await identity.service.enableServiceApiKey({
+    apiKeyId: credentialId,
+    organizationId: account.id,
+  });
 
   let trial: { endsAt: string; limit?: number } | null = null;
-  if (policy.mode === "cloud") {
+  if (deployment.mode === "cloud") {
     const trialDeadline = accountTrialDeadline(account.createdAt);
     if (trialDeadline === null) {
       throw new GatewayError(

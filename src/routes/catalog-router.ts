@@ -1,3 +1,4 @@
+import { canManageOrganization, requireOrganization, requireUser } from "@maxceem/cf-auth";
 import type { Context, Env as HonoEnv, Hono } from "hono";
 import {
   CATALOG,
@@ -5,7 +6,11 @@ import {
   type Catalog,
   type OperationName,
   type OperationResponse,
+  type OperationSpec,
 } from "../contracts/catalog";
+import { assertAccountAccess } from "../core/account-lifecycle";
+import { GatewayError } from "../core/errors";
+import type { AdminVariables } from "../middleware/admin";
 
 /**
  * Every operation a route module has mounted through here.
@@ -27,6 +32,58 @@ function honoPath(template: string, base: string): string {
   return (relative || "/").replace(/\{(\w+)\}/gu, ":$1");
 }
 
+/**
+ * The authorization one operation asks for, with the defaults filled in.
+ *
+ * A `GET` reads and a member may; anything else writes and an admin may. Both
+ * halves of that — who, and what standing the account itself needs — used to
+ * be a `method`-plus-path-regex decision in `middleware/admin.ts`, which every
+ * new route had to remember to update.
+ */
+function operationPolicy(spec: OperationSpec) {
+  const writes = spec.method !== "GET";
+  return {
+    role: spec.policy?.role ?? (writes ? "admin" : "member"),
+    access: spec.policy?.access ?? (writes ? "setup" : "read"),
+    identity: spec.policy?.identity,
+    /** A session-only operation refuses a management key, however privileged. */
+    sessionOnly: spec.security === "session",
+  } as const;
+}
+
+/**
+ * Applies one operation's declared policy to the authenticated caller.
+ *
+ * Runs after `adminAuth`, which established who is asking and nothing more.
+ * The order is the order the refusals used to arrive in, so a caller that was
+ * short of two things is still told about the same one.
+ */
+type AuthorizedContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
+
+async function authorize(c: AuthorizedContext, spec: OperationSpec): Promise<void> {
+  if (spec.security !== "management" && spec.security !== "session") return;
+  const policy = operationPolicy(spec);
+  const state = c.get("authState");
+  const actor = c.get("actor");
+  if (policy.role === "admin" && !canManageOrganization(actor.role)) {
+    throw new GatewayError(
+      403,
+      "forbidden",
+      "Only organization owners and admins can mutate gateway resources",
+    );
+  }
+  if (policy.identity === "human") requireUser(state);
+  requireOrganization(state, policy.role);
+  await assertAccountAccess(c.get("deployment"), c.env, actor.organizationId, policy.access);
+  if (policy.sessionOnly && actor.credentialType !== "session") {
+    throw new GatewayError(
+      403,
+      "session_required",
+      "Management keys can only be administered from a user session",
+    );
+  }
+}
+
 /** What a mounted handler is handed: the request, typed by the catalog's path. */
 export type OperationContext<E extends HonoEnv, K extends OperationName> =
   Context<E, HonoPath<Catalog[K]["path"]>>;
@@ -46,9 +103,20 @@ export type OperationContext<E extends HonoEnv, K extends OperationName> =
  * on `c` before returning, as cf-auth already does when it writes the
  * current-organization cookie.
  */
-export function catalogRouter<E extends HonoEnv>(app: Hono<E>, base: string) {
+export function catalogRouter<E extends HonoEnv>(
+  app: Hono<E>,
+  base: string,
+  options: { authorized?: boolean } = {},
+) {
   const mount = (name: OperationName, handler: (c: Context<E>) => Promise<Response>): void => {
-    app.on(CATALOG[name].method, honoPath(CATALOG[name].path, base), handler as never);
+    const spec: OperationSpec = CATALOG[name];
+    const served = options.authorized
+      ? async (c: Context<E>) => {
+          await authorize(c as unknown as AuthorizedContext, spec);
+          return handler(c);
+        }
+      : handler;
+    app.on(spec.method, honoPath(spec.path, base), served as never);
     MOUNTED_OPERATIONS.add(name);
   };
 
@@ -80,4 +148,14 @@ export function catalogRouter<E extends HonoEnv>(app: Hono<E>, base: string) {
       mount(name, (c) => handler(c as unknown as OperationContext<E, K>));
     },
   };
+}
+
+/**
+ * The same router for the authenticated management surface.
+ *
+ * Everything mounted through it runs its operation's catalog policy first, so
+ * a route module never restates who may call it.
+ */
+export function adminRouter<E extends HonoEnv>(app: Hono<E>, base = "/v1/admin") {
+  return catalogRouter(app, base, { authorized: true });
 }

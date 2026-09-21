@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
 import { createIdentityAuth, relaySocialSignIn } from "../src/auth/identity";
+import { resolveDeployment } from "../src/policy/deployment";
 
 // A local instance answers on whatever host the worktree or port gives it,
 // which is exactly what Google will not let anyone register.
@@ -67,14 +68,22 @@ describe("operator OAuth relay", () => {
   });
 
   it("configures the redirect URI only when a relay is set", () => {
-    const withRelay = createIdentityAuth(operatorEnv({
+    const withRelay = createIdentityAuth(resolveDeployment(operatorEnv({
+      GOOGLE_CLIENT_ID: "test-google-client",
+      GOOGLE_CLIENT_SECRET: "test-google-secret",
+      OAUTH_RELAY_URL: RELAY,
+    })), operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: RELAY,
     }), `${ORIGIN}/v1/auth/sign-in/social`);
     expect(withRelay.config.google?.redirectURI).toBe(`${RELAY}/callback/google`);
 
-    const without = createIdentityAuth(operatorEnv({
+    const without = createIdentityAuth(resolveDeployment(operatorEnv({
+      GOOGLE_CLIENT_ID: "test-google-client",
+      GOOGLE_CLIENT_SECRET: "test-google-secret",
+      OAUTH_RELAY_URL: undefined,
+    })), operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: undefined,
@@ -114,7 +123,11 @@ describe("operator OAuth relay", () => {
   });
 
   it("rejects a relay URL that is not an absolute http(s) URL", () => {
-    expect(() => createIdentityAuth(operatorEnv({
+    expect(() => createIdentityAuth(resolveDeployment(operatorEnv({
+      GOOGLE_CLIENT_ID: "test-google-client",
+      GOOGLE_CLIENT_SECRET: "test-google-secret",
+      OAUTH_RELAY_URL: "dev-oauth.example.test",
+    })), operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: "dev-oauth.example.test",

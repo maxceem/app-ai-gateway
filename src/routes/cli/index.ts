@@ -13,8 +13,8 @@ import {
   providerDescriptor,
   PROVIDER_TYPES,
 } from "../../core/providers";
-import { currentMonth } from "../admin/shared";
-import { bootstrap, deployment } from "./bootstrap";
+import { currentMonth } from "../../management/usage-queries";
+import { bootstrap, deploymentMeta } from "./bootstrap";
 import { authState, createOperation, pollOperation } from "./operations";
 import {
   browserDetails,
@@ -34,7 +34,7 @@ cliRoutes.use("*", async (c, next) => {
   await next();
 });
 routes.handle("getCliCapabilities", (c) => {
-  const identity = deployment(c);
+  const identity = deploymentMeta(c);
   const capabilities: CliCapabilitiesResponse = {
     protocolVersion: 1,
     serverVersion: SERVER_VERSION,
@@ -82,6 +82,7 @@ routes.handle("getCliAccount", async (c) => {
   const state = await authState(c),
     resolved = requireOrganization(state);
   const account = await assertAccountAccess(
+    c.get("deployment"),
     c.env,
     resolved.organization.id,
     "read",
@@ -97,7 +98,7 @@ routes.handle("getCliAccount", async (c) => {
         : c.env.ORG_QUOTA.getByName(account.id).usage(billing.period))
     : null;
   return {
-    deployment: deployment(c),
+    deployment: deploymentMeta(c),
     account,
     billing,
     // A count whose period was replaced while it was being read describes
@@ -109,7 +110,7 @@ routes.handle("getCliAccount", async (c) => {
 routes.handle("getCliUsage", async (c) => {
   const state = await authState(c),
     resolved = requireOrganization(state);
-  await assertAccountAccess(c.env, resolved.organization.id, "read");
+  await assertAccountAccess(c.get("deployment"), c.env, resolved.organization.id, "read");
   const month = c.req.query("month") ?? currentMonth();
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))
     throw new GatewayError(

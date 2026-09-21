@@ -6,12 +6,18 @@ import { appUsageEvent, appUser } from "../../db/schema";
 import type { UserBlockResponse } from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
 import { invalidateBlockedCache } from "../../middleware/gate";
-import { catalogRouter, type OperationContext } from "../catalog-router";
-import { currentMonth, eventDay, monthBounds, parseLimit, parseOffset, usageTotals } from "./shared";
+import { adminRouter, type OperationContext } from "../catalog-router";
+import {
+  currentMonth,
+  eventDay,
+  monthBounds,
+  usageTotals,
+} from "../../management/usage-queries";
+import { parseLimit, parseOffset } from "./shared";
 
 type UserRouteEnv = { Bindings: Env; Variables: AdminVariables };
 export const userRoutes = new Hono<UserRouteEnv>();
-const routes = catalogRouter(userRoutes, "/v1/admin");
+const routes = adminRouter(userRoutes);
 
 interface UserIdentityRow {
   id: string;
@@ -177,7 +183,7 @@ routes.handle("getAppUser", async (c) => {
       .bind(appId, userId)
       .first<UserIdentityRow>();
   }
-  if (!row) throw new GatewayError(404, "invalid_request", "User was not found");
+  if (!row) throw new GatewayError(404, "not_found", "User was not found");
 
   const usage = await db
     .select(usageTotals)
@@ -217,7 +223,7 @@ async function setBlocked(
     .set({ status: blocked ? "blocked" : "active" })
     .where(and(eq(appUser.appId, appId), eq(appUser.id, userId)))
     .returning({ id: appUser.id });
-  if (updated.length !== 1) throw new GatewayError(404, "invalid_request", "User was not found");
+  if (updated.length !== 1) throw new GatewayError(404, "not_found", "User was not found");
   await c.env.USER_LIMITER.getByName(`${appId}:${userId}`).setBlocked(blocked);
   invalidateBlockedCache(appId, userId);
   return { app_id: appId, user_id: userId, blocked };

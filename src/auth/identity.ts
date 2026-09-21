@@ -2,19 +2,19 @@ import {
   createCfAuth,
   type CfAuth,
   type CfAuthError,
-  isCfAuthError,
 } from "@maxceem/cf-auth";
 import { APIError } from "better-auth/api";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import {
-  deploymentPolicy,
   registrationAllowed as policyRegistrationAllowed,
   registrationRule,
   registrationUnrestricted,
   shouldProvisionDefaultOrganization,
+  type Deployment,
 } from "../policy/deployment";
 import { registrationCreateCondition } from "../policy/sql";
+
 
 export const IDENTITY_AUTH_BASE_PATH = "/v1/auth";
 export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
@@ -35,23 +35,27 @@ async function registrationState(env: Env): Promise<{
   };
 }
 
-export async function registrationOpen(env: Env): Promise<boolean> {
-  return registrationAllowed(env, false);
+export async function registrationOpen(deployment: Deployment, env: Env): Promise<boolean> {
+  return registrationAllowed(deployment, env, false);
 }
 
-async function registrationAllowed(env: Env, claimRegistration: boolean): Promise<boolean> {
-  const policy = deploymentPolicy(env);
-  const rule = registrationRule(policy, claimRegistration);
+async function registrationAllowed(
+  deployment: Deployment,
+  env: Env,
+  claimRegistration: boolean,
+): Promise<boolean> {
+  const rule = registrationRule(deployment, claimRegistration);
   if (registrationUnrestricted(rule)) return true;
   return policyRegistrationAllowed(rule, await registrationState(env));
 }
 
 async function assertRegistrationAllowed(
+  deployment: Deployment,
   env: Env,
   claimRegistration: boolean,
   onDenied?: () => void,
 ): Promise<void> {
-  if (!(await registrationAllowed(env, claimRegistration))) registrationDenied(onDenied);
+  if (!(await registrationAllowed(deployment, env, claimRegistration))) registrationDenied(onDenied);
 }
 
 function registrationDenied(onDenied?: () => void): never {
@@ -96,6 +100,7 @@ export function googleRelayRedirectUri(env: Env): string | undefined {
 }
 
 function identityAuth(
+  deployment: Deployment,
   env: Env,
   requestUrl: string,
   claimRegistration: boolean,
@@ -106,8 +111,7 @@ function identityAuth(
   const origin = new URL(requestUrl).origin;
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
-  const policy = deploymentPolicy(env);
-  const rule = registrationRule(policy, claimRegistration);
+  const rule = registrationRule(deployment, claimRegistration);
   return createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
@@ -118,7 +122,7 @@ function identityAuth(
     trustedOrigins: [origin],
     userHooks: {
       beforeCreate: () =>
-        assertRegistrationAllowed(env, claimRegistration, onRegistrationDenied),
+        assertRegistrationAllowed(deployment, env, claimRegistration, onRegistrationDenied),
       ...(!registrationUnrestricted(rule)
         ? {
             atomicCreateGuard: {
@@ -131,7 +135,7 @@ function identityAuth(
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
     organizations: {
-      autoProvisionDefaultOrganization: shouldProvisionDefaultOrganization(policy, {
+      autoProvisionDefaultOrganization: shouldProvisionDefaultOrganization(deployment, {
         claimRegistration,
         suppressDefaultOrganization,
         provisionRegistration,
@@ -151,19 +155,25 @@ function identityAuth(
   });
 }
 
+export interface IdentityAuthOptions {
+  suppressDefaultOrganization?: boolean;
+  provisionRegistration?: boolean;
+  /** Trusted claim route only: pass it after validating the handoff proofs. */
+  claimRegistration?: boolean;
+  onRegistrationDenied?: () => void;
+}
+
 export function createIdentityAuth(
+  deployment: Deployment,
   env: Env,
   requestUrl: string,
-  options: {
-    suppressDefaultOrganization?: boolean;
-    provisionRegistration?: boolean;
-    onRegistrationDenied?: () => void;
-  } = {},
+  options: IdentityAuthOptions = {},
 ): CfAuth {
   return identityAuth(
+    deployment,
     env,
     requestUrl,
-    false,
+    options.claimRegistration ?? false,
     options.suppressDefaultOrganization,
     options.provisionRegistration,
     options.onRegistrationDenied,
@@ -172,11 +182,54 @@ export function createIdentityAuth(
 
 /** Trusted claim route only: invoke after validating the handoff proofs. Never mount its handler. */
 export function createClaimRegistrationAuth(
+  deployment: Deployment,
   env: Env,
   requestUrl: string,
   options: { onRegistrationDenied?: () => void } = {},
 ): CfAuth {
-  return identityAuth(env, requestUrl, true, false, false, options.onRegistrationDenied);
+  return createIdentityAuth(deployment, env, requestUrl, {
+    claimRegistration: true,
+    onRegistrationDenied: options.onRegistrationDenied,
+  });
+}
+
+/** The part of a request context this needs: the environment, the URL, and somewhere to memoize. */
+export interface IdentityAuthScope {
+  env: Env;
+  req: { url: string };
+  get(key: "deployment"): Deployment;
+  get(key: "identityAuthCache"): Map<string, CfAuth>;
+}
+
+/**
+ * The cf-auth instance for this request and these options, built once.
+ *
+ * Building one constructs a Better Auth instance, and a single claim
+ * submission used to build three: one to read the approver's session, one to
+ * register them and one to claim. They are pure functions of the deployment,
+ * the request origin and these three flags, so the flags are the cache key.
+ * An instance carrying a `onRegistrationDenied` callback is not shared, since
+ * the callback belongs to one caller's control flow.
+ */
+export function identityAuthFor(
+  c: IdentityAuthScope,
+  options: IdentityAuthOptions = {},
+): CfAuth {
+  const deployment = c.get("deployment");
+  if (options.onRegistrationDenied) {
+    return createIdentityAuth(deployment, c.env, c.req.url, options);
+  }
+  const key = [
+    options.suppressDefaultOrganization ?? false,
+    options.provisionRegistration ?? false,
+    options.claimRegistration ?? false,
+  ].join(":");
+  const cache = c.get("identityAuthCache");
+  const existing = cache.get(key);
+  if (existing) return existing;
+  const built = createIdentityAuth(deployment, c.env, c.req.url, options);
+  cache.set(key, built);
+  return built;
 }
 
 /** Google's authorization host, and the only URL the relay is put in front of. */
@@ -249,9 +302,4 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
   };
   const code = mappedCodes[error.code] ?? "invalid_request";
   return new GatewayError(error.status, code, error.message);
-}
-
-export function rethrowCfAuthError(error: unknown): never {
-  if (isCfAuthError(error)) throw asGatewayAuthError(error);
-  throw error;
 }

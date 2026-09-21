@@ -14,11 +14,7 @@ import {
   accountLifecycle,
   assertAccountAccess,
 } from "../../core/account-lifecycle";
-import {
-  createClaimRegistrationAuth,
-  googleAuthEnabled,
-} from "../../auth/identity";
-import { deployment } from "./bootstrap";
+import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
 import { authState, challenge } from "./operations";
 import { claimRefusal, completeIdentity } from "./identity-handoff";
 import { proofMatches } from "./security";
@@ -61,10 +57,10 @@ function outcomeFor(kind: CliOperationKind): CliBrowserSubmitResponse {
 }
 
 export async function verifiedSubmission(c: CliContext) {
-  const meta = deployment(c);
-  if (new URL(c.req.url).origin !== meta.consoleOrigin)
+  const consoleOrigin = c.get("deployment").identity().consoleOrigin;
+  if (new URL(c.req.url).origin !== consoleOrigin)
     throw new GatewayError(404, "not_found", "Page was not found");
-  if (c.req.header("origin") !== meta.consoleOrigin)
+  if (c.req.header("origin") !== consoleOrigin)
     throw new GatewayError(
       403,
       "forbidden",
@@ -80,7 +76,12 @@ export async function verifiedSubmission(c: CliContext) {
   if (!(await proofMatches(input.submissionToken, row.submission_proof_hash)))
     throw new GatewayError(403, "forbidden", "Invalid submission proof");
   await enforceEndpointRateLimit(c.env, "submission", row.id);
-  await assertAccountAccess(c.env, row.organization_id, row.kind === "claim" ? "claim" : "read");
+  await assertAccountAccess(
+    c.get("deployment"),
+    c.env,
+    row.organization_id,
+    row.kind === "claim" ? "claim" : "read",
+  );
   return { input, row };
 }
 export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsResponse> {
@@ -128,10 +129,7 @@ export async function browserRegister(c: CliContext): Promise<Response> {
       "invalid_request",
       "Name, email and password are required",
     );
-  const response = await createClaimRegistrationAuth(
-    c.env,
-    c.req.url,
-  ).auth.api.signUpEmail({
+  const response = await identityAuthFor(c, { claimRegistration: true }).auth.api.signUpEmail({
     body: { email: input.email, password: input.password, name: input.name },
     headers: c.req.raw.headers,
     asResponse: true,

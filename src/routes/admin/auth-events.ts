@@ -4,11 +4,12 @@ import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { appAuthEvent, appUsageEvent, appUser } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
-import { catalogRouter } from "../catalog-router";
-import { parseLimit, parseRange } from "./shared";
+import { adminRouter } from "../catalog-router";
+import { parseRange } from "../../management/usage-queries";
+import { parseLimit } from "./shared";
 
 export const authEventRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
-const routes = catalogRouter(authEventRoutes, "/v1/admin");
+const routes = adminRouter(authEventRoutes);
 
 /** `created_at` is `YYYY-MM-DD HH:MM:SS`, so the day prefix compares lexically. */
 const authEventDay = sql<string>`substr(${appAuthEvent.createdAt}, 1, 10)`;

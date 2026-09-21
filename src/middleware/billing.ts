@@ -3,16 +3,15 @@ import type { MiddlewareHandler } from "hono";
 import {
   getBillingAccess,
   requireActiveBilling,
-  type BillingVariables,
 } from "../billing/gateway";
 import { loadApp } from "../core/config";
 import { GatewayError } from "../core/errors";
 import { organizationProviders } from "../core/provider-store";
-import { deploymentPolicy } from "../policy/deployment";
+import type { RequestVariables } from "./request-scope";
 
 export const billingEntitlementGate: MiddlewareHandler<{
   Bindings: Env;
-  Variables: BillingVariables;
+  Variables: RequestVariables;
 }> = async (c, next) => {
   /*
    * A deployment without a billing binding is self-hosted: it has no plan to
@@ -20,7 +19,8 @@ export const billingEntitlementGate: MiddlewareHandler<{
    * cloud bootstrap writes one. So this whole gate — and the D1 read behind it
    * — costs a self-hosted deployment nothing.
    */
-  if (deploymentPolicy(c.env).mode === "self_hosted") {
+  const deployment = c.get("deployment");
+  if (deployment.mode === "self_hosted") {
     await next();
     return;
   }
@@ -55,7 +55,7 @@ export const billingEntitlementGate: MiddlewareHandler<{
    */
   if (served) {
     const [lifecycle] = await Promise.allSettled([
-      assertAccountAccess(c.env, app.organizationId, "proxy"),
+      assertAccountAccess(deployment, c.env, app.organizationId, "proxy"),
       organizationProviders(c.env, app.organizationId),
     ]);
     if (lifecycle.status === "rejected") throw lifecycle.reason;
@@ -64,9 +64,9 @@ export const billingEntitlementGate: MiddlewareHandler<{
     await next();
     return;
   }
-  await assertAccountAccess(c.env, app.organizationId, "proxy");
+  await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   requireActiveBilling(await getBillingAccess(
-    c.env,
+    deployment,
     app.organizationId,
     c.get("billingRequestCache"),
   ));

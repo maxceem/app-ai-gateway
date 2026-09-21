@@ -1,7 +1,7 @@
-import { createClaimRegistrationAuth, relaySocialSignIn } from "../../auth/identity";
+import { identityAuthFor, relaySocialSignIn } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
 import { derive, digest, proofMatches } from "./security";
-import { deployment } from "./bootstrap";
+import { deploymentMeta } from "./bootstrap";
 import { browserPath } from "./operations";
 import { verifiedSubmission } from "./browser";
 import type { CliContext } from "./types";
@@ -41,10 +41,10 @@ export async function browserGoogle(c: CliContext): Promise<Response> {
   const { row } = await verifiedSubmission(c);
   if (row.kind !== "claim" || row.consumed_at)
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
-  const meta = deployment(c);
+  const meta = deploymentMeta(c);
   const encoded = btoa(JSON.stringify({ id: row.id, expires: row.expires_at }));
   const signature = await derive(c.env.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
-  const rawResult = await createClaimRegistrationAuth(c.env, c.req.url).auth.api.signInSocial({
+  const rawResult = await identityAuthFor(c, { claimRegistration: true }).auth.api.signInSocial({
     body: {
       provider: "google",
       callbackURL: `${meta.consoleOrigin}${browserPath(row.id)}`,

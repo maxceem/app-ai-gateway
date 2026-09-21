@@ -6,7 +6,8 @@ import { log } from "../../core/log";
 import type { ProviderType } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/usage";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
-import { catalogRouter } from "../catalog-router";
+import { adminRouter } from "../catalog-router";
+import { jsonBody } from "./body";
 import { database } from "../../db";
 import { appUsageEvent, provider as providerTable } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -14,16 +15,16 @@ import {
   currentMonth,
   inRange,
   isRollupDimension,
-  parseLimit,
   parseRange,
   usageBreakdown,
   usageMonthTotals,
   usageTimeseries,
   usageTotals,
-} from "./shared";
+} from "../../management/usage-queries";
+import { parseLimit } from "./shared";
 
 export const usageRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
-const routes = catalogRouter(usageRoutes, "/v1/admin");
+const routes = adminRouter(usageRoutes);
 
 const BREAKDOWN_COLUMNS = {
   model: appUsageEvent.model,
@@ -99,13 +100,7 @@ routes.handle("getAppUsage", async (c) => {
 
 routes.handle("repriceAppUsage", async (c) => {
   const appId = c.req.param("app");
-  let value: unknown;
-  try {
-    value = await c.req.json();
-  } catch {
-    throw new GatewayError(400, "invalid_request", "A JSON object is required");
-  }
-  const parsed = UsageRepriceRequestSchema.safeParse(value);
+  const parsed = UsageRepriceRequestSchema.safeParse(await jsonBody(c));
   if (!parsed.success) {
     throw new GatewayError(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request");
   }
@@ -124,7 +119,7 @@ routes.handle("repriceAppUsage", async (c) => {
     .from(appUsageEvent)
     .leftJoin(providerTable, and(
       eq(appUsageEvent.providerId, providerTable.id),
-      eq(providerTable.organizationId, c.get("admin").organizationId),
+      eq(providerTable.organizationId, c.get("actor").organizationId),
     ))
     .where(and(
       eq(appUsageEvent.appId, appId),

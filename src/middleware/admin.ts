@@ -1,56 +1,33 @@
 import {
-  canManageOrganization,
   requireOrganization,
-  requireUser,
   type AuthState,
-  type CfAuth,
-  type OrganizationRole,
 } from "@maxceem/cf-auth";
 import type { MiddlewareHandler } from "hono";
 import {
   CONSOLE_REQUEST_HEADER,
-  createIdentityAuth,
+  identityAuthFor,
   MANAGEMENT_KEY_PREFIX,
-  rethrowCfAuthError,
 } from "../auth/identity";
-import { assertAccountAccess } from "../core/account-lifecycle";
 import { GatewayError } from "../core/errors";
 import type { app } from "../db/schema";
-import type { BillingVariables } from "../billing/gateway";
+import type { AdminActor } from "../management/actor";
+import type { RequestVariables } from "./request-scope";
 
-export interface AdminContext {
-  userId: string;
-  identityKind: "human" | "service";
-  credentialId: string;
-  organizationId: string;
-  role: OrganizationRole;
-  credentialType: "session" | "apiKey";
-}
-
-export interface AdminVariables extends BillingVariables {
+export interface AdminVariables extends RequestVariables {
   authState: AuthState;
-  identityAuth: CfAuth;
-  admin: AdminContext;
+  actor: AdminActor;
   adminApp?: typeof app.$inferSelect;
 }
 
 /**
- * Writes that every member may perform. Switching the active organization only
- * re-signs a cookie describing which tenant the caller is reading, so gating it
- * behind owner/admin would strand read-only members in one organization.
+ * Authenticates a management request, and decides nothing else.
+ *
+ * What the caller is then allowed to do is declared on the operation in
+ * `src/contracts/catalog.ts` and applied by `catalogRouter`, so adding a route
+ * no longer means remembering a path regex here. All this establishes is who
+ * is asking: which credential, which user, which organization and with what
+ * role — as one {@link AdminActor} on the context.
  */
-const MEMBER_WRITABLE_OPERATIONS = new Set(["POST /v1/admin/organizations/select"]);
-
-function isAppValidation(method: string, path: string): boolean {
-  return method === "POST" && /^\/v1\/admin\/apps\/[^/]+\/validate$/u.test(path);
-}
-
-function isMutation(method: string, path: string): boolean {
-  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
-  if (MEMBER_WRITABLE_OPERATIONS.has(`${method} ${path}`)) return false;
-  return !isAppValidation(method, path);
-}
-
 export const adminAuth: MiddlewareHandler<{
   Bindings: Env;
   Variables: AdminVariables;
@@ -61,6 +38,10 @@ export const adminAuth: MiddlewareHandler<{
     if (!token.startsWith(MANAGEMENT_KEY_PREFIX)) {
       throw new GatewayError(401, "auth_required", "A valid management key is required");
     }
+    // cf-auth matches the scheme with `startsWith("Bearer ")`, so a client that
+    // spells it in another case authenticates as nobody rather than being
+    // refused. Rewriting the header here keeps that request answerable; the
+    // real fix belongs upstream, and this goes when it lands.
     if (!authorization.startsWith("Bearer ")) {
       const headers = new Headers(c.req.raw.headers);
       headers.set("authorization", `Bearer ${token}`);
@@ -68,61 +49,42 @@ export const adminAuth: MiddlewareHandler<{
     }
   }
 
-  const identityAuth = createIdentityAuth(c.env, c.req.url);
-  c.set("identityAuth", identityAuth);
+  await identityAuthFor(c).middleware<{
+    Bindings: Env;
+    Variables: AdminVariables;
+  }>()(c, async () => {
+    const state = c.get("authState");
+    const resolved = requireOrganization(state);
 
-  try {
-    await identityAuth.middleware<{
-      Bindings: Env;
-      Variables: AdminVariables;
-    }>()(c, async () => {
-      const state = c.get("authState");
-      const resolved = requireOrganization(state);
+    if (
+      state.credentialType === "session"
+      && c.req.header(CONSOLE_REQUEST_HEADER) !== "1"
+    ) {
+      throw new GatewayError(
+        401,
+        "auth_required",
+        `Cookie-authenticated admin requests must set ${CONSOLE_REQUEST_HEADER}: 1`,
+      );
+    }
 
-      if (
-        state.credentialType === "session"
-        && c.req.header(CONSOLE_REQUEST_HEADER) !== "1"
-      ) {
-        throw new GatewayError(
-          401,
-          "auth_required",
-          `Cookie-authenticated admin requests must set ${CONSOLE_REQUEST_HEADER}: 1`,
-        );
-      }
+    const user = state.user;
+    if (
+      !user
+      || (state.credentialType !== "session" && state.credentialType !== "apiKey")
+    ) {
+      throw new GatewayError(401, "auth_required", "Authentication is required");
+    }
 
-      if (isMutation(c.req.method, c.req.path) && !canManageOrganization(resolved.role)) {
-        throw new GatewayError(
-          403,
-          "forbidden",
-          "Only organization owners and admins can mutate gateway resources",
-        );
-      }
-
-      const path = c.req.path;
-      if (path.startsWith("/v1/admin/billing")) requireUser(state);
-      const mutation = isMutation(c.req.method, path);
-      requireOrganization(state, mutation ? "admin" : "member");
-      await assertAccountAccess(c.env, resolved.organization.id, mutation ? "setup" : "read");
-
-      const actorId = state.user?.id;
-      if (
-        !actorId
-        || (state.credentialType !== "session" && state.credentialType !== "apiKey")
-      ) {
-        throw new GatewayError(401, "auth_required", "Authentication is required");
-      }
-
-      c.set("admin", {
-        userId: actorId,
-        identityKind: state.user!.kind,
-        credentialId: state.actor?.credentialId ?? "",
-        organizationId: resolved.organization.id,
-        role: resolved.role,
-        credentialType: state.credentialType,
-      });
-      await next();
+    c.set("actor", {
+      organizationId: resolved.organization.id,
+      userId: user.id,
+      // Null rather than the empty string that used to stand in for it: a
+      // session with no credential id has none, and `""` is a value.
+      credentialId: state.actor?.credentialId ?? null,
+      role: resolved.role,
+      credentialType: state.credentialType,
+      identityKind: user.kind,
     });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+    await next();
+  });
 };

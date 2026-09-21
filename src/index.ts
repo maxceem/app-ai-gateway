@@ -5,7 +5,7 @@ import {
 } from "./core/account-lifecycle";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { HealthResponse } from "./contracts/responses";
-import type { BillingVariables } from "./billing/gateway";
+import type { RequestVariables } from "./middleware/request-scope";
 import {
   AUTH_EVENT_RETENTION_DAYS,
   AUTH_SWEEP_QUERIES,
@@ -30,24 +30,24 @@ import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
 import { quotaGate } from "./middleware/gate";
 import type { ExecutionVariables } from "./execution/plan";
 import { billingEntitlementGate } from "./middleware/billing";
-import { billingRequestScope } from "./middleware/request-scope";
+import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
 import { endpointPrepare, endpointRoutes } from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
 import { proxyPrepare, proxyRoutes } from "./routes/proxy";
 import { vaultStatus } from "./vault";
-import { deploymentPolicy } from "./policy/deployment";
+import { resolveDeployment } from "./policy/deployment";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
 type AppEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
+  Variables: GatewayVariables & ExecutionVariables & RequestVariables;
 };
 
 const app = new Hono<AppEnv>();
 
-app.use("*", billingRequestScope);
+app.use("*", requestScope);
 
 app.get("/v1/healthz", (c) => c.json({
   ok: true,
@@ -233,7 +233,7 @@ async function prune(env: Env): Promise<void> {
   // deployment can have one to collect: a self-host's single account has no
   // `expires_at` at all, so running this there would spend a sixth of a Free
   // plan's nightly queries on a sweep that cannot match a row.
-  if (deploymentPolicy(env).mode === "cloud") {
+  if (resolveDeployment(env).mode === "cloud") {
     const share: QueryBudget = { remaining: Math.floor(budget.remaining / 2) };
     const offered = share.remaining;
     try {

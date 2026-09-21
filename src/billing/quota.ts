@@ -1,4 +1,5 @@
 import { accountLifecycle } from "../core/account-lifecycle";
+import { resolveDeployment } from "../policy/deployment";
 import { accountOnTrial, accountTrialDeadline } from "../policy/accounts";
 import { GatewayError } from "../core/errors";
 import {
@@ -108,7 +109,11 @@ export async function getBillingQuotaResolution(
   cache?: BillingRequestCache,
   now?: number,
 ): Promise<BillingQuotaResolution> {
-  const access = await getBillingAccess(env, organizationId, cache);
+  // Resolved from `env` rather than taken from the request: this is called
+  // from the dispatch gate, the console and the CLI alike, and `mode` and
+  // `billing` are pure functions of the environment, so the value is the same
+  // one `requestScope` put on the context.
+  const access = await getBillingAccess(resolveDeployment(env), organizationId, cache);
   if (access.state !== "billed" || access.plan === null) return { access };
 
   let scheduleId: string;

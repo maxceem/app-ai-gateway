@@ -1,4 +1,5 @@
 import { billingErrorCodeOf, type BillingRuntime } from "./contract";
+import type { Deployment } from "../policy/deployment";
 import type { GatewayBillingAccess, PlanLimits } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
@@ -40,7 +41,7 @@ export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
  *
  * `maxRequestsPerMonth` is spent on the data plane. The rest are ceilings on
  * stored configuration, enforced by the write that would exceed them; see
- * `src/core/plan-caps.ts`.
+ * `src/management/plan-caps.ts`.
  *
  * All of these are the plan allowance an organization is metered against, never
  * the limits an organization sets on its own app's end users — those are
@@ -68,16 +69,6 @@ const PLAN_LIMIT_KEYS = [
 export type { GatewayBillingAccess };
 
 export type BillingRequestCache = Map<string, Promise<GatewayBillingAccess>>;
-
-export interface BillingVariables {
-  billingRequestCache: BillingRequestCache;
-}
-
-/** Structural RPC stub shape; avoids coupling the OSS gateway to the worker class. */
-export type BillingBinding = BillingRuntime;
-export interface BillingEnv {
-  BILLING?: BillingBinding;
-}
 
 interface BillingAccessCacheEntry {
   expiresAt: number;
@@ -112,10 +103,6 @@ export function clearBillingAccessCache(): void {
   lastKnownAccess.clear();
 }
 
-export function billingBinding(env: BillingEnv): BillingBinding | undefined {
-  return env.BILLING;
-}
-
 function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   if (access.state !== "billed" || access.plan?.isDefault !== false || !access.subscription) {
     return null;
@@ -128,10 +115,10 @@ function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-async function loadBillingAccess(env: BillingEnv, organizationId: string): Promise<GatewayBillingAccess> {
-  const binding = billingBinding(env);
-  if (!binding) return { state: "self_hosted" };
-
+async function loadBillingAccess(
+  binding: BillingRuntime,
+  organizationId: string,
+): Promise<GatewayBillingAccess> {
   try {
     const access = await binding.getTenantAccess({
       serviceId: BILLING_SERVICE_ID,
@@ -185,14 +172,16 @@ async function loadBillingAccess(env: BillingEnv, organizationId: string): Promi
 
 /**
  * Reads billing access through a request-owned cache plus a short isolate TTL
- * cache. Self-hosted environments bypass both maps entirely.
+ * cache. Self-hosted deployments bypass both maps entirely.
  */
 export function getBillingAccess(
-  env: BillingEnv,
+  deployment: Deployment,
   organizationId: string,
   cache?: BillingRequestCache,
 ): Promise<GatewayBillingAccess> {
-  if (!billingBinding(env)) return Promise.resolve({ state: "self_hosted" });
+  // The one place `self_hosted` is produced: no billing service, no plan, and
+  // no map to consult about one.
+  if (!deployment.billing) return Promise.resolve({ state: "self_hosted" });
 
   const requestValue = cache?.get(organizationId);
   if (requestValue) return requestValue;
@@ -205,7 +194,7 @@ export function getBillingAccess(
   }
   if (cached) billingAccessCache.delete(organizationId);
 
-  const pending = loadBillingAccess(env, organizationId);
+  const pending = loadBillingAccess(deployment.billing, organizationId);
   billingAccessCache.set(organizationId, {
     expiresAt: now + BILLING_ACCESS_CACHE_TTL_MS,
     value: pending,

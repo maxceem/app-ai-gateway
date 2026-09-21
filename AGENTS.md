@@ -24,10 +24,23 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Everything else is derived from that table: the OpenAPI document
   (`openapi.ts`, one loop), the console's `call` and the CLI's
   `call`/`publicCall`/`create`, the schema the CLI parses each response with,
-  and the server's own mounts. Adding an endpoint is one catalog entry plus one
-  `catalogRouter(...).handle("<name>", …)`, and there is nothing else to keep in
-  step; `test/catalog.test.ts` fails if a documented admin or CLI operation is
-  not mounted.
+  the server's own mounts, and who may call each one. Adding an endpoint is one
+  catalog entry plus one `catalogRouter(...).handle("<name>", …)` — or
+  `adminRouter(...)`, which is the same router with the entry's authorization
+  applied — and there is nothing else to keep in step; `test/catalog.test.ts`
+  fails if a documented admin or CLI operation is not mounted.
+- Authorization on the management surface is the entry's `policy`, and lives
+  nowhere else. `security` names the credential; `policy` names the role, the
+  account access mode and whether a person is required, defaulting to
+  member/read for `GET` and admin/setup for everything else.
+  `src/middleware/admin.ts` only authenticates: it establishes the one `Actor`
+  (`src/management/actor.ts`) and decides nothing about it. Never write a path
+  string or a method test to gate a route.
+- What an admin route does lives in `src/management/`, not beside its path: a
+  route reads the body, builds a `ManagementScope`, and calls one service
+  function taking `(scope, actor, …)`. Nothing under `src/management` may
+  import from `src/routes`; when a route file holds something a service needs,
+  move it into `src/management` rather than importing upwards.
 - `AppConfigSchema` in `src/contracts/schemas.ts` is the only parser of an
   application configuration, and its output is what is stored. The server, the
   console and the CLI all reach it through `parseAppConfig` in
@@ -44,6 +57,18 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - Run `pnpm run openapi:check` to detect generated-document drift.
 - Keep provider proxy bodies permissive: they preserve provider-native formats.
 - Add runtime validation from the shared schema when accepting a documented body.
+
+## Request scope
+
+`requestScope` (`src/middleware/request-scope.ts`) runs on the outer app and
+again on the lazily mounted management app, and puts two things on the context:
+the request's `Deployment` and its billing cache. `resolveDeployment` in
+`src/policy/deployment.ts` is the only place a deployment's mode, its billing
+service and its public identity are derived from `env`; inside a request, read
+`c.get("deployment")`, and give a function that has no context a `Deployment`
+rather than an `Env` to re-derive one from. `deployment.billing === null` is
+what "self-hosted" means, and `getBillingAccess` is the only producer of the
+`self_hosted` state.
 
 ## Documentation changes
 

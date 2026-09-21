@@ -17,6 +17,7 @@ import {
 } from "../src/core/account-lifecycle";
 import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
 import { secretVault } from "../src/vault";
+import { resolveDeployment } from "../src/policy/deployment";
 
 function fakeBilling(): BillingRuntime {
   const none = { plan: null, subscription: null };
@@ -926,10 +927,10 @@ describe("CLI account lifecycle", () => {
     // Only a test moves an account's own instants; the gate caches the row.
     clearAccountLifecycleCache();
     await expect(
-      assertAccountAccess(testEnv, data.account.id, "proxy"),
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "proxy"),
     ).rejects.toMatchObject({ code: "billing_trial_expired" });
     await expect(
-      assertAccountAccess(testEnv, data.account.id, "read"),
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "read"),
     ).resolves.toMatchObject({ id: data.account.id });
     await env.DB.prepare(
       "UPDATE mgmt_organization SET expires_at=? WHERE id=?",
@@ -938,7 +939,7 @@ describe("CLI account lifecycle", () => {
       .run();
     clearAccountLifecycleCache();
     await expect(
-      assertAccountAccess(testEnv, data.account.id, "claim"),
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "claim"),
     ).rejects.toMatchObject({ code: "account_expired" });
     const human = await seedHuman();
     await env.DB.batch([
@@ -1118,6 +1119,6 @@ it("keeps the completed trial counter readable during recovery without renewing 
     billing: { access: { subscription: null }, limit: 1000 },
     usage: { used: 0, periodStart: origin, periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString() },
   });
-  await expect(assertAccountAccess(testEnv, data.account.id, "setup"))
+  await expect(assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "setup"))
     .rejects.toMatchObject({ code: "billing_trial_expired" });
 });

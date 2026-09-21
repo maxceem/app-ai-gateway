@@ -1,4 +1,6 @@
 import { assertAccountAccess } from "../../core/account-lifecycle";
+import { actorFromHandoff } from "../../management/actor";
+import { managementScope } from "../admin/body";
 import { credentialAuthorityCondition } from "@maxceem/cf-auth";
 import { GatewayError } from "../../core/errors";
 import { mgmtAuthTables } from "../../db/schema";
@@ -7,7 +9,6 @@ import { createProviderGateway, rotateProviderGateway } from "../../management/p
 import { databaseErrorMatches } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import type { HandoffRow, CliContext } from "./types";
-import { deploymentPolicy } from "../../policy/deployment";
 import { accountAccessCondition } from "../../policy/sql";
 
 export async function completeProviderSubmission(
@@ -16,10 +17,9 @@ export async function completeProviderSubmission(
   secret: unknown,
 ): Promise<void> {
   if (row.consumed_at && row.outcome) return;
-  if (!row.organization_id || !row.initiating_user_id || !row.initiating_credential_id) {
-    throw new GatewayError(403, "forbidden", "This operation has no management identity binding");
-  }
-  await assertAccountAccess(c.env, row.organization_id, "setup");
+  const actor = actorFromHandoff(row);
+  const scope = managementScope(c);
+  await assertAccountAccess(scope.deployment, c.env, actor.organizationId, "setup");
   const parsed = JSON.parse(row.request_json) as Record<string, unknown>;
   const {
     id,
@@ -36,7 +36,6 @@ export async function completeProviderSubmission(
   }
   if (kind === "provider.rotate-key" && typeof secret !== "string")
     throw new GatewayError(400, "invalid_request", "A provider credential is required");
-  const actor = { organizationId: row.organization_id, userId: row.initiating_user_id };
   const now = Date.now();
   // Authority is rechecked in the mutation transaction, not merely when the
   // URL was issued. Product lifecycle conditions are appended below.
@@ -50,7 +49,7 @@ export async function completeProviderSubmission(
   const transition = crypto.randomUUID();
   const marker = JSON.stringify({ transition });
   const accountAccess = accountAccessCondition(
-    deploymentPolicy(c.env),
+    scope.deployment.mode,
     row.organization_id,
     "setup",
     now,
@@ -97,7 +96,7 @@ export async function completeProviderSubmission(
             row.submission_proof_hash,
             now,
           ),
-          statement,
+          ...(Array.isArray(statement) ? statement : [statement]),
           // A failed CAS must roll back consumption too, keeping the operation retryable.
           c.env.DB.prepare(
             "SELECT json(CASE WHEN changes()=1 THEN 'null' ELSE 'agw_resource_conflict' END)",
@@ -127,7 +126,7 @@ export async function completeProviderSubmission(
   try {
     if (kind === "provider.add") {
       await createProvider(
-        c.env,
+        scope,
         actor,
         { ...payload, ...(secret === undefined ? {} : { secret }) },
         boundary,
@@ -135,14 +134,14 @@ export async function completeProviderSubmission(
     } else if (kind === "provider.rotate-key" || kind === "provider.update") {
       if (typeof id !== "string" || typeof expectedRevision !== "number")
         throw new GatewayError(409, "conflict", "The provider binding is missing");
-      await updateProvider(c.env, actor, id, { ...payload, revision: expectedRevision, secret }, boundary);
+      await updateProvider(scope, actor, id, { ...payload, revision: expectedRevision, secret }, boundary);
     } else if (kind === "provider-gateway.add") {
-      await createProviderGateway(c.env, actor, { ...payload, token: secret }, boundary);
+      await createProviderGateway(scope, actor, { ...payload, token: secret }, boundary);
     } else if (kind === "provider-gateway.rotate-key") {
       if (typeof id !== "string" || typeof expectedRevision !== "number")
         throw new GatewayError(409, "conflict", "The gateway binding is missing");
       await rotateProviderGateway(
-        c.env,
+        scope,
         actor,
         id,
         { ...payload, revision: expectedRevision, token: secret },

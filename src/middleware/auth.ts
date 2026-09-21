@@ -7,9 +7,9 @@ import { organizationProviders, type OrganizationProviders } from "../core/provi
 import { providerDescriptor, PROVIDER_SLUG_PATTERN } from "../core/providers";
 import { lookup } from "../shared/records";
 import type { AppRecord, GatewayIdentity, ProviderType } from "../core/types";
-import type { BillingVariables } from "../billing/gateway";
+import type { RequestVariables } from "./request-scope";
 
-export interface GatewayVariables extends BillingVariables {
+export interface GatewayVariables extends RequestVariables {
   app: AppRecord;
   identity: GatewayIdentity;
   authHeaderName: string;

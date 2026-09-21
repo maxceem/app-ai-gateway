@@ -1,6 +1,6 @@
 import { cliJson } from "./security";
 import { requireOrganization } from "@maxceem/cf-auth";
-import { createIdentityAuth } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
 import {
   assertAccountAccess,
   accountLifecycle,
@@ -14,7 +14,7 @@ import type {
   CliPollResponse,
 } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
-import { deployment } from "./bootstrap";
+import { deploymentMeta } from "./bootstrap";
 import {
   derive,
   digest,
@@ -33,9 +33,7 @@ export function browserPath(id: string): string {
 }
 
 export async function authState(c: CliContext, interactive = false) {
-  const auth = createIdentityAuth(c.env, c.req.url, {
-    suppressDefaultOrganization: true,
-  });
+  const auth = identityAuthFor(c, { suppressDefaultOrganization: true });
   await auth.middleware<CliEnv>({
     apiKeys: !interactive,
     syncCurrentOrganizationCookie: false,
@@ -84,7 +82,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
   ) {
     throw new GatewayError(400, "invalid_request", "revision must be a positive integer");
   }
-  const meta = deployment(c);
+  const meta = deploymentMeta(c);
   const state = await authState(c);
   const resolved = requireOrganization(state);
     if (
@@ -109,6 +107,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
     const userId = state.actor.id;
     const credentialId = state.actor.credentialId;
     const account = await assertAccountAccess(
+      c.get("deployment"),
       c.env,
       organizationId,
       input.kind === "claim" ? "claim" : "setup",
@@ -254,7 +253,7 @@ export async function pollOperation(c: CliContext): Promise<CliPollResponse> {
     throw new GatewayError(403, "forbidden", "Invalid polling proof");
   const base = {
     id: row.id,
-    deployment: deployment(c),
+    deployment: deploymentMeta(c),
     expiresAt: new Date(row.expires_at).toISOString(),
   };
   if (row.expires_at <= Date.now()) return { ...base, state: "expired" };

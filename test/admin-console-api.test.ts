@@ -9,6 +9,8 @@ import {
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import type { AdminVariables } from "../src/middleware/admin";
+import type { AuthState } from "@maxceem/cf-auth";
+import { resolveDeployment } from "../src/policy/deployment";
 import { appRoutes } from "../src/routes/admin/apps";
 import {
   appleConfig,
@@ -741,8 +743,21 @@ describe("authoritative admin configuration", () => {
     }) as Env;
     const route = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
     route.use("*", async (c, next) => {
+      c.set("deployment", resolveDeployment(c.env, c.req.url));
       c.set("billingRequestCache", new Map());
-      c.set("admin", {
+      // The catalog policy runs before the handler, so this stands in for what
+      // `adminAuth` would have established: an owner holding a management key.
+      c.set("authState", {
+        authenticated: true,
+        user: { id: "operator-test-owner", kind: "service" },
+        organization: { id: "operator-test-organization", name: "Test" },
+        role: "owner",
+        memberships: [],
+        credentialType: "apiKey",
+        assurance: "credential",
+        actor: { id: "operator-test-owner", credentialId: "test-management-key" },
+      } as unknown as AuthState);
+      c.set("actor", {
         userId: "operator-test-owner",
         identityKind: "service",
         credentialId: "test-management-key",

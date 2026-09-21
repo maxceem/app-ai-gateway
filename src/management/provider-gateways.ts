@@ -14,7 +14,8 @@ import type {
 } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import { requireGatewayAdapter } from "../core/routes";
-import { planCap } from "../core/plan-caps";
+import { planCap } from "./plan-caps";
+import type { ManagementScope } from "./scope";
 import { probeGatewayPreset, type ProbeResult } from "../core/provider-probe";
 import { invalidateOrganizationProviders } from "../core/provider-store";
 import { database } from "../db";
@@ -27,9 +28,9 @@ import {
 } from "../db/schema";
 import { sealSecret } from "../vault/secrets";
 import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
+import type { Actor } from "./actor";
 import {
   commitResourceWrite,
-  type ResourceWriteActor,
   type ResourceWriteBoundary,
 } from "./write-boundary";
 
@@ -76,8 +77,8 @@ export async function testProviderGateway(input: unknown): Promise<ProviderGatew
   return probeReport(await probeGatewayPreset(requestedGateway(body), body.token));
 }
 
-export async function listProviderGateways(env: Env, actor: ResourceWriteActor): Promise<ProviderGatewayListResponse> {
-  const db = database(env.DB);
+export async function listProviderGateways(scope: ManagementScope, actor: Actor): Promise<ProviderGatewayListResponse> {
+  const db = database(scope.env.DB);
   const [gateways, counts] = await Promise.all([
     db.select().from(providerGateway).where(eq(providerGateway.organizationId, actor.organizationId)),
     db.select({
@@ -91,11 +92,12 @@ export async function listProviderGateways(env: Env, actor: ResourceWriteActor):
 }
 
 export async function createProviderGateway(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderGatewayCreateRequestSchema, input);
   const gateway = requestedGateway(body);
   const id = crypto.randomUUID();
@@ -106,9 +108,9 @@ export async function createProviderGateway(
     config: gateway.config, secretBlob, secretHint: secretHint(body.token),
     revision: 1, createdBy: actor.userId, status: "active", createdAt: now, updatedAt: now,
   };
-  const cap = await planCap(env, "providerGateway", actor.organizationId);
+  const cap = await planCap(scope, "providerGateway", actor.organizationId);
   await commitResourceWrite(
-    env,
+    scope,
     `INSERT INTO provider_gateway(id,organization_id,type,name,config_json,secret_blob,secret_hint,revision,created_by,status,created_at,updated_at)
      SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE /* authorization */`,
     [row.id, row.organizationId, row.type, row.name, JSON.stringify(row.config), row.secretBlob,
@@ -120,12 +122,13 @@ export async function createProviderGateway(
 }
 
 export async function updateProviderGateway(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   id: string,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderGatewayUpdateRequestSchema, input);
   const existing = await database(env.DB).query.providerGateway.findFirst({
     where: and(eq(providerGateway.id, id), eq(providerGateway.organizationId, actor.organizationId), eq(providerGateway.status, "active")),
@@ -140,7 +143,7 @@ export async function updateProviderGateway(
   };
   const counts = await gatewayCounts(env.DB, actor.organizationId, id);
   await commitResourceWrite(
-    env,
+    scope,
     `UPDATE provider_gateway SET name=?,revision=?,updated_at=?
      WHERE id=? AND organization_id=? AND revision=? AND status='active' AND /* authorization */`,
     [row.name, row.revision, row.updatedAt, id, actor.organizationId, body.revision],
@@ -151,12 +154,13 @@ export async function updateProviderGateway(
 }
 
 export async function rotateProviderGateway(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   id: string,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderGatewayRotateRequestSchema, input);
   const existing = await database(env.DB).query.providerGateway.findFirst({
     where: and(eq(providerGateway.id, id), eq(providerGateway.organizationId, actor.organizationId), eq(providerGateway.status, "active")),
@@ -174,7 +178,7 @@ export async function rotateProviderGateway(
   };
   const counts = await gatewayCounts(env.DB, actor.organizationId, id);
   await commitResourceWrite(
-    env,
+    scope,
     `UPDATE provider_gateway SET secret_blob=?,secret_hint=?,revision=?,updated_at=?
      WHERE id=? AND organization_id=? AND revision=? AND status='active' AND /* authorization */`,
     [row.secretBlob, row.secretHint, row.revision, row.updatedAt, row.id, row.organizationId, body.revision],
@@ -184,7 +188,8 @@ export async function rotateProviderGateway(
   return { gateway: serialize(row, counts) };
 }
 
-export async function deleteProviderGateway(env: Env, actor: ResourceWriteActor, id: string): Promise<ProviderGatewayDeleteResponse> {
+export async function deleteProviderGateway(scope: ManagementScope, actor: Actor, id: string): Promise<ProviderGatewayDeleteResponse> {
+  const { env } = scope;
   const existing = await database(env.DB).query.providerGateway.findFirst({
     columns: { id: true },
     where: and(eq(providerGateway.id, id), eq(providerGateway.organizationId, actor.organizationId)),

@@ -1,4 +1,4 @@
-import { createIdentityAuth, rethrowCfAuthError } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
 import { invalidateBillingRequestAccess } from "../../billing/gateway";
 import {
   assertAccountAccess,
@@ -68,7 +68,7 @@ export async function completeIdentity(
     );
 
   const target = row.organization_id;
-  await assertAccountAccess(c.env, target, "claim");
+  await assertAccountAccess(c.get("deployment"), c.env, target, "claim");
 
   // Every row this moves — the owner membership, the account's deadline, the
   // service identity's key — belongs to cf-auth, so cf-auth moves them, in one
@@ -79,10 +79,8 @@ export async function completeIdentity(
   // failures are not equally recoverable: a claim that landed can simply be
   // approved again, since claiming settles on the same owner rather than
   // refusing, while a request consumed without a claim could never be retried.
-  try {
-    await createIdentityAuth(c.env, c.req.url, {
-      suppressDefaultOrganization: true,
-    }).service.claimOrganization({
+  await identityAuthFor(c, { suppressDefaultOrganization: true })
+    .service.claimOrganization({
       actor: state,
       organizationId: target,
       provisioning: {
@@ -95,9 +93,6 @@ export async function completeIdentity(
         revokeAccess: false,
       },
     });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
 
   const now = Date.now();
   await c.env.DB.batch([

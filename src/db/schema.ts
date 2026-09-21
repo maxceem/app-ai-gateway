@@ -178,7 +178,7 @@ export const app = sqliteTable(
      * and never reach into the JSON with `json_extract`, which is an index
      * nothing can use and a path that silently answers null if the shape moves.
      *
-     * Written by `src/core/app-writes.ts` alone, from the parsed configuration.
+     * Written by `src/management/app-writes.ts` alone, from the parsed configuration.
      * No CHECK: the database is permissive and the runtime is authoritative,
      * which is this schema's standing position.
      */

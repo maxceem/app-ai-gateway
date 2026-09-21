@@ -16,6 +16,7 @@ import {
 import worker from "../src/index";
 import { resolveBillingQuota } from "../src/billing/quota";
 import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
+import { resolveDeployment, type Deployment } from "../src/policy/deployment";
 import {
   clearIsolateCaches,
   seedHuman,
@@ -102,6 +103,16 @@ function stub(overrides: Partial<BillingRuntime> = {}): BillingRuntime {
   };
 }
 
+/** A deployment with no billing service, as `resolveDeployment` reports one. */
+function selfHosted(): Deployment {
+  return resolveDeployment({} as Env);
+}
+
+/** A deployment whose billing service is this binding. */
+function hosted(binding: BillingRuntime): Deployment {
+  return resolveDeployment({ BILLING: binding } as Env);
+}
+
 function withBilling(binding: BillingRuntime): Env {
   return new Proxy(env, {
     get(target, property, receiver) {
@@ -113,7 +124,7 @@ function withBilling(binding: BillingRuntime): Env {
 
 describe("billing gateway", () => {
   it("defaults to unlimited self-hosted access without a binding", async () => {
-    await expect(getBillingAccess({}, "org-self-hosted")).resolves.toEqual({
+    await expect(getBillingAccess(selfHosted(), "org-self-hosted")).resolves.toEqual({
       state: "self_hosted",
     });
     const capabilities = await exports.default.fetch(`${ORIGIN}/v1/console/capabilities`);
@@ -136,20 +147,20 @@ describe("billing gateway", () => {
     });
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
     await expect(
-      getBillingAccess({ BILLING: binding }, "org-active", new Map() as BillingRequestCache),
+      getBillingAccess(hosted(binding), "org-active", new Map() as BillingRequestCache),
     ).resolves.toEqual(cached);
     await expect(
-      getBillingAccess({ BILLING: binding }, "org-active", new Map() as BillingRequestCache),
+      getBillingAccess(hosted(binding), "org-active", new Map() as BillingRequestCache),
     ).resolves.toEqual(cached);
     expect(calls).toBe(1);
 
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
     await expect(
-      getBillingAccess({ BILLING: binding }, "org-active", new Map() as BillingRequestCache),
+      getBillingAccess(hosted(binding), "org-active", new Map() as BillingRequestCache),
     ).resolves.toEqual(cached);
     expect(calls).toBe(2);
 
-    await expect(getBillingAccess({ BILLING: stub() }, "org-unentitled")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(stub()), "org-unentitled")).resolves.toEqual({
       state: "billed",
       plan: null,
       subscription: null,
@@ -198,12 +209,12 @@ describe("billing gateway", () => {
       },
     });
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-error")).resolves.toEqual({
       state: "unavailable",
       billingErrorCode: "service_not_found",
     });
     now.mockReturnValue(1_000 + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 + 1);
-    await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-error")).resolves.toEqual({
       state: "billed",
       ...onPlan(),
     });
@@ -538,19 +549,19 @@ describe("billing gateway", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    await expect(getBillingAccess({ BILLING: binding }, "org-stale")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-stale")).resolves.toEqual({
       state: "billed",
       ...onPlan(),
     });
 
     failing = true;
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
-    const stale = await getBillingAccess({ BILLING: binding }, "org-stale");
+    const stale = await getBillingAccess(hosted(binding), "org-stale");
     expect(stale).toEqual({ state: "billed", ...onPlan(), stale: true });
     expect(() => requireActiveBilling(stale)).not.toThrow();
 
     now.mockReturnValue(1_000 + BILLING_STALE_MAX_MS + 1);
-    const expired = await getBillingAccess({ BILLING: binding }, "org-stale");
+    const expired = await getBillingAccess(hosted(binding), "org-stale");
     expect(expired).toEqual({ state: "unavailable" });
     expect(() => requireActiveBilling(expired)).toThrowError(/Billing could not be reached/u);
   });
@@ -570,11 +581,11 @@ describe("billing gateway", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    await getBillingAccess({ BILLING: binding }, "org-stale-unpaid");
+    await getBillingAccess(hosted(binding), "org-stale-unpaid");
 
     failing = true;
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
-    const stale = await getBillingAccess({ BILLING: binding }, "org-stale-unpaid");
+    const stale = await getBillingAccess(hosted(binding), "org-stale-unpaid");
     expect(stale).toEqual({ state: "billed", ...NO_PLAN, stale: true });
     expect(() => requireActiveBilling(stale)).toThrowError(/No plan is available/u);
   });
@@ -595,14 +606,14 @@ describe("billing gateway", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await expect(getBillingAccess({ BILLING: binding }, "org-flapping")).resolves.toEqual({
+      await expect(getBillingAccess(hosted(binding), "org-flapping")).resolves.toEqual({
         state: "unavailable",
       });
     }
     expect(calls).toBe(1);
 
     now.mockReturnValue(1_000 + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 + 1);
-    await expect(getBillingAccess({ BILLING: binding }, "org-flapping")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-flapping")).resolves.toEqual({
       state: "unavailable",
     });
     expect(calls).toBe(2);

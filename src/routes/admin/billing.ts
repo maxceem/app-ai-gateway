@@ -2,7 +2,6 @@ import type { BillingRuntime } from "../../billing/contract";
 import { Hono, type Context } from "hono";
 import {
   BILLING_SERVICE_ID,
-  billingBinding,
   billingPlanLimits,
   billingRpcError,
   invalidateBillingAccess,
@@ -17,7 +16,7 @@ import {
 } from "../../contracts/billing";
 import { schemaBody } from "../../management/validation";
 import { jsonBody } from "./body";
-import { catalogRouter } from "../catalog-router";
+import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
 
@@ -27,10 +26,10 @@ type BillingRouteEnv = {
 };
 
 export const billingRoutes = new Hono<BillingRouteEnv>();
-const routes = catalogRouter(billingRoutes, "/v1/admin/billing");
+const routes = adminRouter(billingRoutes, "/v1/admin/billing");
 
-function binding(env: Env): BillingRuntime {
-  const value = billingBinding(env);
+function binding(c: Context<BillingRouteEnv>): BillingRuntime {
+  const value = c.get("deployment").billing;
   if (!value) throw new GatewayError(404, "not_found", "Billing is not configured");
   return value;
 }
@@ -43,7 +42,7 @@ async function rpc<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-routes.handle("listBillingPlans", (c) => rpc(() => binding(c.env).listPlans({
+routes.handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
   serviceId: BILLING_SERVICE_ID,
 })));
 
@@ -64,7 +63,7 @@ routes.handle("listBillingPlans", (c) => rpc(() => binding(c.env).listPlans({
  * this page is exactly who needs to see why.
  */
 async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusResponse> {
-  const organizationId = c.get("admin").organizationId;
+  const organizationId = c.get("actor").organizationId;
   let resolved = await getBillingQuotaResolution(
     c.env,
     organizationId,
@@ -104,58 +103,58 @@ routes.handle("getBillingStatus", status);
 
 routes.handle("startCheckout", async (c) => {
   const input = schemaBody(BillingCheckoutRequestSchema, await jsonBody(c));
-  const result = await rpc(() => binding(c.env).createCheckout({
+  const result = await rpc(() => binding(c).createCheckout({
     serviceId: BILLING_SERVICE_ID,
-    tenantId: c.get("admin").organizationId,
+    tenantId: c.get("actor").organizationId,
     planKey: input.planKey,
     billingPeriod: input.billingPeriod,
     ...(input.successUrl === undefined ? {} : { successUrl: input.successUrl }),
     ...(input.cancelUrl === undefined ? {} : { cancelUrl: input.cancelUrl }),
   }));
-  invalidateBillingAccess(c.get("admin").organizationId);
+  invalidateBillingAccess(c.get("actor").organizationId);
   return result;
 });
 
 routes.handle("changePlan", async (c) => {
   const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
-  const result = await rpc(() => binding(c.env).changePlan({
+  const result = await rpc(() => binding(c).changePlan({
     serviceId: BILLING_SERVICE_ID,
-    tenantId: c.get("admin").organizationId,
+    tenantId: c.get("actor").organizationId,
     planKey: input.planKey,
     billingPeriod: input.billingPeriod,
   }));
-  invalidateBillingAccess(c.get("admin").organizationId);
+  invalidateBillingAccess(c.get("actor").organizationId);
   return result;
 });
 
 routes.handle("cancelSubscription", async (c) => {
-  const result = await rpc(() => binding(c.env).cancelSubscription({
+  const result = await rpc(() => binding(c).cancelSubscription({
     serviceId: BILLING_SERVICE_ID,
-    tenantId: c.get("admin").organizationId,
+    tenantId: c.get("actor").organizationId,
   }));
-  invalidateBillingAccess(c.get("admin").organizationId);
+  invalidateBillingAccess(c.get("actor").organizationId);
   return result;
 });
 
 routes.handle("resumeSubscription", async (c) => {
   const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
-  const result = await rpc(() => binding(c.env).resumeSubscription({
+  const result = await rpc(() => binding(c).resumeSubscription({
     serviceId: BILLING_SERVICE_ID,
-    tenantId: c.get("admin").organizationId,
+    tenantId: c.get("actor").organizationId,
     planKey: input.planKey,
     billingPeriod: input.billingPeriod,
   }));
-  invalidateBillingAccess(c.get("admin").organizationId);
+  invalidateBillingAccess(c.get("actor").organizationId);
   return result;
 });
 
 routes.handle("startTrial", async (c) => {
   const input = schemaBody(BillingTrialRequestSchema, await jsonBody(c));
-  const result = await rpc(() => binding(c.env).startTrial({
+  const result = await rpc(() => binding(c).startTrial({
     serviceId: BILLING_SERVICE_ID,
-    tenantId: c.get("admin").organizationId,
+    tenantId: c.get("actor").organizationId,
     planKey: input.planKey,
   }));
-  invalidateBillingAccess(c.get("admin").organizationId);
+  invalidateBillingAccess(c.get("actor").organizationId);
   return result;
 });

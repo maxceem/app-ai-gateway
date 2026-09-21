@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import { invalidateAccountLifecycle } from "../core/account-lifecycle";
 import {
   invalidateBillingRequestAccess,
-  type BillingVariables,
+  type BillingRequestCache,
 } from "../billing/gateway";
 import { resolveBillingQuota } from "../billing/quota";
 import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
@@ -13,7 +13,8 @@ import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { ExecutionVariables } from "../execution/plan";
 import type { GatewayVariables } from "./auth";
-import { deploymentPolicy } from "../policy/deployment";
+import type { Deployment } from "../policy/deployment";
+import type { RequestVariables } from "./request-scope";
 
 /**
  * The dispatch boundary.
@@ -102,19 +103,20 @@ async function isUserBlocked(env: Env, name: string): Promise<boolean> {
 }
 
 async function monthlyRequestAllowance(
+  deployment: Deployment,
   env: Env,
   organizationId: string,
-  cache: BillingVariables["billingRequestCache"],
+  cache: BillingRequestCache,
 ): Promise<Awaited<ReturnType<typeof resolveBillingQuota>> | undefined> {
   // No billing service means self-hosted, which is unlimited and must never
   // depend on a hosted plan lookup that cannot happen.
-  if (deploymentPolicy(env).mode === "self_hosted") return undefined;
+  if (deployment.mode === "self_hosted") return undefined;
   return resolveBillingQuota(env, organizationId, cache);
 }
 
 export const quotaGate: MiddlewareHandler<{
   Bindings: Env;
-  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
+  Variables: GatewayVariables & ExecutionVariables & RequestVariables;
 }> = async (c, next) => {
   const start = performance.now();
   const app = c.get("app");
@@ -222,7 +224,12 @@ export const quotaGate: MiddlewareHandler<{
     identity.userId === null || hasUserLevelLimits(app.config)
       ? Promise.resolve(false)
       : isUserBlocked(c.env, `${identity.appId}:${identity.userId}`),
-    monthlyRequestAllowance(c.env, app.organizationId, c.get("billingRequestCache")),
+    monthlyRequestAllowance(
+      c.get("deployment"),
+      c.env,
+      app.organizationId,
+      c.get("billingRequestCache"),
+    ),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;

@@ -151,6 +151,22 @@ export interface OperationSpec {
   readonly summary: string;
   readonly description?: string;
   readonly security: SecurityKind;
+  /**
+   * Management-surface authorization, for `security: "management" | "session"`
+   * entries, applied by `src/routes/catalog-router.ts` before the handler runs.
+   *
+   * Defaults are the shape of the surface rather than a list: `GET` reads, so
+   * `{ role: "member", access: "read" }`; anything else writes, so
+   * `{ role: "admin", access: "setup" }`. Only an operation that departs from
+   * that says so here, and it says so beside its own path instead of in a
+   * regex in another file. `identity: "human"` refuses a service credential,
+   * and a `session` entry refuses anything but a browser session.
+   */
+  readonly policy?: {
+    readonly role?: "member" | "admin";
+    readonly access?: "read" | "setup";
+    readonly identity?: "human";
+  };
   /** Creations that honour Idempotency-Key / X-Idempotency-Proof. */
   readonly receipt?: true;
   /** Registered in the full document but not the published one. */
@@ -473,6 +489,9 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "List billing plans",
     security: "management",
+    // The whole billing subtree is a person's to act on: a service credential
+    // may run an account but may not buy, change or cancel what pays for it.
+    policy: { identity: "human" },
     response: BillingPlansResponseSchema,
     responseDescription: "Billing service response.",
   },
@@ -484,6 +503,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Get billing access and the current allowance period",
     security: "management",
+    policy: { identity: "human" },
     response: BillingStatusResponseSchema,
     responseDescription:
       "Billing access, and the current period against the plan's request allowance when an entitlement resolves.",
@@ -496,6 +516,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Create a hosted checkout",
     security: "management",
+    policy: { identity: "human" },
     request: BillingCheckoutRequestSchema,
     response: BillingCheckoutResponseSchema,
     responseDescription: "Hosted checkout URL.",
@@ -508,6 +529,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Change the subscription plan",
     security: "management",
+    policy: { identity: "human" },
     request: BillingPlanSelectionSchema,
     response: BillingChangeResponseSchema,
     responseDescription: "Billing service response.",
@@ -520,6 +542,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Resume a canceled subscription",
     security: "management",
+    policy: { identity: "human" },
     request: BillingPlanSelectionSchema,
     response: BillingChangeResponseSchema,
     responseDescription: "Billing service response.",
@@ -532,6 +555,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Cancel the subscription at period end",
     security: "management",
+    policy: { identity: "human" },
     response: BillingCancelResponseSchema,
     responseDescription: "Cancellation accepted.",
   },
@@ -543,6 +567,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Start a no-card trial",
     security: "management",
+    policy: { identity: "human" },
     request: BillingTrialRequestSchema,
     response: BillingAccessSchema,
     responseDescription: "Trial access state.",
@@ -579,6 +604,9 @@ export const CATALOG = {
     tags: ["Admin applications"],
     summary: "Validate an application configuration without saving it",
     security: "management",
+    // A POST that stores nothing: it answers whether a body would be accepted,
+    // which is a read of the configuration rules and not a write.
+    policy: { role: "member", access: "read" },
     params: APP_PARAM,
     request: AppWriteSchema,
     response: AppValidateResponseSchema,
@@ -794,7 +822,7 @@ export const CATALOG = {
     path: "/v1/admin/organizations",
     tags: ["Admin organizations"],
     summary: "List the organizations the caller belongs to",
-    security: "session",
+    security: "management",
     response: OrganizationListResponseSchema,
     responseDescription: "Memberships ordered by organization creation time.",
   },
@@ -805,7 +833,12 @@ export const CATALOG = {
     tags: ["Admin organizations"],
     summary: "Switch the caller's active organization",
     description: "Available to every member, including read-only members, of the target organization.",
-    security: "session",
+    security: "management",
+    // Switching the active organization re-signs the cookie naming which
+    // tenant the caller reads; gating it behind owner/admin would strand a
+    // read-only member in one organization, and gating it behind setup access
+    // would strand them in an account whose trial has ended.
+    policy: { role: "member", access: "read" },
     request: OrganizationSelectRequestSchema,
     response: IdentitySessionSchema,
     responseDescription: "Session rescoped to the selected organization.",

@@ -1,41 +1,13 @@
 import {
   billingPlanLimits,
   getBillingAccess,
-  type BillingRequestCache,
   type PlanLimits,
 } from "../billing/gateway";
-import { GatewayError } from "./errors";
+import { GatewayError } from "../core/errors";
+import type { SqlCondition } from "../policy/sql";
+import type { ManagementScope } from "./scope";
 
-/**
- * A predicate carried into the statement that writes, as SQL plus its bound
- * parameters. The same shape a resource receipt and a browser handoff boundary
- * already use, so a cap composes with whichever of those is in play.
- */
-export interface WriteCondition {
-  sql: string;
-  params: unknown[];
-}
-
-const UNCONDITIONAL: WriteCondition = { sql: "1", params: [] };
-
-/**
- * Joins conditions into one, preserving order.
- *
- * Order is the whole contract: every call site interpolates `sql` at one point
- * in a statement and binds `params` at the matching point, so the parameters of
- * the earlier condition must stay ahead of the later one's.
- */
-export function andCondition(
-  ...parts: Array<WriteCondition | undefined>
-): WriteCondition {
-  const present = parts.filter((part): part is WriteCondition => part !== undefined);
-  if (present.length === 0) return UNCONDITIONAL;
-  if (present.length === 1) return present[0]!;
-  return {
-    sql: present.map((part) => `(${part.sql})`).join(" AND "),
-    params: present.flatMap((part) => part.params),
-  };
-}
+const UNCONDITIONAL: SqlCondition = { sql: "1", params: [] };
 
 /**
  * The resources a plan can put a ceiling on, and how each one is counted.
@@ -78,7 +50,7 @@ export interface PlanCap {
    * write are one statement and a concurrent create cannot slip between them.
    * Unconditional when the plan sets no ceiling on this resource.
    */
-  condition: WriteCondition;
+  condition: SqlCondition;
   /**
    * Explains a write that changed nothing.
    *
@@ -109,15 +81,14 @@ const UNCAPPED: PlanCap = {
  * organization whose plan is being read.
  */
 export async function planCap(
-  env: Env,
+  scope: ManagementScope,
   resource: CappedResource,
   organizationId: string,
-  cache?: BillingRequestCache,
   scopeId: string = organizationId,
 ): Promise<PlanCap> {
   const capped = CAPPED_RESOURCES[resource];
   const limit = billingPlanLimits(
-    await getBillingAccess(env, organizationId, cache),
+    await getBillingAccess(scope.deployment, organizationId, scope.billingCache),
   )[capped.limit];
   if (limit === undefined) return UNCAPPED;
   return {
@@ -126,7 +97,7 @@ export async function planCap(
       params: [scopeId, limit],
     },
     async assertNotReached(): Promise<void> {
-      const row = await env.DB.prepare(`SELECT COUNT(*) AS used FROM ${capped.from}`)
+      const row = await scope.env.DB.prepare(`SELECT COUNT(*) AS used FROM ${capped.from}`)
         .bind(scopeId)
         .first<{ used: number }>();
       const used = row?.used ?? 0;

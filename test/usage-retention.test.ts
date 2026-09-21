@@ -26,7 +26,7 @@ import {
   usageBreakdown,
   usageMonthTotals,
   usageTimeseries,
-} from "../src/routes/admin/shared";
+} from "../src/management/usage-queries";
 import { TEST_ORGANIZATION_ID, seedServerApp } from "./helpers";
 
 /** Fixed so every cutoff below is arithmetic rather than a moving target. */

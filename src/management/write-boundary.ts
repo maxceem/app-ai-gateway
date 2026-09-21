@@ -1,20 +1,25 @@
 import { GatewayError } from "../core/errors";
-import { andCondition, type PlanCap } from "../core/plan-caps";
+import { andCondition, type SqlCondition } from "../policy/sql";
+import type { PlanCap } from "./plan-caps";
+import type { ManagementScope } from "./scope";
 
 /** Trusted transaction boundary supplied by a verified browser handoff or request receipt. */
 export interface ResourceWriteBoundary {
-  condition: { sql: string; params: unknown[] };
-  commit(statement: D1PreparedStatement, outcome: Record<string, unknown>): Promise<void>;
-}
-
-export interface ResourceWriteActor {
-  organizationId: string;
-  userId: string;
+  condition: SqlCondition;
+  /**
+   * Commits the guarded write together with whatever the boundary itself has
+   * to record. One statement or several: a create that also mints a key writes
+   * two rows, and both shapes go through this one path.
+   */
+  commit(
+    statement: D1PreparedStatement | D1PreparedStatement[],
+    outcome: Record<string, unknown>,
+  ): Promise<void>;
 }
 
 /** Runs one resource write under its atomic authorization and cap conditions. */
 export async function commitResourceWrite(
-  env: Env,
+  scope: ManagementScope,
   sql: string,
   parameters: unknown[],
   outcome: Record<string, unknown>,
@@ -22,7 +27,7 @@ export async function commitResourceWrite(
   cap?: PlanCap,
 ): Promise<void> {
   const condition = andCondition(boundary?.condition, cap?.condition);
-  const statement = env.DB.prepare(sql.replace("/* authorization */", condition.sql)).bind(
+  const statement = scope.env.DB.prepare(sql.replace("/* authorization */", condition.sql)).bind(
     ...parameters,
     ...condition.params,
   );

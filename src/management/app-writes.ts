@@ -1,5 +1,6 @@
 import type { app } from "../db/schema";
-import type { AppConfig } from "./types";
+import type { AppConfig } from "../core/types";
+import type { SqlCondition } from "../policy/sql";
 
 export interface AtomicAppWrite {
   id: string;
@@ -67,7 +68,7 @@ export async function insertApp(
 export function appInsertStatement(
   d1: D1Database,
   values: AtomicAppWrite,
-  condition: { sql: string; params: unknown[] } = { sql: "1", params: [] },
+  condition: SqlCondition = { sql: "1", params: [] },
   ignoreCollision = false,
 ): D1PreparedStatement {
   const now = new Date().toISOString();

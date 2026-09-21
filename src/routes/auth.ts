@@ -15,6 +15,8 @@ import type {
   AppleAppAttestAuthentication,
 } from "../core/types";
 import { database } from "../db";
+import { schemaBody } from "../management/validation";
+import { jsonBody } from "./admin/body";
 import { appAuthChallenge, appUser, type AuthEventName, type AuthMethod } from "../db/schema";
 import {
   AppAttestRegisterRequestSchema,
@@ -24,36 +26,13 @@ import {
 
 const GATEWAY_TOKEN_TTL_SECONDS = 3600;
 
-function objectBody(value: unknown): Record<string, unknown> {
+/** A JSON body that is an object, which every documented body on this surface is. */
+async function jsonObjectBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
+  const value = await jsonBody(c);
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
   }
   return value as Record<string, unknown>;
-}
-
-async function jsonObjectBody(request: Request): Promise<Record<string, unknown>> {
-  let value: unknown;
-  try {
-    value = await request.json();
-  } catch {
-    throw new GatewayError(400, "invalid_request", "A valid JSON object is required");
-  }
-  return objectBody(value);
-}
-
-function schemaBody<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } } }, value: unknown): T {
-  const parsed = schema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  const issue = parsed.error.issues[0];
-  throw new GatewayError(
-    400,
-    "invalid_request",
-    issue
-      ? issue.path.length > 0
-        ? `${issue.path.join(".")} is required`
-        : issue.message
-      : "Invalid request body",
-  );
 }
 
 async function consumeChallenge(env: Env, appId: string, challenge: string): Promise<void> {
@@ -395,7 +374,7 @@ authRoutes.post("/challenge", async (c) => {
 
 authRoutes.post("/register", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_register");
-  const rawBody = await jsonObjectBody(c.req.raw);
+  const rawBody = await jsonObjectBody(c);
   return recorded(c, "register", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
@@ -439,7 +418,7 @@ authRoutes.post("/register", async (c) => {
 
 authRoutes.post("/token", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_token");
-  const rawBody = await jsonObjectBody(c.req.raw);
+  const rawBody = await jsonObjectBody(c);
   return recorded(c, "token_exchange", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");

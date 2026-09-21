@@ -7165,6 +7165,9 @@
         "security": [
           {
             "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "responses": {
@@ -7298,6 +7301,9 @@
         "security": [
           {
             "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
           }
         ],
         "requestBody": {

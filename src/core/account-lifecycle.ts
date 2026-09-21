@@ -5,7 +5,7 @@ import {
   type AccountAccessMode,
   type AccountLifecycle,
 } from "../policy/accounts";
-import { deploymentPolicy } from "../policy/deployment";
+import type { Deployment } from "../policy/deployment";
 import {
   expiredUnclaimedAccountsCondition,
   humanOwnerCondition,
@@ -79,13 +79,14 @@ export async function accountLifecycle(
  * after a claim has lifted them.
  */
 export async function assertAccountAccess(
+  deployment: Deployment,
   env: Env,
   id: string,
   mode: AccountAccessMode,
 ): Promise<AccountLifecycle> {
   const account = await accountLifecycle(env, id);
   const denial = accountAccessDenial(
-    deploymentPolicy(env).mode,
+    deployment.mode,
     account,
     mode,
     Date.now(),

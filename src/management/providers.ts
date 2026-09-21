@@ -16,7 +16,8 @@ import { assertRouteServesProvider } from "../core/capabilities";
 import { GatewayError } from "../core/errors";
 import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../core/routes";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
-import { planCap } from "../core/plan-caps";
+import { planCap } from "./plan-caps";
+import type { ManagementScope } from "./scope";
 import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../core/provider-probe";
 import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../core/provider-store";
 import { PROVIDER_TYPES } from "../core/providers";
@@ -32,9 +33,9 @@ import {
 } from "../db/schema";
 import { openSecret, sealSecret } from "../vault/secrets";
 import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
+import type { Actor } from "./actor";
 import {
   commitResourceWrite,
-  type ResourceWriteActor,
   type ResourceWriteBoundary,
 } from "./write-boundary";
 
@@ -124,12 +125,14 @@ async function gatewayRouteAdapter(
   return requireGatewayAdapter(row.type);
 }
 
-export async function listProviders(env: Env, actor: ResourceWriteActor): Promise<ProviderListResponse> {
+export async function listProviders(scope: ManagementScope, actor: Actor): Promise<ProviderListResponse> {
+  const { env } = scope;
   const rows = await database(env.DB).select().from(provider).where(eq(provider.organizationId, actor.organizationId));
   return { providers: rows.map(serialize) };
 }
 
-export async function testProvider(env: Env, actor: ResourceWriteActor, input: unknown): Promise<ProviderTestResponse> {
+export async function testProvider(scope: ManagementScope, actor: Actor, input: unknown): Promise<ProviderTestResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderTestRequestSchema, input);
   if (body.secret !== undefined) {
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
@@ -146,11 +149,12 @@ export async function testProvider(env: Env, actor: ResourceWriteActor, input: u
 }
 
 export async function createProvider(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderCreateRequestSchema, input);
   const slug = body.slug ?? body.type;
   assertReservedSlug(body.type, slug);
@@ -196,10 +200,10 @@ export async function createProvider(
     updatedAt: now,
     createdBy: actor.userId,
   };
-  const cap = await planCap(env, "provider", actor.organizationId);
+  const cap = await planCap(scope, "provider", actor.organizationId);
   try {
     await commitResourceWrite(
-      env,
+      scope,
       `INSERT INTO provider(id,organization_id,type,slug,name,secret_blob,secret_hint,provider_gateway_id,gateway_route_json,base_url,pricing_json,revision,status,created_at,updated_at,created_by)
        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE /* authorization */`,
       [row.id, row.organizationId, row.type, row.slug, row.name, row.secretBlob, row.secretHint,
@@ -217,12 +221,13 @@ export async function createProvider(
 }
 
 export async function updateProvider(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   id: string,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderUpdateRequestSchema, input);
   const row = await database(env.DB).query.provider.findFirst({
     where: and(eq(provider.id, id), eq(provider.organizationId, actor.organizationId)),
@@ -268,7 +273,7 @@ export async function updateProvider(
 
   const updated = { ...row, ...updates } as ProviderRow;
   await commitResourceWrite(
-    env,
+    scope,
     `UPDATE provider SET name=?,pricing_json=?,status=?,gateway_route_json=?,base_url=?,secret_blob=?,secret_hint=?,revision=?,updated_at=?
      WHERE id=? AND organization_id=? AND revision=? AND /* authorization */`,
     [updated.name, updated.pricing === null ? null : JSON.stringify(updated.pricing), updated.status,
@@ -280,7 +285,8 @@ export async function updateProvider(
   return { provider: serialize(updated) };
 }
 
-export async function deleteProvider(env: Env, actor: ResourceWriteActor, id: string): Promise<ProviderDeleteResponse> {
+export async function deleteProvider(scope: ManagementScope, actor: Actor, id: string): Promise<ProviderDeleteResponse> {
+  const { env } = scope;
   const [deleted] = await database(env.DB).delete(provider)
     .where(and(eq(provider.id, id), eq(provider.organizationId, actor.organizationId)))
     .returning({ id: provider.id });

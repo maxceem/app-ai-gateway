@@ -4,6 +4,7 @@ import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
 import { createIdentityAuth } from "../src/auth/identity";
 import worker from "../src/index";
 import { seedHuman, seedServerApp, serverConfig } from "./helpers";
+import { resolveDeployment } from "../src/policy/deployment";
 
 // Signing up hashes a password with scrypt in pure JS (workerd has no
 // node:crypto scrypt), which costs about two and a half seconds on an idle
@@ -90,7 +91,7 @@ async function passwordSignIn(email: string, password: string): Promise<Response
 }
 
 async function sessionFor(cookie: string) {
-  return createIdentityAuth(env, ORIGIN).auth.api.getSession({
+  return createIdentityAuth(resolveDeployment(env), env, ORIGIN).auth.api.getSession({
     headers: new Headers({ cookie }),
   });
 }
@@ -296,13 +297,18 @@ describe("operator authentication", () => {
     await env.DB.prepare("UPDATE mgmt_organization_user SET role = 'member' WHERE user_id = ?")
       .bind(userId).run();
 
+    // Authorization is declared on the operation now, so a verb no operation
+    // is mounted on is simply not a route. It used to be refused as an
+    // unauthorized mutation by a path rule that ran before routing did.
     const wrongVerb = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
       method: "PUT",
       headers: sessionHeaders(cookie, true),
       body: JSON.stringify({ organizationId: secondOrganizationId }),
     });
-    expect(wrongVerb.status).toBe(403);
-    await expect(wrongVerb.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+    expect(wrongVerb.status).toBe(404);
+    await expect(wrongVerb.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "Route not found" },
+    });
 
     const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
       method: "POST",
@@ -524,7 +530,7 @@ describe("password changes", () => {
     const otherResponse = await passwordSignIn(email, "json-changed-password-44");
     expect(otherResponse.status, await otherResponse.clone().text()).toBe(200);
     const otherCookie = cookieFrom(otherResponse);
-    const direct = await createIdentityAuth(env, ORIGIN).auth.api.changePassword({
+    const direct = await createIdentityAuth(resolveDeployment(env), env, ORIGIN).auth.api.changePassword({
       body: {
         currentPassword: "json-changed-password-44",
         newPassword: "direct-changed-password-45",

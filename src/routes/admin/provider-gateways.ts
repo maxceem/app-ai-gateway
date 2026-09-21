@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import type { ProviderGatewayResponse } from "../../contracts/responses";
 import {
   createProviderGateway,
   deleteProviderGateway,
@@ -9,38 +8,31 @@ import {
   updateProviderGateway,
 } from "../../management/provider-gateways";
 import type { AdminVariables } from "../../middleware/admin";
-import { catalogRouter } from "../catalog-router";
-import { jsonBody } from "./body";
-import { prepareResourceReceipt } from "./resource-receipt";
+import { adminRouter } from "../catalog-router";
+import { jsonBody, managementScope } from "./body";
+import { receipted } from "./receipted";
 
 type ProviderGatewayEnv = { Bindings: Env; Variables: AdminVariables };
 export const providerGatewayRoutes = new Hono<ProviderGatewayEnv>();
-const routes = catalogRouter(providerGatewayRoutes, "/v1/admin");
+const routes = adminRouter(providerGatewayRoutes);
 
 routes.handle("testProviderGateway", async (c) =>
   testProviderGateway(await jsonBody(c)));
 
 routes.handle("listProviderGateways", (c) =>
-  listProviderGateways(c.env, c.get("admin")));
+  listProviderGateways(managementScope(c), c.get("actor")));
 
 routes.handle("createProviderGateway", async (c) => {
   const body = await jsonBody(c);
-  const receipt = await prepareResourceReceipt(c, "provider-gateway.add", body);
-  if (receipt?.result) return receipt.result as ProviderGatewayResponse;
-  try {
-    const outcome = await createProviderGateway(c.env, c.get("admin"), body, receipt);
-    return (receipt?.result ?? outcome) as ProviderGatewayResponse;
-  } catch (error) {
-    if (receipt && (await receipt.read())) return receipt.result as ProviderGatewayResponse;
-    throw error;
-  }
+  return receipted(c, "provider-gateway.add", body, (boundary) =>
+    createProviderGateway(managementScope(c), c.get("actor"), body, boundary));
 });
 
 routes.handle("updateProviderGateway", async (c) =>
-  updateProviderGateway(c.env, c.get("admin"), c.req.param("id"), await jsonBody(c)));
+  updateProviderGateway(managementScope(c), c.get("actor"), c.req.param("id"), await jsonBody(c)));
 
 routes.handle("rotateProviderGateway", async (c) =>
-  rotateProviderGateway(c.env, c.get("admin"), c.req.param("id"), await jsonBody(c)));
+  rotateProviderGateway(managementScope(c), c.get("actor"), c.req.param("id"), await jsonBody(c)));
 
 routes.handle("deleteProviderGateway", (c) =>
-  deleteProviderGateway(c.env, c.get("admin"), c.req.param("id")));
+  deleteProviderGateway(managementScope(c), c.get("actor"), c.req.param("id")));

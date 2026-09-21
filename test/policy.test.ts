@@ -11,9 +11,9 @@ import {
   type AccountLifecycle,
 } from "../src/policy/accounts";
 import {
-  deploymentPolicy,
   registrationAllowed,
   registrationRule,
+  resolveDeployment,
 } from "../src/policy/deployment";
 import {
   accountAccessCondition,
@@ -31,10 +31,10 @@ const selfHostedRegistrationExpected = {
 } as const;
 
 function policy(mode: "cloud" | "self_hosted", additional = false) {
-  return deploymentPolicy({
+  return resolveDeployment({
     ...(mode === "cloud" ? { BILLING: {} } : {}),
     ALLOW_ADDITIONAL_REGISTRATIONS: additional ? "  TrUe " : "false",
-  });
+  } as unknown as Env);
 }
 
 describe("deployment registration policy", () => {
@@ -266,7 +266,7 @@ describe("account deadline policy", () => {
             action,
             implementation: "pure",
           })).toBe(expected);
-          const condition = accountAccessCondition(policy(mode), account.id, action, now);
+          const condition = accountAccessCondition(mode, account.id, action, now);
           const allowed = await env.DB.prepare(`SELECT ${condition.sql} AS allowed`)
             .bind(...condition.params)
             .first<number>("allowed");
@@ -280,7 +280,7 @@ describe("account deadline policy", () => {
       }
     }
 
-    const missing = accountAccessCondition(policy("cloud"), "missing-account", "read", now);
+    const missing = accountAccessCondition("cloud", "missing-account", "read", now);
     expect(Boolean(await env.DB.prepare(`SELECT ${missing.sql} AS allowed`)
       .bind(...missing.params).first<number>("allowed"))).toBe(false);
   });
@@ -292,8 +292,7 @@ describe("account deadline policy", () => {
       expiresAt: storedInstant(Date.now() - 5_000, "iso"),
       claimed: false,
     });
-    const condition = accountAccessCondition(
-      policy("self_hosted"),
+    const condition = accountAccessCondition("self_hosted",
       account.id,
       "read",
       staleCallerNow,

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { Hono, type Context, type Next } from "hono";
 import prices from "../../core/prices.json";
 import { operationPath } from "../../contracts/catalog";
-import { catalogRouter } from "../catalog-router";
+import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { app } from "../../db/schema";
@@ -17,7 +17,7 @@ import { providerRoutes } from "./providers";
 import { providerGatewayRoutes } from "./provider-gateways";
 import { organizationRoutes } from "./organizations";
 import { billingRoutes } from "./billing";
-import { deploymentPolicy } from "../../policy/deployment";
+
 
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
@@ -26,7 +26,7 @@ export const adminRoutes = new Hono<AdminEnv>();
 async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const organizationId = c.get("admin").organizationId;
+  const organizationId = c.get("actor").organizationId;
   const row = await database(c.env.DB).query.app.findFirst({
     where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
@@ -56,14 +56,14 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
 adminRoutes.use("/apps/:app", scopeAdminApp);
 adminRoutes.use("/apps/:app/*", scopeAdminApp);
 adminRoutes.use("/billing/*", async (c, next) => {
-  if (deploymentPolicy(c.env).mode === "self_hosted") {
+  if (c.get("deployment").mode === "self_hosted") {
     throw new GatewayError(404, "not_found", "Billing is not configured");
   }
   await next();
 });
 
 /** Supplies the priced model catalog used by the proxy-policy editor. */
-catalogRouter(adminRoutes, "/v1/admin").handle("listModelPrices", () => ({ prices }));
+adminRouter(adminRoutes).handle("listModelPrices", () => ({ prices }));
 
 adminRoutes.route("/", appRoutes);
 adminRoutes.route("/", keyRoutes);
