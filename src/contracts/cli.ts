@@ -152,9 +152,8 @@ export const CliOperationResponseSchema = z.object({
  *
  * Declared field by field rather than passed through. The gateway records its
  * own outcome for each kind of handoff, and those records carry more than the
- * caller has any business seeing: a completed claim also holds the approving
- * human's user id and the internal compare-and-swap marker that decided which
- * concurrent submission won. Naming the publishable fields here is what keeps
+ * caller has any business seeing: a completed claim also holds the user id of
+ * the human who approved it. Naming the publishable fields here is what keeps
  * the rest off the CLI's stdout, because zod drops what a schema does not
  * declare — the job the CLI's hand-written field allow-list used to do.
  */

@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { createIdentityAuth } from "../src/auth/identity";
-import { TEST_ORGANIZATION_ID } from "./helpers";
+import { TEST_ORGANIZATION_ID, TEST_SERVICE_USER_ID } from "./helpers";
 import { secretVault } from "../src/vault";
 import { secretContext } from "../src/vault/secrets";
 import { resolveDeployment } from "../src/policy/deployment";
@@ -15,17 +15,39 @@ const runtime = new Proxy(env, {
     return Reflect.get(target, key, receiver);
   },
 });
-async function operation(kind: string, payload: Record<string, unknown>, operationEnv: Env = runtime) {
+/**
+ * An account of its own, for a test that needs the management-operation
+ * allowance to itself: the counter is taken over the account, and the rest of
+ * this file spends the shared one.
+ */
+async function seedAccount(): Promise<string> {
+  const id = `handoff-account-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO mgmt_organization(id,name,created_by_user_id,created_at,updated_at)
+     VALUES (?,'Handoff account',?,?,?)`,
+  )
+    .bind(id, TEST_SERVICE_USER_ID, now, now)
+    .run();
+  return id;
+}
+
+async function operation(
+  kind: string,
+  payload: Record<string, unknown>,
+  operationEnv: Env = runtime,
+  organizationId: string = TEST_ORGANIZATION_ID,
+) {
   const auth = createIdentityAuth(resolveDeployment(operationEnv), operationEnv, origin);
   const user = await auth.service.createServiceIdentity({ name: "Handoff test" });
   await auth.repository.addOrganizationUser({
-    organizationId: TEST_ORGANIZATION_ID,
+    organizationId,
     userId: user.id,
     role: "admin",
   });
   const key = await auth.service.issueServiceApiKey({
     userId: user.id,
-    organizationId: TEST_ORGANIZATION_ID,
+    organizationId,
     name: "Handoff",
   });
   const pollToken = crypto.randomUUID();
@@ -281,6 +303,77 @@ describe("provider browser submissions", () => {
     expect(response).toContain('"state":"completed"');
     expect(response).not.toContain("gateway-second-secret");
     expect((await create.submit("replayed")).status).toBe(200);
+  });
+
+  it("leaves the handoff pending when the guarded write matches no row, and replays a recorded success", async () => {
+    const account = await seedAccount();
+    const create = await operation(
+      "provider-gateway.add",
+      { type: "vercel", name: "Moving gateway" },
+      runtime,
+      account,
+    );
+    expect((await create.submit("gateway-first-secret")).status).toBe(200);
+    const { result } = await (await create.poll()).json<{
+      result: { gateway: { id: string; secretHint: string } };
+    }>();
+    // A submission that already landed answers with what it recorded rather
+    // than writing a second time.
+    const replay = await create.submit("gateway-first-secret");
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toMatchObject({ continueTo: "cli" });
+
+    // The reviewed revision moves after the service has read it and before its
+    // guarded UPDATE runs, so the write matches no row for a reason none of the
+    // handoff's own conditions can see. Consumption rides on that write, so it
+    // must not land either.
+    let moveAtCommit = false;
+    const db = new Proxy(runtime.DB, {
+      get(target, property, receiver) {
+        if (property !== "batch") return Reflect.get(target, property, receiver);
+        return async (statements: Parameters<Env["DB"]["batch"]>[0]) => {
+          if (moveAtCommit) {
+            moveAtCommit = false;
+            await env.DB.prepare("UPDATE provider_gateway SET revision=revision+1 WHERE id=?")
+              .bind(result.gateway.id)
+              .run();
+          }
+          return target.batch(statements);
+        };
+      },
+    });
+    const interleavedEnv = new Proxy(runtime, {
+      get(target, property, receiver) {
+        return property === "DB" ? db : Reflect.get(target, property, receiver);
+      },
+    }) as Env;
+    const rotate = await operation(
+      "provider-gateway.rotate-key",
+      { id: result.gateway.id },
+      interleavedEnv,
+      account,
+    );
+    moveAtCommit = true;
+    const refused = await rotate.submit("gateway-second-secret");
+    expect(refused.status).toBe(409);
+    // The refusal the guarded write reaches, not the one the service's own
+    // revision read would have answered before the batch was built.
+    await expect(refused.json()).resolves.toMatchObject({
+      error: { message: "The resource or its authorization changed; start a new submission" },
+    });
+    expect(
+      (
+        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
+          .bind(rotate.id)
+          .first<{ consumed_at: number | null }>()
+      )?.consumed_at,
+    ).toBeNull();
+    await expect((await rotate.poll()).json()).resolves.toMatchObject({ state: "pending" });
+    expect(
+      await env.DB.prepare("SELECT secret_hint FROM provider_gateway WHERE id=?")
+        .bind(result.gateway.id)
+        .first("secret_hint"),
+    ).toBe(result.gateway.secretHint);
   });
 });
 

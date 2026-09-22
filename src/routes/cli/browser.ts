@@ -7,6 +7,7 @@ import type {
   CliApprovalRefusal,
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
+  CliHandoffContinuation,
   CliOperationKind,
 } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
@@ -15,6 +16,7 @@ import {
   assertAccountAccess,
 } from "../../core/account-lifecycle";
 import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
+import { handoffKind, type HandoffKind } from "./handoff-kinds";
 import { authState, challenge } from "./operations";
 import { claimRefusal, completeIdentity } from "./identity-handoff";
 import { proofMatches } from "./security";
@@ -24,36 +26,39 @@ import type { CliContext, HandoffRow } from "./types";
 /**
  * The page's copy of the verdict the submission endpoint will reach.
  *
- * Kept on the same kind dispatch `browserSubmit` uses, so the button a person
- * is offered and the answer they would get from pressing it can never disagree.
+ * Read from the same registry entry `browserSubmit` dispatches on, so the
+ * button a person is offered and the answer they would get from pressing it
+ * can never disagree. Only a claim asks anything of whoever holds the browser,
+ * and the registry says which kind that is by the account access it demands of
+ * the approving side.
  */
 function refusalFor(row: HandoffRow, state: AuthState): CliApprovalRefusal | null {
-  return row.kind === "claim" ? claimRefusal(state, row.organization_id) : null;
+  return handoffKind(row.kind).view === "claim"
+    ? claimRefusal(state, row.organization_id)
+    : null;
 }
 
 /**
- * What the page says once the handoff is approved, and where it sends the
- * person afterwards.
+ * The whole of what the page says once the handoff is approved.
  *
- * On the same kind dispatch `refusalFor` uses, and for the same reason: what
- * each kind leaves behind is the gateway's knowledge. A claim ends with its
- * approver holding a console session for the account they just took, since
- * they created their sign-in on the approval page moments before, so the
- * console is where they continue. Every other kind was opened by a command
- * that is still running, and the terminal already has the answer.
+ * Keyed on where the registry sends the person next, because the two are the
+ * same fact: a claim ends with its approver holding a console session for the
+ * account they just took, since they created their sign-in on the approval
+ * page moments before, so the console is where they continue and the sentence
+ * tells them what they now have. Every other kind was opened by a command that
+ * is still running, and the terminal already has the answer.
  */
-function outcomeFor(kind: CliOperationKind): CliBrowserSubmitResponse {
-  return kind === "claim"
-    ? {
-        state: "completed",
-        message: "This account is yours.",
-        continueTo: "console",
-      }
-    : {
-        state: "completed",
-        message: "You can close this tab and return to your CLI.",
-        continueTo: "cli",
-      };
+const CONTINUATION_MESSAGE: Record<CliHandoffContinuation, string> = {
+  console: "This account is yours.",
+  cli: "You can close this tab and return to your CLI.",
+};
+
+function outcomeFor(kind: HandoffKind): CliBrowserSubmitResponse {
+  return {
+    state: "completed",
+    message: CONTINUATION_MESSAGE[kind.continueTo],
+    continueTo: kind.continueTo,
+  };
 }
 
 export async function verifiedSubmission(c: CliContext) {
@@ -80,7 +85,7 @@ export async function verifiedSubmission(c: CliContext) {
     c.get("deployment"),
     c.env,
     row.organization_id,
-    row.kind === "claim" ? "claim" : "read",
+    handoffKind(row.kind).view,
   );
   return { input, row };
 }
@@ -117,7 +122,9 @@ export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsRe
 }
 export async function browserRegister(c: CliContext): Promise<Response> {
   const { row, input } = await verifiedSubmission(c);
-  if (row.kind !== "claim" || row.consumed_at)
+  // The one door a handoff opens onto registration, and only the kind whose
+  // approver is expected to have no account yet may open it.
+  if (handoffKind(row.kind).view !== "claim" || row.consumed_at)
     throw new GatewayError(
       403,
       "forbidden",
@@ -145,10 +152,11 @@ export async function browserSubmit(c: CliContext): Promise<CliBrowserSubmitResp
       "invalid_request",
       "Explicit approval is required",
     );
-  if (row.kind === "claim") {
-    await completeIdentity(c, row);
-  } else {
-    await completeProviderSubmission(c, row, input.secret);
-  }
-  return outcomeFor(row.kind as CliOperationKind);
+  // Which half of the package completes this handoff is the registry's answer:
+  // a kind with a write is a resource change, and the one without is the
+  // account claim cf-auth settles.
+  const kind = handoffKind(row.kind);
+  if (kind.write) await completeProviderSubmission(c, row, input.secret);
+  else await completeIdentity(c, row);
+  return outcomeFor(kind);
 }

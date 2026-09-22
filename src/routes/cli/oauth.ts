@@ -1,5 +1,6 @@
 import { identityAuthFor, relaySocialSignIn } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
+import { handoffKind } from "./handoff-kinds";
 import { derive, digest, proofMatches } from "./security";
 import { deploymentMeta } from "./bootstrap";
 import { browserPath } from "./operations";
@@ -39,7 +40,7 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
 }
 export async function browserGoogle(c: CliContext): Promise<Response> {
   const { row } = await verifiedSubmission(c);
-  if (row.kind !== "claim" || row.consumed_at)
+  if (handoffKind(row.kind).view !== "claim" || row.consumed_at)
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
   const meta = deploymentMeta(c);
   const encoded = btoa(JSON.stringify({ id: row.id, expires: row.expires_at }));

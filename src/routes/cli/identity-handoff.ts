@@ -5,6 +5,7 @@ import {
   invalidateAccountLifecycle,
 } from "../../core/account-lifecycle";
 import { GatewayError } from "../../core/errors";
+import { consumeHandoffStatement, handoffKind } from "./handoff-kinds";
 import { authState } from "./operations";
 import type { CliApprovalRefusal } from "../../contracts/cli";
 import type { AuthState } from "@maxceem/cf-auth";
@@ -47,7 +48,7 @@ export async function completeIdentity(
   c: CliContext,
   row: HandoffRow,
 ): Promise<void> {
-  if (row.kind !== "claim")
+  if (handoffKind(row.kind).view !== "claim")
     throw new GatewayError(400, "invalid_request", "Unsupported identity handoff");
   const state = await authState(c, true);
   const refusal = claimRefusal(state, row.organization_id);
@@ -96,14 +97,13 @@ export async function completeIdentity(
 
   const now = Date.now();
   await c.env.DB.batch([
-    c.env.DB.prepare(
-      `UPDATE mgmt_handoff SET consumed_at=?,outcome=?,updated_at=?
-       WHERE id=? AND kind='claim' AND consumed_at IS NULL AND expires_at>?`,
-    ).bind(
-      now,
-      JSON.stringify({ accountId: target, approvedBy: approver.id }),
-      now,
-      row.id,
+    // Unguarded by `changes()`, unlike a provider submission's: the claim
+    // landed before this batch was built, so there is no preceding write in it
+    // for the consumption to ride on.
+    consumeHandoffStatement(
+      c.env.DB,
+      row,
+      { accountId: target, approvedBy: approver.id },
       now,
     ),
     // Bootstrap authority ends with the claim: the encrypted credential the

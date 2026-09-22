@@ -15,6 +15,7 @@ import type {
 } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
 import { deploymentMeta } from "./bootstrap";
+import { handoffKind, handoffState, TARGET_SNAPSHOTS } from "./handoff-kinds";
 import {
   derive,
   digest,
@@ -83,6 +84,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
     throw new GatewayError(400, "invalid_request", "revision must be a positive integer");
   }
   const meta = deploymentMeta(c);
+  const kind = handoffKind(input.kind);
   const state = await authState(c);
   const resolved = requireOrganization(state);
     if (
@@ -110,9 +112,11 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
       c.get("deployment"),
       c.env,
       organizationId,
-      input.kind === "claim" ? "claim" : "setup",
+      kind.open,
     );
-    if (input.kind === "claim" && account.claimed)
+    // Claim access is asked for by the one kind that takes an unowned account,
+    // so it is also the one kind an owner already makes pointless.
+    if (kind.open === "claim" && account.claimed)
       throw new GatewayError(409, "conflict", "Account is already claimed");
   const pollHash = await digest(input.pollToken),
     id = `cli-operation:${pollHash}`;
@@ -137,22 +141,14 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
     );
   const submissionToken = await derive(input.pollToken, `browser:${meta.id}`);
   if (!row) {
-    if (
-      input.kind !== "claim" &&
-      !input.kind.endsWith(".add")
-    ) {
+    if (kind.target !== null) {
       if (typeof input.payload.id !== "string")
         throw new GatewayError(
           400,
           "invalid_request",
           "Resource ID is required",
         );
-      const gateway = input.kind.startsWith("provider-gateway.");
-      const snapshot = await c.env.DB.prepare(
-        gateway
-          ? "SELECT id,type,name,config_json AS config,status,revision AS expectedRevision FROM provider_gateway WHERE id=? AND organization_id=?"
-          : "SELECT id,type,name,slug,base_url AS baseUrl,provider_gateway_id AS providerGatewayId,gateway_route_json AS gatewayRoute,status,revision AS expectedRevision FROM provider WHERE id=? AND organization_id=?",
-      )
+      const snapshot = await c.env.DB.prepare(TARGET_SNAPSHOTS[kind.target])
         .bind(input.payload.id, organizationId)
         .first<Record<string, unknown>>();
       if (!snapshot)
@@ -175,7 +171,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
         __requestHash: requestHash,
       });
     }
-    if (input.kind.startsWith("provider.")) {
+    if (kind.pinsGateway) {
       const captured = JSON.parse(value) as Record<string, unknown>;
       const snapshot = captured.snapshot as Record<string, unknown> | undefined;
       const gatewayId = Object.hasOwn(input.payload, "providerGatewayId")
@@ -183,7 +179,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
         : snapshot?.providerGatewayId;
       if (typeof gatewayId === "string") {
         const gatewaySnapshot = await c.env.DB.prepare(
-          "SELECT id,type,name,config_json AS config,status,revision AS expectedRevision FROM provider_gateway WHERE id=? AND organization_id=?",
+          TARGET_SNAPSHOTS.provider_gateway,
         )
           .bind(gatewayId, organizationId)
           .first<Record<string, unknown>>();
@@ -238,11 +234,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
     id,
     url: `${meta.consoleOrigin}${browserPath(id)}#${submissionToken}`,
     expiresAt: new Date(row.expires_at).toISOString(),
-    state: row.consumed_at
-      ? "completed"
-      : row.expires_at <= Date.now()
-        ? "expired"
-        : "pending",
+    state: handoffState(row),
     deployment: meta,
   };
 }
@@ -256,8 +248,8 @@ export async function pollOperation(c: CliContext): Promise<CliPollResponse> {
     deployment: deploymentMeta(c),
     expiresAt: new Date(row.expires_at).toISOString(),
   };
-  if (row.expires_at <= Date.now()) return { ...base, state: "expired" };
-  if (!row.consumed_at) return { ...base, state: "pending" };
+  const state = handoffState(row);
+  if (state !== "completed") return { ...base, state };
   const result = (row.outcome ? JSON.parse(row.outcome) : {}) as CliOperationResult & {
     accountId?: string;
   };

@@ -4,10 +4,8 @@ import { managementScope } from "../admin/body";
 import { credentialAuthorityCondition } from "@maxceem/cf-auth";
 import { GatewayError } from "../../core/errors";
 import { mgmtAuthTables } from "../../db/schema";
-import { createProvider, updateProvider } from "../../management/providers";
-import { createProviderGateway, rotateProviderGateway } from "../../management/provider-gateways";
-import { databaseErrorMatches } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
+import { consumeHandoffStatement, handoffKind, type HandoffSubmission } from "./handoff-kinds";
 import type { HandoffRow, CliContext } from "./types";
 import { accountAccessCondition } from "../../policy/sql";
 
@@ -17,6 +15,10 @@ export async function completeProviderSubmission(
   secret: unknown,
 ): Promise<void> {
   if (row.consumed_at && row.outcome) return;
+  const kind = handoffKind(row.kind);
+  const write = kind.write;
+  if (!write)
+    throw new GatewayError(400, "invalid_request", "Unsupported provider submission purpose");
   const actor = actorFromHandoff(row);
   const scope = managementScope(c);
   await assertAccountAccess(scope.deployment, c.env, actor.organizationId, "setup");
@@ -30,12 +32,19 @@ export async function completeProviderSubmission(
     expectedGatewayRevision,
     ...payload
   } = parsed;
-  const kind = row.kind;
   if (secret !== undefined && (typeof secret !== "string" || !secret.trim())) {
     throw new GatewayError(400, "invalid_request", "A nonempty credential is required");
   }
-  if (kind === "provider.rotate-key" && typeof secret !== "string")
+  if (kind.secret === "required" && typeof secret !== "string")
     throw new GatewayError(400, "invalid_request", "A provider credential is required");
+  const submission: HandoffSubmission = {
+    payload,
+    secret: typeof secret === "string" ? secret : undefined,
+    target:
+      typeof id === "string" && typeof expectedRevision === "number"
+        ? { id, revision: expectedRevision }
+        : null,
+  };
   const now = Date.now();
   // Authority is rechecked in the mutation transaction, not merely when the
   // URL was issued. Product lifecycle conditions are appended below.
@@ -46,23 +55,32 @@ export async function completeProviderSubmission(
     allowedRoles: ["owner", "admin"],
     nowMs: now,
   });
-  const transition = crypto.randomUUID();
-  const marker = JSON.stringify({ transition });
   const accountAccess = accountAccessCondition(
     scope.deployment.mode,
     row.organization_id,
     "setup",
     now,
   );
+  // The resource write may only land while this handoff is still pending, and
+  // the statement that consumes it lands only if the resource write did. The
+  // clock is the later of the caller's and SQLite's, so a stale caller cannot
+  // extend a deadline.
   const conditions = [
-    "EXISTS (SELECT 1 FROM mgmt_handoff WHERE id=? AND consumed_at=? AND outcome=?)",
+    `EXISTS (SELECT 1 FROM mgmt_handoff WHERE id=? AND kind=? AND organization_id=?
+      AND initiating_user_id=? AND initiating_credential_id=? AND submission_proof_hash=?
+      AND consumed_at IS NULL
+      AND expires_at>MAX(?,CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)))`,
     liveCredential.sql,
     accountAccess.sql,
   ];
   const parameters: unknown[] = [
     row.id,
+    row.kind,
+    row.organization_id,
+    row.initiating_user_id,
+    row.initiating_credential_id,
+    row.submission_proof_hash,
     now,
-    marker,
     ...liveCredential.params,
     ...accountAccess.params,
   ];
@@ -78,78 +96,32 @@ export async function completeProviderSubmission(
   const boundary: ResourceWriteBoundary = {
     condition: { sql: conditions.join(" AND "), params: parameters },
     async commit(statement, outcome) {
-      try {
-        await c.env.DB.batch([
-          c.env.DB.prepare(
-            `UPDATE mgmt_handoff SET consumed_at=?,outcome=?,updated_at=?
-            WHERE id=? AND kind=? AND organization_id=? AND initiating_user_id=? AND initiating_credential_id=?
-            AND submission_proof_hash=? AND consumed_at IS NULL AND expires_at>MAX(?,CAST((julianday('now')-2440587.5)*86400000 AS INTEGER))`,
-          ).bind(
-            now,
-            marker,
-            now,
-            row.id,
-            row.kind,
-            row.organization_id,
-            row.initiating_user_id,
-            row.initiating_credential_id,
-            row.submission_proof_hash,
-            now,
-          ),
-          ...(Array.isArray(statement) ? statement : [statement]),
-          // A failed CAS must roll back consumption too, keeping the operation retryable.
-          c.env.DB.prepare(
-            "SELECT json(CASE WHEN changes()=1 THEN 'null' ELSE 'agw_resource_conflict' END)",
-          ),
-          c.env.DB.prepare(
-            "UPDATE mgmt_handoff SET outcome=? WHERE id=? AND outcome=?",
-          ).bind(JSON.stringify(outcome), row.id, marker),
-        ]);
-      } catch (error) {
-        const completed = await c.env.DB.prepare(
-          "SELECT consumed_at,outcome FROM mgmt_handoff WHERE id=?",
-        )
-          .bind(row.id)
-          .first<{ consumed_at: number | null; outcome: string | null }>();
-        if (completed?.consumed_at && completed.outcome && completed.outcome !== marker) return;
-        if (databaseErrorMatches(error, /malformed JSON/iu)) {
-          throw new GatewayError(
-            409,
-            "conflict",
-            "The resource or its authorization changed; start a new submission",
-          );
-        }
-        throw error;
-      }
+      await c.env.DB.batch([
+        ...(Array.isArray(statement) ? statement : [statement]),
+        consumeHandoffStatement(c.env.DB, row, outcome, now, {
+          onlyIfPreviousChanged: true,
+        }),
+      ]);
+      const settled = await c.env.DB.prepare(
+        "SELECT consumed_at,outcome FROM mgmt_handoff WHERE id=?",
+      )
+        .bind(row.id)
+        .first<{ consumed_at: number | null; outcome: string | null }>();
+      // Consumed with an outcome is the answer, whether this submission wrote
+      // it or a concurrent twin did. Still pending means the resource write
+      // matched no row — the authority was revoked, the revision moved, or a
+      // cap refused it — and nothing was written, so a fresh request is the
+      // only way forward.
+      if (settled?.consumed_at && settled.outcome) return;
+      throw new GatewayError(
+        409,
+        "conflict",
+        "The resource or its authorization changed; start a new submission",
+      );
     },
   };
   try {
-    if (kind === "provider.add") {
-      await createProvider(
-        scope,
-        actor,
-        { ...payload, ...(secret === undefined ? {} : { secret }) },
-        boundary,
-      );
-    } else if (kind === "provider.rotate-key" || kind === "provider.update") {
-      if (typeof id !== "string" || typeof expectedRevision !== "number")
-        throw new GatewayError(409, "conflict", "The provider binding is missing");
-      await updateProvider(scope, actor, id, { ...payload, revision: expectedRevision, secret }, boundary);
-    } else if (kind === "provider-gateway.add") {
-      await createProviderGateway(scope, actor, { ...payload, token: secret }, boundary);
-    } else if (kind === "provider-gateway.rotate-key") {
-      if (typeof id !== "string" || typeof expectedRevision !== "number")
-        throw new GatewayError(409, "conflict", "The gateway binding is missing");
-      await rotateProviderGateway(
-        scope,
-        actor,
-        id,
-        { ...payload, revision: expectedRevision, token: secret },
-        boundary,
-      );
-    } else {
-      throw new GatewayError(400, "invalid_request", "Unsupported provider submission purpose");
-    }
+    await write(scope, actor, submission, boundary);
   } catch (error) {
     const completed = await c.env.DB.prepare(
       "SELECT consumed_at,outcome FROM mgmt_handoff WHERE id=?",
