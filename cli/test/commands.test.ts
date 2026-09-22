@@ -9,9 +9,9 @@ import { parseAppConfig, selectedProviderPolicies } from "../../src/shared/app-c
 import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
 import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
+import { deploymentCommand } from "../src/deployment.ts";
 import {
   Cloudflare,
-  deploymentCommand,
   runWrangler,
   whileWarming,
   wranglerEnvironment,
@@ -19,7 +19,7 @@ import {
   type CloudflareClient,
   type CloudflareRequestOptions,
   type WranglerOptions,
-} from "../src/deployment.ts";
+} from "../src/cloudflare.ts";
 import { StateStore, reserveOutput, type CliState, type InstallationJournal } from "../src/state.ts";
 import { Context } from "../src/context.ts";
 import type { Flags } from "../src/parser.ts";

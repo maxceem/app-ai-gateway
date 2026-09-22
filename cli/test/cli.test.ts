@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
@@ -10,6 +10,7 @@ import { parse, commands, type CommandName } from "../src/parser.ts";
 import {
   StateStore,
   reserveOutput,
+  stateDirectory,
   type CliState,
   type StoredKeyMetadata,
 } from "../src/state.ts";
@@ -133,6 +134,47 @@ test("protected state rejects corrupt prior state and output does not overwrite"
   await out.cancel();
   assert.equal(await readFile(out.path, "utf8"), "SENTINEL");
   await assert.rejects(() => reserveOutput(out.path), hasCode("output_unavailable"));
+});
+
+test("a state file this release cannot read is refused, never replaced", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "agw-state-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const previous = process.env["XDG_STATE_HOME"];
+  process.env["XDG_STATE_HOME"] = home;
+  t.after(() => {
+    if (previous === undefined) delete process.env["XDG_STATE_HOME"];
+    else process.env["XDG_STATE_HOME"] = previous;
+  });
+  // The real state directory for this run, so the path a person would be told
+  // to repair is the path the CLI actually reads.
+  const directory = process.platform === "win32" ? home : stateDirectory();
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const store = new StateStore(directory);
+  for (const junk of [
+    "{not json at all",
+    // Parses, but is not a state: the `mutations` map holds a receipt that has
+    // lost the proof it would have to be honoured with.
+    JSON.stringify({
+      schemaVersion: 1,
+      active: null,
+      operations: {},
+      mutations: { "m-1": { id: "m-1", url: "https://example.com" } },
+    }),
+    // A connection that claims to be authenticated without a credential.
+    JSON.stringify({
+      schemaVersion: 1,
+      active: { url: "https://example.com", authenticated: true },
+      operations: {},
+    }),
+  ]) {
+    await writeFile(store.path, junk, { mode: 0o600 });
+    await assert.rejects(() => store.read(), hasCode("invalid_state"));
+    // And a write does not get to replace what the read would not accept: the
+    // file holds a credential and unfinished creations, so it is repaired by
+    // hand or not at all.
+    await assert.rejects(() => store.write(fresh()), hasCode("invalid_state"));
+    assert.equal(await readFile(store.path, "utf8"), junk);
+  }
 });
 
 test("lost bootstrap response reuses proofs, and logout never bootstraps again", async () => {
