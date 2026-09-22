@@ -4,9 +4,7 @@
  * Nothing about an operation is written here: this module knows how to turn a
  * catalog entry into a `RouteConfig`, and that is all. What an endpoint is —
  * its method, path, parameters, schemas and prose — is declared once, in the
- * catalog, which the server mounts and both clients call through. It used to be
- * written out a second time in this file, in 1069 lines of hand-maintained
- * `register()` calls that nothing checked against the routes actually served.
+ * catalog, which the server mounts and both clients call through.
  *
  * This and `scripts/generate-openapi.ts` are the only modules that import
  * `@hono/zod-openapi`, which is why the catalog itself is plain zod.

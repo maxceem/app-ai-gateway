@@ -14,16 +14,9 @@ import type { HandoffRow } from "./types";
 /**
  * What every CLI browser handoff kind means, in one table.
  *
- * A kind used to be read by matching its text wherever a decision depended on
- * it: the creating endpoint tested `.add` to decide whether to snapshot a row,
- * `provider-gateway.` to choose which table to read it from and `provider.` to
- * decide whether a gateway revision was pinned; the completing endpoint ran an
- * if/else over the four provider kinds; and the browser endpoints compared
- * against `claim` four more times. Six kinds, one meaning each, spread over
- * three files that could disagree — and a seventh meant finding all of them.
- *
- * So every decision a kind makes is a field here, and adding a kind is an
- * entry in this table. Nothing outside this module may test a kind's text.
+ * Every decision a kind makes is a field here, and adding a kind is an entry in
+ * this table. Nothing outside this module may test a kind's text, so a seventh
+ * kind is one entry rather than a search for every place the text is matched.
  */
 export interface HandoffKind {
   /** Account access the initiator needs to open a handoff of this kind. */

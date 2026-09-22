@@ -17,8 +17,7 @@ import type { AdminVariables } from "../middleware/admin";
  *
  * Exported so `test/catalog.test.ts` can compare it against the catalog itself:
  * the document and both client transports are derived from the catalog, so an
- * entry nobody serves is a documented endpoint that answers 404, and that used
- * to be undetectable.
+ * entry nobody serves is a documented endpoint that answers 404.
  */
 export const MOUNTED_OPERATIONS = new Set<OperationName>();
 
@@ -36,9 +35,8 @@ function honoPath(template: string, base: string): string {
  * The authorization one operation asks for, with the defaults filled in.
  *
  * A `GET` reads and a member may; anything else writes and an admin may. Both
- * halves of that — who, and what standing the account itself needs — used to
- * be a `method`-plus-path-regex decision in `middleware/admin.ts`, which every
- * new route had to remember to update.
+ * halves of that — who, and what standing the account itself needs — are the
+ * entry's, never a method test or a path regex in `middleware/admin.ts`.
  */
 function operationPolicy(spec: OperationSpec) {
   const writes = spec.method !== "GET";
@@ -55,8 +53,8 @@ function operationPolicy(spec: OperationSpec) {
  * Applies one operation's declared policy to the authenticated caller.
  *
  * Runs after `adminAuth`, which established who is asking and nothing more.
- * The order is the order the refusals used to arrive in, so a caller that was
- * short of two things is still told about the same one.
+ * The order is fixed, so a caller short of two things is always told about the
+ * same one.
  */
 type AuthorizedContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
@@ -95,10 +93,8 @@ export type OperationContext<E extends HonoEnv, K extends OperationName> =
  * A handler returns the operation's response body and nothing else: the method,
  * the path and the success status come from the entry, and the body's type is
  * the entry's response schema, so a handler that drifts from the contract fails
- * `pnpm run check` at its own `return`. That is what the `satisfies` annotations
- * on these handlers used to do by hand, one per route, with nothing tying the
- * annotation to the path the route was mounted on. The path reaches the handler
- * too, so `c.req.param("app")` is a string rather than a maybe-string.
+ * `pnpm run check` at its own `return`. The path reaches the handler too, so
+ * `c.req.param("app")` is a string rather than a maybe-string.
  *
  * Anything a response needs beyond its body — a cookie, a cache header — is set
  * on `c` before returning, as cf-auth already does when it writes the

@@ -47,7 +47,7 @@ export function apiStyleFromPath(providerPath: string): ApiStyle {
  * `anthropic_messages` and `other` are absent on purpose: the body they clamp
  * is the provider's own, so they fall through to the provider descriptor's
  * `nativeClampStyle`. That keeps a stray `…/messages` path on a non-Anthropic
- * provider clamped exactly as it was before this table existed.
+ * provider clamped by that provider's own request shape.
  */
 const STYLE_CLAMP_STYLE: Partial<Record<ApiStyle, OutputClampStyle>> = {
   audio_transcription: "none",

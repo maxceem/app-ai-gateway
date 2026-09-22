@@ -401,7 +401,7 @@ authRoutes.post("/register", async (c) => {
       attestation: body.attestation,
     });
     // Proved now: the attestation verified against this very key id, so recording
-    // it as the attempt's identity no longer takes the caller's word for it.
+    // it as the attempt's identity does not take the caller's word for it.
     attempt.userId = userId;
     await storeAttestedUser({
       env: c.env,

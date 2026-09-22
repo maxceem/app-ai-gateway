@@ -155,7 +155,7 @@ export const CliOperationResponseSchema = z.object({
  * caller has any business seeing: a completed claim also holds the user id of
  * the human who approved it. Naming the publishable fields here is what keeps
  * the rest off the CLI's stdout, because zod drops what a schema does not
- * declare — the job the CLI's hand-written field allow-list used to do.
+ * declare.
  */
 export const CliOperationResultSchema = z.object({
   /** The account a claim acted on. */
@@ -225,8 +225,7 @@ export const CliCapabilitiesResponseSchema = z.object({
  * because the CLI prints this verbatim on stdout: the resolution it is built
  * from also carries the internal schedule identity (`scheduleId`,
  * `scheduleRevision`) and the `superseded` marker, none of which is any of the
- * caller's business. Parsing against this schema is what keeps them off stdout,
- * which is the job the CLI's hand-written field allow-list used to do.
+ * caller's business. Parsing against this schema is what keeps them off stdout.
  */
 export const CliEntitledPlanSchema = z.object({
   planKey: z.string(),

@@ -13,10 +13,9 @@
  * construction — stays in `src/core`, and the console has its own presentation
  * layer over them.
  *
- * The console used to hand-mirror all of it: a second provider list, a second
- * cost-reporting list, a second copy of both gateways' route tables. Every one
- * of those was a table that could drift from the backend that enforces it, and
- * a console that offers a combination the server refuses is a bug report.
+ * A console that offers a combination the server refuses is a bug report, so
+ * these tables are never mirrored on the client side: the console reads this
+ * module, and the two cannot drift.
  */
 
 // Type-only, and it has to stay that way: `./providers.ts` imports API_STYLES

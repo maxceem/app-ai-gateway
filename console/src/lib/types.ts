@@ -1,10 +1,9 @@
 /**
  * The API's types, under the names the console calls them by.
  *
- * This file used to describe every wire shape a second time, by hand, with
- * nothing that noticed when the gateway's own answer moved. It is now a barrel
- * over `src/contracts`, which is where those shapes are defined once and where
- * the Worker's handlers are checked against them. Type-only, so the console
+ * A barrel over `src/contracts`, which is where those shapes are defined once
+ * and where the Worker's handlers are checked against them, so the console can
+ * never describe a wire shape the gateway has moved. Type-only, so the console
  * bundle gains nothing at runtime.
  *
  * The one shape still written here is the editor's view of an application,

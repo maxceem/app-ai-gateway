@@ -1,13 +1,8 @@
 /**
  * Every documented response body, as one schema per shape.
  *
- * These used to live inside `openapi.ts`, where they were documentation and
- * nothing else: no handler was checked against them, the console kept a second
- * hand-written copy in `console/src/lib/types.ts`, and the CLI kept a third as
- * a field allow-list. Three descriptions of one wire format, and nothing that
- * noticed when they disagreed.
- *
- * Here they are the definition. `openapi.ts` imports them and publishes them,
+ * These are the definition of the wire format. `openapi.ts` imports them and
+ * publishes them,
  * the Worker handlers `satisfies` the inferred types so a drifting handler
  * fails `pnpm run check`, the console imports the types alone, and the CLI
  * parses real responses with the schemas themselves.
@@ -478,10 +473,9 @@ export type IdentitySession = z.infer<typeof IdentitySessionSchema>;
 export type OrganizationListResponse = z.infer<typeof OrganizationListResponseSchema>;
 
 /**
- * The rest of the admin surface. These used to be `z.unknown()` in the
- * published document while the console and the CLI read real fields off them;
- * they are now what `./catalog.ts` documents each operation with, so the
- * handler, the document, the console and the CLI all move together.
+ * The rest of the admin surface. `./catalog.ts` documents each operation with
+ * these, so the handler, the document, the console and the CLI all move
+ * together.
  */
 export const UsageTotalsSchema = z.object({
   requests: z.number(),

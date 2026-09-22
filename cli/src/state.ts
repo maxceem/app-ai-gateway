@@ -214,10 +214,9 @@ const StoredInstallationSchema = z.looseObject({
 /**
  * The whole state file, as the one thing that decides whether it can be read.
  *
- * Every field a command acts on is named here and nowhere else: a hand-written
- * check beside a reader is a second grammar, and the two drifted before — a
- * `mutations` map that was not a map passed the read and was then merged as if
- * it were empty, which silently dropped the receipts it held.
+ * Every field a command acts on is named here and nowhere else: a check written
+ * beside a reader would be a second grammar, and a state file this schema
+ * accepts is one every reader below may merge without inspecting it.
  */
 export const CliStateSchema = z.object({
   schemaVersion: z.literal(1),

@@ -166,10 +166,9 @@ const IssuerAuthenticationSchema = z.object({
    * the console, so it can show "Firebase, project X" and reopen the same
    * form: the gateway verifies tokens from the fields above and reads neither.
    *
-   * Refused rather than dropped when this build does not know the name. The
-   * hand-written store-side parser used to drop one silently, but the write
-   * path never let one through — the public schema has always been checked
-   * first — so refusing is what the API already did, said once.
+   * Refused rather than dropped when this build does not know the name: this
+   * schema is checked on the way in, so a name it cannot interpret never
+   * reaches storage in the first place.
    */
   provider: z.enum(ISSUER_PROVIDERS).optional(),
   entitlement: z.enum(ENTITLEMENT_CHECKS).optional(),
@@ -362,9 +361,8 @@ export const AppConfigSchema = z.object({
     /**
      * Discriminated, because the two modes carry different fields: `all` names
      * nothing and `selected` must name its policies. Declaring `selected` as an
-     * optional member of one object made "all mode with a selection" and
-     * "selected mode with nothing selected" both expressible, and only the
-     * hand-written parser refused them.
+     * optional member of one object would make "all mode with a selection" and
+     * "selected mode with nothing selected" both expressible.
      */
     providers: z.discriminatedUnion("mode", [
       z.object({ mode: z.literal("all") }).strict(),

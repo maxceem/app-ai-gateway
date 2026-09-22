@@ -7,8 +7,8 @@ import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
 // OpenAPI `pattern`, where a trailing JS flag would make the regex invalid.
 export { PROVIDER_SLUG_PATTERN } from "../shared/app-config.ts";
 
-// The endpoint styles are shared with the console, which used to keep its own
-// copy — see `src/shared/capabilities.ts`.
+// The endpoint styles are shared with the console — see
+// `src/shared/capabilities.ts`.
 export {
   ENDPOINT_API_STYLES,
   type EndpointApiStyle,

@@ -8,12 +8,6 @@
  * type is that entry plus its prices, and nothing else: the tables below are
  * derived, and the behaviour that reads them lives in `src/core`.
  *
- * It used to be spread over six tables in five files — a type list, an auth
- * map, a registry, a clamp map, a probe-path map, a capability exception table
- * — and each of them could be the one somebody forgot. A type missing from the
- * clamp map was a type error; a type missing from the probe map was silently
- * unprobed, which reads exactly like "this provider has no cheap call".
- *
  * Shared with the console, which bundles this module directly: it imports only
  * `./capabilities.ts`, `./cost-report.ts` and `./records.ts`, all of which are
  * plain tables and pure functions for the same reason.
@@ -293,7 +287,7 @@ export const PROVIDER_DESCRIPTORS = {
     // segment, so client paths carry no `v1`. `ark.cn-beijing.volces.com` is
     // the separate China platform, and `ark.eu-west.bytepluses.com` is a second
     // region — keys and catalogs are region-isolated, so reaching either needs
-    // the per-row base URL override that Stage 6 introduces.
+    // the per-row base URL override.
     directBaseUrl: "https://ark.ap-southeast.bytepluses.com/api/v3/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",

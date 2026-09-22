@@ -228,7 +228,7 @@ async function plaintextSecret(
 ): Promise<string> {
   const gatewayRouted = row.providerGatewayId !== null;
   // A revoked gateway's token is not a credential this row may still spend
-  // with, so it reads as absent — the join no longer filters it out.
+  // with, so it reads as absent — the join does not filter it out.
   const blob = gatewayRouted
     ? (row.gatewayStatus === "active" ? row.gatewaySecretBlob : null)
     : row.secretBlob;

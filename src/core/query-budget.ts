@@ -99,8 +99,7 @@ export class QueryBudget {
    *
    * Statements are counted rather than calls, so a `batch` of seventeen costs
    * seventeen. That is the conservative reading of D1's per-invocation query
-   * limit — a batch is one transaction but not one subrequest — and it is what
-   * this project's hand counts always assumed.
+   * limit: a batch is one transaction but not one subrequest.
    */
   database(db: D1Database): D1Database {
     const real = WRAPPED_DATABASES.get(db) ?? db;

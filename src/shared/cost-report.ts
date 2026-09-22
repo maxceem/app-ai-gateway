@@ -25,11 +25,9 @@ export interface ProviderReport {
  * How one provider type reports what a request cost. The *presence* of this
  * declaration is what makes a type billable without a local price — generic
  * code asks whether a type has one and calls into it, and never knows which
- * upstream's field names are being read.
- *
- * Before this existed a bare `reportsCost: true` flag switched on OpenRouter's
- * own parsing, so a second reporting provider would have set the flag, bypassed
- * the local-price gate, and recorded every one of its requests unresolved.
+ * upstream's field names are being read. A shared boolean flag would not do: a
+ * second reporting provider would set it, bypass the local-price gate, and
+ * record every one of its requests unresolved.
  */
 export interface CostReport {
   /**
@@ -127,15 +125,15 @@ function reportedByok(root: Record<string, unknown>, usage: Record<string, unkno
 /**
  * OpenRouter's per-request self-report, the only one shipped today.
  *
- * No `mutateBody`: `usage: {include: true}` used to be injected into every chat
- * body to opt into cost accounting. OpenRouter documents accounting as always
- * on — "no additional parameters are required" — and lists `usage.include` under
+ * No `mutateBody`: OpenRouter documents accounting as always on — "no
+ * additional parameters are required" — and lists `usage.include` under
  * *Deprecated Parameters*, "deprecated and have no effect"; its OpenAPI schema
- * has dropped `usage` from the chat request entirely. The injection therefore
- * bought nothing and cost a full JSON re-serialization of every chat body on the
- * hot path. If OpenRouter ever makes accounting opt-in again, this is where the
- * injection returns — as a declared mutation of this integration rather than a
- * provider check in the shared proxy path.
+ * has dropped `usage` from the chat request entirely. Injecting
+ * `usage: {include: true}` would therefore buy nothing and cost a full JSON
+ * re-serialization of every chat body on the hot path. If OpenRouter ever
+ * makes accounting opt-in again, this is where the injection belongs — as a
+ * declared mutation of this integration rather than a provider check in the
+ * shared proxy path.
  */
 export const OPENROUTER_COST_REPORT: CostReport = {
   // Which host actually served a request is opt-in per request; without this

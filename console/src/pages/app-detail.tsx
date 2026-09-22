@@ -52,12 +52,10 @@ export function AppDetailPage() {
   /*
    * A tab this app does not have: a stale bookmark, or a hand-typed URL.
    *
-   * Answered once, here, rather than left to fall out of the chain below. That
-   * chain ends in the pair of lazily-loaded tabs, so an unknown tab used to
-   * reach `Endpoints` — not as anyone's choice of fallback, but because
-   * Endpoints is the second of the two and so the last branch standing. The
-   * header meanwhile did its own lookup, missed, and titled the page
-   * "Overview", leaving the two halves of the screen naming different sections.
+   * Answered once, here, rather than left to fall out of the chain below: that
+   * chain ends in the pair of lazily-loaded tabs, so an unknown tab would reach
+   * whichever of them stands last rather than anyone's chosen fallback, while
+   * the header's own lookup missed and titled the page something else.
    *
    * Sending the URL to the default section instead keeps the address bar and
    * the content agreeing on what is open, and `replace` keeps Back going to

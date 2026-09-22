@@ -53,7 +53,7 @@ function DialogOverlay({
  * goes in `DialogBody` so long dialogs never scroll their title out of view.
  *
  * Clicking the backdrop never closes a dialog. Nearly every dialog in the
- * console is a form, and a stray click beside it used to throw away everything
+ * console is a form, and a stray click beside it would throw away everything
  * typed so far; closing stays with the close button, Cancel, and Escape. Pass
  * `dismissOnOutsideInteraction` for a dialog that holds nothing worth losing.
  */

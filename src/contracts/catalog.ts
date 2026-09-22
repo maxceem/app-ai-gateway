@@ -9,12 +9,6 @@
  * the Hono handler on the path written here. Adding an endpoint means adding an
  * entry and mounting a handler; there is nothing else to keep in step.
  *
- * It replaces three tables that had to agree and had nothing making them:
- * `operations.ts` (method and a hand-written path builder per client call),
- * `operation-schemas.ts` (the response schema the CLI parsed with) and 1069
- * lines of hand-written `register()` calls in `openapi.ts`, where the method,
- * the path and both schemas were typed out a second time.
- *
  * Plain `zod`, never `@hono/zod-openapi`: the console and the CLI both import
  * this module, and neither may pull Hono in behind it. `.meta({ description })`
  * produces the same document `.openapi({ description })` does.

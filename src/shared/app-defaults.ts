@@ -5,8 +5,7 @@
  * this module says what a new one *is* — the numbers a mobile app starts rate
  * limited at, the policy a freshly selected provider opens with, what "no
  * limit" looks like written out in full. They are product decisions rather than
- * grammar, they are the same decisions in the console and in the CLI, and they
- * were written out as literals in four places before this file existed.
+ * grammar, and they are the same decisions in the console and in the CLI.
  *
  * Everything it hands out is freshly built on every call. Nothing here is a
  * constant, because a default's callers edit what they are given.

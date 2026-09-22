@@ -14,12 +14,11 @@ import { registrationCreateCondition } from "../policy/sql";
  * The identity library, loaded on first use and shared by every caller in the
  * isolate.
  *
- * Two thirds of this Worker's startup CPU used to be spent evaluating modules a
- * proxied request never touches: better-auth and `@better-auth/core` behind
- * cf-auth, and the `@opentelemetry` semantic conventions they pull in. A
- * proxied request authenticates nobody through them, so nothing here is on its
- * path and everything that needs the library asks for it through this — the
- * same way App Attest is deferred inside the two handlers in `../routes/auth`.
+ * A proxied request authenticates nobody through better-auth, `@better-auth/core`
+ * behind cf-auth, or the `@opentelemetry` semantic conventions they pull in, so
+ * none of that is on its path: everything that needs the library asks for it
+ * through this — the same way App Attest is deferred inside the two handlers in
+ * `../routes/auth`.
  *
  * What this buys is deferred *evaluation*, not a smaller bundle: wrangler does
  * not emit a separate chunk, it inlines the module as a lazily initialised
@@ -245,9 +244,9 @@ export interface IdentityAuthScope {
 /**
  * The cf-auth instance for this request and these options, built once.
  *
- * Building one constructs a Better Auth instance, and a single claim
- * submission used to build three: one to read the approver's session, one to
- * register them and one to claim. They are pure functions of the deployment,
+ * Building one constructs a Better Auth instance, and a single claim submission
+ * needs three: one to read the approver's session, one to register them and one
+ * to claim. They are pure functions of the deployment,
  * the request origin and these three flags, so the flags are the cache key.
  * An instance carrying a `onRegistrationDenied` callback is not shared, since
  * the callback belongs to one caller's control flow.

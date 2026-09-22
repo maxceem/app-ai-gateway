@@ -1,13 +1,11 @@
 /**
  * Where a provider instance's traffic goes, as one interface with one registry.
  *
- * A direct call used to be the absence of a gateway, so every consumer wrote
- * the same `resolved.gateway ? … : …` fork and three encodings of "how is this
- * row routed" travelled side by side. `direct` is an adapter here, with the
- * same shape the gateways have: it owns its URL, its credential header, its
- * probe, and its answer to "may this provider serve this style". Nothing
- * outside {@link resolveProvider} joins a stored gateway type to an adapter,
- * and nothing anywhere branches on the absence of one.
+ * `direct` is an adapter like the gateways, with the same shape they have: it
+ * owns its URL, its credential header, its probe, and its answer to "may this
+ * provider serve this style". Nothing outside {@link resolveProvider} joins a
+ * stored gateway type to an adapter, and nothing anywhere branches on the
+ * absence of one, so no consumer asks whether a gateway is present.
  */
 
 import type {

@@ -32,10 +32,9 @@ export interface ExecutionAttempt {
 export type { AttemptAttribution };
 
 /**
- * What an attempt says about itself, derived once. Every consumer used to copy
- * the same seven fields off `resolved` by hand and rebuild the `slug/path`
- * string beside them, so a request refused at the gate and the same request
- * recorded after it were two independent spellings of one fact.
+ * What an attempt says about itself, derived once, so a request refused at the
+ * gate and the same request recorded after it are one spelling of one fact
+ * rather than two.
  */
 export function attemptAttribution(attempt: ExecutionAttempt): AttemptAttribution {
   const { resolved } = attempt;

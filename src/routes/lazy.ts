@@ -19,19 +19,12 @@ export interface RouteBundle {
 /**
  * Mounts a route bundle that is only evaluated once a request needs it.
  *
- * Two thirds of this Worker's startup CPU used to be spent evaluating modules a
- * proxied request never touches. A dynamic `import()` behind this handler moves
- * that off the cold start of every request that is not a management call, the
- * same way App Attest is deferred inside the handlers that attest in `./auth`.
- *
- * What is left behind it is the operation catalog and the zod request and
- * response schemas it composes — measured at about 20ms of startup CPU, which
- * is why the management surface is still mounted this way rather than
- * statically. The identity library is not: better-auth and the
- * `@opentelemetry` semantic conventions it pulls in used to enter the bundle
- * here too, and are now deferred per function through `cfAuth()` in
- * `../auth/identity`, which is what lets everything else on the client path —
- * the application token exchange included — mount on the entry app directly.
+ * A dynamic `import()` behind this handler keeps what a proxied request never
+ * touches off the cold start of every request that is not a management call,
+ * the same way App Attest is deferred inside the handlers that attest in
+ * `./auth`. Behind it is the operation catalog and the zod request and response
+ * schemas it composes, about 20ms of startup CPU, which is why the management
+ * surface is mounted this way rather than statically.
  *
  * What this buys is deferred *evaluation*, not a smaller bundle: wrangler does
  * not emit a separate chunk here, it inlines the module as a lazily initialised
@@ -52,8 +45,8 @@ export interface RouteBundle {
  * Hono's `#handleError` calls `errorHandler` without catching it and `compose`
  * awaits it inside the `catch` it was reached from (see
  * `node_modules/hono/dist/hono-base.js` and `compose.js`). So the entry module's
- * `onError` still formats and logs every failure exactly as it did when these
- * routes were mounted statically.
+ * `onError` formats and logs a failure from a lazily mounted route exactly as it
+ * does any other.
  */
 export function lazyRoutes<E extends HonoEnv & { Bindings: Env }>(
   load: () => Promise<RouteBundle>,

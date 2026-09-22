@@ -22,7 +22,7 @@ export interface AdminVariables extends RequestVariables {
  *
  * What the caller is then allowed to do is declared on the operation in
  * `src/contracts/catalog.ts` and applied by `catalogRouter`, so adding a route
- * no longer means remembering a path regex here. All this establishes is who
+ * does not mean remembering a path regex here. All this establishes is who
  * is asking: which credential, which user, which organization and with what
  * role — as one {@link AdminActor} on the context.
  */
@@ -77,8 +77,8 @@ export const adminAuth: MiddlewareHandler<{
     c.set("actor", {
       organizationId: resolved.organization.id,
       userId: user.id,
-      // Null rather than the empty string that used to stand in for it: a
-      // session with no credential id has none, and `""` is a value.
+      // Null rather than the empty string: a session with no credential id has
+      // none, and `""` is a value.
       credentialId: state.actor?.credentialId ?? null,
       role: resolved.role,
       credentialType: state.credentialType,

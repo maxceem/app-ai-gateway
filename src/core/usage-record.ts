@@ -322,8 +322,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   if (unpriced) {
     // Unpriced models are refused before they proxy, so reaching here means the
     // catalog and the gate disagree. Recording the event keeps its tokens; the
-    // dedicated code makes the mispricing alertable, where the old throw only
-    // vanished inside `waitUntil`.
+    // dedicated code makes the mispricing alertable, which a throw inside
+    // `waitUntil` would not be.
     //
     // Not an error on a reporting route: those bill on the reported figure and
     // are expected to carry no local price at all.

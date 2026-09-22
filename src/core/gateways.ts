@@ -41,9 +41,9 @@ function gatewayCapability(
  * the type. `config_json` is written only by the create route, which builds the
  * union field by field from a checked contract, so the pairing is guaranteed
  * upstream rather than here. Every adapter reads its config through this one
- * helper, behind `isGatewayType` or `requireGatewayAdapter`. The previous shape
- * branched on `type` to pick which unchecked cast to apply, which read like a
- * discrimination and was not one.
+ * helper, behind `isGatewayType` or `requireGatewayAdapter`: branching on
+ * `type` to pick which unchecked cast to apply would read like a
+ * discrimination without being one.
  */
 function gatewayConfig<Config extends ProviderGatewayConfig>(
   config: ProviderGatewayConfig | null,

@@ -2,10 +2,8 @@
  * The billing wire shapes, as one schema per shape.
  *
  * These describe an optional service binding rather than a table this gateway
- * owns, which is why they used to be written three times: as interfaces in
- * `src/billing/contract.ts`, as hand-written types in the console, and a third
- * time as loose `z.unknown()` documentation in `openapi.ts`. Here they are the
- * definition. `src/billing/contract.ts` infers the RPC contract from them,
+ * owns, and they are the definition of it rather than documentation of one:
+ * `src/billing/contract.ts` infers the RPC contract from them,
  * `./catalog.ts` documents and types the seven `/v1/admin/billing` operations
  * with them, and the console imports the inferred types.
  *

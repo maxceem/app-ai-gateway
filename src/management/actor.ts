@@ -4,11 +4,9 @@ import { GatewayError } from "../core/errors";
 /**
  * Who is writing, in the one shape the management layer understands.
  *
- * It used to arrive in four: cf-auth's `AuthState`, an `AdminContext` whose
- * `credentialId` was `""` when there was none, a `ResourceWriteActor` of two
- * fields, and the three `initiating_*` columns of a handoff row read out by
- * hand wherever one was needed. A receipt, a plan cap and a management service
- * all take this.
+ * A receipt, a plan cap and a management service all take this one shape, so
+ * nothing re-derives who is writing from a session, a handoff row or a
+ * credential id of its own.
  */
 export interface Actor {
   organizationId: string;

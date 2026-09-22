@@ -230,8 +230,7 @@ export function validateOrInjectOutputCap(
  * A same-protocol request rewrite the provider type's cost-report integration
  * asks for, if it declares one. Generic on purpose: this asks whether the type
  * has an integration and hands it the body, and never knows which provider's
- * fields are being written — the mistake the old `reportsCost`-gated OpenRouter
- * injection made was letting a shared flag switch on one upstream's shape.
+ * fields are being written.
  */
 export function costReportBodyMutation(
   provider: ProviderType,
@@ -353,11 +352,9 @@ type HeaderRoute = ProviderRoute | "pending";
 
 /**
  * The one header-stripping rule, applied wherever a request's headers are
- * touched. It used to be three passes — a reserved-name list, a namespace
- * allowlist, and a second namespace sweep — running at two different times and
- * agreeing only by hand.
+ * touched.
  *
- * What survives, in one sentence: inside a gateway's namespace only the names
+ * The rule, in one sentence: inside a gateway's namespace only the names
  * that adapter declares client-usable, and only while the request could still be
  * routed through that adapter; everywhere else only {@link
  * FORWARDED_CLIENT_HEADERS}. `pending` keeps every adapter's client-usable
@@ -463,8 +460,8 @@ export function clientResponseHeaders(upstream: Response): Headers {
  * Which model a request is for, whether the app may ask for it, what the
  * organization rewrote it to, whether that can be billed, and what the route
  * puts on the wire — in that order, because each step judges the answer the one
- * before it settled. It used to be written out once per body shape, where the
- * multipart copy and the JSON copy could drift into two policies.
+ * before it settled. One function for both shapes, so the multipart path and
+ * the JSON path cannot drift into two policies.
  */
 function resolveModel(input: {
   match: MatchedPath;

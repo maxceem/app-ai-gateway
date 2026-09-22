@@ -1,8 +1,8 @@
 /**
  * The first request an application can send, as data and as code.
  *
- * One source for the console's example card and the CLI's `app snippet`, which
- * used to derive the same example twice and print it in two shapes. It imports
+ * One source for the console's example card and the CLI's `app snippet`, so the
+ * two cannot show different examples. It imports
  * only from `src/shared`, for the reason `./capabilities.ts` gives: the console
  * bundles it, so nothing from `src/core` may reach it.
  *

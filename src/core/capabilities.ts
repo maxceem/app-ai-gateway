@@ -24,9 +24,9 @@ export {
  * The whole (route × provider type) matrix, resolved once at module load.
  *
  * It is static: every adapter is code, so every cell is knowable before the
- * first request and none of them can change afterwards. Computing a cell used to
- * mean filtering two style lists per capability check, and a proxied request
- * makes several. Maps rather than objects because the key is a provider type
+ * first request and none of them can change afterwards. Computing a cell means
+ * filtering two style lists, and a proxied request makes several capability
+ * checks. Maps rather than objects because the key is a provider type
  * read off a stored row, and a plain object answers for `constructor`.
  */
 const ROUTE_CAPABILITIES: ReadonlyMap<

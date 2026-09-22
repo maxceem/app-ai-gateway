@@ -2,15 +2,15 @@
  * The configuration vocabulary, the helpers that read a parsed configuration,
  * and the one function that turns raw JSON into one.
  *
- * There is no parser here any more. `src/contracts/schemas.ts` is the grammar —
- * the same schema the public API documents — and what it produces is what the
+ * There is no parser here. `src/contracts/schemas.ts` is the grammar — the
+ * same schema the public API documents — and what it produces is what the
  * gateway stores and what every reader works on. This module is the door to it:
  * one place that runs it and reports a rejection the same way for the Worker,
  * the console and the CLI.
  *
  * It imports the schema at runtime, so the console bundle carries zod. That is
- * deliberate: a second hand-written parser in the browser was the thing that
- * could disagree with the server, and one parser that ships everywhere cannot.
+ * deliberate: a second parser in the browser could disagree with the server,
+ * and one parser that ships everywhere cannot.
  */
 
 import type { z } from "zod";

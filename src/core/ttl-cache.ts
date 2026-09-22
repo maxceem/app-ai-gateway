@@ -3,14 +3,13 @@
  *
  * Every warm map the Worker keeps is the same three decisions — how long a
  * value stays fresh, how many of them to hold, and what to drop when there are
- * too many — written nine different ways, each with its own `expiresAt`
- * comparison and its own test-only clear function. This is that shape once.
+ * too many — and this is that shape once.
  *
- * What a caller still owns is the *policy*: the TTL, the bound, and why the
- * bound is safe. What it no longer owns is the arithmetic, the eviction, or
- * remembering to be emptied between tests — a cache registers itself here at
- * creation, so {@link clearAllCaches} reaches it whether or not anyone
- * remembered it exists.
+ * A caller owns the *policy*: the TTL, the bound, and why the bound is safe.
+ * The arithmetic, the eviction and being emptied between tests are this
+ * module's — a cache registers itself here at creation, so
+ * {@link clearAllCaches} reaches it whether or not anyone remembered it
+ * exists.
  */
 
 export interface TtlCacheEntry<V> {

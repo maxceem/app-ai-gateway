@@ -81,10 +81,9 @@ export function documentOf(app: AppResponse["app"]): AppWrite {
  * A write body as the gateway's own grammar defines it.
  *
  * Nothing is checked here beyond the schema: the App Attest identifier formats
- * and the rule that per-user limits need an end-user source used to be
- * re-implemented in this file, and they now live in the schema the server
- * parses with, so `agw` refuses exactly what the deployment would and says it
- * in the same words.
+ * and the rule that per-user limits need an end-user source live in the schema
+ * the server parses with, so `agw` refuses exactly what the deployment would
+ * and says it in the same words.
  */
 export function localApp(value: unknown): AppWrite {
   return validate(AppWriteSchema, value);
@@ -145,8 +144,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
              * schema's: someone reaching for the CLI to create an iOS app is
              * building it, and a development-signed build is what they have in
              * hand. Passed through unmapped, so `localApp` below is what
-             * refuses a name that is neither — as it did before this was a
-             * call rather than a literal.
+             * refuses a name that is neither.
              */
             environments: (flags["attest-environments"] ?? "production,development")
               .split(",") as AppAttestEnvironment[],

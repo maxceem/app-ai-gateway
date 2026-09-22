@@ -2,7 +2,7 @@
  * The console's own view of an application configuration.
  *
  * The wire shapes are not restated here: they come from `@shared/app-config`,
- * which is the one grammar the Worker parses with and the console now runs
+ * which is the one grammar the Worker parses with and the console runs
  * directly. What this file adds is the *draft* — the partially filled, named
  * intermediate states a form passes through and a saved configuration has no
  * vocabulary for — plus the labels and copy that go around them.

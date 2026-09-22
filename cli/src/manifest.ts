@@ -19,7 +19,7 @@ export interface CliManifest {
 /**
  * Where this CLI's gateway release is published, and what it must hash to.
  *
- * The release itself is no longer inside the npm package; it is one asset on a
+ * The release itself is not inside the npm package; it is one asset on a
  * GitHub release, downloaded once and cached. These two digests are what makes
  * that safe: they are built into the bundle, so npm's own signature covers
  * them, and GitHub is only ever allowed to supply bytes that match them.
