@@ -146,10 +146,10 @@ export async function recoverPendingUsageSpend(
  * only after every raw event that could still be repriced has gone.
  */
 export async function pruneSettledUsageSpend(
-  env: Env,
+  db: D1Database,
   beforeMonth: string,
 ): Promise<number> {
-  const result = await env.DB.prepare(
+  const result = await db.prepare(
     `DELETE FROM app_usage_spend WHERE id IN (
        SELECT spend.id FROM app_usage_spend AS spend
        WHERE spend.pending = 0 AND spend.month < ?

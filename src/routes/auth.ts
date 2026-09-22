@@ -362,7 +362,7 @@ authRoutes.post("/challenge", async (c) => {
   // table small where no cron runs at all, such as local development.
   if (Math.random() < 0.01) {
     c.executionCtx.waitUntil(
-      pruneAuthChallenges(c.env).catch((error: unknown) => {
+      pruneAuthChallenges(c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", {
           error: error instanceof Error ? error.message : String(error),
         });

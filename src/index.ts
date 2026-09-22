@@ -1,5 +1,4 @@
 import {
-  AUTHORIZATION_SWEEP_QUERIES,
   pruneExpiredAccounts,
   pruneExpiredAuthorizations,
 } from "./core/account-lifecycle";
@@ -8,15 +7,10 @@ import type { HealthResponse } from "./contracts/responses";
 import type { RequestVariables } from "./middleware/request-scope";
 import {
   AUTH_EVENT_RETENTION_DAYS,
-  AUTH_SWEEP_QUERIES,
   pruneAuthChallenges,
   pruneAuthEvents,
 } from "./core/auth-events";
-import {
-  MAINTENANCE_SLACK_QUERIES,
-  maintenanceQueryBudget,
-  type QueryBudget,
-} from "./core/query-budget";
+import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
 import { recoverPendingUsageSpend } from "./core/app-usage-accounting";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
@@ -186,6 +180,24 @@ app.onError((error, c) => {
 });
 
 /**
+ * Reports one sweep's failure, and tells being paced apart from going wrong.
+ *
+ * Running out of the night's allowance is the budget doing its job — the work
+ * left over is simply continued tomorrow — so it is logged once under a code of
+ * its own rather than as this sweep's error, which is reserved for a sweep that
+ * actually failed.
+ */
+function sweepFailed(sweep: string, code: string, error: unknown): void {
+  if (error instanceof QueryBudgetExhausted) {
+    log("warn", "maintenance_budget_exhausted", { sweep, limit: error.limit });
+    return;
+  }
+  log("error", code, {
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+/**
  * Nightly retention: the authentication event log, spent App Attest challenges,
  * expired CLI authorizations, expired unclaimed accounts, and the usage history.
  *
@@ -199,56 +211,51 @@ app.onError((error, c) => {
  * order written: the fixed-cost sweeps first, then account cleanup, then usage
  * retention with everything that is left. Account cleanup is offered at most
  * half of what remains at that point, so a large expired backlog cannot starve
- * compaction, and whatever it declines returns to the budget rather than being
- * wasted.
+ * compaction; what it does not issue it never spends, because the allowance
+ * counts statements as they go out rather than reserving them in advance.
  */
 async function prune(env: Env): Promise<void> {
   const budget = maintenanceQueryBudget(env);
-  budget.remaining -= AUTH_SWEEP_QUERIES + MAINTENANCE_SLACK_QUERIES;
+  // Every sweep below issues its statements through this, so the allowance is
+  // charged for what was run rather than for what each one said it would run.
+  const db = budget.database(env.DB);
   try {
-    const deleted = await pruneAuthEvents(env);
+    const deleted = await pruneAuthEvents(db);
     log("info", "auth_events_pruned", { deleted, retentionDays: AUTH_EVENT_RETENTION_DAYS });
   } catch (error) {
-    log("error", "auth_events_prune_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    sweepFailed("auth_events", "auth_events_prune_failed", error);
   }
   try {
-    const deleted = await pruneAuthChallenges(env);
+    const deleted = await pruneAuthChallenges(db);
     log("info", "auth_challenges_pruned", { deleted });
   } catch (error) {
-    log("error", "auth_challenges_prune_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    sweepFailed("auth_challenges", "auth_challenges_prune_failed", error);
   }
-  budget.remaining -= AUTHORIZATION_SWEEP_QUERIES;
   try {
-    await pruneExpiredAuthorizations(env);
+    await pruneExpiredAuthorizations(db);
   } catch (error) {
-    log("error", "authorizations_prune_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    sweepFailed("authorizations", "authorizations_prune_failed", error);
   }
   // Only a hosted deployment writes an account deadline, and only a hosted
   // deployment can have one to collect: a self-host's single account has no
   // `expires_at` at all, so running this there would spend a sixth of a Free
   // plan's nightly queries on a sweep that cannot match a row.
   if (resolveDeployment(env).mode === "cloud") {
-    const share: QueryBudget = { remaining: Math.floor(budget.remaining / 2) };
-    const offered = share.remaining;
+    // At most half of what the fixed sweeps left, so a large expired backlog
+    // cannot starve compaction. The share issues through its own view of the
+    // database, so it spends the run's allowance without being able to overrun
+    // the half it was offered.
+    const share = budget.limited(Math.floor(budget.remaining / 2));
     try {
-      const deleted = await pruneExpiredAccounts(env, share);
+      const deleted = await pruneExpiredAccounts(share.database(db), share);
       if (deleted > 0) log("info", "expired_accounts_pruned", { deleted });
     } catch (error) {
-      log("error", "expired_accounts_prune_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      sweepFailed("expired_accounts", "expired_accounts_prune_failed", error);
     }
-    budget.remaining -= offered - share.remaining;
   }
   // Reports under its own codes, and swallows its own failures for the same
   // reason the sweeps above do.
-  await runUsageRetention(env, Date.now(), budget);
+  await runUsageRetention(db, Date.now(), budget);
 }
 
 async function recoverUsageSpend(env: Env): Promise<void> {

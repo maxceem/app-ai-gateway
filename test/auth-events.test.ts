@@ -537,7 +537,7 @@ describe("auth event retention", () => {
     ).run();
 
     // Counted across the deployment, not per app: it is one sweep.
-    expect(await pruneAuthEvents(env, 1)).toBeGreaterThanOrEqual(1);
+    expect(await pruneAuthEvents(env.DB, 1)).toBeGreaterThanOrEqual(1);
     expect((await eventsFor("prune-window")).length).toBe(1);
   });
 });

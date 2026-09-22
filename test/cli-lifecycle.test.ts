@@ -701,8 +701,8 @@ describe("CLI account lifecycle", () => {
     expect((await read(data.credential.token)).totals.requests).toBe(1);
     expect((await read(data.credential.token)).apps[0]?.deleted).toBe(true);
     expect((await read(other.data.credential.token)).totals.requests).toBe(0);
-    await compactUsageEvents(testEnv, Date.parse("2026-09-01T00:00:00Z"));
-    await foldUsageRollupMonths(testEnv, Date.parse("2026-09-01T00:00:00Z"));
+    await compactUsageEvents(testEnv.DB, Date.parse("2026-09-01T00:00:00Z"));
+    await foldUsageRollupMonths(testEnv.DB, Date.parse("2026-09-01T00:00:00Z"));
     expect((await read(data.credential.token)).totals.requests).toBe(1);
     await env.DB.prepare(
       "INSERT INTO app(id,organization_id,name,config_json) VALUES (?,?,'Restored','{}')",
@@ -951,7 +951,7 @@ describe("CLI account lifecycle", () => {
       env.DB.prepare("UPDATE mgmt_organization SET expires_at=NULL WHERE id=?")
         .bind(data.account.id),
     ]);
-    await pruneExpiredAccounts(testEnv);
+    await pruneExpiredAccounts(testEnv.DB);
     expect(
       await env.DB.prepare("SELECT id FROM mgmt_organization WHERE id=?")
         .bind(data.account.id)
@@ -973,8 +973,8 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   )
     .bind(new Date(Date.now() - 1000).toISOString(), data.account.id)
     .run();
-  await pruneExpiredAccounts(testEnv);
-  await pruneExpiredAccounts(testEnv);
+  await pruneExpiredAccounts(testEnv.DB);
+  await pruneExpiredAccounts(testEnv.DB);
   expect(
     await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first(
       "n",

@@ -84,9 +84,6 @@ export async function recordAuthEvent(input: AuthEventInput): Promise<void> {
   });
 }
 
-/** Statements the two sweeps below issue between them, one each. */
-export const AUTH_SWEEP_QUERIES = 2;
-
 /**
  * Drops authentication attempts past the retention window.
  *
@@ -95,10 +92,10 @@ export const AUTH_SWEEP_QUERIES = 2;
  * something was billed for.
  */
 export async function pruneAuthEvents(
-  env: Env,
+  db: D1Database,
   retentionDays = AUTH_EVENT_RETENTION_DAYS,
 ): Promise<number> {
-  const result = await env.DB
+  const result = await db
     .prepare("DELETE FROM app_auth_event WHERE created_at < datetime('now', ?)")
     .bind(`-${retentionDays} days`)
     .run();
@@ -113,8 +110,8 @@ export async function pruneAuthEvents(
  * already worthless to `consumeChallenge`, which refuses anything past its
  * `expires_at`, so deleting it changes no outcome.
  */
-export async function pruneAuthChallenges(env: Env): Promise<number> {
-  const result = await env.DB
+export async function pruneAuthChallenges(db: D1Database): Promise<number> {
+  const result = await db
     .prepare("DELETE FROM app_auth_challenge WHERE expires_at < datetime('now')")
     .run();
   return result.meta.changes ?? 0;

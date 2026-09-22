@@ -527,7 +527,7 @@ describe("App Attest challenge retention", () => {
     await seedChallenges("prune-challenge-count");
 
     // Counted across the deployment, not per app: it is one sweep.
-    expect(await pruneAuthChallenges(env)).toBeGreaterThanOrEqual(2);
+    expect(await pruneAuthChallenges(env.DB)).toBeGreaterThanOrEqual(2);
     await expect(challengesFor("prune-challenge-count")).resolves.toEqual([
       "prune-challenge-count-live",
     ]);

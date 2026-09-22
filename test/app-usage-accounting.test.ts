@@ -346,10 +346,10 @@ describe("app usage accounting", () => {
     await insertEvent({ appId, userId: null, costUsd: 0.000051, createdAt });
     await env.DB.prepare("DELETE FROM app_usage_event WHERE app_id = ?").bind(appId).run();
 
-    expect(await pruneSettledUsageSpend(env, "2026-01")).toBe(0);
+    expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(0);
     expect(await spend(appId)).toHaveLength(1);
     await projectUsageEventSpend(env, { appId, userId: null, month: "2025-01" });
-    expect(await pruneSettledUsageSpend(env, "2026-01")).toBe(1);
+    expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(1);
     expect(await spend(appId)).toEqual([]);
   });
 

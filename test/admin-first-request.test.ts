@@ -96,7 +96,7 @@ describe("whether an organization has ever proxied a request", () => {
 
   it("stays true after retention compacts all its raw events", async () => {
     await env.DB.prepare("UPDATE app_usage_event SET created_at = '2020-01-01T00:00:00.000Z'").run();
-    await compactUsageEvents(env);
+    await compactUsageEvents(env.DB);
     expect(await env.DB.prepare("SELECT id FROM app_usage_event LIMIT 1").first()).toBeNull();
     await expect(listApps()).resolves.toMatchObject({ has_proxied_requests: true });
   });
