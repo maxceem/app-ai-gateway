@@ -2,7 +2,7 @@ import { accountMonthUsage } from "../../core/account-usage";
 import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
-import { requireOrganization } from "@maxceem/cf-auth";
+import { cfAuth } from "../../auth/identity";
 import { getBillingQuotaResolution } from "../../billing/quota";
 import {
   assertAccountAccess,
@@ -80,7 +80,7 @@ routes.relay("cliBrowserRegister", browserRegister);
 routes.relay("cliBrowserGoogle", browserGoogle);
 routes.handle("getCliAccount", async (c) => {
   const state = await authState(c),
-    resolved = requireOrganization(state);
+    resolved = (await cfAuth()).requireOrganization(state);
   const account = await assertAccountAccess(
     c.get("deployment"),
     c.env,
@@ -109,7 +109,7 @@ routes.handle("getCliAccount", async (c) => {
 });
 routes.handle("getCliUsage", async (c) => {
   const state = await authState(c),
-    resolved = requireOrganization(state);
+    resolved = (await cfAuth()).requireOrganization(state);
   await assertAccountAccess(c.get("deployment"), c.env, resolved.organization.id, "read");
   const month = c.req.query("month") ?? currentMonth();
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))

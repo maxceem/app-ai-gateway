@@ -1,7 +1,7 @@
 import { assertAccountAccess } from "../../core/account-lifecycle";
 import { actorFromHandoff } from "../../management/actor";
 import { managementScope } from "../admin/body";
-import { credentialAuthorityCondition } from "@maxceem/cf-auth";
+import { cfAuth } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
 import { mgmtAuthTables } from "../../db/schema";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
@@ -48,6 +48,7 @@ export async function completeProviderSubmission(
   const now = Date.now();
   // Authority is rechecked in the mutation transaction, not merely when the
   // URL was issued. Product lifecycle conditions are appended below.
+  const { credentialAuthorityCondition } = await cfAuth();
   const liveCredential = credentialAuthorityCondition(mgmtAuthTables, {
     organizationId: row.organization_id,
     userId: row.initiating_user_id,

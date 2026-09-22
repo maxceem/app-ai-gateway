@@ -91,7 +91,7 @@ async function passwordSignIn(email: string, password: string): Promise<Response
 }
 
 async function sessionFor(cookie: string) {
-  return createIdentityAuth(resolveDeployment(env), env, ORIGIN).auth.api.getSession({
+  return (await createIdentityAuth(resolveDeployment(env), env, ORIGIN)).auth.api.getSession({
     headers: new Headers({ cookie }),
   });
 }
@@ -530,7 +530,7 @@ describe("password changes", () => {
     const otherResponse = await passwordSignIn(email, "json-changed-password-44");
     expect(otherResponse.status, await otherResponse.clone().text()).toBe(200);
     const otherCookie = cookieFrom(otherResponse);
-    const direct = await createIdentityAuth(resolveDeployment(env), env, ORIGIN).auth.api.changePassword({
+    const direct = await (await createIdentityAuth(resolveDeployment(env), env, ORIGIN)).auth.api.changePassword({
       body: {
         currentPassword: "json-changed-password-44",
         newPassword: "direct-changed-password-45",

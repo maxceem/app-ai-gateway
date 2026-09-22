@@ -20,12 +20,18 @@ export interface RouteBundle {
  * Mounts a route bundle that is only evaluated once a request needs it.
  *
  * Two thirds of this Worker's startup CPU used to be spent evaluating modules a
- * proxied request never touches: better-auth and `@better-auth/core` behind the
- * operator identity, the `@opentelemetry` semantic conventions they pull in, the
- * zod contract schemas, and the management route modules themselves. A dynamic
- * `import()` behind this handler moves all of that off the cold start of every
- * request that is not a management call, the same way App Attest is already
- * deferred in `./auth`.
+ * proxied request never touches. A dynamic `import()` behind this handler moves
+ * that off the cold start of every request that is not a management call, the
+ * same way App Attest is deferred inside the handlers that attest in `./auth`.
+ *
+ * What is left behind it is the operation catalog and the zod request and
+ * response schemas it composes — measured at about 20ms of startup CPU, which
+ * is why the management surface is still mounted this way rather than
+ * statically. The identity library is not: better-auth and the
+ * `@opentelemetry` semantic conventions it pulls in used to enter the bundle
+ * here too, and are now deferred per function through `cfAuth()` in
+ * `../auth/identity`, which is what lets everything else on the client path —
+ * the application token exchange included — mount on the entry app directly.
  *
  * What this buys is deferred *evaluation*, not a smaller bundle: wrangler does
  * not emit a separate chunk here, it inlines the module as a lazily initialised
@@ -70,13 +76,4 @@ export function lazyRoutes<E extends HonoEnv & { Bindings: Env }>(
     }
     return routes.fetch(c.req.raw, c.env, executionCtx);
   };
-}
-
-/**
- * The `onError` a lazily mounted bundle installs when it has no mapping of its
- * own: it refuses to format anything and hands the error back to the outer app,
- * which owns the one error shape and the one log line.
- */
-export function rethrow(error: Error): never {
-  throw error;
 }

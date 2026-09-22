@@ -136,7 +136,7 @@ export async function browserRegister(c: CliContext): Promise<Response> {
       "invalid_request",
       "Name, email and password are required",
     );
-  const response = await identityAuthFor(c, { claimRegistration: true }).auth.api.signUpEmail({
+  const response = await (await identityAuthFor(c, { claimRegistration: true })).auth.api.signUpEmail({
     body: { email: input.email, password: input.password, name: input.name },
     headers: c.req.raw.headers,
     asResponse: true,

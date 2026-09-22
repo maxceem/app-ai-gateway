@@ -67,8 +67,8 @@ describe("operator OAuth relay", () => {
     expect(url.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/v1/auth/callback/google`);
   });
 
-  it("configures the redirect URI only when a relay is set", () => {
-    const withRelay = createIdentityAuth(resolveDeployment(operatorEnv({
+  it("configures the redirect URI only when a relay is set", async () => {
+    const withRelay = await createIdentityAuth(resolveDeployment(operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: RELAY,
@@ -79,7 +79,7 @@ describe("operator OAuth relay", () => {
     }), `${ORIGIN}/v1/auth/sign-in/social`);
     expect(withRelay.config.google?.redirectURI).toBe(`${RELAY}/callback/google`);
 
-    const without = createIdentityAuth(resolveDeployment(operatorEnv({
+    const without = await createIdentityAuth(resolveDeployment(operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: undefined,
@@ -122,8 +122,8 @@ describe("operator OAuth relay", () => {
     expect(url.searchParams.get("next")).toBe(googleUrl);
   });
 
-  it("rejects a relay URL that is not an absolute http(s) URL", () => {
-    expect(() => createIdentityAuth(resolveDeployment(operatorEnv({
+  it("rejects a relay URL that is not an absolute http(s) URL", async () => {
+    await expect(createIdentityAuth(resolveDeployment(operatorEnv({
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: "dev-oauth.example.test",
@@ -131,6 +131,6 @@ describe("operator OAuth relay", () => {
       GOOGLE_CLIENT_ID: "test-google-client",
       GOOGLE_CLIENT_SECRET: "test-google-secret",
       OAUTH_RELAY_URL: "dev-oauth.example.test",
-    }), `${ORIGIN}/v1/auth/sign-in/social`)).toThrowError(/absolute http\(s\) URL/u);
+    }), `${ORIGIN}/v1/auth/sign-in/social`)).rejects.toThrowError(/absolute http\(s\) URL/u);
   });
 });

@@ -24,7 +24,7 @@ export const managementKeyRoutes = new Hono<{
 const routes = adminRouter(managementKeyRoutes);
 
 routes.handle("listManagementKeys", async (c) => {
-  const keys = await identityAuthFor(c).service.listApiKeys({
+  const keys = await (await identityAuthFor(c)).service.listApiKeys({
     actor: c.get("authState"),
     organizationId: c.get("actor").organizationId,
   });
@@ -32,7 +32,7 @@ routes.handle("listManagementKeys", async (c) => {
 });
 
 routes.handle("createManagementKey", async (c) => {
-  const key = await identityAuthFor(c).service.createApiKey({
+  const key = await (await identityAuthFor(c)).service.createApiKey({
     actor: c.get("authState"),
     organizationId: c.get("actor").organizationId,
     name: schemaBody(ManagementKeyCreateRequestSchema, await jsonBody(c)).name,
@@ -41,7 +41,7 @@ routes.handle("createManagementKey", async (c) => {
 });
 
 routes.handle("revokeManagementKey", async (c) => {
-  const key = await identityAuthFor(c).service.revokeApiKey({
+  const key = await (await identityAuthFor(c)).service.revokeApiKey({
     actor: c.get("authState"),
     organizationId: c.get("actor").organizationId,
     apiKeyId: c.req.param("id"),

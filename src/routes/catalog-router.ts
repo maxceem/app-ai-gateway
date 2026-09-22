@@ -1,5 +1,5 @@
-import { canManageOrganization, requireOrganization, requireUser } from "@maxceem/cf-auth";
 import type { Context, Env as HonoEnv, Hono } from "hono";
+import { cfAuth } from "../auth/identity";
 import {
   CATALOG,
   type BodiedOperation,
@@ -63,6 +63,7 @@ type AuthorizedContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 async function authorize(c: AuthorizedContext, spec: OperationSpec): Promise<void> {
   if (spec.security !== "management" && spec.security !== "session") return;
   const policy = operationPolicy(spec);
+  const { canManageOrganization, requireOrganization, requireUser } = await cfAuth();
   const state = c.get("authState");
   const actor = c.get("actor");
   if (policy.role === "admin" && !canManageOrganization(actor.role)) {

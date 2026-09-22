@@ -13,8 +13,13 @@ export interface RequestVariables {
    * asks the billing service once.
    */
   billingRequestCache: BillingRequestCache;
-  /** cf-auth instances built during this request, keyed by their options. */
-  identityAuthCache: Map<string, CfAuth>;
+  /**
+   * The cf-auth instances this request builds, keyed by their options.
+   *
+   * The promise rather than the instance, so two callers that await the same
+   * options concurrently share one build instead of racing to make two.
+   */
+  identityAuthCache: Map<string, Promise<CfAuth>>;
 }
 
 /**

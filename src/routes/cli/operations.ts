@@ -1,6 +1,5 @@
 import { cliJson } from "./security";
-import { requireOrganization } from "@maxceem/cf-auth";
-import { identityAuthFor } from "../../auth/identity";
+import { cfAuth, identityAuthFor } from "../../auth/identity";
 import {
   assertAccountAccess,
   accountLifecycle,
@@ -34,7 +33,7 @@ export function browserPath(id: string): string {
 }
 
 export async function authState(c: CliContext, interactive = false) {
-  const auth = identityAuthFor(c, { suppressDefaultOrganization: true });
+  const auth = await identityAuthFor(c, { suppressDefaultOrganization: true });
   await auth.middleware<CliEnv>({
     apiKeys: !interactive,
     syncCurrentOrganizationCookie: false,
@@ -86,7 +85,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
   const meta = deploymentMeta(c);
   const kind = handoffKind(input.kind);
   const state = await authState(c);
-  const resolved = requireOrganization(state);
+  const resolved = (await cfAuth()).requireOrganization(state);
     if (
       state.credentialType === "session" &&
       c.req.header("origin") !== meta.consoleOrigin

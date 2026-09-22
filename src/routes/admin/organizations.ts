@@ -41,7 +41,7 @@ routes.handle("getAdminSession", (c) =>
   ({ session: sessionPayload(c.get("authState"), c.get("actor")) }));
 
 routes.handle("listOrganizations", async (c) => {
-  const organizations = await identityAuthFor(c).service.listOrganizations(c.get("authState"));
+  const organizations = await (await identityAuthFor(c)).service.listOrganizations(c.get("authState"));
   return { organizations };
 });
 
@@ -60,7 +60,7 @@ routes.handle("selectOrganization", async (c) => {
   const actor = c.get("actor");
   const { organizationId } = schemaBody(OrganizationSelectRequestSchema, await jsonBody(c));
 
-  const identityAuth = identityAuthFor(c);
+  const identityAuth = await identityAuthFor(c);
   const state = await identityAuth.service.selectOrganization(
     c.get("authState"),
     organizationId,

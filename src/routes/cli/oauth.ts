@@ -45,7 +45,7 @@ export async function browserGoogle(c: CliContext): Promise<Response> {
   const meta = deploymentMeta(c);
   const encoded = btoa(JSON.stringify({ id: row.id, expires: row.expires_at }));
   const signature = await derive(c.env.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
-  const rawResult = await identityAuthFor(c, { claimRegistration: true }).auth.api.signInSocial({
+  const rawResult = await (await identityAuthFor(c, { claimRegistration: true })).auth.api.signInSocial({
     body: {
       provider: "google",
       callbackURL: `${meta.consoleOrigin}${browserPath(row.id)}`,

@@ -1,9 +1,7 @@
-import {
-  requireOrganization,
-  type AuthState,
-} from "@maxceem/cf-auth";
+import type { AuthState } from "@maxceem/cf-auth";
 import type { MiddlewareHandler } from "hono";
 import {
+  cfAuth,
   CONSOLE_REQUEST_HEADER,
   identityAuthFor,
   MANAGEMENT_KEY_PREFIX,
@@ -49,7 +47,8 @@ export const adminAuth: MiddlewareHandler<{
     }
   }
 
-  await identityAuthFor(c).middleware<{
+  const { requireOrganization } = await cfAuth();
+  await (await identityAuthFor(c)).middleware<{
     Bindings: Env;
     Variables: AdminVariables;
   }>()(c, async () => {

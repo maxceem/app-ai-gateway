@@ -345,7 +345,7 @@ describe("self-hosted registration policy", () => {
 
   it("preserves adapter ids, dates, and selected fields on guarded creates", async () => {
     const testEnv = runtime({ additional: true });
-    const auth = createIdentityAuth(resolveDeployment(testEnv), testEnv, ORIGIN, { suppressDefaultOrganization: true });
+    const auth = await createIdentityAuth(resolveDeployment(testEnv), testEnv, ORIGIN, { suppressDefaultOrganization: true });
     const context = await auth.auth.$context;
     const createdAt = new Date("2026-01-02T03:04:05.000Z");
     const updatedAt = new Date("2026-02-03T04:05:06.000Z");
@@ -473,11 +473,11 @@ describe("self-hosted registration policy", () => {
   it("applies the fresh human gate to trusted claim registration after a human exists", async () => {
     await seedHuman("owner@example.test");
     const claimEnv = runtime();
-    const response = await createClaimRegistrationAuth(
+    const response = await (await createClaimRegistrationAuth(
       resolveDeployment(claimEnv),
       claimEnv,
       ORIGIN,
-    ).auth.api.signUpEmail({
+    )).auth.api.signUpEmail({
       body: {
         name: "Second claimant",
         email: "second-claimant@example.test",
@@ -616,7 +616,7 @@ describe("Google registration policy", () => {
         submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
        VALUES (?, 'claim', '{}', 'claim-account', 'claim-service', 'claim-key', 'proof', 'poll', ?, ?, ?)`,
     ).bind(operationId, expires, now, now).run();
-    const claimAuth = createClaimRegistrationAuth(resolveDeployment(testEnv), testEnv, ORIGIN);
+    const claimAuth = await createClaimRegistrationAuth(resolveDeployment(testEnv), testEnv, ORIGIN);
     const started = await claimAuth.auth.api.signInSocial({
       body: { provider: "google", callbackURL: `${ORIGIN}/after-claim` },
       headers: new Headers({ origin: ORIGIN }),

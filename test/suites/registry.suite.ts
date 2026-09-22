@@ -8,6 +8,7 @@ import "../authoritative-reads.test";
 import "../migration.test";
 import "../index.test";
 import "../lazy-routes.test";
+import "../routing.test";
 import "../performance.test";
 import "../public-api-url.test";
 import "../openapi.test";

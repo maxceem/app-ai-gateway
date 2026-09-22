@@ -154,7 +154,7 @@ identityAuthRoutes.all("/*", async (c) => {
   const markRegistrationDenied = () => {
     registrationDenied = true;
   };
-  const auth = identityAuthFor(c, {
+  const auth = await identityAuthFor(c, {
     ...(claim
       ? { claimRegistration: true }
       : { provisionRegistration: true }),

@@ -80,7 +80,7 @@ export async function completeIdentity(
   // failures are not equally recoverable: a claim that landed can simply be
   // approved again, since claiming settles on the same owner rather than
   // refusing, while a request consumed without a claim could never be retried.
-  await identityAuthFor(c, { suppressDefaultOrganization: true })
+  await (await identityAuthFor(c, { suppressDefaultOrganization: true }))
     .service.claimOrganization({
       actor: state,
       organizationId: target,

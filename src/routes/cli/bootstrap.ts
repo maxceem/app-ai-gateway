@@ -165,7 +165,7 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
   if (account.claimed || row.consumed_at)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
-  const identity = identityAuthFor(c);
+  const identity = await identityAuthFor(c);
 
   if (!row.protected_credential || (row.protected_credential_expires_at ?? 0) <= now) {
     // No expiry of its own: the account's `expires_at` is the one deadline, and

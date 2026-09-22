@@ -38,7 +38,7 @@ async function operation(
   operationEnv: Env = runtime,
   organizationId: string = TEST_ORGANIZATION_ID,
 ) {
-  const auth = createIdentityAuth(resolveDeployment(operationEnv), operationEnv, origin);
+  const auth = await createIdentityAuth(resolveDeployment(operationEnv), operationEnv, origin);
   const user = await auth.service.createServiceIdentity({ name: "Handoff test" });
   await auth.repository.addOrganizationUser({
     organizationId,
@@ -379,7 +379,7 @@ describe("provider browser submissions", () => {
 
 describe("direct provider creation receipts", () => {
   it("returns the winning provider and gateway after concurrent retries without duplicates", async () => {
-    const auth = createIdentityAuth(resolveDeployment(runtime), runtime, origin);
+    const auth = await createIdentityAuth(resolveDeployment(runtime), runtime, origin);
     const user = await auth.service.createServiceIdentity({ name: "Receipt service" });
     await auth.repository.addOrganizationUser({
       organizationId: TEST_ORGANIZATION_ID,

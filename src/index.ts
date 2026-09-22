@@ -26,6 +26,7 @@ import type { ExecutionVariables } from "./execution/plan";
 import { billingEntitlementGate } from "./middleware/billing";
 import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
+import { authRoutes } from "./routes/auth";
 import { endpointPrepare, endpointRoutes } from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
 import { proxyPrepare, proxyRoutes } from "./routes/proxy";
@@ -72,11 +73,11 @@ app.use("/v1/console/*", consoleHostOnly);
 app.use("/v1/cli/browser/*", consoleHostOnly);
 
 /**
- * The management surface and the application token exchange are mounted as
- * whole apps behind a dynamic `import()`, so a proxied request never evaluates
- * better-auth, the operator identity or the zod contract schemas on a cold
- * isolate. See `./routes/lazy` for why the request is forwarded untouched and
- * how errors get back here.
+ * The management surface is mounted as a whole app behind a dynamic `import()`,
+ * so a proxied request never evaluates the operation catalog and the zod
+ * contract schemas behind it on a cold isolate. See `./routes/lazy` for what
+ * that is worth, why the request is forwarded untouched and how errors get back
+ * here.
  *
  * One bundle, four prefixes: the loader is memoised per `lazyRoutes` call, so
  * all four share a single evaluation of `./routes/management`. The wildcard
@@ -91,13 +92,15 @@ app.all("/v1/cli/*", management);
 app.all("/v1/auth/*", management);
 app.all("/v1/console/*", management);
 
+// The application token exchange is on the client path and mounted statically:
+// what a proxied request would rather not evaluate — better-auth behind the
+// operator identity — is deferred per function through `cfAuth()` in
+// `./auth/identity`, and the rest of this surface's graph (the zod request
+// schemas, drizzle, the app configuration parser) is on every request's path
+// already. So it needs no wrapper app of its own, and its failures reach the
+// one `onError` below without one.
 app.use("/v1/apps/:app/*", billingEntitlementGate);
-app.all(
-  "/v1/apps/:app/auth/*",
-  lazyRoutes<AppEnv>(
-    () => import("./routes/app-auth").then((module) => module.appAuthRoutes),
-  ),
-);
+app.route("/v1/apps/:app/auth", authRoutes);
 
 app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, quotaGate);
 app.route("/v1/apps/:app/proxy", proxyRoutes);
@@ -113,7 +116,7 @@ app.route("/v1/apps/:app/me", meRoutes);
  * application. Hono binds `c.req.param()` from the pattern of the handler that
  * is running, and `onError` runs on that same context, so a failure under a
  * bare `/v1/admin/*` mount would log no `app` at all — where mounting the admin
- * routes statically used to register `/v1/admin/apps/:app/...` on this app and
+ * routes statically would register `/v1/admin/apps/:app/...` on this app and
  * fill it in. Nothing about routing changes: all three send the untouched
  * request to the same memoised handler, and the first match wins because it
  * answers without calling `next()`, so these must be registered first.

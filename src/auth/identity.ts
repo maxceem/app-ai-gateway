@@ -1,9 +1,4 @@
-import {
-  createCfAuth,
-  type CfAuth,
-  type CfAuthError,
-} from "@maxceem/cf-auth";
-import { APIError } from "better-auth/api";
+import type { CfAuth, CfAuthError } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import {
@@ -15,6 +10,40 @@ import {
 } from "../policy/deployment";
 import { registrationCreateCondition } from "../policy/sql";
 
+/**
+ * The identity library, loaded on first use and shared by every caller in the
+ * isolate.
+ *
+ * Two thirds of this Worker's startup CPU used to be spent evaluating modules a
+ * proxied request never touches: better-auth and `@better-auth/core` behind
+ * cf-auth, and the `@opentelemetry` semantic conventions they pull in. A
+ * proxied request authenticates nobody through them, so nothing here is on its
+ * path and everything that needs the library asks for it through this — the
+ * same way App Attest is deferred inside the two handlers in `../routes/auth`.
+ *
+ * What this buys is deferred *evaluation*, not a smaller bundle: wrangler does
+ * not emit a separate chunk, it inlines the module as a lazily initialised
+ * wrapper that runs on first use. The file stays the same size; the work moves.
+ *
+ * The promise is memoised, so the module is evaluated once per isolate however
+ * many requests arrive. A rejection is forgotten rather than kept, because a
+ * pinned failed promise would answer every later request in the isolate with a
+ * transient failure the next one might not have hit.
+ *
+ * Type-only imports are exempt: they are erased, so naming a cf-auth type
+ * costs a proxied request nothing. `@maxceem/cf-auth/schema` is exempt too —
+ * the drizzle table definitions in `../db/schema` are on every request's path
+ * already.
+ */
+export const cfAuth = (): Promise<typeof import("@maxceem/cf-auth")> =>
+  (loaded ??= import("@maxceem/cf-auth").catch(forget));
+
+let loaded: Promise<typeof import("@maxceem/cf-auth")> | undefined;
+
+function forget(error: unknown): never {
+  loaded = undefined;
+  throw error;
+}
 
 export const IDENTITY_AUTH_BASE_PATH = "/v1/auth";
 export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
@@ -55,11 +84,22 @@ async function assertRegistrationAllowed(
   claimRegistration: boolean,
   onDenied?: () => void,
 ): Promise<void> {
-  if (!(await registrationAllowed(deployment, env, claimRegistration))) registrationDenied(onDenied);
+  if (!(await registrationAllowed(deployment, env, claimRegistration))) {
+    await registrationDenied(onDenied);
+  }
 }
 
-function registrationDenied(onDenied?: () => void): never {
+/**
+ * Refuses a registration in the shape Better Auth answers with.
+ *
+ * `APIError` is Better Auth's own, so it is reached through an `import()` for
+ * the same reason cf-auth is: nothing may put better-auth on the cold path of a
+ * proxied request. By the time this runs the library is evaluated — only a
+ * Better Auth user hook calls it — so the import resolves from the registry.
+ */
+async function registrationDenied(onDenied?: () => void): Promise<never> {
   onDenied?.();
+  const { APIError } = await import("better-auth/api");
   throw APIError.from("FORBIDDEN", {
     code: "REGISTRATION_DISABLED",
     message: "signup disabled",
@@ -99,7 +139,7 @@ export function googleRelayRedirectUri(env: Env): string | undefined {
   return relay === undefined ? undefined : `${relay}/callback/google`;
 }
 
-function identityAuth(
+async function identityAuth(
   deployment: Deployment,
   env: Env,
   requestUrl: string,
@@ -107,7 +147,8 @@ function identityAuth(
   suppressDefaultOrganization = false,
   provisionRegistration = false,
   onRegistrationDenied?: () => void,
-): CfAuth {
+): Promise<CfAuth> {
+  const { createCfAuth } = await cfAuth();
   const origin = new URL(requestUrl).origin;
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
@@ -168,7 +209,7 @@ export function createIdentityAuth(
   env: Env,
   requestUrl: string,
   options: IdentityAuthOptions = {},
-): CfAuth {
+): Promise<CfAuth> {
   return identityAuth(
     deployment,
     env,
@@ -186,7 +227,7 @@ export function createClaimRegistrationAuth(
   env: Env,
   requestUrl: string,
   options: { onRegistrationDenied?: () => void } = {},
-): CfAuth {
+): Promise<CfAuth> {
   return createIdentityAuth(deployment, env, requestUrl, {
     claimRegistration: true,
     onRegistrationDenied: options.onRegistrationDenied,
@@ -198,7 +239,7 @@ export interface IdentityAuthScope {
   env: Env;
   req: { url: string };
   get(key: "deployment"): Deployment;
-  get(key: "identityAuthCache"): Map<string, CfAuth>;
+  get(key: "identityAuthCache"): Map<string, Promise<CfAuth>>;
 }
 
 /**
@@ -214,7 +255,7 @@ export interface IdentityAuthScope {
 export function identityAuthFor(
   c: IdentityAuthScope,
   options: IdentityAuthOptions = {},
-): CfAuth {
+): Promise<CfAuth> {
   const deployment = c.get("deployment");
   if (options.onRegistrationDenied) {
     return createIdentityAuth(deployment, c.env, c.req.url, options);
@@ -227,7 +268,17 @@ export function identityAuthFor(
   const cache = c.get("identityAuthCache");
   const existing = cache.get(key);
   if (existing) return existing;
-  const built = createIdentityAuth(deployment, c.env, c.req.url, options);
+  // The promise is cached before it settles, so two callers awaiting the same
+  // options concurrently share one build. A rejection is forgotten rather than
+  // kept, for the reason `cfAuth()` forgets its own: a pinned failed promise
+  // would answer the rest of this request with a transient failure a second
+  // attempt might not hit.
+  const built = createIdentityAuth(deployment, c.env, c.req.url, options).catch(
+    (error: unknown) => {
+      cache.delete(key);
+      throw error;
+    },
+  );
   cache.set(key, built);
   return built;
 }
@@ -285,6 +336,25 @@ export async function relaySocialSignIn(
     status: response.status,
     headers,
   });
+}
+
+/**
+ * Recognises a cf-auth rejection without loading cf-auth.
+ *
+ * The library's own `isCfAuthError` is an `instanceof` test, so reaching it
+ * means importing the library — and this module is the one place that does
+ * that, precisely so no error handler drags better-auth onto the cold path of
+ * a proxied request by asking what kind of error it is holding. `CfAuthError`
+ * sets its own `name` in its constructor and carries a machine-readable `code`
+ * and an HTTP `status`, so it is identifiable by shape; see
+ * `node_modules/@maxceem/cf-auth/dist/errors.js`. Its caller today is
+ * `../routes/management`, which maps a rejection and rethrows it for the entry
+ * module to format.
+ */
+export function isCfAuthError(error: unknown): error is CfAuthError {
+  if (!(error instanceof Error) || error.name !== "CfAuthError") return false;
+  const candidate = error as Partial<CfAuthError>;
+  return typeof candidate.code === "string" && typeof candidate.status === "number";
 }
 
 export function asGatewayAuthError(error: CfAuthError): GatewayError {

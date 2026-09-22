@@ -61,14 +61,40 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 ## Request scope
 
 `requestScope` (`src/middleware/request-scope.ts`) runs on the outer app and
-again on the lazily mounted management app, and puts two things on the context:
-the request's `Deployment` and its billing cache. `resolveDeployment` in
-`src/policy/deployment.ts` is the only place a deployment's mode, its billing
-service and its public identity are derived from `env`; inside a request, read
-`c.get("deployment")`, and give a function that has no context a `Deployment`
-rather than an `Env` to re-derive one from. `deployment.billing === null` is
-what "self-hosted" means, and `getBillingAccess` is the only producer of the
-`self_hosted` state.
+again on the lazily mounted management app, and puts three things on the
+context: the request's `Deployment`, its billing cache and its cf-auth
+instances. `resolveDeployment` in `src/policy/deployment.ts` is the only place
+a deployment's mode, its billing service and its public identity are derived
+from `env`; inside a request, read `c.get("deployment")`, and give a function
+that has no context a `Deployment` rather than an `Env` to re-derive one from.
+`deployment.billing === null` is what "self-hosted" means, and
+`getBillingAccess` is the only producer of the `self_hosted` state.
+
+## Deferred modules
+
+Startup CPU is paid by the request that lands on a cold isolate, so what a
+proxied request never touches is not evaluated there. Two things are deferred,
+in two different ways.
+
+The identity library is deferred per function. `@maxceem/cf-auth` — with
+better-auth, its `@opentelemetry` semantic conventions and kysely behind it —
+is reached only through `cfAuth()` in `src/auth/identity.ts`, one memoised
+`import()` the whole isolate shares. Never import a runtime value from that
+package anywhere else, and never import `better-auth` directly; type-only
+imports are erased and cost nothing, and `@maxceem/cf-auth/schema` is exempt
+because `src/db/schema.ts` is on every request's path already.
+
+The management surface is deferred per mount, because the operation catalog and
+the zod request and response schemas it composes are about 20ms of startup on
+their own. It is one app assembled in `src/routes/management.ts` and mounted
+behind `lazyRoutes` (`src/routes/lazy.ts`), which is also why `requestScope`
+runs twice and why that app maps a cf-auth rejection and rethrows it for the
+entry module to format. Everything on the client path, the application token
+exchange included, mounts on the entry app directly.
+
+`pnpm run startup:check` writes a CPU profile of the startup phase; the budget
+is about 70ms busy, and a better-auth, `@opentelemetry` or kysely frame in it
+means a static import crept back in.
 
 ## Documentation changes
 
