@@ -36,6 +36,15 @@ export function formatCostToCent(value: number | null | undefined): string {
   return `$${plain.format(Math.round(value))}`;
 }
 
+/** A duration a person reads at a glance: seconds under a minute, else minutes. */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
+  return `${(ms / 3_600_000).toFixed(1)} h`;
+}
+
 /** D1 stores `YYYY-MM-DD HH:MM:SS` in UTC without a zone marker. */
 export function parseTimestamp(value: string | null | undefined): Date | null {
   if (!value) return null;

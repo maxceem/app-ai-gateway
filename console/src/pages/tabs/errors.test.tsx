@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
-import { ErrorsTab, foldOutcomes, formatDuration } from "./errors";
+import { ErrorsTab } from "./errors";
+import { foldOutcomes } from "@/lib/auth-events";
+import { formatDuration } from "@/lib/format";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AuthEvent, AuthEventSummary } from "@/lib/types";
 

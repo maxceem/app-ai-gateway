@@ -5,7 +5,6 @@ import { CheckCircle2, Loader2 } from "lucide-react";
 import type {
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
-  CliOperationKind,
 } from "@contracts/cli";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -14,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
+import { headingFor, shortId } from "@/lib/cli-approve";
 import { DEFAULT_LANDING, oauthErrorNotice } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
@@ -84,27 +84,6 @@ function clearStoredProof(key: string): void {
   } catch {
     /* Already unreachable. */
   }
-}
-
-/**
- * What the heading says this handoff does.
- *
- * Derived from the kind rather than listed exhaustively, so a handoff kind
- * added to the contract still gets a sentence rather than a blank card.
- */
-export function headingFor(kind: CliOperationKind | string): string {
-  if (kind === "claim") return "Claim your account";
-  const [subject, action] = kind.split(".");
-  const noun = subject === "provider-gateway" ? "provider gateway" : "provider";
-  if (action === "add") return `Add a ${noun}`;
-  if (action === "rotate-key") return `Rotate the ${noun} credential`;
-  if (action === "update") return `Update the ${noun}`;
-  return `Approve a ${noun} change`;
-}
-
-/** Enough of an account id to compare with the terminal, not enough to read aloud. */
-export function shortId(id: string): string {
-  return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
 }
 
 /** Provider handoffs carry the secret; a gateway-routed provider has none of its own. */

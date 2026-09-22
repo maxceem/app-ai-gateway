@@ -26,23 +26,8 @@ import {
   swiftSnippet,
   type RequestExample,
 } from "../../src/shared/first-request.ts";
-import { selectedProviderPolicies } from "../../src/shared/app-config.ts";
-
-const unlimited = () => ({
-  requests: { per_minute: null, per_day: null },
-  spending: { monthly_usd: null },
-});
-/**
- * The policy a newly selected provider starts with: unrestricted.
- *
- * Empty, never `["*"]`. Neither field takes a wildcard — `allowed_paths`
- * compiles each entry to an anchored pattern whose only placeholder is
- * `{model}`, and `allowed_models` is matched with `includes`, so a literal
- * `"*"` matches nothing and an empty list is what means "allow everything".
- * A saved `"*"` is also refused outright, because the gateway prices every
- * model an application names and no catalog prices a model called `*`.
- */
-const policy = () => ({ allowed_paths: [] as string[], allowed_models: [] as string[] });
+import { selectedProviderPolicies, type AppAttestEnvironment } from "../../src/shared/app-config.ts";
+import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 
 /** What a local or remote configuration check was able to establish. */
 export type ValidationResult =
@@ -149,33 +134,24 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
           ? bundle.split(".").slice(-2).join(" ")
           : await required(flags, "name", "App name")),
       status: flags.status ?? "active",
-      config: {
-        authentication: ios
-          ? {
-              type: "apple_app_attest",
-              end_user: { source: "app_install" },
-              app_attest: {
-                team_id: await required(flags, "team-id", "Apple team ID"),
-                bundle_id: bundle,
-                environments: (
-                  flags["attest-environments"] ?? "production,development"
-                ).split(","),
-              },
-            }
-          : { type: "api_key" },
-        routing: { providers: { mode: "all" }, model_rewrites: {} },
-        ...(ios
-          ? {
-              limits: {
-                per_user: {
-                  requests: { per_minute: 10, per_day: 300 },
-                  spending: { monthly_usd: null },
-                },
-                per_app: unlimited(),
-              },
-            }
-          : {}),
-      },
+      config: ios
+        ? newAppConfig({
+            type: "apple_app_attest",
+            teamId: await required(flags, "team-id", "Apple team ID"),
+            // Asked for above, because `ios` is exactly when there is one.
+            bundleId: bundle ?? "",
+            /*
+             * Both environments, which is `agw`'s own default rather than the
+             * schema's: someone reaching for the CLI to create an iOS app is
+             * building it, and a development-signed build is what they have in
+             * hand. Passed through unmapped, so `localApp` below is what
+             * refuses a name that is neither — as it did before this was a
+             * call rather than a literal.
+             */
+            environments: (flags["attest-environments"] ?? "production,development")
+              .split(",") as AppAttestEnvironment[],
+          })
+        : newAppConfig({ type: "api_key" }),
     });
   }
   if (flags.name) doc.name = flags.name;
@@ -202,7 +178,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     doc.config.routing.providers = {
       mode: "selected",
       selected: Object.fromEntries(
-        selectedProviders.map((slug) => [slug, previous[slug] ?? policy()]),
+        selectedProviders.map((slug) => [slug, previous[slug] ?? emptyPolicy()]),
       ),
     };
   }

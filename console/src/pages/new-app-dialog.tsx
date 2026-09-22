@@ -21,11 +21,8 @@ import { ChoiceList } from "@/components/choice-list";
 import { ExternalHint } from "@/components/external-hint";
 import { PresetPicker } from "@/components/preset-picker";
 import { clientApiOrigin } from "@/lib/client-api";
-import {
-  DEFAULT_END_USER_HEADER,
-  type AppAttestEnvironment,
-  type AuthenticationDraft,
-} from "@/lib/config-types";
+import { DEFAULT_END_USER_HEADER, type AppAttestEnvironment } from "@/lib/config-types";
+import { newAppConfig, type NewAppInput } from "@shared/app-defaults";
 import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
 import { useCreateApp } from "@/lib/queries";
@@ -201,7 +198,12 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
     setUserSource(null);
   };
 
-  const authentication = (): AuthenticationDraft => {
+  /**
+   * Everything the wizard asked, in the vocabulary a new configuration takes.
+   * What that becomes — the open proxy policy, the starting rate limits — is
+   * {@link newAppConfig}'s answer, and the same one `agw app add` gets.
+   */
+  const newAppInput = (): NewAppInput => {
     const signIn = userSource === "issuer"
       ? {
           source: "issuer" as const,
@@ -218,23 +220,22 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
             ...(entitlement.id === "none" ? {} : { entitlement: entitlement.id }),
           },
         }
-      : null;
+      : undefined;
 
     if (applicationType === "ios") {
       return {
         type: "apple_app_attest",
-        app_attest: {
-          team_id: appleTeamId.trim(),
-          bundle_id: appleBundleId.trim(),
-          // Production only is the gateway's own default, so it is not written.
-          ...(environments?.includes("development") ? { environments } : {}),
-        },
-        end_user: signIn ?? { source: "app_install" },
+        teamId: appleTeamId.trim(),
+        bundleId: appleBundleId.trim(),
+        // Production only is the gateway's own default, so it is not written.
+        ...(environments?.includes("development") ? { environments } : {}),
+        // Without sign-in the attested install is the user.
+        ...(signIn ? { endUser: signIn } : {}),
       };
     }
-    if (signIn) return { type: "api_key", end_user: signIn };
+    if (signIn) return { type: "api_key", endUser: signIn };
     if (userSource === "header") {
-      return { type: "api_key", end_user: { source: "header", header: DEFAULT_END_USER_HEADER } };
+      return { type: "api_key", endUser: { source: "header", header: DEFAULT_END_USER_HEADER } };
     }
     return { type: "api_key" };
   };
@@ -244,32 +245,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
     try {
       const result = await createApp.mutateAsync({
         name: name.trim(),
-        config: {
-          authentication: authentication(),
-          routing: { providers: { mode: "all" }, model_rewrites: {} },
-          /*
-           * A mobile app ships its credential inside the client, where every
-           * install is a stranger, so it starts rate limited rather than open.
-           * Both of its sources tell installs apart, so the limit always has
-           * someone to apply to.
-           *
-           * A server app gets no default at all. Even when it names its users,
-           * the requests come from one backend the operator controls, and a
-           * ten-a-minute cap silently applied there would throttle it.
-           */
-          ...(applicationType === "server" ? {} : {
-            limits: {
-              per_user: {
-                requests: { per_minute: 10, per_day: 300 },
-                spending: { monthly_usd: null },
-              },
-              per_app: {
-                requests: { per_minute: null, per_day: null },
-                spending: { monthly_usd: null },
-              },
-            },
-          }),
-        },
+        config: newAppConfig(newAppInput()),
         status: "active",
       });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { draftProblem } from "./draft-problems";
-import type { Draft } from "@/hooks/use-app-draft";
+import type { Draft } from "@/lib/app-draft";
 import type { AuthenticationDraft } from "./config-types";
 
 const draft = (authentication: AuthenticationDraft, name = "My app"): Draft => ({

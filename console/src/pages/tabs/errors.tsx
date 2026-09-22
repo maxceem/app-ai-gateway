@@ -21,86 +21,9 @@ import { EmptyState, SectionHeader } from "@/components/field";
 import { RangePicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
 import { AuthOutcomeBadge } from "@/components/status-badge";
-import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
+import { foldOutcomes } from "@/lib/auth-events";
+import { formatDateTime, formatDuration, formatNumber, formatPercent } from "@/lib/format";
 import { useAuthEventSummary, useAuthEvents } from "@/lib/queries";
-import type { AuthEventSummary } from "@/lib/types";
-
-/** A duration a person reads at a glance: seconds under a minute, else minutes. */
-export function formatDuration(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined) return "—";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
-  return `${(ms / 3_600_000).toFixed(1)} h`;
-}
-
-export interface OutcomeRow {
-  outcome: string;
-  reason: string | null;
-  total: number;
-  /** One entry per distinct day the failure occurred on, ascending. */
-  days: { date: string; count: number }[];
-}
-
-/**
- * Collapses the per-day, per-reason buckets into one row per distinct failure.
- *
- * `ok` is dropped: the success rate above already says how much of the window
- * succeeded, and leaving the healthy majority in the table buries the handful
- * of rows the operator opened this view to find.
- *
- * Days are merged, not appended. The API groups by event as well as by outcome
- * and reason, so a day on which both a token exchange and a registration failed
- * the same way arrives as two buckets — appending them would let "Days
- * affected" exceed the number of days in the window, and would split one day's
- * count across two entries.
- */
-export function foldOutcomes(summary: AuthEventSummary | undefined): OutcomeRow[] {
-  const rows = new Map<
-    string,
-    { outcome: string; reason: string | null; days: Map<string, number> }
-  >();
-  const add = (
-    key: string,
-    outcome: string,
-    reason: string | null,
-    date: string,
-    count: number,
-  ): void => {
-    const row = rows.get(key) ?? { outcome, reason, days: new Map<string, number>() };
-    row.days.set(date, (row.days.get(date) ?? 0) + count);
-    rows.set(key, row);
-  };
-
-  for (const bucket of summary?.daily ?? []) {
-    if (bucket.outcome === "ok") continue;
-    add(
-      `auth:${bucket.outcome}:${bucket.reason ?? ""}`,
-      bucket.outcome,
-      bucket.reason,
-      bucket.date,
-      bucket.count,
-    );
-  }
-  for (const bucket of summary?.usage_failures ?? []) {
-    add(`proxy:${bucket.status}`, bucket.status, "proxied request", bucket.date, bucket.count);
-  }
-
-  return [...rows.values()]
-    .map((row): OutcomeRow => ({
-      outcome: row.outcome,
-      reason: row.reason,
-      total: [...row.days.values()].reduce((sum, count) => sum + count, 0),
-      days: [...row.days.entries()]
-        .map(([date, count]) => ({ date, count }))
-        .sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0)),
-    }))
-    .sort(
-      (left, right) =>
-        right.total - left.total
-        || (left.outcome < right.outcome ? -1 : left.outcome > right.outcome ? 1 : 0),
-    );
-}
 
 const OUTCOME_FILTERS = [
   "issuer_claims_missing",

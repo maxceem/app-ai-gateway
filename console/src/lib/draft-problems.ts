@@ -1,4 +1,4 @@
-import type { Draft } from "@/hooks/use-app-draft";
+import type { Draft } from "@/lib/app-draft";
 import { authIssuer, type AuthConfig, type ClaimRequirement } from "@/lib/config-types";
 
 /** Whether the three fields that scope an issuer to one tenant are all there. */

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { useAppDraft } from "./use-app-draft";
+import { useAppDraft, type SaveOutcome } from "./use-app-draft";
 import { stubApi, testQueryClient } from "@/test/render";
 import { emptyIssuer, type AuthenticationDraft } from "@/lib/config-types";
 import { fromWireApp } from "@/lib/config-conversion";
@@ -337,7 +337,10 @@ describe("application revision protection", () => {
     })));
     await waitFor(() => expect(view.result.current.query.data?.kind).toBe("valid"));
     expect(view.result.current.draft?.name).toBe("My unsaved edit");
-    await act(async () => { expect(await view.result.current.save()).toBe(false); });
+    await act(async () => { expect(await view.result.current.save()).toEqual({
+      ok: false,
+      message: "Reload before saving",
+    }); });
     // The revision the draft was opened at, carried in the resource itself.
     expect(writtenBody?.revision).toBe(1);
     expect(view.result.current.dirty).toBe(true);
@@ -358,14 +361,14 @@ describe("application revision protection", () => {
     const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
     await waitFor(() => expect(view.result.current.draft).not.toBeNull());
     act(() => view.result.current.update({ name: "Submitted name" }));
-    let saving!: Promise<boolean>;
+    let saving!: Promise<SaveOutcome>;
     act(() => { saving = view.result.current.save(); });
     act(() => view.result.current.update({ name: "Newer unsaved name" }));
     finishPut(new Response(JSON.stringify({
       app: { ...initial, name: "Submitted name", revision: 2 },
       config_error: null,
     })));
-    await act(async () => { expect(await saving).toBe(true); });
+    await act(async () => { expect(await saving).toEqual({ ok: true }); });
 
     expect(view.result.current.draft?.name).toBe("Newer unsaved name");
     expect(view.result.current.dirty).toBe(true);
@@ -463,7 +466,7 @@ describe("malformed configuration repair", () => {
     await waitFor(() => expect(view.result.current.repair).not.toBeNull());
     act(() => view.result.current.updateRepair(JSON.stringify(VALID_CONFIG)));
 
-    await act(async () => { expect(await view.result.current.saveRepair()).toBe(true); });
+    await act(async () => { expect(await view.result.current.saveRepair()).toEqual({ ok: true }); });
 
     expect(written?.revision).toBe(7);
     // What is held afterwards is the parse of what was typed, defaults included.
@@ -489,7 +492,7 @@ describe("malformed configuration repair", () => {
     await waitFor(() => expect(view.result.current.repair).not.toBeNull());
     const submitted = JSON.stringify(VALID_CONFIG);
     act(() => view.result.current.updateRepair(submitted));
-    let saving!: Promise<boolean>;
+    let saving!: Promise<SaveOutcome>;
     act(() => { saving = view.result.current.saveRepair(); });
     const newer = `${submitted}\n`;
     act(() => view.result.current.updateRepair(newer));
@@ -497,7 +500,7 @@ describe("malformed configuration repair", () => {
       app: wireApp(APP_ID, 8, VALID_CONFIG),
       config_error: null,
     })));
-    await act(async () => { expect(await saving).toBe(true); });
+    await act(async () => { expect(await saving).toEqual({ ok: true }); });
 
     expect(view.result.current.repair?.text).toBe(newer);
     expect(view.result.current.repair?.revision).toBe(8);
@@ -528,7 +531,7 @@ describe("malformed configuration repair", () => {
     });
     await waitFor(() => expect(view.result.current.repair).not.toBeNull());
     act(() => view.result.current.updateRepair(JSON.stringify(VALID_CONFIG)));
-    let saving!: Promise<boolean>;
+    let saving!: Promise<SaveOutcome>;
     act(() => { saving = view.result.current.saveRepair(); });
     view.rerender({ id: "other-app" });
     await waitFor(() => expect(view.result.current.draft?.name).toBe("App other-app"));

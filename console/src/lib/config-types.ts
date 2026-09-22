@@ -36,8 +36,15 @@ import {
   type ProviderPolicy,
   type RoutingConfig,
 } from "@shared/app-config";
+import { unlimitedScope } from "@shared/app-defaults";
 
 export { DEFAULT_END_USER_HEADER, ENDPOINT_SLUG } from "@shared/app-config";
+/**
+ * The product's own defaults live in `@shared/app-defaults`, which the CLI
+ * reads too. This one is re-exported under the name the console has always
+ * imported it by, so no form component needs to know where it moved.
+ */
+export { emptyPolicy as emptyProvider } from "@shared/app-defaults";
 export type {
   AppAttestEnvironment,
   ClaimRequirement,
@@ -153,16 +160,10 @@ export type AuthenticationDraft =
 /** A limits block as the form holds it: either scope may not have been written yet. */
 export type LimitsDraft = NonNullable<AppConfigInput["limits"]>;
 
-/** No limit of any kind, which is what an unwritten scope means. */
-export const UNLIMITED_SCOPE: LimitScopeConfig = {
-  requests: { per_minute: null, per_day: null },
-  spending: { monthly_usd: null },
-};
-
 /** A draft's limits with both scopes present, which is what every form field reads. */
 export const draftLimits = (limits: LimitsDraft | undefined): LimitsConfig => ({
-  per_user: limits?.per_user ?? UNLIMITED_SCOPE,
-  per_app: limits?.per_app ?? UNLIMITED_SCOPE,
+  per_user: limits?.per_user ?? unlimitedScope(),
+  per_app: limits?.per_app ?? unlimitedScope(),
 });
 
 export type AllowedPath = ProviderPolicy["allowed_paths"][number];
@@ -326,10 +327,6 @@ export function normalizePath(path: AllowedPathObject): AllowedPath {
     ...(path.fixed_model ? { fixed_model: path.fixed_model } : {}),
     ...(path.clamp ? { clamp: path.clamp } : {}),
   };
-}
-
-export function emptyProvider(): ProviderConfig {
-  return { allowed_paths: [], allowed_models: [] };
 }
 
 export function emptyEndpoint(provider = "openai"): EndpointConfig {
