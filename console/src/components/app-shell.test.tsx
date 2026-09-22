@@ -163,7 +163,12 @@ describe("AppShell navigation", () => {
   });
 
   it("names the app by its id until the record loads", () => {
-    // No stub: the rail must still say which app it belongs to.
+    // A request that never answers is what "until the record loads" is: the
+    // query stays pending for as long as the test looks at the rail. Leaving
+    // fetch unstubbed would have said the same thing on screen while sending
+    // the console's request to a real socket, whose failure landed in the
+    // suite's output after this test had already passed.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
     renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps/app-1/overview" });
 
     expect(screen.getAllByText("app-1").length).toBeGreaterThan(0);

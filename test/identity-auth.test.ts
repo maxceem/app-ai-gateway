@@ -13,6 +13,14 @@ import { resolveDeployment } from "../src/policy/deployment";
 // subject is registration do it; everything else needs an authenticated
 // operator rather than a sign-up, and `seedHuman` mints one. The timeout is
 // sized for the two that remain.
+//
+// The two tests under "password changes" carry a longer one of their own,
+// declared on the test rather than here. Each of them pays that cost about
+// seven times over — a sign-up, several sign-ins, a wrong-password check and
+// the change itself all hash — which measures near sixteen seconds alone on an
+// idle machine, so the file-wide budget leaves them no room at all once the
+// rest of the suite is competing for the CPU. Their 120s is sized against a
+// genuinely stuck test, not against how long they ought to take.
 vi.setConfig({ testTimeout: 30_000 });
 
 const ORIGIN = "https://example.test";
@@ -432,7 +440,7 @@ describe("operator authentication", () => {
 });
 
 describe("password changes", () => {
-  it("forces JSON false to revoke other sessions and preserves them after a wrong password", async () => {
+  it("forces JSON false to revoke other sessions and preserves them after a wrong password", { timeout: 120_000 }, async () => {
     const email = `password-json-${crypto.randomUUID()}@example.test`;
     const first = await signup(email);
     const secondResponse = await passwordSignIn(email, "correct-horse-42");
@@ -478,7 +486,7 @@ describe("password changes", () => {
     expect((await passwordSignIn(email, "new-correct-horse-43")).status).toBe(200);
   });
 
-  it("rejects forms and forces an omitted flag for JSON and direct auth.api calls", async () => {
+  it("rejects forms and forces an omitted flag for JSON and direct auth.api calls", { timeout: 120_000 }, async () => {
     const email = `password-omitted-${crypto.randomUUID()}@example.test`;
     const first = await signup(email);
     const secondResponse = await passwordSignIn(email, "correct-horse-42");
