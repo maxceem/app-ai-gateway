@@ -169,5 +169,6 @@ export type {
   GatewayBillingAccess as BillingAccess,
   OrganizationQuotaStatus as OrganizationQuota,
   PlanLimits,
+  SubscriptionActions,
   SubscriptionState,
 } from "@contracts/billing";

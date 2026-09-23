@@ -9,6 +9,7 @@ import {
   billingPlanLimits,
   getBillingAccess,
   requireActiveBilling,
+  subscriptionActions,
   type BillingRequestCache,
   type GatewayBillingAccess,
 } from "../src/billing/gateway";
@@ -401,6 +402,9 @@ describe("billing gateway", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       access: { state: "billed", plan: { planKey: "growth", isDefault: false } },
+      // A live self-service subscription on an account a person owns.
+      actions: { cancel: true, resume: false, manual: false },
+      unclaimedAccessEndsAt: null,
       quota: {
         periodId: resolved.period.periodId,
         periodStart: resolved.period.periodStart,
@@ -912,4 +916,39 @@ it("preserves paid trial eligibility after using the initial free plan", async (
       .bind(created!.createdAt, TEST_ORGANIZATION_ID).run();
     accountLifecycleCache.clear();
   }
+});
+
+describe("what a person may do about a subscription", () => {
+  const billed = (subscription: Partial<NonNullable<BillingAccess["subscription"]>> | null): GatewayBillingAccess => {
+    const base = onPlan({ planKey: "growth" });
+    return {
+      state: "billed",
+      plan: base.plan,
+      subscription: subscription === null ? null : { ...base.subscription!, ...subscription },
+    };
+  };
+
+  it.each(["on_trial", "active", "paused", "past_due"] as const)(
+    "offers cancel, not resume, for a %s subscription",
+    (status) => {
+      expect(subscriptionActions(billed({ status }))).toEqual({ cancel: true, resume: false, manual: false });
+    },
+  );
+
+  it("offers resume, and not cancel, for a cancelled subscription", () => {
+    expect(subscriptionActions(billed({ status: "cancelled" }))).toEqual({ cancel: false, resume: true, manual: false });
+  });
+
+  it("offers nothing once the subscription is gone for good, or there is none", () => {
+    for (const status of ["expired", "unpaid"] as const) {
+      expect(subscriptionActions(billed({ status }))).toEqual({ cancel: false, resume: false, manual: false });
+    }
+    expect(subscriptionActions(billed(null))).toEqual({ cancel: false, resume: false, manual: false });
+    expect(subscriptionActions({ state: "self_hosted" })).toEqual({ cancel: false, resume: false, manual: false });
+  });
+
+  it("offers nothing on a live manual grant, which is not LemonSqueezy's to change", () => {
+    expect(subscriptionActions(billed({ source: "manual", subscriptionId: null })))
+      .toEqual({ cancel: false, resume: false, manual: true });
+  });
 });

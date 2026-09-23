@@ -6,6 +6,8 @@ import type {
   EntitledPlan,
   OrganizationQuota,
   OrganizationSummary,
+  PlanLimits,
+  SubscriptionActions,
   SubscriptionState,
 } from "./types";
 
@@ -36,37 +38,10 @@ export function subscriptionOf(
   return access?.state === "billed" ? access.subscription : null;
 }
 
-/**
- * The monthly request allowance a plan grants, or `null` where it states none.
- *
- * Read the same way the gateway reads it — a whole number, or a JSON string
- * holding one — so anything else is left unstated rather than reported as a
- * number the plan does not actually grant. Exported because the allowance is
- * quoted away from the quota meter too: a first-run screen has to name it
- * before the organization has spent a single request, and so has no period to
- * read it from.
- */
-export function planRequestAllowance(
-  plan: EntitledPlan | null | undefined,
-): number | null {
-  const limits = plan?.limits;
-  const allowance =
-    typeof limits === "object" && limits !== null && !Array.isArray(limits)
-      ? (limits as Record<string, unknown>).maxRequestsPerMonth
-      : undefined;
-  const count =
-    typeof allowance === "number"
-      ? allowance
-      : typeof allowance === "string" && allowance.trim().length > 0
-        ? Number(allowance)
-        : Number.NaN;
-  return Number.isSafeInteger(count) && count >= 0 ? count : null;
-}
-
-/** "the Free plan (1,000 requests/month)", from whatever the plan actually says. */
-function describePlan(plan: EntitledPlan): string {
-  const count = planRequestAllowance(plan);
-  return count === null
+/** "the Free plan (1,000 requests/month)", from the limits the gateway enforces. */
+function describePlan(plan: EntitledPlan, limits: PlanLimits | undefined): string {
+  const count = limits?.maxRequestsPerMonth;
+  return count === undefined
     ? `the ${plan.planName} plan`
     : `the ${plan.planName} plan (${formatNumber(count)} requests/month)`;
 }
@@ -80,7 +55,10 @@ function describePlan(plan: EntitledPlan): string {
  * interrupting for: traffic that has quietly changed allowance, and traffic
  * that is about to stop.
  */
-export function billingNotice(access: BillingAccess | undefined | null): BillingNotice | null {
+export function billingNotice(
+  access: BillingAccess | undefined | null,
+  limits?: PlanLimits,
+): BillingNotice | null {
   if (!access || access.state === "self_hosted") return null;
 
   if (access.state === "unavailable") {
@@ -109,7 +87,7 @@ export function billingNotice(access: BillingAccess | undefined | null): Billing
     return {
       tone: "warning",
       title: "Your subscription has ended",
-      description: `You’re on ${describePlan(access.plan)}. Resubscribe to restore your previous allowance.`,
+      description: `You’re on ${describePlan(access.plan, limits)}. Resubscribe to restore your previous allowance.`,
       actionable: true,
     };
   }
@@ -135,10 +113,12 @@ export function isUnclaimedAccount(account: OrganizationSummary | null | undefin
   return Boolean(account && !account.claimed && account.expiresAt);
 }
 
-/** The gateway limits unclaimed free access independently of provider subscriptions. */
-export function accountTrialNotice(account: OrganizationSummary | null | undefined): BillingNotice | null {
-  if (!account || !isUnclaimedAccount(account)) return null;
-  const endsAt = new Date(new Date(account.createdAt).getTime() + 30 * 86_400_000).toISOString();
+/**
+ * The gateway's own window for an account nobody has claimed, independent of
+ * any subscription. `endsAt` is the gateway's answer, from the billing status.
+ */
+export function unclaimedAccessNotice(endsAt: string | null | undefined): BillingNotice | null {
+  if (!endsAt) return null;
   return {
     tone: "warning",
     title: "Unclaimed free access",
@@ -288,30 +268,6 @@ export function subscriptionTimeline(subscription: SubscriptionState): {
 }
 
 /**
- * LemonSqueezy statuses the billing service can still cancel. Deliberately keyed off the
- * *subscription*, never off the entitled plan: an organization can hold a
- * cancellable subscription while sitting on the free default plan, and one on a
- * paid plan may have nothing to cancel.
- */
-const CANCELLABLE = new Set(["on_trial", "active", "paused", "past_due"]);
-
-/** Whether the subscription can be canceled at period end. */
-export function canCancel(subscription: SubscriptionState | null): boolean {
-  return Boolean(
-    subscription
-      // Manual grants are not LemonSqueezy's to cancel.
-      && Boolean(subscription.subscriptionId)
-      && subscription.source === "lemon_squeezy"
-      && CANCELLABLE.has(subscription.status),
-  );
-}
-
-/** A canceled subscription can be un-canceled, whether or not it still entitles. */
-export function canResume(subscription: SubscriptionState | null): boolean {
-  return Boolean(subscription?.subscriptionId && subscription.source === "lemon_squeezy" && subscription.status === "cancelled");
-}
-
-/**
  * Where a plan sits against the others: its monthly price in cents.
  *
  * The catalog carries no explicit order, and the console needs one to say
@@ -354,6 +310,7 @@ export function planAction(
   plan: BillingPlan,
   plans: BillingPlan[],
   access: BillingAccess | undefined | null,
+  actions: SubscriptionActions | undefined,
 ): PlanAction {
   const current = entitledPlan(access);
   if (current && plan.planKey === current.planKey) {
@@ -368,13 +325,12 @@ export function planAction(
   // moves you to is the one thing it has to say.
   const label = `${upgrade ? "Upgrade" : "Downgrade"} to ${plan.name}`;
 
-  const subscription = subscriptionOf(access);
-  if (subscription && subscription.source === "manual" && CANCELLABLE.has(subscription.status)) {
+  if (actions?.manual) {
     return { intent: free ? "cancel" : "change", label, variant, reason: MANUALLY_MANAGED };
   }
 
   if (free) {
-    return canCancel(subscription)
+    return actions?.cancel
       ? { intent: "cancel", label, variant }
       : {
           intent: "cancel",
@@ -384,5 +340,5 @@ export function planAction(
         };
   }
 
-  return { intent: canCancel(subscription) ? "change" : "checkout", label, variant };
+  return { intent: actions?.cancel ? "change" : "checkout", label, variant };
 }

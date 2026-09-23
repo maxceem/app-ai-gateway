@@ -1,6 +1,6 @@
 import { billingErrorCodeOf, type BillingRuntime } from "./contract";
 import type { Deployment } from "../policy/deployment";
-import type { GatewayBillingAccess, PlanLimits } from "../contracts/billing";
+import type { GatewayBillingAccess, PlanLimits, SubscriptionActions } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { ttlCache } from "../core/ttl-cache";
@@ -319,6 +319,26 @@ export function billingPlanLimits(access: GatewayBillingAccess): PlanLimits {
     if (value !== undefined) resolved[key] = value;
   }
   return resolved;
+}
+
+/** Subscription statuses LemonSqueezy can still cancel at the end of the period. */
+const CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(["on_trial", "active", "paused", "past_due"]);
+
+/**
+ * What a person may do about the subscription from the console. Keyed off the
+ * subscription rather than the entitled plan: an account can hold a
+ * cancellable subscription while on the free default plan, and one on a paid
+ * plan may have nothing to cancel. A manual grant is the billing service's
+ * operator's to change, so it offers nothing.
+ */
+export function subscriptionActions(access: GatewayBillingAccess): SubscriptionActions {
+  const subscription = access.state === "billed" ? access.subscription : null;
+  const selfService = Boolean(subscription?.subscriptionId) && subscription?.source === "lemon_squeezy";
+  return {
+    cancel: selfService && CANCELLABLE_STATUSES.has(subscription!.status),
+    resume: selfService && subscription!.status === "cancelled",
+    manual: subscription?.source === "manual" && CANCELLABLE_STATUSES.has(subscription.status),
+  };
 }
 
 export function billingRpcError(error: unknown): GatewayError {

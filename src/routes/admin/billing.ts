@@ -6,7 +6,10 @@ import {
   billingRpcError,
   invalidateBillingAccess,
   invalidateBillingRequestAccess,
+  subscriptionActions,
 } from "../../billing/gateway";
+import { accountLifecycle } from "../../core/account-lifecycle";
+import { accountUnclaimed, unclaimedAccessDeadline } from "../../policy/accounts";
 import { getBillingQuotaResolution } from "../../billing/quota";
 import {
   BillingCheckoutRequestSchema,
@@ -81,7 +84,19 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
    * plan with no ceilings and for a self-hosted deployment alike.
    */
   const limits = billingPlanLimits(resolved.access);
-  if (!resolved.period) return { access: resolved.access, limits, quota: null };
+  // The account's own deadline, beside its billing: the one window a person
+  // can end by claiming the account, which no plan changes.
+  const account = await accountLifecycle(c.env, organizationId);
+  const deadline = accountUnclaimed(account) ? unclaimedAccessDeadline(account.createdAt) : null;
+  const unclaimedAccessEndsAt = deadline === null ? null : new Date(deadline).toISOString();
+  const answer = (quotaStatus: BillingStatusResponse["quota"]): BillingStatusResponse => ({
+    access: resolved.access,
+    limits,
+    quota: quotaStatus,
+    actions: subscriptionActions(resolved.access),
+    unclaimedAccessEndsAt,
+  });
+  if (!resolved.period) return answer(null);
   const quota = c.env.ORG_QUOTA.getByName(organizationId);
   let usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   if ("superseded" in usage && usage.superseded) {
@@ -92,17 +107,13 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
       organizationId,
       c.get("billingRequestCache"),
     );
-    if (!resolved.period) return { access: resolved.access, limits, quota: null };
+    if (!resolved.period) return answer(null);
     usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   }
   if ("superseded" in usage && usage.superseded) {
     throw new GatewayError(503, "billing_unavailable", "Billing changed while status was being read");
   }
-  return {
-    access: resolved.access,
-    limits,
-    quota: { ...usage, ...(resolved.limit === undefined ? {} : { limit: resolved.limit }) },
-  };
+  return answer({ ...usage, ...(resolved.limit === undefined ? {} : { limit: resolved.limit }) });
 }
 
 routes.handle("getBillingStatus", status);

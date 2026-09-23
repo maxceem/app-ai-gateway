@@ -18,16 +18,14 @@ import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { useConsoleSession } from "@/lib/console-session";
 import {
-  accountTrialNotice,
   billingNotice,
-  canCancel,
-  canResume,
   entitledPlan,
   formatPrice,
   planAction,
   priceFor,
   quotaMeter,
   subscriptionOf,
+  unclaimedAccessNotice,
   subscriptionTimeline,
   type PlanAction,
   type QuotaMeter,
@@ -41,12 +39,12 @@ import {
   useResumeSubscription,
   useStartCheckout,
 } from "@/lib/queries";
-import type { BillingAccess, BillingPlan, OrganizationQuota } from "@/lib/types";
+import type { BillingAccess, BillingPlan, OrganizationQuota, SubscriptionActions } from "@/lib/types";
 
 type Period = "month" | "year";
 
 export function BillingPage() {
-  const { capabilities, organization } = useConsoleSession();
+  const { capabilities } = useConsoleSession();
   const [period, setPeriod] = useState<Period>("month");
   const [confirmCancel, setConfirmCancel] = useState(false);
   // The plan a change was asked for, held until it is confirmed: unlike a
@@ -133,7 +131,8 @@ export function BillingPage() {
 
   // The page already renders the allowance in full below, so a banner repeating
   // it would be noise; only a subscription problem is worth restating here.
-  const notice = accountTrialNotice(organization) ?? billingNotice(access);
+  const notice = unclaimedAccessNotice(status.data?.unclaimedAccessEndsAt)
+    ?? billingNotice(access, status.data?.limits);
 
   return (
     <div className="space-y-6">
@@ -160,6 +159,7 @@ export function BillingPage() {
       <SubscriptionCard
         access={access}
         quota={quota}
+        actions={status.data?.actions}
         pending={status.isPending}
         cancelPending={cancel.isPending}
         resumePending={resume.isPending}
@@ -190,7 +190,7 @@ export function BillingPage() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {catalog.map((plan) => {
-            const action = planAction(plan, catalog, access);
+            const action = planAction(plan, catalog, access, status.data?.actions);
             return (
               <PlanCard
                 key={plan.planKey}
@@ -243,6 +243,7 @@ export function BillingPage() {
 function SubscriptionCard({
   access,
   quota,
+  actions,
   pending,
   cancelPending,
   resumePending,
@@ -251,6 +252,8 @@ function SubscriptionCard({
 }: {
   access: BillingAccess | undefined;
   quota: OrganizationQuota | null | undefined;
+  /** What the gateway says a person may do about the subscription. */
+  actions: SubscriptionActions | undefined;
   pending: boolean;
   cancelPending: boolean;
   resumePending: boolean;
@@ -288,7 +291,7 @@ function SubscriptionCard({
         */}
         {!pending && subscription ? (
           <div className="flex flex-wrap gap-2">
-            {canResume(subscription) ? (
+            {actions?.resume ? (
               <GuardedButton
                 variant="outline"
                 size="sm"
@@ -298,7 +301,7 @@ function SubscriptionCard({
                 {resumePending ? <Loader2 className="size-4 animate-spin" /> : null}
                 Resume subscription
               </GuardedButton>
-            ) : canCancel(subscription) ? (
+            ) : actions?.cancel ? (
               <GuardedButton
                 variant="outline"
                 size="sm"

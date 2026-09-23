@@ -1,21 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  accountTrialNotice,
   billingNotice,
-  canCancel,
-  canResume,
   formatBillingDateTime,
   planAction,
   priceFor,
   quotaMeter,
   quotaNotice,
   subscriptionOf,
+  unclaimedAccessNotice,
   subscriptionTimeline,
 } from "./billing";
 import type {
   BillingAccess,
   BillingPlan,
-  BillingSubscriptionStatus,
   EntitledPlan,
   OrganizationQuota,
   SubscriptionState,
@@ -91,7 +88,11 @@ describe("billingNotice", () => {
   });
 
   it("warns that traffic moved to the default plan when a subscription ends", () => {
-    const notice = billingNotice(billed(freePlan, subscription({ status: "expired" })));
+    const notice = billingNotice(
+      billed(freePlan, subscription({ status: "expired" })),
+      // The limits the gateway parsed for the plan, from the status response.
+      { maxRequestsPerMonth: 1000 },
+    );
     // Traffic still flows, so this is a change of allowance, not an outage.
     expect(notice?.tone).toBe("warning");
     expect(notice?.title).toMatch(/subscription has ended/i);
@@ -146,34 +147,6 @@ describe("subscriptionTimeline", () => {
   it("returns nothing when no date is known or parseable", () => {
     expect(subscriptionTimeline(subscription())).toBeNull();
     expect(subscriptionTimeline(subscription({ renewsAt: "not-a-date" }))).toBeNull();
-  });
-});
-
-describe("canCancel / canResume", () => {
-  it.each<BillingSubscriptionStatus>(["on_trial", "active", "paused", "past_due"])(
-    "offers cancel for a %s subscription",
-    (status) => {
-      expect(canCancel(subscription({ status }))).toBe(true);
-      expect(canResume(subscription({ status }))).toBe(false);
-    },
-  );
-
-  it("offers resume, and not cancel, for a cancelled subscription", () => {
-    expect(canResume(subscription({ status: "cancelled" }))).toBe(true);
-    expect(canCancel(subscription({ status: "cancelled" }))).toBe(false);
-  });
-
-  it("offers neither once the subscription is gone for good", () => {
-    for (const status of ["expired", "unpaid"] as const) {
-      expect(canCancel(subscription({ status }))).toBe(false);
-      expect(canResume(subscription({ status }))).toBe(false);
-    }
-    expect(canCancel(null)).toBe(false);
-    expect(canResume(null)).toBe(false);
-  });
-
-  it("never offers to cancel a manual grant, which is not LemonSqueezy's to cancel", () => {
-    expect(canCancel(subscription({ source: "manual" }))).toBe(false);
   });
 });
 
@@ -305,17 +278,23 @@ describe("planAction", () => {
     subscription: sub,
   });
 
-  const on = (plan: BillingPlan, access: BillingAccess) => planAction(plan, CATALOG, access);
+  // What the gateway says about each subscription below. The console no
+  // longer decides these, so the cases say which answer they are about.
+  const LIVE = { cancel: true, resume: false, manual: false };
+  const NONE = { cancel: false, resume: false, manual: false };
+  const MANUAL = { cancel: false, resume: false, manual: true };
+  const on = (plan: BillingPlan, access: BillingAccess, actions = NONE) =>
+    planAction(plan, CATALOG, access, actions);
 
   it("states the plan already held, and offers nothing on it", () => {
-    expect(on(GROWTH, held("growth", subscription({ planKey: "growth" }))))
+    expect(on(GROWTH, held("growth", subscription({ planKey: "growth" })), LIVE))
       .toMatchObject({ intent: "current", label: "Current plan" });
   });
 
   it("reads direction from the price, not from catalog order", () => {
     const access = held("growth", subscription({ planKey: "growth" }));
-    expect(on(SCALE, access)).toMatchObject({ label: "Upgrade to Scale", variant: "default" });
-    expect(on(STARTER, access))
+    expect(on(SCALE, access, LIVE)).toMatchObject({ label: "Upgrade to Scale", variant: "default" });
+    expect(on(STARTER, access, LIVE))
       .toMatchObject({ label: "Downgrade to Starter", variant: "outline" });
   });
 
@@ -324,14 +303,14 @@ describe("planAction", () => {
    * only route back to it is cancelling — which is what the button must do.
    */
   it("routes a downgrade to the free plan through cancellation", () => {
-    expect(on(FREE, held("growth", subscription({ planKey: "growth" }))))
+    expect(on(FREE, held("growth", subscription({ planKey: "growth" })), LIVE))
       .toMatchObject({ intent: "cancel", label: "Downgrade to Free", variant: "outline" });
   });
 
   it("buys a first subscription through checkout, and moves a live one through change", () => {
     expect(on(GROWTH, held("free")))
       .toMatchObject({ intent: "checkout", label: "Upgrade to Growth" });
-    expect(on(GROWTH, held("starter", subscription({ planKey: "starter" }))))
+    expect(on(GROWTH, held("starter", subscription({ planKey: "starter" })), LIVE))
       .toMatchObject({ intent: "change" });
   });
 
@@ -345,9 +324,9 @@ describe("planAction", () => {
 
   it("disables every route out of a manual grant, which billing refuses", () => {
     const access = held("growth", subscription({ planKey: "growth", source: "manual" }));
-    expect(on(SCALE, access).reason).toBeTruthy();
-    expect(on(STARTER, access).reason).toBeTruthy();
-    expect(on(FREE, access).reason).toBeTruthy();
+    expect(on(SCALE, access, MANUAL).reason).toBeTruthy();
+    expect(on(STARTER, access, MANUAL).reason).toBeTruthy();
+    expect(on(FREE, access, MANUAL).reason).toBeTruthy();
   });
 
   it("has nothing to leave when the free plan is already the one held", () => {
@@ -361,15 +340,13 @@ describe("unclaimed free access presentation", () => {
   it("shows temporary free access without manufacturing a subscription", () => {
     expect(quotaMeter(quota(), account)?.caption).toMatch(/^Ends /);
     expect(quotaNotice(quota({ used: 10000 }), account)?.description).toContain("does not renew");
-    expect(accountTrialNotice(account)?.description).toContain("Claim your account for free");
+    expect(unclaimedAccessNotice(EXPIRES)?.description).toContain("Claim your account for free");
     expect(subscriptionOf(billed(freePlan))).toBeNull();
   });
   it("shows normal resets after claim and preserves provider controls", () => {
     // Claiming clears the recovery deadline, which is what ends the single free window.
     const claimed = { ...account, claimed: true, expiresAt: null };
-    expect(accountTrialNotice(claimed)).toBeNull();
+    expect(unclaimedAccessNotice(null)).toBeNull();
     expect(quotaMeter(quota(), claimed)?.caption).toMatch(/^Resets /);
-    expect(canCancel(subscription())).toBe(true);
-    expect(canCancel(subscription({ source: "manual" }))).toBe(false);
   });
 });

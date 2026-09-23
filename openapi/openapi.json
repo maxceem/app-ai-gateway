@@ -4381,12 +4381,43 @@
                         "resetAt"
                       ],
                       "description": "Null when billing is unavailable or no plan entitlement resolves."
+                    },
+                    "actions": {
+                      "type": "object",
+                      "properties": {
+                        "cancel": {
+                          "type": "boolean",
+                          "description": "A self-service subscription can be cancelled at the end of its period."
+                        },
+                        "resume": {
+                          "type": "boolean",
+                          "description": "A cancelled self-service subscription can be resumed."
+                        },
+                        "manual": {
+                          "type": "boolean",
+                          "description": "A live grant made by hand, which no self-service action may change."
+                        }
+                      },
+                      "required": [
+                        "cancel",
+                        "resume",
+                        "manual"
+                      ]
+                    },
+                    "unclaimedAccessEndsAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "When this account's free access ends if nobody claims it; null once a person owns it."
                     }
                   },
                   "required": [
                     "access",
                     "limits",
-                    "quota"
+                    "quota",
+                    "actions",
+                    "unclaimedAccessEndsAt"
                   ]
                 }
               }

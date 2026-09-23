@@ -147,11 +147,25 @@ export const OrganizationQuotaStatusSchema = z.object({
   resetAt: z.string().meta({ description: "UTC instant at which the allowance resets; currently equal to periodEnd." }),
 });
 
+/**
+ * What the subscription allows a person to do about it from the console,
+ * decided by the gateway so no client restates the billing provider's rules.
+ */
+export const SubscriptionActionsSchema = z.object({
+  cancel: z.boolean().meta({ description: "A self-service subscription can be cancelled at the end of its period." }),
+  resume: z.boolean().meta({ description: "A cancelled self-service subscription can be resumed." }),
+  manual: z.boolean().meta({ description: "A live grant made by hand, which no self-service action may change." }),
+});
+
 export const BillingStatusResponseSchema = z.object({
   access: GatewayBillingAccessSchema,
   limits: PlanLimitsSchema,
   quota: OrganizationQuotaStatusSchema.nullable().meta({
     description: "Null when billing is unavailable or no plan entitlement resolves.",
+  }),
+  actions: SubscriptionActionsSchema,
+  unclaimedAccessEndsAt: z.string().nullable().meta({
+    description: "When this account's free access ends if nobody claims it; null once a person owns it.",
   }),
 });
 
@@ -216,6 +230,7 @@ export type GatewayBillingAccess = z.infer<typeof GatewayBillingAccessSchema>;
 export type PlanLimits = z.infer<typeof PlanLimitsSchema>;
 export type OrganizationQuotaStatus = z.infer<typeof OrganizationQuotaStatusSchema>;
 export type BillingStatusResponse = z.infer<typeof BillingStatusResponseSchema>;
+export type SubscriptionActions = z.infer<typeof SubscriptionActionsSchema>;
 export type BillingPlanOfferPrice = z.infer<typeof BillingPlanOfferPriceSchema>;
 export type BillingPlanOffer = z.infer<typeof BillingPlanOfferSchema>;
 export type BillingPlansResponse = z.infer<typeof BillingPlansResponseSchema>;

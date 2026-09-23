@@ -253,6 +253,18 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: /view plans/i })).toBeTruthy();
   });
 
+  it("warns an unclaimed account when its free access ends, from the gateway's own date", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      capabilities: { billing: true },
+      billing: { state: "billed", plan: null, subscription: null },
+      unclaimedAccessEndsAt: "2026-10-01T12:00:00.000Z",
+    });
+
+    // It outranks the plan banner: claiming is what the account needs first.
+    expect(screen.getByText(/unclaimed free access/i)).toBeTruthy();
+    expect(screen.queryByText(/no active plan/i)).toBeNull();
+  });
+
   it("suppresses the banner on the billing page, which states the same thing itself", () => {
     renderAuthenticated(<AppShell>content</AppShell>, {
       route: "/billing",
