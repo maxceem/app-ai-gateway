@@ -146,8 +146,9 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
              * hand. Passed through unmapped, so `localApp` below is what
              * refuses a name that is neither.
              */
-            environments: (flags["attest-environments"] ?? "production,development")
-              .split(",") as AppAttestEnvironment[],
+            environments: attestEnvironments(
+              flags["attest-environments"] ?? "production,development",
+            ),
           })
         : newAppConfig({ type: "api_key" }),
     });
@@ -166,9 +167,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     if (flags["team-id"]) auth.app_attest.team_id = flags["team-id"];
     if (flags["bundle-id"]) auth.app_attest.bundle_id = flags["bundle-id"];
     if (flags["attest-environments"])
-      auth.app_attest.environments = flags["attest-environments"]
-        .split(",")
-        .map((value) => (value === "development" ? "development" : "production"));
+      auth.app_attest.environments = attestEnvironments(flags["attest-environments"]);
   }
   const selectedProviders = flagList(flags.provider);
   if (selectedProviders.length) {
@@ -182,6 +181,19 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   }
   if (flags["all-providers"]) doc.config.routing.providers = { mode: "all" };
   return localApp(doc);
+}
+
+/**
+ * `--attest-environments` as the configuration's own list. Names are passed
+ * through as typed rather than mapped, so `localApp` refuses one that is
+ * neither `production` nor `development` instead of this flag quietly
+ * widening a misspelling into production.
+ */
+function attestEnvironments(value: string): AppAttestEnvironment[] {
+  return value
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0) as AppAttestEnvironment[];
 }
 
 async function remoteValidation(

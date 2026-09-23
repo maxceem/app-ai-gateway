@@ -105,6 +105,25 @@ test("file mode defaults omitted environments and refuses type conversion", asyn
   );
 });
 
+test("--attest-environments passes names through for the schema to judge", async () => {
+  // Both on creation and on update: an unknown name is refused rather than
+  // being widened into production, which would silently admit a key the
+  // operator meant to keep out.
+  await assert.rejects(
+    () => appDocument({ ...iosFlags, "attest-environments": "dev" }),
+    hasCode("invalid_input"),
+  );
+  const ios = await appDocument(iosFlags);
+  await assert.rejects(
+    () => appDocument({ "attest-environments": "production,dev" }, ios),
+    hasCode("invalid_input"),
+  );
+  assert.deepEqual(
+    attest(await appDocument({ "attest-environments": " development " }, ios)).environments,
+    ["development"],
+  );
+});
+
 test("app remove supplies required confirmation query and full writes supply the revision", async () => {
   const calls: { name: string; options?: Record<string, unknown> }[] = [];
   const ctx = stubContext({
