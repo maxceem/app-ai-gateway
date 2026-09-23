@@ -13,7 +13,6 @@ import {
   monthBounds,
   usageTotals,
 } from "../../management/usage-queries";
-import { parseLimit, parseOffset } from "./shared";
 
 type UserRouteEnv = { Bindings: Env; Variables: AdminVariables };
 export const userRoutes = new Hono<UserRouteEnv>();
@@ -78,17 +77,11 @@ const EMPTY_USAGE = {
   blocked: 0,
 };
 
-routes.handle("listAppUsers", async (c) => {
+routes.handle("listAppUsers", async (c, { query: parsed }) => {
   const appId = c.req.param("app");
-  const month = c.req.query("month") ?? currentMonth();
+  const month = parsed.month ?? currentMonth();
   const bounds = monthBounds(month);
-  const limit = parseLimit(c.req.query("limit"), 50, 200);
-  const offset = parseOffset(c.req.query("offset"));
-  const status = c.req.query("status");
-  if (status !== undefined && status !== "active" && status !== "blocked") {
-    throw new GatewayError(400, "invalid_request", "status must be active or blocked");
-  }
-  const query = c.req.query("query");
+  const { limit, offset, status, query } = parsed;
 
   const db = database(c.env.DB);
   const statusFilter = status ?? null;
@@ -146,10 +139,10 @@ routes.handle("listAppUsers", async (c) => {
   };
 });
 
-routes.handle("getAppUser", async (c) => {
+routes.handle("getAppUser", async (c, { query }) => {
   const appId = c.req.param("app");
   const userId = c.req.param("user");
-  const month = c.req.query("month") ?? currentMonth();
+  const month = query.month ?? currentMonth();
   const bounds = monthBounds(month);
 
   const db = database(c.env.DB);

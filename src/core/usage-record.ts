@@ -21,7 +21,7 @@ import type { ApiStyle } from "./api-styles";
 import type { ResolvedRoute } from "./routes";
 import type { GatewayIdentity, ProviderType } from "./types";
 import { database } from "../db";
-import { appUsageEvent, type CostSource, type ProviderPricing } from "../db/schema";
+import { appUsageEvent, type CostSource, type ProviderPricing, type UsageStatus } from "../db/schema";
 
 /** Everything a usage row records about which provider served an attempt. */
 export interface AttemptAttribution {
@@ -86,7 +86,7 @@ interface BlockedUsageEventInput {
    * Which system refused the request: `blocked_app_*` the organization's own app
    * limits, `blocked_billing` the plan allowance, `blocked_user` an operator.
    */
-  status: "blocked_app_rate" | "blocked_app_budget" | "blocked_billing" | "blocked_user";
+  status: Extract<UsageStatus, `blocked_${string}`>;
   latencyMs: number;
 }
 

@@ -3,6 +3,7 @@ import type {
   BreakdownResponse,
   MonthlyUsageResponse,
 } from "../../src/contracts/responses.ts";
+import type { UsageBreakdownDimension } from "../../src/contracts/responses.ts";
 import { MONTH_PATTERN } from "../../src/contracts/schemas.ts";
 import { fail } from "./common.ts";
 import type { Context } from "./context.ts";
@@ -20,6 +21,9 @@ export type UsageResult =
   | MonthlyUsageResponse
   | CliUsageResponse
   | (BreakdownResponse & { coverage: BreakdownCoverage });
+
+/** The breakdowns `agw usage breakdown` offers, of the dimensions the gateway groups by. */
+const CLI_BREAKDOWNS = ["provider", "model", "status"] as const satisfies readonly UsageBreakdownDimension[];
 
 export function month(value: string): string {
   if (!MONTH_PATTERN.test(value))
@@ -61,8 +65,8 @@ export async function usageCommand(
       : (await ctx.call("getCliUsage", { query: { month: m } })).data;
   }
   const app = await required(flags, "app");
-  const by = flags.by ?? "model";
-  if (!["provider", "model", "status"].includes(by))
+  const by = CLI_BREAKDOWNS.find((dimension) => dimension === (flags.by ?? "model"));
+  if (by === undefined)
     fail("invalid_input", "--by must be provider, model or status.");
   if (Boolean(flags.from) !== Boolean(flags.to))
     fail("invalid_input", "Supply both --from and --to or neither.");

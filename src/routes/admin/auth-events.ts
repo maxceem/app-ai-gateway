@@ -1,12 +1,10 @@
 import { Hono } from "hono";
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
-import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { appAuthEvent, appUsageEvent, appUser } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { adminRouter } from "../catalog-router";
 import { parseRange } from "../../management/usage-queries";
-import { parseLimit } from "./shared";
 
 export const authEventRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
 const routes = adminRouter(authEventRoutes);
@@ -14,15 +12,6 @@ const routes = adminRouter(authEventRoutes);
 /** `created_at` is `YYYY-MM-DD HH:MM:SS`, so the day prefix compares lexically. */
 const authEventDay = sql<string>`substr(${appAuthEvent.createdAt}, 1, 10)`;
 const usageEventDay = sql<string>`substr(${appUsageEvent.createdAt}, 1, 10)`;
-
-function parseDays(value: string | undefined, fallback = 30): number {
-  if (value === undefined) return fallback;
-  const days = Number.parseInt(value, 10);
-  if (!Number.isInteger(days) || days < 1 || days > 365) {
-    throw new GatewayError(400, "invalid_request", "days must be an integer between 1 and 365");
-  }
-  return days;
-}
 
 /**
  * The value at a percentile of an ascending list, by nearest rank.
@@ -45,10 +34,9 @@ function percentile(sorted: number[], fraction: number): number | null {
  * asking "what is broken for my users?" should not have to know which of two
  * tables a given failure landed in.
  */
-routes.handle("getAppAuthEventSummary", async (c) => {
+routes.handle("getAppAuthEventSummary", async (c, { query }) => {
   const appId = c.req.param("app");
-  const days = parseDays(c.req.query("days"));
-  const range = parseRange(undefined, undefined, days);
+  const range = parseRange(undefined, undefined, query.days);
   const db = database(c.env.DB);
   const inWindow = and(
     eq(appAuthEvent.appId, appId),
@@ -119,7 +107,7 @@ routes.handle("getAppAuthEventSummary", async (c) => {
   const ok = exchanges?.ok ?? 0;
   return {
     app_id: appId,
-    days,
+    days: query.days,
     ...range,
     daily,
     usage_failures: usageFailures,
@@ -143,31 +131,14 @@ routes.handle("getAppAuthEventSummary", async (c) => {
 });
 
 /** Raw rows for drill-down, newest first, paged the way usage events are. */
-routes.handle("listAppAuthEvents", async (c) => {
+routes.handle("listAppAuthEvents", async (c, { query }) => {
   const appId = c.req.param("app");
-  const limit = parseLimit(c.req.query("limit"), 50, 200);
+  const { limit } = query;
   const filters = [eq(appAuthEvent.appId, appId)];
-
-  const outcome = c.req.query("outcome");
-  if (outcome) filters.push(eq(appAuthEvent.outcome, outcome));
-  const event = c.req.query("event");
-  if (event) {
-    if (event !== "token_exchange" && event !== "register") {
-      throw new GatewayError(400, "invalid_request", "event must be one of token_exchange, register");
-    }
-    filters.push(eq(appAuthEvent.event, event));
-  }
-  const user = c.req.query("user");
-  if (user) filters.push(eq(appAuthEvent.userId, user));
-
-  const before = c.req.query("before_id");
-  if (before !== undefined) {
-    const cursor = Number.parseInt(before, 10);
-    if (!Number.isInteger(cursor) || cursor < 1) {
-      throw new GatewayError(400, "invalid_request", "before_id must be a positive integer");
-    }
-    filters.push(lt(appAuthEvent.id, cursor));
-  }
+  if (query.outcome) filters.push(eq(appAuthEvent.outcome, query.outcome));
+  if (query.event) filters.push(eq(appAuthEvent.event, query.event));
+  if (query.user) filters.push(eq(appAuthEvent.userId, query.user));
+  if (query.before_id !== undefined) filters.push(lt(appAuthEvent.id, query.before_id));
 
   const rows = await database(c.env.DB)
     .select()

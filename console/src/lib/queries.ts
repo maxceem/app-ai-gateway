@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { OperationQuery } from "@contracts/catalog";
+import type { UsageBreakdownDimension } from "@contracts/responses";
 import { call } from "./api";
 import { fromWireApp, toAppWrite } from "./config-conversion";
 import {
@@ -527,21 +529,15 @@ export function useTimeseries(appId: string, from: string, to: string) {
   });
 }
 
-export function useBreakdown(appId: string, by: string, from: string, to: string) {
+export function useBreakdown(appId: string, by: UsageBreakdownDimension, from: string, to: string) {
   return useQuery({
     queryKey: keys.breakdown(appId, by, from, to),
     queryFn: () => call("getAppUsageBreakdown", { params: { app: appId }, query: { by, from, to } }),
   });
 }
 
-export interface EventQuery {
-  limit?: number;
-  status?: string;
-  provider?: string;
-  user?: string;
-  model?: string;
-  before_id?: number;
-}
+/** The event filters, exactly as the operation's query schema takes them. */
+export type EventQuery = OperationQuery<"listAppEvents">;
 
 export function useEvents(appId: string, params: EventQuery) {
   return useQuery({
@@ -564,13 +560,7 @@ export function useAuthEventSummary(appId: string, days: number) {
   });
 }
 
-export interface AuthEventQuery {
-  limit?: number;
-  outcome?: string;
-  event?: string;
-  user?: string;
-  before_id?: number;
-}
+export type AuthEventQuery = OperationQuery<"listAppAuthEvents">;
 
 export function useAuthEvents(appId: string, params: AuthEventQuery) {
   return useQuery({

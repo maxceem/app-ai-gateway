@@ -45,6 +45,7 @@ import {
   totalTokens,
 } from "@/lib/format";
 import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
+import type { UsageBreakdownDimension, UsageStatus } from "@contracts/responses";
 import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
 
 /**
@@ -95,8 +96,8 @@ function BreakdownMark({ dimension, value }: { dimension: string; value: string 
 export function UsageTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<Metric>("cost_usd");
-  const [dimension, setDimension] = useState<string>("model");
-  const [eventStatus, setEventStatus] = useState<string>("all");
+  const [dimension, setDimension] = useState<UsageBreakdownDimension>("model");
+  const [eventStatus, setEventStatus] = useState<UsageStatus | "all">("all");
   const [cursors, setCursors] = useState<number[]>([]);
 
   const from = daysAgo(Number(days) - 1);
@@ -217,7 +218,11 @@ export function UsageTab({ appId }: { appId: string }) {
           <SectionHeader
             title="Breakdown"
             action={
-              <Select value={dimension} onValueChange={setDimension}>
+              <Select
+                value={dimension}
+                // Only this select's own items can reach it, and each is a dimension.
+                onValueChange={(next) => setDimension(next as UsageBreakdownDimension)}
+              >
                 <SelectTrigger className="w-[170px]" size="sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -297,7 +302,7 @@ export function UsageTab({ appId }: { appId: string }) {
               <Select
                 value={eventStatus}
                 onValueChange={(next) => {
-                  setEventStatus(next);
+                  setEventStatus(next as UsageStatus | "all");
                   setCursors([]);
                 }}
               >

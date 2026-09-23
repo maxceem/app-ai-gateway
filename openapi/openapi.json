@@ -7628,7 +7628,10 @@
           },
           {
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
             },
             "required": false,
             "name": "limit",
@@ -7636,7 +7639,15 @@
           },
           {
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "ok",
+                "provider_error",
+                "blocked_app_rate",
+                "blocked_app_budget",
+                "blocked_billing",
+                "blocked_user"
+              ]
             },
             "required": false,
             "name": "status",
@@ -7669,6 +7680,7 @@
           {
             "schema": {
               "type": "integer",
+              "exclusiveMinimum": 0,
               "description": "Page backwards: only events older than this id."
             },
             "required": false,
@@ -7788,6 +7800,7 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 365,
+              "default": 30,
               "description": "Trailing window in days, ending today. Defaults to 30."
             },
             "required": false,
@@ -7877,7 +7890,10 @@
           },
           {
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
             },
             "required": false,
             "name": "limit",
@@ -7893,7 +7909,11 @@
           },
           {
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "token_exchange",
+                "register"
+              ]
             },
             "required": false,
             "name": "event",
@@ -7910,6 +7930,7 @@
           {
             "schema": {
               "type": "integer",
+              "exclusiveMinimum": 0,
               "description": "Page backwards: only events older than this id."
             },
             "required": false,
@@ -8475,7 +8496,10 @@
           },
           {
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
             },
             "required": false,
             "name": "limit",
@@ -8483,7 +8507,12 @@
           },
           {
             "schema": {
-              "type": "integer"
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "default": 0
             },
             "required": false,
             "name": "offset",
@@ -9377,6 +9406,7 @@
           {
             "schema": {
               "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "description": "Inclusive YYYY-MM-DD start; defaults to 29 days before `to`."
             },
             "required": false,
@@ -9387,6 +9417,7 @@
           {
             "schema": {
               "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "description": "Inclusive YYYY-MM-DD end; defaults to today."
             },
             "required": false,
@@ -9544,6 +9575,7 @@
           {
             "schema": {
               "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "description": "Inclusive YYYY-MM-DD start; defaults to 29 days before `to`."
             },
             "required": false,
@@ -9554,6 +9586,7 @@
           {
             "schema": {
               "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "description": "Inclusive YYYY-MM-DD end; defaults to today."
             },
             "required": false,
@@ -9564,6 +9597,21 @@
           {
             "schema": {
               "type": "string",
+              "enum": [
+                "model",
+                "provider",
+                "provider_slug",
+                "provider_gateway",
+                "credential_source",
+                "model_author",
+                "user",
+                "status",
+                "cost_source",
+                "route",
+                "endpoint",
+                "app_version"
+              ],
+              "default": "model",
               "description": "Which dimension to group by. Defaults to model."
             },
             "required": false,
@@ -9573,7 +9621,10 @@
           },
           {
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
             },
             "required": false,
             "name": "limit",
@@ -9592,7 +9643,21 @@
                       "type": "string"
                     },
                     "by": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "model",
+                        "provider",
+                        "provider_slug",
+                        "provider_gateway",
+                        "credential_source",
+                        "model_author",
+                        "user",
+                        "status",
+                        "cost_source",
+                        "route",
+                        "endpoint",
+                        "app_version"
+                      ]
                     },
                     "from": {
                       "type": "string"

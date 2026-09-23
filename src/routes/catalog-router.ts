@@ -7,7 +7,9 @@ import {
   type OperationName,
   type OperationResponse,
   type OperationSpec,
+  type ParsedOperationQuery,
 } from "../contracts/catalog";
+import type { z } from "zod";
 import { assertAccountAccess } from "../core/account-lifecycle";
 import { GatewayError } from "../core/errors";
 import type { AdminVariables } from "../middleware/admin";
@@ -83,6 +85,24 @@ async function authorize(c: AuthorizedContext, spec: OperationSpec): Promise<voi
   }
 }
 
+/**
+ * A query string through its operation's schema, or a 400 naming the first
+ * parameter at fault. Most of these messages name their parameter already
+ * ("limit must be…"); the rest are prefixed with it.
+ */
+function parsedQuery(schema: z.ZodType, raw: Record<string, string>): unknown {
+  const parsed = schema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const name = issue?.path.join(".") ?? "";
+  const message = issue?.message ?? "Invalid query string";
+  throw new GatewayError(
+    400,
+    "invalid_request",
+    name === "" || message.startsWith(`${name} `) ? message : `${name}: ${message}`,
+  );
+}
+
 /** What a mounted handler is handed: the request, typed by the catalog's path. */
 export type OperationContext<E extends HonoEnv, K extends OperationName> =
   Context<E, HonoPath<Catalog[K]["path"]>>;
@@ -136,14 +156,22 @@ export function catalogRouter<E extends HonoEnv>(
   return {
     handle<K extends BodiedOperation>(
       name: K,
-      handler: (c: OperationContext<E, K>) => OperationResponse<K> | Promise<OperationResponse<K>>,
+      handler: (
+        c: OperationContext<E, K>,
+        input: { query: ParsedOperationQuery<K> },
+      ) => OperationResponse<K> | Promise<OperationResponse<K>>,
     ): void {
       // The catalog's status is `200 | 201` for everything mounted here; the one
       // 302 in the table is the Google redirect, which answers with no body and
       // is served by better-auth rather than from this router.
-      const status = ((CATALOG[name] as { status?: number }).status ?? 200) as 200 | 201;
-      mount(name, async (c) =>
-        c.json(await handler(c as unknown as OperationContext<E, K>), status));
+      const spec: OperationSpec = CATALOG[name];
+      const status = (spec.status ?? 200) as 200 | 201;
+      mount(name, async (c) => {
+        // Parsed after the policy has run, so a caller who may not ask is told
+        // that rather than what is wrong with how they asked.
+        const query = (spec.query ? parsedQuery(spec.query, c.req.query()) : {}) as ParsedOperationQuery<K>;
+        return c.json(await handler(c as unknown as OperationContext<E, K>, { query }), status);
+      });
     },
 
     /**

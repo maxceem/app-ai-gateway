@@ -579,6 +579,23 @@ describe("admin console API", () => {
 
     const rejected = await get("/v1/admin/apps/usage-shapes/usage/breakdown?by=nonsense");
     expect(rejected.status).toBe(400);
+    // Every query string goes through its operation's schema before the
+    // handler runs, so each of these is refused, and named, the same way.
+    for (const [path, message] of [
+      ["/v1/admin/apps/usage-shapes/events?limit=0", "limit must be an integer between 1 and 200"],
+      ["/v1/admin/apps/usage-shapes/events?limit=201", "limit must be an integer between 1 and 200"],
+      ["/v1/admin/apps/usage-shapes/events?before_id=-1", "before_id must be a positive integer"],
+      ["/v1/admin/apps/usage-shapes/users?offset=-1", "offset must be a non-negative integer"],
+      ["/v1/admin/apps/usage-shapes/usage/timeseries?from=2026-1-01", "from must use YYYY-MM-DD format"],
+      ["/v1/admin/apps/usage-shapes/auth-events/summary?days=366", "days must be an integer between 1 and 365"],
+    ] as const) {
+      const refused = await get(path);
+      expect(refused.status, path).toBe(400);
+      expect(refused.body, path).toMatchObject({ error: { code: "invalid_request", message } });
+    }
+    const badStatus = await get("/v1/admin/apps/usage-shapes/events?status=bogus");
+    expect(badStatus.status).toBe(400);
+    expect(badStatus.body.error.message).toMatch(/^status: /u);
 
     const firstPage = await get("/v1/admin/apps/usage-shapes/events?limit=2");
     expect(firstPage.body.events).toHaveLength(2);

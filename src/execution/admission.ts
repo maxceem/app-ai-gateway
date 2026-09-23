@@ -12,6 +12,7 @@ import { recordBlockedUsageEvent } from "../core/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { AppRecord, GatewayIdentity } from "../core/types";
+import type { UsageStatus } from "../db/schema";
 import { attemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
 
@@ -135,7 +136,7 @@ export async function admitRequest(
   const firstAttempt = plan.attempts[0];
 
   const blockedEvent = (
-    status: "blocked_user" | "blocked_app_rate" | "blocked_app_budget" | "blocked_billing",
+    status: Extract<UsageStatus, `blocked_${string}`>,
     latencyMs: number,
   ) =>
     input.waitUntil(

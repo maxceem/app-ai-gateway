@@ -99,6 +99,8 @@ import {
   UserBlockResponseSchema,
   UserListResponseSchema,
   UserResponseSchema,
+  USAGE_BREAKDOWN_DIMENSIONS,
+  USAGE_STATUSES,
 } from "./responses.ts";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -239,13 +241,30 @@ const GatewayClientHeadersSchema = z.object({
   }),
 });
 
+// Query strings are parsed with these by the router before a handler runs, so
+// a handler reads typed values and never re-checks one. Numbers are coerced,
+// because a query string has no other kind of value.
 const MonthQuerySchema = z.object({
   month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
 });
+const DaySchema = (name: string) =>
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: `${name} must use YYYY-MM-DD format` });
 const RangeQuerySchema = z.object({
-  from: z.string().optional().meta({ description: "Inclusive YYYY-MM-DD start; defaults to 29 days before `to`." }),
-  to: z.string().optional().meta({ description: "Inclusive YYYY-MM-DD end; defaults to today." }),
+  from: DaySchema("from").optional().meta({ description: "Inclusive YYYY-MM-DD start; defaults to 29 days before `to`." }),
+  to: DaySchema("to").optional().meta({ description: "Inclusive YYYY-MM-DD end; defaults to today." }),
 });
+/** A page size: 50 unless asked, and never more than 200. */
+const PageLimitSchema = z.coerce.number()
+  .int({ error: "limit must be an integer between 1 and 200" })
+  .min(1, { error: "limit must be an integer between 1 and 200" })
+  .max(200, { error: "limit must be an integer between 1 and 200" })
+  .default(50);
+/** Keyset paging: only rows older than this id. */
+const BeforeIdSchema = z.coerce.number()
+  .int({ error: "before_id must be a positive integer" })
+  .positive({ error: "before_id must be a positive integer" })
+  .optional()
+  .meta({ description: "Page backwards: only events older than this id." });
 
 const APP_PARAM = { app: { example: "my-app" } } as const;
 
@@ -615,7 +634,9 @@ export const CATALOG = {
     summary: "Delete an application and its associated operational data",
     security: "management",
     params: APP_PARAM,
-    query: z.object({ confirm: z.string() }),
+    query: z.object({
+      confirm: z.string({ error: "Pass ?confirm=<app-id> to delete an app" }),
+    }),
     response: AppDeleteResponseSchema,
     responseDescription:
       "Application deleted. Its usage events are kept, which is what `usage_events_retained` reports.",
@@ -847,13 +868,12 @@ export const CATALOG = {
     security: "management",
     params: APP_PARAM,
     query: z.object({
-      limit: z.number().int().optional(),
-      status: z.string().optional(),
+      limit: PageLimitSchema,
+      status: z.enum(USAGE_STATUSES).optional(),
       provider: z.string().optional(),
       user: z.string().optional(),
       model: z.string().optional(),
-      before_id: z.number().int().optional()
-        .meta({ description: "Page backwards: only events older than this id." }),
+      before_id: BeforeIdSchema,
     }),
     response: UsageEventListSchema,
     responseDescription: "Paginated application usage events.",
@@ -868,7 +888,11 @@ export const CATALOG = {
     security: "management",
     params: APP_PARAM,
     query: z.object({
-      days: z.coerce.number().int().min(1).max(365).optional()
+      days: z.coerce.number()
+        .int({ error: "days must be an integer between 1 and 365" })
+        .min(1, { error: "days must be an integer between 1 and 365" })
+        .max(365, { error: "days must be an integer between 1 and 365" })
+        .default(30)
         .meta({ description: "Trailing window in days, ending today. Defaults to 30." }),
     }),
     response: AuthEventSummarySchema,
@@ -883,12 +907,11 @@ export const CATALOG = {
     security: "management",
     params: APP_PARAM,
     query: z.object({
-      limit: z.number().int().optional(),
+      limit: PageLimitSchema,
       outcome: z.string().optional(),
-      event: z.string().optional(),
+      event: z.enum(["token_exchange", "register"]).optional(),
       user: z.string().optional(),
-      before_id: z.number().int().optional()
-        .meta({ description: "Page backwards: only events older than this id." }),
+      before_id: BeforeIdSchema,
     }),
     response: AuthEventListSchema,
     responseDescription: "Paginated authentication attempts, newest first.",
@@ -941,8 +964,11 @@ export const CATALOG = {
       month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
       query: z.string().optional().meta({ description: "Substring match on the user id." }),
       status: z.enum(["active", "blocked"]).optional(),
-      limit: z.number().int().optional(),
-      offset: z.number().int().optional(),
+      limit: PageLimitSchema,
+      offset: z.coerce.number()
+        .int({ error: "offset must be a non-negative integer" })
+        .min(0, { error: "offset must be a non-negative integer" })
+        .default(0),
     }),
     response: UserListResponseSchema,
     responseDescription: "Application users and their usage for the month.",
@@ -1026,8 +1052,9 @@ export const CATALOG = {
     security: "management",
     params: APP_PARAM,
     query: RangeQuerySchema.extend({
-      by: z.string().optional().meta({ description: "Which dimension to group by. Defaults to model." }),
-      limit: z.number().int().optional(),
+      by: z.enum(USAGE_BREAKDOWN_DIMENSIONS).default("model")
+        .meta({ description: "Which dimension to group by. Defaults to model." }),
+      limit: PageLimitSchema,
     }),
     response: BreakdownResponseSchema,
     responseDescription: "One dimension's totals, largest first.",
@@ -1209,7 +1236,13 @@ type SchemaOf<Field extends string> = {
 type QuerySchema = SchemaOf<"query">;
 type RequestSchema = SchemaOf<"request">;
 
-export type OperationQuery<K extends OperationName> = z.infer<QuerySchema[K]>;
+/**
+ * A query string as a client composes it, like {@link OperationRequest}: the
+ * schema's input, where defaulted parameters are optional.
+ */
+export type OperationQuery<K extends OperationName> = z.input<QuerySchema[K]>;
+/** The same query once the router has parsed it, which is what a handler reads. */
+export type ParsedOperationQuery<K extends OperationName> = z.output<QuerySchema[K]>;
 /**
  * A request body as a *client composes* it, before the schema's defaults and
  * normalizations apply — `z.input` rather than `z.infer`. An application

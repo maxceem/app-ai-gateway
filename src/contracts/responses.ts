@@ -22,6 +22,40 @@ import {
   StoredSlugSchema,
 } from "./schemas.ts";
 
+/**
+ * What happened to one served request: answered (`ok`), failed upstream, or
+ * refused before any provider was called — by the organization's own app
+ * limits (`blocked_app_*`), by the plan allowance (`blocked_billing`), or by an
+ * operator (`blocked_user`). The one list: the stored column, the recorder, the
+ * event filter and this document all read it.
+ */
+export const USAGE_STATUSES = [
+  "ok",
+  "provider_error",
+  "blocked_app_rate",
+  "blocked_app_budget",
+  "blocked_billing",
+  "blocked_user",
+] as const;
+export type UsageStatus = (typeof USAGE_STATUSES)[number];
+
+/** The dimensions a usage breakdown can group by. */
+export const USAGE_BREAKDOWN_DIMENSIONS = [
+  "model",
+  "provider",
+  "provider_slug",
+  "provider_gateway",
+  "credential_source",
+  "model_author",
+  "user",
+  "status",
+  "cost_source",
+  "route",
+  "endpoint",
+  "app_version",
+] as const;
+export type UsageBreakdownDimension = (typeof USAGE_BREAKDOWN_DIMENSIONS)[number];
+
 export const ErrorResponseSchema = z.object({
   error: z.object({
     code: z.string(),
@@ -124,7 +158,7 @@ export const UsageEventSchema = z.object({
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
-  status: z.enum(["ok", "provider_error", "blocked_app_rate", "blocked_app_budget", "blocked_billing", "blocked_user"]),
+  status: z.enum(USAGE_STATUSES),
   client_aborted: z.number().int().nullable().meta({
     description: "1 when the client disconnected before the upstream finished streaming, which cancelled the provider call; null otherwise. Not a failure — the request was served as far as the caller wanted it — but an aborted stream often takes the provider's end-of-response usage with it, which is why such an event may carry cost_source unresolved.",
   }),
@@ -618,7 +652,7 @@ export const BreakdownRowSchema = UsageTotalsSchema.extend({
 
 export const BreakdownResponseSchema = z.object({
   app_id: z.string(),
-  by: z.string(),
+  by: z.enum(USAGE_BREAKDOWN_DIMENSIONS),
   from: z.string(),
   to: z.string(),
   rows: z.array(BreakdownRowSchema),

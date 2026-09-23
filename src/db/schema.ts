@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { UsageStatus } from "../contracts/responses";
 import { createCfAuthTables } from "@maxceem/cf-auth/schema";
 import {
   check,
@@ -77,13 +78,7 @@ export type ProviderPricing = Record<string, { input: number; output: number }>;
  * allowance the organization itself is metered by. Keeping them distinct is the
  * whole point — one is the customer's decision, the other is ours.
  */
-export type UsageStatus =
-  | "ok"
-  | "provider_error"
-  | "blocked_app_rate"
-  | "blocked_app_budget"
-  | "blocked_billing"
-  | "blocked_user";
+export type { UsageStatus };
 /**
  * Where a proxied request's `cost_usd` came from. `reported` is the upstream's
  * own figure for that request, which outranks a local estimate because it is

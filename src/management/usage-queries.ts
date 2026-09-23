@@ -10,7 +10,6 @@ import { GatewayError } from "../core/errors";
 import { MONTH_FORMAT_MESSAGE, MONTH_PATTERN } from "../contracts/schemas";
 import { appUsageEvent } from "../db/schema";
 
-const DAY = /^\d{4}-\d{2}-\d{2}$/u;
 
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -36,13 +35,12 @@ export interface DateRange {
   to: string;
 }
 
-/** Inclusive day range, defaulting to the trailing `days` window ending today. */
+/**
+ * Inclusive day range, defaulting to the trailing `days` window ending today.
+ * Each bound's format is the operation's query schema's to check; what is
+ * left here is the defaults and that the two bounds are in order.
+ */
 export function parseRange(from: string | undefined, to: string | undefined, days = 30): DateRange {
-  for (const [label, value] of [["from", from], ["to", to]] as const) {
-    if (value !== undefined && !DAY.test(value)) {
-      throw new GatewayError(400, "invalid_request", `${label} must use YYYY-MM-DD format`);
-    }
-  }
   const end = to ?? new Date().toISOString().slice(0, 10);
   const start =
     from ?? new Date(Date.parse(`${end}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);

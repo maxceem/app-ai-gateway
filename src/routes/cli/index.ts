@@ -9,7 +9,7 @@ import {
   providerDescriptor,
   PROVIDER_TYPES,
 } from "../../core/providers";
-import { assertMonth, currentMonth } from "../../management/usage-queries";
+import { currentMonth } from "../../management/usage-queries";
 import { bootstrap, deploymentMeta } from "./bootstrap";
 import { cliAuthenticate, createOperation, pollOperation } from "./operations";
 import {
@@ -101,8 +101,7 @@ routes.handle("getCliAccount", async (c) => {
     usage: reading !== null && "superseded" in reading && reading.superseded ? {} : reading,
   };
 });
-routes.handle("getCliUsage", async (c) => {
-  const month = c.req.query("month") ?? currentMonth();
-  assertMonth(month);
+routes.handle("getCliUsage", async (c, { query }) => {
+  const month = query.month ?? currentMonth();
   return accountMonthUsage(c.env.DB, c.get("actor").organizationId, month);
 });
