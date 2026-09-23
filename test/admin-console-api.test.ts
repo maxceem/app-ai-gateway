@@ -244,6 +244,15 @@ describe("admin console API", () => {
 
     expect((await get("/v1/admin/apps/validate-only")).status).toBe(404);
 
+    // A name of nothing but spaces is the empty name it looks like.
+    const blankName = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "   ", config: serverConfig() }),
+    });
+    expect(blankName.status).toBe(400);
+    await expect(blankName.json()).resolves.toMatchObject({ error: { message: expect.stringMatching(/^name: /u) } });
+
     // The per-application validation is for an application that exists: an id
     // nobody has is refused like every other route under it.
     const missing = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {

@@ -22,7 +22,7 @@ import { ExternalHint } from "@/components/external-hint";
 import { PresetPicker } from "@/components/preset-picker";
 import { clientApiOrigin } from "@/lib/client-api";
 import { DEFAULT_END_USER_HEADER, type AppAttestEnvironment } from "@/lib/config-types";
-import { appleIdentityProblem } from "@shared/app-config";
+import { appConfigIssues, appleIdentityProblem, issueUnder } from "@shared/app-config";
 import { newAppConfig, type NewAppInput } from "@shared/app-defaults";
 import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
@@ -110,6 +110,10 @@ const ENTITLEMENT_NONE = ENTITLEMENT_PRESETS.find((preset) => preset.id === "non
  * be a {@link GuardedButton}: the guard is what tells a read-only member why
  * nothing happens, and a bare element would simply fail on submit instead.
  */
+/** Where the issuer block, and its paid-user claims within it, sit in a configuration. */
+const ISSUER_PATH = ["authentication", "end_user", "issuer"] as const;
+const CLAIMS_PATH = [...ISSUER_PATH, "required_claims"] as const;
+
 export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   const { capabilities } = useConsoleSession();
   const [open, setOpen] = useState(false);
@@ -149,13 +153,6 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   const last = stepIndex >= steps.length - 1;
 
   const issuerFragment = useMemo(() => buildIssuer(issuer, issuerValues), [issuer, issuerValues]);
-  const issuerComplete =
-    presetInputsComplete(issuer, issuerValues) &&
-    issuerFragment.jwks_url.startsWith("https://") &&
-    // Both scope the app to one tenant, and the Worker refuses a write without
-    // them, so the dialog cannot offer to create one either.
-    issuerFragment.issuer.length > 0 &&
-    issuerFragment.audience.length > 0;
 
   // What the save would say about the two ids, from the schema that judges it.
   // Empty fields are simply unfinished, so they disable the step without an
@@ -166,6 +163,15 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   });
   const appleIdentityShown =
     appleTeamId.trim().length > 0 && appleBundleId.trim().length > 0 ? appleIdentity : null;
+
+  // What the gateway would say about the configuration as it stands, read one
+  // section at a time: a step is judged on the fields under its own path, not
+  // held back by a step the person has not reached yet.
+  const issues = appConfigIssues(newAppConfig(newAppInput()));
+  const clearUnder = (path: readonly string[], except?: readonly string[]) =>
+    !issues.some((issue) => issueUnder(issue, path) && !(except && issueUnder(issue, except)));
+  const issuerComplete =
+    presetInputsComplete(issuer, issuerValues) && clearUnder(ISSUER_PATH, CLAIMS_PATH);
 
   const stepComplete = (() => {
     switch (step.id) {
@@ -178,7 +184,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
       case "identity_provider":
         return issuerComplete;
       case "subscription":
-        return presetInputsComplete(entitlement, entitlementValues);
+        return presetInputsComplete(entitlement, entitlementValues) && clearUnder(CLAIMS_PATH);
     }
   })();
 
@@ -214,7 +220,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
    * What that becomes — the open proxy policy, the starting rate limits — is
    * {@link newAppConfig}'s answer, and the same one `agw app add` gets.
    */
-  const newAppInput = (): NewAppInput => {
+  function newAppInput(): NewAppInput {
     const signIn = userSource === "issuer"
       ? {
           source: "issuer" as const,
@@ -249,7 +255,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
       return { type: "api_key", endUser: { source: "header", header: DEFAULT_END_USER_HEADER } };
     }
     return { type: "api_key" };
-  };
+  }
 
   const create = async () => {
     if (!applicationType) return;

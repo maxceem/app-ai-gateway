@@ -17,7 +17,9 @@ import type { z } from "zod";
 import {
   AppConfigSchema,
   AppleAppIdentitySchema,
+  AppWriteSchema,
   type AppConfig,
+  type AppWrite,
   type LimitScopeConfig,
 } from "../contracts/schemas.ts";
 
@@ -110,6 +112,42 @@ export function parseAppConfig(raw: unknown): AppConfig {
 export function appleIdentityProblem(identity: { team_id: string; bundle_id: string }): string | null {
   const parsed = AppleAppIdentitySchema.safeParse(identity);
   return parsed.success ? null : (parsed.error.issues[0]?.message ?? "Invalid Apple app identity");
+}
+
+/**
+ * An application write — name, configuration and status — as the API accepts
+ * it, or a {@link ConfigError} naming the first field at fault. For a client
+ * that wants to know before it sends whether the gateway would take the write.
+ */
+export function parseAppWrite(raw: unknown): AppWrite {
+  const parsed = AppWriteSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  throw configErrorFor(parsed.error);
+}
+
+/** One reason a configuration would be refused, and the field it is about. */
+export interface ConfigIssue {
+  path: readonly PropertyKey[];
+  message: string;
+}
+
+/**
+ * Every reason the schema would refuse a configuration, each with its path.
+ *
+ * For a form that is filled in a section at a time: it asks about the fields
+ * under one path and ignores the sections the person has not reached yet,
+ * rather than holding one step hostage to another's empty field.
+ */
+export function appConfigIssues(raw: unknown): ConfigIssue[] {
+  const parsed = AppConfigSchema.safeParse(raw);
+  return parsed.success
+    ? []
+    : parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message }));
+}
+
+/** Whether `path` is `prefix` or lies under it. */
+export function issueUnder(issue: ConfigIssue, prefix: readonly PropertyKey[]): boolean {
+  return prefix.every((segment, index) => issue.path[index] === segment);
 }
 
 /** The issuer that identifies this application's end users, if one does. */

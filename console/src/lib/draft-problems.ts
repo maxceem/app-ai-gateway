@@ -1,4 +1,5 @@
-import { appleIdentityProblem } from "@shared/app-config";
+import { appleIdentityProblem, ConfigError } from "@shared/app-config";
+import { toAppWrite } from "@/lib/config-conversion";
 import type { Draft } from "@/lib/app-draft";
 import { authIssuer, type AuthConfig, type ClaimRequirement } from "@/lib/config-types";
 
@@ -40,6 +41,15 @@ export function draftProblem(draft: Draft): string | null {
   if (issuer) {
     if (!issuerComplete(issuer)) return "Finish the identity provider details.";
     if (!(issuer.required_claims ?? []).every(claimComplete)) return "Finish the subscription check.";
+  }
+  // Everything above names a field left empty, in the form's own words. The
+  // last word is the schema's: a draft it would refuse is not saveable, and
+  // its message names the field at fault.
+  try {
+    toAppWrite(draft);
+  } catch (error) {
+    if (error instanceof ConfigError) return error.message;
+    throw error;
   }
   return null;
 }

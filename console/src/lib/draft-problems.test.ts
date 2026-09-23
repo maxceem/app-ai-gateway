@@ -43,6 +43,12 @@ describe("draftProblem", () => {
       app_attest: { team_id: "ABCDE12345", bundle_id: "example" },
       end_user: { source: "app_install" },
     }))).toMatch(/bundle_id must be a reverse DNS identifier/u);
+    // Past the form's own prompts, the schema has the last word: a draft it
+    // would refuse is never offered as saveable.
+    expect(draftProblem(draft({
+      type: "api_key",
+      end_user: { source: "header", header: "authorization" },
+    }))).toMatch(/authentication\.end_user\.header/u);
     expect(draftProblem(draft({ type: "api_key", end_user: { source: "header", header: " " } })))
       .toMatch(/header name/i);
     // Half-typed on the Auth policy page: the Worker stores lists, so an empty

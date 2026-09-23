@@ -444,7 +444,8 @@ export type AppConfigInput = z.input<typeof AppConfigSchema>;
  * so many words instead of having it silently ignored.
  */
 export const AppWriteSchema = z.object({
-  name: z.string().min(1).max(100),
+  /** Trimmed, so a name of nothing but spaces is the empty name it looks like. */
+  name: z.string().trim().min(1).max(100),
   config: AppConfigSchema,
   status: z.enum(["active", "disabled"]).optional(),
 }).strict().meta({ id: "AppWrite" });

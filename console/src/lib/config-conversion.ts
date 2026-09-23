@@ -1,6 +1,6 @@
 import type { AppResponse as WireAppResponse } from "@contracts/responses";
 import type { AppWriteInput } from "@contracts/schemas";
-import { ConfigError, parseAppConfig, type AppConfig } from "@shared/app-config";
+import { parseAppConfig, parseAppWrite, type AppConfig } from "@shared/app-config";
 import type { AppConfigDraft, ProviderConfig } from "./config-types";
 import type { AppResponse, AppUpsertBody, InvalidAppResponse, ValidAppResponse } from "./types";
 
@@ -66,12 +66,14 @@ export function normalizeAppConfigDraft(draft: AppConfigDraft): AppConfig {
   });
 }
 
+/**
+ * The draft as the write the API takes, held to the API's own schema: the one
+ * place the console decides whether a save would be accepted.
+ */
 export function toAppWrite(body: AppUpsertBody): AppWriteInput {
-  if (body.name.trim().length === 0) throw new ConfigError("name must be a non-empty string");
-  if (body.name.length > 100) throw new ConfigError("name must be at most 100 characters");
-  return {
+  return parseAppWrite({
     name: body.name,
     config: normalizeAppConfigDraft(body.config),
     ...(body.status === undefined ? {} : { status: body.status }),
-  } satisfies AppWriteInput;
+  });
 }
