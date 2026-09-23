@@ -5,6 +5,7 @@ import type { AppRecord, GatewayIdentity } from "../core/types";
 import { observeUpstreamBody, type ObservedBody } from "../core/body-observer";
 import { recordUsageEvent } from "../core/usage-record";
 import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan } from "./plan";
+import { serverTiming, type ServedTimings } from "./timing";
 import {
   fetchWithTtfbTimeout,
   providerTtfbTimeoutMs,
@@ -16,8 +17,8 @@ export interface ExecutionContext {
   app: Pick<AppRecord, "id" | "organizationId">;
   identity: GatewayIdentity;
   appVersion: string | null;
-  authDurationMs: number;
-  limiterDurationMs: number;
+  /** Read when the response is built, so they are the figures admission settled on. */
+  timings: ServedTimings;
   waitUntil: (promise: Promise<unknown>) => void;
 }
 
@@ -172,10 +173,7 @@ export async function execute(
     }
 
     const headers = clientResponseHeaders(upstream);
-    headers.set(
-      "Server-Timing",
-      `auth;dur=${context.authDurationMs.toFixed(1)}, limiter;dur=${context.limiterDurationMs.toFixed(1)}, provider_ttfb;dur=${providerTtfb.toFixed(1)}`,
-    );
+    headers.set("Server-Timing", serverTiming(context.timings, providerTtfb));
     let clientStream = upstream.body;
     let observed: Promise<ObservedBody> | null = null;
     if (upstream.body) {

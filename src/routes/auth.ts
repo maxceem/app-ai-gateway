@@ -6,6 +6,7 @@ import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-l
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { lookupApiKeyUncached } from "../core/apikeys";
+import { tokenExchange } from "../core/app-auth";
 import { verifyIssuerToken } from "../core/issuer";
 import { issueGatewayToken } from "../core/jwt";
 import type {
@@ -424,21 +425,23 @@ authRoutes.post("/token", async (c) => {
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
     const app = await loadApp(c.env, appId);
     assertAppActive(app);
-    if ("api_key" in rawBody) {
-      if (app.config.authentication.type !== "api_key") {
-        throw new GatewayError(
-          400,
-          "auth_method_not_supported",
-          "API key token exchange is not supported for this app",
-        );
-      }
+    // The application's configuration decides which exchange this is; the body
+    // is then held to that exchange's schema. The one body-shape test left is
+    // for the wording of a refusal an App Attest application gives a client
+    // that sent it an API key.
+    const exchange = tokenExchange(app.config.authentication);
+    if (exchange === null) {
+      throw new GatewayError(
+        400,
+        "auth_method_not_supported",
+        "API key token exchange requires an issuer end-user source",
+      );
+    }
+    if (exchange === "api_key_issuer") {
       const issuer = endUserIssuer(app.config.authentication);
-      if (!issuer) {
-        throw new GatewayError(
-          400,
-          "auth_method_not_supported",
-          "API key token exchange requires an issuer end-user source",
-        );
+      if (!issuer) throw new Error("An API-key exchange always has an issuer");
+      if (!("api_key" in rawBody)) {
+        throw new GatewayError(400, "invalid_request", "api_key and issuer_token are required");
       }
       attempt.authMethod = "api_key";
       const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
@@ -466,16 +469,13 @@ authRoutes.post("/token", async (c) => {
       return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
     }
 
-    if (app.config.authentication.type === "api_key") {
+    if ("api_key" in rawBody) {
       throw new GatewayError(
         400,
-        "invalid_request",
-        endUserIssuer(app.config.authentication)
-          ? "api_key and issuer_token are required"
-          : "API key token exchange requires an issuer end-user source",
+        "auth_method_not_supported",
+        "API key token exchange is not supported for this app",
       );
     }
-
     const auth = appleAuth(app);
     attempt.authMethod = "attest";
     const body = schemaBody(AppAttestTokenRequestSchema, rawBody);

@@ -1,4 +1,3 @@
-import type { MiddlewareHandler } from "hono";
 import { invalidateAccountLifecycle } from "../core/account-lifecycle";
 import {
   invalidateBillingRequestAccess,
@@ -12,10 +11,9 @@ import { ttlCache } from "../core/ttl-cache";
 import { recordBlockedUsageEvent } from "../core/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
-import { attemptAttribution, type ExecutionVariables } from "../execution/plan";
-import type { GatewayVariables } from "./auth";
+import type { AppRecord, GatewayIdentity } from "../core/types";
+import { attemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
-import type { RequestVariables } from "./request-scope";
 
 /**
  * The dispatch boundary.
@@ -111,28 +109,43 @@ async function monthlyRequestAllowance(
   return resolveBillingQuota(env, organizationId, cache);
 }
 
-export const quotaGate: MiddlewareHandler<{
-  Bindings: Env;
-  Variables: GatewayVariables & ExecutionVariables & RequestVariables;
-}> = async (c, next) => {
+/** What admitting one prepared request needs to know, and where to leave its diagnostics. */
+export interface AdmissionInput {
+  env: Env;
+  deployment: Deployment;
+  billingCache: BillingRequestCache;
+  app: AppRecord;
+  identity: GatewayIdentity;
+  plan: ExecutionPlan;
+  appVersion: string | null;
+  waitUntil: (promise: Promise<unknown>) => void;
+}
+
+/**
+ * Admits one prepared request, or refuses it. Resolves with how long the
+ * limiters took, which the response reports as `server-timing`; a refusal
+ * throws, and `onDuration` has reported the same figure by then.
+ */
+export async function admitRequest(
+  input: AdmissionInput,
+  onDuration: (durationMs: number) => void = () => {},
+): Promise<number> {
   const start = performance.now();
-  const app = c.get("app");
-  const identity = c.get("identity");
-  const plan = c.get("executionPlan");
+  const { env, app, identity, plan } = input;
   const firstAttempt = plan.attempts[0];
 
   const blockedEvent = (
     status: "blocked_user" | "blocked_app_rate" | "blocked_app_budget" | "blocked_billing",
     latencyMs: number,
   ) =>
-    c.executionCtx.waitUntil(
+    input.waitUntil(
       recordBlockedUsageEvent({
         organizationId: app.organizationId,
-        env: c.env,
+        env,
         identity,
         attribution: attemptAttribution(firstAttempt),
         endpointSlug: plan.endpointSlug,
-        appVersion: c.req.header("x-app-version") ?? null,
+        appVersion: input.appVersion,
         status,
         latencyMs: Math.round(latencyMs),
       }),
@@ -140,7 +153,7 @@ export const quotaGate: MiddlewareHandler<{
 
   const finish = (): number => {
     const durationMs = performance.now() - start;
-    c.set("limiterDurationMs", durationMs);
+    onDuration(durationMs);
     return durationMs;
   };
 
@@ -213,13 +226,8 @@ export const quotaGate: MiddlewareHandler<{
      */
     identity.userId === null || hasUserLevelLimits(app.config)
       ? Promise.resolve(false)
-      : isUserBlocked(c.env, `${identity.appId}:${identity.userId}`),
-    monthlyRequestAllowance(
-      c.get("deployment"),
-      c.env,
-      app.organizationId,
-      c.get("billingRequestCache"),
-    ),
+      : isUserBlocked(env, `${identity.appId}:${identity.userId}`),
+    monthlyRequestAllowance(input.deployment, env, app.organizationId, input.billingCache),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -248,7 +256,7 @@ export const quotaGate: MiddlewareHandler<{
   // them on an application that identifies no end users is refused when the
   // configuration is parsed, so this is a narrowing, not a second policy.
   if (hasUserLevelLimits(app.config) && identity.userId !== null) {
-    const result = await c.env.USER_LIMITER
+    const result = await env.USER_LIMITER
       .getByName(`${identity.appId}:${identity.userId}`)
       .checkAndIncrement({
         now,
@@ -259,7 +267,7 @@ export const quotaGate: MiddlewareHandler<{
     if (!result.allowed) refuseByAppLimits(result, "user", now);
   }
   if (hasAppLevelLimits(app.config)) {
-    const result = await c.env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
+    const result = await env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
       now,
       rpm: app.config.limits.per_app.requests.per_minute,
       rpd: app.config.limits.per_app.requests.per_day,
@@ -277,12 +285,10 @@ export const quotaGate: MiddlewareHandler<{
   if (resolvedQuota === undefined) {
     // Self-hosted: no coordination object is touched at all, so this
     // deployment pays nothing for a quota it does not have.
-    finish();
-    await next();
-    return;
+    return finish();
   }
 
-  const quota = c.env.ORG_QUOTA.getByName(app.organizationId);
+  const quota = env.ORG_QUOTA.getByName(app.organizationId);
   const claim = async (
     resolved: NonNullable<typeof resolvedQuota>,
     retry: boolean,
@@ -309,12 +315,8 @@ export const quotaGate: MiddlewareHandler<{
       // too, and a retry that kept a cached copy of one of its two inputs would
       // be a retry that could return the same superseded answer.
       invalidateAccountLifecycle(app.organizationId);
-      invalidateBillingRequestAccess(app.organizationId, c.get("billingRequestCache"));
-      const refreshed = await resolveBillingQuota(
-        c.env,
-        app.organizationId,
-        c.get("billingRequestCache"),
-      );
+      invalidateBillingRequestAccess(app.organizationId, input.billingCache);
+      const refreshed = await resolveBillingQuota(env, app.organizationId, input.billingCache);
       return claim(refreshed, false);
     }
     throw new GatewayError(
@@ -326,10 +328,7 @@ export const quotaGate: MiddlewareHandler<{
   };
   const claimResult = await claim(resolvedQuota, true);
   const durationMs = finish();
-  if (claimResult.kind === "unlimited") {
-    await next();
-    return;
-  }
+  if (claimResult.kind === "unlimited") return durationMs;
   const admission = claimResult.value;
   if (!admission.allowed) {
     blockedEvent("blocked_billing", durationMs);
@@ -350,5 +349,5 @@ export const quotaGate: MiddlewareHandler<{
       },
     );
   }
-  await next();
-};
+  return durationMs;
+}

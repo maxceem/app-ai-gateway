@@ -1,6 +1,7 @@
 import { apiStyleFromPath, outputClampStyle, type ApiStyle } from "./api-styles";
 import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
-import { DEFAULT_END_USER_HEADER, endUserHeader, endUserIssuer } from "./config";
+import { consumedRequestHeaders } from "./app-auth";
+import { DEFAULT_END_USER_HEADER } from "./config";
 import { GatewayError } from "./errors";
 import type { ResolvedProvider } from "./provider-store";
 import { costReport, providerDescriptor } from "./providers";
@@ -418,13 +419,11 @@ export function sanitizedHeaders(
   tokenHeader: string,
 ): Headers {
   const headers = new Headers(request.headers);
-  stripClientHeaders(headers, "pending", [
-    endUserIssuer(app.config.authentication)?.token_header,
-    // The header this application reads its end-user id from. Consumed by the
-    // gateway, so it stops here even when it is not the conventional name.
-    endUserHeader(app.config.authentication),
-    tokenHeader,
-  ]);
+  stripClientHeaders(
+    headers,
+    "pending",
+    consumedRequestHeaders(app.config.authentication, tokenHeader),
+  );
   return headers;
 }
 

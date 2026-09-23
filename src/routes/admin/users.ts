@@ -5,7 +5,7 @@ import { database } from "../../db";
 import { appUsageEvent, appUser } from "../../db/schema";
 import type { UserBlockResponse } from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
-import { invalidateBlockedCache } from "../../middleware/gate";
+import { invalidateBlockedCache } from "../../execution/admission";
 import { adminRouter, type OperationContext } from "../catalog-router";
 import {
   currentMonth,

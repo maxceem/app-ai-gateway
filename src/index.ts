@@ -21,15 +21,13 @@ import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
-import { quotaGate } from "./middleware/gate";
-import type { ExecutionVariables } from "./execution/plan";
 import { billingEntitlementGate } from "./middleware/billing";
+import { serveEndpoint, serveProxy, type ServedVariables } from "./execution/serve";
+import { serverTiming } from "./execution/timing";
 import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
 import { authRoutes } from "./routes/auth";
-import { endpointPrepare, endpointRoutes } from "./routes/endpoints";
 import { meRoutes } from "./routes/me";
-import { proxyPrepare, proxyRoutes } from "./routes/proxy";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 
@@ -37,7 +35,7 @@ export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
 type AppEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & ExecutionVariables & RequestVariables;
+  Variables: GatewayVariables & ServedVariables & RequestVariables;
 };
 
 const app = new Hono<AppEnv>();
@@ -99,16 +97,17 @@ app.all("/v1/console/*", management);
 // schemas, drizzle, the app configuration parser) is on every request's path
 // already. So it needs no wrapper app of its own, and its failures reach the
 // one `onError` below without one.
-app.use("/v1/apps/:app/*", billingEntitlementGate);
+app.use("/v1/apps/:app/auth/*", billingEntitlementGate);
 app.route("/v1/apps/:app/auth", authRoutes);
 
-app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, quotaGate);
-app.route("/v1/apps/:app/proxy", proxyRoutes);
+// A served request is one handler that runs its own sequence — account,
+// credential, plan, admission, provider — in `./execution/serve`. Named
+// endpoints are POST-only, so any other method is an unrouted path and is
+// answered before a body is read or a credential checked.
+app.all("/v1/apps/:app/proxy/:provider/*", serveProxy);
+app.post("/v1/apps/:app/endpoints/:slug", serveEndpoint);
 
-app.use("/v1/apps/:app/endpoints/:slug", gatewayAuth, endpointPrepare, quotaGate);
-app.route("/v1/apps/:app/endpoints", endpointRoutes);
-
-app.use("/v1/apps/:app/me", gatewayAuth);
+app.use("/v1/apps/:app/me", billingEntitlementGate, gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);
 
 /*
@@ -130,14 +129,8 @@ app.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 app.onError((error, c) => {
   const headers = new Headers();
   headers.set("content-type", "application/json; charset=UTF-8");
-  if (c.req.path.includes("/proxy/") || c.req.path.includes("/endpoints/")) {
-    const auth = c.get("authDurationMs") ?? 0;
-    const limiter = c.get("limiterDurationMs") ?? 0;
-    headers.set(
-      "server-timing",
-      `auth;dur=${auth.toFixed(1)}, limiter;dur=${limiter.toFixed(1)}, provider_ttfb;dur=0.0`,
-    );
-  }
+  const timings = c.get("servedTimings");
+  if (timings !== undefined) headers.set("server-timing", serverTiming(timings));
   if (error instanceof GatewayError) {
     new Headers(error.headers).forEach((value, name) => headers.set(name, value));
     // Every business rejection, exactly once, in one shape. Without this a user

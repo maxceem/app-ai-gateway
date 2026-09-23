@@ -339,6 +339,19 @@ describe("issuer-backed API key exchange", () => {
     await expect(machine.json()).resolves.toMatchObject({
       error: { code: "auth_method_not_supported" },
     });
+
+    // The application decides which exchange it offers: an issuer-backed key
+    // app sent an App Attest body is told what its own exchange needs.
+    await seedServerApp("issuer-key-attest-body", { issuer: {} });
+    const attestBody = await exchangeToken("issuer-key-attest-body", {
+      key_id: "key",
+      challenge: "challenge",
+      assertion: "assertion",
+    });
+    expect(attestBody.status).toBe(400);
+    await expect(attestBody.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "api_key and issuer_token are required" },
+    });
   });
 });
 
