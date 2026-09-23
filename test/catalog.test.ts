@@ -10,6 +10,7 @@ import {
 import "../src/routes/management";
 import { Hono } from "hono";
 import { MOUNTED_OPERATIONS, catalogRouter } from "../src/routes/catalog-router";
+import { RECEIPT_KINDS } from "../src/routes/admin/receipted";
 
 /** The half of the catalog the management app is supposed to serve. */
 const SERVED = Object.keys(CATALOG).filter((name) => {
@@ -39,6 +40,23 @@ describe("operation catalog", () => {
     expect(() => catalogRouter(new Hono(), "/v1/cli").handle("getCliCapabilities", () => {
       throw new Error("unreachable");
     })).not.toThrow();
+  });
+
+  it("mounts every receipted creation, and only those, under its receipt", () => {
+    // A `receipt: true` entry documents that retries are safe, so mounting one
+    // without the receipt would publish a promise the server does not keep.
+    expect(() => catalogRouter(new Hono(), "/v1/admin", { authorized: true })
+      .handle("createApp" as never, () => {
+        throw new Error("unreachable");
+      })).toThrow(/must be mounted with handleReceipted/u);
+    expect(() => catalogRouter(new Hono(), "/v1/admin", { authorized: true })
+      .handleReceipted("listApps" as never, () => {
+        throw new Error("unreachable");
+      })).toThrow(/does not honour receipts/u);
+    const receipted = Object.keys(CATALOG)
+      .filter((name) => (CATALOG[name as OperationName] as OperationSpec).receipt)
+      .sort();
+    expect(Object.keys(RECEIPT_KINDS).sort()).toEqual(receipted);
   });
 
   it("documents every path parameter it names", () => {

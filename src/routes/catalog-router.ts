@@ -8,7 +8,11 @@ import {
   type OperationResponse,
   type OperationSpec,
   type ParsedOperationQuery,
+  type ReceiptOperation,
 } from "../contracts/catalog";
+import type { ResourceReceipt } from "../management/resource-receipt";
+import { jsonBody } from "./admin/body";
+import { RECEIPT_KINDS, receipted } from "./admin/receipted";
 import type { z } from "zod";
 import { assertAccountAccess } from "../core/account-lifecycle";
 import { GatewayError } from "../core/errors";
@@ -154,7 +158,7 @@ export function catalogRouter<E extends HonoEnv>(
   };
 
   return {
-    handle<K extends BodiedOperation>(
+    handle<K extends Exclude<BodiedOperation, ReceiptOperation>>(
       name: K,
       handler: (
         c: OperationContext<E, K>,
@@ -165,12 +169,44 @@ export function catalogRouter<E extends HonoEnv>(
       // 302 in the table is the Google redirect, which answers with no body and
       // is served by better-auth rather than from this router.
       const spec: OperationSpec = CATALOG[name];
+      // The type above already keeps a receipted creation out of here; this is
+      // the same rule for a caller that widened the name away.
+      if (spec.receipt) throw new Error(`${name} honours receipts and must be mounted with handleReceipted`);
       const status = (spec.status ?? 200) as 200 | 201;
       mount(name, async (c) => {
         // Parsed after the policy has run, so a caller who may not ask is told
         // that rather than what is wrong with how they asked.
         const query = (spec.query ? parsedQuery(spec.query, c.req.query()) : {}) as ParsedOperationQuery<K>;
         return c.json(await handler(c as unknown as OperationContext<E, K>, { query }), status);
+      });
+    },
+
+    /**
+     * The mount for a creation the catalog declares `receipt: true`: the body
+     * is read once, and the write runs under the request's retry receipt, so a
+     * retried creation answers with what the first one recorded instead of
+     * creating again. The handler is given the boundary to write through; the
+     * receipt kind is `RECEIPT_KINDS`', never the handler's to name.
+     */
+    handleReceipted<K extends ReceiptOperation & BodiedOperation>(
+      name: K,
+      handler: (
+        c: OperationContext<E, K>,
+        input: { body: unknown; boundary: ResourceReceipt | undefined },
+      ) => Promise<OperationResponse<K>>,
+    ): void {
+      const spec: OperationSpec = CATALOG[name];
+      if (!spec.receipt) throw new Error(`${name} does not honour receipts`);
+      const status = (spec.status ?? 200) as 200 | 201;
+      mount(name, async (c) => {
+        const body = await jsonBody(c);
+        const outcome = await receipted(
+          c as unknown as AuthorizedContext,
+          RECEIPT_KINDS[name],
+          body,
+          (boundary) => handler(c as unknown as OperationContext<E, K>, { body, boundary }),
+        );
+        return c.json(outcome, status);
       });
     },
 

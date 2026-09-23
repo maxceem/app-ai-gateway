@@ -12,7 +12,6 @@ import { currentMonth } from "../../management/usage-queries";
 import type { AdminVariables } from "../../middleware/admin";
 import { adminRouter } from "../catalog-router";
 import { jsonBody, managementScope, scopedApp } from "./body";
-import { receipted } from "./receipted";
 
 export const appRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
 const routes = adminRouter(appRoutes);
@@ -20,11 +19,8 @@ const routes = adminRouter(appRoutes);
 routes.handle("listApps", (c, { query }) =>
   listApps(managementScope(c), c.get("actor"), query.month ?? currentMonth()));
 
-routes.handle("createApp", async (c) => {
-  const body = await jsonBody(c);
-  return receipted(c, "app.add", body, (boundary) =>
-    createApp(managementScope(c), c.get("actor"), body, boundary));
-});
+routes.handleReceipted("createApp", (c, { body, boundary }) =>
+  createApp(managementScope(c), c.get("actor"), body, boundary));
 
 routes.handle("getApp", (c) => getApp(scopedApp(c)));
 

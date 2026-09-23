@@ -1291,6 +1291,11 @@ export type BodiedOperation = {
   [K in OperationName]: unknown extends OperationResponse<K> ? never : K;
 }[OperationName];
 
+/** The creations that honour Idempotency-Key and X-Idempotency-Proof. */
+export type ReceiptOperation = {
+  [K in OperationName]: Catalog[K] extends { readonly receipt: true } ? K : never;
+}[OperationName];
+
 /** Whether an operation takes any `{name}` segment at all. */
 type HasParams<K extends OperationName> =
   PathParameterNames<Catalog[K]["path"]> extends never ? false : true;

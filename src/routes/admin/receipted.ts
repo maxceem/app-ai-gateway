@@ -3,15 +3,30 @@ import {
   prepareResourceReceipt,
   type ResourceReceipt,
 } from "../../management/resource-receipt";
+import type { ReceiptOperation } from "../../contracts/catalog";
 import type { AdminVariables } from "../../middleware/admin";
+
+/**
+ * The receipt kind each receipted creation is stored under. Keyed by the
+ * catalog's own `receipt: true` entries, so an entry without a kind here fails
+ * the type check; the values are stored, so renaming one abandons every receipt
+ * already written under it.
+ */
+export const RECEIPT_KINDS: Record<ReceiptOperation, string> = {
+  createApp: "app.add",
+  createAppKey: "app.key.add",
+  createProvider: "provider.add",
+  createProviderGateway: "provider-gateway.add",
+};
 
 type ReceiptContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
 /**
- * Runs a creation under the request's retry receipt, if it sent one.
+ * Runs a creation under the request's retry receipt, if it sent one. Reached
+ * only through `catalogRouter`'s `handleReceipted`, which every `receipt: true`
+ * entry is mounted with.
  *
- * The dance is always the same and was written out four times, in two shapes:
- * prepare the receipt from the `Idempotency-Key` and `X-Idempotency-Proof`
+ * Prepare the receipt from the `Idempotency-Key` and `X-Idempotency-Proof`
  * headers; answer from it if this request already committed; otherwise run the
  * write with the receipt as its transaction boundary, and prefer whatever the
  * receipt recorded to what this attempt computed, since a concurrent twin may
