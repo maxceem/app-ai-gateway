@@ -103,17 +103,6 @@ export const SlugSchema = safeKey(
   }),
 );
 
-/**
- * The same slug on the way out, without the reserved-name refusal.
- *
- * A row created before that rule existed still has to be readable: a client
- * that parses responses — the CLI does — would otherwise fail to list an
- * organization's providers because one of them holds a name it may no longer
- * choose. Refusing on the way in is what makes the rule; refusing on the way
- * out would only hide the row that needs renaming.
- */
-export const StoredSlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
-
 const ClaimRequirementSchema = z.object({
   path: z.string().min(1),
   contains: z.union([z.string(), z.array(z.string()).min(1)]).optional(),

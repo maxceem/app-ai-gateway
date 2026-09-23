@@ -597,10 +597,8 @@ describe("admin API", () => {
       "https://example.test/v1/admin/apps/stored-unscoped-issuer",
       { headers: { authorization: "Bearer agw_mgmt_test-admin-secret" } },
     );
-    expect(stored.status).toBe(200);
-    await expect(stored.json()).resolves.toMatchObject({
-      config_error: expect.stringContaining("authentication.end_user.issuer.issuer"),
-    });
+    expect(stored.status).toBe(500);
+    await expect(stored.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
   });
 
   it("validates the optional issuer on API-key applications", async () => {

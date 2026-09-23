@@ -10,8 +10,8 @@ import type {
   CreatedAppResponse,
 } from "../contracts/responses";
 import { generateApiKey } from "../core/apikeys";
-import { invalidateAppConfig, referencedProviderSlugs } from "../core/config";
-import { validateConfigurationReferences } from "../core/config-references";
+import { appRecordFromRow, invalidateAppConfig } from "../core/config";
+import { referencedProviderSlugs, validateConfigurationReferences } from "../core/config-references";
 import { GatewayError } from "../core/errors";
 import {
   authoritativeOrganizationProviders,
@@ -29,7 +29,6 @@ import { andCondition } from "../policy/sql";
 import {
   ConfigError,
   configErrorFor,
-  parseAppConfig,
   selectedProviderPolicies,
   type AppConfig,
 } from "../shared/app-config";
@@ -210,7 +209,10 @@ function serializeRow(row: AppRow) {
   return {
     id: row.id,
     name: row.name,
-    config: row.config,
+    // Parsed rather than passed through: every write validates before it
+    // stores, so a row that does not parse is an internal error here exactly as
+    // it is on the request path.
+    config: appRecordFromRow(row).config,
     status: row.status,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
@@ -311,35 +313,14 @@ export async function listApps(
     apps: rows.map((row) => {
       const totals = usageByApp.get(row.id);
       const userCounts = countsByApp.get(row.id);
-      let configSummary: ReturnType<typeof summary> | {
-        apple_bundle_id: null;
-        providers: string[];
-        referenced_providers: string[];
-        allowed_model_count: number;
-        monthly_budget_usd: null;
-      };
-      try {
-        configSummary = summary(parseAppConfig(row.config), providerIndex);
-      } catch {
-        configSummary = {
-          apple_bundle_id: null,
-          providers: [],
-          referenced_providers: [],
-          allowed_model_count: 0,
-          monthly_budget_usd: null,
-        };
-      }
+      const config = appRecordFromRow(row).config;
       return {
         id: row.id,
         name: row.name,
         status: row.status,
         created_at: row.createdAt,
-        // Off the column, so a row whose configuration no longer parses still
-        // says what kind of application it is rather than "invalid".
-        authentication_type: row.authType === "apple_app_attest" || row.authType === "api_key"
-          ? row.authType
-          : "invalid" as const,
-        ...configSummary,
+        authentication_type: config.authentication.type,
+        ...summary(config, providerIndex),
         users: { total: userCounts?.total ?? 0, blocked: userCounts?.blocked ?? 0 },
         usage: {
           requests: totals?.requests ?? 0,
@@ -392,7 +373,6 @@ export async function createApp(
     } : null;
     const outcome = {
       app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now },
-      config_error: null,
       api_key: createdKey,
     };
     const condition = boundary?.condition ?? { sql: "1", params: [] };
@@ -440,15 +420,7 @@ export async function createApp(
 }
 
 export function getApp(row: AppRow): AppResponse {
-  // A row is answered exactly as it is stored, parseable or not: `config_error`
-  // is what tells the console to open the repair editor over the raw JSON.
-  let configError: string | null = null;
-  try {
-    parseAppConfig(row.config);
-  } catch (error) {
-    configError = error instanceof Error ? error.message : String(error);
-  }
-  return { app: serializeRow(row), config_error: configError };
+  return { app: serializeRow(row) };
 }
 
 /** Whether an edit of an existing application would be accepted, judged as its update would be. */
@@ -463,7 +435,7 @@ export async function validateApp(
   validatedConfig(
     body.config,
     await authoritativeOrganizationProviders(scope.env, actor.organizationId),
-    referencedProviderSlugs(existing.config),
+    referencedProviderSlugs(appRecordFromRow(existing).config),
   );
   return { valid: true, app_id: existing.id };
 }
@@ -502,7 +474,7 @@ export async function updateApp(
   const config = validatedConfig(
     body.config,
     await authoritativeOrganizationProviders(env, organizationId),
-    referencedProviderSlugs(existing.config),
+    referencedProviderSlugs(appRecordFromRow(existing).config),
   );
   // Conditional on the row still being this organization's, so an app deleted
   // or handed over between the read above and this write is not resurrected
@@ -518,7 +490,7 @@ export async function updateApp(
   });
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
-  return { app: serializeRow(written), config_error: null };
+  return { app: serializeRow(written) };
 }
 
 export async function deleteApp(

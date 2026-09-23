@@ -1024,7 +1024,7 @@ it("collects expired accounts on the nightly run only where account deadlines ex
   const nightly = async (cloud: boolean) => {
     const ctx = createExecutionContext();
     worker.scheduled(
-      { cron: "17 3 * * *", scheduledTime: Date.now() } as ScheduledController,
+      { cron: "* * * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController,
       runtime(cloud),
       ctx,
     );

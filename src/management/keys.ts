@@ -20,8 +20,7 @@ type AppRow = typeof app.$inferSelect;
 
 /**
  * Read off the column rather than the configuration: what kind of application
- * this is does not need the whole grammar run over it, and a row whose stored
- * configuration no longer parses is still unambiguously one kind or the other.
+ * this is does not need the whole grammar run over it.
  */
 function apiKeyApp(row: AppRow): AppRow {
   if (row.authType !== "api_key") {

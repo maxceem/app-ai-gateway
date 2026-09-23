@@ -19,7 +19,7 @@ const APP = {
 function renderSettings(role: "owner" | "member", tab = "settings") {
   stubApi({
     "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
-    "/v1/admin/apps/my-app": { body: { app: APP, config_error: null } },
+    "/v1/admin/apps/my-app": { body: { app: APP } },
   });
   return renderAuthenticated(
     <Routes>

@@ -1,16 +1,14 @@
 /**
  * The application editor's state and every transition it can make.
  *
- * One app is edited in one of two ways, and which one is not the operator's
- * choice: a configuration that parses is edited through the forms, and one that
- * does not is edited as raw JSON until it parses. {@link EditorSession} is that
- * pair, and {@link reduceAppDraft} is the whole of how one moves — a pure
- * function of the session and an action, so a transition can be read and tested
- * without a component, a query client or a render.
+ * {@link EditorSession} is one app open in the forms, and {@link reduceAppDraft}
+ * is the whole of how it moves — a pure function of the session and an action,
+ * so a transition can be read and tested without a component, a query client
+ * or a render.
  *
  * `useAppDraft` in `@/hooks/use-app-draft` is the only caller: it holds this
  * state in a reducer, dispatches `loaded` when the query answers, and owns the
- * two saves. Nothing about React belongs here.
+ * save. Nothing about React belongs here.
  */
 
 import {
@@ -28,7 +26,7 @@ import {
 } from "@/lib/config-types";
 import { unlimitedScope } from "@shared/app-defaults";
 import { identifiesEndUsers } from "@shared/app-config";
-import type { AppResponse, AppRow, InvalidAppResponse } from "@/lib/types";
+import type { AppResponse, AppRow } from "@/lib/types";
 
 export interface Draft {
   name: string;
@@ -51,29 +49,15 @@ interface IssuerMemory {
   rememberedIssuer: AuthConfig | null;
 }
 
-export type StructuredSession = IssuerMemory & {
-  kind: "structured";
+export type EditorSession = IssuerMemory & {
   appId: string;
   draft: Draft;
   baseline: Draft;
   revision: number;
 };
 
-export type RepairSession = IssuerMemory & {
-  kind: "repair";
-  appId: string;
-  row: InvalidAppResponse["app"];
-  text: string;
-  baseline: string;
-  revision: number;
-  error: string | null;
-};
-
-export type EditorSession = StructuredSession | RepairSession;
-
-export const sessionDirty = (session: EditorSession): boolean => session.kind === "structured"
-  ? JSON.stringify(session.draft) !== JSON.stringify(session.baseline)
-  : session.text !== session.baseline;
+export const sessionDirty = (session: EditorSession): boolean =>
+  JSON.stringify(session.draft) !== JSON.stringify(session.baseline);
 
 /**
  * Every move the editor can make.
@@ -95,40 +79,23 @@ export type AppDraftAction =
   | { kind: "updateLimits"; appId: string; limits: LimitsConfig }
   | { kind: "updateEndpoints"; appId: string; endpoints: EndpointsConfig }
   | { kind: "reset"; appId: string }
-  | { kind: "updateRepair"; appId: string; text: string }
-  | { kind: "resetRepair"; appId: string }
-  /** A structured save came back. `submittedRevision` is the race guard. */
-  | { kind: "saved"; appId: string; submitted: Draft; submittedRevision: number; app: AppRow }
-  /** A repair save came back, which may turn this session into a structured one. */
-  | {
-      kind: "repaired";
-      appId: string;
-      submittedText: string;
-      submittedRevision: number;
-      app: AppRow;
-    };
+  /** A save came back. `submittedRevision` is the race guard. */
+  | { kind: "saved"; appId: string; submitted: Draft; submittedRevision: number; app: AppRow };
 
-const structuredOf = (
-  session: EditorSession | null,
-  appId: string,
-): StructuredSession | null =>
-  session?.kind === "structured" && session.appId === appId ? session : null;
-
-const repairOf = (session: EditorSession | null, appId: string): RepairSession | null =>
-  session?.kind === "repair" && session.appId === appId ? session : null;
+const sessionOf = (session: EditorSession | null, appId: string): EditorSession | null =>
+  session?.appId === appId ? session : null;
 
 /** The session that holds this draft, with the draft replaced. */
-const withDraft = (session: StructuredSession, draft: Draft): StructuredSession =>
+const withDraft = (session: EditorSession, draft: Draft): EditorSession =>
   ({ ...session, draft });
 
 const remembering = (draft: Draft): AuthConfig | null =>
   authIssuer(draft.config.authentication) ?? null;
 
-/** The session a fresh read of a valid application opens. */
-function loadedStructured(appId: string, app: AppRow): StructuredSession {
+/** The session a fresh read of an application opens. */
+function loadedSession(appId: string, app: AppRow): EditorSession {
   const draft = toDraft(app);
   return {
-    kind: "structured",
     appId,
     draft,
     baseline: draft,
@@ -145,9 +112,9 @@ function loadedStructured(appId: string, app: AppRow): StructuredSession {
  * away and back returns the JWKS URL and claims instead of a blank form.
  */
 function switchEndUserSource(
-  session: StructuredSession,
+  session: EditorSession,
   source: EndUserIdentity["source"] | undefined,
-): StructuredSession {
+): EditorSession {
   const current = session.draft;
   const authentication = current.config.authentication;
   const configured = authIssuer(authentication);
@@ -203,9 +170,9 @@ function switchEndUserSource(
 
 /** The issuer block edited in place, materializing one where the app implies it. */
 function editIssuer(
-  session: StructuredSession,
+  session: EditorSession,
   partial: Partial<AuthConfig>,
-): StructuredSession {
+): EditorSession {
   const current = session.draft;
   const authentication = current.config.authentication;
   // An api_key app has no issuer until the operator enables one. An App
@@ -225,9 +192,8 @@ function editIssuer(
 
 /**
  * The one transition table. Returns the session it was given when an action
- * does not apply — a different app, the other editing mode, or a save whose
- * revision has been overtaken — so a stale dispatch is a no-op rather than a
- * lost edit.
+ * does not apply — a different app, or a save whose revision has been
+ * overtaken — so a stale dispatch is a no-op rather than a lost edit.
  */
 export function reduceAppDraft(
   session: EditorSession | null,
@@ -236,33 +202,18 @@ export function reduceAppDraft(
   switch (action.kind) {
     case "loaded": {
       // A dirty editor owns both its working value and the revision it opened
-      // at, even when a background refetch changes validity or revision.
+      // at, even when a background refetch changes the revision.
       if (session?.appId === action.appId && sessionDirty(session)) return session;
-      if (action.response.kind === "valid") {
-        return loadedStructured(action.appId, action.response.app);
-      }
-      const text = JSON.stringify(action.response.app.config, null, 2);
-      return {
-        kind: "repair",
-        appId: action.appId,
-        row: action.response.app,
-        text,
-        baseline: text,
-        revision: action.response.app.revision,
-        error: action.response.config_error,
-        // A malformed configuration has no issuer to remember; the one from
-        // whatever was open before belongs to that app, not to this one.
-        rememberedIssuer: null,
-      };
+      return loadedSession(action.appId, action.response.app);
     }
 
     case "update": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current ? withDraft(current, { ...current.draft, ...action.partial }) : session;
     }
 
     case "updateConfig": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current
         ? withDraft(current, {
           ...current.draft,
@@ -272,7 +223,7 @@ export function reduceAppDraft(
     }
 
     case "updateAuthentication": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current
         ? withDraft(current, {
           ...current.draft,
@@ -282,18 +233,18 @@ export function reduceAppDraft(
     }
 
     case "updateIssuer": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current ? editIssuer(current, action.partial) : session;
     }
 
     case "setEndUserSource": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current ? switchEndUserSource(current, action.source) : session;
     }
 
     /** The header name, editable only while a header source is selected. */
     case "updateEndUserHeader": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       if (!current) return session;
       const authentication = current.draft.config.authentication;
       if (authentication.type !== "api_key" || authentication.end_user?.source !== "header") {
@@ -312,7 +263,7 @@ export function reduceAppDraft(
     }
 
     case "updateProxy": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current
         ? withDraft(current, {
           ...current.draft,
@@ -325,7 +276,7 @@ export function reduceAppDraft(
     }
 
     case "updateLimits": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       return current
         ? withDraft(current, {
           ...current.draft,
@@ -338,7 +289,7 @@ export function reduceAppDraft(
     // rest. An empty map is dropped so apps without endpoints keep their
     // config clean.
     case "updateEndpoints": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       if (!current) return session;
       const { endpoints: _previous, ...config } = current.draft.config;
       return withDraft(current, {
@@ -350,7 +301,7 @@ export function reduceAppDraft(
     }
 
     case "reset": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       if (!current) return session;
       const restored = current.baseline;
       return {
@@ -361,18 +312,8 @@ export function reduceAppDraft(
       };
     }
 
-    case "updateRepair": {
-      const current = repairOf(session, action.appId);
-      return current ? { ...current, text: action.text } : session;
-    }
-
-    case "resetRepair": {
-      const current = repairOf(session, action.appId);
-      return current ? { ...current, text: current.baseline } : session;
-    }
-
     case "saved": {
-      const current = structuredOf(session, action.appId);
+      const current = sessionOf(session, action.appId);
       if (!current || current.revision !== action.submittedRevision) return session;
       const next = toDraft(action.app);
       // An edit made while the save was in flight is the newer answer and
@@ -386,29 +327,6 @@ export function reduceAppDraft(
         baseline: next,
         revision: action.app.revision,
         rememberedIssuer: remembering(draft),
-      };
-    }
-
-    case "repaired": {
-      const current = repairOf(session, action.appId);
-      if (!current || current.revision !== action.submittedRevision) return session;
-      // What was sent is still what is typed, so the raw editor has done its
-      // job and the forms take over.
-      if (current.text === action.submittedText) {
-        return loadedStructured(action.appId, action.app);
-      }
-      // A newer correction is being typed, so the raw editor stays open — with
-      // the stored value it now has to beat, and its revision.
-      const baseline = JSON.stringify(action.app.config, null, 2);
-      return {
-        ...current,
-        row: {
-          ...action.app,
-          config: Object.fromEntries(Object.entries(action.app.config)),
-        },
-        baseline,
-        revision: action.app.revision,
-        error: null,
       };
     }
   }

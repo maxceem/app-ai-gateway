@@ -269,10 +269,7 @@ export function scheduledMaintenance(
   cron: string,
   scheduledTime: number,
 ): "prune" | "recover" | undefined {
-  // Keep accepting the former nightly trigger while Cloudflare propagates the
-  // one-trigger configuration. An unrelated trigger must not spend either
-  // maintenance budget.
-  if (cron === "17 3 * * *") return "prune";
+  // An unrelated trigger must not spend either maintenance budget.
   if (cron !== "* * * * *") return undefined;
 
   const scheduled = new Date(scheduledTime);

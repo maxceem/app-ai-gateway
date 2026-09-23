@@ -100,15 +100,11 @@ const app: AppResponse = {
     revision: 1,
     id: "app_1",
     name: "Example",
-    config: {
-      authentication: { type: "api_key" },
-      routing: { providers: { mode: "all" }, model_rewrites: {} },
-    },
+    config: UNLIMITED_SERVER_CONFIG,
     status: "active",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
-  config_error: null,
 };
 
 const account: CliAccountResponse = {
@@ -472,7 +468,6 @@ const cases: Case[] = [
     command: "app add",
     result: {
       app: app.app,
-      config_error: null,
       applicationKey: stored,
       guidance: "Store the generated key on your server.",
     },

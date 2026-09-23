@@ -190,7 +190,6 @@ describe("app usage accounting", () => {
     ["the minute after maintenance", "* * * * *", "2026-10-01T03:18:00Z", "recover"],
     ["the end of a UTC day", "* * * * *", "2026-10-01T23:59:00Z", "recover"],
     ["the start of a UTC day", "* * * * *", "2026-10-02T00:00:00Z", "recover"],
-    ["the legacy nightly trigger", "17 3 * * *", "2026-10-01T09:45:00Z", "prune"],
     ["an unknown trigger", "0 * * * *", "2026-10-01T03:17:00Z", undefined],
   ] as const)("routes %s", (_label, cron, scheduledAt, expected) => {
     expect(scheduledMaintenance(cron, Date.parse(scheduledAt))).toBe(expected);

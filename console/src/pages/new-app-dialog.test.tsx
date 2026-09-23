@@ -36,7 +36,6 @@ function stubCreate(appId = "calorie-tracker-k3f9x1") {
               created_at: "2026-09-02T00:00:00.000Z",
               updated_at: "2026-09-02T00:00:00.000Z",
             },
-            config_error: null,
             api_key: {
               id: "key-1",
               name: "Default key",

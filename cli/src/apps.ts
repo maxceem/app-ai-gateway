@@ -45,7 +45,6 @@ export type ValidationResult =
 export interface AppWriteResult {
   snippet?: string;
   app: AppResponse["app"];
-  config_error: AppResponse["config_error"];
   applicationKey?: StoredKeyMetadata;
   guidance: string;
 }
@@ -73,14 +72,7 @@ export type AppResult =
   | { output: string }
   | { language: "swift" | "shell"; snippet: string; notes: string[] };
 
-/**
- * The stored application as a write body.
- *
- * Validated rather than copied: the read response admits a configuration that
- * predates a schema change (see `config_error`), and every command that reaches
- * for `config.authentication` needs one that parses. The refusal names the
- * field, which is what an operator repairing such a row needs.
- */
+/** The stored application as a write body. */
 export function documentOf(app: AppResponse["app"]): AppWrite {
   return localApp({ name: app.name, config: app.config, status: app.status });
 }
@@ -341,12 +333,11 @@ export async function appCommand(
         : null;
     try {
       let app: AppResponse["app"];
-      let configError: AppResponse["config_error"];
       let key: StoredKeyMetadata | undefined;
       if (action === "add") {
         await ctx.bootstrap();
         const created = await ctx.create("createApp", { body: doc });
-        ({ app, config_error: configError } = created.data);
+        ({ app } = created.data);
         if (output) {
           if (created.keyMetadata) key = created.keyMetadata;
           else {
@@ -368,7 +359,7 @@ export async function appCommand(
           params: { app: appId },
           body: { ...doc, revision },
         });
-        ({ app, config_error: configError } = updated.data);
+        ({ app } = updated.data);
       }
       // The request this application can now send, written against whatever it
       // has: a provider it can reach and a priced model where those exist, and
@@ -388,7 +379,6 @@ export async function appCommand(
       return {
         ...(snippet ? { snippet } : {}),
         app,
-        config_error: configError,
         ...(key ? { applicationKey: key } : {}),
         guidance:
           doc.config.authentication.type === "apple_app_attest"
@@ -477,8 +467,7 @@ export async function appCommand(
       })),
       ready:
         doc.status === "active" &&
-        reachableProviders(doc.config.routing, selected).length > 0 &&
-        !data.config_error,
+        reachableProviders(doc.config.routing, selected).length > 0,
       limitations: [
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",

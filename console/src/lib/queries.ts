@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OperationQuery } from "@contracts/catalog";
 import type { UsageBreakdownDimension } from "@contracts/responses";
 import { call } from "./api";
-import { fromWireApp, toAppWrite } from "./config-conversion";
+import { toAppWrite } from "./config-conversion";
 import {
   changePassword,
   signInWithPassword,
@@ -411,20 +411,15 @@ export function useApps(month: string, refetchInterval?: number) {
 export function useApp(appId: string) {
   return useQuery({
     queryKey: keys.app(appId),
-    queryFn: async () => fromWireApp(await call("getApp", { params: { app: appId } })),
+    queryFn: () => call("getApp", { params: { app: appId } }),
   });
 }
 
 export function useSaveApp(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) => {
-      const result = fromWireApp(
-        await call("updateApp", { params: { app: appId }, body: { ...toAppWrite(body), revision } }),
-      );
-      if (result.kind !== "valid") throw new Error(result.config_error);
-      return result;
-    },
+    mutationFn: ({ body, revision }: { body: AppUpsertBody; revision: number }) =>
+      call("updateApp", { params: { app: appId }, body: { ...toAppWrite(body), revision } }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });
       void client.invalidateQueries({ queryKey: ["apps"] });
@@ -435,14 +430,8 @@ export function useSaveApp(appId: string) {
 export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (body: AppCreateBody): Promise<CreatedApp> => {
-      const created = await call("createApp", { body: toAppWrite(body) });
-      const converted = fromWireApp(created);
-      if (converted.kind !== "valid") throw new Error(converted.config_error);
-      // The one-time initial key an API-key application is born with, which is
-      // the one field a create carries beyond an ordinary application read.
-      return { ...converted, api_key: created.api_key };
-    },
+    mutationFn: (body: AppCreateBody): Promise<CreatedApp> =>
+      call("createApp", { body: toAppWrite(body) }),
     onSuccess: (created, body) => {
       // Which of the two ways in the application was born with, since App
       // Attest rather than an API key is what this product is built for.

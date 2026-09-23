@@ -379,10 +379,9 @@ describe("admin console API", () => {
     });
     expect(updated.status, await updated.clone().text()).toBe(200);
     // An update answers with the same object a read does, already renamed.
-    const updatedBody = await updated.json<{ app: { id: string; name: string }; config_error: null }>();
+    const updatedBody = await updated.json<{ app: { id: string; name: string } }>();
     expect(updatedBody.app.id).toBe("put-updates-me");
     expect(updatedBody.app.name).toBe("Renamed");
-    expect(updatedBody.config_error).toBeNull();
     expect((await get("/v1/admin/apps/put-updates-me")).body.app).toEqual(updatedBody.app);
   });
 
@@ -407,7 +406,6 @@ describe("admin console API", () => {
         updated_at: string;
         config: { routing: { providers: { mode: string } } };
       };
-      config_error: string | null;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
     expect(body.app.id).toMatch(/^calorie-tracker-[0-9abcdefghjkmnpqrstvwxyz]{12}$/u);
@@ -417,7 +415,6 @@ describe("admin console API", () => {
     // A create answers with the application, in the shape a read answers with.
     const readBack = await get(`/v1/admin/apps/${body.app.id}`);
     expect(body.app).toEqual(readBack.body.app);
-    expect(body.config_error).toBeNull();
 
     const original = await get("/v1/admin/apps/calorie-tracker");
     expect(original.body.app.name).toBe("Test calorie-tracker");
@@ -454,19 +451,18 @@ describe("admin console API", () => {
     expect(body.api_key).toBeNull();
   });
 
-  it("returns a readable row plus the error when a stored config is invalid", async () => {
+  it("treats a stored config that no longer parses as an internal error", async () => {
     await env.DB.prepare(
       `INSERT INTO app(id, organization_id, name, config_json, status)
        VALUES (?, 'operator-test-organization', ?, ?, 'active')`,
     )
       .bind("broken-config", "Broken", JSON.stringify({ authentication: {}, routing: {}, limits: {} }))
       .run();
+    // Every write validates before it stores, so this row means the database
+    // moved under the schema: a migration was missing, not a user mistake.
     const { status, body } = await get("/v1/admin/apps/broken-config");
-    expect(status).toBe(200);
-    // Returned as it is stored, so the repair editor has something to open.
-    expect(body.app.config).toEqual({ authentication: {}, routing: {}, limits: {} });
-    expect(body.config_error).toContain("authentication.type");
-    expect(body.app.name).toBe("Broken");
+    expect(status).toBe(500);
+    expect(body.error.code).toBe("internal_error");
   });
 
   it("deletes an app only with confirmation, keeping usage but not auth history", async () => {
@@ -850,7 +846,6 @@ describe("authoritative admin configuration", () => {
         revision: 2,
         config: { authentication: { type: "api_key" } },
       },
-      config_error: null,
     });
     expect(sessionCalls).toBe(0);
   });

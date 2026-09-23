@@ -315,10 +315,7 @@ function list(command: CommandName, result: RenderedResult, style: Style): strin
  */
 function show(command: CommandName, result: RenderedResult, style: Style): string[] {
   if (command === "app show" && "app" in result && !("guidance" in result)) {
-    const lines = [style.headline(`${result.app.name} (${result.app.id})`)];
-    if (result.config_error)
-      lines.push(style.alert(`Configuration error: ${result.config_error}`));
-    return [...lines, "", style.json(result)];
+    return [style.headline(`${result.app.name} (${result.app.id})`), "", style.json(result)];
   }
   if ("slug" in result)
     return [

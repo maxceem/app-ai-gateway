@@ -23,7 +23,6 @@ import {
   configFile,
   matchExisting,
   prepare,
-  retireInstallationSecrets,
   selectedInstallation,
   verifyDeployment,
   type DomainPlan,
@@ -180,7 +179,6 @@ async function completeInstallation(
   artifact: ReleaseArtifact,
   installations: Record<string, InstallationJournal>,
 ): Promise<DeploymentSetupPlan> {
-  await retireInstallationSecrets(ctx, ready, flags);
   let journal = ready;
   if (journal.pendingDomain) {
     // Matched against the installation being finished rather than the selected

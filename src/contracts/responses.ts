@@ -19,7 +19,7 @@ import {
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   ProviderPricingSchema,
-  StoredSlugSchema,
+  SlugSchema,
 } from "./schemas.ts";
 
 /**
@@ -249,17 +249,13 @@ export const AppResponseSchema = z.object({
     /**
      * An `AppConfig` — the parsed one, which is also the stored one: what the
      * gateway accepts is what it keeps, so there is no second "resolved" view
-     * of it to publish. The one exception is the row this shape's own
-     * `config_error` describes: a configuration written before a schema change
-     * is returned as it is stored, so an operator can read and repair it, and
-     * that is why this is declared as the union rather than as `AppConfig`.
+     * of it to publish.
      */
-    config: z.union([AppConfigSchema, z.record(z.string(), z.unknown())]),
+    config: AppConfigSchema,
     status: z.enum(["active", "disabled"]),
     created_at: z.string(),
     updated_at: z.string(),
   }),
-  config_error: z.string().nullable().meta({ description: "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write." }),
 }).meta({ id: "AppResponse" });
 
 export const AppDeleteResponseSchema = z.object({
@@ -300,7 +296,7 @@ export const ManagementKeyResponseSchema = z.object({ key: ManagementKeySummaryS
 export const ProviderSummarySchema = z.object({
   id: z.string(),
   type: z.enum(PROVIDER_TYPES),
-  slug: StoredSlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
+  slug: SlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
   name: z.string(),
   secretHint: z.string().nullable().meta({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
@@ -526,7 +522,7 @@ export const AppSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
   status: z.enum(["active", "disabled"]),
-  authentication_type: z.enum(["apple_app_attest", "api_key", "invalid"]),
+  authentication_type: z.enum(["apple_app_attest", "api_key"]),
   apple_bundle_id: z.string().nullable(),
   created_at: z.string(),
   providers: z.array(z.string()),

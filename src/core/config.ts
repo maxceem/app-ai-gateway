@@ -4,7 +4,6 @@ import { app } from "../db/schema";
 import { GatewayError } from "./errors";
 import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
-import { referencedProviderSlugs as referencedSlugs } from "./config-references";
 import type { AppRecord } from "./types";
 
 export {
@@ -40,11 +39,9 @@ export const appConfigCache = ttlCache<string, AppRecord>({
 /**
  * One authoritative stored row as the Worker reads it.
  *
- * A row that does not parse is an internal error on this path and nothing else:
+ * A row that does not parse is an internal error, wherever it is read:
  * every write validates before it stores, so a request-path row that fails the
- * grammar means the deployment has moved under its own data. The management
- * routes answer for such a row differently — they hand it back with
- * `config_error` so it can be repaired — and they parse it themselves.
+ * grammar means the deployment has moved under its own data.
  */
 export function appRecordFromRow(row: typeof app.$inferSelect): AppRecord {
   try {
@@ -78,20 +75,6 @@ export async function loadApp(env: Env, appId: string): Promise<AppRecord> {
 
 export function invalidateAppConfig(appId: string): void {
   appConfigCache.delete(appId);
-}
-
-/**
- * The provider slugs a stored configuration already names, for the write paths
- * that let an edit keep a slug whose provider row has since been deleted. A row
- * that does not parse names none, which is the safe answer: nothing is
- * grandfathered on the strength of configuration nobody can read.
- */
-export function referencedProviderSlugs(raw: unknown): Set<string> {
-  try {
-    return referencedSlugs(parseAppConfig(raw));
-  } catch {
-    return new Set();
-  }
 }
 
 export function assertAppActive(value: AppRecord): void {

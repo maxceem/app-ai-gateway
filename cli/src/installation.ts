@@ -27,9 +27,6 @@ import {
  * one call. A field whose patch value is `undefined` is dropped from the
  * journal — how a `pendingDomain` that has been attached, or a secret the
  * Worker now holds, leaves the state file.
- *
- * The phase names are the ones on disk (`prepared`, `deployed`, `ready`) and
- * cannot be renamed: journals written by earlier releases are still read.
  */
 export async function advance(
   ctx: Context,
@@ -334,25 +331,6 @@ async function currentInventory(
 }
 
 /**
- * Moves a finished installation's leftover secrets out of the state file.
- *
- * Earlier releases kept the auth secrets and the vault key in the journal for
- * the life of the installation, beside the management credential. The Worker
- * holds the auth secrets, so once the install is ready the vault key is the
- * only one worth keeping — in its own file, where `vaultKey` adopts it.
- */
-export async function retireInstallationSecrets(
-  ctx: Context,
-  journal: InstallationJournal,
-  flags: Flags,
-): Promise<void> {
-  if (flags["dry-run"] || journal.phase !== "ready" || !journal.secrets) return;
-  const kek = journal.secrets["SECRET_VAULT_LOCAL_KEK_V1"];
-  if (kek) await ctx.store.vaultKey(journal.id, kek);
-  await advance(ctx, journal, journal.phase, { secrets: undefined });
-}
-
-/**
  * The journal for one deployment, checked against the Worker that serves it.
  *
  * The target is passed rather than read from the context: the journal being
@@ -394,7 +372,6 @@ export async function matchExisting(
       version: capabilities.serverVersion,
     };
     if (!flags["dry-run"]) installations[journal.id] = checked;
-    await retireInstallationSecrets(ctx, checked, flags);
     return checked;
   }
   const accountId = await cf.account(flags);

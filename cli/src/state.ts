@@ -767,7 +767,7 @@ export class StateStore {
    * Keeping it out of `connection.json` keeps it away from the management
    * credential that file carries, and out of anything that reads state.
    */
-  async vaultKey(deploymentId: string, adopt?: string): Promise<string> {
+  async vaultKey(deploymentId: string): Promise<string> {
     const dir = join(this.directory, "vault-keys");
     await protectedDirectory(dir);
     const name = /^[A-Za-z0-9._-]{1,64}$/.test(deploymentId)
@@ -796,7 +796,7 @@ export class StateStore {
         );
       return existing;
     }
-    const key = adopt?.trim() || randomBytes(32).toString("base64");
+    const key = randomBytes(32).toString("base64");
     const handle = await open(path, "wx", 0o600);
     try {
       await handle.writeFile(key);

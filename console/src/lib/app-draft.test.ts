@@ -3,7 +3,6 @@ import {
   reduceAppDraft,
   type AppDraftAction,
   type EditorSession,
-  type StructuredSession,
 } from "./app-draft";
 import { emptyIssuer } from "@/lib/config-types";
 import { parseAppConfig } from "@shared/app-config";
@@ -45,33 +44,33 @@ function row(config: Record<string, unknown>, revision = 1): AppRow {
 }
 
 const valid = (config: Record<string, unknown>, revision = 1): AppResponse =>
-  ({ kind: "valid", app: row(config, revision), config_error: null });
+  ({ app: row(config, revision) });
 
 /** The session a first read of this configuration opens. */
-function opened(config: Record<string, unknown>): StructuredSession {
+function opened(config: Record<string, unknown>): EditorSession {
   const session = reduceAppDraft(null, {
     kind: "loaded",
     appId: APP_ID,
     response: valid(config),
   });
-  if (session?.kind !== "structured") throw new Error("expected a structured session");
+  if (!session) throw new Error("expected a session");
   return session;
 }
 
 /** Several actions in a row, as a screen would dispatch them. */
-function run(session: EditorSession | null, ...actions: AppDraftAction[]): StructuredSession {
+function run(session: EditorSession | null, ...actions: AppDraftAction[]): EditorSession {
   const next = actions.reduce<EditorSession | null>(
     (current, action) => reduceAppDraft(current, action),
     session,
   );
-  if (next?.kind !== "structured") throw new Error("expected a structured session");
+  if (!next) throw new Error("expected a session");
   return next;
 }
 
 const source = (value: "issuer" | "header" | "app_install" | undefined): AppDraftAction =>
   ({ kind: "setEndUserSource", appId: APP_ID, source: value });
 
-const authOf = (session: StructuredSession) => session.draft.config.authentication;
+const authOf = (session: EditorSession) => session.draft.config.authentication;
 
 describe("setEndUserSource on an api_key application", () => {
   it("starts a header source on the default name", () => {
@@ -153,7 +152,7 @@ describe("the issuer the editor remembers", () => {
     const other = reduceAppDraft(edited, {
       kind: "loaded",
       appId: "other-app",
-      response: { kind: "invalid", app: { ...row(SERVER), config: {} }, config_error: "Invalid" },
+      response: valid(SERVER),
     });
 
     expect(other?.rememberedIssuer).toBeNull();

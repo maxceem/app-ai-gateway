@@ -50,7 +50,6 @@ function renderInsideApp(route = "/apps/app-1/overview", status = "active") {
     "/v1/admin/apps/app-1": {
       body: {
         app: { id: "app-1", name: "My app", status, config: {} },
-        config_error: null,
       },
     },
   });

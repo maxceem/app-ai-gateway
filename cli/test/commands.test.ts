@@ -130,7 +130,7 @@ test("app remove supplies required confirmation query and full writes supply the
     call: async (name: string, options?: Record<string, unknown>) => {
       calls.push({ name, ...(options ? { options } : {}) });
       return {
-        data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null },
+        data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null },
       };
     },
   });
@@ -173,7 +173,7 @@ const snippetContext = (providers: ReturnType<typeof providerRow>[], app: AppWri
       if (name === "listProviders") return { data: { providers } };
       if (name === "listModelPrices")
         return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
-      return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+      return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null } };
     },
   });
 
@@ -227,14 +227,13 @@ test("creating a server app hands back the request to send, keyed from the file 
       if (name === "listProviders") return { data: { providers: [providerRow("openai", "openai")] } };
       if (name === "listModelPrices")
         return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
-      return { data: { app: created, resolved: null, config_error: null } };
+      return { data: { app: created, resolved: null } };
     },
     keyOutput: async () => await reserveOutput(keyPath),
     create: async () => ({
       data: {
         app: created,
         resolved: null,
-        config_error: null,
         api_key: { id: "key-1", key: "SENTINEL-KEY", name: "default", key_prefix: "agw_", created_at: "now" },
       },
       complete: async () => {},
@@ -293,7 +292,7 @@ test("app key failures revoke one-time credential before returning error", async
     call: async (name: string) => {
       calls.push(name);
       if (name === "getApp")
-        return { data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+        return { data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null } };
       return { data: {} };
     },
     keyOutput: async () => ({
@@ -467,7 +466,7 @@ test("setup refuses existing Worker name before any remote mutation", async () =
   assert.ok(cf.calls.every(([method]) => method === "GET"));
 });
 
-test("ready setup does not replay secrets or retired bootstrap credentials", async () => {
+test("ready setup changes nothing on Cloudflare", async () => {
   const cf = cfMock();
   cf.all = async () => [{ id: "existing" }] as never;
   cf.request = async () =>
@@ -482,25 +481,12 @@ test("ready setup does not replay secrets or retired bootstrap credentials", asy
     version: "0.1.0",
     phase: "ready",
     url: "https://existing.example",
-    // What an installation completed by an earlier release left in the journal.
-    secrets: {
-      JWT_SECRET: "SENTINEL-JWT",
-      BETTER_AUTH_SECRET: "SENTINEL-AUTH",
-      SECRET_VAULT_LOCAL_KEK_V1: "SENTINEL-KEK",
-    },
   };
   let publicCalls = 0;
-  const adopted: [string, string | undefined][] = [];
   const ctx = stubContext({
     state: { installations: { "deployment-1": journal } },
     url: "https://other.example",
     save: async () => {},
-    store: {
-      vaultKey: async (id: string, adopt?: string) => {
-        adopted.push([id, adopt]);
-        return adopt ?? "generated";
-      },
-    },
     publicCall: async (name: string, options: { url?: string }) => {
       publicCalls++;
       assert.equal(name, "getCliCapabilities");
@@ -518,10 +504,6 @@ test("ready setup does not replay secrets or retired bootstrap credentials", asy
   assert.equal("installed" in result && result.installed, true);
   assert.equal(publicCalls, 1);
   assert.equal(cf.calls.length, 0);
-  // The vault key moves to its own file; the auth secrets leave state for good.
-  assert.deepEqual(adopted, [["deployment-1", "SENTINEL-KEK"]]);
-  assert.equal(journal.secrets, undefined);
-  assert.equal(JSON.stringify(ctx.state).includes("SENTINEL"), false);
 });
 
 test("journal-backed deployment updates refuse a replaced Cloudflare Worker", async () => {
@@ -670,7 +652,6 @@ test("explicit key output resumes after durable response and disk failure withou
         data: {
           app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
           resolved: null,
-          config_error: null,
         }
       };
     },
@@ -763,7 +744,6 @@ test("a refused key creation releases both its receipt and its reserved output",
         data: {
           app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
           resolved: null,
-          config_error: null,
         }
       };
     },
@@ -1034,7 +1014,7 @@ test("app snippet names the deployment's API host, not the managed URL", async (
     },
     call: async (name: string) => {
       if (name === "getApp")
-        return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+        return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null } };
       if (name === "listModelPrices")
         return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
       return { data: { providers: [{ id: "p-1", slug: "openai", type: "openai", status: "active" }] } };

@@ -1205,15 +1205,7 @@
                 "type": "string"
               },
               "config": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/AppConfig"
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": {}
-                  }
-                ]
+                "$ref": "#/components/schemas/AppConfig"
               },
               "status": {
                 "type": "string",
@@ -1238,18 +1230,10 @@
               "created_at",
               "updated_at"
             ]
-          },
-          "config_error": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write."
           }
         },
         "required": [
-          "app",
-          "config_error"
+          "app"
         ]
       },
       "AppUpdate": {
@@ -3841,8 +3825,7 @@
                             "type": "string",
                             "enum": [
                               "apple_app_attest",
-                              "api_key",
-                              "invalid"
+                              "api_key"
                             ]
                           },
                           "apple_bundle_id": {
@@ -4066,15 +4049,7 @@
                           "type": "string"
                         },
                         "config": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/components/schemas/AppConfig"
-                            },
-                            {
-                              "type": "object",
-                              "additionalProperties": {}
-                            }
-                          ]
+                          "$ref": "#/components/schemas/AppConfig"
                         },
                         "status": {
                           "type": "string",
@@ -4099,13 +4074,6 @@
                         "created_at",
                         "updated_at"
                       ]
-                    },
-                    "config_error": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "description": "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write."
                     },
                     "api_key": {
                       "type": [
@@ -4140,7 +4108,6 @@
                   },
                   "required": [
                     "app",
-                    "config_error",
                     "api_key"
                   ]
                 }

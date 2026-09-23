@@ -496,13 +496,12 @@ test("resource creates reuse pre-persisted idempotency authorization after a los
               id: "stable-app",
               revision: 1,
               name: "Test",
-              config: {},
+              config: parseAppConfig({ authentication: { type: "api_key" }, routing: { providers: { mode: "all" }, model_rewrites: {} } }),
               status: "active",
               created_at: "now",
               updated_at: "now",
             },
             resolved: null,
-            config_error: null,
             api_key: null,
           }
         };
@@ -621,7 +620,6 @@ test("advanced public app config and provider gateway IDs survive response parsi
       created_at: "now",
       updated_at: "now",
     },
-    config_error: null,
   });
   // Parsed, so the schema's own defaults are there too; everything the body
   // named survives them untouched.
@@ -746,7 +744,6 @@ test("fresh onboarding output includes exact free access dates without managemen
                   updated_at: "now",
                 },
                 resolved: null,
-                config_error: null,
                 api_key: null,
               }
             };
@@ -912,7 +909,6 @@ function appResponse(id: string) {
       updated_at: "now",
     },
     resolved: null,
-    config_error: null,
     api_key: null,
   };
 }
@@ -1076,20 +1072,18 @@ test("logout strips the credential of the connection this one replaced", async (
   assert.equal(state.previous?.authenticated, false);
 });
 
-test("a deployment's vault key lives in its own file, is adopted once and never regenerated", async (t) => {
+test("a deployment's vault key lives in its own file and is never regenerated", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-vault-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new StateStore(dir);
-  const key = await store.vaultKey("deployment-1", "SENTINEL-LEGACY-KEK");
-  assert.equal(key, "SENTINEL-LEGACY-KEK");
+  const key = await store.vaultKey("deployment-1");
   const path = join(dir, "vault-keys", "deployment-1.key");
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   // A second install of the same deployment must not mint a replacement.
   assert.equal(await store.vaultKey("deployment-1"), key);
-  assert.equal(await store.vaultKey("deployment-1", "different"), key);
   assert.notEqual(await store.vaultKey("deployment-2"), key);
   await store.write(fresh());
-  assert.equal((await readFile(store.path, "utf8")).includes("SENTINEL"), false);
+  assert.equal((await readFile(store.path, "utf8")).includes(key), false);
   await writeFile(path, "", { mode: 0o600 });
   await assert.rejects(() => store.vaultKey("deployment-1"), hasCode("unsafe_storage"));
 });

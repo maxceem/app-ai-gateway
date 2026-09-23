@@ -104,7 +104,6 @@ function renderApps(
           },
         },
       },
-      config_error: null,
     } }])),
     "/v1/admin/prices": { body: { prices: {} } },
     [APPS_URL]: {
