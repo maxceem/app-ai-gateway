@@ -15,7 +15,7 @@
  * looking like configuration.
  */
 
-import type { ProviderPolicy, RoutingConfig } from "./app-config.ts";
+import type { AuthenticationConfig, ProviderPolicy, RoutingConfig } from "./app-config.ts";
 import { API_STYLE_PATHS } from "./capabilities.ts";
 import { isProviderType, providerDescriptor } from "./providers.ts";
 
@@ -234,17 +234,39 @@ export function curlSnippet(
   );
 }
 
+/** The note an issuer-signed-in iOS app's example carries, where its token provider is a stand-in. */
+export const ISSUER_TOKEN_NOTE =
+  "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.";
+
+/**
+ * Whether an iOS application's users sign in with an issuer, which is what
+ * decides how the Swift client authenticates: an App Attest install alone, or
+ * App Attest plus the user's own signed token.
+ */
+export function swiftSignsInUsers(authentication: AuthenticationConfig | undefined): boolean {
+  return authentication?.type === "apple_app_attest" && authentication.end_user.source === "issuer";
+}
+
+/** The Swift client's `authMode` argument for an application, from its own configuration. */
+function swiftAuthMode(authentication: AuthenticationConfig | undefined): string {
+  return swiftSignsInUsers(authentication)
+    ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
+    : ".appAttestInstall";
+}
+
 /**
  * The same request through the Swift package, for an iOS application.
  *
- * `authMode` is the client's own initializer argument rather than a flag here,
- * because an app whose users come from an issuer has a token provider to write
- * into it and only its own configuration knows that.
+ * The client's `authMode` follows from the application's authentication, so
+ * every caller writes the same one: an app whose users come from an issuer gets
+ * a token provider, one that identifies installs gets the install mode. A
+ * caller that cannot read the configuration passes none and gets the latter.
  */
 export function swiftSnippet(
-  options: SnippetOptions & { authMode?: string },
+  options: SnippetOptions & { authentication?: AuthenticationConfig },
 ): string {
-  const { baseUrl, appId, example, notes, authMode = ".appAttestInstall" } = options;
+  const { baseUrl, appId, example, notes, authentication } = options;
+  const authMode = swiftAuthMode(authentication);
   const target =
     "endpoint" in example.target
       ? `endpointSlug: ${JSON.stringify(example.target.endpoint)}`

@@ -28,7 +28,14 @@ import { useCheckoutSuccessToast } from "@/lib/checkout-return";
 import { noteProxiedRequests } from "@/lib/analytics";
 import { useConsoleSession } from "@/lib/console-session";
 import { clientApiOrigin } from "@/lib/client-api";
-import { curlSnippet, exampleNotes, firstRequest, swiftSnippet } from "@shared/first-request";
+import {
+  curlSnippet,
+  exampleNotes,
+  firstRequest,
+  ISSUER_TOKEN_NOTE,
+  swiftSignsInUsers,
+  swiftSnippet,
+} from "@shared/first-request";
 import type { AppSummary } from "@/lib/types";
 
 /** Where the Swift client walks through the first proxied request end to end. */
@@ -117,8 +124,9 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
   if (details.isPending || providers.isPending || prices.isPending) return <Skeleton className="mt-4 h-32" />;
   // An app with no provider yet still gets an example, with placeholders where
   // its own configuration cannot fill one in — see `@shared/first-request`.
+  const config = details.data?.kind === "valid" ? details.data.app.config : undefined;
   const example = firstRequest(
-    details.data?.kind === "valid" ? details.data.app.config.routing : undefined,
+    config?.routing,
     providers.data?.providers ?? [],
     prices.data?.prices ?? {},
   );
@@ -126,9 +134,12 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
   // API domain is not the console's own. A snippet is pasted into a real app.
   const origin = clientApiOrigin(capabilities);
   const code = ios
-    ? swiftSnippet({ baseUrl: origin, appId: app.id, example })
+    ? swiftSnippet({ baseUrl: origin, appId: app.id, example, authentication: config?.authentication })
     : curlSnippet({ baseUrl: origin, appId: app.id, example, keyExpression: "API_KEY" });
-  const notes = exampleNotes(example);
+  const notes = [
+    ...(ios && swiftSignsInUsers(config?.authentication) ? [ISSUER_TOKEN_NOTE] : []),
+    ...exampleNotes(example),
+  ];
 
   return (
     <div className="mt-4 min-w-0 space-y-2">

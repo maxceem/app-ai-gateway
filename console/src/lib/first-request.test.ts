@@ -3,6 +3,7 @@ import {
   curlSnippet,
   exampleNotes,
   firstRequest,
+  swiftSignsInUsers,
   swiftSnippet,
   type ExamplePolicy,
   type ExampleProvider,
@@ -73,10 +74,35 @@ describe("first request examples", () => {
     expect(curl).toContain("# Note.");
     expect(curl).toContain("https://gw.test/v1/apps/app%201/proxy/custom/v1/responses");
     expect(curl).toContain('-H "Authorization: Bearer $APP_AI_GATEWAY_KEY"');
-    const swift = swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authMode: ".appAttest" });
-    expect(swift).toContain("authMode: .appAttest");
+    const swift = swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example });
+    expect(swift).toContain("authMode: .appAttestInstall");
     expect(swift).toContain('providerPath: "v1/responses"');
     expect(swift).toContain('Data("{\\"model\\":\\"text-model\\",\\"input\\":\\"Say hello.\\"}".utf8)');
+  });
+  it("writes the Swift client's auth mode from the app's own authentication", () => {
+    const example = firstRequest(routing(), [provider()], prices);
+    const issuer = {
+      provider: "firebase" as const,
+      jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+      issuer: ["https://securetoken.google.com/my-app"],
+      audience: ["my-app"],
+      user_id_claim: "sub",
+      required_claims: [],
+      max_token_lifetime_seconds: 86400,
+    };
+    const app_attest = { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production" as const] };
+    const signedIn = {
+      type: "apple_app_attest" as const,
+      app_attest,
+      end_user: { source: "issuer" as const, issuer },
+    };
+    expect(swiftSignsInUsers(signedIn)).toBe(true);
+    expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authentication: signedIn }))
+      .toContain("authMode: .appAttest(issuerTokenProvider:");
+    const installs = { type: "apple_app_attest" as const, app_attest, end_user: { source: "app_install" as const } };
+    expect(swiftSignsInUsers(installs)).toBe(false);
+    expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authentication: installs }))
+      .toContain("authMode: .appAttestInstall");
   });
   it("calls a named endpoint at its own URL", () => {
     const example: RequestExample = { target: { endpoint: "chat" }, body: { input: "Say hello." }, anthropic: false, gaps: [] };

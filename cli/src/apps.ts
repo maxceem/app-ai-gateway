@@ -22,7 +22,9 @@ import {
   curlSnippet,
   exampleNotes,
   firstRequest,
+  ISSUER_TOKEN_NOTE,
   shellQuote,
+  swiftSignsInUsers,
   swiftSnippet,
   type RequestExample,
 } from "../../src/shared/first-request.ts";
@@ -539,21 +541,12 @@ export async function appCommand(
     const clientUrl = ctx.active?.deployment?.apiUrl ?? ctx.url;
     let snippet: string;
     if (ios) {
-      const endUser = doc.config.authentication.type === "apple_app_attest"
-        ? doc.config.authentication.end_user
-        : undefined;
-      const issuer = endUser?.source === "issuer";
-      if (issuer)
-        notes.push(
-          "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.",
-        );
+      if (swiftSignsInUsers(doc.config.authentication)) notes.push(ISSUER_TOKEN_NOTE);
       snippet = swiftSnippet({
         baseUrl: clientUrl,
         appId,
         example,
-        authMode: issuer
-          ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
-          : ".appAttestInstall",
+        authentication: doc.config.authentication,
         notes: [
           "Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)",
           "Enable App Attest and test on a supported physical device.",
