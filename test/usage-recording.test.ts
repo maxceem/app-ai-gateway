@@ -10,6 +10,7 @@ import {
 } from "../src/core/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
 import type { GatewayIdentity } from "../src/core/types";
+import { monthlySpendMicrousd } from "../src/core/app-usage-accounting";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -84,10 +85,14 @@ async function rowCount(appId: string): Promise<number> {
   return row!.count;
 }
 
+/** The month's spend for a limiter name: `app` or `app:user`. */
 function monthlyCost(name: string): Promise<number> {
-  return env.USER_LIMITER.getByName(name)
-    .getStatus(Date.now())
-    .then((status) => status.monthlyCostMicrousd);
+  const [appId, userKey] = name.split(":");
+  return monthlySpendMicrousd(
+    env.DB,
+    { appId: appId!, userKey: userKey ?? null },
+    new Date().toISOString().slice(0, 7),
+  );
 }
 
 function errorCodes(spy: { mock: { calls: unknown[][] } }): string[] {
@@ -139,8 +144,8 @@ describe("usage recording idempotency", () => {
 
     await persistUsageEvent(withDatabase(flaky.database), usageEvent({ appId, costUsd: 0.00002 }));
 
-    // Two insert attempts, then the aggregate read and two attempt/ack pairs.
-    expect(flaky.attempts()).toBe(7);
+    // Two insert attempts; the insert's own trigger moved the totals.
+    expect(flaky.attempts()).toBe(2);
     expect(await rowCount(appId)).toBe(1);
     expect(await monthlyCost(`${appId}:user-1`)).toBe(20);
     expect(errorCodes(errors)).not.toContain("usage_record_failed");

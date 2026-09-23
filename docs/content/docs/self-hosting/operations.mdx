@@ -87,8 +87,8 @@ an explicit, deliberate step.
 
 ## Retention
 
-A single cron trigger runs every minute. At 03:17 UTC it uses that invocation
-for nightly maintenance instead of spend recovery and keeps the database bounded:
+A single cron trigger runs nightly maintenance at 03:17 UTC and keeps the
+database bounded:
 
 | Data | Rule |
 | --- | --- |
@@ -117,13 +117,9 @@ reported are never touched; that figure is what you were charged. The request
 shape is in the [API reference](/api), and management keys for calling it are
 covered in [API](/automation/api).
 
-Saved spend changes are sent to the app's limit counters immediately. That
-work is bounded for a large reprice: `reconciled_users` is the number of user
-counters acknowledged during this request, and the remaining saved updates
-stay pending. The same cron trigger retries pending updates every minute except
-the 03:17 UTC maintenance minute. Replays and
-out-of-order deliveries are safe, so a transient counter failure cannot add the
-same spend twice or replace a newer total with an older one.
+A reprice moves each affected month's spend totals in the same write, and the
+app's limit counters read the new totals within about ten seconds, however
+many users the month touched.
 
 ## Request volume
 

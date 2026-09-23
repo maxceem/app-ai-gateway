@@ -12,7 +12,6 @@ import { log } from "./log";
 import { timeOrderedId } from "./ids";
 import { storedAppVersion } from "./app-version";
 import { claimDiagnosticSample } from "./endpoint-rate-limit";
-import { projectUsageEventSpend } from "./app-usage-accounting";
 import { type ObservedBody } from "./body-observer";
 import { computeCost, EMPTY_USAGE, resolveModelAuthor, type UsageObservation } from "./pricing";
 import { observeResponse } from "./usage-readers";
@@ -170,24 +169,13 @@ function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
 }
 
 /**
- * Persists the canonical D1 event first. Its insert trigger updates both
- * aggregate scopes in the same transaction; only after that succeeds may the
- * latest versions be projected to limiters. A failed projection remains
- * pending for scheduled recovery, while a duplicate event insert changes no
- * aggregate and can safely replay the same latest versions.
+ * Persists the event, whose insert trigger moves both of its month's spend
+ * totals in the same D1 write, then marks the API key used. A duplicate insert
+ * changes no total, so every step can be retried without double counting.
  */
 export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<void> {
   const outcomes: boolean[] = [];
-  const stored = await recordStep("usage_insert", event, () => insertUsageEvent(env, event));
-  outcomes.push(stored);
-  if (stored && Math.round(Number(event.row.costUsd ?? 0) * 1_000_000) !== 0) {
-    outcomes.push(await recordStep("limiter_projection", event, () =>
-      projectUsageEventSpend(env, {
-        appId: event.row.appId,
-        userId: event.row.userId ?? null,
-        month: event.row.createdAt.slice(0, 7),
-      })));
-  }
+  outcomes.push(await recordStep("usage_insert", event, () => insertUsageEvent(env, event)));
   const apiKeyId = event.row.apiKeyId;
   if (apiKeyId) {
     outcomes.push(await recordStep("api_key_used", event, () => markApiKeyUsed(env, apiKeyId)));

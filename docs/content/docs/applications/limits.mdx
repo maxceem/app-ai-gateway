@@ -17,7 +17,7 @@ Applied independently to every identified user.
 Rate limits answer `429 app_rate_limited`. An exhausted budget answers
 `429 app_budget_exhausted`. Both carry `data.scope: "user"` and a
 `Retry-After` header. The budget is settled from completed requests, so it
-stops the request after the one that crosses it.
+stops a request within about ten seconds of the one that crosses it.
 
 This card needs an app that identifies users. For an app with **No user
 identity** it is replaced by a note pointing to the **Auth policy** page,

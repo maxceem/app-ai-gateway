@@ -700,9 +700,6 @@ export const UsageRepriceResponseSchema = z.object({
   previous_cost_usd: z.number(),
   recalculated_cost_usd: z.number(),
   delta_usd: z.number(),
-  reconciled_users: z.number().int().meta({
-    description: "End-user spend ledgers reprojected inside this request; the rest are left to scheduled recovery.",
-  }),
 });
 
 export const ModelPriceSchema = z.object({

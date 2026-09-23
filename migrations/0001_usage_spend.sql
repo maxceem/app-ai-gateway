@@ -6,25 +6,17 @@ CREATE TABLE `app_usage_spend` (
 	`user_key` text NOT NULL,
 	`month` text NOT NULL,
 	`microusd` integer NOT NULL,
-	`revision` integer NOT NULL,
-	`pending` integer DEFAULT 1 NOT NULL,
-	`last_attempt_at` integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "app_usage_spend_scope_check" CHECK("app_usage_spend"."scope" IN ('app', 'user')),
 	CONSTRAINT "app_usage_spend_month_check" CHECK("app_usage_spend"."month" GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr("app_usage_spend"."month", 6, 2) BETWEEN '01' AND '12'),
-	CONSTRAINT "app_usage_spend_microusd_check" CHECK("app_usage_spend"."microusd" >= 0),
-	CONSTRAINT "app_usage_spend_revision_check" CHECK("app_usage_spend"."revision" > 0),
-	CONSTRAINT "app_usage_spend_pending_check" CHECK("app_usage_spend"."pending" IN (0, 1))
+	CONSTRAINT "app_usage_spend_microusd_check" CHECK("app_usage_spend"."microusd" >= 0)
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `app_usage_spend_scope_month_unique` ON `app_usage_spend` (`scope`,`app_id`,`user_key`,`month`);--> statement-breakpoint
-CREATE INDEX `idx_app_usage_spend_pending` ON `app_usage_spend` (`pending`,`last_attempt_at`,`id`);--> statement-breakpoint
-CREATE INDEX `idx_app_usage_spend_app_month` ON `app_usage_spend` (`app_id`,`month`,`pending`,`last_attempt_at`);--> statement-breakpoint
 CREATE INDEX `idx_app_usage_spend_organization` ON `app_usage_spend` (`organization_id`);--> statement-breakpoint
 -- One canonical total per app scope and, where an event names a user, per user
 -- scope. Historical rows that predate durable ownership keep a NULL owner.
 INSERT INTO app_usage_spend(
-	organization_id, app_id, scope, user_key, month,
-	microusd, revision, pending, last_attempt_at
+	organization_id, app_id, scope, user_key, month, microusd
 )
 SELECT
 	COALESCE(MAX(NULLIF(events.organization_id, '')), MAX(app.organization_id)),
@@ -32,10 +24,7 @@ SELECT
 	'app',
 	'',
 	substr(events.created_at, 1, 7),
-	SUM(CAST(ROUND(events.cost_usd * 1000000) AS INTEGER)),
-	1,
-	1,
-	0
+	SUM(CAST(ROUND(events.cost_usd * 1000000) AS INTEGER))
 FROM app_usage_event AS events
 LEFT JOIN app ON app.id = events.app_id
 WHERE CAST(ROUND(events.cost_usd * 1000000) AS INTEGER) != 0
@@ -48,10 +37,7 @@ SELECT
 	'user',
 	events.user_id,
 	substr(events.created_at, 1, 7),
-	SUM(CAST(ROUND(events.cost_usd * 1000000) AS INTEGER)),
-	1,
-	1,
-	0
+	SUM(CAST(ROUND(events.cost_usd * 1000000) AS INTEGER))
 FROM app_usage_event AS events
 LEFT JOIN app ON app.id = events.app_id
 WHERE events.user_id IS NOT NULL
@@ -78,33 +64,27 @@ AFTER INSERT ON app_usage_event
 WHEN CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER) != 0
 BEGIN
 	INSERT INTO app_usage_spend(
-		organization_id, app_id, scope, user_key, month,
-		microusd, revision, pending, last_attempt_at
+		organization_id, app_id, scope, user_key, month, microusd
 	) VALUES (
 		NULLIF(NEW.organization_id, ''), NEW.app_id, 'app', '',
 		substr(NEW.created_at, 1, 7),
-		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER), 1, 1, 0
+		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)
 	)
 	ON CONFLICT(scope, app_id, user_key, month) DO UPDATE SET
 		organization_id = COALESCE(app_usage_spend.organization_id, excluded.organization_id),
-		microusd = app_usage_spend.microusd + excluded.microusd,
-		revision = app_usage_spend.revision + 1,
-		pending = 1;
+		microusd = app_usage_spend.microusd + excluded.microusd;
 
 	INSERT INTO app_usage_spend(
-		organization_id, app_id, scope, user_key, month,
-		microusd, revision, pending, last_attempt_at
+		organization_id, app_id, scope, user_key, month, microusd
 	)
 	SELECT
 		NULLIF(NEW.organization_id, ''), NEW.app_id, 'user', NEW.user_id,
 		substr(NEW.created_at, 1, 7),
-		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER), 1, 1, 0
+		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)
 	WHERE NEW.user_id IS NOT NULL
 	ON CONFLICT(scope, app_id, user_key, month) DO UPDATE SET
 		organization_id = COALESCE(app_usage_spend.organization_id, excluded.organization_id),
-		microusd = app_usage_spend.microusd + excluded.microusd,
-		revision = app_usage_spend.revision + 1,
-		pending = 1;
+		microusd = app_usage_spend.microusd + excluded.microusd;
 END;--> statement-breakpoint
 -- Repricing changes only cost_usd. Applying the rounded per-event delta keeps
 -- the aggregate equal to SUM(ROUND(event cost)) across increases and reductions
@@ -118,32 +98,26 @@ BEGIN
 		organization_id = COALESCE(organization_id, NULLIF(NEW.organization_id, '')),
 		microusd = microusd
 			+ CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)
-			- CAST(ROUND(OLD.cost_usd * 1000000) AS INTEGER),
-		revision = revision + 1,
-		pending = 1
+			- CAST(ROUND(OLD.cost_usd * 1000000) AS INTEGER)
 	WHERE scope = 'app'
 		AND app_id = NEW.app_id
 		AND user_key = ''
 		AND month = substr(NEW.created_at, 1, 7);
 
 	INSERT OR IGNORE INTO app_usage_spend(
-		organization_id, app_id, scope, user_key, month,
-		microusd, revision, pending, last_attempt_at
+		organization_id, app_id, scope, user_key, month, microusd
 	)
 	SELECT
 		NULLIF(NEW.organization_id, ''), NEW.app_id, 'app', '',
 		substr(NEW.created_at, 1, 7),
-		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER),
-		1, 1, 0
+		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)
 	WHERE CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER) != 0;
 
 	UPDATE app_usage_spend SET
 		organization_id = COALESCE(organization_id, NULLIF(NEW.organization_id, '')),
 		microusd = microusd
 			+ CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)
-			- CAST(ROUND(OLD.cost_usd * 1000000) AS INTEGER),
-		revision = revision + 1,
-		pending = 1
+			- CAST(ROUND(OLD.cost_usd * 1000000) AS INTEGER)
 	WHERE NEW.user_id IS NOT NULL
 		AND scope = 'user'
 		AND app_id = NEW.app_id
@@ -151,14 +125,12 @@ BEGIN
 		AND month = substr(NEW.created_at, 1, 7);
 
 	INSERT OR IGNORE INTO app_usage_spend(
-		organization_id, app_id, scope, user_key, month,
-		microusd, revision, pending, last_attempt_at
+		organization_id, app_id, scope, user_key, month, microusd
 	)
 	SELECT
 		NULLIF(NEW.organization_id, ''), NEW.app_id, 'user', NEW.user_id,
 		substr(NEW.created_at, 1, 7),
-		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER),
-		1, 1, 0
+		CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)
 	WHERE NEW.user_id IS NOT NULL
 		AND CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER) != 0;
 END;

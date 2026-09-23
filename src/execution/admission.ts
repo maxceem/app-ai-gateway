@@ -260,6 +260,7 @@ export async function admitRequest(
         rpm: app.config.limits.per_user.requests.per_minute,
         rpd: app.config.limits.per_user.requests.per_day,
         monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_user),
+        spend: { appId: identity.appId, userKey: identity.userId },
       });
     if (!result.allowed) refuseByAppLimits(result, "user", now);
   }
@@ -269,6 +270,7 @@ export async function admitRequest(
       rpm: app.config.limits.per_app.requests.per_minute,
       rpd: app.config.limits.per_app.requests.per_day,
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
+      spend: { appId: identity.appId, userKey: null },
     });
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }

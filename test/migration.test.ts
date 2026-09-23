@@ -94,9 +94,6 @@ describe("initial database migration", () => {
       "user_key",
       "month",
       "microusd",
-      "revision",
-      "pending",
-      "last_attempt_at",
     ]);
     expect(spendColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(0);
     const spendTriggers = await env.DB.prepare(

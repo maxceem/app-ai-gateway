@@ -12,7 +12,6 @@ import {
 } from "./core/auth-events";
 import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
-import { recoverPendingUsageSpend } from "./core/app-usage-accounting";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
@@ -254,29 +253,8 @@ async function prune(env: Env): Promise<void> {
   await runUsageRetention(db, Date.now(), budget);
 }
 
-async function recoverUsageSpend(env: Env): Promise<void> {
-  try {
-    const result = await recoverPendingUsageSpend(env);
-    if (result.attempted > 0) log("info", "usage_spend_recovered", { ...result });
-  } catch (error) {
-    log("error", "usage_spend_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-export function scheduledMaintenance(
-  cron: string,
-  scheduledTime: number,
-): "prune" | "recover" | undefined {
-  // An unrelated trigger must not spend either maintenance budget.
-  if (cron !== "* * * * *") return undefined;
-
-  const scheduled = new Date(scheduledTime);
-  return scheduled.getUTCHours() === 3 && scheduled.getUTCMinutes() === 17
-    ? "prune"
-    : "recover";
-}
+/** The one trigger this Worker declares, in `wrangler.jsonc`. */
+export const MAINTENANCE_CRON = "17 3 * * *";
 
 /**
  * The Hono app itself is the handler — `fetch` is one of its own properties, so
@@ -286,8 +264,7 @@ export function scheduledMaintenance(
  */
 export default Object.assign(app, {
   scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    const maintenance = scheduledMaintenance(controller.cron, controller.scheduledTime);
-    if (maintenance === "prune") ctx.waitUntil(prune(env));
-    if (maintenance === "recover") ctx.waitUntil(recoverUsageSpend(env));
+    // An unrelated trigger must not spend the maintenance budget.
+    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(prune(env));
   },
 });

@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
-import { projectPendingAppMonthSpend } from "../../core/app-usage-accounting";
 import { GatewayError } from "../../core/errors";
-import { log } from "../../core/log";
 import type { ProviderType } from "../../core/types";
 import { computeCost, hasTokenModelPrice } from "../../core/pricing";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
@@ -42,11 +40,6 @@ const BREAKDOWN_COLUMNS = {
 } as const satisfies Record<UsageBreakdownDimension, unknown>;
 
 const REPRICE_UPDATE_CHUNK = 500;
-const FREE_SUBREQUEST_LIMIT = 50;
-// Authentication, the event/provider read, projection select, response work,
-// and slack share the same invocation limit as update and delivery calls.
-const REPRICE_FIXED_QUERY_ALLOWANCE = 11;
-const QUERIES_PER_PROJECTION = 3;
 
 /**
  * Whether an event carries usage a price could act on.
@@ -166,7 +159,6 @@ routes.handle("repriceAppUsage", async (c) => {
   const previousCostUsd = repriced.reduce((total, row) => total + row.previousCostUsd, 0);
   const recalculatedCostUsd = repriced.reduce((total, row) => total + row.costUsd, 0);
 
-  let reconciledUsers = 0;
   if (apply && repriced.length > 0) {
     const updates: D1PreparedStatement[] = [];
     for (let offset = 0; offset < repriced.length; offset += REPRICE_UPDATE_CHUNK) {
@@ -211,28 +203,10 @@ routes.handle("repriceAppUsage", async (c) => {
          WHERE app_id = ? AND id IN (SELECT id FROM changes)`,
       ).bind(changes, appId));
     }
-    // One transaction preserves the endpoint's all-or-nothing apply contract;
-    // each statement still counts against the invocation's query allowance.
+    // One transaction preserves the endpoint's all-or-nothing apply contract.
+    // The row triggers move each month's spend totals with it, and the
+    // limiters read them within their refresh window: nothing to push.
     await c.env.DB.batch(updates);
-    const updateQueries = updates.length;
-    const projectionLimit = Math.max(0, Math.min(
-      12,
-      Math.floor(
-        (FREE_SUBREQUEST_LIMIT - REPRICE_FIXED_QUERY_ALLOWANCE - updateQueries)
-        / QUERIES_PER_PROJECTION,
-      ),
-    ));
-    try {
-      const projected = await projectPendingAppMonthSpend(c.env, appId, month, projectionLimit);
-      reconciledUsers = projected.projectedUsers;
-    } catch (error) {
-      // D1 already marked every changed row pending, so recovery owns the rest.
-      log("error", "usage_reprice_projection_failed", {
-        appId,
-        month,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 
   return {
@@ -257,7 +231,6 @@ routes.handle("repriceAppUsage", async (c) => {
     previous_cost_usd: previousCostUsd,
     recalculated_cost_usd: recalculatedCostUsd,
     delta_usd: recalculatedCostUsd - previousCostUsd,
-    reconciled_users: reconciledUsers,
   };
 });
 

@@ -496,7 +496,7 @@ describe("auth event retention", () => {
     ]);
 
     const ctx = createExecutionContext();
-    app.scheduled({ cron: "* * * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController, env, ctx);
+    app.scheduled({ cron: "17 3 * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController, env, ctx);
     await waitOnExecutionContext(ctx);
 
     const kept = await eventsFor("prune-app");

@@ -1,81 +1,100 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import type { UserLimiter } from "../src/do/UserLimiter";
+import { SPEND_REFRESH_MS, type UserLimiter } from "../src/do/UserLimiter";
+
+/** Writes a scope's month the way the usage triggers would. */
+async function spent(appId: string, userKey: string | null, month: string, microusd: number) {
+  await env.DB.prepare(
+    `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
+     VALUES (NULL, ?, ?, ?, ?, ?)
+     ON CONFLICT(scope, app_id, user_key, month) DO UPDATE SET microusd = excluded.microusd`,
+  ).bind(appId, userKey === null ? "app" : "user", userKey ?? "", month, microusd).run();
+}
 
 /**
- * The projection behind an application's own limits: a moderation switch, a
- * versioned monthly spend snapshot, and fixed request windows.
+ * An application's own limits: a moderation switch, the month's spend read from
+ * D1, and fixed request windows.
  */
 describe("UserLimiter", () => {
-  it("accepts only a newer monthly revision", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:versions");
-    const now = Date.UTC(2026, 6, 23, 12);
-
-    expect(await limiter.setMonthlyCost("2026-07", 2, 70)).toBe(true);
-    expect(await limiter.setMonthlyCost("2026-07", 2, 999)).toBe(false);
-    expect(await limiter.setMonthlyCost("2026-07", 1, 5)).toBe(false);
-    expect((await limiter.getStatus(now)).monthlyCostMicrousd).toBe(70);
-    expect(await limiter.setMonthlyCost("2026-07", 3, 75)).toBe(true);
-    expect((await limiter.getStatus(now)).monthlyCostMicrousd).toBe(75);
-  });
-
-  it("validates projection snapshots before writing them", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:validation");
-    await runInDurableObject(limiter, (instance) => {
-      const userLimiter = instance as UserLimiter;
-      expect(() => userLimiter.setMonthlyCost("2026-13", 1, 1)).toThrow(/valid YYYY-MM/u);
-      expect(() => userLimiter.setMonthlyCost("2026-07", 0, 1)).toThrow(/revision/u);
-      expect(() => userLimiter.setMonthlyCost("2026-07", 1, -1)).toThrow(/microusd/u);
-    });
-  });
-
-  it("keeps no event ledger or standing cleanup alarm", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:no-ledger");
-    await limiter.setMonthlyCost("2026-07", 1, 1);
-
-    await runInDurableObject(limiter, async (_instance, state) => {
-      expect(
-        state.storage.sql
-          .exec<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'applied_events'",
-          )
-          .one().count,
-      ).toBe(0);
-      expect(await state.storage.getAlarm()).toBeNull();
-    });
-  });
-
-  it("arms no alarm for a limiter that has never settled a cost", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:never-settled");
-    await limiter.checkAndIncrement({
-      now: Date.now(),
-      rpm: 10,
-      rpd: 10,
-      monthlyBudgetMicrousd: null,
-    });
-    await limiter.getStatus(Date.now());
-
-    await runInDurableObject(limiter, async (_instance, state) => {
-      expect(await state.storage.getAlarm()).toBeNull();
-    });
-  });
-
-  it("tracks the block flag and the month's spend independently", async () => {
+  it("tracks the block flag on its own", async () => {
     const limiter = env.USER_LIMITER.getByName("user-limiter:status");
     const now = Date.UTC(2026, 6, 23, 12);
-    await limiter.setMonthlyCost("2026-07", 1, 42);
-    expect(await limiter.getStatus(now)).toEqual({ blocked: false, requestsToday: 0, monthlyCostMicrousd: 42 });
-    expect(await limiter.isBlocked()).toBe(false);
-
+    expect(await limiter.getStatus(now)).toEqual({ blocked: false, requestsToday: 0 });
     await limiter.setBlocked(true);
     expect(await limiter.isBlocked()).toBe(true);
-    expect(await limiter.getStatus(now)).toEqual({ blocked: true, requestsToday: 0, monthlyCostMicrousd: 42 });
-
-    // Spend is per UTC month, so a later month reads back clean.
-    expect((await limiter.getStatus(Date.UTC(2026, 7, 1))).monthlyCostMicrousd).toBe(0);
+    expect(await limiter.getStatus(now)).toEqual({ blocked: true, requestsToday: 0 });
   });
 
+  it("keeps nothing but the block flag and the windows in its own storage", async () => {
+    const limiter = env.USER_LIMITER.getByName("user-limiter:tables");
+    await limiter.getStatus(Date.now());
+    await runInDurableObject(limiter, async (_instance, state) => {
+      const tables = state.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name",
+        )
+        .toArray()
+        .map((row) => row.name);
+      expect(tables).toEqual(["request_windows", "state"]);
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
+  });
+
+  it("reads the month's spend from D1 and holds it for the refresh window", async () => {
+    const appId = "user-limiter-spend";
+    const limiter = env.USER_LIMITER.getByName(appId);
+    const now = Date.UTC(2026, 6, 23, 12);
+    const check = (at: number) => limiter.checkAndIncrement({
+      now: at, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, userKey: null },
+    });
+    await spent(appId, null, "2026-07", 400);
+    expect(await check(now)).toEqual({ allowed: true });
+    // Spend settles past the budget, but the figure read a moment ago stands
+    // until it ages out.
+    await spent(appId, null, "2026-07", 500);
+    expect(await check(now + SPEND_REFRESH_MS - 1)).toEqual({ allowed: true });
+    expect(await check(now + SPEND_REFRESH_MS)).toMatchObject({ allowed: false, reason: "budget" });
+    // Spend is per UTC month, so the next one starts from nothing.
+    expect(await check(Date.UTC(2026, 7, 1))).toEqual({ allowed: true });
+  });
+
+  it("shares one D1 read among requests that find the spend stale together", async () => {
+    const appId = "user-limiter-shared-read";
+    await spent(appId, null, "2026-07", 100);
+    const limiter = env.USER_LIMITER.getByName(appId);
+    await runInDurableObject(limiter, async (instance) => {
+      let reads = 0;
+      const db = env.DB;
+      const counting = new Proxy(db, {
+        get: (target, property, receiver) => property === "prepare"
+          ? (query: string) => {
+            reads += 1;
+            return target.prepare(query);
+          }
+          : Reflect.get(target, property, receiver),
+      });
+      (instance as unknown as { env: Env }).env = { ...env, DB: counting };
+      const now = Date.UTC(2026, 6, 23, 12);
+      const results = await Promise.all(Array.from({ length: 20 }, () =>
+        (instance as UserLimiter).checkAndIncrement({
+          now, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, userKey: null },
+        })));
+      expect(results.every((result) => result.allowed)).toBe(true);
+      expect(reads).toBe(1);
+    });
+  });
+
+  it("measures a user's budget against that user's own month", async () => {
+    const appId = "user-limiter-user-spend";
+    const limiter = env.USER_LIMITER.getByName(`${appId}:u1`);
+    const now = Date.UTC(2026, 6, 23, 12);
+    await spent(appId, null, "2026-07", 10_000);
+    await spent(appId, "u1", "2026-07", 100);
+    expect(await limiter.checkAndIncrement({
+      now, rpm: null, rpd: null, monthlyBudgetMicrousd: 500, spend: { appId, userKey: "u1" },
+    })).toEqual({ allowed: true });
+  });
 });
 
 /**
@@ -88,7 +107,12 @@ describe("UserLimiter", () => {
  * to be discovered.
  */
 describe("UserLimiter request windows", () => {
-  const unlimited = { rpm: null, rpd: null, monthlyBudgetMicrousd: null };
+  const unlimited = {
+    rpm: null,
+    rpd: null,
+    monthlyBudgetMicrousd: null,
+    spend: { appId: "windows", userKey: null },
+  };
 
   it("admits up to the per-minute limit and refuses the next", async () => {
     const limiter = env.USER_LIMITER.getByName("windows:rpm");
@@ -134,6 +158,22 @@ describe("UserLimiter request windows", () => {
     expect((await limiter.checkAndIncrement({ ...unlimited, now: nextMinute, rpm: 2 })).allowed).toBe(true);
   });
 
+  /**
+   * A request can reach the windows with a clock behind the one already
+   * counted — it awaited its spend read while a later request went through, or
+   * its isolate is a moment behind. It is counted into the newer window, never
+   * allowed to reset it to its own.
+   */
+  it("never moves a window backwards for a request whose clock trails it", async () => {
+    const limiter = env.USER_LIMITER.getByName("windows:monotonic");
+    const later = Date.UTC(2026, 0, 15, 10, 31, 0);
+    const earlier = later - 1_000;
+
+    expect((await limiter.checkAndIncrement({ ...unlimited, now: later, rpm: 1 })).allowed).toBe(true);
+    expect((await limiter.checkAndIncrement({ ...unlimited, now: earlier, rpm: 1 })).allowed).toBe(false);
+    expect((await limiter.checkAndIncrement({ ...unlimited, now: later, rpm: 1 })).allowed).toBe(false);
+  });
+
   it("refuses on the daily limit and points at the next UTC midnight", async () => {
     const limiter = env.USER_LIMITER.getByName("windows:rpd");
     const now = Date.UTC(2026, 0, 15, 23, 0, 0);
@@ -174,10 +214,11 @@ describe("UserLimiter request windows", () => {
   it("refuses on a budget the settled spend has reached, before counting anything", async () => {
     const limiter = env.USER_LIMITER.getByName("windows:budget");
     const now = Date.now();
-    await limiter.setMonthlyCost(new Date(now).toISOString().slice(0, 7), 1, 500);
+    await spent("windows-budget", null, new Date(now).toISOString().slice(0, 7), 500);
 
-    expect(await limiter.checkAndIncrement({ now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: 500 }))
-      .toMatchObject({ allowed: false, reason: "budget" });
+    expect(await limiter.checkAndIncrement({
+      now, rpm: 10, rpd: 10, monthlyBudgetMicrousd: 500, spend: { appId: "windows-budget", userKey: null },
+    })).toMatchObject({ allowed: false, reason: "budget" });
     // Nothing was counted: the budget is decided before the windows are touched.
     expect((await limiter.getStatus(now)).requestsToday).toBe(0);
   });

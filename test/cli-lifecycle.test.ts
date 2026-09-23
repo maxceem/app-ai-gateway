@@ -966,8 +966,8 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   const { data, input } = await start(testEnv);
   await env.DB.prepare(
     `INSERT INTO app_usage_spend(
-       organization_id, app_id, scope, user_key, month, microusd, revision, pending
-     ) VALUES (?, 'expired-spend-app', 'app', '', '2026-07', 10, 1, 1)`,
+       organization_id, app_id, scope, user_key, month, microusd
+     ) VALUES (?, 'expired-spend-app', 'app', '', '2026-07', 10)`,
   ).bind(data.account.id).run();
   await env.DB.prepare(
     "UPDATE mgmt_organization SET expires_at=? WHERE id=?",
@@ -1024,7 +1024,7 @@ it("collects expired accounts on the nightly run only where account deadlines ex
   const nightly = async (cloud: boolean) => {
     const ctx = createExecutionContext();
     worker.scheduled(
-      { cron: "* * * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController,
+      { cron: "17 3 * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController,
       runtime(cloud),
       ctx,
     );

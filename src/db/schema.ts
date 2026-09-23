@@ -499,9 +499,10 @@ export type AppUsageSpendScope = "app" | "user";
 
 /**
  * Canonical monthly spend derived atomically from `app_usage_event` by the D1
- * triggers installed with this table. `UserLimiter` is only a versioned
- * projection of these rows: `pending` is the coalescing outbox bit, so any
- * failed or superseded delivery is retried without retaining event ids.
+ * triggers installed with this table: an insert adds the event's cost, a
+ * reprice applies its delta, both in the same write as the event. The request
+ * gate reads one row by its unique key and caches it briefly — see
+ * `src/core/app-usage-accounting.ts`.
  *
  * `user_key` is deliberately non-null. App rows use the empty string, while a
  * user row may also name a real empty user id; `scope` keeps those identities
@@ -519,11 +520,6 @@ export const appUsageSpend = sqliteTable(
     /** UTC calendar month as `YYYY-MM`, fixed from the event timestamp. */
     month: text("month").notNull(),
     microusd: integer("microusd").notNull(),
-    /** Monotonic version delivered to the limiter; starts at one. */
-    revision: integer("revision").notNull(),
-    pending: integer("pending").notNull().default(1),
-    /** Milliseconds since epoch; rotates failed rows through bounded recovery. */
-    lastAttemptAt: integer("last_attempt_at").notNull().default(0),
   },
   (table) => [
     uniqueIndex("app_usage_spend_scope_month_unique").on(
@@ -532,13 +528,6 @@ export const appUsageSpend = sqliteTable(
       table.userKey,
       table.month,
     ),
-    index("idx_app_usage_spend_pending").on(table.pending, table.lastAttemptAt, table.id),
-    index("idx_app_usage_spend_app_month").on(
-      table.appId,
-      table.month,
-      table.pending,
-      table.lastAttemptAt,
-    ),
     index("idx_app_usage_spend_organization").on(table.organizationId),
     check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user')`),
     check(
@@ -546,8 +535,6 @@ export const appUsageSpend = sqliteTable(
       sql`${table.month} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(${table.month}, 6, 2) BETWEEN '01' AND '12'`,
     ),
     check("app_usage_spend_microusd_check", sql`${table.microusd} >= 0`),
-    check("app_usage_spend_revision_check", sql`${table.revision} > 0`),
-    check("app_usage_spend_pending_check", sql`${table.pending} IN (0, 1)`),
   ],
 );
 

@@ -9471,10 +9471,6 @@
                     },
                     "delta_usd": {
                       "type": "number"
-                    },
-                    "reconciled_users": {
-                      "type": "integer",
-                      "description": "End-user spend ledgers reprojected inside this request; the rest are left to scheduled recovery."
                     }
                   },
                   "required": [
@@ -9489,8 +9485,7 @@
                     "unpriced_cost_usd",
                     "previous_cost_usd",
                     "recalculated_cost_usd",
-                    "delta_usd",
-                    "reconciled_users"
+                    "delta_usd"
                   ]
                 }
               }

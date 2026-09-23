@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { projectPendingAppMonthSpend } from "../src/core/app-usage-accounting";
+import { monthlySpendMicrousd } from "../src/core/app-usage-accounting";
 import worker from "../src/index";
 import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
 
@@ -54,7 +54,7 @@ describe("admin API", () => {
     }
   });
 
-  it("already projects app spend recorded before app-wide limits are enabled", async () => {
+  it("counts app spend recorded before app-wide limits are enabled", async () => {
     const appId = "admin-budget-flip";
     await seedApp(appId);
     await env.DB.prepare(
@@ -63,12 +63,10 @@ describe("admin API", () => {
        ) VALUES (?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok')`,
     ).bind(appId, "spender", 0.08).run();
     const month = new Date().toISOString().slice(0, 7);
-    await projectPendingAppMonthSpend(env, appId, month, 2);
 
     // Accounting is independent of configuration, so enabling a budget below
     // needs no historical SUM/backfill race.
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
-      .toBe(80_000);
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, month)).toBe(80_000);
 
     const written = await exports.default.fetch(
       `https://example.test/v1/admin/apps/${appId}`,
@@ -99,13 +97,25 @@ describe("admin API", () => {
     );
     expect(written.status).toBe(200);
 
-    // The month's spend is there to be measured against, so the $50 budget is
-    // already exhausted rather than offering another $50.
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
-      .toBe(80_000);
+    // The month's spend is there to be measured against: $0.08 of a $50 budget
+    // leaves room, while a budget of exactly what was spent is already closed.
+    expect(await env.USER_LIMITER.getByName(appId).checkAndIncrement({
+      now: Date.now(),
+      rpm: null,
+      rpd: null,
+      monthlyBudgetMicrousd: 50_000_000,
+      spend: { appId, userKey: null },
+    })).toEqual({ allowed: true });
+    expect(await env.USER_LIMITER.getByName(`${appId}-tight`).checkAndIncrement({
+      now: Date.now(),
+      rpm: null,
+      rpd: null,
+      monthlyBudgetMicrousd: 80_000,
+      spend: { appId, userKey: null },
+    })).toMatchObject({ allowed: false, reason: "budget" });
   });
 
-  it("previews and applies usage repricing while reconciling both spend ledgers", async () => {
+  it("previews and applies usage repricing, which moves both spend totals", async () => {
     const appId = "admin-reprice";
     const userId = "user-1";
     await seedApp(appId, { appBudgetUsd: 100 });
@@ -127,13 +137,12 @@ describe("admin API", () => {
       0.000184,
       "ok",
     ).run();
-    const userLimiter = env.USER_LIMITER.getByName(`${appId}:${userId}`);
-    // The app-wide ledger backs the app-wide budget, and is a second sum over
+    // The app-wide total backs the app-wide budget, and is a second sum over
     // the same rows. Repricing has to correct it too, or that budget would run
     // on a total nothing can fix.
-    const appLimiter = env.USER_LIMITER.getByName(appId);
     const month = new Date().toISOString().slice(0, 7);
-    await projectPendingAppMonthSpend(env, appId, month, 2);
+    const userTotal = () => monthlySpendMicrousd(env.DB, { appId, userKey: userId }, month);
+    const appTotal = () => monthlySpendMicrousd(env.DB, { appId, userKey: null }, month);
     const url = `https://example.test/v1/admin/apps/${appId}/usage/reprice`;
     const request = (apply: boolean) => exports.default.fetch(url, {
       method: "POST",
@@ -151,9 +160,8 @@ describe("admin API", () => {
       matched_events: 1,
       previous_cost_usd: 0.000184,
       recalculated_cost_usd: 0.0000373,
-      reconciled_users: 0,
     });
-    expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(184);
+    expect(await userTotal()).toBe(184);
 
     const applied = await request(true);
     expect(applied.status).toBe(200);
@@ -161,14 +169,13 @@ describe("admin API", () => {
       applied: true,
       matched_events: 1,
       recalculated_cost_usd: 0.0000373,
-      reconciled_users: 1,
     });
     const row = await env.DB.prepare("SELECT cost_usd FROM app_usage_event WHERE app_id = ?")
       .bind(appId)
       .first<{ cost_usd: number }>();
     expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);
-    expect((await userLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
-    expect((await appLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(37);
+    expect(await userTotal()).toBe(37);
+    expect(await appTotal()).toBe(37);
   });
 
   it("rolls back every reprice chunk when a later chunk fails", async () => {
@@ -189,8 +196,8 @@ describe("admin API", () => {
       await env.DB.batch(statements);
     }
     const before = await env.DB.prepare(
-      "SELECT microusd, revision FROM app_usage_spend WHERE app_id = ? AND scope = 'app'",
-    ).bind(appId).first<{ microusd: number; revision: number }>();
+      "SELECT microusd FROM app_usage_spend WHERE app_id = ? AND scope = 'app'",
+    ).bind(appId).first<{ microusd: number }>();
 
     let sabotaged = false;
     const failingDb = {
@@ -232,7 +239,7 @@ describe("admin API", () => {
     ).bind(appId).first<{ rows: number; costs: number; cost: number }>();
     expect(costs).toEqual({ rows: 501, costs: 1, cost: 0.000184 });
     expect(await env.DB.prepare(
-      "SELECT microusd, revision FROM app_usage_spend WHERE app_id = ? AND scope = 'app'",
+      "SELECT microusd FROM app_usage_spend WHERE app_id = ? AND scope = 'app'",
     ).bind(appId).first()).toEqual(before);
   });
 
