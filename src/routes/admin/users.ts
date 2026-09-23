@@ -3,16 +3,20 @@ import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
 import { appUsageEvent, appUser } from "../../db/schema";
-import type {
-  UserBlockResponse,
-  UserListResponse,
-  UserResponse,
-} from "../../contracts/responses";
+import type { UserBlockResponse } from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
-import { invalidateBlockedCache } from "../../middleware/gate";
-import { currentMonth, eventDay, monthBounds, parseLimit, parseOffset, usageTotals } from "./shared";
+import { invalidateBlockedCache } from "../../execution/admission";
+import { adminRouter, type OperationContext } from "../catalog-router";
+import {
+  currentMonth,
+  eventDay,
+  monthBounds,
+  usageTotals,
+} from "../../management/usage-queries";
 
-export const userRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+type UserRouteEnv = { Bindings: Env; Variables: AdminVariables };
+export const userRoutes = new Hono<UserRouteEnv>();
+const routes = adminRouter(userRoutes);
 
 interface UserIdentityRow {
   id: string;
@@ -73,17 +77,11 @@ const EMPTY_USAGE = {
   blocked: 0,
 };
 
-userRoutes.get("/apps/:app/users", async (c) => {
+routes.handle("listAppUsers", async (c, { query: parsed }) => {
   const appId = c.req.param("app");
-  const month = c.req.query("month") ?? currentMonth();
+  const month = parsed.month ?? currentMonth();
   const bounds = monthBounds(month);
-  const limit = parseLimit(c.req.query("limit"), 50, 200);
-  const offset = parseOffset(c.req.query("offset"));
-  const status = c.req.query("status");
-  if (status !== undefined && status !== "active" && status !== "blocked") {
-    throw new GatewayError(400, "invalid_request", "status must be active or blocked");
-  }
-  const query = c.req.query("query");
+  const { limit, offset, status, query } = parsed;
 
   const db = database(c.env.DB);
   const statusFilter = status ?? null;
@@ -128,7 +126,7 @@ userRoutes.get("/apps/:app/users", async (c) => {
     }
   }
 
-  return c.json({
+  return {
     app_id: appId,
     month,
     total: total?.value ?? 0,
@@ -138,13 +136,13 @@ userRoutes.get("/apps/:app/users", async (c) => {
       ...serializeUser(row),
       usage: usageByUser.get(row.id) ?? EMPTY_USAGE,
     })),
-  } satisfies UserListResponse);
+  };
 });
 
-userRoutes.get("/apps/:app/users/:user", async (c) => {
+routes.handle("getAppUser", async (c, { query }) => {
   const appId = c.req.param("app");
   const userId = c.req.param("user");
-  const month = c.req.query("month") ?? currentMonth();
+  const month = query.month ?? currentMonth();
   const bounds = monthBounds(month);
 
   const db = database(c.env.DB);
@@ -178,7 +176,7 @@ userRoutes.get("/apps/:app/users/:user", async (c) => {
       .bind(appId, userId)
       .first<UserIdentityRow>();
   }
-  if (!row) throw new GatewayError(404, "invalid_request", "User was not found");
+  if (!row) throw new GatewayError(404, "not_found", "User was not found");
 
   const usage = await db
     .select(usageTotals)
@@ -193,9 +191,7 @@ userRoutes.get("/apps/:app/users/:user", async (c) => {
     )
     .get();
 
-  return c.json(
-    { app_id: appId, month, user: { ...serializeUser(row), usage: usage ?? EMPTY_USAGE } } satisfies UserResponse,
-  );
+  return { app_id: appId, month, user: { ...serializeUser(row), usage: usage ?? EMPTY_USAGE } };
 });
 
 /**
@@ -209,21 +205,22 @@ userRoutes.get("/apps/:app/users/:user", async (c) => {
  * seconds — immediately in the isolate that served this request, which is why
  * its cache entry is dropped here.
  */
-userRoutes.post("/apps/:app/users/:user/:action", async (c) => {
-  const action = c.req.param("action");
-  if (action !== "block" && action !== "unblock") {
-    throw new GatewayError(404, "invalid_request", "Unknown user action");
-  }
+async function setBlocked(
+  c: OperationContext<UserRouteEnv, "blockAppUser">,
+  blocked: boolean,
+): Promise<UserBlockResponse> {
   const appId = c.req.param("app");
   const userId = c.req.param("user");
-  const blocked = action === "block";
   const updated = await database(c.env.DB)
     .update(appUser)
     .set({ status: blocked ? "blocked" : "active" })
     .where(and(eq(appUser.appId, appId), eq(appUser.id, userId)))
     .returning({ id: appUser.id });
-  if (updated.length !== 1) throw new GatewayError(404, "invalid_request", "User was not found");
+  if (updated.length !== 1) throw new GatewayError(404, "not_found", "User was not found");
   await c.env.USER_LIMITER.getByName(`${appId}:${userId}`).setBlocked(blocked);
   invalidateBlockedCache(appId, userId);
-  return c.json({ app_id: appId, user_id: userId, blocked } satisfies UserBlockResponse);
-});
+  return { app_id: appId, user_id: userId, blocked };
+}
+
+routes.handle("blockAppUser", (c) => setBlocked(c, true));
+routes.handle("unblockAppUser", (c) => setBlocked(c, false));

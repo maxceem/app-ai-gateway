@@ -25,9 +25,10 @@ public enum GatewayErrorCode: String, Codable, Sendable {
     /// Carries no verdict on the subscription: the request is worth sending
     /// again, and ``GatewayError/isRetryable`` says so.
     case billingUnavailable = "billing_unavailable"
-    /// The fixed onboarding allowance ended. The account owner must claim the
-    /// account; retrying or replacing application credentials cannot help.
-    case billingTrialExpired = "billing_trial_expired"
+    /// The account has not been claimed by a person, and its free access has
+    /// ended. The account owner must claim it; retrying or replacing
+    /// application credentials cannot help.
+    case unclaimedAccessExpired = "unclaimed_access_expired"
     /// The unclaimed account passed its recovery deadline and cannot be used.
     case accountExpired = "account_expired"
     /// The organization used up the current scheduled request allowance its plan

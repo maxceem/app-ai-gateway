@@ -13,8 +13,9 @@ import {
 import { join, resolve } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import { z } from "zod";
 import type { CliAccount, CliDeployment } from "../../src/contracts/cli.ts";
-import { CliError, fail, randomToken, origin } from "./common.ts";
+import { CliError, fail, randomToken, origin, validate } from "./common.ts";
 
 /**
  * Whether POSIX ownership and permission bits mean anything here.
@@ -109,6 +110,164 @@ export interface CliState {
   bootstrap?: { createdAt?: string; idempotencyKey: string; pollToken: string };
   mutations?: Record<string, MutationRecord>;
   installations?: Record<string, InstallationJournal>;
+}
+
+/**
+ * A URL as the state file carries one, held to the rule a flag is held to.
+ *
+ * `origin` is what decides, so a stored URL cannot be anything a command would
+ * have refused to be given: no credentials, no path, no query, and HTTPS
+ * unless it is loopback.
+ */
+const StoredOrigin = z.string().refine(
+  (value) => {
+    try {
+      origin(value);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  "must be a deployment origin without credentials, path, query or fragment",
+);
+
+/**
+ * One connection as it is written to disk.
+ *
+ * Deliberately open about `account` and `deployment`: those are copies of what
+ * the deployment answered, already parsed by `CliAccountSchema` and
+ * `CliDeploymentSchema` on the way in. Re-checking their fields here would
+ * refuse a state file written by a release whose contract carried fewer of
+ * them, and the price of that refusal is somebody's connection — over fields
+ * this file only carries. What is checked is what every release has required:
+ * a URL that is an origin, and a credential if the connection claims to be
+ * authenticated.
+ */
+const StoredConnectionSchema = z
+  .looseObject({
+    url: StoredOrigin,
+    authenticated: z.boolean(),
+    credential: z.string().optional(),
+    account: z.looseObject({}).optional(),
+    deployment: z.looseObject({}).optional(),
+  })
+  .refine(
+    (connection) => !connection.authenticated || typeof connection.credential === "string",
+    "an authenticated connection must carry its credential",
+  );
+
+const StoredOperationSchema = z.looseObject({
+  url: StoredOrigin,
+  pollToken: z.string(),
+  kind: z.string(),
+  phase: z.enum(["initiating", "pending"]).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
+  generation: z.number().optional(),
+  completed: z.boolean().optional(),
+});
+
+/**
+ * One idempotent creation's receipt.
+ *
+ * Only the fields that decide whether the receipt can still be honoured are
+ * named. `response`, `result` and `keyMetadata` are left to the catchall: the
+ * first two are a server answer this file only holds until it has been
+ * printed, and `context.ts` parses them with the creation's own schema when it
+ * reads them back — a second, weaker grammar for them here would refuse a
+ * recoverable creation over a field nothing in this file looks at.
+ */
+const StoredMutationSchema = z.looseObject({
+  id: z.string(),
+  proof: z.string(),
+  requestHash: z.string(),
+  url: z.string(),
+  accountId: z.string().nullable(),
+  path: z.string(),
+  createdAt: z.string(),
+  completedAt: z.string().optional(),
+});
+
+/**
+ * One self-hosted installation's journal.
+ *
+ * `phase` is the resumable part of a deployment and its three names are the
+ * ones on disk, so they are checked: a journal that claims a phase this
+ * release cannot carry out is not something to deploy from. Everything a
+ * phase adds is optional, because a journal is written at every step.
+ */
+const StoredInstallationSchema = z.looseObject({
+  id: z.string(),
+  name: z.string(),
+  accountId: z.string(),
+  version: z.string(),
+  phase: z.enum(["prepared", "deployed", "ready"]),
+  databaseId: z.string().optional(),
+  databaseName: z.string().optional(),
+  url: z.string().optional(),
+  vars: z.record(z.string(), z.string()).optional(),
+  domains: z.array(z.string()).optional(),
+  pendingDomain: z.string().optional(),
+  bootstrap: z.looseObject({ idempotencyKey: z.string(), pollToken: z.string() }).optional(),
+  secrets: z.record(z.string(), z.string()).optional(),
+});
+
+/**
+ * The whole state file, as the one thing that decides whether it can be read.
+ *
+ * Every field a command acts on is named here and nowhere else: a check written
+ * beside a reader would be a second grammar, and a state file this schema
+ * accepts is one every reader below may merge without inspecting it.
+ */
+export const CliStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  active: StoredConnectionSchema.nullable(),
+  previous: StoredConnectionSchema.optional(),
+  operations: z.record(z.string(), StoredOperationSchema),
+  generation: z.number().optional(),
+  bootstrap: z
+    .looseObject({
+      createdAt: z.string().optional(),
+      idempotencyKey: z.string(),
+      pollToken: z.string(),
+    })
+    .optional(),
+  mutations: z.record(z.string(), StoredMutationSchema).optional(),
+  installations: z.record(z.string(), StoredInstallationSchema).optional(),
+});
+
+/** What can be done about a state file this CLI will not act on. */
+const RECOVER_STATE = "Recover the state file; it will not be treated as a new account.";
+
+/**
+ * The state file, parsed by the one schema that describes it.
+ *
+ * Refused rather than replaced, and always as `invalid_state`: the file holds
+ * a management credential, the owner of a vault key and unfinished creations,
+ * so a shape this release cannot read is something to repair by hand, never
+ * something to overwrite with a fresh state. The path and the first issue are
+ * named because that is what repairing it by hand needs.
+ */
+function parseState(path: string, text: string): CliState {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    fail("invalid_state", `Connection state at ${path} is not valid JSON.`, RECOVER_STATE, 4);
+  }
+  try {
+    // Through `validate`, which is the one place a zod issue is worded the way
+    // this CLI words one; only its code and the length differ here, because a
+    // refusal a person has to act on reads better naming one field than forty.
+    return validate(CliStateSchema, value) as CliState;
+  } catch (error) {
+    const first = error instanceof CliError ? error.message.split("; ")[0] : undefined;
+    fail(
+      "invalid_state",
+      `Unsupported or malformed connection state at ${path}${first ? `: ${first}` : ""}.`,
+      RECOVER_STATE,
+      4,
+    );
+  }
 }
 
 export function stateDirectory(): string {
@@ -306,12 +465,6 @@ async function breakAbandonedLock(path: string): Promise<boolean> {
 const same = (a: unknown, b: unknown): boolean =>
   JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
-/** One record map as it was found on disk, where anything could have been. */
-const records = <T>(value: unknown): Record<string, T> =>
-  value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, T>)
-    : {};
-
 /**
  * Merges one record map three ways: what this command started from, what it
  * holds now, and what is on disk.
@@ -345,22 +498,18 @@ function mergeRecords<T>(
  * receipt or a poll token another command had just recorded, so the record maps
  * merge per entry and the connection is only replaced by the command that
  * actually changed it.
+ *
+ * `disk` is null only when there is no file, which is the one case where this
+ * command's own state is the whole answer. A file that could not be read never
+ * reaches here: `stored` refuses it, so nothing this cannot merge into is
+ * replaced by writing over it.
  */
 function mergeState(
   baseline: CliState | undefined,
   local: CliState,
   disk: CliState | null,
 ): CliState {
-  // Anything this cannot recognise is not something to merge into: the state
-  // this command validated on the way in is written as it stands.
-  if (
-    !disk ||
-    disk.schemaVersion !== 1 ||
-    typeof disk.operations !== "object" ||
-    disk.operations === null ||
-    Array.isArray(disk.operations)
-  )
-    return local;
+  if (!disk) return local;
   const connection =
     baseline &&
     same(baseline.active, local.active) &&
@@ -385,13 +534,13 @@ function mergeState(
   const mutations = mergeRecords(
     baseline?.mutations ?? {},
     local.mutations ?? {},
-    records(disk.mutations),
+    disk.mutations ?? {},
   );
   if (Object.keys(mutations).length) merged.mutations = mutations;
   const installations = mergeRecords(
     baseline?.installations ?? {},
     local.installations ?? {},
-    records(disk.installations),
+    disk.installations ?? {},
   );
   if (Object.keys(installations).length) merged.installations = installations;
   return merged;
@@ -462,73 +611,39 @@ export class StateStore {
     }
   }
 
+  /**
+   * The state this command starts from: what the file holds, or a fresh state
+   * when there is no file.
+   *
+   * Only a missing file is a fresh state. A file that is present and cannot be
+   * read — wrong owner, wrong mode, unparseable, or a shape this release does
+   * not know — is refused, because every one of those would otherwise start a
+   * command as though this machine had never held an account.
+   */
   async read(): Promise<CliState> {
-    try {
-      const s = await lstat(this.path);
-      if (
-        !s.isFile() ||
-        s.isSymbolicLink() ||
+    const held = await lstat(this.path).catch((error: unknown) => {
+      if (errorCode(error) === "ENOENT") return null;
+      fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
+    });
+    if (
+      held &&
+      (!held.isFile() ||
+        held.isSymbolicLink() ||
         (posixPermissions() &&
-          ((process.getuid && s.uid !== process.getuid()) ||
-            (s.mode & 0o077) !== 0))
-      )
-        fail(
-          "unsafe_storage",
-          "Connection state must be owned by you with mode 0600.",
-        );
-      const state = JSON.parse(await readFile(this.path, "utf8")) as CliState;
-      if (
-        state.schemaVersion !== 1 ||
-        !Object.hasOwn(state, "active") ||
-        !state.operations ||
-        typeof state.operations !== "object" ||
-        Array.isArray(state.operations)
-      )
-        fail("invalid_state", "Unsupported or malformed connection state.");
-      if (state.active !== null) {
-        const a: ActiveConnection | null = state.active;
-        if (
-          !a ||
-          typeof a !== "object" ||
-          typeof a.url !== "string" ||
-          typeof a.authenticated !== "boolean" ||
-          (a.authenticated && typeof a.credential !== "string")
-        )
-          fail(
-            "invalid_state",
-            "Malformed prior connection; recovery is required.",
-          );
-        origin(a.url);
-      }
-      for (const op of Object.values(state.operations)) {
-        if (
-          !op ||
-          typeof op.url !== "string" ||
-          typeof op.pollToken !== "string" ||
-          typeof op.kind !== "string"
-        )
-          fail(
-            "invalid_state",
-            "Malformed operation state; recovery is required.",
-          );
-        origin(op.url);
-      }
-      this.baseline = structuredClone(state);
-      return state;
-    } catch (e) {
-      if (errorCode(e) === "ENOENT") {
-        const empty: CliState = { schemaVersion: 1, active: null, operations: {} };
-        this.baseline = structuredClone(empty);
-        return empty;
-      }
-      if (e instanceof CliError) throw e;
+          ((process.getuid && held.uid !== process.getuid()) ||
+            (held.mode & 0o077) !== 0)))
+    )
       fail(
-        "invalid_state",
-        "Cannot read connection state.",
-        "Recover the state file; it will not be treated as a new account.",
-        4,
+        "unsafe_storage",
+        "Connection state must be owned by you with mode 0600.",
       );
-    }
+    const state: CliState = (held && (await this.stored())) || {
+      schemaVersion: 1,
+      active: null,
+      operations: {},
+    };
+    this.baseline = structuredClone(state);
+    return state;
   }
 
   /**
@@ -593,13 +708,23 @@ export class StateStore {
     }
   }
 
-  /** The state file as it stands, or null when there is nothing to merge with. */
+  /**
+   * The state file as it stands, or null when there is no file at all.
+   *
+   * A file that will not parse is refused here rather than treated as nothing
+   * to merge with: this is what a write reads to keep another command's
+   * receipts, and answering "nothing" would replace a file whose contents
+   * could not be understood with this command's own state.
+   */
   private async stored(): Promise<CliState | null> {
+    let text: string;
     try {
-      return JSON.parse(await readFile(this.path, "utf8")) as CliState;
-    } catch {
-      return null;
+      text = await readFile(this.path, "utf8");
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return null;
+      fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
     }
+    return parseState(this.path, text);
   }
 
   private async replace(state: CliState): Promise<void> {

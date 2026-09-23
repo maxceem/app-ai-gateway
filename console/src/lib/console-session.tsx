@@ -7,6 +7,7 @@ import type {
   OrganizationRole,
   OrganizationQuota,
   OrganizationSummary,
+  PlanLimits,
   Session,
 } from "./types";
 
@@ -35,6 +36,10 @@ export interface ConsoleSessionValue {
    * not only from the billing one. `null` where there is no allowance to report.
    */
   quota: OrganizationQuota | null | undefined;
+  /** The ceilings the gateway enforces for the current plan, as it parsed them. */
+  planLimits: PlanLimits | undefined;
+  /** When the account's unclaimed free access ends; null once a person owns it. */
+  unclaimedAccessEndsAt: string | null | undefined;
 }
 
 const ConsoleSessionContext = createContext<ConsoleSessionValue | null>(null);
@@ -44,12 +49,16 @@ export function ConsoleSessionProvider({
   capabilities,
   billing,
   quota,
+  planLimits,
+  unclaimedAccessEndsAt,
   children,
 }: {
   session: Session;
   capabilities: Capabilities;
   billing: BillingAccess | undefined;
   quota: OrganizationQuota | null | undefined;
+  planLimits?: PlanLimits | undefined;
+  unclaimedAccessEndsAt?: string | null | undefined;
   children: ReactNode;
 }) {
   const canManage = roleCanManage(session.role);
@@ -63,6 +72,8 @@ export function ConsoleSessionProvider({
     readOnly: !canManage,
     billing,
     quota,
+    planLimits,
+    unclaimedAccessEndsAt,
   };
 
   return <ConsoleSessionContext value={value}>{children}</ConsoleSessionContext>;

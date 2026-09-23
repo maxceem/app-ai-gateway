@@ -36,7 +36,7 @@ function Harness() {
 function renderTab(limits?: LimitsConfig) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(limits), resolved: null, config_error: null },
+      body: { app: appRow(limits), config_error: null },
     },
   });
   return renderAuthenticated(<Harness />);

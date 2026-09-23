@@ -1,5 +1,5 @@
 import type { CfAuth } from "@maxceem/cf-auth";
-import { createIdentityAuth, rethrowCfAuthError } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
 import { resolveBillingQuota } from "../../billing/quota";
 import {
   accountLifecycle,
@@ -8,12 +8,10 @@ import {
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
 import { CliBootstrapRequestSchema } from "../../contracts/cli";
+import type { CliBootstrapResponse } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
-import { accountTrialDeadline } from "../../policy/accounts";
-import {
-  bootstrapDecision,
-  deploymentPolicy,
-} from "../../policy/deployment";
+import { unclaimedAccessDeadline } from "../../policy/accounts";
+import { bootstrapDecision } from "../../policy/deployment";
 import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
 import {
   cliJson,
@@ -25,23 +23,25 @@ import {
 } from "./security";
 import type { CliContext } from "./types";
 
-interface BootstrapReceiptRow {
-  id: string;
-  organization_id: string | null;
-  initiating_user_id: string | null;
-  proof_hash: string;
-  outcome: string | null;
-  protected_credential: string | null;
-  protected_credential_expires_at: number | null;
-  consumed_at: number | null;
-  expires_at: number;
+/**
+ * How the CLI is told which deployment answered: its public identity, plus the
+ * one thing about it a client behaves differently for.
+ */
+export function deploymentMeta(c: CliContext) {
+  const deployment = c.get("deployment");
+  return { ...deployment.identity(), mode: deployment.mode };
 }
 
-/** The management key this receipt's committed outcome names, if it has one yet. */
-function committedCredentialId(row: BootstrapReceiptRow): string | null {
-  if (!row.outcome) return null;
-  const { credentialId } = JSON.parse(row.outcome) as { credentialId?: string };
-  return credentialId ?? null;
+/** A `mgmt_bootstrap` row; see the table's own description for what each state means. */
+interface BootstrapRow {
+  id: string;
+  state: "active" | "retired" | "expired";
+  organization_id: string | null;
+  service_user_id: string | null;
+  proof_hash: string;
+  credential_id: string | null;
+  protected_credential: string | null;
+  protected_credential_expires_at: number | null;
 }
 
 async function retireKey(
@@ -49,61 +49,32 @@ async function retireKey(
   organizationId: string,
   apiKeyId: string,
 ): Promise<void> {
-  try {
-    await identity.service.revokeServiceApiKey({ apiKeyId, organizationId });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+  await identity.service.revokeServiceApiKey({ apiKeyId, organizationId });
 }
 
-export function deployment(c: CliContext) {
-  const id = c.env.DEPLOYMENT_ID;
-  if (!id)
-    throw new GatewayError(503, "invalid_request", "Deployment identity is not configured");
-  const configuredOrigin = new URL(c.env.CLI_CONSOLE_ORIGIN ?? c.req.url);
-  const loopback =
-    configuredOrigin.hostname === "localhost" ||
-    configuredOrigin.hostname.endsWith(".localhost") ||
-    configuredOrigin.hostname === "127.0.0.1";
-  if (
-    (configuredOrigin.protocol !== "https:" &&
-      !(configuredOrigin.protocol === "http:" && loopback)) ||
-    configuredOrigin.username ||
-    configuredOrigin.password
-  )
-    throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
-  const consoleOrigin = configuredOrigin.origin;
-  return {
-    id,
-    mode: deploymentPolicy(c.env).mode,
-    apiUrl: c.env.PUBLIC_API_URL ?? consoleOrigin,
-    consoleOrigin,
-  };
-}
-
-async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow | null> {
-  return c.env.DB.prepare("SELECT * FROM mgmt_resource_receipt WHERE id=? AND kind='bootstrap'")
+async function bootstrapRow(c: CliContext, id: string): Promise<BootstrapRow | null> {
+  return c.env.DB.prepare("SELECT * FROM mgmt_bootstrap WHERE id=?")
     .bind(id)
-    .first<BootstrapReceiptRow>();
+    .first<BootstrapRow>();
 }
 
-export async function bootstrap(c: CliContext): Promise<Response> {
+export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
   const input = schemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
-  const meta = deployment(c);
-  const policy = deploymentPolicy(c.env);
+  const deployment = c.get("deployment");
+  const meta = deploymentMeta(c);
   const hash = await digest(input.idempotencyKey);
   const proofHash = await digest(input.pollToken);
   const id = `cli-bootstrap:${meta.id}:${hash}`;
   const now = Date.now();
-  const decision = bootstrapDecision(policy, {
+  const decision = bootstrapDecision(deployment, {
     deploymentId: meta.id,
     requestHash: hash,
     nowMs: now,
   });
-  let row = await receipt(c, id);
+  let row = await bootstrapRow(c, id);
   if (row && !(await proofMatches(input.pollToken, row.proof_hash)))
     throw new GatewayError(403, "forbidden", "Bootstrap proof does not match");
-  if (row?.outcome === '{"expired":true}')
+  if (row?.state === "expired")
     throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
 
   // A self-host belongs to whoever initializes it first, exactly as its first
@@ -139,7 +110,6 @@ export async function bootstrap(c: CliContext): Promise<Response> {
       userId,
       createdAt,
       recoveryEndsAt,
-      receiptExpiresAt,
     } = decision;
     const guard = decision.requiresEmptyDeployment ? emptyDeploymentCondition() : "1";
     await c.env.DB.batch([
@@ -157,44 +127,47 @@ export async function bootstrap(c: CliContext): Promise<Response> {
            SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)`,
       ).bind(`member-${accountId}`, accountId, userId, createdAt, accountId, userId),
       c.env.DB.prepare(
-        `INSERT OR IGNORE INTO mgmt_resource_receipt(
-           id,kind,organization_id,initiating_user_id,proof_hash,request_hash,expires_at,created_at,updated_at)
-         SELECT ?,'bootstrap',?,?,?,'{}',?,?,? WHERE EXISTS (
+        `INSERT OR IGNORE INTO mgmt_bootstrap(
+           id,state,organization_id,service_user_id,proof_hash,created_at,updated_at)
+         SELECT ?,'active',?,?,?,?,? WHERE EXISTS (
            SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)
-         ${decision.requiresEmptyDeployment ? "AND NOT EXISTS (SELECT 1 FROM mgmt_resource_receipt WHERE kind='bootstrap')" : ""}`,
+         -- One bootstrap per account: a second proof never attaches to an
+         -- account another bootstrap already holds.
+         AND NOT EXISTS (SELECT 1 FROM mgmt_bootstrap WHERE organization_id=?)
+         ${decision.requiresEmptyDeployment ? "AND NOT EXISTS (SELECT 1 FROM mgmt_bootstrap)" : ""}`,
       ).bind(
         id,
         accountId,
         userId,
         proofHash,
-        receiptExpiresAt,
         now,
         now,
         accountId,
         userId,
+        accountId,
       ),
     ]);
-    row = await receipt(c, id);
+    row = await bootstrapRow(c, id);
     if (!row)
       throw new GatewayError(409, "conflict", "This deployment has already been initialized");
     if (!(await proofMatches(input.pollToken, row.proof_hash)))
       throw new GatewayError(403, "forbidden", "Bootstrap proof does not match");
   }
 
-  if (!row.organization_id || !row.initiating_user_id)
+  if (!row.organization_id || !row.service_user_id)
     throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
-  const account = await assertAccountAccess(c.env, row.organization_id, "read");
-  if (account.claimed || row.consumed_at)
+  const account = await assertAccountAccess(deployment, c.env, row.organization_id, "read");
+  if (account.claimed || row.state !== "active")
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
-  const identity = createIdentityAuth(c.env, c.req.url);
+  const identity = await identityAuthFor(c);
 
   if (!row.protected_credential || (row.protected_credential_expires_at ?? 0) <= now) {
     // No expiry of its own: the account's `expires_at` is the one deadline, and
     // cf-auth refuses any key whose organization has passed it. A second copy
     // here could only go stale, which is exactly what a claim would make it do.
     const issued = await identity.service.issueServiceApiKey({
-      userId: row.initiating_user_id,
+      userId: row.service_user_id,
       organizationId: account.id,
       name: "CLI bootstrap",
       enabled: false,
@@ -205,73 +178,68 @@ export async function bootstrap(c: CliContext): Promise<Response> {
       await retireKey(identity, account.id, issued.id);
       throw error;
     });
-    const previousCredentialId = committedCredentialId(row);
+    const previousCredentialId = row.credential_id;
     await c.env.DB.prepare(
-      `UPDATE mgmt_resource_receipt
-       SET protected_credential=?,protected_credential_expires_at=?,outcome=?,updated_at=?
-       WHERE id=? AND consumed_at IS NULL
+      `UPDATE mgmt_bootstrap
+       SET protected_credential=?,protected_credential_expires_at=?,credential_id=?,updated_at=?
+       WHERE id=? AND state='active'
          AND (protected_credential IS NULL OR protected_credential_expires_at<=?)
-         AND NOT ${humanOwnerCondition("mgmt_resource_receipt.organization_id")}`,
+         AND NOT ${humanOwnerCondition("mgmt_bootstrap.organization_id")}`,
     )
-      .bind(encrypted, now + TTL, JSON.stringify({ credentialId: issued.id }), now, id, now)
+      .bind(encrypted, now + TTL, issued.id, now, id, now)
       .run()
       .catch(async (error) => {
-        // A failed RPC can still have committed, so ask the receipt who won
-        // before retiring the key this call minted.
-        const committed = await receipt(c, id);
-        if (!committed || committedCredentialId(committed) !== issued.id)
+        // A failed RPC can still have committed, so ask the row who won before
+        // retiring the key this call minted.
+        const committed = await bootstrapRow(c, id);
+        if (!committed || committed.credential_id !== issued.id)
           await retireKey(identity, account.id, issued.id);
         throw error;
       });
-    row = (await receipt(c, id))!;
+    row = (await bootstrapRow(c, id))!;
 
-    // The receipt is the single durable record of which key this bootstrap
-    // stands behind. Whichever key it does not name is retired, whether that is
-    // the one this call lost a race with or the one it replaced.
-    const committed = committedCredentialId(row);
-    if (committed !== issued.id) await retireKey(identity, account.id, issued.id);
+    // The row is the single durable record of which key this bootstrap stands
+    // behind. Whichever key it does not name is retired, whether that is the
+    // one this call lost a race with or the one it replaced.
+    if (row.credential_id !== issued.id) await retireKey(identity, account.id, issued.id);
     else if (previousCredentialId) await retireKey(identity, account.id, previousCredentialId);
   }
-  if (row.consumed_at || !row.protected_credential)
+  if (row.state !== "active" || !row.protected_credential)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
-  // Issued inactive, activated only now: a key becomes usable once the receipt
-  // that names it is committed, so a run that dies in between leaves a
+  // Issued inactive, activated only now: a key becomes usable once the row that
+  // names it is committed, so a run that dies in between leaves a
   // credential nobody holds and nothing can authenticate with. Activation is
   // idempotent and refuses a revoked key, so repeating a poll finishes an
   // interrupted run without resurrecting what a claim has already retired.
-  const credentialId = committedCredentialId(row);
+  const credentialId = row.credential_id;
   if (!credentialId)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
-  try {
-    await identity.service.enableServiceApiKey({
-      apiKeyId: credentialId,
-      organizationId: account.id,
-    });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+  await identity.service.enableServiceApiKey({
+    apiKeyId: credentialId,
+    organizationId: account.id,
+  });
 
-  let trial: { endsAt: string; limit?: number } | null = null;
-  if (policy.mode === "cloud") {
-    const trialDeadline = accountTrialDeadline(account.createdAt);
-    if (trialDeadline === null) {
+  let unclaimedAccess: { endsAt: string; limit?: number } | null = null;
+  if (deployment.mode === "cloud") {
+    const deadline = unclaimedAccessDeadline(account.createdAt);
+    if (deadline === null) {
       throw new GatewayError(
         403,
-        "billing_trial_expired",
-        "The trial has ended; claim your account to continue",
+        "unclaimed_access_expired",
+        "This unclaimed account's free access has ended; claim your account to continue",
       );
     }
-    const quota = await resolveBillingQuota(c.env, account.id);
-    trial = {
-      endsAt: new Date(trialDeadline).toISOString(),
+    const quota = await resolveBillingQuota(deployment, c.env, account.id);
+    unclaimedAccess = {
+      endsAt: new Date(deadline).toISOString(),
       ...(quota.limit === undefined ? {} : { limit: quota.limit }),
     };
   }
-  return c.json({
+  return {
     deployment: meta,
     account: await accountLifecycle(c.env, account.id),
     credential: await openCredential(c.env, id, proofHash, row.protected_credential),
-    trial,
-  });
+    unclaimedAccess,
+  };
 }

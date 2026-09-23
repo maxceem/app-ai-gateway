@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { supportsEndpointStyle } from "../src/core/capabilities";
 import {
-  clearProviderCaches,
   organizationProviders,
   resolveProvider,
 } from "../src/core/provider-store";
@@ -15,7 +14,10 @@ import { GatewayError } from "../src/core/errors";
 import type { ResourceWriteBoundary } from "../src/management/write-boundary";
 import { secretVault } from "../src/vault";
 import { secretContext } from "../src/vault/secrets";
+import { resolveDeployment } from "../src/policy/deployment";
+import type { BillingRequestCache } from "../src/billing/gateway";
 import {
+  clearProviderCaches,
   TEST_ORGANIZATION_ID,
   seedAllProviders,
   seedProvider,
@@ -171,6 +173,24 @@ describe("admin provider instances", () => {
     const listed = await call("GET", "/v1/admin/providers");
     expect((listed.body.providers as ProviderSummary[]).map((entry) => entry.slug).sort())
       .toEqual(["openai", "openai-dev"]);
+  });
+
+  /*
+   * `constructor` and `prototype` match the slug pattern and are legal keys on
+   * every plain object, so a row holding one would name a slug no application
+   * policy could ever reference — the configuration grammar refuses those keys.
+   * Refusing them here is what keeps the two ends agreeing.
+   */
+  it.each(["constructor", "prototype"])("refuses the reserved slug %s", async (slug) => {
+    stubProbe();
+    const response = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug,
+      name: "Reserved slug",
+      secret: "secret",
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("invalid_request");
   });
 
   it("rejects cross-type use of a reserved default slug", async () => {
@@ -402,18 +422,27 @@ describe("admin provider instances", () => {
         entered++;
         if (entered === 2) release();
         await ready;
-        const result = await statement.run();
+        const result = await (Array.isArray(statement) ? statement[0]! : statement).run();
         if (result.meta.changes !== 1) throw new GatewayError(409, "conflict", "lost CAS");
       },
     });
-    const actor = { organizationId: TEST_ORGANIZATION_ID, userId: "operator-test-owner" };
+    const actor = {
+      organizationId: TEST_ORGANIZATION_ID,
+      userId: "operator-test-owner",
+      credentialId: null,
+    };
+    const scope = {
+      env,
+      deployment: resolveDeployment(env),
+      billingCache: new Map() as BillingRequestCache,
+    };
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2020-01-01T00:00:00.000Z"));
     let writes: PromiseSettledResult<Awaited<ReturnType<typeof updateProvider>>>[];
     try {
       writes = await Promise.allSettled([
-        updateProvider(env, actor, initial.id, { name: "Writer A", revision: initial.revision }, boundary()),
-        updateProvider(env, actor, initial.id, { name: "Writer B", revision: initial.revision }, boundary()),
+        updateProvider(scope, actor, initial.id, { name: "Writer A", revision: initial.revision }, boundary()),
+        updateProvider(scope, actor, initial.id, { name: "Writer B", revision: initial.revision }, boundary()),
       ]);
     } finally {
       vi.useRealTimers();

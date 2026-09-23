@@ -1,13 +1,8 @@
 /**
  * Every documented response body, as one schema per shape.
  *
- * These used to live inside `openapi.ts`, where they were documentation and
- * nothing else: no handler was checked against them, the console kept a second
- * hand-written copy in `console/src/lib/types.ts`, and the CLI kept a third as
- * a field allow-list. Three descriptions of one wire format, and nothing that
- * noticed when they disagreed.
- *
- * Here they are the definition. `openapi.ts` imports them and publishes them,
+ * These are the definition of the wire format. `openapi.ts` imports them and
+ * publishes them,
  * the Worker handlers `satisfies` the inferred types so a drifting handler
  * fails `pnpm run check`, the console imports the types alone, and the CLI
  * parses real responses with the schemas themselves.
@@ -24,8 +19,42 @@ import {
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   ProviderPricingSchema,
-  SlugSchema,
+  StoredSlugSchema,
 } from "./schemas.ts";
+
+/**
+ * What happened to one served request: answered (`ok`), failed upstream, or
+ * refused before any provider was called — by the organization's own app
+ * limits (`blocked_app_*`), by the plan allowance (`blocked_billing`), or by an
+ * operator (`blocked_user`). The one list: the stored column, the recorder, the
+ * event filter and this document all read it.
+ */
+export const USAGE_STATUSES = [
+  "ok",
+  "provider_error",
+  "blocked_app_rate",
+  "blocked_app_budget",
+  "blocked_billing",
+  "blocked_user",
+] as const;
+export type UsageStatus = (typeof USAGE_STATUSES)[number];
+
+/** The dimensions a usage breakdown can group by. */
+export const USAGE_BREAKDOWN_DIMENSIONS = [
+  "model",
+  "provider",
+  "provider_slug",
+  "provider_gateway",
+  "credential_source",
+  "model_author",
+  "user",
+  "status",
+  "cost_source",
+  "route",
+  "endpoint",
+  "app_version",
+] as const;
+export type UsageBreakdownDimension = (typeof USAGE_BREAKDOWN_DIMENSIONS)[number];
 
 export const ErrorResponseSchema = z.object({
   error: z.object({
@@ -58,6 +87,33 @@ export const AppAttestChallengeResponseSchema = z.object({
 });
 
 export const AppAttestRegisterResponseSchema = z.object({ user_id: z.string() });
+
+export const GatewayTokenResponseSchema = z.object({
+  access_token: z.string(),
+  expires_in: z.number(),
+});
+
+/**
+ * Where one end user stands against the limits their application sets.
+ *
+ * The account's request allowance is deliberately absent: that is the
+ * organization's arrangement with the gateway rather than its users' business,
+ * and it is reported on the rejection that spends it.
+ */
+export const CurrentUserResponseSchema = z.object({
+  user_id: z.string(),
+  limits: z.object({
+    requests_today: z.number().int().nullable().meta({ description: "Requests this user has made so far in the current UTC day. Null when the application sets no per-user limit, in which case requests are not counted at all." }),
+    requests_remaining: z.number().int().nullable().meta({ description: "What is left of requests_per_day. Null when no daily limit is set." }),
+    requests_per_minute: z.number().nullable().meta({ description: "The per-user per-minute limit this app sets. Null means unlimited." }),
+    requests_per_day: z.number().nullable().meta({ description: "The per-user per-day limit this app sets. Null means unlimited." }),
+    monthly_cost_usd: z.number().meta({ description: "What this user's traffic has cost so far in the current UTC calendar month." }),
+    monthly_budget_usd: z.number().nullable().meta({ description: "The per-user monthly spending budget this app sets. Null means unlimited." }),
+    blocked: z.boolean().meta({ description: "Whether this user has been blocked in the console." }),
+  }).meta({
+    description: "The limits the app sets on this user, and where the user stands against them. The account's request allowance is not reported here: it is shared by all apps, and is reported on the rejection that spends it.",
+  }),
+});
 
 export const UsageEventSchema = z.object({
   id: z.number().int(),
@@ -102,7 +158,7 @@ export const UsageEventSchema = z.object({
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
-  status: z.enum(["ok", "provider_error", "blocked_app_rate", "blocked_app_budget", "blocked_billing", "blocked_user"]),
+  status: z.enum(USAGE_STATUSES),
   client_aborted: z.number().int().nullable().meta({
     description: "1 when the client disconnected before the upstream finished streaming, which cancelled the provider call; null otherwise. Not a failure — the request was served as far as the caller wanted it — but an aborted stream often takes the provider's end-of-response usage with it, which is why such an event may carry cost_source unresolved.",
   }),
@@ -191,18 +247,18 @@ export const AppResponseSchema = z.object({
     id: z.string().meta({ description: "The gateway-assigned id, and the `{app}` segment of every URL for this application." }),
     name: z.string(),
     /**
-     * An `AppConfig`, except on the one row this shape's own `config_error`
-     * describes: a configuration written before a schema change is returned as
-     * it is stored, so an operator can read and repair it. Declared as the
-     * union rather than as `AppConfig` alone because a client that parses this
-     * response must still be able to read such a row.
+     * An `AppConfig` — the parsed one, which is also the stored one: what the
+     * gateway accepts is what it keeps, so there is no second "resolved" view
+     * of it to publish. The one exception is the row this shape's own
+     * `config_error` describes: a configuration written before a schema change
+     * is returned as it is stored, so an operator can read and repair it, and
+     * that is why this is declared as the union rather than as `AppConfig`.
      */
     config: z.union([AppConfigSchema, z.record(z.string(), z.unknown())]),
     status: z.enum(["active", "disabled"]),
     created_at: z.string(),
     updated_at: z.string(),
   }),
-  resolved: z.record(z.string(), z.unknown()).nullable().meta({ description: "The configuration as the request path resolves it, with provider routing and limits applied. Null when the stored configuration does not parse, which is the one case `app.config` is not an AppConfig." }),
   config_error: z.string().nullable().meta({ description: "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write." }),
 }).meta({ id: "AppResponse" });
 
@@ -244,7 +300,7 @@ export const ManagementKeyResponseSchema = z.object({ key: ManagementKeySummaryS
 export const ProviderSummarySchema = z.object({
   id: z.string(),
   type: z.enum(PROVIDER_TYPES),
-  slug: SlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
+  slug: StoredSlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
   name: z.string(),
   secretHint: z.string().nullable().meta({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
@@ -419,6 +475,8 @@ export const OrganizationListResponseSchema = z.object({
 
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
+export type GatewayTokenResponse = z.infer<typeof GatewayTokenResponseSchema>;
+export type CurrentUserResponse = z.infer<typeof CurrentUserResponseSchema>;
 export type ConsoleCapabilitiesResponse = z.infer<typeof ConsoleCapabilitiesResponseSchema>;
 export type UsageEvent = z.infer<typeof UsageEventSchema>;
 export type UsageEventList = z.infer<typeof UsageEventListSchema>;
@@ -449,11 +507,9 @@ export type IdentitySession = z.infer<typeof IdentitySessionSchema>;
 export type OrganizationListResponse = z.infer<typeof OrganizationListResponseSchema>;
 
 /**
- * Response shapes the console and the CLI consume that the published document
- * still describes loosely (`z.unknown()` on the generic admin operations). The
- * definition lives here either way, so a handler, the console and the CLI move
- * together; widening the published document to match is a separate change,
- * because it rewrites `openapi/openapi.json` and the generated endpoint pages.
+ * The rest of the admin surface. `./catalog.ts` documents each operation with
+ * these, so the handler, the document, the console and the CLI all move
+ * together.
  */
 export const UsageTotalsSchema = z.object({
   requests: z.number(),
@@ -489,14 +545,21 @@ export const AppSummarySchema = z.object({
 
 export const AppListResponseSchema = z.object({
   month: z.string(),
-  has_proxied_requests: z.boolean(),
+  has_proxied_requests: z.boolean().meta({
+    description:
+      "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
+  }),
   apps: z.array(AppSummarySchema),
 });
 
 export const AppValidateResponseSchema = z.object({
   valid: z.literal(true),
   app_id: z.string(),
-  exists: z.boolean(),
+});
+
+/** A configuration for an application that does not exist yet would be accepted. */
+export const AppDraftValidateResponseSchema = z.object({
+  valid: z.literal(true),
 });
 
 export const CreatedApiKeySchema = z.object({
@@ -593,10 +656,39 @@ export const BreakdownRowSchema = UsageTotalsSchema.extend({
 
 export const BreakdownResponseSchema = z.object({
   app_id: z.string(),
-  by: z.string(),
+  by: z.enum(USAGE_BREAKDOWN_DIMENSIONS),
   from: z.string(),
   to: z.string(),
   rows: z.array(BreakdownRowSchema),
+});
+
+/**
+ * What a repricing run would change, or did.
+ *
+ * `applied` is the difference between a dry run and a write: a dry run is the
+ * only one that can report `unpriced_events`, because an apply refuses outright
+ * rather than leaving some events at a stale figure.
+ */
+export const UsageRepriceResponseSchema = z.object({
+  app_id: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  month: z.string(),
+  applied: z.boolean(),
+  matched_events: z.number().int(),
+  unmetered_events: z.number().int().meta({
+    description: "Matched events that carried no readable usage, and so were repriced to the zero their zero counts imply while keeping whatever cost_source they had. A non-zero number means the month contains spend nothing could meter, which repricing cannot fix and must not appear to have fixed.",
+  }),
+  unpriced_events: z.number().int().meta({
+    description: "Dry-run only: matched events whose serving instance can no longer price them.",
+  }),
+  unpriced_cost_usd: z.number(),
+  previous_cost_usd: z.number(),
+  recalculated_cost_usd: z.number(),
+  delta_usd: z.number(),
+  reconciled_users: z.number().int().meta({
+    description: "End-user spend ledgers reprojected inside this request; the rest are left to scheduled recovery.",
+  }),
 });
 
 export const ModelPriceSchema = z.object({
@@ -621,6 +713,7 @@ export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
 export type AppSummary = z.infer<typeof AppSummarySchema>;
 export type AppListResponse = z.infer<typeof AppListResponseSchema>;
 export type AppValidateResponse = z.infer<typeof AppValidateResponseSchema>;
+export type AppDraftValidateResponse = z.infer<typeof AppDraftValidateResponseSchema>;
 export type CreatedApiKey = z.infer<typeof CreatedApiKeySchema>;
 export type CreatedAppResponse = z.infer<typeof CreatedAppResponseSchema>;
 export type ApiKey = z.infer<typeof ApiKeySchema>;
@@ -637,3 +730,4 @@ export type BreakdownRow = z.infer<typeof BreakdownRowSchema>;
 export type BreakdownResponse = z.infer<typeof BreakdownResponseSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type PricesResponse = z.infer<typeof PricesResponseSchema>;
+export type UsageRepriceResponse = z.infer<typeof UsageRepriceResponseSchema>;

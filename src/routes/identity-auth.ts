@@ -2,14 +2,17 @@ import { claimOAuthAuthorized, CLAIM_OAUTH_COOKIE } from "./cli/oauth";
 import { Hono } from "hono";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import {
-  createIdentityAuth,
-  createClaimRegistrationAuth,
+  identityAuthFor,
   IDENTITY_AUTH_BASE_PATH,
   registrationOpen,
   relaySocialSignIn,
 } from "../auth/identity";
+import type { RequestVariables } from "../middleware/request-scope";
 
-export const identityAuthRoutes = new Hono<{ Bindings: Env }>();
+export const identityAuthRoutes = new Hono<{
+  Bindings: Env;
+  Variables: RequestVariables;
+}>();
 
 /** Where the console serves its sign-in screen. */
 const CONSOLE_LOGIN_PATH = "/login";
@@ -140,7 +143,7 @@ identityAuthRoutes.all("/*", async (c) => {
   if (
     c.req.method === "POST" &&
     c.req.path === "/v1/auth/sign-up/email" &&
-    !(await registrationOpen(c.env))
+    !(await registrationOpen(c.get("deployment"), c.env))
   ) {
     return c.json(registrationDisabled(), 403);
   }
@@ -151,14 +154,12 @@ identityAuthRoutes.all("/*", async (c) => {
   const markRegistrationDenied = () => {
     registrationDenied = true;
   };
-  const auth = claim
-    ? createClaimRegistrationAuth(c.env, c.req.url, {
-        onRegistrationDenied: markRegistrationDenied,
-      })
-    : createIdentityAuth(c.env, c.req.url, {
-        provisionRegistration: true,
-        onRegistrationDenied: markRegistrationDenied,
-      });
+  const auth = await identityAuthFor(c, {
+    ...(claim
+      ? { claimRegistration: true }
+      : { provisionRegistration: true }),
+    onRegistrationDenied: markRegistrationDenied,
+  });
   let handled = await auth.handler(c.req.raw);
   if (callback) {
     const headers = new Headers(handled.headers);

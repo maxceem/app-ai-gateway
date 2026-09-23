@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { insertApp, updateApp, type AtomicAppWrite } from "../src/core/app-writes";
-import type { StoredAppConfig } from "../src/core/types";
+import { insertApp, updateApp, type AtomicAppWrite } from "../src/management/app-writes";
+import { parseAppConfig } from "../src/shared/app-config";
 import { serverConfig } from "./helpers";
 
 async function seedOrganization(id: string): Promise<void> {
@@ -28,7 +28,7 @@ function appWrite(id: string, organizationId: string, name = id): AtomicAppWrite
     id,
     organizationId,
     name,
-    config: serverConfig() as unknown as StoredAppConfig,
+    config: parseAppConfig(serverConfig()),
     status: "active",
     expectedRevision: 1,
   };

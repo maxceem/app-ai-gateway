@@ -1,11 +1,10 @@
 import { Hono } from "hono";
-import { rethrowCfAuthError } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
+import { ManagementKeyCreateRequestSchema } from "../../contracts/schemas";
+import { schemaBody } from "../../management/validation";
+import { jsonBody } from "./body";
+import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
-import type {
-  CreatedManagementKeyResponse,
-  ManagementKeyListResponse,
-  ManagementKeyResponse,
-} from "../../contracts/responses";
 import type { AdminVariables } from "../../middleware/admin";
 
 /**
@@ -15,73 +14,38 @@ import type { AdminVariables } from "../../middleware/admin";
  * the key itself. Reading and revoking are closed too, so the rule is one line
  * to state — management keys are administered by a person, in the console.
  *
- * Guarding each handler rather than mounting middleware: these routes join the
- * admin app at `/`, so a `use("*")` here would answer for every admin path.
+ * That rule is `security: "session"` on the three catalog entries, and the
+ * router enforces it; nothing is restated here.
  */
-function requireSession(admin: AdminVariables["admin"]): void {
-  if (admin.credentialType !== "session") {
-    throw new GatewayError(
-      403,
-      "session_required",
-      "Management keys can only be administered from a user session",
-    );
-  }
-}
-
-function keyName(value: unknown): string {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new GatewayError(400, "invalid_request", "A JSON object is required");
-  }
-  const name = (value as Record<string, unknown>).name;
-  if (typeof name !== "string" || name.trim().length === 0 || name.trim().length > 100) {
-    throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
-  }
-  return name.trim();
-}
-
 export const managementKeyRoutes = new Hono<{
   Bindings: Env;
   Variables: AdminVariables;
 }>();
+const routes = adminRouter(managementKeyRoutes);
 
-managementKeyRoutes.get("/keys", async (c) => {
-  requireSession(c.get("admin"));
-  try {
-    const keys = await c.get("identityAuth").service.listApiKeys({
-      actor: c.get("authState"),
-      organizationId: c.get("admin").organizationId,
-    });
-    return c.json({ keys } satisfies ManagementKeyListResponse);
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+routes.handle("listManagementKeys", async (c) => {
+  const keys = await (await identityAuthFor(c)).service.listApiKeys({
+    actor: c.get("authState"),
+    organizationId: c.get("actor").organizationId,
+  });
+  return { keys };
 });
 
-managementKeyRoutes.post("/keys", async (c) => {
-  requireSession(c.get("admin"));
-  try {
-    const key = await c.get("identityAuth").service.createApiKey({
-      actor: c.get("authState"),
-      organizationId: c.get("admin").organizationId,
-      name: keyName(await c.req.json()),
-    });
-    return c.json({ key } satisfies CreatedManagementKeyResponse, 201);
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+routes.handle("createManagementKey", async (c) => {
+  const key = await (await identityAuthFor(c)).service.createApiKey({
+    actor: c.get("authState"),
+    organizationId: c.get("actor").organizationId,
+    name: schemaBody(ManagementKeyCreateRequestSchema, await jsonBody(c)).name,
+  });
+  return { key };
 });
 
-managementKeyRoutes.post("/keys/:id/revoke", async (c) => {
-  requireSession(c.get("admin"));
-  try {
-    const key = await c.get("identityAuth").service.revokeApiKey({
-      actor: c.get("authState"),
-      organizationId: c.get("admin").organizationId,
-      apiKeyId: c.req.param("id"),
-    });
-    if (!key) throw new GatewayError(404, "not_found", "Management key was not found");
-    return c.json({ key } satisfies ManagementKeyResponse);
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
+routes.handle("revokeManagementKey", async (c) => {
+  const key = await (await identityAuthFor(c)).service.revokeApiKey({
+    actor: c.get("authState"),
+    organizationId: c.get("actor").organizationId,
+    apiKeyId: c.req.param("id"),
+  });
+  if (!key) throw new GatewayError(404, "not_found", "Management key was not found");
+  return { key };
 });

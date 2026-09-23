@@ -1,49 +1,9 @@
+import type { GatewayType, ProviderGatewayConfig } from "../db/schema";
 import { GatewayError } from "./errors";
-import { gatewayProbe, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
-import { PROVIDER_REGISTRY, providerAuthValue, providerProbeHeaders } from "./providers";
+import { providerProbeHeaders } from "./providers";
+import { DIRECT_ADAPTER, routeAdapter, type RouteRequest } from "./routes";
 import type { ProviderType } from "./types";
-
-/**
- * The cheapest authenticated call each provider offers, as a path under its own
- * {@link PROVIDER_REGISTRY} base URL. A type is absent only when the provider
- * has no such call, and its credentials are then accepted unvalidated and
- * flagged in the console — never because a plausible path was untested. An entry
- * that answers 200 to an invalid key would be worse than no entry at all: it
- * would report every key as good.
- *
- * Absent, and why:
- * - `perplexity` — no unmetered authenticated endpoint.
- * - `fireworks` — its list-models call is `v1/accounts/{account}/models`, and
- *   the account id cannot be derived from the key. Nothing under
- *   `inference/v1/` is documented as a GET.
- * - `huggingface` — `router.huggingface.co/v1/models` is public: it answers 200
- *   to a garbage token, so probing it would validate every key. The endpoint
- *   that does check a token lives on a different origin (`huggingface.co`),
- *   which this table cannot express.
- * - `bytedance` — ModelArk publishes no list-models call, and its own SDK has
- *   no models resource. It also authenticates before it routes, so every path
- *   answers the same 401 and a probe would prove nothing about the key.
- */
-const PROBE_PATHS: Partial<Record<ProviderType, string>> = {
-  openai: "v1/models",
-  xai: "v1/models",
-  gemini: "v1beta/models",
-  anthropic: "v1/models",
-  // DeepSeek's OpenAI base URL carries no `v1` segment.
-  deepseek: "models",
-  // Groq's OpenAI-compatible surface is namespaced under `openai/`.
-  groq: "openai/v1/models",
-  mistral: "v1/models",
-  together: "v1/models",
-  cerebras: "v1/models",
-  moonshot: "v1/models",
-  baseten: "v1/models",
-  // OpenRouter's key-status call, not its model list: `v1/models` is public and
-  // answers 200 to any token, exactly the trap `huggingface` is absent for.
-  // `v1/key` answers 401 to a key that does not exist.
-  openrouter: "v1/key",
-};
 
 const PROBE_TIMEOUT_MS = 4_000;
 
@@ -146,14 +106,26 @@ export async function probeProviderKey(
   secret: string,
   baseUrl?: string | null,
 ): Promise<ProbeResult> {
-  const path = PROBE_PATHS[type];
-  if (!path) return { validated: false, reason: "no_probe" };
-  const spec = PROVIDER_REGISTRY[type];
-  const headers: Record<string, string> = {
-    [spec.auth.header]: providerAuthValue(type, secret),
-    ...providerProbeHeaders(type),
-  };
-  return runProbe(type, `${baseUrl ?? spec.directBaseUrl}${path}`, headers);
+  const request = DIRECT_ADAPTER.probe({
+    provider: type,
+    secret,
+    baseUrl: baseUrl ?? null,
+    gatewayConfig: null,
+  });
+  // Null where this provider type has no cheap authenticated call of its own;
+  // the reason lives with the descriptor that declines to name one.
+  if (!request) return { validated: false, reason: "no_probe" };
+  return runProbe(type, request.url, probeHeaders(type, request));
+}
+
+/**
+ * The provider's own probe requirements travel with it on every route: a
+ * Cloudflare route forwards to Anthropic's real API, which refuses a request
+ * with no version header however it arrived. The adapter's own headers win,
+ * because they are the credential this call is proving.
+ */
+function probeHeaders(type: ProviderType, request: RouteRequest): Record<string, string> {
+  return { ...providerProbeHeaders(type), ...request.headers };
 }
 
 /**
@@ -164,28 +136,20 @@ export async function probeProviderKey(
  */
 export async function probeProviderGateway(input: {
   type: ProviderType;
-  gateway: ResolvedGateway;
+  gatewayType: GatewayType;
+  gatewayConfig: ProviderGatewayConfig;
   token: string;
 }): Promise<ProbeResult> {
-  const request = gatewayProbe({
-    gateway: input.gateway,
-    secret: input.token,
+  const request = routeAdapter(input.gatewayType).probe({
     provider: input.type,
-    // Null where this provider has no cheap authenticated call of its own. A
-    // gateway that authenticates with its own credential still has one.
-    path: PROBE_PATHS[input.type] ?? null,
+    secret: input.token,
+    baseUrl: null,
+    gatewayConfig: input.gatewayConfig,
   });
   // Nothing to prove: either this gateway does not serve the provider type, or
   // the only thing it could call is a provider path that does not exist.
   if (!request) return { validated: false, reason: "no_probe" };
-  // The provider's own probe requirements travel with it through the gateway:
-  // a Cloudflare route forwards to Anthropic's real API, which refuses a
-  // request with no version header however it arrived.
-  const headers: Record<string, string> = {
-    ...providerProbeHeaders(input.type),
-    ...request.headers,
-  };
-  return runProbe(`${input.type}_via_${input.gateway.type}`, request.url, headers);
+  return runProbe(`${input.type}_via_${input.gatewayType}`, request.url, probeHeaders(input.type, request));
 }
 
 /**
@@ -196,8 +160,13 @@ export async function probeProviderGateway(input: {
  * because its credential is, so both adapters answer for the connection itself.
  */
 export async function probeGatewayPreset(
-  gateway: ResolvedGateway,
+  gateway: { type: GatewayType; config: ProviderGatewayConfig },
   token: string,
 ): Promise<ProbeResult> {
-  return probeProviderGateway({ type: "openai", gateway, token });
+  return probeProviderGateway({
+    type: "openai",
+    gatewayType: gateway.type,
+    gatewayConfig: gateway.config,
+    token,
+  });
 }

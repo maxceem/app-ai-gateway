@@ -9,6 +9,7 @@ import type {
   ProviderSummary,
   UsageTotals,
 } from "../../src/contracts/responses.ts";
+import { parseAppConfig } from "../../src/shared/app-config.ts";
 import { CliError } from "../src/common.ts";
 import { humanResult, type OutputContext } from "../src/human.ts";
 import { maskDelta } from "../src/input.ts";
@@ -88,6 +89,12 @@ const stored = {
   contentHash: "hash",
 };
 
+/** The smallest valid server configuration, as the schema's own parse produces it. */
+const UNLIMITED_SERVER_CONFIG = parseAppConfig({
+  authentication: { type: "api_key" },
+  routing: { providers: { mode: "all" }, model_rewrites: {} },
+});
+
 const app: AppResponse = {
   app: {
     revision: 1,
@@ -101,7 +108,6 @@ const app: AppResponse = {
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
-  resolved: null,
   config_error: null,
 };
 
@@ -426,7 +432,7 @@ const cases: Case[] = [
     command: "app check",
     result: {
       appId: "app_1",
-      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: true },
+      validation: { local: true, remote: true, valid: true, app_id: "app_1" },
       status: "active",
       providers: [{ id: "prv_1", slug: "openai", status: "active" }],
       ready: true,
@@ -441,10 +447,7 @@ const cases: Case[] = [
       definition: {
         name: "Example",
         status: "active",
-        config: {
-          authentication: { type: "api_key" },
-          routing: { providers: { mode: "all" }, model_rewrites: {} },
-        },
+        config: UNLIMITED_SERVER_CONFIG,
       },
       validation: { local: true, remote: false, skipped: ["Provider references need login."] },
     },
@@ -458,12 +461,9 @@ const cases: Case[] = [
       definition: {
         name: "Example",
         status: "active",
-        config: {
-          authentication: { type: "api_key" },
-          routing: { providers: { mode: "all" }, model_rewrites: {} },
-        },
+        config: UNLIMITED_SERVER_CONFIG,
       },
-      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: false },
+      validation: { local: true, remote: true, valid: true, app_id: "app_1" },
     },
     includes: ["Dry run: Example is valid here and on the gateway.", "Nothing was written."],
   },
@@ -472,7 +472,6 @@ const cases: Case[] = [
     command: "app add",
     result: {
       app: app.app,
-      resolved: null,
       config_error: null,
       applicationKey: stored,
       guidance: "Store the generated key on your server.",
@@ -617,7 +616,7 @@ test("colour marks the headline, the labels and the state words, and nothing els
     "app check",
     {
       appId: "app_1",
-      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: true },
+      validation: { local: true, remote: true, valid: true, app_id: "app_1" },
       status: "disabled",
       providers: [],
       ready: false,

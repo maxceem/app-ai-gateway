@@ -1,9 +1,15 @@
+/**
+ * Every query and calendar calculation the usage surfaces read through.
+ *
+ * It lives here rather than beside the routes because the application service
+ * in `./apps.ts` needs the same month totals the usage endpoints report, and
+ * nothing under `src/management` may reach into `src/routes` to get them.
+ */
 import { and, eq, gte, lte, sql, type SQL } from "drizzle-orm";
-import { GatewayError } from "../../core/errors";
-import { appUsageEvent } from "../../db/schema";
+import { GatewayError } from "../core/errors";
+import { MONTH_FORMAT_MESSAGE, MONTH_PATTERN } from "../contracts/schemas";
+import { appUsageEvent } from "../db/schema";
 
-const DAY = /^\d{4}-\d{2}-\d{2}$/u;
-const MONTH = /^\d{4}-\d{2}$/u;
 
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -11,8 +17,8 @@ export function currentMonth(): string {
 
 /** Rejects a caller-supplied month before it reaches a query. */
 export function assertMonth(month: string): void {
-  if (!MONTH.test(month)) {
-    throw new GatewayError(400, "invalid_request", "month must use YYYY-MM format");
+  if (!MONTH_PATTERN.test(month)) {
+    throw new GatewayError(400, "invalid_request", MONTH_FORMAT_MESSAGE);
   }
 }
 
@@ -29,13 +35,12 @@ export interface DateRange {
   to: string;
 }
 
-/** Inclusive day range, defaulting to the trailing `days` window ending today. */
+/**
+ * Inclusive day range, defaulting to the trailing `days` window ending today.
+ * Each bound's format is the operation's query schema's to check; what is
+ * left here is the defaults and that the two bounds are in order.
+ */
 export function parseRange(from: string | undefined, to: string | undefined, days = 30): DateRange {
-  for (const [label, value] of [["from", from], ["to", to]] as const) {
-    if (value !== undefined && !DAY.test(value)) {
-      throw new GatewayError(400, "invalid_request", `${label} must use YYYY-MM-DD format`);
-    }
-  }
   const end = to ?? new Date().toISOString().slice(0, 10);
   const start =
     from ?? new Date(Date.parse(`${end}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
@@ -62,24 +67,6 @@ export const usageTotals = {
   errors: sql<number>`SUM(CASE WHEN ${appUsageEvent.status} = 'provider_error' THEN 1 ELSE 0 END)`,
   blocked: sql<number>`SUM(CASE WHEN ${appUsageEvent.status} LIKE 'blocked_%' THEN 1 ELSE 0 END)`,
 };
-
-export function parseLimit(value: string | undefined, fallback: number, max: number): number {
-  if (value === undefined) return fallback;
-  const limit = Number.parseInt(value, 10);
-  if (!Number.isInteger(limit) || limit < 1 || limit > max) {
-    throw new GatewayError(400, "invalid_request", `limit must be an integer between 1 and ${max}`);
-  }
-  return limit;
-}
-
-export function parseOffset(value: string | undefined): number {
-  if (value === undefined) return 0;
-  const offset = Number.parseInt(value, 10);
-  if (!Number.isInteger(offset) || offset < 0) {
-    throw new GatewayError(400, "invalid_request", "offset must be a non-negative integer");
-  }
-  return offset;
-}
 
 /*
  * Usage history lives in two tables, and every aggregate has to read both.

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { GuardedButton } from "@/components/guarded-button";
@@ -8,8 +9,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/field";
 import { MissingProvidersAlert } from "@/components/missing-providers-alert";
 import { MonthPicker } from "@/components/pickers";
-import { useAppDraft } from "@/hooks/use-app-draft";
+import { useAppDraft, type SaveOutcome } from "@/hooks/use-app-draft";
 import { APP_SECTIONS, DEFAULT_APP_SECTION } from "@/lib/app-sections";
+import { draftLimits } from "@/lib/config-types";
 import { draftProblem } from "@/lib/draft-problems";
 import { currentMonth } from "@/lib/format";
 import { useConsoleSession } from "@/lib/console-session";
@@ -50,12 +52,10 @@ export function AppDetailPage() {
   /*
    * A tab this app does not have: a stale bookmark, or a hand-typed URL.
    *
-   * Answered once, here, rather than left to fall out of the chain below. That
-   * chain ends in the pair of lazily-loaded tabs, so an unknown tab used to
-   * reach `Endpoints` — not as anyone's choice of fallback, but because
-   * Endpoints is the second of the two and so the last branch standing. The
-   * header meanwhile did its own lookup, missed, and titled the page
-   * "Overview", leaving the two halves of the screen naming different sections.
+   * Answered once, here, rather than left to fall out of the chain below: that
+   * chain ends in the pair of lazily-loaded tabs, so an unknown tab would reach
+   * whichever of them stands last rather than anyone's chosen fallback, while
+   * the header's own lookup missed and titled the page something else.
    *
    * Sending the URL to the default section instead keeps the address bar and
    * the content agreeing on what is open, and `replace` keeps Back going to
@@ -68,6 +68,22 @@ export function AppDetailPage() {
   const { query, draft, dirty } = state;
   // What would make the Worker refuse the draft, said on the button instead.
   const problem = draft ? draftProblem(draft) : null;
+
+  /*
+   * Saving is the hook's; saying so is this page's. The editor reports an
+   * outcome rather than raising a toast itself, so the one place a save is
+   * announced is the one screen a save is started from — and a rejection the
+   * repair editor already shows beside the offending text is not repeated here.
+   */
+  const announce = (done: SaveOutcome, success: string) => {
+    if (done.ok) {
+      toast.success(success, {
+        description: "The gateway picks it up within the 60 second config cache TTL.",
+      });
+      return;
+    }
+    if (!done.inline) toast.error("Save rejected", { description: done.message });
+  };
 
   if (query.isError) {
     return (
@@ -141,7 +157,9 @@ export function AppDetailPage() {
               Discard
             </Button>
             <GuardedButton
-              onClick={() => void state.saveRepair()}
+              onClick={() => void state.saveRepair().then(
+                (done) => announce(done, "Configuration repaired"),
+              )}
               disabled={!state.repairDirty || state.saving}
             >
               {state.saving ? <Loader2 className="size-4 animate-spin" /> : null}
@@ -183,7 +201,7 @@ export function AppDetailPage() {
         // no limits block is unlimited.
         <UsersTab
           appId={appId}
-          monthlyBudgetUsd={draft.config.limits?.per_user.spending.monthly_usd ?? null}
+          monthlyBudgetUsd={draftLimits(draft.config.limits).per_user.spending.monthly_usd}
         />
       ) : tab === "errors" ? (
         <ErrorsTab appId={appId} />
@@ -213,7 +231,9 @@ export function AppDetailPage() {
               <GuardedButton
                 size="sm"
                 reason={problem ?? undefined}
-                onClick={() => void state.save()}
+                onClick={() => void state.save().then(
+                  (done) => announce(done, "Configuration saved"),
+                )}
                 disabled={state.saving}
               >
                 {state.saving ? <Loader2 className="size-4 animate-spin" /> : null}

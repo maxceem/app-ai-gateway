@@ -91,7 +91,7 @@ const draftRewrites = () => JSON.parse(screen.getByTestId("rewrites").textConten
 function renderTab(routing: ProxyConfig, providers = PROVIDERS) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(routing), resolved: null, config_error: null },
+      body: { app: appRow(routing), config_error: null },
     },
     "/v1/admin/providers": { body: { providers } },
     "/v1/admin/prices": { body: { prices: { openai: { "gpt-5.6-luna": { input: 1, output: 2 } } } } },

@@ -1,17 +1,17 @@
 import { env, exports } from "cloudflare:workers";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearAppConfigCache, loadAppConfig } from "../src/core/config";
-import {
-  clearProviderCaches,
-  organizationProviders,
-} from "../src/core/provider-store";
+import { appConfigCache, loadApp } from "../src/core/config";
+import { organizationProviders } from "../src/core/provider-store";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import type { AdminVariables } from "../src/middleware/admin";
+import type { AuthState } from "@maxceem/cf-auth";
+import { resolveDeployment } from "../src/policy/deployment";
 import { appRoutes } from "../src/routes/admin/apps";
 import {
   appleConfig,
+  clearProviderCaches,
   defaultProxyConfig,
   seedApp,
   seedProvider,
@@ -192,7 +192,7 @@ describe("admin console API", () => {
   });
 
   it("validates a candidate config without writing it", async () => {
-    const valid = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
+    const valid = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
       method: "POST",
       headers: JSON_AUTH,
       body: JSON.stringify({
@@ -204,9 +204,9 @@ describe("admin console API", () => {
       }),
     });
     expect(valid.status).toBe(200);
-    await expect(valid.json()).resolves.toMatchObject({ valid: true, exists: false });
+    await expect(valid.json()).resolves.toEqual({ valid: true });
 
-    const invalid = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
+    const invalid = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
       method: "POST",
       headers: JSON_AUTH,
       body: JSON.stringify({
@@ -217,7 +217,7 @@ describe("admin console API", () => {
     expect(invalid.status).toBe(400);
 
     const unknownProvider = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/validate-only/validate`,
+      `${ORIGIN}/v1/admin/app-drafts/validate`,
       {
         method: "POST",
         headers: JSON_AUTH,
@@ -243,6 +243,25 @@ describe("admin console API", () => {
     });
 
     expect((await get("/v1/admin/apps/validate-only")).status).toBe(404);
+
+    // A name of nothing but spaces is the empty name it looks like.
+    const blankName = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "   ", config: serverConfig() }),
+    });
+    expect(blankName.status).toBe(400);
+    await expect(blankName.json()).resolves.toMatchObject({ error: { message: expect.stringMatching(/^name: /u) } });
+
+    // The per-application validation is for an application that exists: an id
+    // nobody has is refused like every other route under it.
+    const missing = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Validate only", config: serverConfig() }),
+    });
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({ error: { code: "app_not_found" } });
   });
 
   // Deleting a provider must not brick every later edit of an app that still
@@ -380,8 +399,14 @@ describe("admin console API", () => {
     });
     expect(created.status).toBe(201);
     const body = await created.json<{
-      app: { id: string; name: string; status: string; created_at: string; updated_at: string };
-      resolved: { routing: { providerMode: string } };
+      app: {
+        id: string;
+        name: string;
+        status: string;
+        created_at: string;
+        updated_at: string;
+        config: { routing: { providers: { mode: string } } };
+      };
       config_error: string | null;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
@@ -392,7 +417,6 @@ describe("admin console API", () => {
     // A create answers with the application, in the shape a read answers with.
     const readBack = await get(`/v1/admin/apps/${body.app.id}`);
     expect(body.app).toEqual(readBack.body.app);
-    expect(body.resolved).toEqual(readBack.body.resolved);
     expect(body.config_error).toBeNull();
 
     const original = await get("/v1/admin/apps/calorie-tracker");
@@ -404,7 +428,9 @@ describe("admin console API", () => {
     ]);
     expect(JSON.stringify(keyList.body)).not.toContain(body.api_key.key);
 
-    expect(body.resolved.routing.providerMode).toBe("all");
+    // Stored is resolved: the response carries the configuration itself, and
+    // there is no second view of it to compare against.
+    expect(body.app.config.routing.providers.mode).toBe("all");
     const appList = await get("/v1/admin/apps");
     // The fixture configures one instance of every provider type, and an
     // all-providers app reaches all of them.
@@ -437,7 +463,8 @@ describe("admin console API", () => {
       .run();
     const { status, body } = await get("/v1/admin/apps/broken-config");
     expect(status).toBe(200);
-    expect(body.resolved).toBeNull();
+    // Returned as it is stored, so the repair editor has something to open.
+    expect(body.app.config).toEqual({ authentication: {}, routing: {}, limits: {} });
     expect(body.config_error).toContain("authentication.type");
     expect(body.app.name).toBe("Broken");
   });
@@ -482,6 +509,34 @@ describe("admin console API", () => {
         .first<{ count: number }>())?.count;
     expect(await counted("app_usage_event")).toBe(1);
     expect(await counted("app_auth_event")).toBe(0);
+  });
+
+  it("deletes an app atomically, leaving everything in place when any step fails", async () => {
+    await seedApp("delete-atomic");
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
+      .bind("delete-atomic", "user-1", "active")
+      .run();
+    // The app row goes last, so refusing it proves the deletes before it are
+    // rolled back rather than merely never reached.
+    await env.DB.prepare(
+      `CREATE TRIGGER refuse_delete_atomic BEFORE DELETE ON app
+       WHEN OLD.id = 'delete-atomic'
+       BEGIN SELECT RAISE(ABORT, 'refused by test'); END`,
+    ).run();
+    try {
+      const failed = await exports.default.fetch(
+        `${ORIGIN}/v1/admin/apps/delete-atomic?confirm=delete-atomic`,
+        { method: "DELETE", headers: AUTH },
+      );
+      expect(failed.status).toBe(500);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER refuse_delete_atomic").run();
+    }
+    expect((await get("/v1/admin/apps/delete-atomic")).status).toBe(200);
+    const users = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_user WHERE app_id = ?")
+      .bind("delete-atomic")
+      .first<{ count: number }>();
+    expect(users?.count).toBe(1);
   });
 
   it("lists users with month-to-date usage and supports search", async () => {
@@ -543,6 +598,23 @@ describe("admin console API", () => {
 
     const rejected = await get("/v1/admin/apps/usage-shapes/usage/breakdown?by=nonsense");
     expect(rejected.status).toBe(400);
+    // Every query string goes through its operation's schema before the
+    // handler runs, so each of these is refused, and named, the same way.
+    for (const [path, message] of [
+      ["/v1/admin/apps/usage-shapes/events?limit=0", "limit must be an integer between 1 and 200"],
+      ["/v1/admin/apps/usage-shapes/events?limit=201", "limit must be an integer between 1 and 200"],
+      ["/v1/admin/apps/usage-shapes/events?before_id=-1", "before_id must be a positive integer"],
+      ["/v1/admin/apps/usage-shapes/users?offset=-1", "offset must be a non-negative integer"],
+      ["/v1/admin/apps/usage-shapes/usage/timeseries?from=2026-1-01", "from must use YYYY-MM-DD format"],
+      ["/v1/admin/apps/usage-shapes/auth-events/summary?days=366", "days must be an integer between 1 and 365"],
+    ] as const) {
+      const refused = await get(path);
+      expect(refused.status, path).toBe(400);
+      expect(refused.body, path).toMatchObject({ error: { code: "invalid_request", message } });
+    }
+    const badStatus = await get("/v1/admin/apps/usage-shapes/events?status=bogus");
+    expect(badStatus.status).toBe(400);
+    expect(badStatus.body.error.message).toMatch(/^status: /u);
 
     const firstPage = await get("/v1/admin/apps/usage-shapes/events?limit=2");
     expect(firstPage.body.events).toHaveLength(2);
@@ -599,7 +671,7 @@ describe("admin console API", () => {
 
     for (const [preset, issuer] of Object.entries(presets)) {
       const response = await exports.default.fetch(
-        `${ORIGIN}/v1/admin/apps/preset-${preset}/validate`,
+        `${ORIGIN}/v1/admin/app-drafts/validate`,
         {
           method: "POST",
           headers: JSON_AUTH,
@@ -676,15 +748,15 @@ describe("authoritative admin configuration", () => {
       .bind(...appIds)
       .run();
     await env.DB.prepare("DELETE FROM provider WHERE id = ?").bind(providerId).run();
-    clearAppConfigCache();
+    appConfigCache.clear();
     clearProviderCaches();
   });
 
   it("resolves GET from its scoped primary row while the runtime cache is stale", async () => {
     const appId = "admin-primary-get";
     await seedApp(appId);
-    const cached = await loadAppConfig(env, appId);
-    expect(cached.authentication.type).toBe("apple_app_attest");
+    const cached = await loadApp(env, appId);
+    expect(cached.config.authentication.type).toBe("apple_app_attest");
 
     await env.DB.prepare(
       "UPDATE app SET name = ?, config_json = ?, status = 'disabled' WHERE id = ?",
@@ -692,26 +764,25 @@ describe("authoritative admin configuration", () => {
 
     const current = await get(`/v1/admin/apps/${appId}`);
     expect(current.status).toBe(200);
-    expect(current.body.app).toMatchObject({ name: "Current primary row", status: "disabled" });
-    expect(current.body.resolved).toMatchObject({
+    expect(current.body.app).toMatchObject({
       name: "Current primary row",
       status: "disabled",
-      authentication: { type: "api_key" },
+      config: { authentication: { type: "api_key" } },
     });
     // The admin response did not refresh or consult the still-stale runtime cache.
-    await expect(loadAppConfig(env, appId)).resolves.toMatchObject({
+    await expect(loadApp(env, appId)).resolves.toMatchObject({
       name: `Test ${appId}`,
       status: "active",
-      authentication: { type: "apple_app_attest" },
+      config: { authentication: { type: "apple_app_attest" } },
     });
-    clearAppConfigCache();
+    appConfigCache.clear();
   });
 
   it("resolves PUT from the row returned by its write with a warm runtime cache", async () => {
     const appId = "admin-primary-put";
     await seedApp(appId);
-    await expect(loadAppConfig(env, appId)).resolves.toMatchObject({
-      authentication: { type: "apple_app_attest" },
+    await expect(loadApp(env, appId)).resolves.toMatchObject({
+      config: { authentication: { type: "apple_app_attest" } },
     });
 
     const scopedRow = await database(env.DB).query.app.findFirst({
@@ -734,8 +805,21 @@ describe("authoritative admin configuration", () => {
     }) as Env;
     const route = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
     route.use("*", async (c, next) => {
+      c.set("deployment", resolveDeployment(c.env, c.req.url));
       c.set("billingRequestCache", new Map());
-      c.set("admin", {
+      // The catalog policy runs before the handler, so this stands in for what
+      // `adminAuth` would have established: an owner holding a management key.
+      c.set("authState", {
+        authenticated: true,
+        user: { id: "operator-test-owner", kind: "service" },
+        organization: { id: "operator-test-organization", name: "Test" },
+        role: "owner",
+        memberships: [],
+        credentialType: "apiKey",
+        assurance: "credential",
+        actor: { id: "operator-test-owner", credentialId: "test-management-key" },
+      } as unknown as AuthState);
+      c.set("actor", {
         userId: "operator-test-owner",
         identityKind: "service",
         credentialId: "test-management-key",
@@ -760,11 +844,11 @@ describe("authoritative admin configuration", () => {
     }, requestEnv);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      app: { name: "Written primary row", status: "disabled", revision: 2 },
-      resolved: {
+      app: {
         name: "Written primary row",
         status: "disabled",
-        authentication: { type: "api_key" },
+        revision: 2,
+        config: { authentication: { type: "api_key" } },
       },
       config_error: null,
     });
@@ -774,8 +858,11 @@ describe("authoritative admin configuration", () => {
   it("uses the scoped primary row when deciding whether an app can create API keys", async () => {
     const appId = "admin-primary-key-mode";
     await seedApp(appId);
-    await loadAppConfig(env, appId);
-    await env.DB.prepare("UPDATE app SET config_json = ? WHERE id = ?")
+    await loadApp(env, appId);
+    // `auth_type` travels with the configuration it is lifted from, which is
+    // what the key routes read: they ask what kind of application this is, not
+    // what its whole configuration says.
+    await env.DB.prepare("UPDATE app SET config_json = ?, auth_type = 'api_key' WHERE id = ?")
       .bind(JSON.stringify(serverConfig()), appId)
       .run();
 
@@ -786,7 +873,7 @@ describe("authoritative admin configuration", () => {
     });
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({ name: "Primary mode key" });
-    clearAppConfigCache();
+    appConfigCache.clear();
   });
 
   it("validates provider pricing from current rows despite a stale runtime cache", async () => {
@@ -808,7 +895,7 @@ describe("authoritative admin configuration", () => {
       .toHaveProperty(model);
 
     const response = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/admin-primary-provider-validate/validate`,
+      `${ORIGIN}/v1/admin/app-drafts/validate`,
       {
         method: "POST",
         headers: JSON_AUTH,

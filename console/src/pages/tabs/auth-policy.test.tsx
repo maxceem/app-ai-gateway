@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AuthPolicyTab, levelStatuses } from "./auth-policy";
+import { AuthPolicyTab } from "./auth-policy";
+import { levelStatuses } from "@/lib/auth-levels";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AppDraft, Draft } from "@/hooks/use-app-draft";
 import type { AuthConfig, AuthenticationDraft } from "@/lib/config-types";

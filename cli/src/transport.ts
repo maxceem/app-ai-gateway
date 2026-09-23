@@ -1,5 +1,5 @@
 import { fail, origin, VERSION } from "./common.ts";
-import type { CliErrorDetails } from "../../src/contracts/operation-schemas.ts";
+import type { CliErrorDetails } from "../../src/contracts/cli.ts";
 
 export interface RequestOptions {
   key?: string | undefined;

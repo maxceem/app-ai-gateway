@@ -1,10 +1,11 @@
-import { createIdentityAuth, rethrowCfAuthError } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
 import { invalidateBillingRequestAccess } from "../../billing/gateway";
 import {
   assertAccountAccess,
   invalidateAccountLifecycle,
 } from "../../core/account-lifecycle";
 import { GatewayError } from "../../core/errors";
+import { consumeHandoffStatement, handoffKind } from "./handoff-kinds";
 import { authState } from "./operations";
 import type { CliApprovalRefusal } from "../../contracts/cli";
 import type { AuthState } from "@maxceem/cf-auth";
@@ -47,7 +48,8 @@ export async function completeIdentity(
   c: CliContext,
   row: HandoffRow,
 ): Promise<void> {
-  if (row.kind !== "claim")
+  const kind = handoffKind(row.kind);
+  if (kind.type !== "claim")
     throw new GatewayError(400, "invalid_request", "Unsupported identity handoff");
   const state = await authState(c, true);
   const refusal = claimRefusal(state, row.organization_id);
@@ -68,7 +70,7 @@ export async function completeIdentity(
     );
 
   const target = row.organization_id;
-  await assertAccountAccess(c.env, target, "claim");
+  await assertAccountAccess(c.get("deployment"), c.env, target, kind.view);
 
   // Every row this moves — the owner membership, the account's deadline, the
   // service identity's key — belongs to cf-auth, so cf-auth moves them, in one
@@ -79,10 +81,8 @@ export async function completeIdentity(
   // failures are not equally recoverable: a claim that landed can simply be
   // approved again, since claiming settles on the same owner rather than
   // refusing, while a request consumed without a claim could never be retried.
-  try {
-    await createIdentityAuth(c.env, c.req.url, {
-      suppressDefaultOrganization: true,
-    }).service.claimOrganization({
+  await (await identityAuthFor(c, { suppressDefaultOrganization: true }))
+    .service.claimOrganization({
       actor: state,
       organizationId: target,
       provisioning: {
@@ -95,29 +95,25 @@ export async function completeIdentity(
         revokeAccess: false,
       },
     });
-  } catch (error) {
-    rethrowCfAuthError(error);
-  }
 
   const now = Date.now();
   await c.env.DB.batch([
-    c.env.DB.prepare(
-      `UPDATE mgmt_handoff SET consumed_at=?,outcome=?,updated_at=?
-       WHERE id=? AND kind='claim' AND consumed_at IS NULL AND expires_at>?`,
-    ).bind(
-      now,
-      JSON.stringify({ accountId: target, approvedBy: approver.id }),
-      now,
-      row.id,
+    // Unguarded by `changes()`, unlike a provider submission's: the claim
+    // landed before this batch was built, so there is no preceding write in it
+    // for the consumption to ride on.
+    consumeHandoffStatement(
+      c.env.DB,
+      row,
+      { accountId: target, approvedBy: approver.id },
       now,
     ),
     // Bootstrap authority ends with the claim: the encrypted credential the
     // poller would otherwise collect goes with it.
     c.env.DB.prepare(
-      `UPDATE mgmt_resource_receipt SET consumed_at=?,protected_credential=NULL,
+      `UPDATE mgmt_bootstrap SET state='retired',protected_credential=NULL,
        protected_credential_expires_at=NULL,updated_at=?
-       WHERE kind='bootstrap' AND organization_id=? AND consumed_at IS NULL`,
-    ).bind(now, now, target),
+       WHERE organization_id=? AND state='active'`,
+    ).bind(now, target),
   ]);
   const completed = await c.env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
     .bind(row.id)

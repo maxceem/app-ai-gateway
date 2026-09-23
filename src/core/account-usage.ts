@@ -1,9 +1,16 @@
-/** Durable ownership survives app deletion and both retention passes. */
+import type { CliUsageResponse } from "../contracts/cli";
+
+/**
+ * Durable ownership survives app deletion and both retention passes.
+ *
+ * Typed as the documented response rather than inferred, because it is answered
+ * verbatim by `GET /v1/cli/usage`: the query and the contract move together.
+ */
 export async function accountMonthUsage(
   db: D1Database,
   accountId: string,
   month: string,
-) {
+): Promise<CliUsageResponse> {
   const next = new Date(`${month}-01T00:00:00.000Z`);
   next.setUTCMonth(next.getUTCMonth() + 1);
   const end = next.toISOString().slice(0, 7);

@@ -1,20 +1,23 @@
 import { Hono, type Context } from "hono";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { pruneAuthChallenges, recordAuthEvent } from "../core/auth-events";
-import { assertAppActive, endUserIssuer, loadAppConfig } from "../core/config";
+import { assertAppActive, endUserIssuer, loadApp } from "../core/config";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { lookupApiKeyUncached } from "../core/apikeys";
+import { tokenExchange } from "../core/app-auth";
 import { verifyIssuerToken } from "../core/issuer";
 import { issueGatewayToken } from "../core/jwt";
 import type {
   AppAttestEndUser,
   AppAttestEnvironment,
-  AppConfig,
+  AppRecord,
   AppleAppAttestAuthentication,
 } from "../core/types";
 import { database } from "../db";
+import { schemaBody } from "../management/validation";
+import { jsonBody } from "./admin/body";
 import { appAuthChallenge, appUser, type AuthEventName, type AuthMethod } from "../db/schema";
 import {
   AppAttestRegisterRequestSchema,
@@ -24,36 +27,13 @@ import {
 
 const GATEWAY_TOKEN_TTL_SECONDS = 3600;
 
-function objectBody(value: unknown): Record<string, unknown> {
+/** A JSON body that is an object, which every documented body on this surface is. */
+async function jsonObjectBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
+  const value = await jsonBody(c);
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
   }
   return value as Record<string, unknown>;
-}
-
-async function jsonObjectBody(request: Request): Promise<Record<string, unknown>> {
-  let value: unknown;
-  try {
-    value = await request.json();
-  } catch {
-    throw new GatewayError(400, "invalid_request", "A valid JSON object is required");
-  }
-  return objectBody(value);
-}
-
-function schemaBody<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } } }, value: unknown): T {
-  const parsed = schema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  const issue = parsed.error.issues[0];
-  throw new GatewayError(
-    400,
-    "invalid_request",
-    issue
-      ? issue.path.length > 0
-        ? `${issue.path.join(".")} is required`
-        : issue.message
-      : "Invalid request body",
-  );
 }
 
 async function consumeChallenge(env: Env, appId: string, challenge: string): Promise<void> {
@@ -74,15 +54,15 @@ function accessTtl(): number {
   return GATEWAY_TOKEN_TTL_SECONDS;
 }
 
-function appleAuth(app: AppConfig): AppleAppAttestAuthentication {
-  if (app.authentication.type !== "apple_app_attest") {
+function appleAuth(app: AppRecord): AppleAppAttestAuthentication {
+  if (app.config.authentication.type !== "apple_app_attest") {
     throw new GatewayError(
       403,
       "auth_method_not_supported",
       "Issuer token exchange is not supported for this app",
     );
   }
-  return app.authentication;
+  return app.config.authentication;
 }
 
 /**
@@ -367,7 +347,7 @@ authRoutes.post("/challenge", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_challenge");
   const appId = c.req.param("app");
   if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-  const app = await loadAppConfig(c.env, appId);
+  const app = await loadApp(c.env, appId);
   assertAppActive(app);
   appleAuth(app);
   const bytes = new Uint8Array(32);
@@ -383,7 +363,7 @@ authRoutes.post("/challenge", async (c) => {
   // table small where no cron runs at all, such as local development.
   if (Math.random() < 0.01) {
     c.executionCtx.waitUntil(
-      pruneAuthChallenges(c.env).catch((error: unknown) => {
+      pruneAuthChallenges(c.env.DB).catch((error: unknown) => {
         log("warn", "auth_challenges_prune_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
@@ -395,11 +375,11 @@ authRoutes.post("/challenge", async (c) => {
 
 authRoutes.post("/register", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_register");
-  const rawBody = await jsonObjectBody(c.req.raw);
+  const rawBody = await jsonObjectBody(c);
   return recorded(c, "register", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-    const app = await loadAppConfig(c.env, appId);
+    const app = await loadApp(c.env, appId);
     assertAppActive(app);
     const auth = appleAuth(app);
     attempt.authMethod = "attest";
@@ -422,7 +402,7 @@ authRoutes.post("/register", async (c) => {
       attestation: body.attestation,
     });
     // Proved now: the attestation verified against this very key id, so recording
-    // it as the attempt's identity no longer takes the caller's word for it.
+    // it as the attempt's identity does not take the caller's word for it.
     attempt.userId = userId;
     await storeAttestedUser({
       env: c.env,
@@ -439,27 +419,29 @@ authRoutes.post("/register", async (c) => {
 
 authRoutes.post("/token", async (c) => {
   await enforceAppAuthLimit(c, "app_auth_token");
-  const rawBody = await jsonObjectBody(c.req.raw);
+  const rawBody = await jsonObjectBody(c);
   return recorded(c, "token_exchange", async (attempt) => {
     const appId = c.req.param("app");
     if (!appId) throw new GatewayError(400, "invalid_request", "App id is required");
-    const app = await loadAppConfig(c.env, appId);
+    const app = await loadApp(c.env, appId);
     assertAppActive(app);
-    if ("api_key" in rawBody) {
-      if (app.authentication.type !== "api_key") {
-        throw new GatewayError(
-          400,
-          "auth_method_not_supported",
-          "API key token exchange is not supported for this app",
-        );
-      }
-      const issuer = endUserIssuer(app.authentication);
-      if (!issuer) {
-        throw new GatewayError(
-          400,
-          "auth_method_not_supported",
-          "API key token exchange requires an issuer end-user source",
-        );
+    // The application's configuration decides which exchange this is; the body
+    // is then held to that exchange's schema. The one body-shape test left is
+    // for the wording of a refusal an App Attest application gives a client
+    // that sent it an API key.
+    const exchange = tokenExchange(app.config.authentication);
+    if (exchange === null) {
+      throw new GatewayError(
+        400,
+        "auth_method_not_supported",
+        "API key token exchange requires an issuer end-user source",
+      );
+    }
+    if (exchange === "api_key_issuer") {
+      const issuer = endUserIssuer(app.config.authentication);
+      if (!issuer) throw new Error("An API-key exchange always has an issuer");
+      if (!("api_key" in rawBody)) {
+        throw new GatewayError(400, "invalid_request", "api_key and issuer_token are required");
       }
       attempt.authMethod = "api_key";
       const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
@@ -487,16 +469,13 @@ authRoutes.post("/token", async (c) => {
       return c.json({ access_token: issued.token, expires_in: issued.expiresIn });
     }
 
-    if (app.authentication.type === "api_key") {
+    if ("api_key" in rawBody) {
       throw new GatewayError(
         400,
-        "invalid_request",
-        endUserIssuer(app.authentication)
-          ? "api_key and issuer_token are required"
-          : "API key token exchange requires an issuer end-user source",
+        "auth_method_not_supported",
+        "API key token exchange is not supported for this app",
       );
     }
-
     const auth = appleAuth(app);
     attempt.authMethod = "attest";
     const body = schemaBody(AppAttestTokenRequestSchema, rawBody);

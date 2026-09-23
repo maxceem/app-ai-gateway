@@ -7,6 +7,7 @@ import type {
   CliApprovalRefusal,
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
+  CliHandoffContinuation,
   CliOperationKind,
 } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
@@ -14,11 +15,8 @@ import {
   accountLifecycle,
   assertAccountAccess,
 } from "../../core/account-lifecycle";
-import {
-  createClaimRegistrationAuth,
-  googleAuthEnabled,
-} from "../../auth/identity";
-import { deployment } from "./bootstrap";
+import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
+import { handoffKind, type HandoffKind } from "./handoff-kinds";
 import { authState, challenge } from "./operations";
 import { claimRefusal, completeIdentity } from "./identity-handoff";
 import { proofMatches } from "./security";
@@ -28,43 +26,46 @@ import type { CliContext, HandoffRow } from "./types";
 /**
  * The page's copy of the verdict the submission endpoint will reach.
  *
- * Kept on the same kind dispatch `browserSubmit` uses, so the button a person
- * is offered and the answer they would get from pressing it can never disagree.
+ * Read from the same registry entry `browserSubmit` dispatches on, so the
+ * button a person is offered and the answer they would get from pressing it
+ * can never disagree. Only a claim asks anything of whoever holds the browser,
+ * and the registry says which kind that is by the account access it demands of
+ * the approving side.
  */
 function refusalFor(row: HandoffRow, state: AuthState): CliApprovalRefusal | null {
-  return row.kind === "claim" ? claimRefusal(state, row.organization_id) : null;
+  return handoffKind(row.kind).type === "claim"
+    ? claimRefusal(state, row.organization_id)
+    : null;
 }
 
 /**
- * What the page says once the handoff is approved, and where it sends the
- * person afterwards.
+ * The whole of what the page says once the handoff is approved.
  *
- * On the same kind dispatch `refusalFor` uses, and for the same reason: what
- * each kind leaves behind is the gateway's knowledge. A claim ends with its
- * approver holding a console session for the account they just took, since
- * they created their sign-in on the approval page moments before, so the
- * console is where they continue. Every other kind was opened by a command
- * that is still running, and the terminal already has the answer.
+ * Keyed on where the registry sends the person next, because the two are the
+ * same fact: a claim ends with its approver holding a console session for the
+ * account they just took, since they created their sign-in on the approval
+ * page moments before, so the console is where they continue and the sentence
+ * tells them what they now have. Every other kind was opened by a command that
+ * is still running, and the terminal already has the answer.
  */
-function outcomeFor(kind: CliOperationKind): CliBrowserSubmitResponse {
-  return kind === "claim"
-    ? {
-        state: "completed",
-        message: "This account is yours.",
-        continueTo: "console",
-      }
-    : {
-        state: "completed",
-        message: "You can close this tab and return to your CLI.",
-        continueTo: "cli",
-      };
+const CONTINUATION_MESSAGE: Record<CliHandoffContinuation, string> = {
+  console: "This account is yours.",
+  cli: "You can close this tab and return to your CLI.",
+};
+
+function outcomeFor(kind: HandoffKind): CliBrowserSubmitResponse {
+  return {
+    state: "completed",
+    message: CONTINUATION_MESSAGE[kind.continueTo],
+    continueTo: kind.continueTo,
+  };
 }
 
 export async function verifiedSubmission(c: CliContext) {
-  const meta = deployment(c);
-  if (new URL(c.req.url).origin !== meta.consoleOrigin)
+  const consoleOrigin = c.get("deployment").identity().consoleOrigin;
+  if (new URL(c.req.url).origin !== consoleOrigin)
     throw new GatewayError(404, "not_found", "Page was not found");
-  if (c.req.header("origin") !== meta.consoleOrigin)
+  if (c.req.header("origin") !== consoleOrigin)
     throw new GatewayError(
       403,
       "forbidden",
@@ -80,28 +81,30 @@ export async function verifiedSubmission(c: CliContext) {
   if (!(await proofMatches(input.submissionToken, row.submission_proof_hash)))
     throw new GatewayError(403, "forbidden", "Invalid submission proof");
   await enforceEndpointRateLimit(c.env, "submission", row.id);
-  await assertAccountAccess(c.env, row.organization_id, row.kind === "claim" ? "claim" : "read");
+  await assertAccountAccess(
+    c.get("deployment"),
+    c.env,
+    row.organization_id,
+    handoffKind(row.kind).view,
+  );
   return { input, row };
 }
-export async function browserDetails(c: CliContext): Promise<Response> {
+export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsResponse> {
   const { row } = await verifiedSubmission(c);
   const state = await authState(c, true);
-  const visiblePayload = JSON.parse(row.request_json) as Record<string, unknown>;
-  for (const field of [
-    "__requestHash",
-    "expectedRevision",
-    "expectedGatewayRevision",
-  ])
-    delete visiblePayload[field];
-  for (const field of ["snapshot", "gatewaySnapshot"]) {
-    const snapshot = visiblePayload[field];
-    if (snapshot && typeof snapshot === "object") {
-      delete (snapshot as Record<string, unknown>).expectedRevision;
-    }
-  }
-  return c.json({
+  // The payload as the CLI sent it, beside the rows it was pinned to: the page
+  // shows a person the change and what it changes, and never a revision or a
+  // digest, which live in columns of their own.
+  const snapshot = row.snapshot_json === null
+    ? {}
+    : JSON.parse(row.snapshot_json) as { target?: unknown; gateway?: unknown };
+  return {
     kind: row.kind as CliOperationKind,
-    payload: visiblePayload,
+    payload: {
+      ...(JSON.parse(row.request_json) as Record<string, unknown>),
+      ...(snapshot.target === undefined ? {} : { snapshot: snapshot.target }),
+      ...(snapshot.gateway === undefined ? {} : { gatewaySnapshot: snapshot.gateway }),
+    },
     account: await accountLifecycle(c.env, row.organization_id),
     // Named rather than reduced to a flag: the page shows who is about to
     // approve, so a person who is signed in as the wrong human can see it.
@@ -112,11 +115,13 @@ export async function browserDetails(c: CliContext): Promise<Response> {
     blockedBy: refusalFor(row, state),
     googleEnabled: googleAuthEnabled(c.env),
     expiresAt: new Date(row.expires_at).toISOString(),
-  } satisfies CliBrowserDetailsResponse);
+  };
 }
 export async function browserRegister(c: CliContext): Promise<Response> {
   const { row, input } = await verifiedSubmission(c);
-  if (row.kind !== "claim" || row.consumed_at)
+  // The one door a handoff opens onto registration, and only the kind whose
+  // approver is expected to have no account yet may open it.
+  if (handoffKind(row.kind).type !== "claim" || row.consumed_at)
     throw new GatewayError(
       403,
       "forbidden",
@@ -128,10 +133,7 @@ export async function browserRegister(c: CliContext): Promise<Response> {
       "invalid_request",
       "Name, email and password are required",
     );
-  const response = await createClaimRegistrationAuth(
-    c.env,
-    c.req.url,
-  ).auth.api.signUpEmail({
+  const response = await (await identityAuthFor(c, { claimRegistration: true })).auth.api.signUpEmail({
     body: { email: input.email, password: input.password, name: input.name },
     headers: c.req.raw.headers,
     asResponse: true,
@@ -139,7 +141,7 @@ export async function browserRegister(c: CliContext): Promise<Response> {
   return response;
 }
 
-export async function browserSubmit(c: CliContext): Promise<Response> {
+export async function browserSubmit(c: CliContext): Promise<CliBrowserSubmitResponse> {
   const { row, input } = await verifiedSubmission(c);
   if (input.approve !== true)
     throw new GatewayError(
@@ -147,10 +149,10 @@ export async function browserSubmit(c: CliContext): Promise<Response> {
       "invalid_request",
       "Explicit approval is required",
     );
-  if (row.kind === "claim") {
-    await completeIdentity(c, row);
-  } else {
-    await completeProviderSubmission(c, row, input.secret);
-  }
-  return c.json(outcomeFor(row.kind as CliOperationKind) satisfies CliBrowserSubmitResponse);
+  // Which half of the package completes this handoff is the registry's answer:
+  // a resource kind is a write, and the claim is settled by cf-auth.
+  const kind = handoffKind(row.kind);
+  if (kind.type === "resource") await completeProviderSubmission(c, row, input.secret);
+  else await completeIdentity(c, row);
+  return outcomeFor(kind);
 }

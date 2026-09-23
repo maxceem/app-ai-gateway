@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { UsageTab, pivot } from "./usage";
+import { UsageTab } from "./usage";
+import { pivot } from "@/lib/usage-pivot";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { TimeseriesBucket, UsageEvent } from "@/lib/types";
 

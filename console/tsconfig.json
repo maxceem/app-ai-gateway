@@ -24,11 +24,11 @@
     // than mirrored. Everything under it is dependency-free by contract — see
     // the module's own header — so nothing server-side reaches this bundle.
     //
-    // `@contracts` is the API's own request and response schemas, for the same
-    // reason: the console used to keep a second hand-written copy of every wire
-    // shape. Only types and `operations.ts` — a table of methods and path
-    // builders — are ever imported from it, so no zod reaches this bundle; the
-    // runtime schemas live in `operation-schemas.ts`, which nothing here loads.
+    // `@contracts` is the API's own catalog of operations and the schemas it
+    // composes, for the same reason: the console used to keep a second
+    // hand-written copy of every wire shape, and a third of every URL. It is
+    // zod, which this bundle already carries for the application configuration
+    // grammar; nothing server-side or Hono-shaped comes with it.
     "paths": {
       "@/*": ["./src/*"],
       "@shared/*": ["../src/shared/*"],

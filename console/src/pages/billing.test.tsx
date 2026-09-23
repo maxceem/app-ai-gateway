@@ -73,6 +73,26 @@ const billed = (
   sub: SubscriptionState | null = null,
 ): BillingAccess => ({ state: "billed", plan, subscription: sub });
 
+/**
+ * What the gateway's status endpoint says alongside the access it read, as a
+ * stand-in for the server: the page no longer works these out itself.
+ */
+function actionsFor(access: BillingAccess) {
+  const sub = access.state === "billed" ? access.subscription : null;
+  const live = sub !== null && ["on_trial", "active", "paused", "past_due"].includes(sub.status);
+  const selfService = Boolean(sub?.subscriptionId) && sub?.source === "lemon_squeezy";
+  return {
+    cancel: selfService && live,
+    resume: selfService && sub?.status === "cancelled",
+    manual: sub?.source === "manual" && live,
+  };
+}
+
+function limitsFor(access: BillingAccess) {
+  const limits = access.state === "billed" ? access.plan?.limits : undefined;
+  return typeof limits === "object" && limits !== null ? limits : {};
+}
+
 function stubBilling(
   access: BillingAccess,
   checkoutUrl = "https://checkout.example/session",
@@ -87,7 +107,13 @@ function stubBilling(
       return new Response(JSON.stringify({ url: checkoutUrl }), { status: 200 });
     }
     if (init?.method === "POST") return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    return new Response(JSON.stringify({ access, quota }), { status: 200 });
+    return new Response(JSON.stringify({
+      access,
+      quota,
+      limits: limitsFor(access),
+      actions: actionsFor(access),
+      unclaimedAccessEndsAt: null,
+    }), { status: 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;

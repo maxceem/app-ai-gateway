@@ -36,7 +36,6 @@ function stubCreate(appId = "calorie-tracker-k3f9x1") {
               created_at: "2026-09-02T00:00:00.000Z",
               updated_at: "2026-09-02T00:00:00.000Z",
             },
-            resolved: null,
             config_error: null,
             api_key: {
               id: "key-1",
@@ -81,6 +80,24 @@ async function identifyApp(user: ReturnType<typeof userEvent.setup>) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("the app identity step", () => {
+  it("holds the step until the ids are ones the gateway accepts, and says why", async () => {
+    stubCreate();
+    renderAuthenticated(<NewAppDialog />);
+    const user = await startWizard("Calorie Tracker", "iOS application");
+
+    await user.type(screen.getByLabelText("Apple Team ID"), "abcde12345");
+    await user.type(screen.getByLabelText("Bundle ID"), "com.example.calories");
+    expect(next()).toHaveProperty("disabled", true);
+    expect(screen.getByRole("alert").textContent).toMatch(/team_id must contain ten uppercase/u);
+
+    await user.clear(screen.getByLabelText("Apple Team ID"));
+    await user.type(screen.getByLabelText("Apple Team ID"), "ABCDE12345");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(next()).toHaveProperty("disabled", false);
+  });
 });
 
 describe("the first step", () => {
@@ -154,8 +171,13 @@ describe("a server application", () => {
     /*
      * A backend without users is one identity, so a per-user limit would not
      * meter users, it would cap the whole backend at ten requests a minute.
+     * The block itself is always written — the schema defaults it — so what
+     * this asserts is that every number in it is unlimited.
      */
-    expect(attempts[0]?.config?.limits).toBeUndefined();
+    expect(attempts[0]?.config?.limits).toEqual({
+      per_user: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+      per_app: { requests: { per_minute: null, per_day: null }, spending: { monthly_usd: null } },
+    });
   });
 
   it("offers the answers most secure first", async () => {
@@ -214,7 +236,11 @@ describe("an iOS application", () => {
     await waitFor(() => expect(attempts).toHaveLength(1));
     expect(attempts[0]?.config?.authentication).toEqual({
       type: "apple_app_attest",
-      app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.calories" },
+      app_attest: {
+        team_id: "ABCDE12345",
+        bundle_id: "com.example.calories",
+        environments: ["production"],
+      },
       end_user: { source: "app_install" },
     });
     // Every install is a stranger, so a mobile app starts rate limited.
@@ -254,7 +280,11 @@ describe("an iOS application", () => {
     await waitFor(() => expect(attempts).toHaveLength(1));
     expect(attempts[0]?.config?.authentication).toEqual({
       type: "apple_app_attest",
-      app_attest: { team_id: "ABCDE12345", bundle_id: "com.example.calories" },
+      app_attest: {
+        team_id: "ABCDE12345",
+        bundle_id: "com.example.calories",
+        environments: ["production"],
+      },
       end_user: {
         source: "issuer",
         issuer: {

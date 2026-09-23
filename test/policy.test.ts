@@ -5,15 +5,15 @@ import { describe, expect, it } from "vitest";
 import { database } from "../src/db";
 import {
   ACCOUNT_RECOVERY_MS,
-  ACCOUNT_TRIAL_MS,
+  UNCLAIMED_ACCESS_MS,
   accountAccessDenial,
   type AccountAccessMode,
   type AccountLifecycle,
 } from "../src/policy/accounts";
 import {
-  deploymentPolicy,
   registrationAllowed,
   registrationRule,
+  resolveDeployment,
 } from "../src/policy/deployment";
 import {
   accountAccessCondition,
@@ -21,7 +21,7 @@ import {
   registrationCreateCondition,
 } from "../src/policy/sql";
 
-const actions = ["read", "setup", "proxy", "claim"] as const;
+const actions = ["read", "setup", "proxy"] as const;
 const DAY = 86_400_000;
 const selfHostedRegistrationExpected = {
   "false:false": [true, false, false, false],
@@ -31,10 +31,10 @@ const selfHostedRegistrationExpected = {
 } as const;
 
 function policy(mode: "cloud" | "self_hosted", additional = false) {
-  return deploymentPolicy({
+  return resolveDeployment({
     ...(mode === "cloud" ? { BILLING: {} } : {}),
     ALLOW_ADDITIONAL_REGISTRATIONS: additional ? "  TrUe " : "false",
-  });
+  } as unknown as Env);
 }
 
 describe("deployment registration policy", () => {
@@ -140,7 +140,7 @@ function expectedDenial(
     expected === "trial" &&
     mode === "cloud" &&
     (action === "setup" || action === "proxy")
-  ) return "billing_trial_expired";
+  ) return "unclaimed_access_expired";
   return null;
 }
 
@@ -157,28 +157,28 @@ describe("account deadline policy", () => {
     }> = [
       {
         label: "trial-just-before-iso",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS + 1, "iso"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS + 1, "iso"),
         expiresAt: storedInstant(now + 60 * DAY + 1, "iso"),
         claimed: false,
         expected: "open",
       },
       {
         label: "trial-exact-iso",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS, "iso"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS, "iso"),
         expiresAt: storedInstant(now + 60 * DAY, "iso"),
         claimed: false,
         expected: "trial",
       },
       {
         label: "trial-exact-sqlite",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS, "sqlite"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS, "sqlite"),
         expiresAt: storedInstant(now + 60 * DAY, "sqlite"),
         claimed: false,
         expected: "trial",
       },
       {
         label: "trial-after-iso",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS - 1, "iso"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS - 1, "iso"),
         expiresAt: storedInstant(now + 60 * DAY - 1, "iso"),
         claimed: false,
         expected: "trial",
@@ -266,7 +266,7 @@ describe("account deadline policy", () => {
             action,
             implementation: "pure",
           })).toBe(expected);
-          const condition = accountAccessCondition(policy(mode), account.id, action, now);
+          const condition = accountAccessCondition(mode, account.id, action, now);
           const allowed = await env.DB.prepare(`SELECT ${condition.sql} AS allowed`)
             .bind(...condition.params)
             .first<number>("allowed");
@@ -280,7 +280,7 @@ describe("account deadline policy", () => {
       }
     }
 
-    const missing = accountAccessCondition(policy("cloud"), "missing-account", "read", now);
+    const missing = accountAccessCondition("cloud", "missing-account", "read", now);
     expect(Boolean(await env.DB.prepare(`SELECT ${missing.sql} AS allowed`)
       .bind(...missing.params).first<number>("allowed"))).toBe(false);
   });
@@ -292,8 +292,7 @@ describe("account deadline policy", () => {
       expiresAt: storedInstant(Date.now() - 5_000, "iso"),
       claimed: false,
     });
-    const condition = accountAccessCondition(
-      policy("self_hosted"),
+    const condition = accountAccessCondition("self_hosted",
       account.id,
       "read",
       staleCallerNow,

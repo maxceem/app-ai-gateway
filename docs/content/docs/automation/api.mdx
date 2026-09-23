@@ -47,7 +47,7 @@ document is at [/openapi.json](/openapi.json).
 | --- | --- |
 | Providers | `GET`, `POST /v1/admin/providers`, `POST /v1/admin/providers/test`, `PUT`, `DELETE /v1/admin/providers/{id}` |
 | Gateways | `GET`, `POST /v1/admin/provider-gateways`, `POST …/test`, `PATCH`, `DELETE …/{id}`, `POST …/{id}/rotate` |
-| Apps | `GET`, `POST /v1/admin/apps`, `GET`, `PUT`, `DELETE /v1/admin/apps/{app}`, `POST …/validate` |
+| Apps | `GET`, `POST /v1/admin/apps`, `GET`, `PUT`, `DELETE /v1/admin/apps/{app}`, `POST …/validate`, `POST /v1/admin/app-drafts/validate` |
 | App keys | `GET`, `POST /v1/admin/apps/{app}/keys`, `POST …/keys/{key}/revoke` |
 | Users | `GET /v1/admin/apps/{app}/users`, `GET …/users/{user}`, `POST …/block`, `POST …/unblock` |
 | Usage | `GET /v1/admin/apps/{app}/usage`, `…/usage/timeseries`, `…/usage/breakdown`, `…/events`, `POST …/usage/reprice` |
@@ -57,9 +57,11 @@ document is at [/openapi.json](/openapi.json).
 ## Validate before you write
 
 `POST /v1/admin/apps/{app}/validate` checks an application body without
-saving it and returns the same errors a write would. Run it before `PUT` in
-any automated flow, so a bad configuration is caught before it replaces a
-good one.
+saving it and returns the same errors an update of that app would. Run it
+before `PUT` in any automated flow, so a bad configuration is caught before it
+replaces a good one. For an app you have not created yet, use
+`POST /v1/admin/app-drafts/validate`, which returns the errors a creation
+would.
 
 ## Rules worth knowing
 

@@ -4,10 +4,10 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearApiKeyCache } from "../src/core/apikeys";
+import { apiKeyCache } from "../src/core/apikeys";
 import { appAttestEnvironment } from "../src/core/appattest";
 import { pruneAuthChallenges } from "../src/core/auth-events";
-import { clearAppConfigCache } from "../src/core/config";
+import { appConfigCache } from "../src/core/config";
 import {
   ENDPOINT_RATE_LIMITS,
   enforceEndpointRateLimit,
@@ -123,7 +123,7 @@ describe("issuer-backed API key exchange", () => {
       .where(eq(appApiKey.id, "key_api-key-revoked"));
 
     for (const key of [revokedKey, wrongAppKey]) {
-      clearApiKeyCache();
+      apiKeyCache.clear();
       const response = await exchangeToken("api-key-revoked", {
         api_key: key,
         issuer_token: "not-a-jwt",
@@ -309,7 +309,7 @@ describe("issuer-backed API key exchange", () => {
     )
       .bind("issuer-unscoped")
       .run();
-    clearAppConfigCache();
+    appConfigCache.clear();
 
     const response = await exchangeToken("issuer-unscoped", {
       api_key: key,
@@ -338,6 +338,19 @@ describe("issuer-backed API key exchange", () => {
     expect(machine.status).toBe(400);
     await expect(machine.json()).resolves.toMatchObject({
       error: { code: "auth_method_not_supported" },
+    });
+
+    // The application decides which exchange it offers: an issuer-backed key
+    // app sent an App Attest body is told what its own exchange needs.
+    await seedServerApp("issuer-key-attest-body", { issuer: {} });
+    const attestBody = await exchangeToken("issuer-key-attest-body", {
+      key_id: "key",
+      challenge: "challenge",
+      assertion: "assertion",
+    });
+    expect(attestBody.status).toBe(400);
+    await expect(attestBody.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "api_key and issuer_token are required" },
     });
   });
 });
@@ -527,7 +540,7 @@ describe("App Attest challenge retention", () => {
     await seedChallenges("prune-challenge-count");
 
     // Counted across the deployment, not per app: it is one sweep.
-    expect(await pruneAuthChallenges(env)).toBeGreaterThanOrEqual(2);
+    expect(await pruneAuthChallenges(env.DB)).toBeGreaterThanOrEqual(2);
     await expect(challengesFor("prune-challenge-count")).resolves.toEqual([
       "prune-challenge-count-live",
     ]);

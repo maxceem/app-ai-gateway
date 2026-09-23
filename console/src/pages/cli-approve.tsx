@@ -2,11 +2,9 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Loader2 } from "lucide-react";
-import { operations } from "@contracts/operations";
 import type {
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
-  CliOperationKind,
 } from "@contracts/cli";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
+import { headingFor, shortId } from "@/lib/cli-approve";
 import { DEFAULT_LANDING, oauthErrorNotice } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
@@ -87,27 +86,6 @@ function clearStoredProof(key: string): void {
   }
 }
 
-/**
- * What the heading says this handoff does.
- *
- * Derived from the kind rather than listed exhaustively, so a handoff kind
- * added to the contract still gets a sentence rather than a blank card.
- */
-export function headingFor(kind: CliOperationKind | string): string {
-  if (kind === "claim") return "Claim your account";
-  const [subject, action] = kind.split(".");
-  const noun = subject === "provider-gateway" ? "provider gateway" : "provider";
-  if (action === "add") return `Add a ${noun}`;
-  if (action === "rotate-key") return `Rotate the ${noun} credential`;
-  if (action === "update") return `Update the ${noun}`;
-  return `Approve a ${noun} change`;
-}
-
-/** Enough of an account id to compare with the terminal, not enough to read aloud. */
-export function shortId(id: string): string {
-  return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
-}
-
 /** Provider handoffs carry the secret; a gateway-routed provider has none of its own. */
 function needsSecret(details: CliBrowserDetailsResponse): boolean {
   if (details.kind === "claim") return false;
@@ -144,7 +122,7 @@ export function CliApprovePage() {
 
   const details = useQuery({
     queryKey: ["cli-approve", id],
-    queryFn: () => call(operations.cliBrowserDetails, [id], { submissionToken: token }),
+    queryFn: () => call("cliBrowserDetails", { params: { id }, body: { submissionToken: token } }),
     enabled: Boolean(token),
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
@@ -161,7 +139,7 @@ export function CliApprovePage() {
   const [outcome, setOutcome] = useState<CliBrowserSubmitResponse | null>(null);
   const submit = useMutation({
     mutationFn: (body: { approve: true; secret?: string }) =>
-      call(operations.cliBrowserSubmit, [id], { submissionToken: token, ...body }),
+      call("cliBrowserSubmit", { params: { id }, body: { submissionToken: token, ...body } }),
     onSuccess: (result) => {
       clearStoredProof(storageKey);
       setOutcome(result);
@@ -380,7 +358,7 @@ function ClaimRegister({
   const signIn = useSignIn();
   const register = useMutation({
     mutationFn: (input: { name: string; email: string; password: string }) =>
-      call(operations.cliBrowserRegister, [id], { submissionToken: token, ...input }),
+      call("cliBrowserRegister", { params: { id }, body: { submissionToken: token, ...input } }),
   });
   /* Entered only from the refusal below, which is why nothing sets it back. */
   const [recovering, setRecovering] = useState(false);
@@ -412,7 +390,7 @@ function ClaimRegister({
   };
 
   const startGoogle = async () => {
-    const result = await call(operations.cliBrowserGoogle, [id], { submissionToken: token });
+    const result = await call("cliBrowserGoogle", { params: { id }, body: { submissionToken: token } });
     if (!result.url) throw new Error("Google sign-in is unavailable right now.");
     window.location.assign(result.url);
   };

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { z } from "zod";
-import type { CliErrorDetails } from "../../src/contracts/operation-schemas.ts";
+import type { CliErrorDetails } from "../../src/contracts/cli.ts";
 
 export { VERSION } from "./manifest.ts";
 export const CLOUD = "https://api.appaigateway.com";

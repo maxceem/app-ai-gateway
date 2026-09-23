@@ -1,4 +1,5 @@
-import type { OutputClampStyle, ProviderType } from "./types.ts";
+import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
+import type { OutputClampStyle } from "./types.ts";
 
 // Shared with the console, which lists these styles in its capability panels.
 export { API_STYLES, type ApiStyle } from "../shared/capabilities.ts";
@@ -44,9 +45,9 @@ export function apiStyleFromPath(providerPath: string): ApiStyle {
  * The output cap each style clamps, where the style alone settles it.
  *
  * `anthropic_messages` and `other` are absent on purpose: the body they clamp
- * is the provider's own, so they fall through to {@link NATIVE_CLAMP_STYLE}.
- * That keeps a stray `…/messages` path on a non-Anthropic provider clamped
- * exactly as it was before this table existed.
+ * is the provider's own, so they fall through to the provider descriptor's
+ * `nativeClampStyle`. That keeps a stray `…/messages` path on a non-Anthropic
+ * provider clamped by that provider's own request shape.
  */
 const STYLE_CLAMP_STYLE: Partial<Record<ApiStyle, OutputClampStyle>> = {
   audio_transcription: "none",
@@ -55,31 +56,6 @@ const STYLE_CLAMP_STYLE: Partial<Record<ApiStyle, OutputClampStyle>> = {
   gemini_native: "gemini_native",
 };
 
-/**
- * Each provider type's own request shape. The Stage 3 batch is
- * chat-completions-native — `max_tokens` is the cap in every one of their own
- * bodies — so a provider-native path with no cross-provider style still clamps
- * the field those providers actually read.
- */
-const NATIVE_CLAMP_STYLE: Record<ProviderType, OutputClampStyle> = {
-  openai: "responses",
-  anthropic: "anthropic",
-  xai: "responses",
-  gemini: "gemini_native",
-  perplexity: "responses",
-  deepseek: "chat_completions",
-  groq: "chat_completions",
-  mistral: "chat_completions",
-  together: "chat_completions",
-  fireworks: "chat_completions",
-  cerebras: "chat_completions",
-  moonshot: "chat_completions",
-  huggingface: "chat_completions",
-  baseten: "chat_completions",
-  bytedance: "chat_completions",
-  openrouter: "chat_completions",
-};
-
 export function outputClampStyle(style: ApiStyle, provider: ProviderType): OutputClampStyle {
-  return STYLE_CLAMP_STYLE[style] ?? NATIVE_CLAMP_STYLE[provider];
+  return STYLE_CLAMP_STYLE[style] ?? providerDescriptor(provider).nativeClampStyle;
 }

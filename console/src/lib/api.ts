@@ -1,7 +1,12 @@
 import {
-  searchSuffix,
-  type ApiOperation,
-} from "@contracts/operations";
+  CATALOG,
+  operationPath,
+  type OperationName,
+  type OperationParams,
+  type OperationQuery,
+  type OperationRequest,
+  type OperationResponse,
+} from "@contracts/catalog";
 
 export class ApiError extends Error {
   constructor(
@@ -50,8 +55,12 @@ function toApiError(status: number, payload: unknown): ApiError {
 /**
  * Every call rides the HttpOnly session cookie plus the header the Worker
  * requires, so a cross-site request can never reach the admin API.
+ *
+ * Exported for `./auth`, which talks to Better Auth's own surface: those five
+ * endpoints are the library's, not this gateway's, so they have no catalog
+ * entry to be sent through.
  */
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("x-console-request", "1");
   if (init.body !== undefined) headers.set("content-type", "application/json");
@@ -70,39 +79,37 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
+export interface CallOptions<K extends OperationName> {
+  /** The `{name}` segments of the operation's path, if it has any. */
+  params?: OperationParams<K>;
+  query?: OperationQuery<K>;
+  body?: OperationRequest<K>;
+  headers?: HeadersInit;
+}
+
 /**
  * One documented operation, sent the console's way.
  *
- * The descriptor supplies the method, the URL and both types, so no caller
- * writes a path or names a response type: changing a schema in
- * `src/contracts` produces an error at the call site instead of a surprise at
- * runtime. The transport itself — the cookie and `x-console-request` — is
- * unchanged, and the console still parses nothing, because its bundle carries
- * no zod.
+ * The catalog entry supplies the method, the URL and both types, so no caller
+ * writes a path or names a response type: changing a schema in `src/contracts`
+ * produces an error at the call site instead of a surprise at runtime. The
+ * transport itself — the cookie and `x-console-request` — is unchanged, and the
+ * console still parses nothing, because the server is the one that validates.
  */
-export function call<Params extends readonly unknown[], Body, Response>(
-  operation: ApiOperation<Params, Body, Response>,
-  params: Params,
-  body?: Body,
-  headers?: HeadersInit,
-): Promise<Response> {
-  return request<Response>(operation.path(...params), {
-    method: operation.method,
+export function call<K extends OperationName>(
+  name: K,
+  { params, query, body, headers }: CallOptions<K> = {},
+): Promise<OperationResponse<K>> {
+  // One cast, because `operationPath` takes the parameters this operation's own
+  // template declares and a generic name stands for every template at once.
+  const path = (operationPath as (
+    name: OperationName,
+    params?: Record<string, string>,
+    query?: object,
+  ) => string)(name, params as Record<string, string> | undefined, query as object | undefined);
+  return request<OperationResponse<K>>(path, {
+    method: CATALOG[name].method,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     ...(headers === undefined ? {} : { headers }),
   });
 }
-
-export const api = {
-  get: <T,>(path: string) => request<T>(path),
-  post: <T,>(path: string, body?: unknown) =>
-    request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) }),
-  put: <T,>(path: string, body: unknown, headers?: HeadersInit) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(body), headers }),
-  patch: <T,>(path: string, body: unknown) =>
-    request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
-  delete: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
-};
-
-/** The same query-string builder the path descriptors use. */
-export const query = searchSuffix;

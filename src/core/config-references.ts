@@ -1,9 +1,15 @@
 import { supportsEndpointStyle } from "./capabilities";
 import type { OrganizationProviders } from "./provider-store";
-import { lookup } from "./records";
+import { lookup } from "../shared/records";
 import { PROVIDER_TYPES } from "./providers";
-import { hasModelPrice, isBillable } from "./usage";
-import { ConfigError, type EndpointConfig, type ProviderProxyConfig, type StoredAppConfig } from "../shared/app-config";
+import { hasModelPrice, isBillable } from "./pricing";
+import {
+  ConfigError,
+  selectedProviderPolicies,
+  type AppConfig,
+  type EndpointConfig,
+  type ProviderPolicy,
+} from "../shared/app-config";
 
 export interface ProviderScope {
   instances: OrganizationProviders;
@@ -11,7 +17,7 @@ export interface ProviderScope {
 }
 
 function validateRoutingPrices(
-  selected: Record<string, ProviderProxyConfig>,
+  selected: Record<string, ProviderPolicy>,
   rewrites: Record<string, string>,
   scope: ProviderScope,
 ): void {
@@ -81,12 +87,13 @@ function validateTarget(
 }
 
 /** Applies organization-specific reference, route capability, and price checks on management writes. */
-export function validateConfigurationReferences(config: StoredAppConfig, scope: ProviderScope): void {
-  const selected = config.routing.providers.mode === "selected"
-    ? config.routing.providers.selected ?? {}
-    : {};
-  validateRoutingPrices(selected, config.routing.model_rewrites, scope);
-  for (const [slug, endpoint] of Object.entries(config.endpoints ?? {})) {
+export function validateConfigurationReferences(config: AppConfig, scope: ProviderScope): void {
+  validateRoutingPrices(
+    selectedProviderPolicies(config.routing),
+    config.routing.model_rewrites,
+    scope,
+  );
+  for (const [slug, endpoint] of Object.entries(config.endpoints)) {
     validateTarget(endpoint, `endpoints.${slug}`, endpoint, scope);
     for (const [index, fallback] of (endpoint.fallback ?? []).entries()) {
       validateTarget(fallback, `endpoints.${slug}.fallback[${index}]`, endpoint, scope);
@@ -94,12 +101,10 @@ export function validateConfigurationReferences(config: StoredAppConfig, scope: 
   }
 }
 
-export function referencedProviderSlugs(config: StoredAppConfig): Set<string> {
+export function referencedProviderSlugs(config: AppConfig): Set<string> {
   const slugs = new Set<string>();
-  if (config.routing.providers.mode === "selected") {
-    for (const slug of Object.keys(config.routing.providers.selected ?? {})) slugs.add(slug);
-  }
-  for (const endpoint of Object.values(config.endpoints ?? {})) {
+  for (const slug of Object.keys(selectedProviderPolicies(config.routing))) slugs.add(slug);
+  for (const endpoint of Object.values(config.endpoints)) {
     slugs.add(endpoint.provider);
     for (const fallback of endpoint.fallback ?? []) slugs.add(fallback.provider);
   }

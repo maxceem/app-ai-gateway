@@ -6,7 +6,6 @@ import {
   type GatewayRouteConfig,
   type ProviderGatewayConfig,
   type ProviderGatewayStatus,
-  type ProviderGatewayTypeName,
   type ProviderPricing,
   type ProviderStatus,
 } from "../db/schema";
@@ -14,9 +13,15 @@ import { isVaultTransportFailure } from "../vault";
 import { openSecret } from "../vault/secrets";
 import type { ProviderRoute } from "./capabilities";
 import { GatewayError } from "./errors";
-import { isGatewayType, resolveGateway, type ResolvedGateway } from "./gateways";
 import { log } from "./log";
-import { recordFromEntries } from "./records";
+import { ttlCache } from "./ttl-cache";
+import {
+  DIRECT_ROUTE,
+  isGatewayType,
+  routeThroughGateway,
+  type ResolvedRoute,
+} from "./routes";
+import { recordFromEntries } from "../shared/records";
 import type { ProviderType } from "./types";
 
 export interface ResolvedProvider {
@@ -26,12 +31,12 @@ export interface ResolvedProvider {
   /** Provider key for direct rows; gateway token for routed rows. */
   secret: string;
   /**
-   * Null for a direct row; otherwise the gateway that owns the transport, with
-   * the id of the row it came from so usage events can attribute to it.
+   * How this instance reaches its provider: the adapter that carries it, the
+   * gateway row behind it where there is one, and that row's own routing
+   * configuration. Resolved once, here, and passed around whole — nothing
+   * downstream reassembles it or asks whether a gateway is present.
    */
-  gateway: (ResolvedGateway & { id: string }) | null;
-  /** The gateway-type-specific routing config, validated when it was stored. */
-  gatewayRoute: GatewayRouteConfig | null;
+  route: ResolvedRoute;
   /**
    * The operator's own origin for this instance, replacing the provider type's
    * `directBaseUrl`. Canonicalized by the origin guard before it was stored, and
@@ -55,23 +60,13 @@ interface ProviderRow {
    * *is*, which is what configuration has to be judged against — see
    * {@link OrganizationProvider.route}.
    */
-  gatewayType: ProviderGatewayTypeName | null;
+  gatewayType: string | null;
   gatewayStatus: ProviderGatewayStatus | null;
   gatewayConfig: ProviderGatewayConfig | null;
   gatewaySecretBlob: string | null;
   gatewayRoute: GatewayRouteConfig | null;
   baseUrl: string | null;
   pricing: ProviderPricing | null;
-}
-
-interface RowsEntry {
-  expiresAt: number;
-  rows: ProviderRow[];
-}
-
-interface SecretEntry {
-  expiresAt: number;
-  secret: string;
 }
 
 export interface OrganizationProvider {
@@ -121,43 +116,30 @@ const CACHE_TTL_MS = 60_000;
 const SECRET_STALE_MAX_MS = 60 * 60_000;
 
 /**
- * Blobs come from D1, so this map is not caller-growable, but a long-running
- * isolate in a large deployment would otherwise keep one entry per blob it ever
- * saw, rotations included.
+ * One row set per organization: the ids come from D1 and no caller can invent
+ * one, but a long-lived isolate in a large deployment would otherwise keep a
+ * row set for every organization it ever served.
+ *
+ * Exported so tests can read its keys and narrow its bound; nothing in the
+ * Worker reads it but this file.
  */
-const MAX_SECRET_CACHE_ENTRIES = 5_000;
+export const providerRowsCache = ttlCache<string, ProviderRow[]>({
+  name: "provider-rows",
+  ttlMs: CACHE_TTL_MS,
+  maxEntries: 5_000,
+});
 
 /**
- * The same bound for the same reason, one entry per organization: the ids come
- * from D1 and no caller can invent one, but a long-lived isolate in a large
- * deployment would otherwise keep a row set for every organization it ever
- * served.
+ * Decrypted secrets, keyed by the complete authenticated identity plus blob,
+ * which is what makes an entry rotation-safe. Blobs come from D1, so this is
+ * not caller-growable either, but the same long-running isolate would keep one
+ * entry per blob it ever saw, rotations included.
  */
-const MAX_ROWS_CACHE_ENTRIES = 5_000;
-
-/**
- * Narrowed only by `setProviderRowsCacheLimit` below, and restored by
- * `clearProviderCaches`, so nothing but a test can be running on another bound.
- */
-let rowsCacheLimit = MAX_ROWS_CACHE_ENTRIES;
-
-const rowsCache = new Map<string, RowsEntry>();
-/** The complete authenticated identity plus blob makes rotation-safe entries. */
-const secretCache = new Map<string, SecretEntry>();
-
-/**
- * Stores one entry and drops the oldest once the map is over its bound.
- * Re-inserting first keeps the map in insertion order, so eviction drops the
- * entry that has been there longest.
- */
-function remember<T>(cache: Map<string, T>, key: string, value: T, bound: number): void {
-  cache.delete(key);
-  cache.set(key, value);
-  if (cache.size > bound) {
-    const oldest = cache.keys().next();
-    if (!oldest.done) cache.delete(oldest.value);
-  }
-}
+export const providerSecretCache = ttlCache<string, string>({
+  name: "provider-secret",
+  ttlMs: CACHE_TTL_MS,
+  maxEntries: 5_000,
+});
 
 function secretCacheKey(
   kind: "providerKey" | "providerGatewayToken",
@@ -168,15 +150,6 @@ function secretCacheKey(
   // separator another encoding might choose. The cache must distinguish every
   // value the vault authenticates or a warm entry could bypass that check.
   return JSON.stringify([kind, ...identity, blob]);
-}
-
-function rememberSecret(key: string, secret: string): void {
-  remember(
-    secretCache,
-    key,
-    { expiresAt: Date.now() + CACHE_TTL_MS, secret },
-    MAX_SECRET_CACHE_ENTRIES,
-  );
 }
 
 /**
@@ -190,41 +163,16 @@ function rememberSecret(key: string, secret: string): void {
  */
 function staleSecret(key: string, error: unknown): { secret: string; ageMs: number } | null {
   if (!isVaultTransportFailure(error)) return null;
-  const cached = secretCache.get(key);
+  // Read past its expiry deliberately, which is the whole point of this path.
+  const cached = providerSecretCache.peek(key);
   if (!cached) return null;
   const now = Date.now();
   if (now - cached.expiresAt >= SECRET_STALE_MAX_MS) return null;
-  return { secret: cached.secret, ageMs: now - (cached.expiresAt - CACHE_TTL_MS) };
+  return { secret: cached.value, ageMs: now - cached.storedAt };
 }
 
 export function invalidateOrganizationProviders(organizationId: string): void {
-  rowsCache.delete(organizationId);
-}
-
-export function clearProviderCaches(): void {
-  rowsCache.clear();
-  secretCache.clear();
-  rowsCacheLimit = MAX_ROWS_CACHE_ENTRIES;
-}
-
-/** Cached authenticated secret identities, oldest first. Exposed for tests. */
-export function secretCacheKeys(): string[] {
-  return [...secretCache.keys()];
-}
-
-/**
- * Narrows the row-cache bound. Exposed for tests, like the API key one: what
- * wants covering is that the bound holds and that eviction is insertion-oldest
- * first, and neither depends on the number. Every caller clears the caches
- * between tests, which restores the production bound with them.
- */
-export function setProviderRowsCacheLimit(limit: number): void {
-  rowsCacheLimit = limit;
-}
-
-/** Cached organization ids, oldest first. Exposed for tests. */
-export function providerRowsCacheKeys(): string[] {
-  return [...rowsCache.keys()];
+  providerRowsCache.delete(organizationId);
 }
 
 async function queryOrganizationRows(
@@ -264,17 +212,12 @@ async function queryOrganizationRows(
 }
 
 async function organizationRows(env: Env, organizationId: string): Promise<ProviderRow[]> {
-  const cached = rowsCache.get(organizationId);
-  if (cached && cached.expiresAt > Date.now()) return cached.rows;
+  const cached = providerRowsCache.get(organizationId);
+  if (cached) return cached;
   // Fill from the authoritative primary. The row-cache TTL is the only
   // intentional configuration staleness window on the data plane.
   const rows = await queryOrganizationRows(database(env.DB), organizationId);
-  remember(
-    rowsCache,
-    organizationId,
-    { expiresAt: Date.now() + CACHE_TTL_MS, rows },
-    rowsCacheLimit,
-  );
+  providerRowsCache.set(organizationId, rows);
   return rows;
 }
 
@@ -285,7 +228,7 @@ async function plaintextSecret(
 ): Promise<string> {
   const gatewayRouted = row.providerGatewayId !== null;
   // A revoked gateway's token is not a credential this row may still spend
-  // with, so it reads as absent — the join no longer filters it out.
+  // with, so it reads as absent — the join does not filter it out.
   const blob = gatewayRouted
     ? (row.gatewayStatus === "active" ? row.gatewaySecretBlob : null)
     : row.secretBlob;
@@ -308,11 +251,11 @@ async function plaintextSecret(
     row.baseUrl ?? "",
   ];
   const key = secretCacheKey("providerKey", identity, blob);
-  const cached = secretCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.secret;
+  const cached = providerSecretCache.get(key);
+  if (cached !== undefined) return cached;
   try {
     const secret = await openSecret(env, "providerKey", identity, blob);
-    rememberSecret(key, secret);
+    providerSecretCache.set(key, secret);
     return secret;
   } catch (error) {
     const stale = staleSecret(key, error);
@@ -347,8 +290,8 @@ export async function decryptProviderGatewaySecret(
 ): Promise<string> {
   const identity: [string, string] = [organizationId, providerGatewayId];
   const key = secretCacheKey("providerGatewayToken", identity, secretBlob);
-  const cached = secretCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.secret;
+  const cached = providerSecretCache.get(key);
+  if (cached !== undefined) return cached;
   try {
     const secret = await openSecret(
       env,
@@ -356,7 +299,7 @@ export async function decryptProviderGatewaySecret(
       identity,
       secretBlob,
     );
-    rememberSecret(key, secret);
+    providerSecretCache.set(key, secret);
     return secret;
   } catch (error) {
     const stale = staleSecret(key, error);
@@ -395,16 +338,17 @@ export async function resolveProvider(
       `Provider instance ${slug} is disabled; enable it under Providers in the console`,
     );
   }
-  // A gateway type the CHECK constraint admits but no adapter implements is
-  // unroutable here, exactly like a revoked one: the database is permissive so
-  // the constraint never needs another rebuild, the adapter registry decides.
+  // A gateway type the column admits but no adapter implements is unroutable
+  // here, exactly like a revoked one: the database is permissive, the adapter
+  // registry decides. This is the only place a stored gateway type is joined to
+  // its adapter.
   const gateway = row.providerGatewayId === null
     ? null
     : row.gatewayStatus === "active"
         && row.gatewayType
         && row.gatewayConfig
         && isGatewayType(row.gatewayType)
-      ? { id: row.providerGatewayId, ...resolveGateway(row.gatewayType, row.gatewayConfig) }
+      ? { id: row.providerGatewayId, type: row.gatewayType, config: row.gatewayConfig }
       : null;
   if (row.providerGatewayId !== null && gateway === null) {
     throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");
@@ -414,8 +358,7 @@ export async function resolveProvider(
     slug: row.slug,
     type: row.type,
     secret: await plaintextSecret(env, organizationId, row),
-    gateway,
-    gatewayRoute: row.gatewayRoute,
+    route: gateway === null ? DIRECT_ROUTE : routeThroughGateway(gateway, row.gatewayRoute),
     // Read only on a direct row. The admin routes refuse the pairing, but a row
     // that predates a gateway being attached, or one written by another tool,
     // must not quietly redirect gateway traffic somewhere else.

@@ -3,23 +3,29 @@ import prices from "../src/core/prices.json";
 import { providerModelAuthor, PROVIDER_TYPES } from "../src/core/providers";
 import {
   bodyWindows,
-  computeCost,
-  extractUsageText,
-  hasTokenModelPrice,
-  isBillable,
-  observeResponse,
   observeUpstreamBody,
   OBSERVER_HEAD_BYTES,
   OBSERVER_TAIL_BYTES,
-  resolveModelAuthor,
   wholeBody,
   type ObservedBody,
-} from "../src/core/usage";
+} from "../src/core/body-observer";
+import {
+  computeCost,
+  hasTokenModelPrice,
+  isBillable,
+  resolveModelAuthor,
+} from "../src/core/pricing";
+import { extractUsageText, observeResponse } from "../src/core/usage-readers";
+import { API_STYLES, type ApiStyle } from "../src/core/api-styles";
 import type { ProviderType } from "../src/core/types";
 
-/** Extraction that a shape is expected to recognise; `null` fails the test here. */
-function extracted(text: string, contentType: string, provider: ProviderType) {
-  const usage = extractUsageText(text, contentType, provider);
+/**
+ * Extraction that a style is expected to recognise; `null` fails the test here.
+ * The style is the one the request side classified the call as, which is what
+ * picks the reader — never the provider that happened to answer.
+ */
+function extracted(text: string, contentType: string, style: ApiStyle) {
+  const usage = extractUsageText(text, contentType, style);
   expect(usage).not.toBeNull();
   return usage!;
 }
@@ -37,7 +43,7 @@ describe("usage extraction", () => {
         },
       })}\n\n`,
       "text/event-stream",
-      "openai",
+      "responses",
     );
     expect(usage).toEqual({
       inputTokens: 50,
@@ -68,7 +74,7 @@ describe("usage extraction", () => {
         })}`,
       ].join("\n\n") + "\n\n",
       "text/event-stream",
-      "anthropic",
+      "anthropic_messages",
     );
     expect(usage).toEqual({
       inputTokens: 60,
@@ -93,7 +99,7 @@ describe("usage extraction", () => {
           },
         ]),
         "application/json",
-        "gemini",
+        "gemini_native",
       ),
     ).toEqual({
       inputTokens: 65,
@@ -117,8 +123,10 @@ describe("usage extraction", () => {
         "data: [DONE]",
         "",
       ].join("\n\n"),
+      // Gemini's OpenAI-compatibility surface: the path is a chat completion,
+      // so that is the contract the answer is read as.
       "text/event-stream",
-      "gemini",
+      "chat_completions",
     );
     expect(usage).toEqual({
       inputTokens: 90,
@@ -132,7 +140,7 @@ describe("usage extraction", () => {
     const usage = extracted(
       JSON.stringify({ usage: { input_tokens: 2, output_tokens: 3 } }),
       "application/json",
-      "xai",
+      "responses",
     );
     expect(usage.inputTokens).toBe(2);
     expect(computeCost("xai", "unknown-model", usage)).toBeNull();
@@ -142,7 +150,7 @@ describe("usage extraction", () => {
     const usage = extracted(
       JSON.stringify({ text: "hello", duration: 90 }),
       "application/json",
-      "xai",
+      "audio_transcription",
     );
     expect(computeCost("xai", "grok-transcribe", usage)).toBeCloseTo(0.0025, 8);
   });
@@ -159,7 +167,7 @@ describe("usage extraction", () => {
   });
 
   it("reports malformed data to the caller so background bookkeeping can contain it", () => {
-    expect(() => extractUsageText("not-json", "application/json", "openai")).toThrow();
+    expect(() => extractUsageText("not-json", "application/json", "responses")).toThrow();
   });
 
   /**
@@ -199,7 +207,7 @@ describe("usage extraction", () => {
 
     let usage: ReturnType<typeof extractUsageText> = null;
     const parses = parseCount(() => {
-      usage = extractUsageText(body, "text/event-stream", "openai");
+      usage = extractUsageText(body, "text/event-stream", "chat_completions");
     });
     expect(usage).toEqual({
       inputTokens: 120,
@@ -233,7 +241,7 @@ describe("usage extraction", () => {
 
     let usage: ReturnType<typeof extractUsageText> = null;
     const parses = parseCount(() => {
-      usage = extractUsageText(body, "text/event-stream", "anthropic");
+      usage = extractUsageText(body, "text/event-stream", "anthropic_messages");
     });
     // `message_start` at the head, the last `message_delta` at the tail, and
     // nothing between them: the input tokens are only in the first event.
@@ -280,6 +288,7 @@ describe("provider self-reports", () => {
       })),
       "application/json",
       "openrouter",
+      "chat_completions",
     );
     expect(seen.usage).toEqual({
       inputTokens: 30,
@@ -306,6 +315,7 @@ describe("provider self-reports", () => {
       ].join("")),
       "text/event-stream",
       "openrouter",
+      "chat_completions",
     );
     expect(seen.report?.costUsd).toBe(0.00009);
     expect(seen.usage?.outputTokens).toBe(3);
@@ -313,7 +323,7 @@ describe("provider self-reports", () => {
 
   it("calls the credential byok only when the response says so", () => {
     const byok = (usage: Record<string, unknown>) =>
-      observeResponse(wholeBody(completion(usage)), "application/json", "openrouter")
+      observeResponse(wholeBody(completion(usage)), "application/json", "openrouter", "chat_completions")
         .report?.credentialSource;
     expect(byok({ cost: 0, is_byok: true })).toBe("byok");
     // The upstream's own charge is a figure OpenRouter only has when the
@@ -344,6 +354,7 @@ describe("provider self-reports", () => {
       ].join("")),
       "text/event-stream",
       "openrouter",
+      "chat_completions",
     );
     expect(seen.report).toMatchObject({ costUsd: 0.5, servedModel: "late/model" });
   });
@@ -356,6 +367,7 @@ describe("provider self-reports", () => {
         wholeBody(JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 1 } })),
         "application/json",
         "openrouter",
+        "chat_completions",
       ).report,
     ).toBeNull();
   });
@@ -363,7 +375,12 @@ describe("provider self-reports", () => {
   it("reads no report at all for a provider type that does not report costs", () => {
     // Same body, non-reporting type: the type is what decides, not the shape,
     // so nothing can start billing on a field a provider never promised.
-    const seen = observeResponse(wholeBody(completion({ cost: 9.99 })), "application/json", "openai");
+    const seen = observeResponse(
+      wholeBody(completion({ cost: 9.99 })),
+      "application/json",
+      "openai",
+      "chat_completions",
+    );
     expect(seen.report).toBeNull();
     expect(seen.usage?.inputTokens).toBe(30);
   });
@@ -376,7 +393,8 @@ describe("provider self-reports", () => {
  */
 const RECOGNISED_SHAPES: {
   name: string;
-  provider: ProviderType;
+  /** The API this call was: what the request side classified, not who answered. */
+  style: ApiStyle;
   contentType: string;
   body: string;
   expected: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number; outputTokens: number };
@@ -384,7 +402,7 @@ const RECOGNISED_SHAPES: {
 }[] = [
   {
     name: "OpenAI Responses JSON",
-    provider: "openai",
+    style: "responses",
     contentType: "application/json",
     body: JSON.stringify({
       id: "resp_1",
@@ -394,7 +412,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "OpenAI Chat Completions JSON",
-    provider: "openai",
+    style: "chat_completions",
     contentType: "application/json",
     body: JSON.stringify({
       choices: [{ message: { content: "hi" } }],
@@ -404,7 +422,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "OpenAI Responses SSE",
-    provider: "openai",
+    style: "responses",
     contentType: "text/event-stream",
     body: `event: response.completed\ndata: ${JSON.stringify({
       response: { usage: { input_tokens: 12, output_tokens: 4 } },
@@ -413,7 +431,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "Anthropic Messages JSON",
-    provider: "anthropic",
+    style: "anthropic_messages",
     contentType: "application/json",
     body: JSON.stringify({
       type: "message",
@@ -428,7 +446,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "Anthropic SSE across merged events",
-    provider: "anthropic",
+    style: "anthropic_messages",
     contentType: "text/event-stream",
     body:
       [
@@ -445,7 +463,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "Gemini native JSON",
-    provider: "gemini",
+    style: "gemini_native",
     contentType: "application/json",
     body: JSON.stringify({
       candidates: [{ content: {} }],
@@ -455,7 +473,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "Gemini native SSE",
-    provider: "gemini",
+    style: "gemini_native",
     contentType: "text/event-stream",
     body:
       [
@@ -469,7 +487,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "audio transcription duration",
-    provider: "openai",
+    style: "audio_transcription",
     contentType: "application/json",
     body: JSON.stringify({ text: "hello", duration: 42 }),
     expected: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
@@ -480,7 +498,7 @@ const RECOGNISED_SHAPES: {
   // spelling would over-bill exactly the traffic the discount exists for.
   {
     name: "Groq chat completions, no cache fields at all",
-    provider: "groq",
+    style: "chat_completions",
     contentType: "application/json",
     body: JSON.stringify({
       choices: [{ message: { content: "hi" } }],
@@ -491,7 +509,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "DeepSeek prompt_cache_hit_tokens",
-    provider: "deepseek",
+    style: "chat_completions",
     contentType: "application/json",
     body: JSON.stringify({
       choices: [{ message: { content: "hi" } }],
@@ -508,7 +526,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "Moonshot cached_tokens at the usage root",
-    provider: "moonshot",
+    style: "chat_completions",
     contentType: "application/json",
     body: JSON.stringify({
       choices: [{ message: { content: "hi" } }],
@@ -518,7 +536,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "Mistral prompt_tokens_details on a chat completion",
-    provider: "mistral",
+    style: "chat_completions",
     contentType: "application/json",
     body: JSON.stringify({
       choices: [{ message: { content: "hi" } }],
@@ -532,7 +550,7 @@ const RECOGNISED_SHAPES: {
   },
   {
     name: "ByteDance Ark chat completions SSE",
-    provider: "bytedance",
+    style: "chat_completions",
     contentType: "text/event-stream",
     body:
       [
@@ -555,7 +573,7 @@ const RECOGNISED_SHAPES: {
 describe("recognised usage shapes", () => {
   for (const shape of RECOGNISED_SHAPES) {
     it(`reads billable usage from ${shape.name}`, () => {
-      const usage = extracted(shape.body, shape.contentType, shape.provider);
+      const usage = extracted(shape.body, shape.contentType, shape.style);
       expect(usage).toEqual(
         shape.audioSeconds === undefined
           ? shape.expected
@@ -570,6 +588,108 @@ describe("recognised usage shapes", () => {
   }
 });
 
+/**
+ * One canonical response per API style, read by the reader that style names.
+ *
+ * The request side classifies the call before the first byte comes back, so the
+ * style is what picks the reader: a regression that wires one style to another's
+ * reader still passes every shape assertion above, because most of those bodies
+ * are readable by more than one reader.
+ */
+const STYLE_FIXTURES: Record<ApiStyle, {
+  contentType: string;
+  body: string;
+  expected: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number; outputTokens: number };
+  audioSeconds?: number;
+}> = {
+  responses: {
+    contentType: "application/json",
+    body: JSON.stringify({ id: "resp_1", usage: { input_tokens: 11, output_tokens: 2 } }),
+    expected: { inputTokens: 11, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 2 },
+  },
+  chat_completions: {
+    contentType: "application/json",
+    body: JSON.stringify({
+      choices: [{ message: { content: "hi" } }],
+      usage: { prompt_tokens: 13, completion_tokens: 4 },
+    }),
+    expected: { inputTokens: 13, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 4 },
+  },
+  anthropic_messages: {
+    contentType: "text/event-stream",
+    body: [
+      `event: message_start\ndata: ${JSON.stringify({
+        type: "message_start",
+        message: { usage: { input_tokens: 17, cache_read_input_tokens: 5, output_tokens: 1 } },
+      })}`,
+      `event: message_delta\ndata: ${JSON.stringify({
+        type: "message_delta",
+        usage: { output_tokens: 9 },
+      })}`,
+    ].join("\n\n") + "\n\n",
+    expected: { inputTokens: 17, cachedInputTokens: 5, cacheWriteTokens: 0, outputTokens: 9 },
+  },
+  gemini_native: {
+    contentType: "application/json",
+    body: JSON.stringify({
+      candidates: [{ content: {} }],
+      usageMetadata: { promptTokenCount: 23, candidatesTokenCount: 6 },
+    }),
+    expected: { inputTokens: 23, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 6 },
+  },
+  audio_transcription: {
+    contentType: "application/json",
+    body: JSON.stringify({ text: "hello", duration: 12.5 }),
+    expected: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+    audioSeconds: 12.5,
+  },
+  other: {
+    // A provider-native operation with no cross-provider contract: an
+    // embeddings call, which no path matcher classifies.
+    contentType: "application/json",
+    body: JSON.stringify({
+      object: "list",
+      data: [{ object: "embedding", index: 0, embedding: [0.1] }],
+      usage: { prompt_tokens: 19, total_tokens: 19 },
+    }),
+    expected: { inputTokens: 19, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+  },
+};
+
+describe("readers keyed by API style", () => {
+  for (const style of API_STYLES) {
+    it(`reads a ${style} response with the ${style} reader`, () => {
+      const fixture = STYLE_FIXTURES[style];
+      expect(extracted(fixture.body, fixture.contentType, style)).toEqual(
+        fixture.audioSeconds === undefined
+          ? fixture.expected
+          : { ...fixture.expected, audioSeconds: fixture.audioSeconds },
+      );
+    });
+  }
+
+  it("still sniffs an Anthropic-shaped body on an unclassified path", () => {
+    // `other` is the one style with nothing to key on, so it keeps the shape
+    // walk: a provider-native path that answers in Anthropic's shape is still
+    // metered, cache buckets and all.
+    expect(
+      extracted(
+        JSON.stringify({
+          type: "message",
+          usage: {
+            input_tokens: 40,
+            cache_read_input_tokens: 8,
+            cache_creation_input_tokens: 2,
+            output_tokens: 6,
+          },
+        }),
+        "application/json",
+        "other",
+      ),
+    ).toEqual({ inputTokens: 40, cachedInputTokens: 8, cacheWriteTokens: 2, outputTokens: 6 });
+  });
+});
+
 describe("unrecognised usage shapes", () => {
   it("reports no usage for a Cohere-style billed_units object", () => {
     // The worked example from the provider-expansion review: proxying works,
@@ -580,8 +700,10 @@ describe("unrecognised usage shapes", () => {
           text: "hello",
           usage: { billed_units: { input_tokens: 120, output_tokens: 30 } },
         }),
+        // A provider-native operation this gateway does not classify, so the
+        // shape of the body is all there is to go on — and it says nothing.
         "application/json",
-        "openai",
+        "other",
       ),
     ).toBeNull();
   });
@@ -591,7 +713,7 @@ describe("unrecognised usage shapes", () => {
       extractUsageText(
         JSON.stringify({ id: "resp_1", output: [{ type: "message" }] }),
         "application/json",
-        "openai",
+        "responses",
       ),
     ).toBeNull();
   });
@@ -601,7 +723,7 @@ describe("unrecognised usage shapes", () => {
       extractUsageText(
         `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\ndata: [DONE]\n\n`,
         "text/event-stream",
-        "openai",
+        "chat_completions",
       ),
     ).toBeNull();
   });
@@ -611,7 +733,7 @@ describe("unrecognised usage shapes", () => {
       extractUsageText(
         `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: {} })}\n\n`,
         "text/event-stream",
-        "anthropic",
+        "anthropic_messages",
       ),
     ).toBeNull();
   });
@@ -622,7 +744,7 @@ describe("unrecognised usage shapes", () => {
       extractUsageText(
         JSON.stringify({ usage: { input_tokens: 0, output_tokens: 0 } }),
         "application/json",
-        "openai",
+        "responses",
       ),
     ).toEqual({ inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 });
   });
@@ -686,7 +808,8 @@ describe("large response bodies", () => {
     const observed = await observe(embeddingsBody(SIX_MB));
     expect(observed.truncated).toBe(true);
     expect(observed.totalBytes).toBeGreaterThan(SIX_MB);
-    const usage = observeResponse(observed, "application/json", "openai").usage;
+    // An embeddings call is `other`: no cross-provider contract classifies it.
+    const usage = observeResponse(observed, "application/json", "openai", "other").usage;
     expect(usage).toEqual({
       inputTokens: 120000,
       cachedInputTokens: 0,
@@ -701,7 +824,9 @@ describe("large response bodies", () => {
     expect(observed.truncated).toBe(true);
     // Input tokens are only in `message_start` at the head, output tokens only
     // in `message_delta` at the tail: one window alone would halve the bill.
-    expect(observeResponse(observed, "text/event-stream", "anthropic").usage).toEqual({
+    expect(
+      observeResponse(observed, "text/event-stream", "anthropic", "anthropic_messages").usage,
+    ).toEqual({
       inputTokens: 1200,
       cachedInputTokens: 300,
       cacheWriteTokens: 0,
@@ -714,7 +839,7 @@ describe("large response bodies", () => {
     expect(observed.truncated).toBe(true);
     // Unresolved, exactly as an intact response carrying no usage is: nothing
     // here may read as a measured zero.
-    expect(observeResponse(observed, "application/json", "openai").usage).toBeNull();
+    expect(observeResponse(observed, "application/json", "openai", "other").usage).toBeNull();
   });
 
   it("reads the usage object out of a tail full of braces and quotes", async () => {
@@ -724,7 +849,7 @@ describe("large response bodies", () => {
       + `"completion_tokens":7}`;
     const observed = await observe(`{"filler":"${"x".repeat(SIX_MB)}","usage":${usage}}`);
     expect(observed.truncated).toBe(true);
-    expect(observeResponse(observed, "application/json", "openai").usage).toEqual({
+    expect(observeResponse(observed, "application/json", "openai", "other").usage).toEqual({
       inputTokens: 42,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
@@ -739,7 +864,7 @@ describe("large response bodies", () => {
       // object leaves nothing to read: the scan has to end rather than keep
       // finding the same first occurrence.
       const observed = { head: "", tail: '"usage": 5, "x": 1}', truncated: true };
-      expect(observeResponse(observed, "application/json", "openai").usage).toBeNull();
+      expect(observeResponse(observed, "application/json", "openai", "other").usage).toBeNull();
     },
     1000,
   );
@@ -754,7 +879,9 @@ describe("large response bodies", () => {
     // so everything below a window's worth still parses as one document.
     expect(text.length).toBeGreaterThan(OBSERVER_HEAD_BYTES);
     expect(observed).toMatchObject({ head: text, tail: "", truncated: false, aborted: false });
-    expect(observeResponse(observed, "application/json", "openai").usage).toEqual({
+    expect(
+      observeResponse(observed, "application/json", "openai", "chat_completions").usage,
+    ).toEqual({
       inputTokens: 30,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,

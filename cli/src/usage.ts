@@ -3,6 +3,8 @@ import type {
   BreakdownResponse,
   MonthlyUsageResponse,
 } from "../../src/contracts/responses.ts";
+import type { UsageBreakdownDimension } from "../../src/contracts/responses.ts";
+import { MONTH_PATTERN } from "../../src/contracts/schemas.ts";
 import { fail } from "./common.ts";
 import type { Context } from "./context.ts";
 import type { Flags } from "./parser.ts";
@@ -20,8 +22,11 @@ export type UsageResult =
   | CliUsageResponse
   | (BreakdownResponse & { coverage: BreakdownCoverage });
 
+/** The breakdowns `agw usage breakdown` offers, of the dimensions the gateway groups by. */
+const CLI_BREAKDOWNS = ["provider", "model", "status"] as const satisfies readonly UsageBreakdownDimension[];
+
 export function month(value: string): string {
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value))
+  if (!MONTH_PATTERN.test(value))
     fail(
       "invalid_input",
       "Month must use YYYY-MM with a valid calendar month.",
@@ -56,12 +61,12 @@ export async function usageCommand(
   if (command === "usage show") {
     const m = month(flags.month ?? new Date().toISOString().slice(0, 7));
     return flags.app
-      ? (await ctx.call("getAppUsage", [flags.app, { month: m }])).data
-      : (await ctx.call("getCliUsage", [{ month: m }])).data;
+      ? (await ctx.call("getAppUsage", { params: { app: flags.app }, query: { month: m } })).data
+      : (await ctx.call("getCliUsage", { query: { month: m } })).data;
   }
   const app = await required(flags, "app");
-  const by = flags.by ?? "model";
-  if (!["provider", "model", "status"].includes(by))
+  const by = CLI_BREAKDOWNS.find((dimension) => dimension === (flags.by ?? "model"));
+  if (by === undefined)
     fail("invalid_input", "--by must be provider, model or status.");
   if (Boolean(flags.from) !== Boolean(flags.to))
     fail("invalid_input", "Supply both --from and --to or neither.");
@@ -71,7 +76,9 @@ export async function usageCommand(
   if (from > to) fail("invalid_input", "--from must not be later than --to.");
   const limit = positive(flags.limit ?? 50, 200);
   return {
-    ...(await ctx.call("getAppUsageBreakdown", [app, { from, to, by, limit }])).data,
+    ...(await ctx.call("getAppUsageBreakdown", {
+      params: { app }, query: { from, to, by, limit },
+    })).data,
     coverage: {
       from,
       to,

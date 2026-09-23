@@ -18,12 +18,10 @@
  */
 import { log } from "./log";
 import { pruneSettledUsageSpend } from "./app-usage-accounting";
-import { AUTHORIZATION_SWEEP_QUERIES } from "./account-lifecycle";
-import { AUTH_SWEEP_QUERIES } from "./auth-events";
 import {
   DEFAULT_MAINTENANCE_QUERY_BUDGET,
   MAINTENANCE_SLACK_QUERIES,
-  type QueryBudget,
+  QueryBudget,
 } from "./query-budget";
 
 /** How long a raw, per-event row survives. */
@@ -53,27 +51,22 @@ export const USAGE_ROLLUP_DAY_RETENTION_DAYS = 400;
 export const CHUNK_ROWS = 5_000;
 
 /**
- * Queries retention may issue when no run-wide budget is handed to it.
+ * Queries retention may issue when it is called on its own.
  *
- * This is what the nightly run leaves for retention on a deployment with no
- * expired accounts to collect — the default allowance, less the two
- * authentication sweeps, the authorization sweep and the run's slack. A hosted
- * deployment also runs account cleanup, so there {@link runUsageRetention} is
- * given whatever that left instead of this number.
+ * A whole nightly allowance, less its slack: a standalone call — a test, or a
+ * manual invocation — has no sweeps in front of it to have spent any of it.
+ * Inside the nightly run nothing uses this number: {@link runUsageRetention} is
+ * handed the run's own budget, already charged for whatever ran before it.
  *
  * Each compaction chunk commits independently, so a backlog that does not fit
  * is simply continued the following night. A deployment on the Workers Paid
  * plan can raise the whole run's allowance with `MAINTENANCE_QUERY_BUDGET`.
  */
 export const USAGE_RETENTION_QUERY_BUDGET =
-  DEFAULT_MAINTENANCE_QUERY_BUDGET -
-  AUTH_SWEEP_QUERIES -
-  AUTHORIZATION_SWEEP_QUERIES -
-  MAINTENANCE_SLACK_QUERIES;
+  DEFAULT_MAINTENANCE_QUERY_BUDGET - MAINTENANCE_SLACK_QUERIES;
 
 /** Held back so a large compaction backlog can never starve the fold entirely. */
 const FOLD_RESERVE = 9;
-export const USAGE_SPEND_PRUNE_QUERIES = 1;
 
 const SUMMED_COLUMNS = [
   "requests",
@@ -173,9 +166,8 @@ function dayBefore(now: number, days: number): string {
  * run resumes. SQLite answers `MIN(rowid)` from the left edge of the b-tree
  * rather than by scanning.
  */
-async function oldestEventId(env: Env, budget: QueryBudget): Promise<number | null> {
-  budget.remaining -= 1;
-  const row = await env.DB.prepare("SELECT MIN(id) AS id FROM app_usage_event").first<{ id: number | null }>();
+async function oldestEventId(db: D1Database): Promise<number | null> {
+  const row = await db.prepare("SELECT MIN(id) AS id FROM app_usage_event").first<{ id: number | null }>();
   return row?.id ?? null;
 }
 
@@ -189,11 +181,11 @@ export interface CompactionResult {
   caughtUp: boolean;
 }
 
-/** Queries a chunk costs: the upsert, the delete, and the cursor read after them. */
-const QUERIES_PER_CHUNK = 3;
+/** Statements a chunk issues: the upsert, the delete, and the cursor read after them. */
+const CHUNK_STATEMENTS = 3;
 
-/** Queries a month costs: finding the oldest eligible one, then the fold pair. */
-const QUERIES_PER_MONTH = 3;
+/** Statements a month issues: finding the oldest eligible one, then the fold pair. */
+const MONTH_STATEMENTS = 3;
 
 /**
  * Sums expired events into the rollup and deletes them, a chunk at a time.
@@ -203,26 +195,26 @@ const QUERIES_PER_MONTH = 3;
  * never a chunk that was counted but not removed, or removed but not counted.
  */
 export async function compactUsageEvents(
-  env: Env,
+  db: D1Database,
   now: number = Date.now(),
-  budget: QueryBudget = { remaining: USAGE_RETENTION_QUERY_BUDGET - FOLD_RESERVE },
+  budget: QueryBudget = new QueryBudget(USAGE_RETENTION_QUERY_BUDGET - FOLD_RESERVE),
 ): Promise<CompactionResult> {
   const cutoff = dayBefore(now, USAGE_EVENT_RETENTION_DAYS);
-  let cursor = await oldestEventId(env, budget);
+  if (!budget.affords(1)) return { chunks: 0, rolledUp: 0, deleted: 0, caughtUp: false };
+  let cursor = await oldestEventId(db);
   const result: CompactionResult = { chunks: 0, rolledUp: 0, deleted: 0, caughtUp: cursor === null };
 
-  while (cursor !== null && budget.remaining >= QUERIES_PER_CHUNK) {
+  while (cursor !== null && budget.affords(CHUNK_STATEMENTS)) {
     const end = cursor + CHUNK_ROWS;
-    budget.remaining -= QUERIES_PER_CHUNK - 1; // the cursor read below spends the third
-    const [rolled, removed] = await env.DB.batch([
-      env.DB.prepare(ROLLUP_CHUNK).bind(cursor, end, cutoff),
-      env.DB.prepare(DELETE_CHUNK).bind(cursor, end, cutoff),
+    const [rolled, removed] = await db.batch([
+      db.prepare(ROLLUP_CHUNK).bind(cursor, end, cutoff),
+      db.prepare(DELETE_CHUNK).bind(cursor, end, cutoff),
     ]);
     result.chunks += 1;
     result.rolledUp += rolled?.meta.changes ?? 0;
     result.deleted += removed?.meta.changes ?? 0;
 
-    const next = await oldestEventId(env, budget);
+    const next = await oldestEventId(db);
     if (next === null) {
       result.caughtUp = true;
       break;
@@ -260,27 +252,26 @@ export interface FoldResult {
 
 /** Folds day buckets older than the day-grain window into their month buckets. */
 export async function foldUsageRollupMonths(
-  env: Env,
+  db: D1Database,
   now: number = Date.now(),
-  budget: QueryBudget = { remaining: FOLD_RESERVE },
+  budget: QueryBudget = new QueryBudget(FOLD_RESERVE),
 ): Promise<FoldResult> {
   // A month is eligible only once all of it is past the window, so a month still
   // accumulating days is never half-folded.
   const cutoffMonth = dayBefore(now, USAGE_ROLLUP_DAY_RETENTION_DAYS).slice(0, 7);
   const result: FoldResult = { months: 0, folded: 0 };
 
-  while (budget.remaining >= QUERIES_PER_MONTH) {
-    budget.remaining -= QUERIES_PER_MONTH;
-    const oldest = await env.DB
+  while (budget.affords(MONTH_STATEMENTS)) {
+    const oldest = await db
       .prepare("SELECT MIN(substr(bucket, 1, 7)) AS month FROM app_usage_rollup WHERE grain = 'day' AND substr(bucket, 1, 7) < ?")
       .bind(cutoffMonth)
       .first<{ month: string | null }>();
     const month = oldest?.month ?? null;
     if (month === null) break;
 
-    const [folded] = await env.DB.batch([
-      env.DB.prepare(FOLD_MONTH).bind(month, month),
-      env.DB.prepare(DROP_FOLDED_DAYS).bind(month),
+    const [folded] = await db.batch([
+      db.prepare(FOLD_MONTH).bind(month, month),
+      db.prepare(DROP_FOLDED_DAYS).bind(month),
     ]);
     result.months += 1;
     result.folded += folded?.meta.changes ?? 0;
@@ -297,44 +288,20 @@ export async function foldUsageRollupMonths(
  * same reason — a compaction backlog must not be able to spend the whole night's
  * allowance and starve it.
  *
- * `budget` is the nightly run's shared allowance, already debited by the sweeps
- * that ran before this one; whatever retention does not spend is left in it.
+ * `budget` is the nightly run's shared allowance, already charged for the sweeps
+ * that ran before this one; whatever retention does not issue it never spends.
  */
 export async function runUsageRetention(
-  env: Env,
+  db: D1Database,
   now: number = Date.now(),
-  budget: QueryBudget = { remaining: USAGE_RETENTION_QUERY_BUDGET },
+  budget: QueryBudget = new QueryBudget(USAGE_RETENTION_QUERY_BUDGET),
 ): Promise<void> {
-  const spendPrune = budget.remaining >= USAGE_SPEND_PRUNE_QUERIES
-    ? USAGE_SPEND_PRUNE_QUERIES
-    : 0;
-  budget.remaining -= spendPrune;
-  const fold = Math.min(FOLD_RESERVE, Math.max(0, budget.remaining));
-  budget.remaining -= fold;
-  try {
-    const result = await compactUsageEvents(env, now, budget);
-    log("info", "usage_events_compacted", { ...result, retentionDays: USAGE_EVENT_RETENTION_DAYS });
-  } catch (error) {
-    log("error", "usage_events_compact_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  // Whatever compaction left, plus the reserve held back for exactly this.
-  budget.remaining = Math.max(0, budget.remaining) + fold;
-  try {
-    const result = await foldUsageRollupMonths(env, now, budget);
-    if (result.months > 0) {
-      log("info", "usage_rollup_folded", { ...result, dayRetentionDays: USAGE_ROLLUP_DAY_RETENTION_DAYS });
-    }
-  } catch (error) {
-    log("error", "usage_rollup_fold_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  if (spendPrune > 0) {
+  // First because it is one statement and it either fits or it does not; the
+  // two passes below each want as much of what is left as they can get.
+  if (budget.affords(1)) {
     try {
       const deleted = await pruneSettledUsageSpend(
-        env,
+        db,
         dayBefore(now, USAGE_EVENT_RETENTION_DAYS).slice(0, 7),
       );
       if (deleted > 0) log("info", "usage_spend_pruned", { deleted });
@@ -343,5 +310,26 @@ export async function runUsageRetention(
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+  // Everything but the reserve. A view charges this budget as it spends, so
+  // the nine it cannot reach are simply still here when the fold asks for them.
+  const compaction = budget.limited(budget.remaining - FOLD_RESERVE);
+  try {
+    const result = await compactUsageEvents(compaction.database(db), now, compaction);
+    log("info", "usage_events_compacted", { ...result, retentionDays: USAGE_EVENT_RETENTION_DAYS });
+  } catch (error) {
+    log("error", "usage_events_compact_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
+    const result = await foldUsageRollupMonths(db, now, budget);
+    if (result.months > 0) {
+      log("info", "usage_rollup_folded", { ...result, dayRetentionDays: USAGE_ROLLUP_DAY_RETENTION_DAYS });
+    }
+  } catch (error) {
+    log("error", "usage_rollup_fold_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

@@ -4,6 +4,7 @@ import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
 import { createIdentityAuth } from "../src/auth/identity";
 import worker from "../src/index";
 import { seedHuman, seedServerApp, serverConfig } from "./helpers";
+import { resolveDeployment } from "../src/policy/deployment";
 
 // Signing up hashes a password with scrypt in pure JS (workerd has no
 // node:crypto scrypt), which costs about two and a half seconds on an idle
@@ -12,6 +13,14 @@ import { seedHuman, seedServerApp, serverConfig } from "./helpers";
 // subject is registration do it; everything else needs an authenticated
 // operator rather than a sign-up, and `seedHuman` mints one. The timeout is
 // sized for the two that remain.
+//
+// The two tests under "password changes" carry a longer one of their own,
+// declared on the test rather than here. Each of them pays that cost about
+// seven times over — a sign-up, several sign-ins, a wrong-password check and
+// the change itself all hash — which measures near sixteen seconds alone on an
+// idle machine, so the file-wide budget leaves them no room at all once the
+// rest of the suite is competing for the CPU. Their 120s is sized against a
+// genuinely stuck test, not against how long they ought to take.
 vi.setConfig({ testTimeout: 30_000 });
 
 const ORIGIN = "https://example.test";
@@ -90,7 +99,7 @@ async function passwordSignIn(email: string, password: string): Promise<Response
 }
 
 async function sessionFor(cookie: string) {
-  return createIdentityAuth(env, ORIGIN).auth.api.getSession({
+  return (await createIdentityAuth(resolveDeployment(env), env, ORIGIN)).auth.api.getSession({
     headers: new Headers({ cookie }),
   });
 }
@@ -217,7 +226,7 @@ describe("operator authentication", () => {
     expect(read.status).toBe(200);
 
     const validation = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/member-validation/validate`,
+      `${ORIGIN}/v1/admin/app-drafts/validate`,
       {
         method: "POST",
         headers: sessionHeaders(cookie, true),
@@ -296,13 +305,18 @@ describe("operator authentication", () => {
     await env.DB.prepare("UPDATE mgmt_organization_user SET role = 'member' WHERE user_id = ?")
       .bind(userId).run();
 
+    // Authorization is declared on the operation now, so a verb no operation
+    // is mounted on is simply not a route. It used to be refused as an
+    // unauthorized mutation by a path rule that ran before routing did.
     const wrongVerb = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
       method: "PUT",
       headers: sessionHeaders(cookie, true),
       body: JSON.stringify({ organizationId: secondOrganizationId }),
     });
-    expect(wrongVerb.status).toBe(403);
-    await expect(wrongVerb.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+    expect(wrongVerb.status).toBe(404);
+    await expect(wrongVerb.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "Route not found" },
+    });
 
     const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
       method: "POST",
@@ -426,7 +440,7 @@ describe("operator authentication", () => {
 });
 
 describe("password changes", () => {
-  it("forces JSON false to revoke other sessions and preserves them after a wrong password", async () => {
+  it("forces JSON false to revoke other sessions and preserves them after a wrong password", { timeout: 120_000 }, async () => {
     const email = `password-json-${crypto.randomUUID()}@example.test`;
     const first = await signup(email);
     const secondResponse = await passwordSignIn(email, "correct-horse-42");
@@ -472,7 +486,7 @@ describe("password changes", () => {
     expect((await passwordSignIn(email, "new-correct-horse-43")).status).toBe(200);
   });
 
-  it("rejects forms and forces an omitted flag for JSON and direct auth.api calls", async () => {
+  it("rejects forms and forces an omitted flag for JSON and direct auth.api calls", { timeout: 120_000 }, async () => {
     const email = `password-omitted-${crypto.randomUUID()}@example.test`;
     const first = await signup(email);
     const secondResponse = await passwordSignIn(email, "correct-horse-42");
@@ -524,7 +538,7 @@ describe("password changes", () => {
     const otherResponse = await passwordSignIn(email, "json-changed-password-44");
     expect(otherResponse.status, await otherResponse.clone().text()).toBe(200);
     const otherCookie = cookieFrom(otherResponse);
-    const direct = await createIdentityAuth(env, ORIGIN).auth.api.changePassword({
+    const direct = await (await createIdentityAuth(resolveDeployment(env), env, ORIGIN)).auth.api.changePassword({
       body: {
         currentPassword: "json-changed-password-44",
         newPassword: "direct-changed-password-45",

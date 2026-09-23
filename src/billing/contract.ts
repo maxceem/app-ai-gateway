@@ -9,95 +9,52 @@
  *
  * Keep this file free of implementation. It is a wire contract: changing a
  * field here is a breaking change for whatever Worker is bound on the other
- * side.
+ * side. Every shape below is the one `src/contracts/billing.ts` declares, so
+ * the RPC contract, the documented `/v1/admin/billing` responses and the
+ * console all read one definition; what is written here is the RPC surface
+ * itself, which has no wire schema because it is not HTTP.
  */
+import {
+  BillingCancelResponseSchema,
+  BillingChangeResponseSchema,
+  BillingCheckoutResponseSchema,
+  billingPeriods,
+  billingSources,
+  billingSubscriptionStatuses,
+  type BillingAccess,
+  type BillingCancelResponse,
+  type BillingChangeResponse,
+  type BillingCheckoutResponse,
+  type BillingPeriod,
+  type BillingPlanOffer,
+  type BillingPlanOfferPrice,
+  type BillingSource,
+  type BillingSubscriptionStatus,
+  type EntitledPlan,
+  type SubscriptionState,
+} from "../contracts/billing";
 
-/** Subscription statuses, as spelled by the billing provider. */
-export const billingSubscriptionStatuses = [
-  "on_trial",
-  "active",
-  "paused",
-  "past_due",
-  "unpaid",
-  "cancelled",
-  "expired",
-] as const;
-
-export type BillingSubscriptionStatus = (typeof billingSubscriptionStatuses)[number];
-
-export const billingSources = ["lemon_squeezy", "manual"] as const;
-export type BillingSource = (typeof billingSources)[number];
-
-export const billingPeriods = ["month", "year"] as const;
-export type BillingPeriod = (typeof billingPeriods)[number];
-
-/**
- * The plan an organization is entitled to right now.
- *
- * `limits` is opaque to the billing side and interpreted only here — see
- * `PlanLimits` and `billingPlanLimits`, which read the gateway's whole
- * vocabulary of plan limits out of it. A new ceiling is a new key there and
- * plan data on the billing side; this contract never changes for one.
- */
-export interface EntitledPlan {
-  planKey: string;
-  planName: string;
-  limits: unknown;
-  /** True when it came from the service's default plan rather than a subscription. */
-  isDefault: boolean;
-}
-
-/**
- * What the organization is paying for, reported as stored.
- *
- * Deliberately separate from {@link EntitledPlan}: a subscription that no
- * longer entitles anything still has to be describable, because "your plan
- * ended" is a sentence only this object can support.
- */
-export interface SubscriptionState {
-  subscriptionId: string | null;
-  status: BillingSubscriptionStatus;
-  planKey: string;
-  planName: string;
-  /** Null for trials and manual grants, which carry no price. */
-  billingPeriod: BillingPeriod | null;
-  renewsAt: string | null;
-  endsAt: string | null;
-  trialEndsAt: string | null;
-  source: BillingSource;
-  /** This subscription generation */
-  createdAt: string;
-  updatedAt: string;
-  /** Original provider day, retained when short months clamp the exact anchor. */
-  billingAnchorDay: number | null;
-  /** Exact normalized UTC origin of the monthly allowance schedule. */
-  billingAnchorAt: string;
-  /** When the current allowance schedule took effect. */
-  billingScheduleUpdatedAt: string;
-}
-
-export interface BillingAccess {
-  /** `null` means no entitlement at all, and the gateway refuses the request. */
-  plan: EntitledPlan | null;
-  /** `null` means the organization has no billing row. */
-  subscription: SubscriptionState | null;
-}
-
-export interface BillingPlanOfferPrice {
-  billingPeriod: BillingPeriod;
-  priceAmountCents: number;
-  priceCurrency: string;
-}
-
-export interface BillingPlanOffer {
-  planKey: string;
-  name: string;
-  description: string;
-  features: string[];
-  limits?: unknown;
-  trialDays: number;
-  prices: BillingPlanOfferPrice[];
-}
+export {
+  billingPeriods,
+  billingSources,
+  billingSubscriptionStatuses,
+  BillingCancelResponseSchema,
+  BillingChangeResponseSchema,
+  BillingCheckoutResponseSchema,
+};
+export type {
+  BillingAccess,
+  BillingCancelResponse,
+  BillingChangeResponse,
+  BillingCheckoutResponse,
+  BillingPeriod,
+  BillingPlanOffer,
+  BillingPlanOfferPrice,
+  BillingSource,
+  BillingSubscriptionStatus,
+  EntitledPlan,
+  SubscriptionState,
+};
 
 /**
  * The RPC surface the `BILLING` service binding must expose.
@@ -118,23 +75,23 @@ export interface BillingRuntime {
     billingPeriod: BillingPeriod;
     successUrl?: string | undefined;
     cancelUrl?: string | undefined;
-  }): Promise<{ url: string }>;
+  }): Promise<BillingCheckoutResponse>;
 
   changePlan(input: {
     serviceId: string;
     tenantId: string;
     planKey: string;
     billingPeriod: BillingPeriod;
-  }): Promise<{ ok: true; requiredActionUrl?: string | undefined }>;
+  }): Promise<BillingChangeResponse>;
 
   resumeSubscription(input: {
     serviceId: string;
     tenantId: string;
     planKey: string;
     billingPeriod: BillingPeriod;
-  }): Promise<{ ok: true; requiredActionUrl?: string | undefined }>;
+  }): Promise<BillingChangeResponse>;
 
-  cancelSubscription(input: { serviceId: string; tenantId: string }): Promise<{ ok: true }>;
+  cancelSubscription(input: { serviceId: string; tenantId: string }): Promise<BillingCancelResponse>;
 
   startTrial(input: {
     serviceId: string;

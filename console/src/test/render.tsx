@@ -149,6 +149,7 @@ export function renderAuthenticated(
     capabilities?: Partial<Capabilities>;
     billing?: BillingAccess;
     quota?: OrganizationQuota | null;
+    unclaimedAccessEndsAt?: string | null;
     route?: string;
   } = {},
 ) {
@@ -169,6 +170,7 @@ export function renderAuthenticated(
               capabilities={{ ...CAPABILITIES, ...options.capabilities }}
               billing={options.billing}
               quota={options.quota}
+              unclaimedAccessEndsAt={options.unclaimedAccessEndsAt}
             >
               {ui}
             </ConsoleSessionProvider>

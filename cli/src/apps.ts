@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { AppWriteSchema, type AppWrite } from "../../src/contracts/schemas.ts";
-import { operations } from "../../src/contracts/operations.ts";
+import { operationPath } from "../../src/contracts/catalog.ts";
 import type {
   ApiKeyListResponse,
   ApiKeyRevokeResponse,
   AppDeleteResponse,
   AppListResponse,
   AppResponse,
+  AppDraftValidateResponse,
   AppValidateResponse,
   CreatedApiKey,
   ProviderSummary,
@@ -22,36 +23,28 @@ import {
   curlSnippet,
   exampleNotes,
   firstRequest,
+  ISSUER_TOKEN_NOTE,
   shellQuote,
+  swiftSignsInUsers,
   swiftSnippet,
   type RequestExample,
 } from "../../src/shared/first-request.ts";
-
-const unlimited = () => ({
-  requests: { per_minute: null, per_day: null },
-  spending: { monthly_usd: null },
-});
-/**
- * The policy a newly selected provider starts with: unrestricted.
- *
- * Empty, never `["*"]`. Neither field takes a wildcard — `allowed_paths`
- * compiles each entry to an anchored pattern whose only placeholder is
- * `{model}`, and `allowed_models` is matched with `includes`, so a literal
- * `"*"` matches nothing and an empty list is what means "allow everything".
- * A saved `"*"` is also refused outright, because the gateway prices every
- * model an application names and no catalog prices a model called `*`.
- */
-const policy = () => ({ allowed_paths: [] as string[], allowed_models: [] as string[] });
+import {
+  providerPolicyFor,
+  reachableProviders,
+  selectedProviderPolicies,
+  type AppAttestEnvironment,
+} from "../../src/shared/app-config.ts";
+import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 
 /** What a local or remote configuration check was able to establish. */
 export type ValidationResult =
   | { local: true; remote: false; skipped: string[] }
-  | ({ local: true; remote: true } & AppValidateResponse);
+  | ({ local: true; remote: true } & (AppValidateResponse | AppDraftValidateResponse));
 
 export interface AppWriteResult {
   snippet?: string;
   app: AppResponse["app"];
-  resolved: AppResponse["resolved"];
   config_error: AppResponse["config_error"];
   applicationKey?: StoredKeyMetadata;
   guidance: string;
@@ -92,31 +85,16 @@ export function documentOf(app: AppResponse["app"]): AppWrite {
   return localApp({ name: app.name, config: app.config, status: app.status });
 }
 
+/**
+ * A write body as the gateway's own grammar defines it.
+ *
+ * Nothing is checked here beyond the schema: the App Attest identifier formats
+ * and the rule that per-user limits need an end-user source live in the schema
+ * the server parses with, so `agw` refuses exactly what the deployment would
+ * and says it in the same words.
+ */
 export function localApp(value: unknown): AppWrite {
-  const doc = validate(AppWriteSchema, value);
-  const auth = doc.config.authentication;
-  if (auth.type === "apple_app_attest") {
-    if (!/^[A-Z0-9]{10}$/.test(auth.app_attest.team_id))
-      fail(
-        "invalid_input",
-        "App Attest team_id must contain ten uppercase letters or digits.",
-      );
-    if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(auth.app_attest.bundle_id))
-      fail(
-        "invalid_input",
-        "App Attest bundle_id must be a reverse DNS identifier.",
-      );
-  }
-  if (
-    auth.type === "api_key" &&
-    !auth.end_user &&
-    doc.config.limits?.per_user &&
-    (doc.config.limits.per_user.requests.per_minute !== null ||
-      doc.config.limits.per_user.requests.per_day !== null ||
-      doc.config.limits.per_user.spending.monthly_usd !== null)
-  )
-    fail("invalid_input", "User limits require an end-user identity source.");
-  return doc;
+  return validate(AppWriteSchema, value);
 }
 
 export async function appDocument(flags: Flags, current?: AppWrite): Promise<AppWrite> {
@@ -163,33 +141,24 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
           ? bundle.split(".").slice(-2).join(" ")
           : await required(flags, "name", "App name")),
       status: flags.status ?? "active",
-      config: {
-        authentication: ios
-          ? {
-              type: "apple_app_attest",
-              end_user: { source: "app_install" },
-              app_attest: {
-                team_id: await required(flags, "team-id", "Apple team ID"),
-                bundle_id: bundle,
-                environments: (
-                  flags["attest-environments"] ?? "production,development"
-                ).split(","),
-              },
-            }
-          : { type: "api_key" },
-        routing: { providers: { mode: "all" }, model_rewrites: {} },
-        ...(ios
-          ? {
-              limits: {
-                per_user: {
-                  requests: { per_minute: 10, per_day: 300 },
-                  spending: { monthly_usd: null },
-                },
-                per_app: unlimited(),
-              },
-            }
-          : {}),
-      },
+      config: ios
+        ? newAppConfig({
+            type: "apple_app_attest",
+            teamId: await required(flags, "team-id", "Apple team ID"),
+            // Asked for above, because `ios` is exactly when there is one.
+            bundleId: bundle ?? "",
+            /*
+             * Both environments, which is `agw`'s own default rather than the
+             * schema's: someone reaching for the CLI to create an iOS app is
+             * building it, and a development-signed build is what they have in
+             * hand. Passed through unmapped, so `localApp` below is what
+             * refuses a name that is neither.
+             */
+            environments: attestEnvironments(
+              flags["attest-environments"] ?? "production,development",
+            ),
+          })
+        : newAppConfig({ type: "api_key" }),
     });
   }
   if (flags.name) doc.name = flags.name;
@@ -206,17 +175,15 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
     if (flags["team-id"]) auth.app_attest.team_id = flags["team-id"];
     if (flags["bundle-id"]) auth.app_attest.bundle_id = flags["bundle-id"];
     if (flags["attest-environments"])
-      auth.app_attest.environments = flags["attest-environments"]
-        .split(",")
-        .map((value) => (value === "development" ? "development" : "production"));
+      auth.app_attest.environments = attestEnvironments(flags["attest-environments"]);
   }
   const selectedProviders = flagList(flags.provider);
   if (selectedProviders.length) {
-    const previous = doc.config.routing.providers.selected ?? {};
+    const previous = selectedProviderPolicies(doc.config.routing);
     doc.config.routing.providers = {
       mode: "selected",
       selected: Object.fromEntries(
-        selectedProviders.map((slug) => [slug, previous[slug] ?? policy()]),
+        selectedProviders.map((slug) => [slug, previous[slug] ?? emptyPolicy()]),
       ),
     };
   }
@@ -224,10 +191,27 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
   return localApp(doc);
 }
 
+/**
+ * `--attest-environments` as the configuration's own list. Names are passed
+ * through as typed rather than mapped, so `localApp` refuses one that is
+ * neither `production` nor `development` instead of this flag quietly
+ * widening a misspelling into production.
+ */
+function attestEnvironments(value: string): AppAttestEnvironment[] {
+  return value
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0) as AppAttestEnvironment[];
+}
+
+/**
+ * The gateway's own verdict on a document: as an edit of the application `id`
+ * names, or as a new application when there is none yet.
+ */
 async function remoteValidation(
   ctx: Context,
   doc: AppWrite,
-  id = "validation-preview",
+  id?: string,
 ): Promise<ValidationResult> {
   if (!ctx.active?.credential)
     return {
@@ -237,7 +221,9 @@ async function remoteValidation(
         "Provider references, pricing, and saved configuration checks require login.",
       ],
     };
-  const { data } = await ctx.call("validateApp", [id], { body: doc });
+  const { data } = id === undefined
+    ? await ctx.call("validateAppDraft", { body: doc })
+    : await ctx.call("validateApp", { params: { app: id }, body: doc });
   return { local: true, remote: true, ...data };
 }
 
@@ -271,7 +257,7 @@ export async function saveKey(
     }
     let revoked = false;
     try {
-      await ctx.call("revokeAppKey", [appId, keyRecord.id]);
+      await ctx.call("revokeAppKey", { params: { app: appId, key: keyRecord.id } });
       revoked = true;
     } catch {
       /* Left unverified on purpose; the refusal below says so. */
@@ -309,7 +295,7 @@ export async function appCommand(
   flags: Flags,
 ): Promise<AppResult> {
   const action = command.slice(4);
-  if (action === "list") return (await ctx.call("listApps", [])).data;
+  if (action === "list") return (await ctx.call("listApps")).data;
   if (action === "validate") {
     const doc = localApp(await jsonFile(await required(flags, "file")));
     return { definition: doc, validation: await remoteValidation(ctx, doc) };
@@ -323,7 +309,7 @@ export async function appCommand(
     let revision = 0;
     const appId = args[0] ?? "";
     if (action === "update") {
-      const r = await ctx.call("getApp", [appId]);
+      const r = await ctx.call("getApp", { params: { app: appId } });
       current = documentOf(r.data.app);
       revision = r.data.app.revision;
       if (!revision && !flags["dry-run"])
@@ -351,17 +337,16 @@ export async function appCommand(
       };
     const output =
       action === "add" && doc.config.authentication.type === "api_key"
-        ? await ctx.keyOutput(operations.createApp.path(), doc, flags["key-output"])
+        ? await ctx.keyOutput(operationPath("createApp"), doc, flags["key-output"])
         : null;
     try {
       let app: AppResponse["app"];
-      let resolved: AppResponse["resolved"];
       let configError: AppResponse["config_error"];
       let key: StoredKeyMetadata | undefined;
       if (action === "add") {
         await ctx.bootstrap();
-        const created = await ctx.create("createApp", [], doc);
-        ({ app, resolved, config_error: configError } = created.data);
+        const created = await ctx.create("createApp", { body: doc });
+        ({ app, config_error: configError } = created.data);
         if (output) {
           if (created.keyMetadata) key = created.keyMetadata;
           else {
@@ -379,10 +364,11 @@ export async function appCommand(
         }
         await created.complete();
       } else {
-        const updated = await ctx.call("updateApp", [appId], {
+        const updated = await ctx.call("updateApp", {
+          params: { app: appId },
           body: { ...doc, revision },
         });
-        ({ app, resolved, config_error: configError } = updated.data);
+        ({ app, config_error: configError } = updated.data);
       }
       // The request this application can now send, written against whatever it
       // has: a provider it can reach and a priced model where those exist, and
@@ -402,7 +388,6 @@ export async function appCommand(
       return {
         ...(snippet ? { snippet } : {}),
         app,
-        resolved,
         config_error: configError,
         ...(key ? { applicationKey: key } : {}),
         guidance:
@@ -417,31 +402,31 @@ export async function appCommand(
   if (action.startsWith("key ")) {
     const sub = action.slice(4);
     const appId = args[0] ?? "";
-    const { data: app } = await ctx.call("getApp", [appId]);
+    const { data: app } = await ctx.call("getApp", { params: { app: appId } });
     if (documentOf(app.app).config.authentication.type !== "api_key")
       fail(
         "invalid_input",
         "Only server applications support application keys.",
       );
-    if (sub === "list") return (await ctx.call("listAppKeys", [appId])).data;
+    if (sub === "list") return (await ctx.call("listAppKeys", { params: { app: appId } })).data;
     if (sub === "revoke") {
       const keyId = args[1] ?? "";
       await confirm(
         `Revoke key ${keyId} for app ${appId}? Clients using it will lose access.`,
         flags,
       );
-      return (await ctx.call("revokeAppKey", [appId, keyId])).data;
+      return (await ctx.call("revokeAppKey", { params: { app: appId, key: keyId } })).data;
     }
     const name = await required(flags, "name");
     if (!name.trim() || name.length > 100)
       fail("invalid_input", "Key name must be 1–100 characters.");
     const output = await ctx.keyOutput(
-      operations.createAppKey.path(appId),
+      operationPath("createAppKey", { app: appId }),
       { name },
       flags["key-output"],
     );
     try {
-      const created = await ctx.create("createAppKey", [appId], { name });
+      const created = await ctx.create("createAppKey", { params: { app: appId }, body: { name } });
       let applicationKey = created.keyMetadata;
       if (!applicationKey) {
         const minted = mintedKey(created.data);
@@ -462,7 +447,7 @@ export async function appCommand(
     }
   }
   const appId = args[0] ?? "";
-  const { data } = await ctx.call("getApp", [appId]);
+  const { data } = await ctx.call("getApp", { params: { app: appId } });
   if (action === "show") return data;
   const doc = documentOf(data.app);
   if (action === "remove") {
@@ -470,17 +455,17 @@ export async function appCommand(
       `Delete app ${data.app.name} (${appId})? Its keys, users and authentication state will be removed and clients will lose access.`,
       flags,
     );
-    return (await ctx.call("deleteApp", [appId])).data;
+    return (await ctx.call("deleteApp", { params: { app: appId }, query: { confirm: appId } })).data;
   }
   if (action === "check") {
     const validation = await remoteValidation(ctx, doc, appId);
-    const { data: providers } = await ctx.call("listProviders", []);
-    const selected =
-      doc.config.routing.providers.mode === "all"
-        ? providers.providers
-        : providers.providers.filter((p) =>
-            Object.hasOwn(doc.config.routing.providers.selected ?? {}, p.slug),
-          );
+    const { data: providers } = await ctx.call("listProviders");
+    // Every instance the routing names, paused ones included, so the report
+    // shows a disabled provider rather than leaving it out; ready means one of
+    // them can serve.
+    const selected = providers.providers.filter(
+      (p) => providerPolicyFor(doc.config.routing, p.slug) !== undefined,
+    );
     return {
       appId,
       validation,
@@ -492,7 +477,7 @@ export async function appCommand(
       })),
       ready:
         doc.status === "active" &&
-        selected.some((p) => p.status === "active") &&
+        reachableProviders(doc.config.routing, selected).length > 0 &&
         !data.config_error,
       limitations: [
         "No inference was sent.",
@@ -519,7 +504,7 @@ export async function appCommand(
     const notes: string[] = [];
     let example: RequestExample;
     if (flags.endpoint) {
-      const endpoint = doc.config.endpoints?.[flags.endpoint];
+      const endpoint = doc.config.endpoints[flags.endpoint];
       if (!endpoint)
         fail("endpoint_not_found", "Choose an existing named endpoint.");
       // A named endpoint holds the provider, the model and the parameters, so
@@ -532,20 +517,11 @@ export async function appCommand(
         gaps: responses ? [] : ["body"],
       };
     } else {
-      const routing = {
-        providerMode: doc.config.routing.providers.mode,
-        providers: doc.config.routing.providers.selected,
-      };
-      const { data: all } = await ctx.call("listProviders", []);
+      const routing = doc.config.routing;
+      const { data: all } = await ctx.call("listProviders");
       // What this application may send to today, which is narrower than what
-      // the account holds: a disabled provider serves nothing, and a selected
-      // routing policy names the rest out.
-      const reachable = all.providers.filter(
-        (p) =>
-          p.status === "active" &&
-          (routing.providerMode === "all" ||
-            Object.hasOwn(routing.providers ?? {}, p.slug)),
-      );
+      // the account holds.
+      const reachable = reachableProviders(routing, all.providers);
       const requested = typeof flags.provider === "string" ? flags.provider : undefined;
       if (requested && !reachable.some((p) => p.slug === requested))
         fail(
@@ -557,7 +533,7 @@ export async function appCommand(
             : "No provider has that slug.",
           "Run agw provider list for the slugs, and agw app show <id> for the policy.",
         );
-      const { data: catalog } = await ctx.call("listModelPrices", []);
+      const { data: catalog } = await ctx.call("listModelPrices");
       const providers = requested
         ? reachable.filter((p) => p.slug === requested)
         : reachable;
@@ -572,21 +548,12 @@ export async function appCommand(
     const clientUrl = ctx.active?.deployment?.apiUrl ?? ctx.url;
     let snippet: string;
     if (ios) {
-      const endUser = doc.config.authentication.type === "apple_app_attest"
-        ? doc.config.authentication.end_user
-        : undefined;
-      const issuer = endUser?.source === "issuer";
-      if (issuer)
-        notes.push(
-          "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.",
-        );
+      if (swiftSignsInUsers(doc.config.authentication)) notes.push(ISSUER_TOKEN_NOTE);
       snippet = swiftSnippet({
         baseUrl: clientUrl,
         appId,
         example,
-        authMode: issuer
-          ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
-          : ".appAttestInstall",
+        authentication: doc.config.authentication,
         notes: [
           "Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)",
           "Enable App Attest and test on a supported physical device.",

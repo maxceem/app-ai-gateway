@@ -3,7 +3,8 @@ import { toast } from "sonner";
 import { Route, Routes } from "react-router-dom";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ProvidersPage, draftsToPricing } from "./providers";
+import { ProvidersPage } from "./providers";
+import { draftsToPricing } from "@/lib/pricing-draft";
 import { renderAuthenticated } from "@/test/render";
 import type { AppSummary, ProviderCredential, ProviderGateway } from "@/lib/types";
 

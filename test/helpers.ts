@@ -1,14 +1,10 @@
 import { env } from "cloudflare:workers";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
 import { issueGatewayToken } from "../src/core/jwt";
-import { clearApiKeyCache, hashApiKey } from "../src/core/apikeys";
-import { clearProviderCaches } from "../src/core/provider-store";
+import { hashApiKey } from "../src/core/apikeys";
+import { providerRowsCache, providerSecretCache } from "../src/core/provider-store";
 import { sealSecret } from "../src/vault/secrets";
-import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
-import { clearJwksCache } from "../src/core/issuer";
-import { clearAppConfigCache } from "../src/core/config";
-import { clearBillingAccessCache } from "../src/billing/gateway";
-import { clearBlockedCache } from "../src/middleware/gate";
+import { clearAllCaches } from "../src/core/ttl-cache";
 import { PROVIDER_TYPES } from "../src/core/providers";
 import { database } from "../src/db";
 import {
@@ -18,10 +14,16 @@ import {
   providerGateway,
   type CfAigConfig,
   type GatewayRouteConfig,
-  type ProviderGatewayType,
+  type GatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
-import type { ProviderType, StoredAppConfig } from "../src/core/types";
+import type { GatewayIdentity, ProviderType } from "../src/core/types";
+import { DIRECT_ROUTE } from "../src/core/routes";
+import type { AttemptAttribution } from "../src/core/usage-record";
+import { parseAppConfig } from "../src/shared/app-config";
+import { validateConfigurationReferences } from "../src/core/config-references";
+import type { OrganizationProviders } from "../src/core/provider-store";
+import { recordFromEntries } from "../src/shared/records";
 import { createCfAuth } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../src/db/schema";
 
@@ -30,21 +32,62 @@ import { mgmtAuthTables } from "../src/db/schema";
  *
  * A suite shares one isolate with the rest of its barrel, so a row this file
  * rewrites straight in D1 is otherwise still answered from whatever an earlier
- * file left warm. Clearing them together is what keeps a new test from having
- * to know which of them the path it exercises happens to read: forgetting one
- * shows up as a test that passes alone and fails in its barrel.
+ * file left warm. Nothing is listed here: every cache registers itself with
+ * `ttlCache`, so this reaches one added tomorrow too — a hand-kept list is what
+ * used to make a new cache show up as a test that passes alone and fails in its
+ * barrel.
  */
 export function clearIsolateCaches(): void {
-  clearAppConfigCache();
-  clearProviderCaches();
-  clearApiKeyCache();
-  clearJwksCache();
-  clearBillingAccessCache();
-  clearAccountLifecycleCache();
-  clearBlockedCache();
+  clearAllCaches();
+}
+
+/**
+ * The provider caches alone, for a test that rewrote a provider row straight in
+ * D1 and wants the next read to see it without disturbing anything else this
+ * barrel has warm.
+ */
+export function clearProviderCaches(): void {
+  providerRowsCache.clear();
+  providerSecretCache.clear();
 }
 
 export const TEST_ORGANIZATION_ID = "operator-test-organization";
+
+/**
+ * A caller, for the tests that record a usage row directly instead of proxying
+ * one. The gateway builds this from a verified credential; here it is the small
+ * set of fields a usage row actually reads off it.
+ */
+export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayIdentity {
+  return {
+    appId: "test-app",
+    userId: "user-1",
+    jti: "test-jti",
+    expiresAt: 0,
+    authMethod: "api_key",
+    credentialType: "api_key",
+    ...overrides,
+  };
+}
+
+/**
+ * What an attempt would have said about itself. The real one comes from
+ * `attemptAttribution` over a resolved provider row, which is more machinery
+ * than a recorder test needs: nothing below the recorder reads a provider row.
+ */
+export function testAttribution(overrides: Partial<AttemptAttribution> = {}): AttemptAttribution {
+  return {
+    provider: "openai",
+    providerId: "provider-test",
+    providerSlug: "openai",
+    providerRoute: DIRECT_ROUTE,
+    pricing: null,
+    model: "gpt-5.6-sol",
+    apiStyle: "responses",
+    route: "openai/v1/responses",
+    ...overrides,
+  };
+}
 export const TEST_SERVICE_USER_ID = "operator-test-owner";
 
 /**
@@ -70,7 +113,7 @@ export async function seedProvider(input: {
   organizationId?: string;
   secret?: string;
   name?: string;
-  gateway?: ProviderGatewayType;
+  gateway?: GatewayType;
   gatewayConfig?: CfAigConfig;
   /** The row's gateway-type-specific routing configuration. */
   gatewayRoute?: GatewayRouteConfig;
@@ -143,9 +186,8 @@ export interface SeedOptions {
   auth?: Record<string, unknown>;
   endpoints?: Record<string, unknown>;
   /**
-   * The app's own limits on its end users. Omitted entirely when no field is
-   * given, so the seeded config matches an app that never set one and the
-   * request path skips the limiter exactly as it does in production.
+   * The app's own limits on its end users. Every field defaults to null, which
+   * is an app that limits nothing and skips the limiter Durable Object.
    */
   limits?: { rpm?: number | null; rpd?: number | null; app_rpm?: number | null; app_rpd?: number | null };
   budgetUsd?: number | null;
@@ -153,15 +195,11 @@ export interface SeedOptions {
 }
 
 /**
- * The `limits` block for a seeded app, or nothing at all when the test asked
- * for no limits. Absent is not the same as all-null to the request path: one
- * skips the Durable Object, the other would still be a configured scope.
+ * The `limits` block for a seeded app. Always written in full, because that is
+ * what the schema produces now: an app that sets nothing is the one whose every
+ * number is null, and the request path reads exactly that.
  */
 export function limitsConfig(options: SeedOptions): Record<string, unknown> {
-  const wanted = options.limits !== undefined
-    || options.budgetUsd !== undefined
-    || options.appBudgetUsd !== undefined;
-  if (!wanted) return {};
   return {
     limits: {
       per_user: {
@@ -192,14 +230,43 @@ export function serverConfig(input: {
   proxy?: Record<string, unknown>;
   authentication?: Record<string, unknown>;
   endpoints?: Record<string, unknown>;
+  limits?: Record<string, unknown>;
 } = {}): Record<string, unknown> {
   return {
-    ...(input.endpoints === undefined ? {} : { endpoints: input.endpoints }),
+    endpoints: input.endpoints ?? {},
     // No end users unless a test says otherwise: it is the smallest valid
     // server application, and the shape most configuration tests care about.
     authentication: input.authentication ?? { type: "api_key" },
     routing: routingConfig(input.proxy ?? {}),
+    limits: input.limits ?? limitsConfig({}).limits,
   };
+}
+
+/**
+ * Every provider type as though the organization ran one instance of it under
+ * its own name. The reference checks are organization-scoped, and a
+ * configuration test that is not about provider rows wants the permissive
+ * index rather than a fixture per case.
+ */
+export const WELL_KNOWN_PROVIDER_INSTANCES: OrganizationProviders = recordFromEntries(
+  PROVIDER_TYPES.map((type) => [
+    type,
+    { id: type, slug: type, type, route: "direct" as const, pricing: null, status: "active" as const },
+  ] as const),
+);
+
+/**
+ * A configuration as a management write judges it: the grammar first, then the
+ * organization-scoped reference, capability and price checks.
+ */
+export function validateConfig(
+  raw: unknown,
+  instances: OrganizationProviders = WELL_KNOWN_PROVIDER_INSTANCES,
+  grandfathered: ReadonlySet<string> = new Set(),
+) {
+  const config = parseAppConfig(raw);
+  validateConfigurationReferences(config, { instances, grandfathered });
+  return config;
 }
 
 export function appleConfig(
@@ -226,6 +293,8 @@ export function appleConfig(
       },
     },
     routing: routingConfig(input.proxy ?? {}),
+    limits: limitsConfig({}).limits,
+    endpoints: {},
   };
 }
 
@@ -270,7 +339,7 @@ export async function seedApp(
       ? TEST_ORGANIZATION_ID
       : options.organizationId,
     name: `Test ${appId}`,
-    config: {
+    config: parseAppConfig({
       authentication: {
         type: "apple_app_attest",
         app_attest: {
@@ -294,8 +363,9 @@ export async function seedApp(
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       ...limitsConfig(options),
-      ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
-    } as unknown as StoredAppConfig,
+      endpoints: options.endpoints ?? {},
+    }),
+    authType: "apple_app_attest",
     status: "active",
   });
 }
@@ -322,7 +392,7 @@ export async function seedServerApp(
       ? TEST_ORGANIZATION_ID
       : options.organizationId,
     name: `Test ${appId}`,
-    config: {
+    config: parseAppConfig({
       authentication: {
         type: "api_key",
         /*
@@ -350,8 +420,9 @@ export async function seedServerApp(
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       ...limitsConfig(options),
-      ...(options.endpoints === undefined ? {} : { endpoints: options.endpoints }),
-    } as unknown as StoredAppConfig,
+      endpoints: options.endpoints ?? {},
+    }),
+    authType: "api_key",
     status: "active",
   });
   await database(env.DB).insert(appApiKey).values({

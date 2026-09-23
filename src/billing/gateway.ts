@@ -1,11 +1,9 @@
-import {
-  billingErrorCodeOf,
-  type BillingRuntime,
-  type EntitledPlan,
-  type SubscriptionState,
-} from "./contract";
+import { billingErrorCodeOf, type BillingRuntime } from "./contract";
+import type { Deployment } from "../policy/deployment";
+import type { GatewayBillingAccess, PlanLimits, SubscriptionActions } from "../contracts/billing";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
+import { ttlCache } from "../core/ttl-cache";
 
 /**
  * This product's id in the billing service.
@@ -38,34 +36,19 @@ export const BILLING_STALE_MAX_MS = 60 * 60_000;
 export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
 /**
- * What a plan allows, read out of its opaque `limits` JSON.
- *
- * Every limit is a whole count and every one is optional; absent means
- * unlimited, which is what a self-hosted deployment, a plan with no `limits`
- * block, and a plan that simply does not mention the key all get. Adding a
- * ceiling to a plan is therefore plan data alone — nothing here knows which
- * plan carries which number, and no plan is named anywhere in this Worker.
+ * What a plan allows, read out of its opaque `limits` JSON — declared as
+ * `PlanLimitsSchema` in `src/contracts/billing.ts`, because the billing status
+ * endpoint publishes the same object the write path enforces.
  *
  * `maxRequestsPerMonth` is spent on the data plane. The rest are ceilings on
  * stored configuration, enforced by the write that would exceed them; see
- * `src/core/plan-caps.ts`.
+ * `src/management/plan-caps.ts`.
  *
  * All of these are the plan allowance an organization is metered against, never
  * the limits an organization sets on its own app's end users — those are
  * `app_*` codes and `src/do/UserLimiter.ts`, and no value here may cap them.
  */
-export interface PlanLimits {
-  /** Requests admitted for provider dispatch per allowance period, per organization. */
-  maxRequestsPerMonth?: number;
-  /** Applications the organization may own, in any status. */
-  maxApps?: number;
-  /** Providers the organization may own, in any status. */
-  maxProviders?: number;
-  /** Provider gateways the organization may own, in any status. */
-  maxProviderGateways?: number;
-  /** Counted per application, over its `active` keys alone. */
-  maxActiveKeysPerApp?: number;
-}
+export type { PlanLimits };
 
 const PLAN_LIMIT_KEYS = [
   "maxRequestsPerMonth",
@@ -76,59 +59,42 @@ const PLAN_LIMIT_KEYS = [
 ] as const satisfies readonly (keyof PlanLimits)[];
 
 /**
- * the billing service's answer, plus the two states only the gateway can be in.
+ * The billing service's answer, plus the two states only the gateway can be in
+ * — declared as `GatewayBillingAccessSchema` in `src/contracts/billing.ts`,
+ * because the console reads this union off the billing status endpoint.
  *
- * `state` is the discriminant the whole gateway and console read: the service
- * itself has no notion of a deployment without billing, nor of its own
- * unreachability, and both have to be distinguishable from "this organization
- * has no plan" — one is unlimited, one is temporary, one is a paywall.
+ * A stale reading is served for {@link BILLING_STALE_MAX_MS} after the billing
+ * service stops answering. Entitlement decisions are unchanged by it: a stale
+ * `plan === null` is still a paywall.
  */
-export type GatewayBillingAccess =
-  /** No `BILLING` binding: self-hosted, unlimited, never refused. */
-  | { state: "self_hosted" }
-  /** The billing RPC failed. The allowance is unknown, so traffic waits. */
-  | { state: "unavailable"; billingErrorCode?: string }
-  /** The billing service answered. `plan === null` means no entitlement at all. */
-  | {
-      state: "billed";
-      plan: EntitledPlan | null;
-      subscription: SubscriptionState | null;
-      /**
-       * Set when the billing service could not be reached and this is the last reading
-       * it gave for the organization, still inside {@link BILLING_STALE_MAX_MS}.
-       * Entitlement decisions are unchanged: a stale `plan === null` is still a
-       * paywall.
-       */
-      stale?: true;
-      /** Why the refresh failed, on a stale reading. */
-      billingErrorCode?: string;
-    };
+export type { GatewayBillingAccess };
 
 export type BillingRequestCache = Map<string, Promise<GatewayBillingAccess>>;
 
-export interface BillingVariables {
-  billingRequestCache: BillingRequestCache;
-}
-
-/** Structural RPC stub shape; avoids coupling the OSS gateway to the worker class. */
-export type BillingBinding = BillingRuntime;
-export interface BillingEnv {
-  BILLING?: BillingBinding;
-}
-
-interface BillingAccessCacheEntry {
-  expiresAt: number;
-  value: Promise<GatewayBillingAccess>;
-}
-
-const billingAccessCache = new Map<string, BillingAccessCacheEntry>();
+/**
+ * The pending or settled answer per organization. The promise itself is what is
+ * stored, so concurrent requests for one organization share a single RPC.
+ *
+ * Keyed by organization ids that came from D1, so it is not attacker-growable;
+ * the bound only stops a long-lived isolate in a large deployment from keeping
+ * an entry per organization it ever served.
+ */
+const billingAccessCache = ttlCache<string, Promise<GatewayBillingAccess>>({
+  name: "billing-access",
+  ttlMs: BILLING_ACCESS_CACHE_TTL_MS,
+  maxEntries: 5_000,
+});
 
 /**
- * The last reading the billing service actually gave, per organization, kept beyond the
- * TTL cache so an outage can be answered with it. Keyed by organization ids
- * that came from D1, so it is not attacker-growable and needs no bound.
+ * The last reading the billing service actually gave, per organization, kept
+ * beyond the TTL cache so an outage can be answered with it. Its own TTL is the
+ * stale window: an entry that is still fresh is one still worth serving.
  */
-const lastKnownAccess = new Map<string, { value: GatewayBillingAccess & { state: "billed" }; at: number }>();
+const lastKnownAccess = ttlCache<string, GatewayBillingAccess & { state: "billed" }>({
+  name: "billing-last-known",
+  ttlMs: BILLING_STALE_MAX_MS,
+  maxEntries: 5_000,
+});
 
 export function invalidateBillingAccess(organizationId: string): void {
   billingAccessCache.delete(organizationId);
@@ -144,15 +110,6 @@ export function invalidateBillingRequestAccess(
   cache?.delete(organizationId);
 }
 
-export function clearBillingAccessCache(): void {
-  billingAccessCache.clear();
-  lastKnownAccess.clear();
-}
-
-export function billingBinding(env: BillingEnv): BillingBinding | undefined {
-  return env.BILLING;
-}
-
 function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   if (access.state !== "billed" || access.plan?.isDefault !== false || !access.subscription) {
     return null;
@@ -165,10 +122,10 @@ function entitlementEndsAt(access: GatewayBillingAccess): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-async function loadBillingAccess(env: BillingEnv, organizationId: string): Promise<GatewayBillingAccess> {
-  const binding = billingBinding(env);
-  if (!binding) return { state: "self_hosted" };
-
+async function loadBillingAccess(
+  binding: BillingRuntime,
+  organizationId: string,
+): Promise<GatewayBillingAccess> {
   try {
     const access = await binding.getTenantAccess({
       serviceId: BILLING_SERVICE_ID,
@@ -189,7 +146,7 @@ async function loadBillingAccess(env: BillingEnv, organizationId: string): Promi
       }));
       return { state: "unavailable" };
     }
-    lastKnownAccess.set(organizationId, { value, at: now });
+    lastKnownAccess.set(organizationId, value, { storedAt: now });
     return value;
   } catch (error) {
     const code = billingErrorCodeOf(error);
@@ -203,14 +160,16 @@ async function loadBillingAccess(env: BillingEnv, organizationId: string): Promi
      * Fail closed on an unknown allowance, not on a known one. An organization
      * this isolate has read before keeps the plan it had; one it has never
      * seen still waits, because admitting it would mean guessing an allowance.
+     * Still fresh here means still inside the stale window, which is exactly
+     * what that cache's TTL is.
      */
     const known = lastKnownAccess.get(organizationId);
     if (known) {
-      const ageMs = Date.now() - known.at;
-      const endsAt = entitlementEndsAt(known.value);
-      if (ageMs < BILLING_STALE_MAX_MS && (endsAt === null || endsAt > Date.now())) {
+      const endsAt = entitlementEndsAt(known);
+      if (endsAt === null || endsAt > Date.now()) {
+        const ageMs = Date.now() - (lastKnownAccess.peek(organizationId)?.storedAt ?? 0);
         log("warn", "billing_access_stale", { organizationId, ageMs, billingErrorCode: code });
-        return { ...known.value, stale: true, ...(code ? { billingErrorCode: code } : {}) };
+        return { ...known, stale: true, ...(code ? { billingErrorCode: code } : {}) };
       }
     }
     return {
@@ -222,31 +181,30 @@ async function loadBillingAccess(env: BillingEnv, organizationId: string): Promi
 
 /**
  * Reads billing access through a request-owned cache plus a short isolate TTL
- * cache. Self-hosted environments bypass both maps entirely.
+ * cache. Self-hosted deployments bypass both maps entirely.
  */
 export function getBillingAccess(
-  env: BillingEnv,
+  deployment: Deployment,
   organizationId: string,
   cache?: BillingRequestCache,
 ): Promise<GatewayBillingAccess> {
-  if (!billingBinding(env)) return Promise.resolve({ state: "self_hosted" });
+  // The one place `self_hosted` is produced: no billing service, no plan, and
+  // no map to consult about one.
+  if (!deployment.billing) return Promise.resolve({ state: "self_hosted" });
 
   const requestValue = cache?.get(organizationId);
   if (requestValue) return requestValue;
 
   const now = Date.now();
-  const cached = billingAccessCache.get(organizationId);
-  if (cached && cached.expiresAt > now) {
-    cache?.set(organizationId, cached.value);
-    return cached.value;
+  const cached = billingAccessCache.get(organizationId, now);
+  if (cached) {
+    cache?.set(organizationId, cached);
+    return cached;
   }
-  if (cached) billingAccessCache.delete(organizationId);
+  billingAccessCache.delete(organizationId);
 
-  const pending = loadBillingAccess(env, organizationId);
-  billingAccessCache.set(organizationId, {
-    expiresAt: now + BILLING_ACCESS_CACHE_TTL_MS,
-    value: pending,
-  });
+  const pending = loadBillingAccess(deployment.billing, organizationId);
+  billingAccessCache.set(organizationId, pending, { storedAt: now });
   /*
    * A fresh answer from billing keeps the full TTL. Anything else — unavailable,
    * or the last known reading served stale — is held only for the retry
@@ -257,17 +215,22 @@ export function getBillingAccess(
    * A binding is present here, so `self_hosted` cannot occur.
    */
   void pending.then((access) => {
-    const current = billingAccessCache.get(organizationId);
+    // Only this entry's own answer may shorten it: another request may already
+    // have replaced it, and that one carries its own window.
+    if (billingAccessCache.peek(organizationId)?.value !== pending) return;
     if (access.state === "billed" && !access.stale) {
       const endsAt = entitlementEndsAt(access);
-      if (current?.value === pending && endsAt !== null) {
-        current.expiresAt = Math.min(current.expiresAt, endsAt);
-      }
+      if (endsAt === null) return;
+      billingAccessCache.set(organizationId, pending, {
+        storedAt: now,
+        ttlMs: Math.min(BILLING_ACCESS_CACHE_TTL_MS, endsAt - now),
+      });
       return;
     }
-    if (current?.value === pending) {
-      current.expiresAt = now + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000;
-    }
+    billingAccessCache.set(organizationId, pending, {
+      storedAt: now,
+      ttlMs: BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000,
+    });
   });
   cache?.set(organizationId, pending);
   return pending;
@@ -356,6 +319,26 @@ export function billingPlanLimits(access: GatewayBillingAccess): PlanLimits {
     if (value !== undefined) resolved[key] = value;
   }
   return resolved;
+}
+
+/** Subscription statuses LemonSqueezy can still cancel at the end of the period. */
+const CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(["on_trial", "active", "paused", "past_due"]);
+
+/**
+ * What a person may do about the subscription from the console. Keyed off the
+ * subscription rather than the entitled plan: an account can hold a
+ * cancellable subscription while on the free default plan, and one on a paid
+ * plan may have nothing to cancel. A manual grant is the billing service's
+ * operator's to change, so it offers nothing.
+ */
+export function subscriptionActions(access: GatewayBillingAccess): SubscriptionActions {
+  const subscription = access.state === "billed" ? access.subscription : null;
+  const selfService = Boolean(subscription?.subscriptionId) && subscription?.source === "lemon_squeezy";
+  return {
+    cancel: selfService && CANCELLABLE_STATUSES.has(subscription!.status),
+    resume: selfService && subscription!.status === "cancelled",
+    manual: subscription?.source === "manual" && CANCELLABLE_STATUSES.has(subscription.status),
+  };
 }
 
 export function billingRpcError(error: unknown): GatewayError {

@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
-import { responseSchemas } from "../../src/contracts/operation-schemas.ts";
+import { CATALOG } from "../../src/contracts/catalog.ts";
+import { parseAppConfig } from "../../src/shared/app-config.ts";
 import { parse, commands, type CommandName } from "../src/parser.ts";
 import {
   StateStore,
   reserveOutput,
+  stateDirectory,
   type CliState,
   type StoredKeyMetadata,
 } from "../src/state.ts";
@@ -34,7 +36,7 @@ const credential = {
     apiUrl: "https://api.example.com",
     consoleOrigin: "https://console.example.com",
   },
-  trial: null,
+  unclaimedAccess: null,
 };
 
 test("all public commands parse help; forbidden and conflicting inputs fail before transport", () => {
@@ -132,6 +134,47 @@ test("protected state rejects corrupt prior state and output does not overwrite"
   await out.cancel();
   assert.equal(await readFile(out.path, "utf8"), "SENTINEL");
   await assert.rejects(() => reserveOutput(out.path), hasCode("output_unavailable"));
+});
+
+test("a state file this release cannot read is refused, never replaced", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "agw-state-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const previous = process.env["XDG_STATE_HOME"];
+  process.env["XDG_STATE_HOME"] = home;
+  t.after(() => {
+    if (previous === undefined) delete process.env["XDG_STATE_HOME"];
+    else process.env["XDG_STATE_HOME"] = previous;
+  });
+  // The real state directory for this run, so the path a person would be told
+  // to repair is the path the CLI actually reads.
+  const directory = process.platform === "win32" ? home : stateDirectory();
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const store = new StateStore(directory);
+  for (const junk of [
+    "{not json at all",
+    // Parses, but is not a state: the `mutations` map holds a receipt that has
+    // lost the proof it would have to be honoured with.
+    JSON.stringify({
+      schemaVersion: 1,
+      active: null,
+      operations: {},
+      mutations: { "m-1": { id: "m-1", url: "https://example.com" } },
+    }),
+    // A connection that claims to be authenticated without a credential.
+    JSON.stringify({
+      schemaVersion: 1,
+      active: { url: "https://example.com", authenticated: true },
+      operations: {},
+    }),
+  ]) {
+    await writeFile(store.path, junk, { mode: 0o600 });
+    await assert.rejects(() => store.read(), hasCode("invalid_state"));
+    // And a write does not get to replace what the read would not accept: the
+    // file holds a credential and unfinished creations, so it is repaired by
+    // hand or not at all.
+    await assert.rejects(() => store.write(fresh()), hasCode("invalid_state"));
+    assert.equal(await readFile(store.path, "utf8"), junk);
+  }
 });
 
 test("lost bootstrap response reuses proofs, and logout never bootstraps again", async () => {
@@ -255,7 +298,7 @@ test("stale authentication operation refuses activating account after connection
 });
 
 test("response parsing emits only declared fields, so no unknown credential reaches stdout", () => {
-  const key = responseSchemas.listAppKeys.parse({
+  const key = CATALOG.listAppKeys.response.parse({
     app_id: "app",
     keys: [
       {
@@ -274,7 +317,7 @@ test("response parsing emits only declared fields, so no unknown credential reac
   assert.equal(JSON.stringify(key).includes("SENTINEL"), false);
   assert.deepEqual(Object.keys(key), ["app_id", "keys"]);
 
-  const provider = responseSchemas.listProviders.parse({
+  const provider = CATALOG.listProviders.response.parse({
     providers: [
       {
         id: "p",
@@ -342,7 +385,7 @@ test("a completed key creation leaves no plaintext in protected state, and repla
           },
   };
   const ctx = new Context(store, state, transport, {});
-  const created = await ctx.create("createAppKey", ["app-1"], { name: "CI" });
+  const created = await ctx.create("createAppKey", { params: { app: "app-1" }, body: { name: "CI" } });
   assert.equal("key" in created.data && created.data.key, minted.key);
   const stored: StoredKeyMetadata = {
     id: minted.id,
@@ -375,7 +418,7 @@ test("a completed key creation leaves no plaintext in protected state, and repla
 
   // A replay before acknowledgment still answers, from the recorded metadata.
   const resumed = new Context(store, state, transport, {});
-  const replayed = await resumed.create("createAppKey", ["app-1"], { name: "CI" });
+  const replayed = await resumed.create("createAppKey", { params: { app: "app-1" }, body: { name: "CI" } });
   assert.deepEqual(replayed.keyMetadata, stored);
   assert.equal("key" in replayed.data, false);
   assert.equal(JSON.stringify(replayed.data).includes("SENTINEL"), false);
@@ -467,15 +510,15 @@ test("resource creates reuse pre-persisted idempotency authorization after a los
     },
     {},
   );
-  await assert.rejects(() => ctx.create("createApp", [], appBody()));
-  const result = await ctx.create("createApp", [], appBody());
+  await assert.rejects(() => ctx.create("createApp", { body: appBody() }));
+  const result = await ctx.create("createApp", { body: appBody() });
   assert.deepEqual(headers[0], headers[1]);
   assert.equal(Object.keys(state.mutations ?? {}).length, 1);
   await result.complete();
   const mutation = Object.values(state.mutations ?? {})[0]!;
   assert.ok(mutation.completedAt);
   assert.equal(mutation.response, undefined);
-  await ctx.create("createApp", [], appBody());
+  await ctx.create("createApp", { body: appBody() });
   assert.equal(attempts, 2);
 });
 
@@ -506,13 +549,13 @@ test("a rate limited creation keeps its receipt, a refused one leaves none behin
 
   // Refused for now, so the receipt stays and the retry arrives under the same
   // authorization rather than as a second creation.
-  await assert.rejects(() => ctx.create("createApp", [], appBody()), hasCode("rate_limited"));
+  await assert.rejects(() => ctx.create("createApp", { body: appBody() }), hasCode("rate_limited"));
   assert.equal(Object.keys(state.mutations ?? {}).length, 1);
 
   // Refused for good: nothing was created, the deployment committed no receipt
   // of its own, and keeping this one would only refuse the same command as an
   // unfinished creation once it is ninety days old.
-  await assert.rejects(() => ctx.create("createApp", [], appBody()), hasCode("invalid_request"));
+  await assert.rejects(() => ctx.create("createApp", { body: appBody() }), hasCode("invalid_request"));
   assert.equal(authorizations[0], authorizations[1]);
   assert.deepEqual(state.mutations, {});
 });
@@ -539,10 +582,10 @@ test("a refused bootstrap leaves no pending account reservation", async () => {
 function appBody() {
   return {
     name: "Test",
-    config: {
-      authentication: { type: "api_key" as const },
-      routing: { providers: { mode: "all" as const }, model_rewrites: {} },
-    },
+    config: parseAppConfig({
+      authentication: { type: "api_key" },
+      routing: { providers: { mode: "all" }, model_rewrites: {} },
+    }),
   };
 }
 
@@ -568,7 +611,7 @@ test("advanced public app config and provider gateway IDs survive response parsi
       },
     },
   };
-  const parsed = responseSchemas.getApp.parse({
+  const parsed = CATALOG.getApp.response.parse({
     app: {
       id: "test",
       revision: 1,
@@ -578,12 +621,13 @@ test("advanced public app config and provider gateway IDs survive response parsi
       created_at: "now",
       updated_at: "now",
     },
-    resolved: null,
     config_error: null,
   });
-  assert.deepEqual(parsed.app.config, config);
+  // Parsed, so the schema's own defaults are there too; everything the body
+  // named survives them untouched.
+  assert.deepEqual(parsed.app.config, parseAppConfig(config));
 
-  const gateway = responseSchemas.listProviderGateways.parse({
+  const gateway = CATALOG.listProviderGateways.response.parse({
     gateways: [
       {
         id: "g",
@@ -659,7 +703,7 @@ test("expired local creation proofs never retry a forgotten remote mutation", as
   const pending = await ctx.prepareCreate("/v1/admin/apps", appBody());
   pending.createdAt = "2020-01-01T00:00:00Z";
   await assert.rejects(
-    () => ctx.create("createApp", [], appBody()),
+    () => ctx.create("createApp", { body: appBody() }),
     hasCode("resource_retry_expired"),
   );
 });
@@ -688,7 +732,7 @@ test("fresh onboarding output includes exact free access dates without managemen
       transport: {
         request: async (_url, path) => {
           if (path.endsWith("/bootstrap"))
-            return { data: { ...credential, account, trial } };
+            return { data: { ...credential, account, unclaimedAccess: trial } };
           if (path.endsWith("/apps"))
             return {
               data: {
@@ -792,7 +836,7 @@ test("retained account usage preserves deleted app attribution and actual backen
         "Earlier unowned history cannot be assigned or counted for this account.",
     },
   };
-  assert.deepEqual(responseSchemas.getCliUsage.parse(response), response);
+  assert.deepEqual(CATALOG.getCliUsage.response.parse(response), response);
 });
 
 test("successful stdout acknowledges creation so delete and re-add makes a new request", async () => {
@@ -889,15 +933,15 @@ test("pre-output crash replays completed creation once, then acknowledgment perm
     },
   };
   const first = new Context(makeStore(), state, transport, {});
-  await (await first.create("createProvider", [], providerBody())).complete();
+  await (await first.create("createProvider", { body: providerBody() })).complete();
   const resumed = new Context(makeStore(), state, transport, {});
   assert.equal(
-    (await resumed.create("createProvider", [], providerBody())).data.provider.id,
+    (await resumed.create("createProvider", { body: providerBody() })).data.provider.id,
     "provider-1",
   );
   assert.equal(posts, 1);
   await resumed.acknowledgeOutput();
-  await resumed.create("createProvider", [], providerBody());
+  await resumed.create("createProvider", { body: providerBody() });
   assert.equal(posts, 2);
 });
 
@@ -944,7 +988,7 @@ test("failed stdout acknowledgment retains the completed receipt without failing
     { request: async () => ({ data: { provider: providerRow("provider") } }) },
     {},
   );
-  await (await ctx.create("createProvider", [], providerBody())).complete();
+  await (await ctx.create("createProvider", { body: providerBody() })).complete();
   failSave = true;
   await ctx.acknowledgeOutput();
   assert.equal(Object.keys(state.mutations ?? {}).length, 1);

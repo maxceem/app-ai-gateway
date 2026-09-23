@@ -4,14 +4,15 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import prices from "../src/core/prices.json";
-import { PROVIDER_REGISTRY, providerModelAuthor, reportsCost } from "../src/core/providers";
 import {
-  isBillable,
-  hasModelPrice,
-  observeResponse,
-  resolveModelAuthor,
-  wholeBody,
-} from "../src/core/usage";
+  providerDescriptor,
+  providerModelAuthor,
+  PROVIDER_TYPES,
+  reportsCost,
+} from "../src/core/providers";
+import { wholeBody } from "../src/core/body-observer";
+import { hasModelPrice, isBillable, resolveModelAuthor } from "../src/core/pricing";
+import { observeResponse } from "../src/core/usage-readers";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { clearIsolateCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
@@ -674,14 +675,14 @@ describe("billability", () => {
    * model; there is no way to claim the first without supplying the second.
    */
   it("proxies an unpriced model on a route that declares how it reports cost", () => {
-    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const descriptor = providerDescriptor("perplexity") as { costReport?: unknown };
     expect(reportsCost("perplexity")).toBe(false);
     try {
-      spec.costReport = { read: () => false };
+      descriptor.costReport = { read: () => false };
       expect(reportsCost("perplexity")).toBe(true);
       expect(isBillable("perplexity", "model-with-no-local-price")).toBe(true);
     } finally {
-      delete spec.costReport;
+      delete descriptor.costReport;
     }
     expect(isBillable("perplexity", "model-with-no-local-price")).toBe(false);
   });
@@ -694,7 +695,7 @@ describe("billability", () => {
    * every one of its requests unresolved.
    */
   it("never reads one provider's report fields out of another's response", () => {
-    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const descriptor = providerDescriptor("perplexity") as { costReport?: unknown };
     // A body in OpenRouter's exact shape, answered by a different type.
     const openRouterShaped = JSON.stringify({
       model: "sonar-pro",
@@ -705,7 +706,7 @@ describe("billability", () => {
     });
     try {
       const seen: string[] = [];
-      spec.costReport = {
+      descriptor.costReport = {
         // Reads a field only this hypothetical provider sends, and pointedly
         // not `usage.cost`.
         read: (value: Record<string, unknown>, report: { costUsd: number | null }) => {
@@ -716,11 +717,16 @@ describe("billability", () => {
           return true;
         },
       };
-      const other = observeResponse(wholeBody(openRouterShaped), "application/json", "perplexity");
+      const other = observeResponse(
+        wholeBody(openRouterShaped),
+        "application/json",
+        "perplexity",
+        "chat_completions",
+      );
       // Its own parser ran; OpenRouter's `usage.cost` and metadata were not read.
       expect(seen).toEqual(["read"]);
       expect(other.report).toBeNull();
-      // Usage parsing is shape-sniffed and unaffected, as it always was.
+      // Usage parsing reads the style's own shape and is unaffected.
       expect(other.usage?.inputTokens).toBe(10);
 
       // The same declaration, given the body it does understand.
@@ -730,14 +736,21 @@ describe("billability", () => {
         ),
         "application/json",
         "perplexity",
+        "chat_completions",
       );
       expect(own.report?.costUsd).toBe(7);
     } finally {
-      delete spec.costReport;
+      delete descriptor.costReport;
     }
     // And OpenRouter's own parser still reads OpenRouter's own body.
-    expect(observeResponse(wholeBody(openRouterShaped), "application/json", "openrouter").report)
-      .toMatchObject({ costUsd: 9.99, servedProvider: "Someone Else" });
+    expect(
+      observeResponse(
+        wholeBody(openRouterShaped),
+        "application/json",
+        "openrouter",
+        "chat_completions",
+      ).report,
+    ).toMatchObject({ costUsd: 9.99, servedProvider: "Someone Else" });
   });
 
   /**
@@ -746,7 +759,7 @@ describe("billability", () => {
    * aggregator that really returns `usage.cost` bills on a local price.
    */
   it("reports only OpenRouter as cost-reporting", () => {
-    for (const type of Object.keys(PROVIDER_REGISTRY) as Array<keyof typeof PROVIDER_REGISTRY>) {
+    for (const type of PROVIDER_TYPES) {
       expect([type, reportsCost(type)]).toEqual([type, type === "openrouter"]);
     }
     // Which is what makes an unpriced OpenRouter slug proxy at all: nothing in

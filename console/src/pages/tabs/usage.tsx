@@ -45,12 +45,15 @@ import {
   totalTokens,
 } from "@/lib/format";
 import { useBreakdown, useEvents, useTimeseries } from "@/lib/queries";
-import type { TimeseriesBucket } from "@/lib/types";
+import type { UsageBreakdownDimension, UsageStatus } from "@contracts/responses";
+import { OTHER, pivot, type Metric } from "@/lib/usage-pivot";
 
 /**
  * The categorical slots, in the fixed order they were validated in — see the
  * comment on `--chart-1` in `index.css`. Assigned in sequence and never cycled:
- * a ninth series does not get a ninth hue, it goes to {@link OTHER}.
+ * a series past the last of them does not get a hue, because `pivot` has
+ * already folded it into `OTHER`. There are exactly `MAX_SERIES` of these, and
+ * `@/lib/usage-pivot` is where that number is written.
  */
 const CHART_COLORS = [
   "var(--chart-1)",
@@ -61,18 +64,6 @@ const CHART_COLORS = [
   "var(--chart-6)",
   "var(--chart-7)",
 ];
-
-/**
- * The band every provider past the seventh is summed into. Eight bands is
- * already the most a reader can hold against a legend; past that, a colour
- * stops naming anything and two neighbouring segments of the same hue are two
- * different providers. Its key cannot collide with a provider type, which is
- * why it is not simply "other".
- */
-const OTHER = "__other";
-
-/** Named series before the tail: seven hues, then {@link OTHER}. */
-const MAX_SERIES = CHART_COLORS.length;
 
 const BREAKDOWNS = [
   { value: "model", label: "By model" },
@@ -90,64 +81,6 @@ const BREAKDOWNS = [
   { value: "app_version", label: "By app version" },
 ] as const;
 
-type Metric = "cost_usd" | "requests" | "tokens";
-
-/** One column of the chart: the day, then one total per series key. */
-export interface ChartColumn {
-  date: string;
-  [series: string]: string | number;
-}
-
-const metricOf = (bucket: TimeseriesBucket, metric: Metric): number =>
-  metric === "tokens" ? totalTokens(bucket) : metric === "requests" ? bucket.requests : bucket.cost_usd;
-
-/**
- * Turns `(date, provider)` rows into one row per day with a column per series.
- *
- * The series are the busiest providers over the whole range, largest first, and
- * everything behind them is summed into one `Other` band — so the stack carries
- * at most eight, which is as many as its palette has hues. Ranking by the range
- * total rather than per day keeps a provider in the same band on every column.
- */
-export function pivot(buckets: TimeseriesBucket[], from: string, to: string, metric: Metric) {
-  const totals = new Map<string, number>();
-  for (const bucket of buckets) {
-    totals.set(bucket.provider, (totals.get(bucket.provider) ?? 0) + metricOf(bucket, metric));
-  }
-  const ranked = [...totals.entries()]
-    // Ties broken by name, so an all-zero range is still ordered the same way
-    // twice running rather than by whatever order the rows arrived in.
-    .sort(([leftName, left], [rightName, right]) =>
-      right - left || (leftName < rightName ? -1 : leftName > rightName ? 1 : 0),
-    )
-    .map(([provider]) => provider);
-  const named = ranked.slice(0, MAX_SERIES);
-  const folded = new Set(ranked.slice(MAX_SERIES));
-  const providers = folded.size > 0 ? [...named, OTHER] : named;
-
-  const byDate = new Map<string, Record<string, number>>();
-  for (
-    let day = new Date(`${from}T00:00:00Z`);
-    day <= new Date(`${to}T00:00:00Z`);
-    day.setUTCDate(day.getUTCDate() + 1)
-  ) {
-    const date = day.toISOString().slice(0, 10);
-    byDate.set(date, Object.fromEntries(providers.map((provider) => [provider, 0])));
-  }
-  for (const bucket of buckets) {
-    const row = byDate.get(bucket.date);
-    if (!row) continue;
-    const key = folded.has(bucket.provider) ? OTHER : bucket.provider;
-    row[key] = (row[key] ?? 0) + metricOf(bucket, metric);
-  }
-  return {
-    providers,
-    /** How many providers the `Other` band stands for, for the legend to say. */
-    foldedCount: folded.size,
-    rows: [...byDate.entries()].map(([date, values]): ChartColumn => ({ date, ...values })),
-  };
-}
-
 /**
  * The brand a breakdown key names, on the two dimensions whose keys are types
  * rather than free-form strings. The key itself stays exactly as recorded —
@@ -163,8 +96,8 @@ function BreakdownMark({ dimension, value }: { dimension: string; value: string 
 export function UsageTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<Metric>("cost_usd");
-  const [dimension, setDimension] = useState<string>("model");
-  const [eventStatus, setEventStatus] = useState<string>("all");
+  const [dimension, setDimension] = useState<UsageBreakdownDimension>("model");
+  const [eventStatus, setEventStatus] = useState<UsageStatus | "all">("all");
   const [cursors, setCursors] = useState<number[]>([]);
 
   const from = daysAgo(Number(days) - 1);
@@ -285,7 +218,11 @@ export function UsageTab({ appId }: { appId: string }) {
           <SectionHeader
             title="Breakdown"
             action={
-              <Select value={dimension} onValueChange={setDimension}>
+              <Select
+                value={dimension}
+                // Only this select's own items can reach it, and each is a dimension.
+                onValueChange={(next) => setDimension(next as UsageBreakdownDimension)}
+              >
                 <SelectTrigger className="w-[170px]" size="sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -365,7 +302,7 @@ export function UsageTab({ appId }: { appId: string }) {
               <Select
                 value={eventStatus}
                 onValueChange={(next) => {
-                  setEventStatus(next);
+                  setEventStatus(next as UsageStatus | "all");
                   setCursors([]);
                 }}
               >

@@ -50,7 +50,6 @@ function renderInsideApp(route = "/apps/app-1/overview", status = "active") {
     "/v1/admin/apps/app-1": {
       body: {
         app: { id: "app-1", name: "My app", status, config: {} },
-        resolved: null,
         config_error: null,
       },
     },
@@ -164,7 +163,12 @@ describe("AppShell navigation", () => {
   });
 
   it("names the app by its id until the record loads", () => {
-    // No stub: the rail must still say which app it belongs to.
+    // A request that never answers is what "until the record loads" is: the
+    // query stays pending for as long as the test looks at the rail. Leaving
+    // fetch unstubbed would have said the same thing on screen while sending
+    // the console's request to a real socket, whose failure landed in the
+    // suite's output after this test had already passed.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
     renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps/app-1/overview" });
 
     expect(screen.getAllByText("app-1").length).toBeGreaterThan(0);
@@ -247,6 +251,18 @@ describe("AppShell navigation", () => {
 
     expect(screen.getByText(/no active plan/i)).toBeTruthy();
     expect(screen.getByRole("link", { name: /view plans/i })).toBeTruthy();
+  });
+
+  it("warns an unclaimed account when its free access ends, from the gateway's own date", () => {
+    renderAuthenticated(<AppShell>content</AppShell>, {
+      capabilities: { billing: true },
+      billing: { state: "billed", plan: null, subscription: null },
+      unclaimedAccessEndsAt: "2026-10-01T12:00:00.000Z",
+    });
+
+    // It outranks the plan banner: claiming is what the account needs first.
+    expect(screen.getByText(/unclaimed free access/i)).toBeTruthy();
+    expect(screen.queryByText(/no active plan/i)).toBeNull();
   });
 
   it("suppresses the banner on the billing page, which states the same thing itself", () => {

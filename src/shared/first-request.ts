@@ -1,9 +1,10 @@
 /**
  * The first request an application can send, as data and as code.
  *
- * One source for the console's example card and the CLI's `app snippet`, which
- * used to derive the same example twice and print it in two shapes. It imports
- * nothing, for the reason `./capabilities.ts` gives: the console bundles it.
+ * One source for the console's example card and the CLI's `app snippet`, so the
+ * two cannot show different examples. It imports
+ * only from `src/shared`, for the reason `./capabilities.ts` gives: the console
+ * bundles it, so nothing from `src/core` may reach it.
  *
  * The example is always produced. An application created a minute ago has no
  * provider, no catalogued model, and sometimes a policy that allows no path
@@ -13,6 +14,16 @@
  * ever invents a provider slug or a model ID that would fail on arrival while
  * looking like configuration.
  */
+
+import {
+  providerPolicyFor,
+  reachableProviders,
+  type AuthenticationConfig,
+  type ProviderPolicy,
+  type RoutingConfig,
+} from "./app-config.ts";
+import { API_STYLE_PATHS } from "./capabilities.ts";
+import { isProviderType, providerDescriptor } from "./providers.ts";
 
 export const PROVIDER_PLACEHOLDER = "PROVIDER_SLUG";
 export const MODEL_PLACEHOLDER = "MODEL";
@@ -27,17 +38,15 @@ export const EXAMPLE_GAP_NOTES: Record<ExampleGap, string> = {
   body: `This app allows no path whose request shape is known here, so ${BODY_PLACEHOLDER} stands in for the body the provider documents.`,
 };
 
-/** One entry of an app's proxy policy, as both the stored and resolved form carry it. */
-export interface ExamplePolicy {
-  allowed_paths?: (string | { path: string; fixed_model?: string })[] | null;
-  allowed_models?: string[] | null;
-}
+/** One entry of an app's proxy policy, as the configuration carries it. */
+export type ExamplePolicy = ProviderPolicy;
 
-/** Which providers an app may reach, and under what policy. */
-export interface ExampleRouting {
-  providerMode: "all" | "selected";
-  providers?: Record<string, ExamplePolicy | undefined> | null;
-}
+/**
+ * Which providers an app may reach, and under what policy: the application's
+ * own routing block, not a projection of it. There is one shape for this and
+ * this module reads it directly.
+ */
+export type ExampleRouting = RoutingConfig;
 
 /** As much of a provider as an example needs: where it sits and what it prices. */
 export interface ExampleProvider {
@@ -68,26 +77,29 @@ export interface RequestExample {
 /**
  * The path a provider type's first call goes to.
  *
- * The provider registry used to carry this per entry; it lives here so that the
- * console, the CLI and the deployment's published capabilities name one path
- * each. OpenAI and Anthropic get their own current surfaces, Gemini needs the
- * model in the path and so has none without one, and everything else is an
- * OpenAI-compatible chat-completions service under whichever prefix it serves
- * — which a gateway in front of it normalizes away.
+ * The provider descriptor carries the type's own answer — OpenAI and Anthropic
+ * name their current surfaces, the OpenAI-compatible hosts name whichever
+ * prefix they serve one under, and the default is the plain
+ * `v1/chat/completions` most of them use. What is decided here is the two
+ * things a descriptor cannot answer alone: a type whose native generation path
+ * carries the model in the URL has no example without one, and a gateway in
+ * front of an OpenAI-compatible host republishes it under the standard path, so
+ * the host's own prefix is normalized away. A type whose example is its own
+ * Responses or Messages API keeps it either way — every gateway here serves
+ * those too.
  */
 export function examplePath(
   type: string,
   { gatewayRouted = false, model }: { gatewayRouted?: boolean; model?: string } = {},
 ): string | undefined {
-  if (type === "openai") return "v1/responses";
-  if (type === "anthropic") return "v1/messages";
-  if (type === "gemini")
-    return model ? `v1beta/models/${model}:generateContent` : undefined;
-  if (gatewayRouted) return "v1/chat/completions";
-  if (type === "groq") return "openai/v1/chat/completions";
-  if (type === "fireworks") return "inference/v1/chat/completions";
-  if (["deepseek", "perplexity", "bytedance"].includes(type)) return "chat/completions";
-  return "v1/chat/completions";
+  const descriptor = isProviderType(type) ? providerDescriptor(type) : undefined;
+  if (descriptor?.modelInPath) {
+    return model ? API_STYLE_PATHS.gemini_native.replace("{model}", model) : undefined;
+  }
+  const own = descriptor?.examplePath ?? API_STYLE_PATHS.chat_completions;
+  return gatewayRouted && own.endsWith("chat/completions")
+    ? API_STYLE_PATHS.chat_completions
+    : own;
 }
 
 /** The request body a path takes, or null where this module knows of none. */
@@ -130,10 +142,16 @@ export function firstRequest(
   prices: ExamplePrices,
 ): RequestExample {
   let fallback: RequestExample | undefined;
-  for (const provider of providers) {
-    if (provider.status !== "active") continue;
-    const policy = routing?.providers?.[provider.slug];
-    if (routing?.providerMode === "selected" && !policy) continue;
+  // With no routing known yet, every active instance is a candidate.
+  const candidates = routing
+    ? reachableProviders(routing, providers)
+    : providers.filter((provider) => provider.status === "active");
+  for (const provider of candidates) {
+    // The app's own policy for the instance, where it names one; an all-mode
+    // app has none of its own and takes the catalog's models and paths.
+    const policy = routing?.providers.mode === "selected"
+      ? providerPolicyFor(routing, provider.slug)
+      : undefined;
     const models = modelsFor(provider, policy, prices);
     const model = models[0] ?? MODEL_PLACEHOLDER;
     const gaps: ExampleGap[] = models.length ? [] : ["model"];
@@ -227,17 +245,39 @@ export function curlSnippet(
   );
 }
 
+/** The note an issuer-signed-in iOS app's example carries, where its token provider is a stand-in. */
+export const ISSUER_TOKEN_NOTE =
+  "Replace yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh) with your configured issuer integration.";
+
+/**
+ * Whether an iOS application's users sign in with an issuer, which is what
+ * decides how the Swift client authenticates: an App Attest install alone, or
+ * App Attest plus the user's own signed token.
+ */
+export function swiftSignsInUsers(authentication: AuthenticationConfig | undefined): boolean {
+  return authentication?.type === "apple_app_attest" && authentication.end_user.source === "issuer";
+}
+
+/** The Swift client's `authMode` argument for an application, from its own configuration. */
+function swiftAuthMode(authentication: AuthenticationConfig | undefined): string {
+  return swiftSignsInUsers(authentication)
+    ? ".appAttest(issuerTokenProvider: { forceRefresh in\n        // Return a fresh signed token from your configured identity SDK.\n        try await yourIdentitySDK.currentIDToken(forceRefresh: forceRefresh)\n    })"
+    : ".appAttestInstall";
+}
+
 /**
  * The same request through the Swift package, for an iOS application.
  *
- * `authMode` is the client's own initializer argument rather than a flag here,
- * because an app whose users come from an issuer has a token provider to write
- * into it and only its own configuration knows that.
+ * The client's `authMode` follows from the application's authentication, so
+ * every caller writes the same one: an app whose users come from an issuer gets
+ * a token provider, one that identifies installs gets the install mode. A
+ * caller that cannot read the configuration passes none and gets the latter.
  */
 export function swiftSnippet(
-  options: SnippetOptions & { authMode?: string },
+  options: SnippetOptions & { authentication?: AuthenticationConfig },
 ): string {
-  const { baseUrl, appId, example, notes, authMode = ".appAttestInstall" } = options;
+  const { baseUrl, appId, example, notes, authentication } = options;
+  const authMode = swiftAuthMode(authentication);
   const target =
     "endpoint" in example.target
       ? `endpointSlug: ${JSON.stringify(example.target.endpoint)}`

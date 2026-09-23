@@ -8,13 +8,13 @@ import {
   recoverPendingUsageSpend,
   USAGE_SPEND_RECOVERY_BATCH,
 } from "../src/core/app-usage-accounting";
+import { wholeBody, type ObservedBody } from "../src/core/body-observer";
 import {
   persistUsageEvent,
   recordUsageEvent,
-  wholeBody,
-  type ObservedBody,
   type UsageEvent,
-} from "../src/core/usage";
+} from "../src/core/usage-record";
+import { testAttribution, testIdentity } from "./helpers";
 import app, { scheduledMaintenance } from "../src/index";
 
 const PREFIX = "accounting-";
@@ -321,14 +321,8 @@ describe("app usage accounting", () => {
       organizationId: "operator-test-organization",
       observed,
       contentType: "application/json",
-      appId,
-      userId: null,
-      authMethod: "api_key",
-      provider: "openai",
-      providerId: "provider-test",
-      providerSlug: "openai",
-      model: "gpt-5.6-sol",
-      route: "openai/v1/responses",
+      identity: testIdentity({ appId, userId: null }),
+      attribution: testAttribution(),
       appVersion: null,
       status: "ok",
       latencyMs: 1,
@@ -352,10 +346,10 @@ describe("app usage accounting", () => {
     await insertEvent({ appId, userId: null, costUsd: 0.000051, createdAt });
     await env.DB.prepare("DELETE FROM app_usage_event WHERE app_id = ?").bind(appId).run();
 
-    expect(await pruneSettledUsageSpend(env, "2026-01")).toBe(0);
+    expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(0);
     expect(await spend(appId)).toHaveLength(1);
     await projectUsageEventSpend(env, { appId, userId: null, month: "2025-01" });
-    expect(await pruneSettledUsageSpend(env, "2026-01")).toBe(1);
+    expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(1);
     expect(await spend(appId)).toEqual([]);
   });
 

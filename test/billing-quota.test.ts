@@ -5,6 +5,13 @@ import { invalidateAccountLifecycle } from "../src/core/account-lifecycle";
 import { clearIsolateCaches } from "./helpers";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveDeployment } from "../src/policy/deployment";
+
+/** Resolves a quota the way a request does: with the deployment its environment describes. */
+const quotaFor = (
+  quotaEnv: Env,
+  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
+) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
 
 function subscription(overrides: Partial<SubscriptionState> = {}): SubscriptionState {
   return {
@@ -102,7 +109,7 @@ describe("billing quota anniversary periods", () => {
       },
       subscription: null,
     };
-    const resolved = await resolveBillingQuota(
+    const resolved = await quotaFor(
       hosted(access),
       organizationId,
       undefined,
@@ -127,7 +134,7 @@ describe("billing quota anniversary periods", () => {
       },
       subscription: subscription({ billingPeriod: "year" }),
     };
-    const resolved = await resolveBillingQuota(
+    const resolved = await quotaFor(
       hosted(access),
       organizationId,
       undefined,
@@ -153,7 +160,7 @@ describe("billing quota anniversary periods", () => {
       }),
     };
     const billingEnv = hosted(access);
-    const free = await resolveBillingQuota(billingEnv, organizationId);
+    const free = await quotaFor(billingEnv, organizationId);
     expect(free.period.scheduleId).toMatch(/^free:/u);
     expect(free.period.scheduleRevision).toBe(Date.parse("2026-03-01T00:00:00.000Z"));
     expect(
@@ -168,7 +175,7 @@ describe("billing quota anniversary periods", () => {
       updatedAt: "2026-03-10T00:00:00.000Z",
     });
     invalidateBillingAccess(organizationId);
-    const paid = await resolveBillingQuota(billingEnv, organizationId);
+    const paid = await quotaFor(billingEnv, organizationId);
     expect(paid.period.scheduleId).toMatch(/^paid:/u);
     expect(paid.period.scheduleRevision).toBe(Date.parse("2026-03-10T00:00:00.000Z"));
     expect(
@@ -197,13 +204,13 @@ describe("billing schedule validation", () => {
   ])("rejects malformed %s with billing_unavailable", async (field, value) => {
     const payload = subscription({ [field]: value } as Partial<SubscriptionState>);
     await expect(
-      resolveBillingQuota(hosted(paid(payload)), `invalid-${field}`),
+      quotaFor(hosted(paid(payload)), `invalid-${field}`),
     ).rejects.toMatchObject({ status: 502, code: "billing_unavailable" });
   });
 
   it("uses the anchor date for manual grants with a null anchor day", async () => {
     await expect(
-      resolveBillingQuota(
+      quotaFor(
         hosted(paid(subscription({ billingAnchorDay: null }))),
         "manual-null-day",
         undefined,
@@ -214,7 +221,7 @@ describe("billing schedule validation", () => {
 
   it("rejects a paid plan without a subscription", async () => {
     await expect(
-      resolveBillingQuota(hosted(paid(null)), "missing-subscription"),
+      quotaFor(hosted(paid(null)), "missing-subscription"),
     ).rejects.toMatchObject({ status: 502, code: "billing_unavailable" });
   });
 
@@ -225,7 +232,7 @@ describe("billing schedule validation", () => {
       subscription({ updatedAt: undefined } as unknown as Partial<SubscriptionState>),
     );
     access.plan!.isDefault = true;
-    await expect(resolveBillingQuota(hosted(access), id)).rejects.toMatchObject({
+    await expect(quotaFor(hosted(access), id)).rejects.toMatchObject({
       status: 502,
       code: "billing_unavailable",
     });
@@ -243,7 +250,7 @@ describe("billing schedule validation", () => {
       vi.setSystemTime(anchor + 10);
       return access;
     });
-    await expect(resolveBillingQuota(billingEnv, "no-d1-organization")).resolves.toMatchObject({
+    await expect(quotaFor(billingEnv, "no-d1-organization")).resolves.toMatchObject({
       period: { periodStart: new Date(anchor).toISOString() },
     });
   });
@@ -255,7 +262,7 @@ describe("billing schedule validation", () => {
     const now = Date.parse("2026-08-01T00:00:00.000Z");
     const access = paid(subscription({ billingAnchorAt: new Date(now + ahead).toISOString() }));
     await expect(
-      resolveBillingQuota(hosted(access), "future-anchor", undefined, now),
+      quotaFor(hosted(access), "future-anchor", undefined, now),
     ).rejects.toMatchObject({
       status,
       code: "billing_unavailable",
@@ -301,7 +308,7 @@ describe("initial free access schedule", () => {
     await seedCliAccount("unclaimed", origin);
     const runtime = hosted(freeAccess(5000));
     const cache = new Map();
-    const first = await resolveBillingQuota(runtime, "unclaimed", cache);
+    const first = await quotaFor(runtime, "unclaimed", cache);
     expect(first.limit).toBe(5000);
     expect(first.access).toMatchObject({ subscription: null, plan: { planKey: "free" } });
     expect(first.period).toMatchObject({ periodStart: origin, periodEnd: end });
@@ -311,7 +318,7 @@ describe("initial free access schedule", () => {
     // Past the end the window stays exactly where it was: an account nobody has
     // claimed never draws a second allowance, and its counter stays readable.
     vi.setSystemTime(new Date("2026-03-20T12:34:56.789Z"));
-    const expired = await resolveBillingQuota(runtime, "unclaimed", cache);
+    const expired = await quotaFor(runtime, "unclaimed", cache);
     expect(expired.period).toEqual(first.period);
     expect(await quota.admit({ ...expired.period, limit: 1 })).toEqual({ allowed: false, superseded: true });
     expect(await quota.pastUsage(expired.period)).toMatchObject({ used: 1 });
@@ -324,16 +331,16 @@ describe("initial free access schedule", () => {
     await seedCliAccount("claimed", origin);
     const runtime = hosted(freeAccess(5000));
     const cache = new Map();
-    const before = await resolveBillingQuota(runtime, "claimed", cache);
+    const before = await quotaFor(runtime, "claimed", cache);
     expect(before.period).toMatchObject({ periodStart: origin, periodEnd: "2026-03-02T12:34:56.789Z" });
     await claimOrganization("claimed");
-    const after = await resolveBillingQuota(runtime, "claimed", cache);
+    const after = await quotaFor(runtime, "claimed", cache);
     expect(after.limit).toBe(5000);
     expect(after.period.scheduleId).toMatch(/^free:/);
     // Anchored on the account's own creation day, like any other free account.
     expect(after.period).toMatchObject({ periodStart: origin, periodEnd: "2026-02-28T12:34:56.789Z" });
     vi.setSystemTime(new Date("2026-02-28T12:34:56.789Z"));
-    const renewed = await resolveBillingQuota(runtime, "claimed", cache);
+    const renewed = await quotaFor(runtime, "claimed", cache);
     expect(renewed.period).toMatchObject({
       scheduleId: after.period.scheduleId,
       periodStart: "2026-02-28T12:34:56.789Z",
@@ -348,11 +355,11 @@ describe("initial free access schedule", () => {
     await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
     const runtime = hosted(freeAccess(5000));
     const quota = env.ORG_QUOTA.getByName(id);
-    const before = await resolveBillingQuota(runtime, id);
+    const before = await quotaFor(runtime, id);
     expect(await quota.admit({ ...before.period, limit: before.limit! }))
       .toMatchObject({ allowed: true, used: 1 });
     await claimOrganization(id);
-    const after = await resolveBillingQuota(runtime, id);
+    const after = await quotaFor(runtime, id);
     // Same schedule, same period: what the trial spent is still spent.
     expect(after.period.scheduleId).toBe(before.period.scheduleId);
     expect(await quota.admit({ ...after.period, limit: after.limit! }))
@@ -365,10 +372,10 @@ describe("initial free access schedule", () => {
     const id = `configured-free-${limit}`;
     await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
     const runtime = hosted(freeAccess(limit));
-    const before = await resolveBillingQuota(runtime, id);
+    const before = await quotaFor(runtime, id);
     expect(before.limit).toBe(limit ?? undefined);
     await claimOrganization(id);
-    const after = await resolveBillingQuota(runtime, id);
+    const after = await quotaFor(runtime, id);
     expect(after.limit).toBe(limit ?? undefined);
     const quota = env.ORG_QUOTA.getByName(id);
     if (after.limit !== undefined) {
@@ -379,12 +386,12 @@ describe("initial free access schedule", () => {
 
   it("does not manufacture access when billing has no entitlement or malformed limits", async () => {
     await seedCliAccount("disabled-trial", new Date(Date.now() - 1000).toISOString());
-    await expect(resolveBillingQuota(hosted({ plan: null, subscription: null }), "disabled-trial"))
+    await expect(quotaFor(hosted({ plan: null, subscription: null }), "disabled-trial"))
       .rejects.toMatchObject({ code: "billing_payment_required" });
     invalidateBillingAccess("disabled-trial");
     const access = freeAccess();
     access.plan!.limits = { maxRequestsPerMonth: -1 };
-    await expect(resolveBillingQuota(hosted(access), "disabled-trial"))
+    await expect(quotaFor(hosted(access), "disabled-trial"))
       .rejects.toMatchObject({ code: "billing_unavailable" });
   });
 });
@@ -403,14 +410,14 @@ it.each([
       billingAnchorAt: "2026-02-01T00:00:00.000Z", createdAt: "2026-02-01T00:00:00.000Z",
       updatedAt: "2026-02-01T00:00:00.000Z", billingAnchorDay: 1 }),
   };
-  const result = await resolveBillingQuota(hosted(access), id);
+  const result = await quotaFor(hosted(access), id);
   expect(result.limit).toBe(9000);
   expect(result.period.scheduleId).toMatch(/^paid:/);
   expect(result.period.periodStart).toBe("2026-02-01T00:00:00.000Z");
   access.subscription = { ...access.subscription!, status: "expired" };
   access.plan = freeAccess().plan;
   invalidateBillingAccess(id);
-  const fallback = await resolveBillingQuota(hosted(access), id);
+  const fallback = await quotaFor(hosted(access), id);
   expect(fallback.period.scheduleId).toMatch(/^free:/);
   expect(fallback.period.periodStart).toBe("2026-01-31T00:00:00.000Z");
   expect(fallback.limit).toBe(1000);
@@ -423,9 +430,9 @@ it("can adopt an earlier manual grant after a claim read through cached default 
   await seedCliAccount(id, "2026-01-31T00:00:00.000Z");
   const access = freeAccess();
   const runtime = hosted(access);
-  await resolveBillingQuota(runtime, id);
+  await quotaFor(runtime, id);
   await claimOrganization(id);
-  const cachedDefault = await resolveBillingQuota(runtime, id);
+  const cachedDefault = await quotaFor(runtime, id);
   const quota = env.ORG_QUOTA.getByName(id);
   expect(await quota.admit({ ...cachedDefault.period, limit: 1000 })).toMatchObject({ allowed: true, used: 1 });
   access.plan = { planKey: "manual-pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9000 } };
@@ -434,13 +441,13 @@ it("can adopt an earlier manual grant after a claim read through cached default 
     billingAnchorAt: "2026-02-01T00:00:00.000Z", billingScheduleUpdatedAt: "2026-02-01T00:00:00.000Z",
     billingAnchorDay: 1, endsAt: "2026-02-20T00:00:00.000Z" });
   invalidateBillingAccess(id);
-  const paid = await resolveBillingQuota(runtime, id);
+  const paid = await quotaFor(runtime, id);
   expect(await quota.admit({ ...paid.period, limit: paid.limit! })).toMatchObject({ allowed: true, used: 1 });
   vi.setSystemTime(new Date("2026-02-20T00:00:00Z"));
   access.plan = freeAccess().plan;
   access.subscription.status = "expired";
   invalidateBillingAccess(id);
-  const fallback = await resolveBillingQuota(runtime, id);
+  const fallback = await quotaFor(runtime, id);
   expect(fallback.period.scheduleRevision).toBe(Date.now());
   expect(await quota.admit({ ...fallback.period, limit: fallback.limit! })).toMatchObject({ allowed: true, used: 2 });
 });

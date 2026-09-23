@@ -363,10 +363,9 @@ const asRewriteMap = (rows: RewriteRow[]) => Object.fromEntries(completeRewrites
  * Rows are held here rather than in the draft because the draft stores a map,
  * and a row being typed is not yet a map entry: it has no key until a source is
  * given, and the Worker refuses an entry whose target is empty. Committing rows
- * straight to the map is what used to make "Add rewrite" look broken — the new
- * blank row was dropped on the way in, so the map never changed and no row
- * appeared. So only complete rows are committed, and the incomplete one stays
- * on screen until it is finished.
+ * straight to the map would drop a new blank row on the way in, so the map
+ * would not change and no row would appear. Only complete rows are committed,
+ * and the incomplete one stays on screen until it is finished.
  */
 function ModelRewrites({
   rewrites,

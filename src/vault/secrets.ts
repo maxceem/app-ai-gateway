@@ -12,9 +12,9 @@ import {
  * This table is the only place a context is written. A context is AES-GCM
  * additional data: a blob sealed under one can only ever be opened under a
  * byte-identical one, so the sealing side and the opening side must agree
- * forever. Spelling a context out at each call site made that agreement a
- * matter of memory — and `resource-create-receipt` was already written twice by
- * hand, once to seal and once to open, with nothing to keep the two in step.
+ * forever. Spelling a context out at each call site would make that agreement
+ * a matter of memory, with nothing keeping the sealing and the opening side in
+ * step.
  *
  * Adding a secret means adding a line here, where the whole set is visible at
  * once, rather than burying a new context in a route.

@@ -2,8 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { clearProviderCaches } from "../src/core/provider-store";
-import { gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
+import { clearProviderCaches, gatewayToken, seedApp, seedProvider, seedServerApp } from "./helpers";
 
 interface CapturedRequest {
   url: string;
@@ -917,6 +916,9 @@ describe("named endpoints", () => {
 
   // The budget belongs to the request, not to each target: a chain that hangs
   // all the way down must not multiply the wait the deployment configured.
+  // The proof is what the executor logged, not how long the test took: the one
+  // attempt that ran was given the whole budget as its own timeout, and the
+  // rest of the chain was skipped rather than granted a budget of its own.
   it("shares one time-to-first-byte budget across the chain", async () => {
     const appId = "endpoint-fallback-ttfb-budget";
     // Only openai and xai compose named endpoints, so the third target is a
@@ -937,7 +939,6 @@ describe("named endpoints", () => {
     const warnings = captureWarnings();
     const captured = captureUpstream((_attempt, signal) => hangingUpstream(signal));
 
-    const started = performance.now();
     const response = await endpointRequest({
       appId,
       slug: "chat",
@@ -946,14 +947,20 @@ describe("named endpoints", () => {
       body: JSON.stringify({ input: "hello" }),
       env: withTtfbTimeout(0.2),
     });
-    const elapsed = performance.now() - started;
 
     expect(response.status).toBe(504);
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "provider_error" },
     });
-    // One budget of 200 ms, not three: the old behaviour took past 600 ms.
-    expect(elapsed).toBeLessThan(500);
+    // One budget of 200 ms, not three: the single attempt that ran carried the
+    // whole budget as its own timeout.
+    const timeouts = warnings.filter((line) => line.message === "provider_ttfb_timeout");
+    expect(timeouts).toHaveLength(1);
+    expect(timeouts[0]).toMatchObject({
+      providerSlug: "openai",
+      timeoutMs: 200,
+      budgetMs: 200,
+    });
     // The primary spent the whole budget, so the two fallbacks were never
     // called at all.
     expect(captured).toHaveLength(1);
@@ -990,11 +997,15 @@ describe("named endpoints", () => {
     const token = await gatewayToken(appId);
     const warnings = captureWarnings();
     // The primary burns part of the budget before failing over, so the
-    // fallback's own timeout is provably shorter than the budget.
+    // fallback's own timeout is provably shorter than the budget. The burn is a
+    // small fraction of the budget on purpose: what is being proved is only that
+    // something was subtracted, so a budget fifteen times the burn keeps a
+    // timer that fires late under a loaded suite from leaving the fallback no
+    // budget at all and changing the path the request takes.
     const captured = captureUpstream((attempt, signal) =>
       attempt === 0
         ? new Promise((resolve) => {
-          setTimeout(() => resolve(Response.json({ error: "busy" }, { status: 503 })), 120);
+          setTimeout(() => resolve(Response.json({ error: "busy" }, { status: 503 })), 100);
         })
         : hangingUpstream(signal));
 
@@ -1004,7 +1015,7 @@ describe("named endpoints", () => {
       token,
       contentType: "application/json",
       body: JSON.stringify({ input: "hello" }),
-      env: withTtfbTimeout(0.3),
+      env: withTtfbTimeout(1.5),
     });
     await response.text();
 
@@ -1013,9 +1024,9 @@ describe("named endpoints", () => {
 
     const timeouts = warnings.filter((line) => line.message === "provider_ttfb_timeout");
     expect(timeouts).toHaveLength(1);
-    expect(timeouts[0]).toMatchObject({ providerSlug: "xai", budgetMs: 300 });
+    expect(timeouts[0]).toMatchObject({ providerSlug: "xai", budgetMs: 1500 });
     expect(timeouts[0]!.timeoutMs).toBeGreaterThan(0);
-    expect(timeouts[0]!.timeoutMs).toBeLessThan(300);
+    expect(timeouts[0]!.timeoutMs).toBeLessThan(1500);
   });
 
   it.each([

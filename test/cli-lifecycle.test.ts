@@ -2,21 +2,28 @@ import {
   compactUsageEvents,
   foldUsageRollupMonths,
 } from "../src/core/usage-retention";
-import { recordBlockedUsageEvent } from "../src/core/usage";
+import { recordBlockedUsageEvent } from "../src/core/usage-record";
 import { claimOAuthAuthorized } from "../src/routes/cli/oauth";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { clearIsolateCaches, seedHuman, seedUnaffiliatedHuman } from "./helpers";
+import {
+  clearIsolateCaches,
+  seedHuman,
+  seedUnaffiliatedHuman,
+  testAttribution,
+  testIdentity,
+} from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
   assertAccountAccess,
-  clearAccountLifecycleCache,
+  accountLifecycleCache,
   pruneExpiredAccounts,
 } from "../src/core/account-lifecycle";
 import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
 import { secretVault } from "../src/vault";
+import { resolveDeployment } from "../src/policy/deployment";
 
 function fakeBilling(): BillingRuntime {
   const none = { plan: null, subscription: null };
@@ -108,6 +115,7 @@ beforeEach(async () => {
       "provider_gateway",
       "mgmt_handoff",
       "mgmt_resource_receipt",
+      "mgmt_bootstrap",
       "mgmt_verification",
       "mgmt_api_key",
       "mgmt_organization_user",
@@ -126,9 +134,9 @@ describe("CLI account lifecycle", () => {
     });
     const response = await request(testEnv, "/bootstrap", { idempotencyKey: random(), pollToken: random() });
     expect(response.status).toBe(200);
-    const data = await response.json() as { trial: { limit?: number } };
-    if (limit === null) expect(data.trial).not.toHaveProperty("limit");
-    else expect(data.trial.limit).toBe(limit);
+    const data = await response.json() as { unclaimedAccess: { limit?: number } };
+    if (limit === null) expect(data.unclaimedAccess).not.toHaveProperty("limit");
+    else expect(data.unclaimedAccess.limit).toBe(limit);
   });
   it("replays concurrent bootstrap without another account or plaintext verification credential", async () => {
     const testEnv = runtime();
@@ -143,7 +151,7 @@ describe("CLI account lifecycle", () => {
     )) as Array<{ credential: { token: string } }>;
     expect(values[0]!.credential.token).toBe(values[1]!.credential.token);
     const rows = await env.DB.prepare(
-      "SELECT request_hash,outcome,protected_credential FROM mgmt_resource_receipt WHERE kind='bootstrap'",
+      "SELECT credential_id,protected_credential FROM mgmt_bootstrap",
     ).all();
     expect(JSON.stringify(rows)).not.toContain(values[0]!.credential.token);
     expect(
@@ -173,7 +181,7 @@ describe("CLI account lifecycle", () => {
       authorization: `Bearer ${created.credential.token}`,
     })).status).toBe(200);
     await env.DB.prepare(
-      "UPDATE mgmt_resource_receipt SET protected_credential_expires_at=0 WHERE kind='bootstrap' AND organization_id=?",
+      "UPDATE mgmt_bootstrap SET protected_credential_expires_at=0 WHERE organization_id=?",
     ).bind(created.account.id).run();
     const renewed = await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
@@ -200,7 +208,7 @@ describe("CLI account lifecycle", () => {
     ]);
     // Claiming through the CLI drops the cached row itself; this one is written
     // straight into D1, so the isolate has to be told.
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     expect((await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
     })).status).toBe(403);
@@ -670,12 +678,8 @@ describe("CLI account lifecycle", () => {
     await recordBlockedUsageEvent({
       env: testEnv,
       organizationId: data.account.id,
-      appId,
-      userId: null,
-      authMethod: "api_key",
-      provider: "openai",
-      model: "test",
-      route: "test",
+      identity: testIdentity({ appId, userId: null }),
+      attribution: testAttribution({ model: "test", route: "test" }),
       appVersion: null,
       status: "blocked_billing",
       latencyMs: 0,
@@ -698,8 +702,8 @@ describe("CLI account lifecycle", () => {
     expect((await read(data.credential.token)).totals.requests).toBe(1);
     expect((await read(data.credential.token)).apps[0]?.deleted).toBe(true);
     expect((await read(other.data.credential.token)).totals.requests).toBe(0);
-    await compactUsageEvents(testEnv, Date.parse("2026-09-01T00:00:00Z"));
-    await foldUsageRollupMonths(testEnv, Date.parse("2026-09-01T00:00:00Z"));
+    await compactUsageEvents(testEnv.DB, Date.parse("2026-09-01T00:00:00Z"));
+    await foldUsageRollupMonths(testEnv.DB, Date.parse("2026-09-01T00:00:00Z"));
     expect((await read(data.credential.token)).totals.requests).toBe(1);
     await env.DB.prepare(
       "INSERT INTO app(id,organization_id,name,config_json) VALUES (?,?,'Restored','{}')",
@@ -924,21 +928,21 @@ describe("CLI account lifecycle", () => {
       )
       .run();
     // Only a test moves an account's own instants; the gate caches the row.
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     await expect(
-      assertAccountAccess(testEnv, data.account.id, "proxy"),
-    ).rejects.toMatchObject({ code: "billing_trial_expired" });
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "proxy"),
+    ).rejects.toMatchObject({ code: "unclaimed_access_expired" });
     await expect(
-      assertAccountAccess(testEnv, data.account.id, "read"),
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "read"),
     ).resolves.toMatchObject({ id: data.account.id });
     await env.DB.prepare(
       "UPDATE mgmt_organization SET expires_at=? WHERE id=?",
     )
       .bind(new Date(now - 1).toISOString(), data.account.id)
       .run();
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     await expect(
-      assertAccountAccess(testEnv, data.account.id, "claim"),
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "read"),
     ).rejects.toMatchObject({ code: "account_expired" });
     const human = await seedHuman();
     await env.DB.batch([
@@ -948,7 +952,7 @@ describe("CLI account lifecycle", () => {
       env.DB.prepare("UPDATE mgmt_organization SET expires_at=NULL WHERE id=?")
         .bind(data.account.id),
     ]);
-    await pruneExpiredAccounts(testEnv);
+    await pruneExpiredAccounts(testEnv.DB);
     expect(
       await env.DB.prepare("SELECT id FROM mgmt_organization WHERE id=?")
         .bind(data.account.id)
@@ -970,8 +974,8 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   )
     .bind(new Date(Date.now() - 1000).toISOString(), data.account.id)
     .run();
-  await pruneExpiredAccounts(testEnv);
-  await pruneExpiredAccounts(testEnv);
+  await pruneExpiredAccounts(testEnv.DB);
+  await pruneExpiredAccounts(testEnv.DB);
   expect(
     await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first(
       "n",
@@ -986,13 +990,13 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
     ).first("n"),
   ).toBe(0);
   const row = await env.DB.prepare(
-    "SELECT * FROM mgmt_resource_receipt WHERE kind='bootstrap'",
+    "SELECT * FROM mgmt_bootstrap",
   ).first<Record<string, unknown>>();
-  expect(row?.outcome).toBe('{"expired":true}');
+  expect(row?.state).toBe("expired");
   for (const field of [
     "organization_id",
-    "initiating_user_id",
-    "initiating_credential_id",
+    "service_user_id",
+    "credential_id",
     "protected_credential",
   ])
     expect(row?.[field]).toBeNull();
@@ -1110,7 +1114,7 @@ it("keeps the completed trial counter readable during recovery without renewing 
   await env.DB.prepare("UPDATE mgmt_organization SET created_at=? WHERE id=?")
     .bind(origin, data.account.id).run();
   // Only this test moves an account's creation instant; the gate caches the row.
-  clearAccountLifecycleCache();
+  accountLifecycleCache.clear();
   const response = await request(testEnv, "/account", undefined, headers);
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
@@ -1118,6 +1122,6 @@ it("keeps the completed trial counter readable during recovery without renewing 
     billing: { access: { subscription: null }, limit: 1000 },
     usage: { used: 0, periodStart: origin, periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString() },
   });
-  await expect(assertAccountAccess(testEnv, data.account.id, "setup"))
-    .rejects.toMatchObject({ code: "billing_trial_expired" });
+  await expect(assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "setup"))
+    .rejects.toMatchObject({ code: "unclaimed_access_expired" });
 });

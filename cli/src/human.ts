@@ -94,8 +94,8 @@ export function humanResult(
     return style.code(result.snippet, language).join("\n") + "\n";
   }
   const lines = render(command, result, context, style);
-  if ("trial" in result && result.trial)
-    lines.push(`Free access ends: ${result.trial.endsAt}`);
+  if ("unclaimedAccess" in result && result.unclaimedAccess)
+    lines.push(`Free access ends: ${result.unclaimedAccess.endsAt}`);
   if ("account" in result && result.account?.expiresAt)
     lines.push(`Recovery deadline: ${result.account.expiresAt}`);
   return lines.join("\n") + "\n";
@@ -545,7 +545,9 @@ function app(
           ["Gateway", context.url],
           ["Status", result.definition.status],
           ["Authentication", result.definition.config.authentication.type],
-          ["App ID", result.validation.remote ? result.validation.app_id : undefined],
+          // Only an edit of an application that exists has an id to show; a
+          // new one is judged as a draft and has none yet.
+          ["App ID", result.validation.remote && "app_id" in result.validation ? result.validation.app_id : undefined],
         ],
         style,
       ),

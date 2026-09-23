@@ -1,17 +1,26 @@
-import type { GatewayRouteConfig } from "../db/schema";
-import { routeWireModel, type ProviderRoute } from "./capabilities";
+import { supportsEndpointStyle } from "./capabilities";
 import { GatewayError } from "./errors";
-import { gatewayBodyMutation } from "./gateways";
-import { lookup } from "./records";
+import { isBillable } from "./pricing";
+import {
+  requireProvider,
+  resolveProvider,
+  type ResolvedProvider,
+} from "./provider-store";
+import { providerDescriptor } from "./providers";
+import { routeWireModel } from "./routes";
+import { lookup } from "../shared/records";
+import { ENDPOINT_STYLE_API } from "../shared/capabilities";
+import type { ExecutionAttempt } from "../execution/plan";
 import {
   jsonObject,
   readBodyLimited,
   sanitizedHeaders,
+  unpricedMessage,
   validateOrInjectOutputCap,
   type PreparedProxyRequest,
 } from "./proxyrules";
 import type {
-  AppConfig,
+  AppRecord,
   EndpointApiStyle,
   EndpointConfig,
   EndpointTarget,
@@ -35,16 +44,26 @@ export interface PreparedEndpointRequest {
   form: FormData | null;
 }
 
+/**
+ * The provider's own path a named endpoint of this style posts to, from the
+ * descriptor that declares it. The key set of `endpointPaths` *is* the type's
+ * endpoint capability, so a missing entry means the capability matrix already
+ * refused this pairing: reaching here is a bug in this deployment, not a
+ * caller's mistake.
+ */
 export function endpointProviderPath(
   style: EndpointApiStyle,
   provider: ProviderType,
 ): string {
-  if (style === "transcription") {
-    // Native provider paths: OpenAI transcribes at v1/audio/transcriptions,
-    // xAI at v1/stt.
-    return provider === "openai" ? "v1/audio/transcriptions" : "v1/stt";
+  const path = providerDescriptor(provider).endpointPaths?.[style];
+  if (path === undefined) {
+    throw new GatewayError(
+      500,
+      "internal_error",
+      `Provider type ${provider} composes no ${style} endpoint`,
+    );
   }
-  return "v1/responses";
+  return path;
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -89,15 +108,14 @@ function formWithModel(source: FormData, model: string): FormData {
 export function endpointAttemptRequest(
   prepared: PreparedEndpointRequest,
   target: EndpointTarget,
-  provider: ProviderType,
-  /** How the resolved row reaches the provider; the adapter owns the wire model. */
-  route: ProviderRoute,
-  /** The row's stored routing configuration, if its gateway takes one. */
-  gatewayRoute: GatewayRouteConfig | null = null,
+  /** The row this attempt resolved to; its route owns the wire model. */
+  resolved: ResolvedProvider,
 ): Pick<PreparedProxyRequest, "body" | "headers" | "query"> {
+  const provider = resolved.type;
+  const route = resolved.route;
   // The configured model is canonical, so it is what gets priced and recorded;
   // only the body the upstream reads carries the route's namespace.
-  const wireModel = routeWireModel(route, provider, target.model, gatewayRoute);
+  const wireModel = routeWireModel(route, provider, target.model);
   let body: BodyInit;
   if (prepared.form) {
     body = formWithModel(prepared.form, wireModel);
@@ -109,9 +127,8 @@ export function endpointAttemptRequest(
       json,
       prepared.endpoint.max_output_tokens,
     );
-    gatewayBodyMutation({
-      gatewayType: route === "direct" ? null : route,
-      route: gatewayRoute,
+    route.adapter.mutateBody?.({
+      routeConfig: route.config,
       // A named endpoint of this style composes a Responses body, so the style
       // is the endpoint's contract rather than something sniffed off a path.
       style: "responses",
@@ -128,9 +145,107 @@ export function endpointAttemptRequest(
   };
 }
 
+/**
+ * The fallback chain as attempts, with every target that cannot serve this
+ * endpoint dropped.
+ *
+ * Every target needs its own credential, because a fallback may point at a
+ * different provider. The primary target must work; a fallback the
+ * organization has not configured, cannot decrypt, or cannot price is simply
+ * dropped from the chain rather than turned into a request that is certain to
+ * fail. Resolution itself can throw — an unreadable secret, or a gateway that
+ * was revoked out from under the row — and on a fallback that is still just a
+ * reason to skip it.
+ *
+ * A *disabled* primary is the one exception: disabling is a deliberate pause,
+ * so the chain falls through to its fallbacks exactly as an upstream failure
+ * would. Only when no fallback survives does the pause itself get reported.
+ */
+export async function resolveEndpointAttempts(
+  env: Env,
+  app: AppRecord,
+  endpoint: EndpointConfig,
+  prepared: PreparedEndpointRequest,
+): Promise<[ExecutionAttempt, ...ExecutionAttempt[]]> {
+  const resolvedProviders = new Map<string, ResolvedProvider>();
+  const usableTargets: typeof prepared.targets = [];
+  let disabledPrimary: GatewayError | undefined;
+  for (const [index, target] of prepared.targets.entries()) {
+    const primary = index === 0;
+    let entry = resolvedProviders.get(target.provider);
+    if (!entry) {
+      let found: ResolvedProvider | null;
+      try {
+        found = primary
+          ? await requireProvider(env, app.organizationId, target.provider)
+          : await resolveProvider(env, app.organizationId, target.provider);
+      } catch (error) {
+        if (primary) {
+          if (error instanceof GatewayError && error.code === "provider_disabled") {
+            disabledPrimary = error;
+            continue;
+          }
+          throw error;
+        }
+        continue;
+      }
+      if (!found) continue;
+      entry = found;
+      resolvedProviders.set(target.provider, entry);
+    }
+    if (!supportsEndpointStyle(entry.route.kind, entry.type, endpoint.api_style)) {
+      if (primary) {
+        throw new GatewayError(
+          502,
+          "provider_unavailable",
+          `Provider instance ${target.provider} does not support ${endpoint.api_style} endpoints`,
+        );
+      }
+      continue;
+    }
+    if (!isBillable(entry.type, target.model, entry.pricing)) {
+      if (primary) {
+        throw new GatewayError(
+          400,
+          "pricing_not_configured",
+          unpricedMessage(entry.type, target.model),
+        );
+      }
+      continue;
+    }
+    usableTargets.push(target);
+  }
+  // A skipped disabled primary is the only way the chain can end up empty: on
+  // every other primary failure the loop threw above. With nothing left to try,
+  // the pause is the answer.
+  if (usableTargets.length === 0 && disabledPrimary) throw disabledPrimary;
+
+  const attempts = usableTargets.map((target) => {
+    const resolved = resolvedProviders.get(target.provider);
+    if (!resolved) throw new Error(`Resolved provider missing for ${target.provider}`);
+    const buildRequest = () => endpointAttemptRequest(prepared, target, resolved);
+    return {
+      resolved,
+      providerPath: endpointProviderPath(endpoint.api_style, resolved.type),
+      model: target.model,
+      // The endpoint's own style settles the API, so the answer is read by the
+      // reader for the contract this gateway composed rather than a guess.
+      apiStyle: ENDPOINT_STYLE_API[endpoint.api_style],
+      buildRequest,
+    } satisfies ExecutionAttempt;
+  });
+  const first = attempts[0];
+  if (!first) throw disabledPrimary ?? new Error("Endpoint execution plan is empty");
+  // Validate and materialize the primary before admission. Fallback builders
+  // stay lazy so a multipart upload is copied only for targets actually tried.
+  const primaryRequest = first.buildRequest();
+  const primary: ExecutionAttempt = { ...first, buildRequest: () => primaryRequest };
+  return [primary, ...attempts.slice(1)];
+}
+
 export async function prepareEndpointRequest(input: {
   request: Request;
-  app: AppConfig;
+  app: AppRecord;
   slug: string;
   endpoint: EndpointConfig;
   tokenHeader: string;

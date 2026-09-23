@@ -1,9 +1,8 @@
-import { isCfAuthError } from "@maxceem/cf-auth";
 import { Hono } from "hono";
-import { asGatewayAuthError } from "../auth/identity";
+import { asGatewayAuthError, isCfAuthError } from "../auth/identity";
 import { ROUTE_NOT_FOUND } from "../core/errors";
 import { adminAuth, type AdminVariables } from "../middleware/admin";
-import { billingRequestScope } from "../middleware/request-scope";
+import { requestScope } from "../middleware/request-scope";
 import { adminRoutes } from "./admin";
 import { cliRoutes } from "./cli";
 import { consoleRoutes } from "./console";
@@ -14,9 +13,11 @@ import { identityAuthRoutes } from "./identity-auth";
  * as one app the entry module mounts lazily through `./lazy`.
  *
  * It is a separate module precisely so that importing it is a decision a request
- * makes rather than something the isolate does on startup: this is where
- * better-auth, `@maxceem/cf-auth` and the zod contract schemas enter the bundle,
- * and none of them is on the path of a proxied request.
+ * makes rather than something the isolate does on startup: this is where the
+ * operation catalog and the zod contract schemas enter the bundle, and neither
+ * is on the path of a proxied request. The identity library is not among them —
+ * everything that needs it reaches it through `cfAuth()` in `../auth/identity`,
+ * so it is deferred whether or not this module is.
  *
  * Paths are absolute and identical to the ones the outer app publishes, because
  * `lazyRoutes` forwards the untouched request.
@@ -26,10 +27,10 @@ export const managementRoutes = new Hono<{
   Variables: AdminVariables;
 }>();
 
-// This is an app of its own, with its own `Context`, so the per-request billing
-// cache the entry module opens on the outer context is not visible here and has
-// to be opened again. It is a `Map` per management request, which is nothing.
-managementRoutes.use("*", billingRequestScope);
+// This is an app of its own, with its own `Context`, so the request scope the
+// entry module opens on the outer context is not visible here and has to be
+// opened again: one deployment snapshot and one `Map` per management request.
+managementRoutes.use("*", requestScope);
 
 managementRoutes.use("/v1/admin/*", adminAuth);
 managementRoutes.route("/v1/admin", adminRoutes);

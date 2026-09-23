@@ -1,18 +1,20 @@
-import type { MiddlewareHandler } from "hono";
 import { invalidateAccountLifecycle } from "../core/account-lifecycle";
 import {
   invalidateBillingRequestAccess,
-  type BillingVariables,
+  type BillingRequestCache,
 } from "../billing/gateway";
 import { resolveBillingQuota } from "../billing/quota";
 import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
+import { monthlyBudgetMicrousd } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
-import { recordBlockedUsageEvent } from "../core/usage";
+import { ttlCache } from "../core/ttl-cache";
+import { recordBlockedUsageEvent } from "../core/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
-import type { ExecutionVariables } from "../execution/plan";
-import type { GatewayVariables } from "./auth";
-import { deploymentPolicy } from "../policy/deployment";
+import type { AppRecord, GatewayIdentity } from "../core/types";
+import type { UsageStatus } from "../db/schema";
+import { attemptAttribution, type ExecutionPlan } from "./plan";
+import type { Deployment } from "../policy/deployment";
 
 /**
  * The dispatch boundary.
@@ -55,6 +57,8 @@ import { deploymentPolicy } from "../policy/deployment";
  * whose allowance is monthly.
  */
 
+const BLOCK_CACHE_TTL_MS = 10_000;
+
 /**
  * The cached block flag, and the answer only for applications that set no
  * per-user limits. Where per-user limits exist the gate calls the very same
@@ -72,74 +76,77 @@ import { deploymentPolicy } from "../policy/deployment";
  * The isolate that serves a block clears its own entry
  * ({@link invalidateBlockedCache}); every other isolate converges within the
  * TTL. Token exchange reads `app_user` in D1 and is not affected by this cache.
+ *
+ * Exported for the tests that clear it on its own; nothing in the Worker reads
+ * it but this file.
  */
-const blockedCache = new Map<string, { blocked: boolean; expiresAt: number }>();
-const BLOCK_CACHE_TTL_MS = 10_000;
-const MAX_BLOCK_CACHE_ENTRIES = 50_000;
+export const blockedUserCache = ttlCache<string, boolean>({
+  name: "blocked-user",
+  ttlMs: BLOCK_CACHE_TTL_MS,
+  maxEntries: 50_000,
+});
 
 export function invalidateBlockedCache(appId: string, userId: string): void {
-  blockedCache.delete(`${appId}:${userId}`);
-}
-
-/** Drops every cached flag at once. Tests share one isolate across a suite. */
-export function clearBlockedCache(): void {
-  blockedCache.clear();
+  blockedUserCache.delete(`${appId}:${userId}`);
 }
 
 async function isUserBlocked(env: Env, name: string): Promise<boolean> {
-  const cached = blockedCache.get(name);
-  if (cached && cached.expiresAt > Date.now()) return cached.blocked;
+  const cached = blockedUserCache.get(name);
+  if (cached !== undefined) return cached;
   const blocked = await env.USER_LIMITER.getByName(name).isBlocked();
-  // Re-inserting keeps the map in least-recently-used order.
-  blockedCache.delete(name);
-  blockedCache.set(name, { blocked, expiresAt: Date.now() + BLOCK_CACHE_TTL_MS });
-  if (blockedCache.size > MAX_BLOCK_CACHE_ENTRIES) {
-    const oldest = blockedCache.keys().next();
-    if (!oldest.done) blockedCache.delete(oldest.value);
-  }
+  blockedUserCache.set(name, blocked);
   return blocked;
 }
 
 async function monthlyRequestAllowance(
+  deployment: Deployment,
   env: Env,
   organizationId: string,
-  cache: BillingVariables["billingRequestCache"],
+  cache: BillingRequestCache,
 ): Promise<Awaited<ReturnType<typeof resolveBillingQuota>> | undefined> {
   // No billing service means self-hosted, which is unlimited and must never
   // depend on a hosted plan lookup that cannot happen.
-  if (deploymentPolicy(env).mode === "self_hosted") return undefined;
-  return resolveBillingQuota(env, organizationId, cache);
+  if (deployment.mode === "self_hosted") return undefined;
+  return resolveBillingQuota(deployment, env, organizationId, cache);
 }
 
-export const quotaGate: MiddlewareHandler<{
-  Bindings: Env;
-  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
-}> = async (c, next) => {
+/** What admitting one prepared request needs to know, and where to leave its diagnostics. */
+export interface AdmissionInput {
+  env: Env;
+  deployment: Deployment;
+  billingCache: BillingRequestCache;
+  app: AppRecord;
+  identity: GatewayIdentity;
+  plan: ExecutionPlan;
+  appVersion: string | null;
+  waitUntil: (promise: Promise<unknown>) => void;
+}
+
+/**
+ * Admits one prepared request, or refuses it. Resolves with how long the
+ * limiters took, which the response reports as `server-timing`; a refusal
+ * throws, and `onDuration` has reported the same figure by then.
+ */
+export async function admitRequest(
+  input: AdmissionInput,
+  onDuration: (durationMs: number) => void = () => {},
+): Promise<number> {
   const start = performance.now();
-  const app = c.get("appConfig");
-  const identity = c.get("identity");
-  const plan = c.get("executionPlan");
+  const { env, app, identity, plan } = input;
   const firstAttempt = plan.attempts[0];
 
   const blockedEvent = (
-    status: "blocked_user" | "blocked_app_rate" | "blocked_app_budget" | "blocked_billing",
+    status: Extract<UsageStatus, `blocked_${string}`>,
     latencyMs: number,
   ) =>
-    c.executionCtx.waitUntil(
+    input.waitUntil(
       recordBlockedUsageEvent({
         organizationId: app.organizationId,
-        env: c.env,
-        appId: identity.appId,
-        userId: identity.userId,
-        authMethod: identity.authMethod,
-        apiKeyId: identity.apiKeyId,
-        provider: firstAttempt.resolved.type,
-        providerId: firstAttempt.resolved.id,
-        providerSlug: firstAttempt.resolved.slug,
-        model: firstAttempt.model,
-        route: `${firstAttempt.resolved.slug}/${firstAttempt.providerPath}`,
+        env,
+        identity,
+        attribution: attemptAttribution(firstAttempt),
         endpointSlug: plan.endpointSlug,
-        appVersion: c.req.header("x-app-version") ?? null,
+        appVersion: input.appVersion,
         status,
         latencyMs: Math.round(latencyMs),
       }),
@@ -147,7 +154,7 @@ export const quotaGate: MiddlewareHandler<{
 
   const finish = (): number => {
     const durationMs = performance.now() - start;
-    c.set("limiterDurationMs", durationMs);
+    onDuration(durationMs);
     return durationMs;
   };
 
@@ -218,10 +225,10 @@ export const quotaGate: MiddlewareHandler<{
      * per-user check runs before the app-wide one, so a blocked user still
      * drains nothing of the window their app shares.
      */
-    identity.userId === null || hasUserLevelLimits(app)
+    identity.userId === null || hasUserLevelLimits(app.config)
       ? Promise.resolve(false)
-      : isUserBlocked(c.env, `${identity.appId}:${identity.userId}`),
-    monthlyRequestAllowance(c.env, app.organizationId, c.get("billingRequestCache")),
+      : isUserBlocked(env, `${identity.appId}:${identity.userId}`),
+    monthlyRequestAllowance(input.deployment, env, app.organizationId, input.billingCache),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -249,23 +256,23 @@ export const quotaGate: MiddlewareHandler<{
   // `identity.userId` is non-null whenever per-user limits exist: configuring
   // them on an application that identifies no end users is refused when the
   // configuration is parsed, so this is a narrowing, not a second policy.
-  if (hasUserLevelLimits(app) && identity.userId !== null) {
-    const result = await c.env.USER_LIMITER
+  if (hasUserLevelLimits(app.config) && identity.userId !== null) {
+    const result = await env.USER_LIMITER
       .getByName(`${identity.appId}:${identity.userId}`)
       .checkAndIncrement({
         now,
-        rpm: app.limits.perUser.requestsPerMinute,
-        rpd: app.limits.perUser.requestsPerDay,
-        monthlyBudgetMicrousd: app.limits.perUser.monthlyBudgetMicrousd,
+        rpm: app.config.limits.per_user.requests.per_minute,
+        rpd: app.config.limits.per_user.requests.per_day,
+        monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_user),
       });
     if (!result.allowed) refuseByAppLimits(result, "user", now);
   }
-  if (hasAppLevelLimits(app)) {
-    const result = await c.env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
+  if (hasAppLevelLimits(app.config)) {
+    const result = await env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
       now,
-      rpm: app.limits.perApp.requestsPerMinute,
-      rpd: app.limits.perApp.requestsPerDay,
-      monthlyBudgetMicrousd: app.limits.perApp.monthlyBudgetMicrousd,
+      rpm: app.config.limits.per_app.requests.per_minute,
+      rpd: app.config.limits.per_app.requests.per_day,
+      monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
     });
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }
@@ -279,12 +286,10 @@ export const quotaGate: MiddlewareHandler<{
   if (resolvedQuota === undefined) {
     // Self-hosted: no coordination object is touched at all, so this
     // deployment pays nothing for a quota it does not have.
-    finish();
-    await next();
-    return;
+    return finish();
   }
 
-  const quota = c.env.ORG_QUOTA.getByName(app.organizationId);
+  const quota = env.ORG_QUOTA.getByName(app.organizationId);
   const claim = async (
     resolved: NonNullable<typeof resolvedQuota>,
     retry: boolean,
@@ -311,11 +316,12 @@ export const quotaGate: MiddlewareHandler<{
       // too, and a retry that kept a cached copy of one of its two inputs would
       // be a retry that could return the same superseded answer.
       invalidateAccountLifecycle(app.organizationId);
-      invalidateBillingRequestAccess(app.organizationId, c.get("billingRequestCache"));
+      invalidateBillingRequestAccess(app.organizationId, input.billingCache);
       const refreshed = await resolveBillingQuota(
-        c.env,
+        input.deployment,
+        env,
         app.organizationId,
-        c.get("billingRequestCache"),
+        input.billingCache,
       );
       return claim(refreshed, false);
     }
@@ -328,10 +334,7 @@ export const quotaGate: MiddlewareHandler<{
   };
   const claimResult = await claim(resolvedQuota, true);
   const durationMs = finish();
-  if (claimResult.kind === "unlimited") {
-    await next();
-    return;
-  }
+  if (claimResult.kind === "unlimited") return durationMs;
   const admission = claimResult.value;
   if (!admission.allowed) {
     blockedEvent("blocked_billing", durationMs);
@@ -352,5 +355,5 @@ export const quotaGate: MiddlewareHandler<{
       },
     );
   }
-  await next();
-};
+  return durationMs;
+}

@@ -1,4 +1,6 @@
-import type { Draft } from "@/hooks/use-app-draft";
+import { appleIdentityProblem, ConfigError } from "@shared/app-config";
+import { toAppWrite } from "@/lib/config-conversion";
+import type { Draft } from "@/lib/app-draft";
 import { authIssuer, type AuthConfig, type ClaimRequirement } from "@/lib/config-types";
 
 /** Whether the three fields that scope an issuer to one tenant are all there. */
@@ -29,6 +31,8 @@ export function draftProblem(draft: Draft): string | null {
   if (authentication.type === "apple_app_attest") {
     const { team_id, bundle_id } = authentication.app_attest;
     if (!team_id.trim() || !bundle_id.trim()) return "Enter the Apple Team ID and Bundle ID.";
+    const identity = appleIdentityProblem({ team_id, bundle_id });
+    if (identity) return identity;
   }
   if (authentication.type === "api_key" && authentication.end_user?.source === "header") {
     if (!authentication.end_user.header.trim()) return "Enter the header name.";
@@ -37,6 +41,15 @@ export function draftProblem(draft: Draft): string | null {
   if (issuer) {
     if (!issuerComplete(issuer)) return "Finish the identity provider details.";
     if (!(issuer.required_claims ?? []).every(claimComplete)) return "Finish the subscription check.";
+  }
+  // Everything above names a field left empty, in the form's own words. The
+  // last word is the schema's: a draft it would refuse is not saveable, and
+  // its message names the field at fault.
+  try {
+    toAppWrite(draft);
+  } catch (error) {
+    if (error instanceof ConfigError) return error.message;
+    throw error;
   }
   return null;
 }

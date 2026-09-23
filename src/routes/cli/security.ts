@@ -1,3 +1,4 @@
+import type { CliCredential } from "../../contracts/cli";
 import { GatewayError } from "../../core/errors";
 import { openSecret, sealSecret } from "../../vault/secrets";
 
@@ -64,8 +65,10 @@ export async function openCredential(
   id: string,
   pollHash: string,
   ciphertext: string,
-): Promise<unknown> {
-  return JSON.parse(await openSecret(env, "cliCredential", [id, pollHash], ciphertext));
+): Promise<CliCredential> {
+  return JSON.parse(
+    await openSecret(env, "cliCredential", [id, pollHash], ciphertext),
+  ) as CliCredential;
 }
 
 export async function cliJson(request: Request): Promise<unknown> {

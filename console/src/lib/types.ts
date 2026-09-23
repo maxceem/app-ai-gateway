@@ -1,19 +1,17 @@
 /**
  * The API's types, under the names the console calls them by.
  *
- * This file used to describe every wire shape a second time, by hand, with
- * nothing that noticed when the gateway's own answer moved. It is now a barrel
- * over `src/contracts`, which is where those shapes are defined once and where
- * the Worker's handlers are checked against them. Type-only, so the console
+ * A barrel over `src/contracts`, which is where those shapes are defined once
+ * and where the Worker's handlers are checked against them, so the console can
+ * never describe a wire shape the gateway has moved. Type-only, so the console
  * bundle gains nothing at runtime.
  *
- * What is still written here is what has no API counterpart: the billing
- * service's own contract, which the gateway passes through rather than owns,
- * and the editor's view of an application, whose configuration model lives in
- * `./config-types` because it is a form, not a wire format.
+ * The one shape still written here is the editor's view of an application,
+ * whose configuration model lives in `./config-types` because it is a form,
+ * not a wire format.
  */
 import type { AppConfigDraft } from "./config-types";
-import type { StoredAppConfig, ResolvedAppConfig } from "@shared/app-config";
+import type { AppConfig } from "@shared/app-config";
 import type { AppResponse as WireAppResponse, CreatedApiKey } from "@contracts/responses";
 
 export type {
@@ -118,20 +116,17 @@ export type UsageFailureBucket = AuthEventSummary["usage_failures"][number];
  * contract's, and `client-api.ts` is where the two meet.
  */
 type AppMetadata = Omit<WireAppResponse["app"], "config">;
-export type AppRow = AppMetadata & { config: StoredAppConfig };
-export type ResolvedConfig = ResolvedAppConfig & Pick<AppMetadata, "id" | "name" | "status">;
+export type AppRow = AppMetadata & { config: AppConfig };
 
 export interface ValidAppResponse {
   kind: "valid";
   app: AppRow;
-  resolved: ResolvedConfig;
   config_error: null;
 }
 
 export interface InvalidAppResponse {
   kind: "invalid";
   app: AppMetadata & { config: Record<string, unknown> };
-  resolved: null;
   config_error: string;
 }
 
@@ -155,136 +150,25 @@ export type AppCreateBody = AppUpsertBody;
  */
 export type CreatedApp = ValidAppResponse & { api_key: CreatedApiKey | null };
 
-export interface MonthlyUsage {
-  app_id: string;
-  month: string;
-  requests: number;
-  input_tokens: number;
-  cached_input_tokens: number;
-  cache_write_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-}
-
-// ---------------------------------------------------------------------------
-// The optional billing service's contract.
-//
-// Not sourced from `src/contracts`: these are the shapes of a separate Worker
-// the gateway may be bound to, passed through unchanged. The gateway declares
-// them in `src/billing/`, which imports its own error and logging modules and
-// so cannot be read from a browser build without splitting it up — a change
-// that belongs with the billing system rather than with this one.
-// ---------------------------------------------------------------------------
-
-/** Raw LemonSqueezy subscription status, passed through unmapped. */
-export type BillingSubscriptionStatus =
-  | "on_trial"
-  | "active"
-  | "paused"
-  | "past_due"
-  | "unpaid"
-  | "cancelled"
-  | "expired";
-
 /**
- * The plan the organization may use right now. Resolved either from an
- * access-granting subscription or, failing that, from the service's default
- * plan — which is what `isDefault` distinguishes.
+ * The optional billing service's contract.
+ *
+ * Its shapes belong to a separate Worker the gateway may be bound to and
+ * passes through unchanged, so they are declared in `src/contracts/billing.ts`
+ * beside the rest of the wire format rather than as interfaces here — the
+ * gateway's RPC contract and the seven documented `/v1/admin/billing`
+ * operations read the same definitions.
  */
-export interface EntitledPlan {
-  planKey: string;
-  planName: string;
-  limits?: unknown;
-  isDefault: boolean;
-}
-
-/**
- * What the organization is paying for, reported whether or not it still
- * entitles anything: a lapsed subscription is exactly what "your plan ended"
- * is written from.
- */
-export interface SubscriptionState {
-  subscriptionId: string | null;
-  status: BillingSubscriptionStatus;
-  planKey: string;
-  planName: string;
-  billingPeriod: "month" | "year" | null;
-  renewsAt: string | null;
-  endsAt: string | null;
-  trialEndsAt: string | null;
-  source: "lemon_squeezy" | "manual";
-  createdAt: string;
-  updatedAt: string;
-  billingAnchorDay: number | null;
-  billingAnchorAt: string;
-  billingScheduleUpdatedAt: string;
-}
-
-/**
- * Mirrors the gateway's `GatewayBillingAccess`. The two non-`billed` states are
- * the gateway's own: the billing service does not know it is absent, nor that
- * it is unreachable.
- */
-export type BillingAccess =
-  | { state: "self_hosted" }
-  | { state: "unavailable"; billingErrorCode?: string }
-  | {
-      state: "billed";
-      plan: EntitledPlan | null;
-      subscription: SubscriptionState | null;
-      /** The last reading, served because the billing service is unreachable. */
-      stale?: true;
-      billingErrorCode?: string;
-    };
-
-/**
- * The organization's current plan period against the allowance its plan grants.
- * `limit` is absent on a plan that sets no ceiling. Only ever read from a
- * deployment with billing enabled; self-hosted consoles never fetch it.
- */
-export interface OrganizationQuota {
-  periodId: string;
-  periodStart: string;
-  periodEnd: string;
-  used: number;
-  limit?: number;
-  resetAt: string;
-}
-
-/**
- * The plan's ceilings, parsed by the gateway rather than read raw off
- * `plan.limits`. Every key is optional and an absent one means unlimited, so an
- * empty object is a plan with no ceilings at all.
- */
-export interface PlanLimits {
-  maxRequestsPerMonth?: number;
-  maxApps?: number;
-  maxProviders?: number;
-  maxProviderGateways?: number;
-  maxActiveKeysPerApp?: number;
-}
-
-export interface BillingStatusResponse {
-  access: BillingAccess;
-  limits: PlanLimits;
-  quota: OrganizationQuota | null;
-}
-
-export interface BillingPrice {
-  billingPeriod: "month" | "year";
-  priceAmountCents: number;
-  priceCurrency: string;
-}
-
-export interface BillingPlan {
-  planKey: string;
-  name: string;
-  description: string;
-  features: string[];
-  trialDays: number;
-  prices: BillingPrice[];
-}
-
-export interface BillingPlansResponse {
-  plans: BillingPlan[];
-}
+export type {
+  BillingPlanOffer as BillingPlan,
+  BillingPlanOfferPrice as BillingPrice,
+  BillingPlansResponse,
+  BillingStatusResponse,
+  BillingSubscriptionStatus,
+  EntitledPlan,
+  GatewayBillingAccess as BillingAccess,
+  OrganizationQuotaStatus as OrganizationQuota,
+  PlanLimits,
+  SubscriptionActions,
+  SubscriptionState,
+} from "@contracts/billing";

@@ -85,8 +85,9 @@ provider's own request format. You manage all of this through the admin API.
    in a private file where the person asked, then report its location.
 2. Never send `id` when creating an application. The gateway assigns the ID
    from the name and returns it as `app.id`. IDs cannot be changed.
-3. Validate an application body with `POST /v1/admin/apps/{app}/validate`
-   before creating or updating it.
+3. Validate an application body before writing it: a new application with
+   `POST /v1/admin/app-drafts/validate`, an existing one with
+   `POST /v1/admin/apps/{app}/validate`.
 4. `PUT /v1/admin/apps/{app}` replaces the whole application. Always `GET`
    first, modify the returned `app.name`, `app.config` and `app.status`, and
    send all three back together with the `app.revision` from that read. A
@@ -129,8 +130,7 @@ Every refusal is JSON:
 2. If the app needs a provider that is missing, and the person has given you
    its key, use the provider browser handoff. Do not ask the agent to read it.
 3. Compose the application body from the reference below.
-4. `POST /v1/admin/apps/{placeholder}/validate` with the body, using any
-   well-formed placeholder ID such as `new-app`. Fix every error.
+4. `POST /v1/admin/app-drafts/validate` with the body. Fix every error.
 5. `POST /v1/admin/apps` with the same body. Read `app.id` from the
    response. For a server app, `api_key.key` is in the response once; store
    it where the person asked.
@@ -199,8 +199,9 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | Call | Body | Notes |
 | --- | --- | --- |
 | `GET /v1/admin/apps` | | `apps[]` with each app's month-to-date usage |
-| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at }, resolved, config_error }` |
-| `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id, exists }` or a 400 naming the problem. Works for an ID that does not exist yet |
+| `GET /v1/admin/apps/{app}` | | `{ app: { id, name, config, status, revision, created_at, updated_at }, config_error }` |
+| `POST /v1/admin/app-drafts/validate` | `{ name, config, status? }` | `{ valid: true }` or a 400 naming the problem. For an app that does not exist yet |
+| `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id }` or a 400 naming the problem. Judged as an update of that app; 404 if it does not exist |
 | `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
 | `PUT /v1/admin/apps/{app}` | `{ name, config, status?, revision }` | Full replace; `revision` must be the one the last read returned |
 | `DELETE /v1/admin/apps/{app}` | | Removes users and keys, keeps usage history |

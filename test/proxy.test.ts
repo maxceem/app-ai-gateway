@@ -3,11 +3,11 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import { API_STYLES, apiStyleFromPath, outputClampStyle } from "../src/core/api-styles";
-import { clearProviderCaches } from "../src/core/provider-store";
-import { PROVIDER_REGISTRY, PROVIDER_TYPES } from "../src/core/providers";
+import { providerDescriptor, PROVIDER_TYPES } from "../src/core/providers";
 import { costReportBodyMutation } from "../src/core/proxyrules";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import {
+  clearProviderCaches,
   clearIsolateCaches,
   defaultProxyConfig,
   gatewayToken,
@@ -750,16 +750,15 @@ describe("provider-native proxy", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["omitted", undefined],
-    ["empty", []],
-  ])("requires pricing even when allowed_models is %s", async (suffix, allowedModels) => {
-    const appId = `proxy-models-${suffix}`;
+  // An empty list is how a policy says "no restriction"; it is not how it says
+  // nothing at all, which the grammar refuses outright.
+  it("requires pricing even when allowed_models is empty", async () => {
+    const appId = "proxy-models-empty";
     const openai: Record<string, unknown> = {
       allowed_paths: ["v1/responses"],
+      allowed_models: [],
       max_output_tokens: 128,
     };
-    if (allowedModels !== undefined) openai.allowed_models = allowedModels;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
     const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
@@ -786,16 +785,13 @@ describe("provider-native proxy", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it.each([
-    ["omitted", undefined],
-    ["empty", []],
-  ])("allows default inference paths when allowed_paths is %s", async (suffix, allowedPaths) => {
-    const appId = `proxy-paths-${suffix}`;
+  it("allows default inference paths when allowed_paths is empty", async () => {
+    const appId = "proxy-paths-empty";
     const openai: Record<string, unknown> = {
+      allowed_paths: [],
       allowed_models: [],
       max_output_tokens: 128,
     };
-    if (allowedPaths !== undefined) openai.allowed_paths = allowedPaths;
     await seedApp(appId, { proxy: { openai, model_rewrites: {} } });
     const token = await gatewayToken(appId);
     const captured: CapturedRequest[] = [];
@@ -819,20 +815,15 @@ describe("provider-native proxy", () => {
     expect(captured[0]?.url).toBe("https://api.openai.com/v1/chat/completions");
   });
 
-  it.each([
-    ["omitted", undefined, "generateContent"],
-    ["empty", [], "streamGenerateContent"],
-  ])("resolves native Gemini URL models when allowed_paths is %s", async (
-    suffix,
-    allowedPaths,
-    operation,
-  ) => {
-    const appId = `proxy-gemini-paths-${suffix}`;
+  it.each(["generateContent", "streamGenerateContent"])(
+    "resolves native Gemini URL models under %s with an empty allowed_paths",
+    async (operation) => {
+    const appId = `proxy-gemini-paths-${operation}`;
     const gemini: Record<string, unknown> = {
+      allowed_paths: [],
       allowed_models: [],
       max_output_tokens: 128,
     };
-    if (allowedPaths !== undefined) gemini.allowed_paths = allowedPaths;
     await seedApp(appId, {
       proxy: {
         gemini,
@@ -1931,10 +1922,10 @@ describe("cost report body mutation", () => {
    * needs it.
    */
   it("calls a declared mutation without the proxy path knowing whose it is", () => {
-    const spec = PROVIDER_REGISTRY.perplexity as { costReport?: unknown };
+    const descriptor = providerDescriptor("perplexity") as { costReport?: unknown };
     const calls: string[] = [];
     try {
-      spec.costReport = {
+      descriptor.costReport = {
         read: () => false,
         mutateBody: (input: { style: string; body: Record<string, unknown> }) => {
           calls.push(input.style);
@@ -1947,7 +1938,7 @@ describe("cost report body mutation", () => {
       expect(body).toEqual({ model: "m", hypothetical: true });
       expect(calls).toEqual(["chat_completions"]);
     } finally {
-      delete spec.costReport;
+      delete descriptor.costReport;
     }
     const after: Record<string, unknown> = { model: "m" };
     expect(costReportBodyMutation("perplexity", "chat_completions", after)).toBe(false);

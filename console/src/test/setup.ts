@@ -89,6 +89,26 @@ if (!globalThis.DOMRect) {
   } as unknown as typeof DOMRect;
 }
 
+// The console's tests stub every request they make, so a real call leaving the
+// suite is a bug in a test — the relative URL the console asks for resolves
+// against the test DOM's own location and reaches a port nobody is serving,
+// which surfaces only as a connection error printed beside an otherwise green
+// run. Rejecting it here names the request and fails the test that made it.
+//
+// A plain function rather than `vi.fn`: `restoreMocks` would strip a mock
+// between tests, while a test that wants its own stub still spies on top of
+// this one and is restored back down to it.
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  const url = typeof input === "string" || input instanceof URL
+    ? String(input)
+    : input.url;
+  const method = init?.method
+    ?? (typeof input === "object" && input !== null && "method" in input
+      ? input.method
+      : "GET");
+  return Promise.reject(new Error(`Unstubbed network call in a test: ${method} ${url}`));
+}) as typeof fetch;
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();

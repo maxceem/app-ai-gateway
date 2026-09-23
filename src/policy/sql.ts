@@ -1,12 +1,42 @@
-import type { RegistrationRule, DeploymentPolicy } from "./deployment";
+import type { DeploymentMode, RegistrationRule } from "./deployment";
 import type { AccountAccessMode } from "./accounts";
-import { ACCOUNT_TRIAL_MS, requiresActiveTrial } from "./accounts";
+import { UNCLAIMED_ACCESS_MS, requiresUnclaimedAccess } from "./accounts";
 import { sql, type SQL } from "drizzle-orm";
 import type { CfAuthTables } from "@maxceem/cf-auth/schema";
 
+/**
+ * A predicate carried into the statement that writes, as SQL plus its bound
+ * parameters.
+ *
+ * One shape for all three of them — an account-lifecycle guard, a plan ceiling
+ * and a resource receipt or browser handoff boundary — because every call site
+ * interpolates one `sql` into a statement and binds the matching `params`, and
+ * they compose with {@link andCondition}.
+ */
 export interface SqlCondition {
   sql: string;
   params: unknown[];
+}
+
+const UNCONDITIONAL: SqlCondition = { sql: "1", params: [] };
+
+/**
+ * Joins conditions into one, preserving order.
+ *
+ * Order is the whole contract: every call site interpolates `sql` at one point
+ * in a statement and binds `params` at the matching point, so the parameters of
+ * the earlier condition must stay ahead of the later one's.
+ */
+export function andCondition(
+  ...parts: Array<SqlCondition | undefined>
+): SqlCondition {
+  const present = parts.filter((part): part is SqlCondition => part !== undefined);
+  if (present.length === 0) return UNCONDITIONAL;
+  if (present.length === 1) return present[0]!;
+  return {
+    sql: present.map((part) => `(${part.sql})`).join(" AND "),
+    params: present.flatMap((part) => part.params),
+  };
 }
 
 export function humanOwnerCondition(organizationExpression: string): string {
@@ -48,7 +78,7 @@ const effectiveNow = "MAX(julianday(?),julianday('now'))";
  * extending access.
  */
 export function accountAccessCondition(
-  policy: DeploymentPolicy,
+  deploymentMode: DeploymentMode,
   organizationId: string,
   accessMode: AccountAccessMode,
   nowMs: number,
@@ -57,11 +87,11 @@ export function accountAccessCondition(
     `julianday(o.expires_at)>${effectiveNow}`,
   ];
   const params: unknown[] = [organizationId, new Date(nowMs).toISOString()];
-  if (requiresActiveTrial(policy.mode, accessMode)) {
+  if (requiresUnclaimedAccess(deploymentMode, accessMode)) {
     deadlineChecks.push(
       `(julianday(o.created_at)+(?/86400000.0))>${effectiveNow}`,
     );
-    params.push(ACCOUNT_TRIAL_MS, new Date(nowMs).toISOString());
+    params.push(UNCLAIMED_ACCESS_MS, new Date(nowMs).toISOString());
   }
   return {
     sql: `EXISTS (SELECT 1 FROM mgmt_organization o WHERE o.id=? AND (

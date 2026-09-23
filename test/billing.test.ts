@@ -7,17 +7,31 @@ import {
   BILLING_STALE_MAX_MS,
   BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS,
   billingPlanLimits,
-  clearBillingAccessCache,
   getBillingAccess,
   requireActiveBilling,
+  subscriptionActions,
   type BillingRequestCache,
   type GatewayBillingAccess,
 } from "../src/billing/gateway";
-import { validateAppConfigJson } from "../src/core/config";
 import worker from "../src/index";
 import { resolveBillingQuota } from "../src/billing/quota";
-import { clearAccountLifecycleCache } from "../src/core/account-lifecycle";
-import { clearIsolateCaches, seedHuman, seedServerApp, serverConfig, TEST_ORGANIZATION_ID } from "./helpers";
+import { accountLifecycleCache } from "../src/core/account-lifecycle";
+import { clearAllCaches } from "../src/core/ttl-cache";
+import { resolveDeployment, type Deployment } from "../src/policy/deployment";
+import {
+  clearIsolateCaches,
+  seedHuman,
+  seedServerApp,
+  serverConfig,
+  TEST_ORGANIZATION_ID,
+  validateConfig,
+} from "./helpers";
+
+/** Resolves a quota the way a request does: with the deployment its environment describes. */
+const quotaFor = (
+  quotaEnv: Env,
+  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
+) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
 
 const ORIGIN = "https://example.test";
 const MANAGEMENT_HEADERS = {
@@ -96,6 +110,16 @@ function stub(overrides: Partial<BillingRuntime> = {}): BillingRuntime {
   };
 }
 
+/** A deployment with no billing service, as `resolveDeployment` reports one. */
+function selfHosted(): Deployment {
+  return resolveDeployment({} as Env);
+}
+
+/** A deployment whose billing service is this binding. */
+function hosted(binding: BillingRuntime): Deployment {
+  return resolveDeployment({ BILLING: binding } as Env);
+}
+
 function withBilling(binding: BillingRuntime): Env {
   return new Proxy(env, {
     get(target, property, receiver) {
@@ -107,7 +131,7 @@ function withBilling(binding: BillingRuntime): Env {
 
 describe("billing gateway", () => {
   it("defaults to unlimited self-hosted access without a binding", async () => {
-    await expect(getBillingAccess({}, "org-self-hosted")).resolves.toEqual({
+    await expect(getBillingAccess(selfHosted(), "org-self-hosted")).resolves.toEqual({
       state: "self_hosted",
     });
     const capabilities = await exports.default.fetch(`${ORIGIN}/v1/console/capabilities`);
@@ -130,20 +154,20 @@ describe("billing gateway", () => {
     });
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
     await expect(
-      getBillingAccess({ BILLING: binding }, "org-active", new Map() as BillingRequestCache),
+      getBillingAccess(hosted(binding), "org-active", new Map() as BillingRequestCache),
     ).resolves.toEqual(cached);
     await expect(
-      getBillingAccess({ BILLING: binding }, "org-active", new Map() as BillingRequestCache),
+      getBillingAccess(hosted(binding), "org-active", new Map() as BillingRequestCache),
     ).resolves.toEqual(cached);
     expect(calls).toBe(1);
 
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
     await expect(
-      getBillingAccess({ BILLING: binding }, "org-active", new Map() as BillingRequestCache),
+      getBillingAccess(hosted(binding), "org-active", new Map() as BillingRequestCache),
     ).resolves.toEqual(cached);
     expect(calls).toBe(2);
 
-    await expect(getBillingAccess({ BILLING: stub() }, "org-unentitled")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(stub()), "org-unentitled")).resolves.toEqual({
       state: "billed",
       plan: null,
       subscription: null,
@@ -192,12 +216,12 @@ describe("billing gateway", () => {
       },
     });
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-error")).resolves.toEqual({
       state: "unavailable",
       billingErrorCode: "service_not_found",
     });
     now.mockReturnValue(1_000 + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 + 1);
-    await expect(getBillingAccess({ BILLING: binding }, "org-error")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-error")).resolves.toEqual({
       state: "billed",
       ...onPlan(),
     });
@@ -211,7 +235,7 @@ describe("billing gateway", () => {
    * large, which is what keeps the two quota systems independent.
    */
   it("imposes no plan ceiling on an application's own limits", () => {
-    expect(() => validateAppConfigJson(serverConfig())).not.toThrow();
+    expect(() => validateConfig(serverConfig())).not.toThrow();
     const generous = {
       // Per-user limits need somebody to apply to, so this app identifies its
       // users. What matters here is that no plan value refuses the numbers.
@@ -232,7 +256,7 @@ describe("billing gateway", () => {
         },
       },
     };
-    expect(validateAppConfigJson(generous)).toHaveProperty("limits");
+    expect(validateConfig(generous)).toHaveProperty("limits");
   });
 
   const billed = (limits?: unknown) =>
@@ -366,7 +390,7 @@ describe("billing gateway", () => {
     );
     const quota = env.ORG_QUOTA.getByName(TEST_ORGANIZATION_ID);
     const now = Date.now();
-    const resolved = await resolveBillingQuota(billingEnv, TEST_ORGANIZATION_ID, undefined, now);
+    const resolved = await quotaFor(billingEnv, TEST_ORGANIZATION_ID, undefined, now);
     expect((await quota.admit({ limit: 50, ...resolved.period })).allowed).toBe(true);
     expect((await quota.admit({ limit: 50, ...resolved.period })).allowed).toBe(true);
 
@@ -378,6 +402,9 @@ describe("billing gateway", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       access: { state: "billed", plan: { planKey: "growth", isDefault: false } },
+      // A live self-service subscription on an account a person owns.
+      actions: { cancel: true, resume: false, manual: false },
+      unclaimedAccessEndsAt: null,
       quota: {
         periodId: resolved.period.periodId,
         periodStart: resolved.period.periodStart,
@@ -532,19 +559,19 @@ describe("billing gateway", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    await expect(getBillingAccess({ BILLING: binding }, "org-stale")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-stale")).resolves.toEqual({
       state: "billed",
       ...onPlan(),
     });
 
     failing = true;
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
-    const stale = await getBillingAccess({ BILLING: binding }, "org-stale");
+    const stale = await getBillingAccess(hosted(binding), "org-stale");
     expect(stale).toEqual({ state: "billed", ...onPlan(), stale: true });
     expect(() => requireActiveBilling(stale)).not.toThrow();
 
     now.mockReturnValue(1_000 + BILLING_STALE_MAX_MS + 1);
-    const expired = await getBillingAccess({ BILLING: binding }, "org-stale");
+    const expired = await getBillingAccess(hosted(binding), "org-stale");
     expect(expired).toEqual({ state: "unavailable" });
     expect(() => requireActiveBilling(expired)).toThrowError(/Billing could not be reached/u);
   });
@@ -564,11 +591,11 @@ describe("billing gateway", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    await getBillingAccess({ BILLING: binding }, "org-stale-unpaid");
+    await getBillingAccess(hosted(binding), "org-stale-unpaid");
 
     failing = true;
     now.mockReturnValue(1_000 + BILLING_ACCESS_CACHE_TTL_MS + 1);
-    const stale = await getBillingAccess({ BILLING: binding }, "org-stale-unpaid");
+    const stale = await getBillingAccess(hosted(binding), "org-stale-unpaid");
     expect(stale).toEqual({ state: "billed", ...NO_PLAN, stale: true });
     expect(() => requireActiveBilling(stale)).toThrowError(/No plan is available/u);
   });
@@ -589,14 +616,14 @@ describe("billing gateway", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await expect(getBillingAccess({ BILLING: binding }, "org-flapping")).resolves.toEqual({
+      await expect(getBillingAccess(hosted(binding), "org-flapping")).resolves.toEqual({
         state: "unavailable",
       });
     }
     expect(calls).toBe(1);
 
     now.mockReturnValue(1_000 + BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS * 1_000 + 1);
-    await expect(getBillingAccess({ BILLING: binding }, "org-flapping")).resolves.toEqual({
+    await expect(getBillingAccess(hosted(binding), "org-flapping")).resolves.toEqual({
       state: "unavailable",
     });
     expect(calls).toBe(2);
@@ -616,7 +643,7 @@ describe("billing gateway", () => {
     await expect(inactiveCreate.json()).resolves.toMatchObject({
       error: { code: "billing_payment_required" },
     });
-    clearBillingAccessCache();
+    clearAllCaches();
 
     // `maxApps` is a ceiling the plan names, so zero refuses every create. The
     // rest are the vocabulary of the limits an organization sets on its own
@@ -643,7 +670,7 @@ describe("billing gateway", () => {
       error: { code: "billing_plan_limit_reached", data: { limit: 0 } },
     });
 
-    clearBillingAccessCache();
+    clearAllCaches();
     const uncappedEnv = withBilling(
       stub({ getTenantAccess: async () => onPlan({ limits: { maxRpm: 5, maxRpd: 10 } }) }),
     );
@@ -820,7 +847,7 @@ describe("billing gateway", () => {
     ]);
     const appId = "billing-expired-app";
     const key = await seedServerApp(appId, { endUser: "none", organizationId });
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
     const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({}));
     const response = await worker.request(
       `${ORIGIN}/v1/apps/${appId}/proxy/openai/v1/responses`,
@@ -887,6 +914,41 @@ it("preserves paid trial eligibility after using the initial free plan", async (
   } finally {
     await env.DB.prepare("UPDATE mgmt_organization SET created_at=? WHERE id=?")
       .bind(created!.createdAt, TEST_ORGANIZATION_ID).run();
-    clearAccountLifecycleCache();
+    accountLifecycleCache.clear();
   }
+});
+
+describe("what a person may do about a subscription", () => {
+  const billed = (subscription: Partial<NonNullable<BillingAccess["subscription"]>> | null): GatewayBillingAccess => {
+    const base = onPlan({ planKey: "growth" });
+    return {
+      state: "billed",
+      plan: base.plan,
+      subscription: subscription === null ? null : { ...base.subscription!, ...subscription },
+    };
+  };
+
+  it.each(["on_trial", "active", "paused", "past_due"] as const)(
+    "offers cancel, not resume, for a %s subscription",
+    (status) => {
+      expect(subscriptionActions(billed({ status }))).toEqual({ cancel: true, resume: false, manual: false });
+    },
+  );
+
+  it("offers resume, and not cancel, for a cancelled subscription", () => {
+    expect(subscriptionActions(billed({ status: "cancelled" }))).toEqual({ cancel: false, resume: true, manual: false });
+  });
+
+  it("offers nothing once the subscription is gone for good, or there is none", () => {
+    for (const status of ["expired", "unpaid"] as const) {
+      expect(subscriptionActions(billed({ status }))).toEqual({ cancel: false, resume: false, manual: false });
+    }
+    expect(subscriptionActions(billed(null))).toEqual({ cancel: false, resume: false, manual: false });
+    expect(subscriptionActions({ state: "self_hosted" })).toEqual({ cancel: false, resume: false, manual: false });
+  });
+
+  it("offers nothing on a live manual grant, which is not LemonSqueezy's to change", () => {
+    expect(subscriptionActions(billed({ source: "manual", subscriptionId: null })))
+      .toEqual({ cancel: false, resume: false, manual: true });
+  });
 });

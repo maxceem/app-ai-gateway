@@ -70,7 +70,7 @@ function renderSection(
       body: { app_id: APP_ID, total: users.length, users },
     },
     [`/v1/admin/apps/${APP_ID}/keys`]: { body: { app_id: APP_ID, keys: [] } },
-    [`/v1/admin/apps/${APP_ID}`]: { body: { app, resolved: null, config_error: null } },
+    [`/v1/admin/apps/${APP_ID}`]: { body: { app, config_error: null } },
   });
   return renderAuthenticated(
     <Routes>
@@ -90,7 +90,7 @@ describe("AppDetailPage", () => {
     };
     stubApi({
       [`/v1/admin/apps/${APP_ID}`]: {
-        body: { app, resolved: null, config_error: "Invalid routing configuration" },
+        body: { app, config_error: "Invalid routing configuration" },
       },
     });
     renderAuthenticated(

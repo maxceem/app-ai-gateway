@@ -2,20 +2,19 @@ import { env, exports } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  apiKeyCacheHashes,
-  clearApiKeyCache,
+  apiKeyCache,
   generateApiKey,
   hashApiKey,
   markApiKeyUsed,
-  setApiKeyCacheLimit,
   verifyApiKey,
 } from "../src/core/apikeys";
+import { clearAllCaches } from "../src/core/ttl-cache";
 import { issueGatewayToken } from "../src/core/jwt";
 import { database } from "../src/db";
 import { appApiKey } from "../src/db/schema";
 import { gatewayToken, seedApp, seedServerApp } from "./helpers";
 
-beforeEach(() => clearApiKeyCache());
+beforeEach(() => clearAllCaches());
 afterEach(() => vi.restoreAllMocks());
 
 describe("server tenant API keys", () => {
@@ -169,7 +168,7 @@ describe("server tenant API keys", () => {
   // first, and neither depends on where the bound sits.
   it("bounds the verification cache and evicts the oldest credential first", async () => {
     const limit = 100;
-    setApiKeyCacheLimit(limit);
+    apiKeyCache.setLimit(limit);
     await seedServerApp("cache-bound");
     const credentials = Array.from({ length: limit + 1 }, (_, index) => `agw_rejected_${index}`);
 
@@ -179,7 +178,9 @@ describe("server tenant API keys", () => {
       });
     }
 
-    const hashes = apiKeyCacheHashes();
+    const hashes = apiKeyCache.keys()
+      .filter((key) => key.startsWith("hash:"))
+      .map((key) => key.slice("hash:".length));
     expect(hashes).toHaveLength(limit);
     expect(hashes[0]).toBe(await hashApiKey(credentials[1]!));
     expect(hashes.at(-1)).toBe(await hashApiKey(credentials.at(-1)!));
@@ -318,7 +319,7 @@ describe("marking a server key used", () => {
     await markApiKeyUsed(counted.env, "key_mark-used-fresh");
     // Standing in for an isolate that never saw this key: it has to reach D1,
     // where the statement's own predicate decides whether anything changes.
-    clearApiKeyCache();
+    clearAllCaches();
     await markApiKeyUsed(counted.env, "key_mark-used-fresh");
 
     expect(counted.statements()).toBe(2);

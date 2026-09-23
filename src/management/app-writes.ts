@@ -1,11 +1,12 @@
 import type { app } from "../db/schema";
-import type { StoredAppConfig } from "./types";
+import type { AppConfig } from "../core/types";
+import type { SqlCondition } from "../policy/sql";
 
 export interface AtomicAppWrite {
   id: string;
   organizationId: string;
   name: string;
-  config: StoredAppConfig;
+  config: AppConfig;
   status: "active" | "disabled";
   createdAt?: string;
   updatedAt?: string;
@@ -15,13 +16,14 @@ export interface AtomicAppWrite {
 /** The stored app, as the writing statement itself returned it. */
 export type StoredAppRow = typeof app.$inferSelect;
 
-const RETURNED_COLUMNS = "id, organization_id, name, config_json, status, created_at, updated_at, revision";
+const RETURNED_COLUMNS = "id, organization_id, name, config_json, auth_type, status, created_at, updated_at, revision";
 
 interface ReturnedRow {
   id: string;
   organization_id: string;
   name: string;
   config_json: string;
+  auth_type: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -38,7 +40,8 @@ function hydrate(row: ReturnedRow): StoredAppRow {
     id: row.id,
     organizationId: row.organization_id,
     name: row.name,
-    config: JSON.parse(row.config_json) as StoredAppConfig,
+    config: JSON.parse(row.config_json) as AppConfig,
+    authType: row.auth_type,
     status: row.status as StoredAppRow["status"],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -65,16 +68,17 @@ export async function insertApp(
 export function appInsertStatement(
   d1: D1Database,
   values: AtomicAppWrite,
-  condition: { sql: string; params: unknown[] } = { sql: "1", params: [] },
+  condition: SqlCondition = { sql: "1", params: [] },
   ignoreCollision = false,
 ): D1PreparedStatement {
   const now = new Date().toISOString();
   return d1.prepare(
-    `INSERT INTO app(id,organization_id,name,config_json,status,created_at,updated_at,revision)
-     SELECT ?,?,?,?,?,?,?,1 WHERE ${condition.sql}
+    `INSERT INTO app(id,organization_id,name,config_json,auth_type,status,created_at,updated_at,revision)
+     SELECT ?,?,?,?,?,?,?,?,1 WHERE ${condition.sql}
      ${ignoreCollision ? "ON CONFLICT(id) DO NOTHING" : ""}
      RETURNING ${RETURNED_COLUMNS}`,
-  ).bind(values.id, values.organizationId, values.name, JSON.stringify(values.config), values.status,
+  ).bind(values.id, values.organizationId, values.name, JSON.stringify(values.config),
+    values.config.authentication.type, values.status,
     values.createdAt ?? now, values.updatedAt ?? now, ...condition.params);
 }
 
@@ -93,6 +97,7 @@ export async function updateApp(
     `UPDATE app SET
        name = ?,
        config_json = ?,
+       auth_type = ?,
        status = ?,
        updated_at = ?,
        revision = revision + 1
@@ -101,6 +106,7 @@ export async function updateApp(
   ).bind(
     values.name,
     JSON.stringify(values.config),
+    values.config.authentication.type,
     values.status,
     values.updatedAt ?? new Date().toISOString(),
     values.id,

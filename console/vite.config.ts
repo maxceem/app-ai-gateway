@@ -65,9 +65,9 @@ export default defineConfig(({ command, mode, isPreview }) => {
         // It imports nothing, so bundling it costs the tables themselves and
         // pulls no server dependency into the browser build.
         "@shared": path.resolve(import.meta.dirname, "../src/shared"),
-        // The API contracts. Only `operations.ts` has any runtime content —
-        // path builders and method names — and it imports every schema with
-        // `import type`, so the browser build gains no zod and no Worker code.
+        // The API contracts: the operation catalog and the schemas it composes.
+        // Runtime zod, which this bundle already carries for the application
+        // configuration grammar, and no Hono or Worker code behind it.
         "@contracts": path.resolve(import.meta.dirname, "../src/contracts"),
       },
     },

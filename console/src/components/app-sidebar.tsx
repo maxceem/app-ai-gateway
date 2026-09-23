@@ -69,10 +69,10 @@ const NAV_ITEMS: NavItem[] = [
 /**
  * The plan the organization is on, and how much of its allowance is left.
  *
- * The console's only persistent statement of either. Both were previously
- * reachable solely by opening the billing page, so an operator could spend an
- * allowance they had never seen a number for — and the banner that warns them
- * only appears once four fifths of it is already gone. The figure is the same
+ * The console's only persistent statement of either: the billing page is the
+ * one other place to read them, and the banner that warns about the allowance
+ * appears only once four fifths of it is gone, so without this an operator can
+ * spend an allowance they have never seen a number for. The figure is the same
  * one the billing page draws, from the same reading the shell already holds, so
  * this costs no request of its own.
  *

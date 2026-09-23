@@ -3,15 +3,22 @@ import {
   curlSnippet,
   exampleNotes,
   firstRequest,
+  swiftSignsInUsers,
   swiftSnippet,
+  type ExamplePolicy,
   type ExampleProvider,
   type ExampleRouting,
   type RequestExample,
 } from "@shared/first-request";
+import { providerPolicyFor, reachableProviders } from "@shared/app-config";
 
-const routing = (policy: object = {}): ExampleRouting => ({
-  providerMode: "selected",
-  providers: { custom: policy },
+/** An application that selects one instance, under whatever policy a case needs. */
+const routing = (policy: Partial<ExamplePolicy> = {}): ExampleRouting => ({
+  providers: {
+    mode: "selected",
+    selected: { custom: { allowed_paths: [], allowed_models: [], ...policy } },
+  },
+  model_rewrites: {},
 });
 const provider = (type = "openai"): ExampleProvider => ({ slug: "custom", type, status: "active" });
 const prices = { openai: { "text-model": { input: 1, output: 2 } } };
@@ -68,10 +75,35 @@ describe("first request examples", () => {
     expect(curl).toContain("# Note.");
     expect(curl).toContain("https://gw.test/v1/apps/app%201/proxy/custom/v1/responses");
     expect(curl).toContain('-H "Authorization: Bearer $APP_AI_GATEWAY_KEY"');
-    const swift = swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authMode: ".appAttest" });
-    expect(swift).toContain("authMode: .appAttest");
+    const swift = swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example });
+    expect(swift).toContain("authMode: .appAttestInstall");
     expect(swift).toContain('providerPath: "v1/responses"');
     expect(swift).toContain('Data("{\\"model\\":\\"text-model\\",\\"input\\":\\"Say hello.\\"}".utf8)');
+  });
+  it("writes the Swift client's auth mode from the app's own authentication", () => {
+    const example = firstRequest(routing(), [provider()], prices);
+    const issuer = {
+      provider: "firebase" as const,
+      jwks_url: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+      issuer: ["https://securetoken.google.com/my-app"],
+      audience: ["my-app"],
+      user_id_claim: "sub",
+      required_claims: [],
+      max_token_lifetime_seconds: 86400,
+    };
+    const app_attest = { team_id: "ABCDE12345", bundle_id: "com.example.app", environments: ["production" as const] };
+    const signedIn = {
+      type: "apple_app_attest" as const,
+      app_attest,
+      end_user: { source: "issuer" as const, issuer },
+    };
+    expect(swiftSignsInUsers(signedIn)).toBe(true);
+    expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authentication: signedIn }))
+      .toContain("authMode: .appAttest(issuerTokenProvider:");
+    const installs = { type: "apple_app_attest" as const, app_attest, end_user: { source: "app_install" as const } };
+    expect(swiftSignsInUsers(installs)).toBe(false);
+    expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authentication: installs }))
+      .toContain("authMode: .appAttestInstall");
   });
   it("calls a named endpoint at its own URL", () => {
     const example: RequestExample = { target: { endpoint: "chat" }, body: { input: "Say hello." }, anthropic: false, gaps: [] };
@@ -79,5 +111,33 @@ describe("first request examples", () => {
       "https://gw.test/v1/apps/app-1/endpoints/chat",
     );
     expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example })).toContain('endpointSlug: "chat"');
+  });
+});
+
+describe("which provider instances an app can reach", () => {
+  const instances = [
+    { slug: "openai", status: "active" },
+    { slug: "paused", status: "disabled" },
+    { slug: "other", status: "active" },
+  ];
+  it("reaches every active instance in all-mode, under an unrestricted policy", () => {
+    const all = { providers: { mode: "all" as const }, model_rewrites: {} };
+    expect(reachableProviders(all, instances).map((i) => i.slug)).toEqual(["openai", "other"]);
+    expect(providerPolicyFor(all, "anything")).toEqual({ allowed_paths: [], allowed_models: [] });
+  });
+  it("reaches only the named active instances in selected-mode, and never a prototype key", () => {
+    const selected = {
+      providers: {
+        mode: "selected" as const,
+        selected: {
+          openai: { allowed_paths: ["v1/responses"], allowed_models: [] },
+          paused: { allowed_paths: [], allowed_models: [] },
+        },
+      },
+      model_rewrites: {},
+    };
+    expect(reachableProviders(selected, instances).map((i) => i.slug)).toEqual(["openai"]);
+    expect(providerPolicyFor(selected, "other")).toBeUndefined();
+    expect(providerPolicyFor(selected, "constructor")).toBeUndefined();
   });
 });

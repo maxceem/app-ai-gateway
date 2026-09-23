@@ -14,15 +14,10 @@ import type {
 } from "../contracts/responses";
 import { assertRouteServesProvider } from "../core/capabilities";
 import { GatewayError } from "../core/errors";
-import {
-  assertGatewayRoute,
-  isGatewayType,
-  requireGatewayAdapter,
-  resolveGateway,
-  type ResolvedGateway,
-} from "../core/gateways";
+import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../core/routes";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
-import { planCap } from "../core/plan-caps";
+import { planCap } from "./plan-caps";
+import type { ManagementScope } from "./scope";
 import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../core/provider-probe";
 import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../core/provider-store";
 import { PROVIDER_TYPES } from "../core/providers";
@@ -32,14 +27,15 @@ import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
-  type ProviderGatewayType,
+  type GatewayType,
+  type ProviderGatewayConfig,
   type ProviderStatus,
 } from "../db/schema";
 import { openSecret, sealSecret } from "../vault/secrets";
 import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
+import type { Actor } from "./actor";
 import {
   commitResourceWrite,
-  type ResourceWriteActor,
   type ResourceWriteBoundary,
 } from "./write-boundary";
 
@@ -85,7 +81,7 @@ function assertReservedSlug(type: ProviderType, slug: string): void {
   }
 }
 
-async function gatewayToken(env: Env, organizationId: string, gatewayId: string): Promise<{ gateway: ResolvedGateway; token: string }> {
+async function gatewayToken(env: Env, organizationId: string, gatewayId: string): Promise<{ type: GatewayType; config: ProviderGatewayConfig; token: string }> {
   const row = await database(env.DB).query.providerGateway.findFirst({
     where: and(
       eq(providerGateway.id, gatewayId),
@@ -94,14 +90,14 @@ async function gatewayToken(env: Env, organizationId: string, gatewayId: string)
     ),
   });
   if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  const type = requireGatewayAdapter(row.type);
   return {
-    gateway: resolveGateway(type, row.config),
+    type: requireGatewayAdapter(row.type),
+    config: row.config,
     token: await decryptProviderGatewaySecret(env, organizationId, row.id, row.secretBlob),
   };
 }
 
-async function gatewayAdapterType(env: Env, organizationId: string, gatewayId: string): Promise<ProviderGatewayType> {
+async function gatewayAdapterType(env: Env, organizationId: string, gatewayId: string): Promise<GatewayType> {
   const row = await database(env.DB).query.providerGateway.findFirst({
     columns: { type: true },
     where: and(
@@ -119,7 +115,7 @@ async function gatewayRouteAdapter(
   organizationId: string,
   gatewayId: string,
   route: GatewayRouteConfig | null,
-): Promise<ProviderGatewayType | null> {
+): Promise<GatewayType | null> {
   const row = await database(env.DB).query.providerGateway.findFirst({
     columns: { type: true },
     where: and(eq(providerGateway.id, gatewayId), eq(providerGateway.organizationId, organizationId)),
@@ -129,28 +125,36 @@ async function gatewayRouteAdapter(
   return requireGatewayAdapter(row.type);
 }
 
-export async function listProviders(env: Env, actor: ResourceWriteActor): Promise<ProviderListResponse> {
+export async function listProviders(scope: ManagementScope, actor: Actor): Promise<ProviderListResponse> {
+  const { env } = scope;
   const rows = await database(env.DB).select().from(provider).where(eq(provider.organizationId, actor.organizationId));
   return { providers: rows.map(serialize) };
 }
 
-export async function testProvider(env: Env, actor: ResourceWriteActor, input: unknown): Promise<ProviderTestResponse> {
+export async function testProvider(scope: ManagementScope, actor: Actor, input: unknown): Promise<ProviderTestResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderTestRequestSchema, input);
   if (body.secret !== undefined) {
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
     return assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl));
   }
-  const resolved = await gatewayToken(env, actor.organizationId, body.providerGatewayId!);
-  assertRouteServesProvider(resolved.gateway.type, body.type);
-  return assertNotRejected(await probeProviderGateway({ type: body.type, ...resolved }));
+  const gateway = await gatewayToken(env, actor.organizationId, body.providerGatewayId!);
+  assertRouteServesProvider(gateway.type, body.type);
+  return assertNotRejected(await probeProviderGateway({
+    type: body.type,
+    gatewayType: gateway.type,
+    gatewayConfig: gateway.config,
+    token: gateway.token,
+  }));
 }
 
 export async function createProvider(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderCreateRequestSchema, input);
   const slug = body.slug ?? body.type;
   assertReservedSlug(body.type, slug);
@@ -165,7 +169,7 @@ export async function createProvider(
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
   if (body.secret !== undefined) {
-    assertGatewayRoute(null, gatewayRoute);
+    routeAdapter("direct").validateRouteConfig(gatewayRoute);
     secret = body.secret;
   } else {
     const gatewayId = body.providerGatewayId;
@@ -173,7 +177,7 @@ export async function createProvider(
     providerGatewayId = gatewayId;
     const gatewayType = await gatewayAdapterType(env, actor.organizationId, gatewayId);
     assertRouteServesProvider(gatewayType, body.type);
-    assertGatewayRoute(gatewayType, gatewayRoute);
+    routeAdapter(gatewayType).validateRouteConfig(gatewayRoute);
   }
 
   const now = new Date().toISOString();
@@ -196,10 +200,10 @@ export async function createProvider(
     updatedAt: now,
     createdBy: actor.userId,
   };
-  const cap = await planCap(env, "provider", actor.organizationId);
+  const cap = await planCap(scope, "provider", actor.organizationId);
   try {
     await commitResourceWrite(
-      env,
+      scope,
       `INSERT INTO provider(id,organization_id,type,slug,name,secret_blob,secret_hint,provider_gateway_id,gateway_route_json,base_url,pricing_json,revision,status,created_at,updated_at,created_by)
        SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE /* authorization */`,
       [row.id, row.organizationId, row.type, row.slug, row.name, row.secretBlob, row.secretHint,
@@ -217,12 +221,13 @@ export async function createProvider(
 }
 
 export async function updateProvider(
-  env: Env,
-  actor: ResourceWriteActor,
+  scope: ManagementScope,
+  actor: Actor,
   id: string,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
+  const { env } = scope;
   const body = schemaBody(ProviderUpdateRequestSchema, input);
   const row = await database(env.DB).query.provider.findFirst({
     where: and(eq(provider.id, id), eq(provider.organizationId, actor.organizationId)),
@@ -239,7 +244,7 @@ export async function updateProvider(
   if (body.status !== undefined) updates.status = body.status;
   if (body.gatewayRoute !== undefined) {
     const gatewayType = row.providerGatewayId === null ? null : await gatewayRouteAdapter(env, actor.organizationId, row.providerGatewayId, body.gatewayRoute);
-    assertGatewayRoute(gatewayType, body.gatewayRoute);
+    routeAdapter(gatewayType ?? "direct").validateRouteConfig(body.gatewayRoute);
     updates.gatewayRoute = body.gatewayRoute;
   }
 
@@ -268,7 +273,7 @@ export async function updateProvider(
 
   const updated = { ...row, ...updates } as ProviderRow;
   await commitResourceWrite(
-    env,
+    scope,
     `UPDATE provider SET name=?,pricing_json=?,status=?,gateway_route_json=?,base_url=?,secret_blob=?,secret_hint=?,revision=?,updated_at=?
      WHERE id=? AND organization_id=? AND revision=? AND /* authorization */`,
     [updated.name, updated.pricing === null ? null : JSON.stringify(updated.pricing), updated.status,
@@ -280,7 +285,8 @@ export async function updateProvider(
   return { provider: serialize(updated) };
 }
 
-export async function deleteProvider(env: Env, actor: ResourceWriteActor, id: string): Promise<ProviderDeleteResponse> {
+export async function deleteProvider(scope: ManagementScope, actor: Actor, id: string): Promise<ProviderDeleteResponse> {
+  const { env } = scope;
   const [deleted] = await database(env.DB).delete(provider)
     .where(and(eq(provider.id, id), eq(provider.organizationId, actor.organizationId)))
     .returning({ id: provider.id });

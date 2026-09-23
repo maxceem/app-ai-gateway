@@ -1,9 +1,11 @@
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { clientResponseHeaders, providerUpstream } from "../core/proxyrules";
-import type { AppConfig, GatewayIdentity } from "../core/types";
-import { observeUpstreamBody, recordUsageEvent, type ObservedBody } from "../core/usage";
-import type { ExecutionAttempt, ExecutionPlan } from "./plan";
+import type { AppRecord, GatewayIdentity } from "../core/types";
+import { observeUpstreamBody, type ObservedBody } from "../core/body-observer";
+import { recordUsageEvent } from "../core/usage-record";
+import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan } from "./plan";
+import { serverTiming, type ServedTimings } from "./timing";
 import {
   fetchWithTtfbTimeout,
   providerTtfbTimeoutMs,
@@ -12,11 +14,11 @@ import {
 
 export interface ExecutionContext {
   env: Env;
-  app: Pick<AppConfig, "id" | "organizationId">;
+  app: Pick<AppRecord, "id" | "organizationId">;
   identity: GatewayIdentity;
   appVersion: string | null;
-  authDurationMs: number;
-  limiterDurationMs: number;
+  /** Read when the response is built, so they are the figures admission settled on. */
+  timings: ServedTimings;
   waitUntil: (promise: Promise<unknown>) => void;
 }
 
@@ -39,24 +41,13 @@ function record(
     latencyMs: number;
   },
 ): void {
-  const { attempt } = input;
   context.waitUntil(recordUsageEvent({
     organizationId: context.app.organizationId,
     env: context.env,
     observed: input.observed,
     contentType: input.contentType,
-    appId: context.app.id,
-    userId: context.identity.userId,
-    authMethod: context.identity.authMethod,
-    apiKeyId: context.identity.apiKeyId,
-    provider: attempt.resolved.type,
-    providerId: attempt.resolved.id,
-    providerSlug: attempt.resolved.slug,
-    gateway: attempt.resolved.gateway,
-    gatewayRoute: attempt.resolved.gatewayRoute,
-    pricing: attempt.resolved.pricing,
-    model: attempt.model,
-    route: route(attempt),
+    identity: context.identity,
+    attribution: attemptAttribution(input.attempt),
     endpointSlug: plan.endpointSlug,
     appVersion: context.appVersion,
     status: input.status,
@@ -113,14 +104,9 @@ export async function execute(
     const request = attempt.buildRequest();
     const upstreamRequest = providerUpstream({
       resolved: attempt.resolved,
-      prepared: {
-        provider: attempt.resolved.type,
-        providerPath: attempt.providerPath,
-        model: attempt.model,
-        body: request.body,
-        headers: request.headers,
-        query: request.query,
-      },
+      providerPath: attempt.providerPath,
+      query: request.query,
+      headers: request.headers,
       appId: context.app.id,
       userId: context.identity.userId,
     });
@@ -187,10 +173,7 @@ export async function execute(
     }
 
     const headers = clientResponseHeaders(upstream);
-    headers.set(
-      "Server-Timing",
-      `auth;dur=${context.authDurationMs.toFixed(1)}, limiter;dur=${context.limiterDurationMs.toFixed(1)}, provider_ttfb;dur=${providerTtfb.toFixed(1)}`,
-    );
+    headers.set("Server-Timing", serverTiming(context.timings, providerTtfb));
     let clientStream = upstream.body;
     let observed: Promise<ObservedBody> | null = null;
     if (upstream.body) {

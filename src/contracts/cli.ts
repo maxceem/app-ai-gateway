@@ -1,23 +1,45 @@
 import { z } from "zod";
 import { ProviderGatewaySummarySchema, ProviderSummarySchema } from "./responses.ts";
+import {
+  HandoffProviderAddPayloadSchema,
+  HandoffProviderGatewayAddPayloadSchema,
+  HandoffProviderUpdatePayloadSchema,
+  HandoffRotatePayloadSchema,
+} from "./schemas.ts";
 export const CliProofSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/);
 export const CliBootstrapRequestSchema = z
   .object({ idempotencyKey: CliProofSchema, pollToken: CliProofSchema })
   .strict();
-export const CliOperationRequestSchema = z
-  .object({
-    kind: z.enum([
-      "claim",
-      "provider.add",
-      "provider.rotate-key",
-      "provider.update",
-      "provider-gateway.add",
-      "provider-gateway.rotate-key",
-    ]),
-    payload: z.record(z.string(), z.unknown()).default({}),
-    pollToken: CliProofSchema,
-  })
-  .strict();
+export const CliOperationKindSchema = z.enum([
+  "claim",
+  "provider.add",
+  "provider.rotate-key",
+  "provider.update",
+  "provider-gateway.add",
+  "provider-gateway.rotate-key",
+]);
+
+/**
+ * One member per kind, each with the payload that kind's write takes minus its
+ * secret. Checked when the handoff is opened, so a malformed request is refused
+ * in the terminal that sent it rather than on the approval page after a
+ * person has read it.
+ */
+function operationRequest<
+  const Kind extends z.infer<typeof CliOperationKindSchema>,
+  Payload extends z.ZodType,
+>(kind: Kind, payload: Payload) {
+  return z.object({ kind: z.literal(kind), payload, pollToken: CliProofSchema }).strict();
+}
+
+export const CliOperationRequestSchema = z.discriminatedUnion("kind", [
+  operationRequest("claim", z.object({}).strict().default({})),
+  operationRequest("provider.add", HandoffProviderAddPayloadSchema),
+  operationRequest("provider.rotate-key", HandoffRotatePayloadSchema),
+  operationRequest("provider.update", HandoffProviderUpdatePayloadSchema),
+  operationRequest("provider-gateway.add", HandoffProviderGatewayAddPayloadSchema),
+  operationRequest("provider-gateway.rotate-key", HandoffRotatePayloadSchema),
+]);
 export const CliSubmissionRequestSchema = z
   .object({
     submissionToken: CliProofSchema,
@@ -76,7 +98,7 @@ export const CliViewerSchema = z.object({
  * signed in. No secret, submitted or stored, is ever part of it.
  */
 export const CliBrowserDetailsResponseSchema = z.object({
-  kind: CliOperationRequestSchema.shape.kind,
+  kind: CliOperationKindSchema,
   payload: z.record(z.string(), z.unknown()),
   account: CliAccountSchema,
   viewer: CliViewerSchema.nullable(),
@@ -134,11 +156,20 @@ export const CliBrowserGoogleResponseSchema = z.object({
 export const CliCredentialSchema = z.object({
   token: z.string(),
 });
+const UnclaimedAccessSchema = z
+  .object({ endsAt: z.string(), limit: z.number().int().optional() })
+  .nullable();
+
 export const CliBootstrapResponseSchema = z.object({
   deployment: CliDeploymentSchema,
   account: CliAccountSchema,
   credential: CliCredentialSchema,
-  trial: z.object({ endsAt: z.string(), limit: z.number().int().optional() }).nullable(),
+  /**
+   * On a hosted deployment, when this unclaimed account's free access ends and
+   * the request allowance it has until then; null on a self-host, where an
+   * account has no such window.
+   */
+  unclaimedAccess: UnclaimedAccessSchema,
 });
 export const CliOperationResponseSchema = z.object({
   id: z.string(),
@@ -152,11 +183,10 @@ export const CliOperationResponseSchema = z.object({
  *
  * Declared field by field rather than passed through. The gateway records its
  * own outcome for each kind of handoff, and those records carry more than the
- * caller has any business seeing: a completed claim also holds the approving
- * human's user id and the internal compare-and-swap marker that decided which
- * concurrent submission won. Naming the publishable fields here is what keeps
+ * caller has any business seeing: a completed claim also holds the user id of
+ * the human who approved it. Naming the publishable fields here is what keeps
  * the rest off the CLI's stdout, because zod drops what a schema does not
- * declare — the job the CLI's hand-written field allow-list used to do.
+ * declare.
  */
 export const CliOperationResultSchema = z.object({
   /** The account a claim acted on. */
@@ -226,8 +256,7 @@ export const CliCapabilitiesResponseSchema = z.object({
  * because the CLI prints this verbatim on stdout: the resolution it is built
  * from also carries the internal schedule identity (`scheduleId`,
  * `scheduleRevision`) and the `superseded` marker, none of which is any of the
- * caller's business. Parsing against this schema is what keeps them off stdout,
- * which is the job the CLI's hand-written field allow-list used to do.
+ * caller's business. Parsing against this schema is what keeps them off stdout.
  */
 export const CliEntitledPlanSchema = z.object({
   planKey: z.string(),
@@ -299,4 +328,43 @@ export type CliHandoffContinuation = z.infer<typeof CliHandoffContinuationSchema
 export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
 export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;
 export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
-export type CliOperationKind = CliOperationRequest["kind"];
+export type CliOperationKind = z.infer<typeof CliOperationKindSchema>;
+export type CliOperationRequestInput = z.input<typeof CliOperationRequestSchema>;
+/** The payload a handoff of one kind carries, as a client writes it. */
+export type CliOperationPayload<Kind extends CliOperationKind> = NonNullable<
+  Extract<CliOperationRequestInput, { kind: Kind }>["payload"]
+>;
+
+/** The envelope the CLI prints for a failure; see `cli/src/common.ts`. */
+export const CliErrorDetailsSchema = z.object({
+  status: z.number().optional(),
+  appId: z.string().optional(),
+  keyId: z.string().optional(),
+  providerId: z.string().optional(),
+  providerGatewayId: z.string().optional(),
+  revoked: z.boolean().optional(),
+  storagePath: z.string().optional(),
+  /** Which ceiling refused the request, for the codes that name one. */
+  scope: z.string().optional(),
+  limit: z.number().optional(),
+  used: z.number().optional(),
+  windowSeconds: z.number().optional(),
+  retryAfterSeconds: z.number().optional(),
+  resetAt: z.string().optional(),
+  id: z.string().optional(),
+  state: z.string().optional(),
+  expiresAt: z.string().optional(),
+  url: z.string().optional(),
+  /** The tail of a failed subprocess's own output, for failures it explains. */
+  output: z.string().optional(),
+  /**
+   * What Cloudflare itself said about a refused API call: each error's message
+   * and its code. Carried because the things that refuse a deployment — an
+   * account ceiling, a permission a token lacks — are named only there, and
+   * wrangler reports an API refusal it aggregates as the bare sentence that a
+   * request failed.
+   */
+  apiErrors: z.string().optional(),
+});
+export type CliErrorDetails = z.infer<typeof CliErrorDetailsSchema>;
+

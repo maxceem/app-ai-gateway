@@ -3,23 +3,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { EmptyState, Field } from "@/components/field";
 import type { AppDraft } from "@/hooks/use-app-draft";
-import type { LimitScopeConfig, LimitsConfig } from "@/lib/config-types";
+import { draftLimits, type LimitScopeConfig } from "@/lib/config-types";
+import { identifiesEndUsers } from "@shared/app-config";
 import { formatCost } from "@/lib/format";
-
-/** An app with no `limits` block is unlimited; editing one starts from this. */
-const UNLIMITED_SCOPE: LimitScopeConfig = {
-  requests: { per_minute: null, per_day: null },
-  spending: { monthly_usd: null },
-};
-
-const UNLIMITED: LimitsConfig = { per_user: UNLIMITED_SCOPE, per_app: UNLIMITED_SCOPE };
 
 /** Empty means unlimited, so an unparseable or blank field clears the limit. */
 const asLimit = (value: string): number | null => (value === "" ? null : Number(value));
 
 export function LimitsTab({ state }: { state: AppDraft }) {
   const draft = state.draft!;
-  const limits = draft.config.limits ?? UNLIMITED;
+  const limits = draftLimits(draft.config.limits);
   /*
    * An application that identifies no end users has nobody for a per-user limit
    * to apply to, and the Worker refuses the combination outright. Hiding the
@@ -27,8 +20,7 @@ export function LimitsTab({ state }: { state: AppDraft }) {
    * numbers and then fails on save, or worse, one that looks like it is
    * metering users while everything lands in a single bucket.
    */
-  const identifiesUsers = draft.config.authentication.type !== "api_key"
-    || draft.config.authentication.end_user !== undefined;
+  const identifiesUsers = identifiesEndUsers(draft.config.authentication);
   const updateScope = (scope: "per_user" | "per_app", partial: Partial<LimitScopeConfig>) =>
     state.updateLimits({
       ...limits,

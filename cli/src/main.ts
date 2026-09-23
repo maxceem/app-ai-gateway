@@ -1,5 +1,5 @@
 import { Writable } from "node:stream";
-import { CliErrorDetailsSchema } from "../../src/contracts/operation-schemas.ts";
+import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
 import { appCommand } from "./apps.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
 import { Context } from "./context.ts";
@@ -40,7 +40,7 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
     return command === "operation wait"
       ? ctx.wait(args[0] ?? "", positive(flags.timeout ?? 300))
       : ctx.poll(args[0] ?? "");
-  if (command === "account status") return (await ctx.call("getCliAccount", [])).data;
+  if (command === "account status") return (await ctx.call("getCliAccount")).data;
   if (command === "account login") return ctx.login();
   if (command === "account claim") return ctx.operation("claim", {});
   if (command === "account logout") {
@@ -67,7 +67,7 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
     return ctx.login(url);
   }
   if (command === "deployment status") {
-    const { data } = await ctx.publicCall("getCliCapabilities", []);
+    const { data } = await ctx.publicCall("getCliCapabilities");
     return {
       url: ctx.url,
       authenticated: Boolean(ctx.active?.credential),

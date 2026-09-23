@@ -4,14 +4,11 @@ import { projectPendingAppMonthSpend } from "../../core/app-usage-accounting";
 import { GatewayError } from "../../core/errors";
 import { log } from "../../core/log";
 import type { ProviderType } from "../../core/types";
-import { computeCost, hasTokenModelPrice } from "../../core/usage";
+import { computeCost, hasTokenModelPrice } from "../../core/pricing";
 import { UsageRepriceRequestSchema } from "../../contracts/schemas";
-import type {
-  BreakdownResponse,
-  MonthlyUsageResponse,
-  TimeseriesResponse,
-  UsageEventList,
-} from "../../contracts/responses";
+import type { UsageBreakdownDimension } from "../../contracts/responses";
+import { adminRouter } from "../catalog-router";
+import { jsonBody } from "./body";
 import { database } from "../../db";
 import { appUsageEvent, provider as providerTable } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
@@ -19,15 +16,15 @@ import {
   currentMonth,
   inRange,
   isRollupDimension,
-  parseLimit,
   parseRange,
   usageBreakdown,
   usageMonthTotals,
   usageTimeseries,
   usageTotals,
-} from "./shared";
+} from "../../management/usage-queries";
 
 export const usageRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+const routes = adminRouter(usageRoutes);
 
 const BREAKDOWN_COLUMNS = {
   model: appUsageEvent.model,
@@ -42,12 +39,7 @@ const BREAKDOWN_COLUMNS = {
   route: appUsageEvent.route,
   endpoint: appUsageEvent.endpointSlug,
   app_version: appUsageEvent.appVersion,
-} as const;
-
-type BreakdownKey = keyof typeof BREAKDOWN_COLUMNS;
-
-const USAGE_STATUSES = ["ok", "provider_error", "blocked_app_rate", "blocked_app_budget", "blocked_billing", "blocked_user"] as const;
-type UsageStatusFilter = (typeof USAGE_STATUSES)[number];
+} as const satisfies Record<UsageBreakdownDimension, unknown>;
 
 const REPRICE_UPDATE_CHUNK = 500;
 const FREE_SUBREQUEST_LIMIT = 50;
@@ -87,29 +79,20 @@ const EMPTY_MONTH_TOTALS = {
   cost_usd: 0,
 };
 
-usageRoutes.get("/apps/:app/usage", async (c) => {
+routes.handle("getAppUsage", async (c, { query }) => {
   const appId = c.req.param("app");
-  const month = c.req.query("month") ?? currentMonth();
-  if (!/^\d{4}-\d{2}$/u.test(month)) {
-    throw new GatewayError(400, "invalid_request", "month must use YYYY-MM format");
-  }
+  const month = query.month ?? currentMonth();
   // `.first()` is typed nullable, though an aggregate with no GROUP BY always
   // answers with one row. Filled in rather than spread away, so the documented
   // shape holds even if that ever stops being true: six zeros is the honest
   // answer for a month with nothing in it.
   const row = (await usageMonthTotals(c.env.DB, appId, month)) ?? EMPTY_MONTH_TOTALS;
-  return c.json({ app_id: appId, month, ...row } satisfies MonthlyUsageResponse);
+  return { app_id: appId, month, ...row };
 });
 
-usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
+routes.handle("repriceAppUsage", async (c) => {
   const appId = c.req.param("app");
-  let value: unknown;
-  try {
-    value = await c.req.json();
-  } catch {
-    throw new GatewayError(400, "invalid_request", "A JSON object is required");
-  }
-  const parsed = UsageRepriceRequestSchema.safeParse(value);
+  const parsed = UsageRepriceRequestSchema.safeParse(await jsonBody(c));
   if (!parsed.success) {
     throw new GatewayError(400, "invalid_request", parsed.error.issues[0]?.message ?? "Invalid request");
   }
@@ -128,7 +111,7 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     .from(appUsageEvent)
     .leftJoin(providerTable, and(
       eq(appUsageEvent.providerId, providerTable.id),
-      eq(providerTable.organizationId, c.get("admin").organizationId),
+      eq(providerTable.organizationId, c.get("actor").organizationId),
     ))
     .where(and(
       eq(appUsageEvent.appId, appId),
@@ -252,7 +235,7 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     }
   }
 
-  return c.json({
+  return {
     app_id: appId,
     provider,
     model,
@@ -275,37 +258,29 @@ usageRoutes.post("/apps/:app/usage/reprice", async (c) => {
     recalculated_cost_usd: recalculatedCostUsd,
     delta_usd: recalculatedCostUsd - previousCostUsd,
     reconciled_users: reconciledUsers,
-  });
+  };
 });
 
 /** Daily buckets split by provider; the console pivots them into a stacked chart. */
-usageRoutes.get("/apps/:app/usage/timeseries", async (c) => {
+routes.handle("getAppUsageTimeseries", async (c, { query }) => {
   const appId = c.req.param("app");
-  const range = parseRange(c.req.query("from"), c.req.query("to"));
+  const range = parseRange(query.from, query.to);
   const { results } = await usageTimeseries(c.env.DB, appId, range);
-  return c.json({ app_id: appId, ...range, buckets: results } satisfies TimeseriesResponse);
+  return { app_id: appId, ...range, buckets: results };
 });
 
-usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
+routes.handle("getAppUsageBreakdown", async (c, { query }) => {
   const appId = c.req.param("app");
-  const range = parseRange(c.req.query("from"), c.req.query("to"));
-  const by = c.req.query("by") ?? "model";
-  if (!Object.hasOwn(BREAKDOWN_COLUMNS, by)) {
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      `by must be one of ${Object.keys(BREAKDOWN_COLUMNS).join(", ")}`,
-    );
-  }
-  const limit = parseLimit(c.req.query("limit"), 50, 200);
+  const range = parseRange(query.from, query.to);
+  const { by, limit } = query;
   // The three dimensions the rollup carries are answered from both tables, back
   // to the oldest day bucket; the rest exist only on raw events and so reach back
   // only through the retention window.
   if (isRollupDimension(by)) {
     const { results } = await usageBreakdown(c.env.DB, appId, range, by, limit);
-    return c.json({ app_id: appId, by, ...range, rows: results } satisfies BreakdownResponse);
+    return { app_id: appId, by, ...range, rows: results };
   }
-  const column = BREAKDOWN_COLUMNS[by as BreakdownKey];
+  const column = BREAKDOWN_COLUMNS[by];
   const rows = await database(c.env.DB)
     .select({ key: column, ...usageTotals })
     .from(appUsageEvent)
@@ -313,36 +288,18 @@ usageRoutes.get("/apps/:app/usage/breakdown", async (c) => {
     .groupBy(column)
     .orderBy(desc(usageTotals.requests))
     .limit(limit);
-  return c.json({ app_id: appId, by, ...range, rows } satisfies BreakdownResponse);
+  return { app_id: appId, by, ...range, rows };
 });
 
-usageRoutes.get("/apps/:app/events", async (c) => {
+routes.handle("listAppEvents", async (c, { query }) => {
   const appId = c.req.param("app");
-  const limit = parseLimit(c.req.query("limit"), 50, 200);
+  const { limit } = query;
   const filters = [eq(appUsageEvent.appId, appId)];
-
-  const status = c.req.query("status");
-  if (status) {
-    if (!USAGE_STATUSES.includes(status as UsageStatusFilter)) {
-      throw new GatewayError(400, "invalid_request", `status must be one of ${USAGE_STATUSES.join(", ")}`);
-    }
-    filters.push(eq(appUsageEvent.status, status as UsageStatusFilter));
-  }
-  const provider = c.req.query("provider");
-  if (provider) filters.push(eq(appUsageEvent.providerType, provider));
-  const user = c.req.query("user");
-  if (user) filters.push(eq(appUsageEvent.userId, user));
-  const model = c.req.query("model");
-  if (model) filters.push(eq(appUsageEvent.model, model));
-
-  const before = c.req.query("before_id");
-  if (before !== undefined) {
-    const cursor = Number.parseInt(before, 10);
-    if (!Number.isInteger(cursor) || cursor < 1) {
-      throw new GatewayError(400, "invalid_request", "before_id must be a positive integer");
-    }
-    filters.push(lt(appUsageEvent.id, cursor));
-  }
+  if (query.status) filters.push(eq(appUsageEvent.status, query.status));
+  if (query.provider) filters.push(eq(appUsageEvent.providerType, query.provider));
+  if (query.user) filters.push(eq(appUsageEvent.userId, query.user));
+  if (query.model) filters.push(eq(appUsageEvent.model, query.model));
+  if (query.before_id !== undefined) filters.push(lt(appUsageEvent.id, query.before_id));
 
   const rows = await database(c.env.DB)
     .select()
@@ -351,7 +308,7 @@ usageRoutes.get("/apps/:app/events", async (c) => {
     .orderBy(desc(appUsageEvent.id))
     .limit(limit);
 
-  return c.json({
+  return {
     app_id: appId,
     limit,
     next_before_id: rows.length === limit ? rows[rows.length - 1]!.id : null,
@@ -384,5 +341,5 @@ usageRoutes.get("/apps/:app/events", async (c) => {
       latency_ms: row.latencyMs,
       created_at: row.createdAt,
     })),
-  } satisfies UsageEventList);
+  };
 });

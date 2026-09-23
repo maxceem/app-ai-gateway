@@ -78,7 +78,13 @@ describe("initial database migration", () => {
       "status",
       "created_at",
       "updated_at",
+      // Added by 0003 and backfilled from config_json: what kind of application
+      // this is, lifted out of the JSON so the queries that only need that
+      // never parse a configuration.
+      "auth_type",
     ]);
+    expect(appColumns.results.find((column) => column.name === "auth_type"))
+      .toMatchObject({ notnull: 1, dflt_value: "''" });
     expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
     expect(spendColumns.results.map((column) => column.name)).toEqual([
       "id",
@@ -146,6 +152,10 @@ describe("initial database migration", () => {
       notnull: number;
       dflt_value: string | null;
     }>();
+    // `revision` sits where the schema declares it rather than at the end: the
+    // rebuild that dropped the type CHECKs recreated both tables from the
+    // declaration, so the column a later `ALTER TABLE ADD` had appended moved
+    // back into place. Nothing reads a provider row positionally.
     expect(providerColumns.results.map((column) => column.name)).toEqual([
       "id",
       "organization_id",
@@ -158,11 +168,11 @@ describe("initial database migration", () => {
       "base_url",
       "gateway_route_json",
       "pricing_json",
+      "revision",
       "status",
       "created_by",
       "created_at",
       "updated_at",
-      "revision",
     ]);
     expect(providerColumns.results.find((column) => column.name === "gateway_route_json"))
       .toMatchObject({ notnull: 0 });
@@ -180,11 +190,11 @@ describe("initial database migration", () => {
       "config_json",
       "secret_blob",
       "secret_hint",
+      "revision",
       "status",
       "created_by",
       "created_at",
       "updated_at",
-      "revision",
     ]);
     expect(gatewayColumns.results.find((column) => column.name === "revision"))
       .toMatchObject({ notnull: 1, dflt_value: "1" });
@@ -193,6 +203,7 @@ describe("initial database migration", () => {
     ).all<{ name: string }>();
     expect(mgmtTables.results.map((row) => row.name)).toEqual([
       "mgmt_api_key",
+      "mgmt_bootstrap",
       "mgmt_handoff",
       "mgmt_organization",
       "mgmt_organization_user",
@@ -236,6 +247,21 @@ describe("initial database migration", () => {
       "created_at",
       "revoked_at",
     ]);
+    // The server's own handoff fields are columns, never fields mixed into the
+    // payload the CLI sent.
+    const handoffColumns = await env.DB.prepare("PRAGMA table_info(mgmt_handoff)")
+      .all<{ name: string; notnull: number }>();
+    expect(handoffColumns.results.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "request_json",
+      "request_hash",
+      "target_id",
+      "target_revision",
+      "gateway_id",
+      "gateway_revision",
+      "snapshot_json",
+    ]));
+    expect(handoffColumns.results.find((column) => column.name === "request_hash"))
+      .toMatchObject({ notnull: 1 });
     const gatewayStateTables = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mgmt_handoff','cli_rate_limit','mgmt_resource_receipt') ORDER BY name",
     ).all<{ name: string }>();
@@ -307,11 +333,15 @@ describe("initial database migration", () => {
   });
 
   /**
-   * The type CHECK is deliberately wider than the runtime registry: widening it
-   * is a table rebuild, so the whole roadmap was admitted at once and the
-   * contracts refuse the types no registry entry backs yet.
+   * The `type` columns carry whatever is stored. Constraining them was a table
+   * rebuild per name added, and it was never the thing that decided anything:
+   * the contracts refuse a type no descriptor backs on the way in, and
+   * `isGatewayType` treats a gateway with no adapter as unroutable on the way
+   * out. What the database still owes is the rest of the row — the slug index,
+   * the status CHECK, the credential-source pairing — which the rebuild that
+   * dropped the type CHECKs had to carry over intact.
    */
-  it("admits every planned provider type and still refuses an unknown one", async () => {
+  it("admits any provider type, leaving the decision to the registry", async () => {
     await seedProviderOrganization();
     const insert = (id: string, type: string) =>
       env.DB.prepare(
@@ -322,22 +352,37 @@ describe("initial database migration", () => {
     for (const type of [
       "deepseek", "groq", "mistral", "together", "fireworks", "openrouter",
       "cerebras", "moonshot", "huggingface", "baseten", "bytedance",
+      // Types with no descriptor at all: storable, and refused by the contracts
+      // long before anything tries to serve one.
+      "cohere", "litellm",
     ]) {
       await expect(insert(`planned-${type}`, type)).resolves.toBeDefined();
     }
-    await expect(insert("planned-cohere", "cohere")).rejects.toThrow(/CHECK constraint failed/u);
+    // The constraints the rebuild kept still bind.
+    await expect(insert("planned-dup", "cohere")).rejects.toThrow(/UNIQUE constraint failed/u);
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO provider(id, organization_id, type, slug, name, secret_blob, secret_hint, status, created_by)
+         VALUES ('planned-bad-status', 'org-providers', 'openai', 'slug-bad-status', 'Planned', 'local1.1.iv.ct', 'abcd', 'revoked', 'provider-owner')`,
+      ).run(),
+    ).rejects.toThrow(/CHECK constraint failed/u);
   });
 
-  it("admits every planned gateway type and still refuses an unknown one", async () => {
+  it("admits any gateway type, and still refuses a row with no organization", async () => {
     await seedProviderOrganization();
-    const insert = (id: string, type: string) =>
+    const insert = (id: string, type: string, organizationId = "org-providers") =>
       env.DB.prepare(
         `INSERT INTO provider_gateway(id, organization_id, type, name, config_json, secret_blob, secret_hint, created_by)
-         VALUES (?, 'org-providers', ?, 'Planned gateway', '{}', 'local1.1.iv.ct', 'abcd', 'provider-owner')`,
-      ).bind(id, type).run();
+         VALUES (?, ?, ?, 'Planned gateway', '{}', 'local1.1.iv.ct', 'abcd', 'provider-owner')`,
+      ).bind(id, organizationId, type).run();
 
     await expect(insert("planned-cf", "cf_aig")).resolves.toBeDefined();
     await expect(insert("planned-vercel", "vercel")).resolves.toBeDefined();
-    await expect(insert("planned-litellm", "litellm")).rejects.toThrow(/CHECK constraint failed/u);
+    // No adapter for this one; `requireGatewayAdapter` is what refuses it, and
+    // a row carrying it reads as unroutable rather than as another gateway.
+    await expect(insert("planned-litellm", "litellm")).resolves.toBeDefined();
+    // The foreign key the rebuild carried over.
+    await expect(insert("planned-orphan", "cf_aig", "org-missing"))
+      .rejects.toThrow(/FOREIGN KEY constraint failed/u);
   });
 });

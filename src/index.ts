@@ -1,22 +1,16 @@
 import {
-  AUTHORIZATION_SWEEP_QUERIES,
   pruneExpiredAccounts,
   pruneExpiredAuthorizations,
 } from "./core/account-lifecycle";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { HealthResponse } from "./contracts/responses";
-import type { BillingVariables } from "./billing/gateway";
+import type { RequestVariables } from "./middleware/request-scope";
 import {
   AUTH_EVENT_RETENTION_DAYS,
-  AUTH_SWEEP_QUERIES,
   pruneAuthChallenges,
   pruneAuthEvents,
 } from "./core/auth-events";
-import {
-  MAINTENANCE_SLACK_QUERIES,
-  maintenanceQueryBudget,
-  type QueryBudget,
-} from "./core/query-budget";
+import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
 import { runUsageRetention } from "./core/usage-retention";
 import { recoverPendingUsageSpend } from "./core/app-usage-accounting";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
@@ -27,27 +21,26 @@ import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
 import { gatewayAuth, type GatewayVariables } from "./middleware/auth";
-import { quotaGate } from "./middleware/gate";
-import type { ExecutionVariables } from "./execution/plan";
 import { billingEntitlementGate } from "./middleware/billing";
-import { billingRequestScope } from "./middleware/request-scope";
+import { serveEndpoint, serveProxy, type ServedVariables } from "./execution/serve";
+import { serverTiming } from "./execution/timing";
+import { requestScope } from "./middleware/request-scope";
 import { lazyRoutes } from "./routes/lazy";
-import { endpointPrepare, endpointRoutes } from "./routes/endpoints";
+import { authRoutes } from "./routes/auth";
 import { meRoutes } from "./routes/me";
-import { proxyPrepare, proxyRoutes } from "./routes/proxy";
 import { vaultStatus } from "./vault";
-import { deploymentPolicy } from "./policy/deployment";
+import { resolveDeployment } from "./policy/deployment";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
 type AppEnv = {
   Bindings: Env;
-  Variables: GatewayVariables & ExecutionVariables & BillingVariables;
+  Variables: GatewayVariables & ServedVariables & RequestVariables;
 };
 
 const app = new Hono<AppEnv>();
 
-app.use("*", billingRequestScope);
+app.use("*", requestScope);
 
 app.get("/v1/healthz", (c) => c.json({
   ok: true,
@@ -78,11 +71,11 @@ app.use("/v1/console/*", consoleHostOnly);
 app.use("/v1/cli/browser/*", consoleHostOnly);
 
 /**
- * The management surface and the application token exchange are mounted as
- * whole apps behind a dynamic `import()`, so a proxied request never evaluates
- * better-auth, the operator identity or the zod contract schemas on a cold
- * isolate. See `./routes/lazy` for why the request is forwarded untouched and
- * how errors get back here.
+ * The management surface is mounted as a whole app behind a dynamic `import()`,
+ * so a proxied request never evaluates the operation catalog and the zod
+ * contract schemas behind it on a cold isolate. See `./routes/lazy` for what
+ * that is worth, why the request is forwarded untouched and how errors get back
+ * here.
  *
  * One bundle, four prefixes: the loader is memoised per `lazyRoutes` call, so
  * all four share a single evaluation of `./routes/management`. The wildcard
@@ -97,21 +90,24 @@ app.all("/v1/cli/*", management);
 app.all("/v1/auth/*", management);
 app.all("/v1/console/*", management);
 
-app.use("/v1/apps/:app/*", billingEntitlementGate);
-app.all(
-  "/v1/apps/:app/auth/*",
-  lazyRoutes<AppEnv>(
-    () => import("./routes/app-auth").then((module) => module.appAuthRoutes),
-  ),
-);
+// The application token exchange is on the client path and mounted statically:
+// what a proxied request would rather not evaluate — better-auth behind the
+// operator identity — is deferred per function through `cfAuth()` in
+// `./auth/identity`, and the rest of this surface's graph (the zod request
+// schemas, drizzle, the app configuration parser) is on every request's path
+// already. So it needs no wrapper app of its own, and its failures reach the
+// one `onError` below without one.
+app.use("/v1/apps/:app/auth/*", billingEntitlementGate);
+app.route("/v1/apps/:app/auth", authRoutes);
 
-app.use("/v1/apps/:app/proxy/:provider/*", gatewayAuth, proxyPrepare, quotaGate);
-app.route("/v1/apps/:app/proxy", proxyRoutes);
+// A served request is one handler that runs its own sequence — account,
+// credential, plan, admission, provider — in `./execution/serve`. Named
+// endpoints are POST-only, so any other method is an unrouted path and is
+// answered before a body is read or a credential checked.
+app.all("/v1/apps/:app/proxy/:provider/*", serveProxy);
+app.post("/v1/apps/:app/endpoints/:slug", serveEndpoint);
 
-app.use("/v1/apps/:app/endpoints/:slug", gatewayAuth, endpointPrepare, quotaGate);
-app.route("/v1/apps/:app/endpoints", endpointRoutes);
-
-app.use("/v1/apps/:app/me", gatewayAuth);
+app.use("/v1/apps/:app/me", billingEntitlementGate, gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);
 
 /*
@@ -119,7 +115,7 @@ app.route("/v1/apps/:app/me", meRoutes);
  * application. Hono binds `c.req.param()` from the pattern of the handler that
  * is running, and `onError` runs on that same context, so a failure under a
  * bare `/v1/admin/*` mount would log no `app` at all — where mounting the admin
- * routes statically used to register `/v1/admin/apps/:app/...` on this app and
+ * routes statically would register `/v1/admin/apps/:app/...` on this app and
  * fill it in. Nothing about routing changes: all three send the untouched
  * request to the same memoised handler, and the first match wins because it
  * answers without calling `next()`, so these must be registered first.
@@ -133,14 +129,8 @@ app.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 app.onError((error, c) => {
   const headers = new Headers();
   headers.set("content-type", "application/json; charset=UTF-8");
-  if (c.req.path.includes("/proxy/") || c.req.path.includes("/endpoints/")) {
-    const auth = c.get("authDurationMs") ?? 0;
-    const limiter = c.get("limiterDurationMs") ?? 0;
-    headers.set(
-      "server-timing",
-      `auth;dur=${auth.toFixed(1)}, limiter;dur=${limiter.toFixed(1)}, provider_ttfb;dur=0.0`,
-    );
-  }
+  const timings = c.get("servedTimings");
+  if (timings !== undefined) headers.set("server-timing", serverTiming(timings));
   if (error instanceof GatewayError) {
     new Headers(error.headers).forEach((value, name) => headers.set(name, value));
     // Every business rejection, exactly once, in one shape. Without this a user
@@ -186,6 +176,24 @@ app.onError((error, c) => {
 });
 
 /**
+ * Reports one sweep's failure, and tells being paced apart from going wrong.
+ *
+ * Running out of the night's allowance is the budget doing its job — the work
+ * left over is simply continued tomorrow — so it is logged once under a code of
+ * its own rather than as this sweep's error, which is reserved for a sweep that
+ * actually failed.
+ */
+function sweepFailed(sweep: string, code: string, error: unknown): void {
+  if (error instanceof QueryBudgetExhausted) {
+    log("warn", "maintenance_budget_exhausted", { sweep, limit: error.limit });
+    return;
+  }
+  log("error", code, {
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+/**
  * Nightly retention: the authentication event log, spent App Attest challenges,
  * expired CLI authorizations, expired unclaimed accounts, and the usage history.
  *
@@ -199,56 +207,51 @@ app.onError((error, c) => {
  * order written: the fixed-cost sweeps first, then account cleanup, then usage
  * retention with everything that is left. Account cleanup is offered at most
  * half of what remains at that point, so a large expired backlog cannot starve
- * compaction, and whatever it declines returns to the budget rather than being
- * wasted.
+ * compaction; what it does not issue it never spends, because the allowance
+ * counts statements as they go out rather than reserving them in advance.
  */
 async function prune(env: Env): Promise<void> {
   const budget = maintenanceQueryBudget(env);
-  budget.remaining -= AUTH_SWEEP_QUERIES + MAINTENANCE_SLACK_QUERIES;
+  // Every sweep below issues its statements through this, so the allowance is
+  // charged for what was run rather than for what each one said it would run.
+  const db = budget.database(env.DB);
   try {
-    const deleted = await pruneAuthEvents(env);
+    const deleted = await pruneAuthEvents(db);
     log("info", "auth_events_pruned", { deleted, retentionDays: AUTH_EVENT_RETENTION_DAYS });
   } catch (error) {
-    log("error", "auth_events_prune_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    sweepFailed("auth_events", "auth_events_prune_failed", error);
   }
   try {
-    const deleted = await pruneAuthChallenges(env);
+    const deleted = await pruneAuthChallenges(db);
     log("info", "auth_challenges_pruned", { deleted });
   } catch (error) {
-    log("error", "auth_challenges_prune_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    sweepFailed("auth_challenges", "auth_challenges_prune_failed", error);
   }
-  budget.remaining -= AUTHORIZATION_SWEEP_QUERIES;
   try {
-    await pruneExpiredAuthorizations(env);
+    await pruneExpiredAuthorizations(db);
   } catch (error) {
-    log("error", "authorizations_prune_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    sweepFailed("authorizations", "authorizations_prune_failed", error);
   }
   // Only a hosted deployment writes an account deadline, and only a hosted
   // deployment can have one to collect: a self-host's single account has no
   // `expires_at` at all, so running this there would spend a sixth of a Free
   // plan's nightly queries on a sweep that cannot match a row.
-  if (deploymentPolicy(env).mode === "cloud") {
-    const share: QueryBudget = { remaining: Math.floor(budget.remaining / 2) };
-    const offered = share.remaining;
+  if (resolveDeployment(env).mode === "cloud") {
+    // At most half of what the fixed sweeps left, so a large expired backlog
+    // cannot starve compaction. The share issues through its own view of the
+    // database, so it spends the run's allowance without being able to overrun
+    // the half it was offered.
+    const share = budget.limited(Math.floor(budget.remaining / 2));
     try {
-      const deleted = await pruneExpiredAccounts(env, share);
+      const deleted = await pruneExpiredAccounts(share.database(db), share);
       if (deleted > 0) log("info", "expired_accounts_pruned", { deleted });
     } catch (error) {
-      log("error", "expired_accounts_prune_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      sweepFailed("expired_accounts", "expired_accounts_prune_failed", error);
     }
-    budget.remaining -= offered - share.remaining;
   }
   // Reports under its own codes, and swallows its own failures for the same
   // reason the sweeps above do.
-  await runUsageRetention(env, Date.now(), budget);
+  await runUsageRetention(db, Date.now(), budget);
 }
 
 async function recoverUsageSpend(env: Env): Promise<void> {

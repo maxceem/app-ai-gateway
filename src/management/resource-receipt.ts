@@ -1,6 +1,7 @@
 import { openSecret, sealSecret } from "../vault/secrets";
 import { hashApiKey } from "../core/apikeys";
 import { GatewayError } from "../core/errors";
+import type { Actor } from "./actor";
 import type { ResourceWriteBoundary } from "./write-boundary";
 
 const PROOF = /^[A-Za-z0-9_-]{32,256}$/;
@@ -54,7 +55,7 @@ export class ResourceReceipt implements ResourceWriteBoundary {
     private readonly purpose: string,
     private readonly accountId: string,
     private readonly userId: string,
-    private readonly credentialId: string,
+    private readonly credentialId: string | null,
     private readonly proofHash: string,
     private readonly requestHash: string,
   ) {
@@ -131,7 +132,7 @@ export class ResourceReceipt implements ResourceWriteBoundary {
 
 export interface ResourceReceiptInput {
   env: Env;
-  actor: { organizationId: string; userId: string; credentialId: string };
+  actor: Actor;
   kind: string;
   method: string;
   path: string;
