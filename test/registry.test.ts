@@ -3,7 +3,11 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { apiStyleFromPath, outputClampStyle, API_STYLES } from "../src/core/api-styles";
+import { API_STYLES, clampStyleFor, classifyPath, PROTOCOLS, type ApiStyle } from "../src/core/protocols";
+
+const apiStyleFromPath = (path: string) => classifyPath(path).protocol.style;
+const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyleFor>[1]) =>
+  clampStyleFor(PROTOCOLS[style], provider);
 import {
   assertApiStyleSupported,
   assertRouteServesProvider,
@@ -162,6 +166,17 @@ describe("API style classification", () => {
     }
   });
 
+  it("captures the model a native Gemini path names, with the place it came from", () => {
+    expect(classifyPath("v1beta/models/gemini%2D3.6-flash:streamGenerateContent")).toMatchObject({
+      protocol: { style: "gemini_native" },
+      // Still encoded: the proxy decodes it only once the path is allowed.
+      model: { value: "gemini%2D3.6-flash", template: "v1beta/models/{model}:streamGenerateContent" },
+    });
+    // Every other protocol carries its model in the body, so it captures none.
+    expect(classifyPath("v1/chat/completions").model).toBeUndefined();
+    expect(classifyPath("v1/models").protocol.style).toBe("other");
+  });
+
   it("uses Gemini's output field for native streaming generation", () => {
     const style = apiStyleFromPath("v1beta/models/gemini-3.6-flash:streamGenerateContent");
     for (const providerType of PROVIDER_TYPES) {
@@ -247,7 +262,7 @@ describe("capability matrix", () => {
   it("keeps named-endpoint eligibility where it was", () => {
     expect(ENDPOINT_PROVIDER_TYPES).toEqual(["openai", "xai"]);
     expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
-    expect(providersForEndpointStyle("transcription")).toEqual(["openai", "xai"]);
+    expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
     for (const route of ["direct", "cf_aig"] as ProviderRoute[]) {
       expect(supportsEndpointStyle(route, "openai", "responses")).toBe(true);
       expect(supportsEndpointStyle(route, "anthropic", "responses")).toBe(false);
@@ -331,8 +346,7 @@ describe("the capability matrix the console shares", () => {
     for (const type of PROVIDER_TYPES) {
       const paths = providerDescriptor(type).endpointPaths ?? {};
       for (const [style, path] of Object.entries(paths)) {
-        expect([type, style, apiStyleFromPath(path)])
-          .toEqual([type, style, SHARED.ENDPOINT_STYLE_API[style as keyof typeof SHARED.ENDPOINT_STYLE_API]]);
+        expect([type, style, apiStyleFromPath(path)]).toEqual([type, style, style]);
       }
     }
   });
@@ -356,7 +370,7 @@ describe("the capability matrix the console shares", () => {
     expect(SHARED_PROVIDERS.PROVIDER_TYPES).toBe(PROVIDER_TYPES);
     expect(SHARED.API_STYLES).toBe(API_STYLES);
     expect([...SHARED_PROVIDERS.ENDPOINT_PROVIDER_TYPES]).toEqual([...ENDPOINT_PROVIDER_TYPES]);
-    for (const style of ["responses", "transcription"] as const) {
+    for (const style of ["responses", "audio_transcription"] as const) {
       expect([style, SHARED_PROVIDERS.providersForEndpointStyle(style)])
         .toEqual([style, providersForEndpointStyle(style)]);
     }
@@ -722,8 +736,8 @@ describe("Vercel AI Gateway adapter", () => {
     // Named endpoints narrow the same way: a Responses endpoint composes a body
     // Vercel serves, a transcription endpoint one it does not.
     expect(supportsEndpointStyle("vercel", "openai", "responses")).toBe(true);
-    expect(supportsEndpointStyle("vercel", "openai", "transcription")).toBe(false);
-    expect(supportsEndpointStyle("cf_aig", "openai", "transcription")).toBe(true);
+    expect(supportsEndpointStyle("vercel", "openai", "audio_transcription")).toBe(false);
+    expect(supportsEndpointStyle("cf_aig", "openai", "audio_transcription")).toBe(true);
   });
 
   it.each([

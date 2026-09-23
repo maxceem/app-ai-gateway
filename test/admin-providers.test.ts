@@ -830,7 +830,7 @@ describe("admin provider gateway API", () => {
     // Still narrowed by Vercel's capabilities, so an endpoint style Vercel does
     // not serve is refused while the gateway is down as well as while it is up.
     expect(revoked).toMatchObject({ route: "vercel" });
-    expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "transcription")).toBe(false);
+    expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "audio_transcription")).toBe(false);
     expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "responses")).toBe(true);
 
     // And it still cannot serve traffic: a revoked gateway is not a credential.

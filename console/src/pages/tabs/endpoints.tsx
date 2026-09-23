@@ -42,7 +42,7 @@ const NO_ELIGIBLE_INSTANCE_ID = "add-endpoint-disabled-reason";
 
 const API_STYLE_HINTS: Record<EndpointConfig["api_style"], string> = {
   responses: "Clients send an OpenAI Responses body. The gateway overwrites the model and deep-merges the parameters below.",
-  transcription: "Clients send an OpenAI audio-transcription multipart body and may omit the model field entirely.",
+  audio_transcription: "Clients send an OpenAI audio-transcription multipart body and may omit the model field entirely.",
 };
 
 function ModelSelect({

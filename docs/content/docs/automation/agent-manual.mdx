@@ -310,7 +310,7 @@ Optional. Keyed by slug (`^[a-z0-9-]{1,64}$`). Each endpoint:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `api_style` | `"responses"` or `"transcription"` | Request shape the client sends |
+| `api_style` | `"responses"` or `"audio_transcription"` | Request shape the client sends |
 | `provider` | provider slug | Must be an `openai` or `xai` provider |
 | `model` | string | Must be priced |
 | `params` | object, optional | Deep-merged over the client body, server wins. `responses` only |

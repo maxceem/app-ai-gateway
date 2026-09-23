@@ -1,4 +1,4 @@
-import type { ApiStyle } from "../core/api-styles";
+import type { ApiStyle } from "../core/protocols";
 import type { ResolvedProvider } from "../core/provider-store";
 import type { PreparedProxyRequest } from "../core/proxyrules";
 import type { AttemptAttribution } from "../core/usage-record";

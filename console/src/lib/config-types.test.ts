@@ -183,7 +183,7 @@ describe("the models an instance can be asked for", () => {
 describe("named endpoint targets", () => {
   it("only offers instances whose type composes the endpoint request shape", () => {
     expect(endpointProviderTypes("responses")).toEqual(["openai", "xai"]);
-    expect(endpointProviderTypes("transcription")).toEqual(["openai", "xai"]);
+    expect(endpointProviderTypes("audio_transcription")).toEqual(["openai", "xai"]);
     // The Anthropic instance is not an option, whatever its slug.
     expect(endpointInstances("responses", INSTANCES).map((entry) => entry.slug))
       .toEqual(["openai", "openai-dev"]);
@@ -256,7 +256,7 @@ describe("the issuer as an end-user source", () => {
 describe("named endpoint editing", () => {
   const endpoints: EndpointsConfig = {
     chat: { api_style: "responses", provider: "openai", model: "gpt-5.6-luna" },
-    transcribe: { api_style: "transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },
+    transcribe: { api_style: "audio_transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },
   };
 
   it("starts a new endpoint on the responses style with no model chosen", () => {

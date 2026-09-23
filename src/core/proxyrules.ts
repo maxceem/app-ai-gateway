@@ -1,10 +1,16 @@
-import { apiStyleFromPath, outputClampStyle, type ApiStyle } from "./api-styles";
 import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
 import { consumedRequestHeaders } from "./app-auth";
 import { DEFAULT_END_USER_HEADER } from "./config";
 import { GatewayError } from "./errors";
 import type { ResolvedProvider } from "./provider-store";
-import { costReport, providerDescriptor } from "./providers";
+import { clampStyleFor, classifyPath, type ApiStyle } from "./protocols";
+import {
+  finishJsonBody,
+  isMultipart,
+  jsonObjectFromText,
+  parseForm,
+  readBodyLimited,
+} from "./request-body";
 import { ROUTE_ADAPTERS, routeWireModel } from "./routes";
 import { lookup } from "../shared/records";
 import { isBillable } from "./pricing";
@@ -14,12 +20,9 @@ import type {
   AllowedPath,
   AllowedPathConfig,
   AppRecord,
-  OutputClampStyle,
   ProviderType,
   ProviderPolicy,
 } from "./types";
-
-export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
 
 export interface PreparedProxyRequest {
   provider: ProviderType;
@@ -57,43 +60,6 @@ export function sanitizedQuery(request: Request): string {
   return url.search;
 }
 
-/**
- * The whole request body, or a 413 before any of it reaches a provider. The
- * return type is exact on purpose: an `ArrayBuffer`-backed view is what the
- * runtime accepts as a `BodyInit`, and what lets callers forward these bytes
- * without copying them.
- */
-export async function readBodyLimited(request: Request): Promise<Uint8Array<ArrayBuffer>> {
-  const declared = request.headers.get("content-length");
-  if (declared && Number.parseInt(declared, 10) > MAX_REQUEST_BYTES) {
-    throw new GatewayError(413, "payload_too_large", "Request body exceeds 20 MB");
-  }
-  if (!request.body) return new Uint8Array();
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_REQUEST_BYTES) {
-      await reader.cancel();
-      throw new GatewayError(413, "payload_too_large", "Request body exceeds 20 MB");
-    }
-    chunks.push(value);
-  }
-  // Exactly `total` bytes at offset 0, never a view onto something larger:
-  // callers hand this array straight to `fetch` and to `Request` as a body,
-  // which is only the same bytes because of that.
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
-}
-
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -115,126 +81,33 @@ function modelIsAllowed(allowedModels: string[], requestedModel: string): boolea
   return allowedModels.length === 0 || allowedModels.includes(requestedModel);
 }
 
-function matchedPath(provider: ProviderType, path: string, allowed: AllowedPath[]): MatchedPath | null {
+/**
+ * The allowlist entry a path matches, and the model it captured if it names
+ * one. An app that names no paths allows every default inference style, which
+ * the caller has already checked; the classifier's own capture is the model
+ * then, so a native Gemini path is judged by the model in its URL.
+ */
+function matchedPath(path: string, allowed: AllowedPath[], model: { value: string; template: string } | undefined): MatchedPath | null {
   if (allowed.length === 0) {
-    if (providerDescriptor(provider).modelInPath) {
-      // A type whose native generation requests carry the model in the URL
-      // rather than the JSON body still needs a model capture on a default
-      // inference path.
-      const nativeMatch = path.match(
-        /^(v1(?:alpha|beta)?\/models\/)([^/]+)(:(?:generateContent|streamGenerateContent))$/u,
-      );
-      if (nativeMatch?.[2]) {
-        return {
-          entry: { path: `${nativeMatch[1]}{model}${nativeMatch[3]}` },
-          modelFromPath: decodeURIComponent(nativeMatch[2]),
-        };
-      }
-    }
-    return { entry: { path } };
+    return model
+      ? { entry: { path: model.template }, modelFromPath: decodedModel(model.value) }
+      : { entry: { path } };
   }
   for (const rawEntry of allowed) {
     const entry = normalizedPath(rawEntry);
     const match = path.match(pathPattern(entry.path));
-    if (match) return { entry, ...(match[1] ? { modelFromPath: decodeURIComponent(match[1]) } : {}) };
+    if (match) return { entry, ...(match[1] ? { modelFromPath: decodedModel(match[1]) } : {}) };
   }
   return null;
 }
 
-export function jsonObject(bytes: Uint8Array): Record<string, unknown> {
-  return jsonObjectFromText(new TextDecoder().decode(bytes));
-}
-
-/**
- * The same, for a caller that already holds the text. A request whose body is
- * forwarded unchanged is forwarded as that text, so decoding the bytes a second
- * time to produce it was a second pass over every byte of every JSON request.
- */
-export function jsonObjectFromText(text: string): Record<string, unknown> {
+/** A model segment of an allowed path, decoded; malformed escapes are the client's error. */
+function decodedModel(segment: string): string {
   try {
-    const value = JSON.parse(text) as unknown;
-    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not object");
-    return value as Record<string, unknown>;
+    return decodeURIComponent(segment);
   } catch {
-    throw new GatewayError(400, "invalid_request", "Request body must be a JSON object");
+    throw new GatewayError(400, "invalid_request", "The model in the request path is not validly encoded");
   }
-}
-
-function validateOutputCap(
-  body: Record<string, unknown>,
-  key: string,
-  cap: number,
-  field = key,
-): boolean {
-  if (!Object.hasOwn(body, key)) return false;
-  if (typeof body[key] === "number" && body[key] > cap) {
-    throw new GatewayError(
-      403,
-      "max_output_tokens_exceeded",
-      `Request ${field} exceeds the configured max_output_tokens cap of ${cap}`,
-    );
-  }
-  return true;
-}
-
-export function validateOrInjectOutputCap(
-  style: OutputClampStyle,
-  provider: ProviderType,
-  body: Record<string, unknown>,
-  cap: number | undefined,
-): boolean {
-  if (cap === undefined || style === "none") return false;
-  if (style === "anthropic") {
-    if (validateOutputCap(body, "max_tokens", cap)) return false;
-    body.max_tokens = cap;
-    return true;
-  }
-  if (style === "gemini_native") {
-    const currentConfig = body.generationConfig;
-    const generationConfig =
-      typeof currentConfig === "object" && currentConfig !== null && !Array.isArray(currentConfig)
-        ? (currentConfig as Record<string, unknown>)
-        : {};
-    if (
-      validateOutputCap(
-        generationConfig,
-        "maxOutputTokens",
-        cap,
-        "generationConfig.maxOutputTokens",
-      )
-    ) {
-      return false;
-    }
-    generationConfig.maxOutputTokens = cap;
-    body.generationConfig = generationConfig;
-    return true;
-  }
-  if (style === "chat_completions") {
-    const hasMaxTokens = validateOutputCap(body, "max_tokens", cap);
-    const hasMaxCompletionTokens = validateOutputCap(body, "max_completion_tokens", cap);
-    if (hasMaxTokens || hasMaxCompletionTokens) return false;
-    // `max_tokens` unless this type's own chat-completions surface reads
-    // something else, which OpenAI's does.
-    body[providerDescriptor(provider).chatCompletionsCapField ?? "max_tokens"] = cap;
-    return true;
-  }
-  if (validateOutputCap(body, "max_output_tokens", cap)) return false;
-  body.max_output_tokens = cap;
-  return true;
-}
-
-/**
- * A same-protocol request rewrite the provider type's cost-report integration
- * asks for, if it declares one. Generic on purpose: this asks whether the type
- * has an integration and hands it the body, and never knows which provider's
- * fields are being written.
- */
-export function costReportBodyMutation(
-  provider: ProviderType,
-  style: ApiStyle,
-  body: Record<string, unknown>,
-): boolean {
-  return costReport(provider)?.mutateBody?.({ style, body }) ?? false;
 }
 
 /**
@@ -526,37 +399,36 @@ export async function prepareProxyRequest(input: {
   const route = resolved.route;
   const config = providerPolicyFor(input.app.config.routing, resolved.slug);
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
-  const apiStyle = apiStyleFromPath(input.providerPath);
+  const classified = classifyPath(input.providerPath);
+  const apiStyle = classified.protocol.style;
   if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
     throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   }
-  const match = matchedPath(provider, input.providerPath, config.allowed_paths);
+  const match = matchedPath(input.providerPath, config.allowed_paths, classified.model);
   if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
   assertApiStyleSupported(route.kind, provider, apiStyle);
 
   const bytes = await readBodyLimited(input.request);
   const contentType = input.request.headers.get("content-type") ?? "";
-  const isMultipart = contentType.toLowerCase().startsWith("multipart/form-data");
-  const clampStyle = match.entry.clamp ?? outputClampStyle(apiStyle, provider);
-  let body: BodyInit;
-  let bodyChanged = false;
-  let providerPath = input.providerPath;
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
+  const prepared = (body: BodyInit, providerPath: string, model: string): PreparedProxyRequest => ({
+    provider,
+    providerPath,
+    model,
+    apiStyle,
+    body,
+    headers,
+    query: sanitizedQuery(input.request),
+  });
 
-  if (isMultipart) {
+  // The body's format is the client's, whatever the path: a classified
+  // transcription is multipart, but so are provider-native uploads under
+  // `other`, which only their content type announces.
+  if (isMultipart(contentType)) {
     // Parsed only where the form is where the model could be: a path capture
     // already names it, and parsing the upload to confirm that would copy every
     // byte of it for nothing.
-    let parsed: FormData | null = null;
-    if (!match.modelFromPath) {
-      parsed = await new Request("https://local.invalid", {
-        method: "POST",
-        headers: { "content-type": contentType },
-        // The bytes themselves: `readBodyLimited` already owns an exact-sized
-        // array, and copying it to parse the form copied the whole upload.
-        body: bytes,
-      }).formData();
-    }
+    const parsed = match.modelFromPath ? null : await parseForm(bytes, contentType);
     const modelField = parsed?.get("model");
     const model = resolveModel({
       match,
@@ -566,23 +438,15 @@ export async function prepareProxyRequest(input: {
       resolved,
     });
     const placement = modelPlacement(match, model);
-    body = bytes;
-    if (placement && "path" in placement) providerPath = placement.path;
     if (placement && "bodyModel" in placement && parsed) {
-      // Re-encoded only here, so fetch writes a fresh boundary for it.
+      // Re-encoded only here, so fetch writes a fresh boundary for it; an
+      // untouched upload keeps its original bytes and boundary.
       parsed.set("model", placement.bodyModel);
       headers.delete("content-type");
-      body = parsed;
+      return prepared(parsed, input.providerPath, model.actualModel);
     }
-    return {
-      provider,
-      providerPath,
-      model: model.actualModel,
-      apiStyle,
-      body,
-      headers,
-      query: sanitizedQuery(input.request),
-    };
+    const path = placement && "path" in placement ? placement.path : input.providerPath;
+    return prepared(bytes, path, model.actualModel);
   }
 
   // Decoded once and read twice: the parse below and, where nothing rewrote
@@ -599,38 +463,24 @@ export async function prepareProxyRequest(input: {
     resolved,
   });
   const placement = modelPlacement(match, model);
-  if (placement && "path" in placement) providerPath = placement.path;
+  let bodyChanged = false;
   if (placement && "bodyModel" in placement) {
     parsed.model = placement.bodyModel;
     bodyChanged = true;
   }
-  bodyChanged =
-    validateOrInjectOutputCap(clampStyle, provider, parsed, config.max_output_tokens)
-    || bodyChanged;
-  // Whatever the provider type's own cost-report integration asks for, if it
-  // declares a body rewrite at all. OpenRouter does not: its accounting is
-  // always on, so nothing is re-serialized for it.
-  bodyChanged = costReportBodyMutation(provider, apiStyle, parsed) || bodyChanged;
-  // The route's own routing directive, applied last so it wins over anything a
-  // client put in the same field. Same-protocol: it steers the gateway, and the
-  // provider behind it sees the payload it would have seen anyway. Absent on
-  // every route that expresses nothing in the body, the direct one included.
-  bodyChanged = (route.adapter.mutateBody?.({
-    routeConfig: route.config,
-    style: apiStyle,
-    body: parsed,
-  }) ?? false) || bodyChanged;
-  headers.set("content-type", "application/json");
-  body = bodyChanged ? JSON.stringify(parsed) : text;
-  return {
+  bodyChanged = finishJsonBody(parsed, {
     provider,
-    providerPath,
-    model: model.actualModel,
-    apiStyle,
-    body,
-    headers,
-    query: sanitizedQuery(input.request),
-  };
+    route,
+    style: apiStyle,
+    clamp: match.entry.clamp ?? clampStyleFor(classified.protocol, provider),
+    cap: config.max_output_tokens,
+  }) || bodyChanged;
+  headers.set("content-type", "application/json");
+  return prepared(
+    bodyChanged ? JSON.stringify(parsed) : text,
+    placement && "path" in placement ? placement.path : input.providerPath,
+    model.actualModel,
+  );
 }
 
 /**

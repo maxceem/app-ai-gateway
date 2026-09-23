@@ -864,7 +864,7 @@
                   "type": "string",
                   "enum": [
                     "responses",
-                    "transcription"
+                    "audio_transcription"
                   ]
                 },
                 "params": {
@@ -3581,7 +3581,7 @@
         ],
         "operationId": "callNamedEndpoint",
         "summary": "Call a server-configured named endpoint",
-        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
         "security": [
           {
             "GatewayBearer": []
@@ -3663,7 +3663,7 @@
                 "required": [
                   "file"
                 ],
-                "description": "Body for endpoints whose api_style is transcription."
+                "description": "Body for endpoints whose api_style is audio_transcription."
               }
             }
           }

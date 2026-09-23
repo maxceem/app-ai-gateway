@@ -478,12 +478,12 @@ describe("the application configuration grammar", () => {
 
     it("derives named-endpoint eligibility from provider registry capabilities", () => {
       expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
-      expect(providersForEndpointStyle("transcription")).toEqual(["openai", "xai"]);
+      expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
     });
 
     it("keeps a valid endpoints block verbatim", () => {
       const transcribe = {
-        api_style: "transcription",
+        api_style: "audio_transcription",
         provider: "openai",
         model: "gpt-4o-mini-transcribe",
       };
@@ -795,14 +795,14 @@ describe("organization-scoped configuration references", () => {
     const transcribe = serverConfig({
       endpoints: {
         speech: {
-          api_style: "transcription",
+          api_style: "audio_transcription",
           provider: "openai-routed",
           model: "gpt-4o-transcribe",
         },
       },
     });
     expect(() => validateConfig(transcribe, instance("vercel"))).toThrowError(
-      "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support transcription",
+      "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support audio_transcription",
     );
     // The same endpoint is fine on either route that reaches OpenAI's own API.
     for (const route of ["direct", "cf_aig"] as const) {
@@ -835,7 +835,7 @@ describe("organization-scoped configuration references", () => {
         status: "active" as const,
       },
     };
-    for (const style of ["responses", "transcription"] as const) {
+    for (const style of ["responses", "audio_transcription"] as const) {
       expect(() => validateConfig(
         serverConfig({
           endpoints: {

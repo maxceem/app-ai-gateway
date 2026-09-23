@@ -80,7 +80,7 @@ export function isDefaultProxyApiStyle(style: ApiStyle): boolean {
  * (`chat/completions` on DeepSeek, `openai/v1/chat/completions` on Groq).
  *
  * `other` is absent because it names no contract and so has no canonical path.
- * A test pins every entry against `apiStyleFromPath`, so the table cannot come
+ * A test pins every entry against `classifyPath`, so the table cannot come
  * to disagree with the classifier that judges real requests.
  */
 export const API_STYLE_PATHS = {
@@ -91,19 +91,13 @@ export const API_STYLE_PATHS = {
   audio_transcription: "v1/audio/transcriptions",
 } as const satisfies Partial<Record<ApiStyle, string>>;
 
-export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;
+/**
+ * The API styles a named endpoint can compose: the gateway writes those request
+ * bodies itself, so each is a style this deployment has verified end to end.
+ */
+export const ENDPOINT_API_STYLES = ["responses", "audio_transcription"] as const satisfies readonly ApiStyle[];
 
 export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
-
-/**
- * The client API a named endpoint of each style composes, so endpoint
- * eligibility comes off the same matrix the proxy paths do rather than a second
- * list of its own.
- */
-export const ENDPOINT_STYLE_API = {
-  responses: "responses",
-  transcription: "audio_transcription",
-} as const satisfies Record<EndpointApiStyle, ApiStyle>;
 
 /** The body field a request's output cap is clamped in. */
 export const OUTPUT_CLAMP_STYLES = [
@@ -208,8 +202,9 @@ export const VERCEL_API_STYLES: readonly ApiStyle[] = [
 ];
 
 /**
- * Named endpoints this gateway can compose. `responses` only: `transcription`
- * would post to `v1/audio/transcriptions`, which Vercel does not serve.
+ * Named endpoints this gateway can compose. `responses` only: an
+ * `audio_transcription` endpoint would post to `v1/audio/transcriptions`, which
+ * Vercel does not serve.
  */
 export const VERCEL_ENDPOINT_STYLES: readonly EndpointApiStyle[] = ["responses"];
 

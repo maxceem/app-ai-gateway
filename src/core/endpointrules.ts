@@ -6,19 +6,20 @@ import {
   resolveProvider,
   type ResolvedProvider,
 } from "./provider-store";
+import { clampStyleFor, PROTOCOLS } from "./protocols";
 import { providerDescriptor } from "./providers";
 import { routeWireModel } from "./routes";
 import { lookup } from "../shared/records";
-import { ENDPOINT_STYLE_API } from "../shared/capabilities";
 import type { ExecutionAttempt } from "../execution/plan";
+import { sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxyrules";
 import {
+  finishJsonBody,
+  formWithModel,
+  isMultipart,
   jsonObject,
+  parseForm,
   readBodyLimited,
-  sanitizedHeaders,
-  unpricedMessage,
-  validateOrInjectOutputCap,
-  type PreparedProxyRequest,
-} from "./proxyrules";
+} from "./request-body";
 import type {
   AppRecord,
   EndpointApiStyle,
@@ -38,9 +39,9 @@ export interface PreparedEndpointRequest {
   endpoint: EndpointConfig;
   targets: EndpointTarget[];
   headers: Headers;
-  /** Present for the responses style; the model is set per attempt. */
+  /** Present for a JSON style; the model is set per attempt. */
   json: Record<string, unknown> | null;
-  /** Present for the transcription style; the model field is set per attempt. */
+  /** Present for the audio_transcription style; the model field is set per attempt. */
   form: FormData | null;
 }
 
@@ -95,15 +96,6 @@ export function endpointTargets(endpoint: EndpointConfig): EndpointTarget[] {
   ];
 }
 
-function formWithModel(source: FormData, model: string): FormData {
-  const form = new FormData();
-  source.forEach((value, name) => {
-    if (name !== "model") form.append(name, value as string | File);
-  });
-  form.set("model", model);
-  return form;
-}
-
 /** Builds the concrete upstream request for one target in the fallback chain. */
 export function endpointAttemptRequest(
   prepared: PreparedEndpointRequest,
@@ -121,18 +113,15 @@ export function endpointAttemptRequest(
     body = formWithModel(prepared.form, wireModel);
   } else {
     const json = { ...prepared.json, model: wireModel };
-    validateOrInjectOutputCap(
-      "responses",
+    // The endpoint's own style is the contract, so it names the protocol
+    // rather than anything sniffed off a path.
+    const protocol = PROTOCOLS[prepared.endpoint.api_style];
+    finishJsonBody(json, {
       provider,
-      json,
-      prepared.endpoint.max_output_tokens,
-    );
-    route.adapter.mutateBody?.({
-      routeConfig: route.config,
-      // A named endpoint of this style composes a Responses body, so the style
-      // is the endpoint's contract rather than something sniffed off a path.
-      style: "responses",
-      body: json,
+      route,
+      style: protocol.style,
+      clamp: clampStyleFor(protocol, provider),
+      cap: prepared.endpoint.max_output_tokens,
     });
     body = JSON.stringify(json);
   }
@@ -230,7 +219,7 @@ export async function resolveEndpointAttempts(
       model: target.model,
       // The endpoint's own style settles the API, so the answer is read by the
       // reader for the contract this gateway composed rather than a guess.
-      apiStyle: ENDPOINT_STYLE_API[endpoint.api_style],
+      apiStyle: endpoint.api_style,
       buildRequest,
     } satisfies ExecutionAttempt;
   });
@@ -254,21 +243,15 @@ export async function prepareEndpointRequest(input: {
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
 
-  if (input.endpoint.api_style === "transcription") {
-    if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+  if (input.endpoint.api_style === "audio_transcription") {
+    if (!isMultipart(contentType)) {
       throw new GatewayError(
         400,
         "invalid_request",
         "This endpoint expects a multipart/form-data transcription request",
       );
     }
-    const form = await new Request("https://local.invalid", {
-      method: "POST",
-      headers: { "content-type": contentType },
-      // The exact-sized array `readBodyLimited` returns is the body; copying it
-      // here copied the whole upload a second time.
-      body: bytes,
-    }).formData();
+    const form = await parseForm(bytes, contentType);
     if (!form.has("file")) {
       throw new GatewayError(400, "invalid_request", "A file field is required");
     }

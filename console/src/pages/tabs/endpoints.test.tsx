@@ -154,7 +154,7 @@ describe("EndpointsTab", () => {
    */
   it("drops an instance whose route cannot serve the style", async () => {
     renderTab(
-      { speech: { api_style: "transcription", provider: "openai-dev", model: "gpt-5.6-luna" } },
+      { speech: { api_style: "audio_transcription", provider: "openai-dev", model: "gpt-5.6-luna" } },
       [...PROVIDERS, OPENAI_VIA_VERCEL],
       [VERCEL_GATEWAY],
     );

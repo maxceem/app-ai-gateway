@@ -69,12 +69,12 @@ describe("the console's view of the shared capability matrix", () => {
 
   it("judges endpoint eligibility by the route, not the provider type", () => {
     // Both styles on the provider's own API; only Responses through Vercel.
-    for (const style of ["responses", "transcription"] as const) {
+    for (const style of ["responses", "audio_transcription"] as const) {
       expect([style, routeServesEndpointStyle(null, "openai", style)]).toEqual([style, true]);
       expect([style, routeServesEndpointStyle("cf_aig", "openai", style)]).toEqual([style, true]);
     }
     expect(routeServesEndpointStyle("vercel", "openai", "responses")).toBe(true);
-    expect(routeServesEndpointStyle("vercel", "openai", "transcription")).toBe(false);
+    expect(routeServesEndpointStyle("vercel", "openai", "audio_transcription")).toBe(false);
     // A provider type the gateway does not serve at all has no route to judge.
     expect(routeServesEndpointStyle("vercel", "groq", "responses")).toBe(false);
   });

@@ -17,7 +17,7 @@ import { type ObservedBody } from "./body-observer";
 import { computeCost, EMPTY_USAGE, resolveModelAuthor, type UsageObservation } from "./pricing";
 import { observeResponse } from "./usage-readers";
 import { reportsCost } from "./providers";
-import type { ApiStyle } from "./api-styles";
+import type { ApiStyle } from "./protocols";
 import type { ResolvedRoute } from "./routes";
 import type { GatewayIdentity, ProviderType } from "./types";
 import { database } from "../db";

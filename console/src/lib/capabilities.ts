@@ -1,6 +1,5 @@
 import {
   API_STYLE_PATHS,
-  ENDPOINT_STYLE_API,
   GATEWAY_ROUTES,
   type ApiStyle as CoreApiStyle,
   type EndpointApiStyle,
@@ -119,6 +118,5 @@ export function routeServesEndpointStyle(
   // A transparent gateway forwards to the provider's own API, so whatever the
   // provider offers survives the trip.
   if (!surface.narrowed) return true;
-  const api = ENDPOINT_STYLE_API[style];
-  return surface.available.some((entry) => entry.style === api);
+  return surface.available.some((entry) => entry.style === style);
 }

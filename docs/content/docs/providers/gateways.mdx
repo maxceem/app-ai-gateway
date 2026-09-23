@@ -131,7 +131,7 @@ Anything else on a Vercel-routed provider is refused with
 `403 api_style_not_supported` before the request leaves the gateway. In
 particular, Gemini's native `generateContent` is not available through Vercel
 (use a direct or Cloudflare-routed Gemini provider for that), and neither is
-transcription, so a `transcription`
+transcription, so an `audio_transcription`
 [named endpoint](/applications/endpoints) cannot use a Vercel-routed provider.
 The Responses entry means `POST v1/responses` only: retrieving, cancelling or
 deleting a stored response by ID is refused on a Vercel-routed provider,

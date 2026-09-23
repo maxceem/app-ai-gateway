@@ -52,21 +52,15 @@ export interface ProviderDescriptor {
   probePath?: string;
   /**
    * The path a first example request goes to, for the console's example card,
-   * the CLI's `app snippet` and the published capabilities. Absent where the
-   * provider's own surface needs the model in the path, which is no path a
-   * client could call as it stands — see {@link modelInPath}.
+   * the CLI's `app snippet` and the published capabilities. A `{model}`
+   * segment marks a surface that carries the model in the URL, which has no
+   * example until a model is chosen.
    *
-   * Absent also means the OpenAI-compatible default (`v1/chat/completions`),
-   * which is what most of these types serve; only a type whose prefix or whose
+   * Absent means the OpenAI-compatible default (`v1/chat/completions`), which
+   * is what most of these types serve; only a type whose prefix or whose
    * current surface differs says so.
    */
   examplePath?: string;
-  /**
-   * This type's native generation paths carry the model in the URL rather than
-   * in the request body, so a request on one has its model captured from — and
-   * rewritten into — the path.
-   */
-  modelInPath?: true;
   /**
    * The chat-completions output cap this type reads, where it is not the
    * `max_tokens` every other OpenAI-compatible service takes.
@@ -146,7 +140,7 @@ export const PROVIDER_DESCRIPTORS = {
     chatCompletionsCapField: "max_completion_tokens",
     // The two types whose Responses and transcription request shapes the
     // gateway composes itself for named endpoints.
-    endpointPaths: { responses: "v1/responses", transcription: "v1/audio/transcriptions" },
+    endpointPaths: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions" },
     modelAuthor: "OpenAI",
   },
   anthropic: {
@@ -170,7 +164,7 @@ export const PROVIDER_DESCRIPTORS = {
     probePath: "v1/models",
     // Native provider paths: xAI transcribes at `v1/stt`, where OpenAI serves
     // `v1/audio/transcriptions`.
-    endpointPaths: { responses: "v1/responses", transcription: "v1/stt" },
+    endpointPaths: { responses: "v1/responses", audio_transcription: "v1/stt" },
     modelAuthor: "xAI",
   },
   gemini: {
@@ -179,9 +173,8 @@ export const PROVIDER_DESCRIPTORS = {
     nativeClampStyle: "gemini_native",
     probePath: "v1beta/models",
     // Native Gemini generation requests carry the model in the URL rather than
-    // in the JSON body, so there is no example path without a model and a
-    // request on one has its model captured from the path.
-    modelInPath: true,
+    // in the JSON body, so there is no example path without a model.
+    examplePath: "v1beta/models/{model}:generateContent",
     modelAuthor: "Google",
   },
   perplexity: {

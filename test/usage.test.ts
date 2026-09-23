@@ -16,7 +16,7 @@ import {
   resolveModelAuthor,
 } from "../src/core/pricing";
 import { extractUsageText, observeResponse } from "../src/core/usage-readers";
-import { API_STYLES, type ApiStyle } from "../src/core/api-styles";
+import { API_STYLES, type ApiStyle } from "../src/core/protocols";
 import type { ProviderType } from "../src/core/types";
 
 /**

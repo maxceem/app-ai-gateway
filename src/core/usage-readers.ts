@@ -1,16 +1,16 @@
 /**
  * Reading what a provider reported off its own response body.
  *
- * One reader per {@link ApiStyle}, chosen by the style the request side already
- * classified rather than by sniffing the answer: the gateway knows which API it
- * called before the first byte comes back, and a body that does not say what
- * that API says is unreadable rather than an invitation to guess. `other` — a
- * provider-native operation this gateway does not classify — is the one entry
+ * One reader per {@link UsageFormat}, the one its protocol declares, rather than
+ * one found by sniffing the answer: the gateway knows which API it called
+ * before the first byte comes back, and a body that does not say what that API
+ * says is unreadable rather than an invitation to guess. `unknown` — a
+ * provider-native operation this gateway does not classify — is the one format
  * that still sniffs, because there is nothing else to go on.
  */
 
 import { readProviderReport, type ProviderReport } from "../shared/cost-report";
-import type { ApiStyle } from "./api-styles";
+import { PROTOCOLS, type ApiStyle, type UsageFormat } from "./protocols";
 import { type ObservedText, wholeBody } from "./body-observer";
 import { EMPTY_USAGE, type UsageObservation } from "./pricing";
 import { costReport } from "./providers";
@@ -462,23 +462,22 @@ const sniffUsage: UsageReader = (values) => {
 };
 
 /**
- * One reader per API style, because the request side already classified the
+ * One reader per usage format, because the request side already classified the
  * operation and the response to a known API has a known shape. A classified
  * style whose reader finds nothing records as unresolved and is logged — the
  * same answer an unreadable body has always had, and deliberately not a second
  * guess at another provider's fields.
  */
-export const USAGE_READERS: Record<ApiStyle, UsageReader> = {
-  responses: openAiReader,
-  chat_completions: openAiReader,
-  anthropic_messages: anthropicReader,
-  gemini_native: geminiReader,
-  audio_transcription: audioReader,
-  other: sniffUsage,
+const USAGE_READERS: Record<UsageFormat, UsageReader> = {
+  openai: openAiReader,
+  anthropic: anthropicReader,
+  gemini: geminiReader,
+  audio: audioReader,
+  unknown: sniffUsage,
 };
 
 export function readUsage(values: ResponseValues, style: ApiStyle): UsageObservation | null {
-  return USAGE_READERS[style](values);
+  return USAGE_READERS[PROTOCOLS[style].usage](values);
 }
 
 export function extractUsageText(

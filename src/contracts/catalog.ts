@@ -230,7 +230,7 @@ const TranscriptionStyleBodySchema = z.object({
   prompt: z.string().optional(),
   language: z.string().optional(),
   response_format: z.string().optional(),
-}).meta({ description: "Body for endpoints whose api_style is transcription." });
+}).meta({ description: "Body for endpoints whose api_style is audio_transcription." });
 
 /** The two hints an application client may send with a proxied request. */
 const GatewayClientHeadersSchema = z.object({
@@ -446,7 +446,7 @@ export const CATALOG = {
     path: "/v1/apps/{app}/endpoints/{slug}",
     tags: ["Named endpoints"],
     summary: "Call a server-configured named endpoint",
-    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
     security: "gateway",
     params: {
       app: { example: "my-app" },

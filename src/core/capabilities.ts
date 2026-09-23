@@ -1,5 +1,5 @@
 import type { ProviderRoute, RouteCapability } from "../shared/capabilities";
-import type { ApiStyle } from "./api-styles";
+import type { ApiStyle } from "./protocols";
 import { GatewayError } from "./errors";
 import { PROVIDER_TYPES, type EndpointApiStyle, type ProviderType } from "./providers";
 import { ROUTE_ADAPTERS } from "./routes";

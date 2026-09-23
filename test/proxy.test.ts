@@ -2,9 +2,13 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { API_STYLES, apiStyleFromPath, outputClampStyle } from "../src/core/api-styles";
+import { API_STYLES, clampStyleFor, classifyPath, PROTOCOLS, type ApiStyle } from "../src/core/protocols";
+
+const apiStyleFromPath = (path: string) => classifyPath(path).protocol.style;
+const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyleFor>[1]) =>
+  clampStyleFor(PROTOCOLS[style], provider);
 import { providerDescriptor, PROVIDER_TYPES } from "../src/core/providers";
-import { costReportBodyMutation } from "../src/core/proxyrules";
+import { costReportBodyMutation } from "../src/core/request-body";
 import type { OutputClampStyle, ProviderType } from "../src/core/types";
 import {
   clearProviderCaches,
@@ -813,6 +817,36 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe("https://api.openai.com/v1/chat/completions");
+  });
+
+  it("refuses a native Gemini path the app does not allow before decoding its model", async () => {
+    const appId = "proxy-gemini-malformed-model";
+    await seedApp(appId, {
+      proxy: { gemini: { allowed_paths: ["v1/chat/completions"], allowed_models: [] } },
+    });
+    const token = await gatewayToken(appId);
+    const refused = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/models/%ZZ:generateContent",
+      body: { contents: [] },
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+  });
+
+  it("answers a malformed model escape on an allowed native Gemini path as the client's error", async () => {
+    const appId = "proxy-gemini-malformed-allowed";
+    await seedApp(appId, { proxy: { gemini: { allowed_paths: [], allowed_models: [] } } });
+    const token = await gatewayToken(appId);
+    const refused = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/models/%ZZ:generateContent",
+      body: { contents: [] },
+    });
+    expect(refused.status).toBe(400);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
   });
 
   it.each(["generateContent", "streamGenerateContent"])(

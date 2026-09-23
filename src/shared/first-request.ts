@@ -93,10 +93,8 @@ export function examplePath(
   { gatewayRouted = false, model }: { gatewayRouted?: boolean; model?: string } = {},
 ): string | undefined {
   const descriptor = isProviderType(type) ? providerDescriptor(type) : undefined;
-  if (descriptor?.modelInPath) {
-    return model ? API_STYLE_PATHS.gemini_native.replace("{model}", model) : undefined;
-  }
   const own = descriptor?.examplePath ?? API_STYLE_PATHS.chat_completions;
+  if (own.includes("{model}")) return model ? own.replace("{model}", model) : undefined;
   return gatewayRouted && own.endsWith("chat/completions")
     ? API_STYLE_PATHS.chat_completions
     : own;

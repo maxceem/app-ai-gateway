@@ -29,7 +29,7 @@ const CHAT_ENDPOINTS = {
     params: { reasoning: { effort: "low" }, store: false },
   },
   transcribe: {
-    api_style: "transcription",
+    api_style: "audio_transcription",
     provider: "openai",
     model: "gpt-4o-mini-transcribe",
   },
@@ -653,7 +653,7 @@ describe("named endpoints", () => {
     const appId = "endpoint-xai-stt";
     await seedApp(appId, {
       endpoints: {
-        voice: { api_style: "transcription", provider: "xai", model: "grok-transcribe" },
+        voice: { api_style: "audio_transcription", provider: "xai", model: "grok-transcribe" },
       },
     });
     const token = await gatewayToken(appId);
