@@ -203,6 +203,7 @@ describe("initial database migration", () => {
     ).all<{ name: string }>();
     expect(mgmtTables.results.map((row) => row.name)).toEqual([
       "mgmt_api_key",
+      "mgmt_bootstrap",
       "mgmt_handoff",
       "mgmt_organization",
       "mgmt_organization_user",

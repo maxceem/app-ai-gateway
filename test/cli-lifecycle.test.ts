@@ -115,6 +115,7 @@ beforeEach(async () => {
       "provider_gateway",
       "mgmt_handoff",
       "mgmt_resource_receipt",
+      "mgmt_bootstrap",
       "mgmt_verification",
       "mgmt_api_key",
       "mgmt_organization_user",
@@ -137,6 +138,37 @@ describe("CLI account lifecycle", () => {
     if (limit === null) expect(data.trial).not.toHaveProperty("limit");
     else expect(data.trial.limit).toBe(limit);
   });
+  it("holds a bootstrap a pre-0006 Worker recorded to its own proof", async () => {
+    // What a Worker older than the bootstrap table leaves behind when it
+    // serves between that migration and its replacement's deploy: the row
+    // exists only as a receipt.
+    const testEnv = runtime();
+    const input = { idempotencyKey: random(), pollToken: random() };
+    const first = await request(testEnv, "/bootstrap", input);
+    expect(first.status, await first.clone().text()).toBe(200);
+    const created = await first.json() as { account: { id: string } };
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO mgmt_resource_receipt(
+           id,kind,organization_id,initiating_user_id,proof_hash,request_hash,outcome,
+           protected_credential,protected_credential_expires_at,expires_at,created_at,updated_at)
+         SELECT id,'bootstrap',organization_id,service_user_id,proof_hash,'{}',
+           json_object('credentialId',credential_id),protected_credential,
+           protected_credential_expires_at,0,created_at,updated_at
+         FROM mgmt_bootstrap WHERE organization_id=?`,
+      ).bind(created.account.id),
+      env.DB.prepare("DELETE FROM mgmt_bootstrap WHERE organization_id=?").bind(created.account.id),
+    ]);
+
+    // The same idempotency key names the same account, so a different poll
+    // token must be refused rather than attached to it.
+    const stolen = await request(testEnv, "/bootstrap", { ...input, pollToken: random() });
+    expect(stolen.status).toBe(403);
+    const resumed = await request(testEnv, "/bootstrap", input);
+    expect(resumed.status, await resumed.clone().text()).toBe(200);
+    await expect(resumed.json()).resolves.toMatchObject({ account: { id: created.account.id } });
+  });
+
   it("replays concurrent bootstrap without another account or plaintext verification credential", async () => {
     const testEnv = runtime();
     const input = { idempotencyKey: random(), pollToken: random() };
@@ -150,7 +182,7 @@ describe("CLI account lifecycle", () => {
     )) as Array<{ credential: { token: string } }>;
     expect(values[0]!.credential.token).toBe(values[1]!.credential.token);
     const rows = await env.DB.prepare(
-      "SELECT request_hash,outcome,protected_credential FROM mgmt_resource_receipt WHERE kind='bootstrap'",
+      "SELECT credential_id,protected_credential FROM mgmt_bootstrap",
     ).all();
     expect(JSON.stringify(rows)).not.toContain(values[0]!.credential.token);
     expect(
@@ -180,7 +212,7 @@ describe("CLI account lifecycle", () => {
       authorization: `Bearer ${created.credential.token}`,
     })).status).toBe(200);
     await env.DB.prepare(
-      "UPDATE mgmt_resource_receipt SET protected_credential_expires_at=0 WHERE kind='bootstrap' AND organization_id=?",
+      "UPDATE mgmt_bootstrap SET protected_credential_expires_at=0 WHERE organization_id=?",
     ).bind(created.account.id).run();
     const renewed = await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
@@ -989,13 +1021,13 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
     ).first("n"),
   ).toBe(0);
   const row = await env.DB.prepare(
-    "SELECT * FROM mgmt_resource_receipt WHERE kind='bootstrap'",
+    "SELECT * FROM mgmt_bootstrap",
   ).first<Record<string, unknown>>();
-  expect(row?.outcome).toBe('{"expired":true}');
+  expect(row?.state).toBe("expired");
   for (const field of [
     "organization_id",
-    "initiating_user_id",
-    "initiating_credential_id",
+    "service_user_id",
+    "credential_id",
     "protected_credential",
   ])
     expect(row?.[field]).toBeNull();

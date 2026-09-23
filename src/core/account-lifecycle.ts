@@ -199,12 +199,16 @@ function accountCleanupStatements(cutoffMs: number): {
   // Keep only the proof-bound bootstrap tombstone: deleting it would let an old
   // bootstrap recreate the same expired account. No account identity or secret survives.
   statements.push({
-    sql: `UPDATE mgmt_resource_receipt SET outcome='{"expired":true}', organization_id=NULL,
-      initiating_user_id=NULL, initiating_credential_id=NULL, protected_credential=NULL,
-      protected_credential_expires_at=NULL, consumed_at=?, expires_at=?, updated_at=?
-      WHERE kind='bootstrap' AND organization_id IN (${expired})`,
-    params: [cutoffMs, cutoffMs, cutoffMs, ...cutoff],
+    sql: `UPDATE mgmt_bootstrap SET state='expired', organization_id=NULL,
+      service_user_id=NULL, credential_id=NULL, protected_credential=NULL,
+      protected_credential_expires_at=NULL, updated_at=?
+      WHERE organization_id IN (${expired})`,
+    params: [cutoffMs, ...cutoff],
   });
+  // Receipts of kind 'bootstrap' are the pre-0006 copies of bootstrap rows,
+  // kept until no Worker older than that migration can be serving. They are
+  // left alone here: deleting its account nulls their `organization_id`, which
+  // such a Worker reads as expired, so each still refuses its own replay.
   statements.push({
     sql: `DELETE FROM mgmt_resource_receipt WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
     params: [...cutoff],
@@ -283,6 +287,11 @@ export async function pruneExpiredAccounts(
 export async function pruneExpiredAuthorizations(db: D1Database): Promise<void> {
   await db.prepare(
     "UPDATE mgmt_resource_receipt SET protected_credential = NULL WHERE protected_credential_expires_at <= ?",
+  )
+    .bind(Date.now())
+    .run();
+  await db.prepare(
+    "UPDATE mgmt_bootstrap SET protected_credential = NULL WHERE protected_credential_expires_at <= ?",
   )
     .bind(Date.now())
     .run();

@@ -41,23 +41,27 @@ recoverable. Retrying with the same pair returns the same account and the same
 protected credential rather than creating a second one; a mismatched proof is
 rejected outright.
 
-Three stores are deliberately kept apart: bootstrap uses the gateway's
-resource-creation receipt, claim and provider browser handoffs use
-`mgmt_handoff`, and Better Auth's verification rows are left to Better Auth.
-Mixing them would let one feature's cleanup or expiry policy silently govern
-another's.
+Four stores are deliberately kept apart: bootstrap uses `mgmt_bootstrap`,
+resource creation uses the receipt table, claim and provider browser handoffs
+use `mgmt_handoff`, and Better Auth's verification rows are left to Better
+Auth. Mixing them would let one feature's cleanup or expiry policy silently
+govern another's.
+
+A bootstrap row is `active` until a claim `retired` it or account cleanup
+`expired` it. The expired row keeps only the proof: it is what stops the same
+bootstrap from recreating an account the deadline already removed.
 
 Management credentials are issued **disabled** and are enabled only when the
-encrypted receipt commits, because the alternative — issue, then persist — can
+encrypted bootstrap row commits, because the alternative — issue, then persist — can
 leave a live key that nobody received if the write fails. Concurrent issuance
 keeps one winner and retires only the key it issued itself, never the winner's.
 The one-time response is encrypted with the vault under the poll-proof hash, so
-the receipt row alone does not disclose a credential.
+the row alone does not disclose a credential.
 
 Issuing, activating and retiring those keys are all cf-auth operations rather
-than statements written here: this package owns the receipt, and the library
-owns every credential in it. That splits the two writes, so activation is
-repeated on each poll from whichever key the committed receipt names — it is
+than statements written here: this package owns the bootstrap row, and the
+library owns every credential in it. That splits the two writes, so activation
+is repeated on each poll from whichever key the committed row names — it is
 idempotent and refuses a revoked key, so a run that died between the two heals
 on the next call without ever resurrecting what a claim retired.
 
@@ -145,6 +149,4 @@ query to any one of them means re-checking the total.
 
 ## Status
 
-The schema is maintained as a single fresh initial migration while the feature
-is pre-release; there is no populated-database upgrade path. Account export is
-not implemented.
+Account export is not implemented.

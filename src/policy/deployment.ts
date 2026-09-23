@@ -142,7 +142,6 @@ export interface BootstrapDecision {
   userId: string;
   createdAt: string;
   recoveryEndsAt: string | null;
-  receiptExpiresAt: number;
   requiresEmptyDeployment: boolean;
   rateLimited: boolean;
 }
@@ -164,10 +163,6 @@ export function bootstrapDecision(
     userId: `service-${accountId}`,
     createdAt: new Date(input.nowMs).toISOString(),
     recoveryEndsAt,
-    receiptExpiresAt:
-      !cloud
-        ? 8_640_000_000_000_000
-        : input.nowMs + ACCOUNT_RECOVERY_MS,
     requiresEmptyDeployment: !cloud,
     rateLimited: cloud,
   };

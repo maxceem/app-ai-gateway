@@ -110,10 +110,10 @@ export async function completeIdentity(
     // Bootstrap authority ends with the claim: the encrypted credential the
     // poller would otherwise collect goes with it.
     c.env.DB.prepare(
-      `UPDATE mgmt_resource_receipt SET consumed_at=?,protected_credential=NULL,
+      `UPDATE mgmt_bootstrap SET state='retired',protected_credential=NULL,
        protected_credential_expires_at=NULL,updated_at=?
-       WHERE kind='bootstrap' AND organization_id=? AND consumed_at IS NULL`,
-    ).bind(now, now, target),
+       WHERE organization_id=? AND state='active'`,
+    ).bind(now, target),
   ]);
   const completed = await c.env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
     .bind(row.id)

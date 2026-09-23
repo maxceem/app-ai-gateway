@@ -138,6 +138,36 @@ export const mgmtResourceReceipt = sqliteTable(
   (table) => [index("idx_mgmt_resource_receipt_organization").on(table.organizationId)],
 );
 
+/**
+ * One CLI bootstrap: the proof that created an account, and the management key
+ * it may still collect.
+ *
+ * `active` until the account is claimed (`retired`, the key's authority ends
+ * with the claim) or collected as expired (`expired`, every identity and secret
+ * cleared). The expired row is kept on purpose: it is what stops the same
+ * proof from recreating an account the deadline has already removed.
+ */
+export const mgmtBootstrap = sqliteTable(
+  "mgmt_bootstrap",
+  {
+    id: text("id").primaryKey(),
+    state: text("state", { enum: ["active", "retired", "expired"] }).notNull(),
+    organizationId: text("organization_id").references(() => mgmtOrganization.id, {
+      onDelete: "set null",
+    }),
+    /** The service identity the bootstrap created the account for. */
+    serviceUserId: text("service_user_id"),
+    proofHash: text("proof_hash").notNull(),
+    /** The management key the protected credential below is, once one is committed. */
+    credentialId: text("credential_id"),
+    protectedCredential: text("protected_credential"),
+    protectedCredentialExpiresAt: integer("protected_credential_expires_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_mgmt_bootstrap_organization").on(table.organizationId)],
+);
+
 /** An unfinished administrative act: human claim approval, or a provider-secret browser handoff. */
 export const mgmtHandoff = sqliteTable(
   "mgmt_handoff",

@@ -32,23 +32,16 @@ export function deploymentMeta(c: CliContext) {
   return { ...deployment.identity(), mode: deployment.mode };
 }
 
-interface BootstrapReceiptRow {
+/** A `mgmt_bootstrap` row; see the table's own description for what each state means. */
+interface BootstrapRow {
   id: string;
+  state: "active" | "retired" | "expired";
   organization_id: string | null;
-  initiating_user_id: string | null;
+  service_user_id: string | null;
   proof_hash: string;
-  outcome: string | null;
+  credential_id: string | null;
   protected_credential: string | null;
   protected_credential_expires_at: number | null;
-  consumed_at: number | null;
-  expires_at: number;
-}
-
-/** The management key this receipt's committed outcome names, if it has one yet. */
-function committedCredentialId(row: BootstrapReceiptRow): string | null {
-  if (!row.outcome) return null;
-  const { credentialId } = JSON.parse(row.outcome) as { credentialId?: string };
-  return credentialId ?? null;
 }
 
 async function retireKey(
@@ -59,10 +52,54 @@ async function retireKey(
   await identity.service.revokeServiceApiKey({ apiKeyId, organizationId });
 }
 
-async function receipt(c: CliContext, id: string): Promise<BootstrapReceiptRow | null> {
-  return c.env.DB.prepare("SELECT * FROM mgmt_resource_receipt WHERE id=? AND kind='bootstrap'")
+/**
+ * Copies one bootstrap a Worker older than migration 0006 recorded as a receipt,
+ * with the state its columns imply, exactly as that migration copied the rows
+ * that existed when it ran. Only a bootstrap such a Worker started while
+ * migrations ran ahead of this one can still be missing here, and without it
+ * the bootstrap's own id would reach an existing account with no proof to hold
+ * it to. Removed with the legacy rows themselves.
+ */
+function importLegacyBootstrap(db: D1Database, id: string): D1PreparedStatement {
+  return db.prepare(
+    `INSERT OR IGNORE INTO mgmt_bootstrap(
+       id,state,organization_id,service_user_id,proof_hash,credential_id,
+       protected_credential,protected_credential_expires_at,created_at,updated_at)
+     SELECT id,
+       CASE WHEN outcome='{"expired":true}' THEN 'expired'
+            WHEN consumed_at IS NOT NULL THEN 'retired' ELSE 'active' END,
+       organization_id,initiating_user_id,proof_hash,
+       CASE WHEN json_valid(outcome) THEN json_extract(outcome,'$.credentialId') END,
+       protected_credential,protected_credential_expires_at,created_at,updated_at
+     FROM mgmt_resource_receipt WHERE id=? AND kind='bootstrap'`,
+  ).bind(id);
+}
+
+async function bootstrapRow(c: CliContext, id: string): Promise<BootstrapRow | null> {
+  const read = () =>
+    c.env.DB.prepare("SELECT * FROM mgmt_bootstrap WHERE id=?").bind(id).first<BootstrapRow>();
+  const row = await read();
+  if (row) return row;
+  // Re-read whatever the import did: a concurrent request may have imported
+  // the same row first, which leaves this one with no changes but a row.
+  await importLegacyBootstrap(c.env.DB, id).run();
+  return read();
+}
+
+/**
+ * The key a pre-0006 Worker last committed to its receipt copy of this
+ * bootstrap. It can differ from this table's when that Worker issued or renewed
+ * one after migration 0006 had copied the row, so it is retired alongside the
+ * key this table names rather than left valid and untracked.
+ */
+async function legacyCredentialId(c: CliContext, id: string): Promise<string | null> {
+  const legacy = await c.env.DB.prepare(
+    `SELECT CASE WHEN json_valid(outcome) THEN json_extract(outcome,'$.credentialId') END AS credential_id
+     FROM mgmt_resource_receipt WHERE id=? AND kind='bootstrap'`,
+  )
     .bind(id)
-    .first<BootstrapReceiptRow>();
+    .first<{ credential_id: string | null }>();
+  return legacy?.credential_id ?? null;
 }
 
 export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
@@ -78,10 +115,10 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
     requestHash: hash,
     nowMs: now,
   });
-  let row = await receipt(c, id);
+  let row = await bootstrapRow(c, id);
   if (row && !(await proofMatches(input.pollToken, row.proof_hash)))
     throw new GatewayError(403, "forbidden", "Bootstrap proof does not match");
-  if (row?.outcome === '{"expired":true}')
+  if (row?.state === "expired")
     throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
 
   // A self-host belongs to whoever initializes it first, exactly as its first
@@ -117,7 +154,6 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
       userId,
       createdAt,
       recoveryEndsAt,
-      receiptExpiresAt,
     } = decision;
     const guard = decision.requiresEmptyDeployment ? emptyDeploymentCondition() : "1";
     await c.env.DB.batch([
@@ -135,34 +171,43 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
            SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)`,
       ).bind(`member-${accountId}`, accountId, userId, createdAt, accountId, userId),
       c.env.DB.prepare(
-        `INSERT OR IGNORE INTO mgmt_resource_receipt(
-           id,kind,organization_id,initiating_user_id,proof_hash,request_hash,expires_at,created_at,updated_at)
-         SELECT ?,'bootstrap',?,?,?,'{}',?,?,? WHERE EXISTS (
+        `INSERT OR IGNORE INTO mgmt_bootstrap(
+           id,state,organization_id,service_user_id,proof_hash,created_at,updated_at)
+         SELECT ?,'active',?,?,?,?,? WHERE EXISTS (
            SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)
-         ${decision.requiresEmptyDeployment ? "AND NOT EXISTS (SELECT 1 FROM mgmt_resource_receipt WHERE kind='bootstrap')" : ""}`,
+         -- One bootstrap per account: a second proof never attaches to an
+         -- account another bootstrap already holds, legacy receipts included.
+         AND NOT EXISTS (SELECT 1 FROM mgmt_bootstrap WHERE organization_id=?)
+         AND NOT EXISTS (
+           SELECT 1 FROM mgmt_resource_receipt WHERE kind='bootstrap' AND organization_id=?)
+         ${decision.requiresEmptyDeployment
+           ? `AND NOT EXISTS (SELECT 1 FROM mgmt_bootstrap)
+              AND NOT EXISTS (SELECT 1 FROM mgmt_resource_receipt WHERE kind='bootstrap')`
+           : ""}`,
       ).bind(
         id,
         accountId,
         userId,
         proofHash,
-        receiptExpiresAt,
         now,
         now,
         accountId,
         userId,
+        accountId,
+        accountId,
       ),
     ]);
-    row = await receipt(c, id);
+    row = await bootstrapRow(c, id);
     if (!row)
       throw new GatewayError(409, "conflict", "This deployment has already been initialized");
     if (!(await proofMatches(input.pollToken, row.proof_hash)))
       throw new GatewayError(403, "forbidden", "Bootstrap proof does not match");
   }
 
-  if (!row.organization_id || !row.initiating_user_id)
+  if (!row.organization_id || !row.service_user_id)
     throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
   const account = await assertAccountAccess(deployment, c.env, row.organization_id, "read");
-  if (account.claimed || row.consumed_at)
+  if (account.claimed || row.state !== "active")
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
   const identity = await identityAuthFor(c);
@@ -172,7 +217,7 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
     // cf-auth refuses any key whose organization has passed it. A second copy
     // here could only go stale, which is exactly what a claim would make it do.
     const issued = await identity.service.issueServiceApiKey({
-      userId: row.initiating_user_id,
+      userId: row.service_user_id,
       organizationId: account.id,
       name: "CLI bootstrap",
       enabled: false,
@@ -183,42 +228,45 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
       await retireKey(identity, account.id, issued.id);
       throw error;
     });
-    const previousCredentialId = committedCredentialId(row);
+    const superseded = new Set(
+      [row.credential_id, await legacyCredentialId(c, id)].filter(
+        (credential): credential is string => credential !== null,
+      ),
+    );
     await c.env.DB.prepare(
-      `UPDATE mgmt_resource_receipt
-       SET protected_credential=?,protected_credential_expires_at=?,outcome=?,updated_at=?
-       WHERE id=? AND consumed_at IS NULL
+      `UPDATE mgmt_bootstrap
+       SET protected_credential=?,protected_credential_expires_at=?,credential_id=?,updated_at=?
+       WHERE id=? AND state='active'
          AND (protected_credential IS NULL OR protected_credential_expires_at<=?)
-         AND NOT ${humanOwnerCondition("mgmt_resource_receipt.organization_id")}`,
+         AND NOT ${humanOwnerCondition("mgmt_bootstrap.organization_id")}`,
     )
-      .bind(encrypted, now + TTL, JSON.stringify({ credentialId: issued.id }), now, id, now)
+      .bind(encrypted, now + TTL, issued.id, now, id, now)
       .run()
       .catch(async (error) => {
-        // A failed RPC can still have committed, so ask the receipt who won
-        // before retiring the key this call minted.
-        const committed = await receipt(c, id);
-        if (!committed || committedCredentialId(committed) !== issued.id)
+        // A failed RPC can still have committed, so ask the row who won before
+        // retiring the key this call minted.
+        const committed = await bootstrapRow(c, id);
+        if (!committed || committed.credential_id !== issued.id)
           await retireKey(identity, account.id, issued.id);
         throw error;
       });
-    row = (await receipt(c, id))!;
+    row = (await bootstrapRow(c, id))!;
 
-    // The receipt is the single durable record of which key this bootstrap
-    // stands behind. Whichever key it does not name is retired, whether that is
-    // the one this call lost a race with or the one it replaced.
-    const committed = committedCredentialId(row);
-    if (committed !== issued.id) await retireKey(identity, account.id, issued.id);
-    else if (previousCredentialId) await retireKey(identity, account.id, previousCredentialId);
+    // The row is the single durable record of which key this bootstrap stands
+    // behind. Whichever key it does not name is retired, whether that is the
+    // one this call lost a race with or the one it replaced.
+    if (row.credential_id !== issued.id) await retireKey(identity, account.id, issued.id);
+    else for (const previous of superseded) await retireKey(identity, account.id, previous);
   }
-  if (row.consumed_at || !row.protected_credential)
+  if (row.state !== "active" || !row.protected_credential)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
-  // Issued inactive, activated only now: a key becomes usable once the receipt
-  // that names it is committed, so a run that dies in between leaves a
+  // Issued inactive, activated only now: a key becomes usable once the row that
+  // names it is committed, so a run that dies in between leaves a
   // credential nobody holds and nothing can authenticate with. Activation is
   // idempotent and refuses a revoked key, so repeating a poll finishes an
   // interrupted run without resurrecting what a claim has already retired.
-  const credentialId = committedCredentialId(row);
+  const credentialId = row.credential_id;
   if (!credentialId)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
   await identity.service.enableServiceApiKey({

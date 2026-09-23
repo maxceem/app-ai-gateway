@@ -287,6 +287,7 @@ beforeEach(async () => {
       "provider_gateway",
       "mgmt_handoff",
       "mgmt_resource_receipt",
+      "mgmt_bootstrap",
       "mgmt_verification",
       "mgmt_user_account",
       "mgmt_user_session",
@@ -337,7 +338,7 @@ describe("self-hosted registration policy", () => {
       .toBe(1);
     expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user_account").first("n"))
       .toBe(signup.status === 200 ? 1 : 0);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_resource_receipt").first("n"))
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_bootstrap").first("n"))
       .toBe(bootstrap.status === 200 ? 1 : 0);
     expect(barrier.guardedInsertCount()).toBe(1);
     expect(barrier.bootstrapPreflightCount()).toBe(1);
