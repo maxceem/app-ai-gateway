@@ -15,7 +15,13 @@
  * looking like configuration.
  */
 
-import type { AuthenticationConfig, ProviderPolicy, RoutingConfig } from "./app-config.ts";
+import {
+  providerPolicyFor,
+  reachableProviders,
+  type AuthenticationConfig,
+  type ProviderPolicy,
+  type RoutingConfig,
+} from "./app-config.ts";
 import { API_STYLE_PATHS } from "./capabilities.ts";
 import { isProviderType, providerDescriptor } from "./providers.ts";
 
@@ -136,11 +142,16 @@ export function firstRequest(
   prices: ExamplePrices,
 ): RequestExample {
   let fallback: RequestExample | undefined;
-  for (const provider of providers) {
-    if (provider.status !== "active") continue;
-    const selected = routing?.providers.mode === "selected" ? routing.providers.selected : undefined;
-    const policy = selected?.[provider.slug];
-    if (selected !== undefined && !policy) continue;
+  // With no routing known yet, every active instance is a candidate.
+  const candidates = routing
+    ? reachableProviders(routing, providers)
+    : providers.filter((provider) => provider.status === "active");
+  for (const provider of candidates) {
+    // The app's own policy for the instance, where it names one; an all-mode
+    // app has none of its own and takes the catalog's models and paths.
+    const policy = routing?.providers.mode === "selected"
+      ? providerPolicyFor(routing, provider.slug)
+      : undefined;
     const models = modelsFor(provider, policy, prices);
     const model = models[0] ?? MODEL_PLACEHOLDER;
     const gaps: ExampleGap[] = models.length ? [] : ["model"];

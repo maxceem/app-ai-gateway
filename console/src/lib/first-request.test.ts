@@ -10,6 +10,7 @@ import {
   type ExampleRouting,
   type RequestExample,
 } from "@shared/first-request";
+import { providerPolicyFor, reachableProviders } from "@shared/app-config";
 
 /** An application that selects one instance, under whatever policy a case needs. */
 const routing = (policy: Partial<ExamplePolicy> = {}): ExampleRouting => ({
@@ -110,5 +111,33 @@ describe("first request examples", () => {
       "https://gw.test/v1/apps/app-1/endpoints/chat",
     );
     expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example })).toContain('endpointSlug: "chat"');
+  });
+});
+
+describe("which provider instances an app can reach", () => {
+  const instances = [
+    { slug: "openai", status: "active" },
+    { slug: "paused", status: "disabled" },
+    { slug: "other", status: "active" },
+  ];
+  it("reaches every active instance in all-mode, under an unrestricted policy", () => {
+    const all = { providers: { mode: "all" as const }, model_rewrites: {} };
+    expect(reachableProviders(all, instances).map((i) => i.slug)).toEqual(["openai", "other"]);
+    expect(providerPolicyFor(all, "anything")).toEqual({ allowed_paths: [], allowed_models: [] });
+  });
+  it("reaches only the named active instances in selected-mode, and never a prototype key", () => {
+    const selected = {
+      providers: {
+        mode: "selected" as const,
+        selected: {
+          openai: { allowed_paths: ["v1/responses"], allowed_models: [] },
+          paused: { allowed_paths: [], allowed_models: [] },
+        },
+      },
+      model_rewrites: {},
+    };
+    expect(reachableProviders(selected, instances).map((i) => i.slug)).toEqual(["openai"]);
+    expect(providerPolicyFor(selected, "other")).toBeUndefined();
+    expect(providerPolicyFor(selected, "constructor")).toBeUndefined();
   });
 });

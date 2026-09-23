@@ -176,6 +176,32 @@ export function selectedProviderPolicies(routing: RoutingConfig): Record<string,
   return routing.providers.mode === "selected" ? routing.providers.selected : {};
 }
 
+/**
+ * The policy an application applies to one provider instance, or undefined
+ * when it may not reach that instance at all. All-mode reaches every instance
+ * under the default policy — an unrestricted one — and selected-mode only the
+ * slugs it names.
+ */
+export function providerPolicyFor(routing: RoutingConfig, slug: string): ProviderPolicy | undefined {
+  if (routing.providers.mode === "all") return { allowed_paths: [], allowed_models: [] };
+  return Object.hasOwn(routing.providers.selected, slug) ? routing.providers.selected[slug] : undefined;
+}
+
+/**
+ * The instances an application can send to right now: the ones its routing
+ * allows, and of those the ones that are active, since a disabled instance
+ * serves nothing. The one answer the console's example, the CLI's
+ * `app check` and `app snippet` all give.
+ */
+export function reachableProviders<Instance extends { slug: string; status: string }>(
+  routing: RoutingConfig,
+  instances: readonly Instance[],
+): Instance[] {
+  return instances.filter(
+    (instance) => instance.status === "active" && providerPolicyFor(routing, instance.slug) !== undefined,
+  );
+}
+
 /** A scope's monthly budget in whole microdollars, which is what the limiter counts in. */
 export function monthlyBudgetMicrousd(scope: LimitScopeConfig): number | null {
   return scope.spending.monthly_usd === null

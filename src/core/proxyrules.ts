@@ -9,7 +9,7 @@ import { ROUTE_ADAPTERS, routeWireModel } from "./routes";
 import { lookup } from "../shared/records";
 import { isBillable } from "./pricing";
 import { isDefaultProxyApiStyle } from "../shared/capabilities";
-import { selectedProviderPolicies } from "../shared/app-config";
+import { providerPolicyFor } from "../shared/app-config";
 import type {
   AllowedPath,
   AllowedPathConfig,
@@ -20,10 +20,6 @@ import type {
 } from "./types";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
-const DEFAULT_PROVIDER_POLICY: ProviderPolicy = {
-  allowed_paths: [],
-  allowed_models: [],
-};
 
 export interface PreparedProxyRequest {
   provider: ProviderType;
@@ -528,9 +524,7 @@ export async function prepareProxyRequest(input: {
   const { resolved } = input;
   const provider = resolved.type;
   const route = resolved.route;
-  const config = input.app.config.routing.providers.mode === "all"
-    ? DEFAULT_PROVIDER_POLICY
-    : lookup(selectedProviderPolicies(input.app.config.routing), resolved.slug);
+  const config = providerPolicyFor(input.app.config.routing, resolved.slug);
   if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
   const apiStyle = apiStyleFromPath(input.providerPath);
   if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {

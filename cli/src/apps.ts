@@ -29,7 +29,12 @@ import {
   swiftSnippet,
   type RequestExample,
 } from "../../src/shared/first-request.ts";
-import { selectedProviderPolicies, type AppAttestEnvironment } from "../../src/shared/app-config.ts";
+import {
+  providerPolicyFor,
+  reachableProviders,
+  selectedProviderPolicies,
+  type AppAttestEnvironment,
+} from "../../src/shared/app-config.ts";
 import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 
 /** What a local or remote configuration check was able to establish. */
@@ -455,11 +460,12 @@ export async function appCommand(
   if (action === "check") {
     const validation = await remoteValidation(ctx, doc, appId);
     const { data: providers } = await ctx.call("listProviders");
-    const allowed = selectedProviderPolicies(doc.config.routing);
-    const selected =
-      doc.config.routing.providers.mode === "all"
-        ? providers.providers
-        : providers.providers.filter((p) => Object.hasOwn(allowed, p.slug));
+    // Every instance the routing names, paused ones included, so the report
+    // shows a disabled provider rather than leaving it out; ready means one of
+    // them can serve.
+    const selected = providers.providers.filter(
+      (p) => providerPolicyFor(doc.config.routing, p.slug) !== undefined,
+    );
     return {
       appId,
       validation,
@@ -471,7 +477,7 @@ export async function appCommand(
       })),
       ready:
         doc.status === "active" &&
-        selected.some((p) => p.status === "active") &&
+        reachableProviders(doc.config.routing, selected).length > 0 &&
         !data.config_error,
       limitations: [
         "No inference was sent.",
@@ -512,16 +518,10 @@ export async function appCommand(
       };
     } else {
       const routing = doc.config.routing;
-      const allowed = selectedProviderPolicies(routing);
       const { data: all } = await ctx.call("listProviders");
       // What this application may send to today, which is narrower than what
-      // the account holds: a disabled provider serves nothing, and a selected
-      // routing policy names the rest out.
-      const reachable = all.providers.filter(
-        (p) =>
-          p.status === "active" &&
-          (routing.providers.mode === "all" || Object.hasOwn(allowed, p.slug)),
-      );
+      // the account holds.
+      const reachable = reachableProviders(routing, all.providers);
       const requested = typeof flags.provider === "string" ? flags.provider : undefined;
       if (requested && !reachable.some((p) => p.slug === requested))
         fail(
