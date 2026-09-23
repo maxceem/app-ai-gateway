@@ -16,7 +16,8 @@ import { Field } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { ApiError } from "@/lib/api";
-import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import { PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import { PROVIDER_TYPES } from "@shared/providers";
 import { testOutcome, type TestOutcome } from "@/lib/provider-probe";
 import {
   useCreateProvider,
@@ -239,7 +240,7 @@ export function AddProviderDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {PROVIDERS.map((entry) => (
+                {PROVIDER_TYPES.map((entry) => (
                   <SelectItem key={entry} value={entry}>
                     <ProviderName type={entry} />
                   </SelectItem>

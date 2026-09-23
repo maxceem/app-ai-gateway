@@ -150,7 +150,7 @@ a slug, or the create answers `409 slug_taken`.
 
 | Call | Body | Notes |
 | --- | --- | --- |
-| `GET /v1/admin/providers` | | Returns `providers[]` with `id`, `type`, `slug`, `name`, `secretHint`, `providerGatewayId`, `baseUrl`, `pricing`, `revision`, `status` |
+| `GET /v1/admin/providers` | | Returns `providers[]` with `id`, `type`, `slug`, `name`, `secretHint`, `providerGatewayId`, `baseUrl`, `pricing`, `route`, `capability`, `revision`, `status`. `capability` lists the `apiStyles` and `endpointStyles` the instance serves on its route and the `modelPrefix` the route adds |
 | `POST /v1/admin/providers/test` | `{ type, secret }` or `{ type, providerGatewayId }`, optional `baseUrl` | Dry run. `validated: true` means the provider accepted the key. `validated: false` with a `reason` means nothing was proven. A refused key answers `400 provider_key_invalid` |
 | `POST /v1/admin/providers` | `{ type, name, secret }` or `{ type, name, providerGatewayId }`; optional `slug`, `baseUrl`, `pricing`, `gatewayRoute` | Exactly one of `secret` and `providerGatewayId`. `baseUrl` only with `secret` |
 | `PUT /v1/admin/providers/{id}` | `revision` plus any of `name`, `secret`, `baseUrl`, `pricing`, `gatewayRoute`, `status` | `revision` is the value from the provider read this edit is based on. `secret` rotates the key in place. A new non-null `baseUrl` requires `secret` in the same call. `pricing: null` clears prices. `status: "disabled"` pauses without freeing the slug |

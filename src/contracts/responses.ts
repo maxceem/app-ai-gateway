@@ -14,6 +14,7 @@
  */
 import { z } from "zod";
 import { PROVIDER_TYPES } from "../core/providers.ts";
+import { API_STYLES, ENDPOINT_API_STYLES, GATEWAY_TYPES } from "../shared/capabilities.ts";
 import {
   AppConfigSchema,
   GatewayRouteConfigSchema,
@@ -310,6 +311,23 @@ export const ProviderSummarySchema = z.object({
     example: "https://my-resource.openai.azure.com/openai/v1/",
   }),
   pricing: ProviderPricingSchema.nullable(),
+  route: z.enum(["direct", ...GATEWAY_TYPES]).nullable().meta({
+    description: "Where this instance's traffic goes: direct to the provider's own API, or the type of the provider gateway it is routed through. Null when that gateway's type has no adapter in this deployment, so the instance can serve nothing until it is fixed or deleted.",
+  }),
+  capability: z.object({
+    apiStyles: z.array(z.enum(API_STYLES)).meta({
+      description: "The client APIs this instance can be called with on its route. A direct instance lists every style its provider type does not narrow; the provider itself answers for paths it lacks.",
+    }),
+    endpointStyles: z.array(z.enum(ENDPOINT_API_STYLES)).meta({
+      description: "The named-endpoint styles this instance can back on its route.",
+    }),
+    modelPrefix: z.string().nullable().meta({
+      description: "The namespace the route adds to model IDs on the way out. Clients always send the provider's own ID; null means the route sends it unchanged.",
+    }),
+    paths: z.enum(["provider", "gateway"]).meta({
+      description: "Whose URL layout clients call under /proxy/{slug}/: the provider's own paths, or the one path per API style a gateway publishes for every provider it serves.",
+    }),
+  }).meta({ description: "What this instance can do on its route, decided by the gateway rather than re-derived by clients." }),
   revision: z.number().int().positive(),
   status: z.enum(["active", "disabled"]).meta({
     description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",

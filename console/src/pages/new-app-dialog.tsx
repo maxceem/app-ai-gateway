@@ -22,7 +22,8 @@ import { ExternalHint } from "@/components/external-hint";
 import { PresetPicker } from "@/components/preset-picker";
 import { clientApiOrigin } from "@/lib/client-api";
 import { DEFAULT_END_USER_HEADER, type AppAttestEnvironment } from "@/lib/config-types";
-import { appConfigIssues, appleIdentityProblem, issueUnder } from "@shared/app-config";
+import { appConfigIssues, appleIdentityProblem } from "@shared/app-config";
+import { clearUnder, DRAFT_PATHS } from "@/lib/draft-problems";
 import { newAppConfig, type NewAppInput } from "@shared/app-defaults";
 import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
@@ -110,10 +111,6 @@ const ENTITLEMENT_NONE = ENTITLEMENT_PRESETS.find((preset) => preset.id === "non
  * be a {@link GuardedButton}: the guard is what tells a read-only member why
  * nothing happens, and a bare element would simply fail on submit instead.
  */
-/** Where the issuer block, and its paid-user claims within it, sit in a configuration. */
-const ISSUER_PATH = ["authentication", "end_user", "issuer"] as const;
-const CLAIMS_PATH = [...ISSUER_PATH, "required_claims"] as const;
-
 export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   const { capabilities } = useConsoleSession();
   const [open, setOpen] = useState(false);
@@ -168,10 +165,8 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   // section at a time: a step is judged on the fields under its own path, not
   // held back by a step the person has not reached yet.
   const issues = appConfigIssues(newAppConfig(newAppInput()));
-  const clearUnder = (path: readonly string[], except?: readonly string[]) =>
-    !issues.some((issue) => issueUnder(issue, path) && !(except && issueUnder(issue, except)));
   const issuerComplete =
-    presetInputsComplete(issuer, issuerValues) && clearUnder(ISSUER_PATH, CLAIMS_PATH);
+    presetInputsComplete(issuer, issuerValues) && clearUnder(issues, DRAFT_PATHS.issuer, DRAFT_PATHS.claims);
 
   const stepComplete = (() => {
     switch (step.id) {
@@ -184,7 +179,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
       case "identity_provider":
         return issuerComplete;
       case "subscription":
-        return presetInputsComplete(entitlement, entitlementValues) && clearUnder(CLAIMS_PATH);
+        return presetInputsComplete(entitlement, entitlementValues) && clearUnder(issues, DRAFT_PATHS.claims);
     }
   })();
 

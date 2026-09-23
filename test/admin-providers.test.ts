@@ -1026,6 +1026,22 @@ describe("gateway routing configuration", () => {
     });
     expect(routed.status, routed.text).toBe(201);
     expect(routed.body.provider.gatewayRoute).toEqual({ providerOnly: ["google"] });
+    // What the instance can do on its route, reported with the row so no
+    // client has to join it to its gateway and the route tables: Vercel's three
+    // APIs under its own paths, no endpoint Gemini composes, and Google's
+    // namespace on the wire.
+    expect(routed.body.provider).toMatchObject({
+      route: "vercel",
+      capability: {
+        apiStyles: ["responses", "chat_completions", "anthropic_messages"],
+        endpointStyles: [],
+        modelPrefix: "google/",
+        paths: "gateway",
+      },
+    });
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.body.providers.find((row: { slug: string }) => row.slug === "gemini-vercel"))
+      .toMatchObject({ route: "vercel", capability: routed.body.provider.capability });
 
     const badPrefix = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: { modelPrefix: "google" },
@@ -1041,6 +1057,48 @@ describe("gateway routing configuration", () => {
     expect(unknownKey.status, unknownKey.text).toBe(400);
   });
 
+  it("lists an instance whose gateway type has no adapter without hiding the rest", async () => {
+    stubProbe();
+    const gateway = await createGateway();
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug: "openai-orphan",
+      name: "OpenAI through a gone gateway",
+      providerGatewayId: gateway.id,
+    });
+    expect(routed.status, routed.text).toBe(201);
+    const direct = await call("POST", "/v1/admin/providers", {
+      type: "anthropic",
+      name: "Anthropic",
+      secret: "sk-ant-direct",
+    });
+    expect(direct.status, direct.text).toBe(201);
+    // The column is permissive on purpose; a type this build cannot route is
+    // one a newer deployment wrote, or one whose adapter was removed.
+    await env.DB.prepare("UPDATE provider_gateway SET type = 'litellm' WHERE id = ?")
+      .bind(gateway.id)
+      .run();
+
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.status, listed.text).toBe(200);
+    const bySlug = new Map(
+      (listed.body.providers as { slug: string }[]).map((row) => [row.slug, row]),
+    );
+    expect(bySlug.get("openai-orphan")).toMatchObject({
+      route: null,
+      capability: { apiStyles: [], endpointStyles: [] },
+    });
+    expect(bySlug.get("anthropic")).toMatchObject({ route: "direct" });
+
+    // And it can still be paused rather than being stuck until someone deletes it.
+    const paused = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      status: "disabled",
+      revision: routed.body.provider.revision,
+    });
+    expect(paused.status, paused.text).toBe(200);
+    expect(paused.body.provider).toMatchObject({ route: null, status: "disabled" });
+  });
+
   it("stores no routing configuration for a Cloudflare-routed instance", async () => {
     stubProbe();
     const gateway = await createGateway();
@@ -1054,6 +1112,16 @@ describe("gateway routing configuration", () => {
 
     const listed = await call("GET", "/v1/admin/providers");
     expect(listed.body.providers[0].gatewayRoute).toBeNull();
+    // Cloudflare forwards to the provider's own API: nothing narrowed, both
+    // endpoint styles, and OpenAI's own model IDs on the wire.
+    expect(listed.body.providers[0]).toMatchObject({
+      route: "cf_aig",
+      capability: {
+        endpointStyles: ["responses", "audio_transcription"],
+        modelPrefix: null,
+        paths: "provider",
+      },
+    });
   });
 
   it("refuses a routing configuration Cloudflare AI Gateway cannot honour", async () => {

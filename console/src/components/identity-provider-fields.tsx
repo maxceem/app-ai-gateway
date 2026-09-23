@@ -1,5 +1,5 @@
 import { PresetPicker } from "@/components/preset-picker";
-import type { AuthConfig } from "@/lib/config-types";
+import type { IssuerDraft } from "@/lib/config-types";
 import { ISSUER_PRESETS, buildIssuer, matchIssuerPreset, type IssuerPreset } from "@/lib/presets";
 
 /**
@@ -14,9 +14,9 @@ export function IdentityProviderFields({
   disabled = false,
   onChange,
 }: {
-  issuer: AuthConfig;
+  issuer: IssuerDraft;
   disabled?: boolean;
-  onChange: (partial: Partial<AuthConfig>) => void;
+  onChange: (partial: Partial<IssuerDraft>) => void;
 }) {
   const { preset, values } = matchIssuerPreset(issuer);
 

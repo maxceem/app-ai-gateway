@@ -17,7 +17,7 @@ import { colorEnabled, style } from "../src/style.ts";
 import { main } from "../src/main.ts";
 import type { CommandName } from "../src/parser.ts";
 import type { RenderedResult } from "../src/results.ts";
-import { fresh, makeStore } from "./helpers.ts";
+import { fresh, makeStore, served } from "./helpers.ts";
 
 const context: OutputContext = { url: "https://gw.example" };
 const owned: OutputContext = { url: "https://gw.example", accountId: "acct_1" };
@@ -50,6 +50,7 @@ const provider: ProviderSummary = {
   gatewayRoute: null,
   baseUrl: null,
   pricing: null,
+  ...served("openai"),
   revision: 1,
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",

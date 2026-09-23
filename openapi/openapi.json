@@ -293,17 +293,19 @@
                                   "properties": {
                                     "path": {
                                       "type": "string",
-                                      "minLength": 1
+                                      "pattern": "\\S"
                                     },
                                     "contains": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "array",
                                           "items": {
-                                            "type": "string"
+                                            "type": "string",
+                                            "pattern": "\\S"
                                           },
                                           "minItems": 1
                                         }
@@ -312,7 +314,8 @@
                                     "equals": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "number"
@@ -522,17 +525,19 @@
                                   "properties": {
                                     "path": {
                                       "type": "string",
-                                      "minLength": 1
+                                      "pattern": "\\S"
                                     },
                                     "contains": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "array",
                                           "items": {
-                                            "type": "string"
+                                            "type": "string",
+                                            "pattern": "\\S"
                                           },
                                           "minItems": 1
                                         }
@@ -541,7 +546,8 @@
                                     "equals": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "number"
@@ -1363,6 +1369,72 @@
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "direct",
+              "cf_aig",
+              "vercel",
+              null
+            ],
+            "description": "Where this instance's traffic goes: direct to the provider's own API, or the type of the provider gateway it is routed through. Null when that gateway's type has no adapter in this deployment, so the instance can serve nothing until it is fixed or deleted."
+          },
+          "capability": {
+            "type": "object",
+            "properties": {
+              "apiStyles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "chat_completions",
+                    "anthropic_messages",
+                    "gemini_native",
+                    "audio_transcription",
+                    "other"
+                  ]
+                },
+                "description": "The client APIs this instance can be called with on its route. A direct instance lists every style its provider type does not narrow; the provider itself answers for paths it lacks."
+              },
+              "endpointStyles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "audio_transcription"
+                  ]
+                },
+                "description": "The named-endpoint styles this instance can back on its route."
+              },
+              "modelPrefix": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The namespace the route adds to model IDs on the way out. Clients always send the provider's own ID; null means the route sends it unchanged."
+              },
+              "paths": {
+                "type": "string",
+                "enum": [
+                  "provider",
+                  "gateway"
+                ],
+                "description": "Whose URL layout clients call under /proxy/{slug}/: the provider's own paths, or the one path per API style a gateway publishes for every provider it serves."
+              }
+            },
+            "required": [
+              "apiStyles",
+              "endpointStyles",
+              "modelPrefix",
+              "paths"
+            ],
+            "description": "What this instance can do on its route, decided by the gateway rather than re-derived by clients."
+          },
           "revision": {
             "type": "integer",
             "exclusiveMinimum": 0
@@ -1392,6 +1464,8 @@
           "gatewayRoute",
           "baseUrl",
           "pricing",
+          "route",
+          "capability",
           "revision",
           "status",
           "createdAt",

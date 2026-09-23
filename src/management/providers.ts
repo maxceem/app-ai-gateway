@@ -12,7 +12,7 @@ import type {
   ProviderSummary,
   ProviderTestResponse,
 } from "../contracts/responses";
-import { assertRouteServesProvider } from "../core/capabilities";
+import { assertRouteServesProvider, instanceCapability, type ProviderRoute } from "../core/capabilities";
 import { GatewayError } from "../core/errors";
 import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../core/routes";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
@@ -41,7 +41,12 @@ import {
 
 type ProviderRow = typeof provider.$inferSelect;
 
-function serialize(row: ProviderRow): ProviderSummary {
+/**
+ * One row as the API publishes it. `route` is the row's gateway type, or
+ * `direct`, and the capability is read off it here so no client has to join
+ * provider rows to gateway rows and the route tables to work it out.
+ */
+function serialize(row: ProviderRow, route: ProviderRoute | null): ProviderSummary {
   return {
     id: row.id,
     type: row.type,
@@ -52,11 +57,34 @@ function serialize(row: ProviderRow): ProviderSummary {
     gatewayRoute: row.gatewayRoute,
     baseUrl: row.baseUrl,
     pricing: row.pricing,
+    route,
+    capability: instanceCapability(route, row.type, row.gatewayRoute),
     revision: row.revision,
     status: row.status,
     createdAt: row.createdAt,
     createdBy: row.createdBy,
   };
+}
+
+/**
+ * The route a stored gateway type names, or `null` for a type this deployment
+ * has no adapter for. The column is deliberately permissive, and such a row
+ * stays listable and editable — it simply serves nothing — rather than taking
+ * every healthy instance in the list down with it.
+ */
+function storedRoute(gatewayType: string | null): ProviderRoute | null {
+  if (gatewayType === null) return "direct";
+  return isGatewayType(gatewayType) ? gatewayType : null;
+}
+
+/** The route of one existing row, reading its gateway's type where it has one. */
+async function rowRoute(env: Env, row: ProviderRow): Promise<ProviderRoute | null> {
+  if (row.providerGatewayId === null) return "direct";
+  const gateway = await database(env.DB).query.providerGateway.findFirst({
+    columns: { type: true },
+    where: eq(providerGateway.id, row.providerGatewayId),
+  });
+  return storedRoute(gateway?.type ?? null);
 }
 
 function guardedBaseUrl(raw: string): string {
@@ -127,8 +155,12 @@ async function gatewayRouteAdapter(
 
 export async function listProviders(scope: ManagementScope, actor: Actor): Promise<ProviderListResponse> {
   const { env } = scope;
-  const rows = await database(env.DB).select().from(provider).where(eq(provider.organizationId, actor.organizationId));
-  return { providers: rows.map(serialize) };
+  const rows = await database(env.DB)
+    .select({ row: provider, gatewayType: providerGateway.type })
+    .from(provider)
+    .leftJoin(providerGateway, eq(providerGateway.id, provider.providerGatewayId))
+    .where(eq(provider.organizationId, actor.organizationId));
+  return { providers: rows.map(({ row, gatewayType }) => serialize(row, storedRoute(gatewayType))) };
 }
 
 export async function testProvider(scope: ManagementScope, actor: Actor, input: unknown): Promise<ProviderTestResponse> {
@@ -168,6 +200,7 @@ export async function createProvider(
   const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
+  let route: ProviderRoute = "direct";
   if (body.secret !== undefined) {
     routeAdapter("direct").validateRouteConfig(gatewayRoute);
     secret = body.secret;
@@ -178,6 +211,7 @@ export async function createProvider(
     const gatewayType = await gatewayAdapterType(env, actor.organizationId, gatewayId);
     assertRouteServesProvider(gatewayType, body.type);
     routeAdapter(gatewayType).validateRouteConfig(gatewayRoute);
+    route = gatewayType;
   }
 
   const now = new Date().toISOString();
@@ -209,7 +243,7 @@ export async function createProvider(
       [row.id, row.organizationId, row.type, row.slug, row.name, row.secretBlob, row.secretHint,
         row.providerGatewayId, row.gatewayRoute === null ? null : JSON.stringify(row.gatewayRoute), row.baseUrl,
         row.pricing === null ? null : JSON.stringify(row.pricing), row.revision, row.status, row.createdAt, row.updatedAt, row.createdBy],
-      { provider: serialize(row) }, boundary, cap,
+      { provider: serialize(row, route) }, boundary, cap,
     );
   } catch (error) {
     if (databaseErrorMatches(error, /UNIQUE constraint failed/u)) throw slugConflict(slug);
@@ -217,7 +251,7 @@ export async function createProvider(
     throw error;
   }
   invalidateOrganizationProviders(actor.organizationId);
-  return { provider: serialize(row) };
+  return { provider: serialize(row, route) };
 }
 
 export async function updateProvider(
@@ -272,6 +306,7 @@ export async function updateProvider(
   }
 
   const updated = { ...row, ...updates } as ProviderRow;
+  const route = await rowRoute(env, updated);
   await commitResourceWrite(
     scope,
     `UPDATE provider SET name=?,pricing_json=?,status=?,gateway_route_json=?,base_url=?,secret_blob=?,secret_hint=?,revision=?,updated_at=?
@@ -279,10 +314,10 @@ export async function updateProvider(
     [updated.name, updated.pricing === null ? null : JSON.stringify(updated.pricing), updated.status,
       updated.gatewayRoute === null ? null : JSON.stringify(updated.gatewayRoute), updated.baseUrl,
       updated.secretBlob, updated.secretHint, updated.revision, updated.updatedAt, id, actor.organizationId, body.revision],
-    { provider: serialize(updated) }, boundary,
+    { provider: serialize(updated, route) }, boundary,
   );
   invalidateOrganizationProviders(actor.organizationId);
-  return { provider: serialize(updated) };
+  return { provider: serialize(updated, route) };
 }
 
 export async function deleteProvider(scope: ManagementScope, actor: Actor, id: string): Promise<ProviderDeleteResponse> {

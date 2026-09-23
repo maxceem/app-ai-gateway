@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer } from "react";
 import { reduceAppDraft, sessionDirty, type Draft } from "@/lib/app-draft";
 import type {
   AppConfigDraft,
-  AuthConfig,
+  IssuerDraft,
   AuthenticationDraft,
   EndUserIdentity,
   EndpointsConfig,
@@ -64,7 +64,7 @@ export function useAppDraft(appId: string) {
     dispatch({ kind: "updateAuthentication", appId, authentication });
   }, [appId]);
 
-  const updateIssuer = useCallback((partial: Partial<AuthConfig>) => {
+  const updateIssuer = useCallback((partial: Partial<IssuerDraft>) => {
     dispatch({ kind: "updateIssuer", appId, partial });
   }, [appId]);
 

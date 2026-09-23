@@ -1,5 +1,20 @@
 import { Context, type ContextStore } from "../src/context.ts";
 import type { CliState } from "../src/state.ts";
+import { providerCapability, type ProviderType } from "../../src/shared/providers.ts";
+
+/** The route and capability a direct provider row of this type is served with. */
+export const served = (type: ProviderType) => {
+  const capability = providerCapability(type);
+  return {
+    route: "direct" as const,
+    capability: {
+      apiStyles: [...capability.apiStyles],
+      endpointStyles: [...capability.endpointStyles],
+      modelPrefix: null,
+      paths: "provider" as const,
+    },
+  };
+};
 
 export const fresh = (): CliState => ({
   schemaVersion: 1,

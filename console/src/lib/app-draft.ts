@@ -17,7 +17,7 @@ import {
   emptyIssuer,
   withIssuer,
   type AppConfigDraft,
-  type AuthConfig,
+  type IssuerDraft,
   type AuthenticationDraft,
   type EndUserIdentity,
   type EndpointsConfig,
@@ -46,7 +46,7 @@ export function toDraft(row: AppRow): Draft {
  * app's issuer has no business surviving that.
  */
 interface IssuerMemory {
-  rememberedIssuer: AuthConfig | null;
+  rememberedIssuer: IssuerDraft | null;
 }
 
 export type EditorSession = IssuerMemory & {
@@ -72,7 +72,7 @@ export type AppDraftAction =
   | { kind: "update"; appId: string; partial: Partial<Draft> }
   | { kind: "updateConfig"; appId: string; partial: Partial<AppConfigDraft> }
   | { kind: "updateAuthentication"; appId: string; authentication: AuthenticationDraft }
-  | { kind: "updateIssuer"; appId: string; partial: Partial<AuthConfig> }
+  | { kind: "updateIssuer"; appId: string; partial: Partial<IssuerDraft> }
   | { kind: "setEndUserSource"; appId: string; source: EndUserIdentity["source"] | undefined }
   | { kind: "updateEndUserHeader"; appId: string; header: string }
   | { kind: "updateProxy"; appId: string; partial: Partial<ProxyConfig> }
@@ -89,7 +89,7 @@ const sessionOf = (session: EditorSession | null, appId: string): EditorSession 
 const withDraft = (session: EditorSession, draft: Draft): EditorSession =>
   ({ ...session, draft });
 
-const remembering = (draft: Draft): AuthConfig | null =>
+const remembering = (draft: Draft): IssuerDraft | null =>
   authIssuer(draft.config.authentication) ?? null;
 
 /** The session a fresh read of an application opens. */
@@ -171,7 +171,7 @@ function switchEndUserSource(
 /** The issuer block edited in place, materializing one where the app implies it. */
 function editIssuer(
   session: EditorSession,
-  partial: Partial<AuthConfig>,
+  partial: Partial<IssuerDraft>,
 ): EditorSession {
   const current = session.draft;
   const authentication = current.config.authentication;

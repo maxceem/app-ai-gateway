@@ -24,7 +24,7 @@ import {
   DEFAULT_END_USER_HEADER,
   authIssuer,
   emptyIssuer,
-  type AuthConfig,
+  type IssuerDraft,
   type AuthenticationDraft,
 } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
@@ -363,7 +363,7 @@ function SubscriptionCheck({
   readOnly,
   state,
 }: {
-  issuer: AuthConfig;
+  issuer: IssuerDraft;
   readOnly: boolean;
   state: AppDraft;
 }) {

@@ -7,12 +7,14 @@ import { ProvidersPage } from "./providers";
 import { draftsToPricing } from "@/lib/pricing-draft";
 import { renderAuthenticated } from "@/test/render";
 import type { AppSummary, ProviderCredential, ProviderGateway } from "@/lib/types";
+import { served } from "@/test/providers";
 
 const SECRET = "sk-live-never-shown-again";
 
 const DIRECT: ProviderCredential = {
   id: "provider-1",
   type: "openai",
+  ...served("openai"),
   slug: "openai",
   name: "Prod OpenAI",
   secretHint: "gain",
@@ -35,6 +37,7 @@ const VIA_GATEWAY: ProviderCredential = {
   // A routed row owns no secret at all: the gateway token authenticates it.
   secretHint: null,
   providerGatewayId: "gw-1",
+  ...served("anthropic", "cf_aig"),
   pricing: null,
 };
 
@@ -98,6 +101,7 @@ const VIA_VERCEL: ProviderCredential = {
   name: "Gemini via Vercel",
   secretHint: null,
   providerGatewayId: "gw-vercel",
+  ...served("gemini", "vercel"),
   pricing: null,
 };
 

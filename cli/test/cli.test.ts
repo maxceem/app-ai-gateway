@@ -19,7 +19,7 @@ import { Context } from "../src/context.ts";
 import { date, month, positive } from "../src/usage.ts";
 import { main, type OutputSink } from "../src/main.ts";
 import { fail } from "../src/common.ts";
-import { fresh, hasCode, makeStore } from "./helpers.ts";
+import { fresh, hasCode, makeStore, served } from "./helpers.ts";
 
 const credential = {
   credential: { token: "SENTINEL-MANAGEMENT-SECRET", expiresAt: "2030-01-01" },
@@ -329,6 +329,7 @@ test("response parsing emits only declared fields, so no unknown credential reac
         gatewayRoute: null,
         baseUrl: null,
         pricing: null,
+        ...served("openai"),
         revision: 1,
         status: "active",
         createdAt: "now",
@@ -956,6 +957,7 @@ function providerRow(id: string) {
     gatewayRoute: null,
     baseUrl: null,
     pricing: null,
+    ...served("openai"),
     revision: 1,
     status: "active",
     createdAt: "now",

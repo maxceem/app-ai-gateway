@@ -30,7 +30,8 @@ import { GatewayIcon, ProviderIcon, ProviderName } from "@/components/brand-icon
 import { EmptyState, SectionHeader } from "@/components/field";
 import { RangePicker } from "@/components/pickers";
 import { EventStatusBadge } from "@/components/status-badge";
-import { isGatewayType, isProviderType } from "@/lib/config-types";
+import { isGatewayType } from "@/lib/config-types";
+import { isProviderType } from "@shared/providers";
 import {
   cachedInputRate,
   daysAgo,

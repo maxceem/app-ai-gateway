@@ -1,4 +1,4 @@
-import type { AuthConfig, ClaimRequirement, EntitlementCheck, IssuerProvider } from "./config-types";
+import type { IssuerDraft, ClaimRequirement, EntitlementCheck, IssuerProvider } from "./config-types";
 
 export interface PresetInput {
   key: string;
@@ -241,7 +241,7 @@ export const issuerPreset = (id: IssuerProvider): IssuerPreset =>
  * as a list even when one was written, so a list of one is read as that value.
  * A list of several is beyond what any preset writes; the first is shown.
  */
-export function storedIssuer(issuer: AuthConfig): StoredIssuer {
+export function storedIssuer(issuer: IssuerDraft): StoredIssuer {
   const single = (value: string | string[] | undefined): string =>
     Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
   return {
@@ -264,7 +264,7 @@ export function storedIssuer(issuer: AuthConfig): StoredIssuer {
  * several `iss` or `aud` values is custom by definition: no preset writes a list.
  */
 export function matchIssuerPreset(
-  issuer: AuthConfig,
+  issuer: IssuerDraft,
 ): { preset: IssuerPreset; values: Record<string, string> } {
   const stored = storedIssuer(issuer);
   if (issuer.provider) {

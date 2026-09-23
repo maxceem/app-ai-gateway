@@ -15,18 +15,23 @@ function selectedPolicies(draft: AppConfigDraft): Record<string, ProviderConfig>
   );
 }
 
-/** Materializes form-only omissions, then validates and normalizes before an HTTP request starts. */
-export function normalizeAppConfigDraft(draft: AppConfigDraft): AppConfig {
+/** The draft with its form-only omissions filled in: what the schema is asked about. */
+export function materializeAppConfigDraft(draft: AppConfigDraft): unknown {
   const providers = draft.routing.providers.mode === "all"
     ? { mode: "all" as const }
     : { mode: "selected" as const, selected: selectedPolicies(draft) };
-  return parseAppConfig({
+  return {
     ...draft,
     routing: {
       providers,
       model_rewrites: draft.routing.model_rewrites ?? {},
     },
-  });
+  };
+}
+
+/** Materializes form-only omissions, then validates and normalizes before an HTTP request starts. */
+export function normalizeAppConfigDraft(draft: AppConfigDraft): AppConfig {
+  return parseAppConfig(materializeAppConfigDraft(draft));
 }
 
 /**

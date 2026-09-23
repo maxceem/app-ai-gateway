@@ -5,7 +5,7 @@ import { AuthPolicyTab } from "./auth-policy";
 import { levelStatuses } from "@/lib/auth-levels";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AppDraft, Draft } from "@/hooks/use-app-draft";
-import type { AuthConfig, AuthenticationDraft } from "@/lib/config-types";
+import type { IssuerDraft, AuthenticationDraft } from "@/lib/config-types";
 
 const APP_ID = "my-app";
 
@@ -15,7 +15,11 @@ const APP_ID = "my-app";
  */
 function draftFor(authentication: AuthenticationDraft): AppDraft {
   return {
-    draft: { name: "My app", status: "active", config: { authentication } },
+    draft: {
+      name: "My app",
+      status: "active",
+      config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },
+    },
     dirty: false,
     save: vi.fn(),
     updateIssuer: vi.fn(),
@@ -25,7 +29,7 @@ function draftFor(authentication: AuthenticationDraft): AppDraft {
   } as unknown as AppDraft;
 }
 
-const FIREBASE: AuthConfig = {
+const FIREBASE: IssuerDraft = {
   provider: "firebase",
   jwks_url:
     "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
@@ -33,9 +37,10 @@ const FIREBASE: AuthConfig = {
   audience: "my-app-1a2b3",
   user_id_claim: "sub",
   required_claims: [],
+  max_token_lifetime_seconds: 86400,
 };
 
-const serverApp = (issuer?: AuthConfig): AuthenticationDraft => ({
+const serverApp = (issuer?: IssuerDraft): AuthenticationDraft => ({
   type: "api_key",
   ...(issuer ? { end_user: { source: "issuer" as const, issuer } } : {}),
 });
@@ -45,7 +50,7 @@ const headerApp = (header = "x-end-user-id"): AuthenticationDraft => ({
   end_user: { source: "header", header },
 });
 
-const appleApp = (issuer: AuthConfig = FIREBASE): AuthenticationDraft => ({
+const appleApp = (issuer: IssuerDraft = FIREBASE): AuthenticationDraft => ({
   type: "apple_app_attest",
   app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
   end_user: { source: "issuer", issuer },
@@ -109,6 +114,13 @@ describe("levelStatuses", () => {
       undefined,
     );
     expect(paidWithoutClaim.subscription.tone).toBe("incomplete");
+  });
+
+  it("judges a backend-sent header by the schema, not by whether it is empty", () => {
+    expect(levelStatuses(draft(headerApp()), true).users.tone).toBe("weak");
+    // A name the gateway already uses is refused on save, so it is not an
+    // answer the level can call done.
+    expect(levelStatuses(draft(headerApp("authorization")), true).users.tone).toBe("incomplete");
   });
 
   it("reads a server app's identity off its keys", () => {
@@ -258,7 +270,7 @@ describe("AuthPolicyTab user authentication", () => {
 
   it("opens the custom form on the stored URLs when no vendor wrote them", async () => {
     stubKeys();
-    const custom: AuthConfig = {
+    const custom: IssuerDraft = {
       jwks_url: "https://issuer.example.test/jwks.json",
       issuer: "https://issuer.example.test",
       audience: "my-api",

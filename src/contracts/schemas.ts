@@ -103,10 +103,18 @@ export const SlugSchema = safeKey(
   }),
 );
 
+/**
+ * A claim path or value an operator typed. Blank is refused rather than stored:
+ * it is a half-filled form, not a requirement, and it would match only a claim
+ * that is itself blank — a paid-user check that never admits a paying user.
+ */
+// Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
+const ClaimTextSchema = z.string().regex(/\S/, { error: "must not be blank" });
+
 const ClaimRequirementSchema = z.object({
-  path: z.string().min(1),
-  contains: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
-  equals: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  path: ClaimTextSchema,
+  contains: z.union([ClaimTextSchema, z.array(ClaimTextSchema).min(1)]).optional(),
+  equals: z.union([ClaimTextSchema, z.number(), z.boolean()]).optional(),
 }).strict().superRefine((value, context) => {
   // Exactly one: a requirement with both says two different things about the
   // same claim, and one with neither says nothing and would admit everybody.

@@ -24,7 +24,8 @@ import { StateStore, reserveOutput, type CliState, type InstallationJournal } fr
 import { Context } from "../src/context.ts";
 import type { Flags } from "../src/parser.ts";
 import { CliError, fail } from "../src/common.ts";
-import { errorOf, hasCode, stubContext } from "./helpers.ts";
+import { errorOf, hasCode, stubContext, served } from "./helpers.ts";
+import type { ProviderType } from "../../src/shared/providers.ts";
 
 const server: AppWrite = {
   name: "Server",
@@ -155,7 +156,7 @@ test("app remove supplies required confirmation query and full writes supply the
 const providerRow = (slug: string, type: string) => ({
   id: `p-${slug}`, slug, type, name: slug, secretHint: null, providerGatewayId: null,
   gatewayRoute: null, baseUrl: null, pricing: null, status: "active",
-  revision: 1, createdAt: "now", createdBy: "me",
+  revision: 1, createdAt: "now", createdBy: "me", ...served(type as ProviderType),
 });
 
 /** The example a command answered with, refused as a string by the union's other members. */
@@ -333,6 +334,7 @@ test("provider canonical-origin reset can initiate a narrowly bound browser resu
             gatewayRoute: null,
             baseUrl: "https://custom.example",
             pricing: null,
+            ...served("openai"),
             revision: 1,
             status: "active",
             createdAt: "now",
@@ -362,7 +364,7 @@ test("provider and gateway updates forward the revision that was listed", async 
   const provider = {
     id: "p1", slug: "openai", type: "openai", name: "OpenAI", secretHint: null,
     providerGatewayId: null, gatewayRoute: null, baseUrl: null, pricing: null,
-    revision: 7, status: "active", createdAt: "now", createdBy: "me",
+    revision: 7, status: "active", createdAt: "now", createdBy: "me", ...served("openai"),
   };
   const gateway = {
     id: "g1", type: "vercel", name: "Gateway", config: {}, secretHint: "safe",

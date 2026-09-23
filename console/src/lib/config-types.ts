@@ -8,18 +8,8 @@
  * vocabulary for — plus the labels and copy that go around them.
  */
 
-import {
-  OUTPUT_CLAMP_STYLES,
-  type EndpointApiStyle,
-  type OutputClampStyle,
-} from "@shared/capabilities";
-import {
-  ENDPOINT_PROVIDER_TYPES,
-  PROVIDER_TYPES,
-  providersForEndpointStyle,
-  type EndpointProvider,
-  type ProviderType,
-} from "@shared/providers";
+import type { EndpointApiStyle } from "@shared/capabilities";
+import { PROVIDER_TYPES, isProviderType, type ProviderType } from "@shared/providers";
 import {
   ENDPOINT_SLUG,
   type AppAttestEnvironment,
@@ -39,12 +29,6 @@ import {
 import { unlimitedScope } from "@shared/app-defaults";
 
 export { DEFAULT_END_USER_HEADER, ENDPOINT_SLUG } from "@shared/app-config";
-/**
- * The product's own defaults live in `@shared/app-defaults`, which the CLI
- * reads too. This one is re-exported under the name the console has always
- * imported it by, so no form component needs to know where it moved.
- */
-export { emptyPolicy as emptyProvider } from "@shared/app-defaults";
 export type {
   AppAttestEnvironment,
   ClaimRequirement,
@@ -66,7 +50,6 @@ export {
 } from "@shared/capabilities";
 export { reportsCost } from "@shared/providers";
 
-export const PROVIDERS = PROVIDER_TYPES;
 export type Provider = ProviderType;
 
 export const PROVIDER_LABELS: Record<Provider, string> = {
@@ -130,17 +113,12 @@ export const CREATABLE_GATEWAY_TYPES = [
 
 export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["value"];
 
-export const CLAMP_STYLES = OUTPUT_CLAMP_STYLES;
-export type ClampStyle = OutputClampStyle;
-
 /**
  * Incomplete issuer state while the form is being edited. Built on the schema's
  * *input* type, because a half-typed form is exactly a body that has not been
  * parsed yet — and a saved one round-trips through it unchanged.
  */
 export type IssuerDraft = Partial<IssuerAuthenticationInput>;
-/** Stable compatibility name for existing form components. */
-export type AuthConfig = IssuerDraft;
 
 export type HeaderEndUserDraft = { source: "header"; header: string };
 export type IssuerEndUserDraft = { source: "issuer"; issuer: IssuerDraft };
@@ -230,30 +208,17 @@ export interface ProxyConfig {
 }
 
 /**
- * The provider types whose native request shapes the Worker composes for named
- * endpoints, and which styles each one covers — read straight off the shared
- * capability matrix rather than restated here.
+ * The instances a named endpoint of this style may target: the ones whose own
+ * route serves it, as the gateway reports on each instance. The provider type
+ * and the route are both already in that answer — only OpenAI and xAI compose
+ * these request shapes, and Vercel serves no transcription API — so nothing is
+ * judged here that the server has not.
  */
-export const ENDPOINT_PROVIDERS = ENDPOINT_PROVIDER_TYPES;
-export type { EndpointProvider };
-export const endpointProviderTypes = providersForEndpointStyle;
-
-/**
- * The instances a named endpoint of this style may target. The provider type
- * decides which request shapes the gateway composes at all; the instance's
- * *route* decides whether the upstream serves them — Vercel has no transcription
- * API, so a Vercel-routed OpenAI row cannot back a transcription endpoint. Pass
- * `serves` to apply the second half; without it only the type is checked.
- */
-export function endpointInstances<T extends ProviderInstance>(
+export function endpointInstances<T extends { capability: { endpointStyles: readonly EndpointApiStyle[] } }>(
   style: EndpointApiStyle,
   instances: T[],
-  serves?: (instance: T, style: EndpointApiStyle) => boolean,
 ): T[] {
-  const eligible: readonly Provider[] = endpointProviderTypes(style);
-  return instances.filter((instance) =>
-    eligible.includes(instance.type) && (serves?.(instance, style) ?? true)
-  );
+  return instances.filter((instance) => instance.capability.endpointStyles.includes(style));
 }
 
 /**
@@ -269,7 +234,7 @@ export interface AppConfigDraft extends Omit<AppConfigInput, "authentication" | 
   routing: ProxyConfig;
 }
 /** The issuer block, which api_key apps only have once an operator enables one. */
-export const authIssuer = (auth: AuthenticationDraft): AuthConfig | undefined =>
+export const authIssuer = (auth: AuthenticationDraft): IssuerDraft | undefined =>
   auth.end_user?.source === "issuer" ? auth.end_user.issuer : undefined;
 
 /** The end-user source an application uses, or `undefined` when it has none. */
@@ -281,7 +246,7 @@ export const endUserSource = (
  * A fresh issuer block, matching the defaults the Worker applies. Firebase is
  * the provider it opens on, as the creation wizard does.
  */
-export function emptyIssuer(): AuthConfig {
+export function emptyIssuer(): IssuerDraft {
   return {
     provider: "firebase",
     jwks_url: "",
@@ -302,7 +267,7 @@ export function emptyIssuer(): AuthConfig {
  */
 export function withIssuer(
   auth: AuthenticationDraft,
-  issuer: AuthConfig | undefined,
+  issuer: IssuerDraft | undefined,
 ): AuthenticationDraft {
   if (auth.type === "apple_app_attest") {
     return { ...auth, end_user: { source: "issuer", issuer: issuer ?? authIssuer(auth) ?? emptyIssuer() } };
@@ -373,10 +338,6 @@ export function selectedSlugs(proxy: ProxyConfig): string[] {
   return Object.keys(selected).filter((slug) => selected[slug] !== undefined);
 }
 
-export function isProviderType(value: string): value is Provider {
-  return (PROVIDERS as readonly string[]).includes(value);
-}
-
 /**
  * Whether a string names a gateway type this console can describe. Read off the
  * label table, whose key set is what makes a type displayable at all.
@@ -395,7 +356,7 @@ export function isGatewayType(value: string): value is keyof typeof GATEWAY_TYPE
  * that allows `openai` before any OpenAI key exists still reports the gap.
  */
 export function enabledProviders(proxy: ProxyConfig, instances: ProviderInstance[]): Provider[] {
-  if (providerMode(proxy) === "all") return [...PROVIDERS];
+  if (providerMode(proxy) === "all") return [...PROVIDER_TYPES];
   const typeBySlug = new Map(instances.map((instance) => [instance.slug, instance.type]));
   const enabled = new Set(
     selectedSlugs(proxy).flatMap((slug) => {
@@ -404,5 +365,5 @@ export function enabledProviders(proxy: ProxyConfig, instances: ProviderInstance
       return isProviderType(slug) ? [slug] : [];
     }),
   );
-  return PROVIDERS.filter((provider) => enabled.has(provider));
+  return PROVIDER_TYPES.filter((provider) => enabled.has(provider));
 }

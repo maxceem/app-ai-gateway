@@ -4,6 +4,7 @@ import { MissingProvidersAlert, unconfiguredProviders } from "./missing-provider
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { ProxyConfig } from "@/lib/config-types";
 import type { ProviderCredential } from "@/lib/types";
+import { served } from "@/test/providers";
 
 const ALL: ProxyConfig = { providers: { mode: "all" }, model_rewrites: {} };
 
@@ -19,6 +20,7 @@ function credential(overrides: Partial<ProviderCredential>): ProviderCredential 
   return {
     id: "provider-1",
     type: "openai",
+    ...served("openai"),
     slug: "openai",
     name: "Prod OpenAI",
     secretHint: "gain",

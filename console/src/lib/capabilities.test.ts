@@ -6,8 +6,9 @@ import {
   type ApiStyle as CoreApiStyle,
 } from "@shared/capabilities";
 import { PROVIDER_TYPES, providerCapability } from "@shared/providers";
-import { API_STYLE_LABELS, gatewayApiSurface, routeServesEndpointStyle } from "./capabilities";
+import { API_STYLE_LABELS, routedSurface } from "./capabilities";
 import { GATEWAY_TYPE_LABELS, PROVIDER_LABELS } from "./config-types";
+import { served } from "@/test/providers";
 
 /**
  * The console used to hand-mirror the capability matrix: its own provider list,
@@ -38,45 +39,21 @@ describe("the console's view of the shared capability matrix", () => {
     expect(Object.keys(API_STYLE_LABELS).sort()).toEqual(Object.keys(API_STYLE_PATHS).sort());
   });
 
-  it("describes exactly the routes the shared table serves, and no others", () => {
-    for (const gateway of GATEWAY_TYPES) {
-      for (const provider of PROVIDER_TYPES) {
-        const served = GATEWAY_ROUTES[gateway][provider] !== undefined;
-        expect([gateway, provider, gatewayApiSurface(gateway, provider) !== null])
-          .toEqual([gateway, provider, served]);
-      }
-    }
+  it("says nothing extra for a direct row or a gateway that narrows nothing", () => {
+    expect(routedSurface({ type: "openai", ...served("openai") })).toBeNull();
+    // Cloudflare forwards to the provider's own API, so the console makes no
+    // claim about which APIs survive and the provider's own hint stands.
+    expect(routedSurface({ type: "openai", ...served("openai", "cf_aig") })).toBeNull();
   });
 
-  it("reads each route's narrowing off the shared table", () => {
-    // Cloudflare forwards to the provider's own API, so nothing is narrowed and
-    // the console makes no claim about which APIs survive.
-    const cf = gatewayApiSurface("cf_aig", "openai")!;
-    expect(cf.narrowed).toBe(false);
-    expect(cf.available).toEqual([]);
-
-    // Vercel republishes three APIs in front of every model, and namespaces the
-    // model IDs — both read from the same entry the adapter routes with.
-    const vercel = gatewayApiSurface("vercel", "gemini")!;
-    expect(vercel.narrowed).toBe(true);
+  it("reads a narrowing route's APIs and model namespace off the instance", () => {
+    // Vercel republishes three APIs in front of every model and namespaces the
+    // model IDs — both as the gateway reports them on the row.
+    const vercel = routedSurface({ type: "gemini", ...served("gemini", "vercel") })!;
     expect(vercel.available.map((entry) => entry.style))
       .toEqual(GATEWAY_ROUTES.vercel.gemini!.apiStyles);
-    // The API Gemini has that this route cannot carry is named, not hidden.
-    expect(vercel.unavailable.map((entry) => entry.style)).toEqual(["gemini_native"]);
     expect(vercel.modelIds).toContain("google/");
     expect(vercel.modelIds).toContain(PROVIDER_LABELS.gemini);
-  });
-
-  it("judges endpoint eligibility by the route, not the provider type", () => {
-    // Both styles on the provider's own API; only Responses through Vercel.
-    for (const style of ["responses", "audio_transcription"] as const) {
-      expect([style, routeServesEndpointStyle(null, "openai", style)]).toEqual([style, true]);
-      expect([style, routeServesEndpointStyle("cf_aig", "openai", style)]).toEqual([style, true]);
-    }
-    expect(routeServesEndpointStyle("vercel", "openai", "responses")).toBe(true);
-    expect(routeServesEndpointStyle("vercel", "openai", "audio_transcription")).toBe(false);
-    // A provider type the gateway does not serve at all has no route to judge.
-    expect(routeServesEndpointStyle("vercel", "groq", "responses")).toBe(false);
   });
 
   it("labels every provider type the shared list admits", () => {

@@ -4,14 +4,11 @@ import {
   enabledProviders,
   emptyEndpoint,
   emptyIssuer,
-  emptyProvider,
   endpointInstances,
-  endpointProviderTypes,
   endpointSlugError,
   instanceModels,
   nextEndpointSlug,
   providerMode,
-  PROVIDERS,
   PROVIDER_LABELS,
   renameEndpoint,
   reportsCost,
@@ -21,6 +18,9 @@ import {
   type EndpointsConfig,
   type ProviderInstance,
 } from "./config-types";
+import { emptyPolicy as emptyProvider } from "@shared/app-defaults";
+import { PROVIDER_TYPES as PROVIDERS, providersForEndpointStyle as endpointProviderTypes } from "@shared/providers";
+import { served } from "@/test/providers";
 
 /** The organization's rows, which is what a slug-keyed policy is read against. */
 const INSTANCES: ProviderInstance[] = [
@@ -185,8 +185,13 @@ describe("named endpoint targets", () => {
     expect(endpointProviderTypes("responses")).toEqual(["openai", "xai"]);
     expect(endpointProviderTypes("audio_transcription")).toEqual(["openai", "xai"]);
     // The Anthropic instance is not an option, whatever its slug.
-    expect(endpointInstances("responses", INSTANCES).map((entry) => entry.slug))
+    const rows = INSTANCES.map((instance) => ({ ...instance, ...served(instance.type) }));
+    expect(endpointInstances("responses", rows).map((entry) => entry.slug))
       .toEqual(["openai", "openai-dev"]);
+    // The route decides too: Vercel serves no transcription API.
+    const viaVercel = [{ ...INSTANCES[0]!, ...served("openai", "vercel") }];
+    expect(endpointInstances("responses", viaVercel)).toHaveLength(1);
+    expect(endpointInstances("audio_transcription", viaVercel)).toHaveLength(0);
   });
 });
 

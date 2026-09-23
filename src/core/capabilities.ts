@@ -1,4 +1,5 @@
 import type { ProviderRoute, RouteCapability } from "../shared/capabilities";
+import type { GatewayRouteConfig } from "../db/schema";
 import type { ApiStyle } from "./protocols";
 import { GatewayError } from "./errors";
 import { PROVIDER_TYPES, type EndpointApiStyle, type ProviderType } from "./providers";
@@ -43,6 +44,35 @@ const ROUTE_CAPABILITIES: ReadonlyMap<
     })),
   ] as const),
 );
+
+/**
+ * What one provider instance can do on its route, as the management API
+ * publishes it: the resolved matrix cell, the model namespace in force, and
+ * whose URL layout clients call. A `null` route — a gateway type this
+ * deployment has no adapter for — can do nothing, and neither can a route that
+ * does not carry the type at all, which every write refuses.
+ */
+export function instanceCapability(
+  route: ProviderRoute | null,
+  provider: ProviderType,
+  routeConfig: GatewayRouteConfig | null,
+): {
+  apiStyles: ApiStyle[];
+  endpointStyles: EndpointApiStyle[];
+  modelPrefix: string | null;
+  paths: "provider" | "gateway";
+} {
+  const capability = route === null ? null : routeCapability(route, provider);
+  const gatewayRoute = route === null ? undefined : ROUTE_ADAPTERS[route].providerRoute(provider);
+  return {
+    apiStyles: [...(capability?.apiStyles ?? [])],
+    endpointStyles: [...(capability?.endpointStyles ?? [])],
+    modelPrefix: routeConfig?.modelPrefix ?? gatewayRoute?.modelPrefix ?? null,
+    // A gateway that lists the styles it serves publishes one path per style
+    // for every provider; one that lists none forwards the provider's own.
+    paths: gatewayRoute?.apiStyles === undefined ? "provider" : "gateway",
+  };
+}
 
 /** `null` when the route cannot serve the provider type at all. */
 export function routeCapability(

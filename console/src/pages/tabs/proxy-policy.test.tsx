@@ -6,6 +6,7 @@ import { useAppDraft } from "@/hooks/use-app-draft";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { ProxyConfig } from "@/lib/config-types";
 import type { ProviderCredential } from "@/lib/types";
+import { served } from "@/test/providers";
 
 const APP_ID = "my-app";
 
@@ -14,6 +15,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-1",
     type: "openai",
+    ...served("openai"),
     slug: "openai",
     name: "Prod OpenAI",
     secretHint: "gain",
@@ -29,6 +31,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-2",
     type: "openai",
+    ...served("openai"),
     slug: "openai-dev",
     name: "Dev OpenAI",
     secretHint: "dev4",
@@ -44,6 +47,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-3",
     type: "anthropic",
+    ...served("anthropic"),
     slug: "claude",
     name: "Anthropic",
     secretHint: "an7c",

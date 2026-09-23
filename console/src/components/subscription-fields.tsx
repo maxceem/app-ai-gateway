@@ -10,7 +10,7 @@ import {
 import { ClaimsEditor } from "@/components/claims-editor";
 import { ExternalHint } from "@/components/external-hint";
 import { PresetName } from "@/components/preset-picker";
-import type { AuthConfig, ClaimRequirement, EntitlementCheck } from "@/lib/config-types";
+import type { IssuerDraft, ClaimRequirement, EntitlementCheck } from "@/lib/config-types";
 import {
   ENTITLEMENT_FIELD_LABEL,
   ENTITLEMENT_PRESETS,
@@ -39,9 +39,9 @@ export function SubscriptionFields({
   disabled = false,
   onChange,
 }: {
-  issuer: AuthConfig;
+  issuer: IssuerDraft;
   disabled?: boolean;
-  onChange: (partial: Partial<AuthConfig>) => void;
+  onChange: (partial: Partial<IssuerDraft>) => void;
 }) {
   const claims = issuer.required_claims ?? [];
   const entitlement = revenueCatEntitlement(claims);

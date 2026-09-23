@@ -222,6 +222,15 @@ describe("the application configuration grammar", () => {
       expect(() => parseAppConfig(withIssuer({ required_claims: [{ path: "", contains: "a" }] })))
         .toThrowError("required_claims.0.path");
     });
+
+    it.each([
+      ["a blank path", { path: "  ", contains: "pro" }, "required_claims.0.path"],
+      ["a blank contains", { path: "p", contains: "" }, "required_claims.0.contains"],
+      ["a blank alternative", { path: "p", contains: ["pro", " "] }, "required_claims.0.contains"],
+      ["a blank equals", { path: "p", equals: "" }, "required_claims.0.equals"],
+    ])("refuses %s, which is a half-filled form rather than a requirement", (_case, requirement, at) => {
+      expect(() => parseAppConfig(withIssuer({ required_claims: [requirement] }))).toThrowError(at);
+    });
   });
 
   describe("authentication.end_user.header", () => {
