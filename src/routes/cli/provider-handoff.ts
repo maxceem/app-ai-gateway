@@ -18,10 +18,6 @@ export async function completeProviderSubmission(
   const kind = handoffKind(row.kind);
   if (kind.type !== "resource")
     throw new GatewayError(400, "invalid_request", "Unsupported provider submission purpose");
-  // A row a Worker that predates the pin columns wrote, while migrations ran
-  // ahead of its replacement: it pins nothing, so nothing it says is approvable.
-  if (row.request_hash === null)
-    throw new GatewayError(409, "conflict", "This request was opened by an earlier version; run the command again");
   const { write } = kind;
   const actor = actorFromHandoff(row);
   const scope = managementScope(c);

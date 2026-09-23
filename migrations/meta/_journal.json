@@ -40,15 +40,8 @@
     {
       "idx": 5,
       "version": "6",
-      "when": 1790131938929,
-      "tag": "0005_handoff_pins",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "6",
-      "when": 1790132194763,
-      "tag": "0006_bootstrap_table",
+      "when": 1790138404769,
+      "tag": "0005_handoff_pins_and_bootstrap",
       "breakpoints": true
     }
   ]

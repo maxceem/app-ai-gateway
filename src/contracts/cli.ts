@@ -170,11 +170,6 @@ export const CliBootstrapResponseSchema = z.object({
    * account has no such window.
    */
   unclaimedAccess: UnclaimedAccessSchema,
-  /**
-   * The same value under the name CLIs up to 0.2.1 require, which they parse
-   * a bootstrap response with. Removed once no such CLI can still be installed.
-   */
-  trial: UnclaimedAccessSchema.meta({ deprecated: true, description: "Deprecated alias of unclaimedAccess." }),
 });
 export const CliOperationResponseSchema = z.object({
   id: z.string(),

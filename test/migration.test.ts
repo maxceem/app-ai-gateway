@@ -260,6 +260,8 @@ describe("initial database migration", () => {
       "gateway_revision",
       "snapshot_json",
     ]));
+    expect(handoffColumns.results.find((column) => column.name === "request_hash"))
+      .toMatchObject({ notnull: 1 });
     const gatewayStateTables = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mgmt_handoff','cli_rate_limit','mgmt_resource_receipt') ORDER BY name",
     ).all<{ name: string }>();

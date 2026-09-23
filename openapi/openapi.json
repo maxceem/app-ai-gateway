@@ -10263,33 +10263,13 @@
                       "required": [
                         "endsAt"
                       ]
-                    },
-                    "trial": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "properties": {
-                        "endsAt": {
-                          "type": "string"
-                        },
-                        "limit": {
-                          "type": "integer"
-                        }
-                      },
-                      "required": [
-                        "endsAt"
-                      ],
-                      "deprecated": true,
-                      "description": "Deprecated alias of unclaimedAccess."
                     }
                   },
                   "required": [
                     "deployment",
                     "account",
                     "credential",
-                    "unclaimedAccess",
-                    "trial"
+                    "unclaimedAccess"
                   ]
                 }
               }

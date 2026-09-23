@@ -37,7 +37,6 @@ const credential = {
     consoleOrigin: "https://console.example.com",
   },
   unclaimedAccess: null,
-  trial: null,
 };
 
 test("all public commands parse help; forbidden and conflicting inputs fail before transport", () => {
@@ -733,7 +732,7 @@ test("fresh onboarding output includes exact free access dates without managemen
       transport: {
         request: async (_url, path) => {
           if (path.endsWith("/bootstrap"))
-            return { data: { ...credential, account, unclaimedAccess: trial, trial } };
+            return { data: { ...credential, account, unclaimedAccess: trial } };
           if (path.endsWith("/apps"))
             return {
               data: {

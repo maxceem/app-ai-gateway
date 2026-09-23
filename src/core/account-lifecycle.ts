@@ -205,12 +205,8 @@ function accountCleanupStatements(cutoffMs: number): {
       WHERE organization_id IN (${expired})`,
     params: [cutoffMs, ...cutoff],
   });
-  // Receipts of kind 'bootstrap' are the pre-0006 copies of bootstrap rows,
-  // kept until no Worker older than that migration can be serving. They are
-  // left alone here: deleting its account nulls their `organization_id`, which
-  // such a Worker reads as expired, so each still refuses its own replay.
   statements.push({
-    sql: `DELETE FROM mgmt_resource_receipt WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
+    sql: `DELETE FROM mgmt_resource_receipt WHERE organization_id IN (${expired})`,
     params: [...cutoff],
   });
   statements.push({

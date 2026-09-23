@@ -138,37 +138,6 @@ describe("CLI account lifecycle", () => {
     if (limit === null) expect(data.unclaimedAccess).not.toHaveProperty("limit");
     else expect(data.unclaimedAccess.limit).toBe(limit);
   });
-  it("holds a bootstrap a pre-0006 Worker recorded to its own proof", async () => {
-    // What a Worker older than the bootstrap table leaves behind when it
-    // serves between that migration and its replacement's deploy: the row
-    // exists only as a receipt.
-    const testEnv = runtime();
-    const input = { idempotencyKey: random(), pollToken: random() };
-    const first = await request(testEnv, "/bootstrap", input);
-    expect(first.status, await first.clone().text()).toBe(200);
-    const created = await first.json() as { account: { id: string } };
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO mgmt_resource_receipt(
-           id,kind,organization_id,initiating_user_id,proof_hash,request_hash,outcome,
-           protected_credential,protected_credential_expires_at,expires_at,created_at,updated_at)
-         SELECT id,'bootstrap',organization_id,service_user_id,proof_hash,'{}',
-           json_object('credentialId',credential_id),protected_credential,
-           protected_credential_expires_at,0,created_at,updated_at
-         FROM mgmt_bootstrap WHERE organization_id=?`,
-      ).bind(created.account.id),
-      env.DB.prepare("DELETE FROM mgmt_bootstrap WHERE organization_id=?").bind(created.account.id),
-    ]);
-
-    // The same idempotency key names the same account, so a different poll
-    // token must be refused rather than attached to it.
-    const stolen = await request(testEnv, "/bootstrap", { ...input, pollToken: random() });
-    expect(stolen.status).toBe(403);
-    const resumed = await request(testEnv, "/bootstrap", input);
-    expect(resumed.status, await resumed.clone().text()).toBe(200);
-    await expect(resumed.json()).resolves.toMatchObject({ account: { id: created.account.id } });
-  });
-
   it("replays concurrent bootstrap without another account or plaintext verification credential", async () => {
     const testEnv = runtime();
     const input = { idempotencyKey: random(), pollToken: random() };

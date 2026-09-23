@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "69297adc-1cff-49bf-8fe5-cfe7bec90a5a",
+  "id": "d1a378d6-f919-45d4-8d2b-24db7549f3cf",
   "prevId": "98f67b01-34e1-413e-85c1-fd83516e23bd",
   "tables": {
     "app": {
@@ -1177,6 +1177,108 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "mgmt_bootstrap": {
+      "name": "mgmt_bootstrap",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "service_user_id": {
+          "name": "service_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "proof_hash": {
+          "name": "proof_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "protected_credential": {
+          "name": "protected_credential",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "protected_credential_expires_at": {
+          "name": "protected_credential_expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_mgmt_bootstrap_organization": {
+          "name": "idx_mgmt_bootstrap_organization",
+          "columns": [
+            "organization_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "mgmt_bootstrap_organization_id_mgmt_organization_id_fk": {
+          "name": "mgmt_bootstrap_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "mgmt_bootstrap",
+          "tableTo": "mgmt_organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "mgmt_handoff": {
       "name": "mgmt_handoff",
       "columns": {
@@ -1205,7 +1307,7 @@
           "name": "request_hash",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "target_id": {

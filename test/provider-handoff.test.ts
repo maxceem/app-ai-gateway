@@ -299,16 +299,6 @@ describe("provider browser submissions", () => {
     }
   });
 
-  it("refuses to approve a resource handoff a pre-pin Worker opened", async () => {
-    // What a Worker that predates the pin columns writes while migrations run
-    // ahead of its replacement: no digest, nothing pinned.
-    const add = await operation("provider.add", providerBody(), runtime, await seedAccount());
-    await env.DB.prepare("UPDATE mgmt_handoff SET request_hash=NULL WHERE id=?").bind(add.id).run();
-    const refused = await add.submit("provider-secret");
-    expect(refused.status).toBe(409);
-    await expect(refused.json()).resolves.toMatchObject({ error: { code: "conflict" } });
-  });
-
   it("keeps a provider submission pending when its reviewed gateway changes", async () => {
     const createGateway = await operation("provider-gateway.add", {
       type: "vercel",
