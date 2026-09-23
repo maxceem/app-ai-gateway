@@ -268,6 +268,47 @@ describe("provider browser submissions", () => {
     expect((await request({ id: result.provider.id, expectedRevision: result.provider.revision })).status).toBe(400);
   });
 
+  it("refuses a payload its kind's write would refuse before anyone reviews it", async () => {
+    // An account of its own, so the handoff this opens to get a key is not
+    // counted against the shared account's per-minute allowance.
+    const seed = await operation("provider.add", providerBody(), runtime, await seedAccount());
+    const open = (kind: string, payload: Record<string, unknown>) => worker.request(
+      `${origin}/v1/cli/operations`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${seed.key.plaintext}`, "content-type": "application/json" },
+        body: JSON.stringify({ kind, payload, pollToken: crypto.randomUUID() }),
+      },
+      runtime,
+    );
+    // No provider type, a type nobody serves, a key in the payload, a field the
+    // write does not take, and a gateway missing its Cloudflare ids: each is
+    // refused when the handoff is opened, not after a person has approved it.
+    for (const [kind, payload] of [
+      ["provider.add", { name: "No type" }],
+      ["provider.add", { type: "not-a-provider", name: "Unknown" }],
+      ["provider.add", { ...providerBody(), secret: "sk-in-the-terminal" }],
+      ["provider.add", { ...providerBody(), unexpected: true }],
+      ["provider-gateway.add", { type: "cf_aig", name: "Missing ids" }],
+      ["provider-gateway.add", { type: "vercel", name: "Tokenless", token: "tk" }],
+      ["provider.update", { id: "provider-1" }],
+      ["claim", { anything: true }],
+    ] as const) {
+      const refused = await open(kind, payload);
+      expect(refused.status, `${kind} ${JSON.stringify(payload)}`).toBe(400);
+    }
+  });
+
+  it("refuses to approve a resource handoff a pre-pin Worker opened", async () => {
+    // What a Worker that predates the pin columns writes while migrations run
+    // ahead of its replacement: no digest, nothing pinned.
+    const add = await operation("provider.add", providerBody(), runtime, await seedAccount());
+    await env.DB.prepare("UPDATE mgmt_handoff SET request_hash=NULL WHERE id=?").bind(add.id).run();
+    const refused = await add.submit("provider-secret");
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "conflict" } });
+  });
+
   it("keeps a provider submission pending when its reviewed gateway changes", async () => {
     const createGateway = await operation("provider-gateway.add", {
       type: "vercel",

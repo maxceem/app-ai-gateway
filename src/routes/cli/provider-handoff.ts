@@ -18,20 +18,18 @@ export async function completeProviderSubmission(
   const kind = handoffKind(row.kind);
   if (kind.type !== "resource")
     throw new GatewayError(400, "invalid_request", "Unsupported provider submission purpose");
+  // A row a Worker that predates the pin columns wrote, while migrations ran
+  // ahead of its replacement: it pins nothing, so nothing it says is approvable.
+  if (row.request_hash === null)
+    throw new GatewayError(409, "conflict", "This request was opened by an earlier version; run the command again");
   const { write } = kind;
   const actor = actorFromHandoff(row);
   const scope = managementScope(c);
   await assertAccountAccess(scope.deployment, c.env, actor.organizationId, "setup");
-  const parsed = JSON.parse(row.request_json) as Record<string, unknown>;
-  const {
-    id,
-    expectedRevision,
-    snapshot: _snapshot,
-    __requestHash: _requestHash,
-    gatewaySnapshot,
-    expectedGatewayRevision,
-    ...payload
-  } = parsed;
+  // The row a targeted kind edits is named by the pin, not by the payload, so
+  // `id` and the revision the CLI read are dropped from what the write takes.
+  const { id: _id, revision: _revision, ...payload } =
+    JSON.parse(row.request_json) as Record<string, unknown>;
   if (secret !== undefined && (typeof secret !== "string" || !secret.trim())) {
     throw new GatewayError(400, "invalid_request", "A nonempty credential is required");
   }
@@ -41,8 +39,8 @@ export async function completeProviderSubmission(
     payload,
     secret: typeof secret === "string" ? secret : undefined,
     target:
-      typeof id === "string" && typeof expectedRevision === "number"
-        ? { id, revision: expectedRevision }
+      row.target_id !== null && row.target_revision !== null
+        ? { id: row.target_id, revision: row.target_revision }
         : null,
   };
   const now = Date.now();
@@ -85,14 +83,13 @@ export async function completeProviderSubmission(
     ...liveCredential.params,
     ...accountAccess.params,
   ];
-  if (typeof expectedGatewayRevision === "number") {
-    const gatewayId = (gatewaySnapshot as { id?: unknown } | undefined)?.id;
-    if (typeof gatewayId !== "string")
+  if (row.gateway_id !== null) {
+    if (row.gateway_revision === null)
       throw new GatewayError(409, "conflict", "The gateway binding is missing");
     conditions.push(
       "EXISTS (SELECT 1 FROM provider_gateway WHERE id=? AND organization_id=? AND revision=?)",
     );
-    parameters.push(gatewayId, row.organization_id, expectedGatewayRevision);
+    parameters.push(row.gateway_id, row.organization_id, row.gateway_revision);
   }
   const boundary: ResourceWriteBoundary = {
     condition: { sql: conditions.join(" AND "), params: parameters },

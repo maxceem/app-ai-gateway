@@ -1,23 +1,45 @@
 import { z } from "zod";
 import { ProviderGatewaySummarySchema, ProviderSummarySchema } from "./responses.ts";
+import {
+  HandoffProviderAddPayloadSchema,
+  HandoffProviderGatewayAddPayloadSchema,
+  HandoffProviderUpdatePayloadSchema,
+  HandoffRotatePayloadSchema,
+} from "./schemas.ts";
 export const CliProofSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/);
 export const CliBootstrapRequestSchema = z
   .object({ idempotencyKey: CliProofSchema, pollToken: CliProofSchema })
   .strict();
-export const CliOperationRequestSchema = z
-  .object({
-    kind: z.enum([
-      "claim",
-      "provider.add",
-      "provider.rotate-key",
-      "provider.update",
-      "provider-gateway.add",
-      "provider-gateway.rotate-key",
-    ]),
-    payload: z.record(z.string(), z.unknown()).default({}),
-    pollToken: CliProofSchema,
-  })
-  .strict();
+export const CliOperationKindSchema = z.enum([
+  "claim",
+  "provider.add",
+  "provider.rotate-key",
+  "provider.update",
+  "provider-gateway.add",
+  "provider-gateway.rotate-key",
+]);
+
+/**
+ * One member per kind, each with the payload that kind's write takes minus its
+ * secret. Checked when the handoff is opened, so a malformed request is refused
+ * in the terminal that sent it rather than on the approval page after a
+ * person has read it.
+ */
+function operationRequest<
+  const Kind extends z.infer<typeof CliOperationKindSchema>,
+  Payload extends z.ZodType,
+>(kind: Kind, payload: Payload) {
+  return z.object({ kind: z.literal(kind), payload, pollToken: CliProofSchema }).strict();
+}
+
+export const CliOperationRequestSchema = z.discriminatedUnion("kind", [
+  operationRequest("claim", z.object({}).strict().default({})),
+  operationRequest("provider.add", HandoffProviderAddPayloadSchema),
+  operationRequest("provider.rotate-key", HandoffRotatePayloadSchema),
+  operationRequest("provider.update", HandoffProviderUpdatePayloadSchema),
+  operationRequest("provider-gateway.add", HandoffProviderGatewayAddPayloadSchema),
+  operationRequest("provider-gateway.rotate-key", HandoffRotatePayloadSchema),
+]);
 export const CliSubmissionRequestSchema = z
   .object({
     submissionToken: CliProofSchema,
@@ -76,7 +98,7 @@ export const CliViewerSchema = z.object({
  * signed in. No secret, submitted or stored, is ever part of it.
  */
 export const CliBrowserDetailsResponseSchema = z.object({
-  kind: CliOperationRequestSchema.shape.kind,
+  kind: CliOperationKindSchema,
   payload: z.record(z.string(), z.unknown()),
   account: CliAccountSchema,
   viewer: CliViewerSchema.nullable(),
@@ -297,7 +319,12 @@ export type CliHandoffContinuation = z.infer<typeof CliHandoffContinuationSchema
 export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
 export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;
 export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
-export type CliOperationKind = CliOperationRequest["kind"];
+export type CliOperationKind = z.infer<typeof CliOperationKindSchema>;
+export type CliOperationRequestInput = z.input<typeof CliOperationRequestSchema>;
+/** The payload a handoff of one kind carries, as a client writes it. */
+export type CliOperationPayload<Kind extends CliOperationKind> = NonNullable<
+  Extract<CliOperationRequestInput, { kind: Kind }>["payload"]
+>;
 
 /** The envelope the CLI prints for a failure; see `cli/src/common.ts`. */
 export const CliErrorDetailsSchema = z.object({

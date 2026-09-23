@@ -1472,11 +1472,6 @@
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
           },
-          "secret": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096
-          },
           "providerGatewayId": {
             "type": "string",
             "minLength": 1
@@ -1491,6 +1486,11 @@
           },
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
           }
         },
         "required": [
@@ -1567,20 +1567,10 @@
       "ProviderUpdateRequest": {
         "type": "object",
         "properties": {
-          "revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "description": "The provider revision returned by the read this update is based on."
-          },
           "name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
-          },
-          "secret": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096
           },
           "gatewayRoute": {
             "allOf": [
@@ -1612,6 +1602,16 @@
               "active",
               "disabled"
             ]
+          },
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "The provider revision returned by the read this update is based on."
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
           }
         },
         "required": [
@@ -10185,34 +10185,340 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "enum": [
-                      "claim",
-                      "provider.add",
-                      "provider.rotate-key",
-                      "provider.update",
-                      "provider-gateway.add",
-                      "provider-gateway.rotate-key"
-                    ]
-                  },
-                  "payload": {
+                "oneOf": [
+                  {
                     "type": "object",
-                    "additionalProperties": {},
-                    "default": {}
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "claim"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "default": {},
+                        "additionalProperties": false
+                      },
+                      "pollToken": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "pollToken"
+                    ],
+                    "additionalProperties": false
                   },
-                  "pollToken": {
-                    "type": "string",
-                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "provider.add"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "openai",
+                              "anthropic",
+                              "xai",
+                              "gemini",
+                              "perplexity",
+                              "deepseek",
+                              "groq",
+                              "mistral",
+                              "together",
+                              "fireworks",
+                              "cerebras",
+                              "moonshot",
+                              "huggingface",
+                              "baseten",
+                              "bytedance",
+                              "openrouter"
+                            ]
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100
+                          },
+                          "slug": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                            "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
+                          },
+                          "providerGatewayId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "gatewayRoute": {
+                            "$ref": "#/components/schemas/GatewayRouteConfig"
+                          },
+                          "baseUrl": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "pricing": {
+                            "$ref": "#/components/schemas/ProviderPricing"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "name"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pollToken": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "pollToken"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "provider.rotate-key"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pollToken": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "pollToken"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "provider.update"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100
+                          },
+                          "gatewayRoute": {
+                            "allOf": [
+                              {
+                                "$ref": "#/components/schemas/GatewayRouteConfig"
+                              },
+                              {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ]
+                              }
+                            ]
+                          },
+                          "baseUrl": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "pricing": {
+                            "$ref": "#/components/schemas/ProviderPricing"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "disabled"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pollToken": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "pollToken"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "provider-gateway.add"
+                        ]
+                      },
+                      "payload": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "cf_aig"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              "accountId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              "gatewayId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name",
+                              "accountId",
+                              "gatewayId"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "vercel"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "pollToken": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "pollToken"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "provider-gateway.rotate-key"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pollToken": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "pollToken"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "kind",
-                  "pollToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }

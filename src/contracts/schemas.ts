@@ -561,15 +561,22 @@ export const GatewayRouteConfigSchema = z.object({
   providerOnly: z.array(z.string().trim().min(1).max(100)).min(1).max(20).optional(),
 }).strict().meta({ id: "GatewayRouteConfig" });
 
-export const ProviderCreateRequestSchema = z.object({
+/**
+ * A provider instance's configuration as a create names it: everything but the
+ * key, which is its own field so a browser handoff can collect it separately.
+ */
+const ProviderCreateFieldsSchema = z.object({
   type: ProviderTypeSchema,
   name: ProviderNameSchema,
   slug: SlugSchema.optional(),
-  secret: ProviderSecretSchema.optional(),
   providerGatewayId: z.string().trim().min(1).optional(),
   gatewayRoute: GatewayRouteConfigSchema.optional(),
   baseUrl: ProviderBaseUrlSchema.optional(),
   pricing: ProviderPricingSchema.optional(),
+});
+
+export const ProviderCreateRequestSchema = ProviderCreateFieldsSchema.extend({
+  secret: ProviderSecretSchema.optional(),
 }).strict().superRefine((value, context) => {
   if ((value.secret === undefined) === (value.providerGatewayId === undefined)) {
     context.addIssue({
@@ -611,21 +618,23 @@ export const ProviderTestRequestSchema = z.object({
  * Vercel asks for nothing but a name and a token: its origin is fixed in
  * adapter code, and the token alone identifies the Vercel team.
  */
+const CfAigGatewayFieldsSchema = z.object({
+  type: z.literal("cf_aig"),
+  name: ProviderNameSchema,
+  accountId: z.string().trim().min(1).max(100),
+  gatewayId: z.string().trim().min(1).max(100),
+});
+const VercelGatewayFieldsSchema = z.object({
+  type: z.literal("vercel"),
+  name: ProviderNameSchema,
+});
+const GATEWAY_TYPE_ERROR = "Provider gateway type must be one of cf_aig, vercel";
+
 export const ProviderGatewayCreateRequestSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("cf_aig"),
-    name: ProviderNameSchema,
-    accountId: z.string().trim().min(1).max(100),
-    gatewayId: z.string().trim().min(1).max(100),
-    token: ProviderSecretSchema,
-  }).strict(),
-  z.object({
-    type: z.literal("vercel"),
-    name: ProviderNameSchema,
-    token: ProviderSecretSchema,
-  }).strict(),
+  CfAigGatewayFieldsSchema.extend({ token: ProviderSecretSchema }).strict(),
+  VercelGatewayFieldsSchema.extend({ token: ProviderSecretSchema }).strict(),
 ], {
-  error: "Provider gateway type must be one of cf_aig, vercel",
+  error: GATEWAY_TYPE_ERROR,
 }).meta({ id: "ProviderGatewayCreateRequest" });
 
 /**
@@ -669,10 +678,9 @@ export const ProviderGatewayRotateRequestSchema = z.object({
 export const BASE_URL_REQUIRES_SECRET =
   "Changing the base URL requires re-supplying the provider key, because the stored key is never sent to a new origin";
 
-export const ProviderUpdateRequestSchema = z.object({
-  revision: z.number().int().positive().meta({ description: "The provider revision returned by the read this update is based on." }),
+/** The fields an update may change, other than the key and the revision it is based on. */
+const ProviderUpdateFieldsSchema = z.object({
   name: ProviderNameSchema.optional(),
-  secret: ProviderSecretSchema.optional(),
   /** A full replace; `null` clears the row's routing configuration. */
   gatewayRoute: GatewayRouteConfigSchema.nullable().optional(),
   /**
@@ -688,6 +696,11 @@ export const ProviderUpdateRequestSchema = z.object({
    * nothing can take the slug meanwhile and re-enabling always succeeds.
    */
   status: z.enum(["active", "disabled"]).optional(),
+});
+
+export const ProviderUpdateRequestSchema = ProviderUpdateFieldsSchema.extend({
+  revision: z.number().int().positive().meta({ description: "The provider revision returned by the read this update is based on." }),
+  secret: ProviderSecretSchema.optional(),
 }).strict().superRefine((value, context) => {
   if (
     value.name === undefined
@@ -706,6 +719,46 @@ export const ProviderUpdateRequestSchema = z.object({
     context.addIssue({ code: "custom", message: BASE_URL_REQUIRES_SECRET, path: ["secret"] });
   }
 }).meta({ id: "ProviderUpdateRequest" });
+
+/**
+ * What a CLI browser handoff carries for each kind: the reviewable part of the
+ * write it will make, never its secret. Strict, so a key, a token or a field
+ * the server manages is refused when the handoff is opened rather than after a
+ * person has approved it; the secret is supplied on the approval page.
+ */
+const HandoffTargetFields = {
+  /** The existing row the handoff edits. */
+  id: z.string().trim().min(1),
+  /** The revision the CLI read, when it read one; the server pins the current one either way. */
+  revision: z.number().int().positive().optional(),
+};
+
+export const HandoffProviderAddPayloadSchema = ProviderCreateFieldsSchema.strict()
+  .superRefine(assertBaseUrlIsDirect);
+
+export const HandoffProviderUpdatePayloadSchema = ProviderUpdateFieldsSchema.extend(HandoffTargetFields)
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.name === undefined
+      && value.gatewayRoute === undefined
+      && value.baseUrl === undefined
+      && value.pricing === undefined
+      && value.status === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Provide at least one of name, gatewayRoute, baseUrl, pricing, or status",
+      });
+    }
+  });
+
+export const HandoffRotatePayloadSchema = z.object(HandoffTargetFields).strict();
+
+export const HandoffProviderGatewayAddPayloadSchema = z.discriminatedUnion("type", [
+  CfAigGatewayFieldsSchema.strict(),
+  VercelGatewayFieldsSchema.strict(),
+], { error: GATEWAY_TYPE_ERROR });
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 

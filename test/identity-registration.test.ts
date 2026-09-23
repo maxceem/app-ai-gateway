@@ -612,9 +612,9 @@ describe("Google registration policy", () => {
     ]);
     await env.DB.prepare(
       `INSERT INTO mgmt_handoff(
-        id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,
+        id,kind,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
         submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
-       VALUES (?, 'claim', '{}', 'claim-account', 'claim-service', 'claim-key', 'proof', 'poll', ?, ?, ?)`,
+       VALUES (?, 'claim', '{}', 'hash', 'claim-account', 'claim-service', 'claim-key', 'proof', 'poll', ?, ?, ?)`,
     ).bind(operationId, expires, now, now).run();
     const claimAuth = await createClaimRegistrationAuth(resolveDeployment(testEnv), testEnv, ORIGIN);
     const started = await claimAuth.auth.api.signInSocial({
@@ -716,9 +716,9 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
     ]);
     await env.DB.prepare(
       `INSERT INTO mgmt_handoff(
-        id,kind,request_json,organization_id,initiating_user_id,initiating_credential_id,
+        id,kind,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
         submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
-       VALUES (?, 'claim', '{}', 'takeover-account', 'takeover-service', 'takeover-key', ?, 'poll', ?, ?, ?)`,
+       VALUES (?, 'claim', '{}', 'hash', 'takeover-account', 'takeover-service', 'takeover-key', ?, 'poll', ?, ?, ?)`,
     ).bind(operationId, await digest(submissionToken), expires, now, now).run();
     // The email already signs in with a password, so Google must not open it.
     const squatted = await seedHuman("claim-victim@example.test");

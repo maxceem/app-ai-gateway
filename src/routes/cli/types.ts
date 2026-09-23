@@ -6,6 +6,12 @@ export interface HandoffRow {
   id: string;
   kind: string;
   request_json: string;
+  request_hash: string | null;
+  target_id: string | null;
+  target_revision: number | null;
+  gateway_id: string | null;
+  gateway_revision: number | null;
+  snapshot_json: string | null;
   organization_id: string;
   initiating_user_id: string;
   initiating_credential_id: string;

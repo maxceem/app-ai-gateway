@@ -92,22 +92,19 @@ export async function verifiedSubmission(c: CliContext) {
 export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsResponse> {
   const { row } = await verifiedSubmission(c);
   const state = await authState(c, true);
-  const visiblePayload = JSON.parse(row.request_json) as Record<string, unknown>;
-  for (const field of [
-    "__requestHash",
-    "expectedRevision",
-    "expectedGatewayRevision",
-  ])
-    delete visiblePayload[field];
-  for (const field of ["snapshot", "gatewaySnapshot"]) {
-    const snapshot = visiblePayload[field];
-    if (snapshot && typeof snapshot === "object") {
-      delete (snapshot as Record<string, unknown>).expectedRevision;
-    }
-  }
+  // The payload as the CLI sent it, beside the rows it was pinned to: the page
+  // shows a person the change and what it changes, and never a revision or a
+  // digest, which live in columns of their own.
+  const snapshot = row.snapshot_json === null
+    ? {}
+    : JSON.parse(row.snapshot_json) as { target?: unknown; gateway?: unknown };
   return {
     kind: row.kind as CliOperationKind,
-    payload: visiblePayload,
+    payload: {
+      ...(JSON.parse(row.request_json) as Record<string, unknown>),
+      ...(snapshot.target === undefined ? {} : { snapshot: snapshot.target }),
+      ...(snapshot.gateway === undefined ? {} : { gatewaySnapshot: snapshot.gateway }),
+    },
     account: await accountLifecycle(c.env, row.organization_id),
     // Named rather than reduced to a flag: the page shows who is about to
     // approve, so a person who is signed in as the wrong human can see it.

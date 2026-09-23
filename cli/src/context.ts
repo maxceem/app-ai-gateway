@@ -8,6 +8,8 @@ import type {
   CliCredential,
   CliDeployment,
   CliOperationKind,
+  CliOperationPayload,
+  CliOperationRequestInput,
   CliOperationResponse,
   CliPollResponse,
 } from "../../src/contracts/cli.ts";
@@ -629,9 +631,9 @@ export class Context {
     return { connected: true, ...data };
   }
 
-  async operation(
-    kind: CliOperationKind,
-    payload: Record<string, unknown>,
+  async operation<Kind extends CliOperationKind>(
+    kind: Kind,
+    payload: CliOperationPayload<Kind>,
     url: string = this.url,
     authenticated = true,
   ): Promise<CliOperationResponse | CliPollResponse> {
@@ -667,7 +669,9 @@ export class Context {
       url: target,
     });
     const { data } = await this.publicCall("createCliOperation", {
-      body: { kind, payload, pollToken: operation.pollToken },
+      // One member of the per-kind union: `payload` was typed by `kind` above,
+      // which is the correlation the compiler cannot follow through a generic.
+      body: { kind, payload, pollToken: operation.pollToken } as CliOperationRequestInput,
       url: target,
       ...(authenticated ? { key: this.active?.credential } : {}),
     });

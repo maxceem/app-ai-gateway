@@ -246,6 +246,19 @@ describe("initial database migration", () => {
       "created_at",
       "revoked_at",
     ]);
+    // The server's own handoff fields are columns, never fields mixed into the
+    // payload the CLI sent.
+    const handoffColumns = await env.DB.prepare("PRAGMA table_info(mgmt_handoff)")
+      .all<{ name: string; notnull: number }>();
+    expect(handoffColumns.results.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "request_json",
+      "request_hash",
+      "target_id",
+      "target_revision",
+      "gateway_id",
+      "gateway_revision",
+      "snapshot_json",
+    ]));
     const gatewayStateTables = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mgmt_handoff','cli_rate_limit','mgmt_resource_receipt') ORDER BY name",
     ).all<{ name: string }>();

@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { checkOperatorBaseUrl } from "../../src/core/origin-guard.ts";
 import {
+  HandoffProviderAddPayloadSchema,
+  HandoffProviderUpdatePayloadSchema,
   ProviderCreateRequestSchema,
   ProviderGatewayCreateRequestSchema,
   ProviderGatewayUpdateRequestSchema,
@@ -237,7 +239,8 @@ export async function resourceCommand(
     let body: ProviderCreateRequest | undefined;
     if (!flags.browser) body = validate(ProviderCreateRequestSchema, draft);
     await ctx.bootstrap();
-    if (flags.browser) return ctx.operation("provider.add", { ...draft });
+    if (flags.browser)
+      return ctx.operation("provider.add", validate(HandoffProviderAddPayloadSchema, draft));
     const created = await ctx.create("createProvider", { body: body! });
     await created.complete();
     return created.data;
@@ -326,7 +329,14 @@ export async function resourceCommand(
       ...(flags.browser ? { secret: "validation-placeholder" } : {}),
     });
     if (flags.browser)
-      return ctx.operation("provider.update", { id: existingProvider.id, revision: existingProvider.revision, ...draft });
+      return ctx.operation(
+        "provider.update",
+        validate(HandoffProviderUpdatePayloadSchema, {
+          id: existingProvider.id,
+          revision: existingProvider.revision,
+          ...draft,
+        }),
+      );
     return (await ctx.call("updateProvider", { params: { id: existingProvider.id }, body })).data;
   }
   fail("unknown_command", "Unknown command.");

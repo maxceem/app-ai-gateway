@@ -144,7 +144,26 @@ export const mgmtHandoff = sqliteTable(
   {
     id: text("id").primaryKey(),
     kind: text("kind").notNull(),
+    /** The kind's payload exactly as its schema accepted it, and nothing the server added. */
     request: text("request_json").notNull(),
+    /**
+     * Digest of the payload, which is what a replay of the same proof must match.
+     * Nullable only so a Worker that predates the column keeps inserting while
+     * migrations run ahead of its replacement; such a row matches no replay and
+     * pins nothing, so it can only be refused, never approved.
+     */
+    requestHash: text("request_hash"),
+    /** The existing row a targeted kind edits, and the revision it was pinned to on opening. */
+    targetId: text("target_id"),
+    targetRevision: integer("target_revision"),
+    /** The provider gateway a provider handoff routes through, pinned the same way. */
+    gatewayId: text("gateway_id"),
+    gatewayRevision: integer("gateway_revision"),
+    /**
+     * What the approval page is shown of the pinned rows: `{ target?, gateway? }`,
+     * the reviewable configuration and never a sealed secret.
+     */
+    snapshot: text("snapshot_json"),
     organizationId: text("organization_id")
       .notNull()
       .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
