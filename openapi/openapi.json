@@ -5244,7 +5244,8 @@
           "Admin applications"
         ],
         "operationId": "validateApp",
-        "summary": "Validate an application configuration without saving it",
+        "summary": "Validate an edit of an application without saving it",
+        "description": "Judged as an update of this application would be: provider slugs its stored configuration already names stay acceptable even if their provider has since been deleted. Use the draft validation for an application that does not exist yet.",
         "security": [
           {
             "ConsoleSession": []
@@ -5290,15 +5291,102 @@
                     },
                     "app_id": {
                       "type": "string"
-                    },
-                    "exists": {
-                      "type": "boolean"
                     }
                   },
                   "required": [
                     "valid",
-                    "app_id",
-                    "exists"
+                    "app_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/app-drafts/validate": {
+      "post": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "validateAppDraft",
+        "summary": "Validate a new application configuration without saving it",
+        "description": "Judged as a creation would be, against the account's current providers and prices.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The configuration would be accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "valid": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "valid"
                   ]
                 }
               }

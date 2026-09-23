@@ -7,6 +7,7 @@ import type {
   AppDeleteResponse,
   AppListResponse,
   AppResponse,
+  AppDraftValidateResponse,
   AppValidateResponse,
   CreatedApiKey,
   ProviderSummary,
@@ -34,7 +35,7 @@ import { emptyPolicy, newAppConfig } from "../../src/shared/app-defaults.ts";
 /** What a local or remote configuration check was able to establish. */
 export type ValidationResult =
   | { local: true; remote: false; skipped: string[] }
-  | ({ local: true; remote: true } & AppValidateResponse);
+  | ({ local: true; remote: true } & (AppValidateResponse | AppDraftValidateResponse));
 
 export interface AppWriteResult {
   snippet?: string;
@@ -198,10 +199,14 @@ function attestEnvironments(value: string): AppAttestEnvironment[] {
     .filter((name) => name.length > 0) as AppAttestEnvironment[];
 }
 
+/**
+ * The gateway's own verdict on a document: as an edit of the application `id`
+ * names, or as a new application when there is none yet.
+ */
 async function remoteValidation(
   ctx: Context,
   doc: AppWrite,
-  id = "validation-preview",
+  id?: string,
 ): Promise<ValidationResult> {
   if (!ctx.active?.credential)
     return {
@@ -211,7 +216,9 @@ async function remoteValidation(
         "Provider references, pricing, and saved configuration checks require login.",
       ],
     };
-  const { data } = await ctx.call("validateApp", { params: { app: id }, body: doc });
+  const { data } = id === undefined
+    ? await ctx.call("validateAppDraft", { body: doc })
+    : await ctx.call("validateApp", { params: { app: id }, body: doc });
   return { local: true, remote: true, ...data };
 }
 

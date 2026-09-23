@@ -226,7 +226,7 @@ describe("operator authentication", () => {
     expect(read.status).toBe(200);
 
     const validation = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/member-validation/validate`,
+      `${ORIGIN}/v1/admin/app-drafts/validate`,
       {
         method: "POST",
         headers: sessionHeaders(cookie, true),

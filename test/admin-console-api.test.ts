@@ -192,7 +192,7 @@ describe("admin console API", () => {
   });
 
   it("validates a candidate config without writing it", async () => {
-    const valid = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
+    const valid = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
       method: "POST",
       headers: JSON_AUTH,
       body: JSON.stringify({
@@ -204,9 +204,9 @@ describe("admin console API", () => {
       }),
     });
     expect(valid.status).toBe(200);
-    await expect(valid.json()).resolves.toMatchObject({ valid: true, exists: false });
+    await expect(valid.json()).resolves.toEqual({ valid: true });
 
-    const invalid = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
+    const invalid = await exports.default.fetch(`${ORIGIN}/v1/admin/app-drafts/validate`, {
       method: "POST",
       headers: JSON_AUTH,
       body: JSON.stringify({
@@ -217,7 +217,7 @@ describe("admin console API", () => {
     expect(invalid.status).toBe(400);
 
     const unknownProvider = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/validate-only/validate`,
+      `${ORIGIN}/v1/admin/app-drafts/validate`,
       {
         method: "POST",
         headers: JSON_AUTH,
@@ -243,6 +243,16 @@ describe("admin console API", () => {
     });
 
     expect((await get("/v1/admin/apps/validate-only")).status).toBe(404);
+
+    // The per-application validation is for an application that exists: an id
+    // nobody has is refused like every other route under it.
+    const missing = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/validate-only/validate`, {
+      method: "POST",
+      headers: JSON_AUTH,
+      body: JSON.stringify({ name: "Validate only", config: serverConfig() }),
+    });
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({ error: { code: "app_not_found" } });
   });
 
   // Deleting a provider must not brick every later edit of an app that still
@@ -652,7 +662,7 @@ describe("admin console API", () => {
 
     for (const [preset, issuer] of Object.entries(presets)) {
       const response = await exports.default.fetch(
-        `${ORIGIN}/v1/admin/apps/preset-${preset}/validate`,
+        `${ORIGIN}/v1/admin/app-drafts/validate`,
         {
           method: "POST",
           headers: JSON_AUTH,
@@ -876,7 +886,7 @@ describe("authoritative admin configuration", () => {
       .toHaveProperty(model);
 
     const response = await exports.default.fetch(
-      `${ORIGIN}/v1/admin/apps/admin-primary-provider-validate/validate`,
+      `${ORIGIN}/v1/admin/app-drafts/validate`,
       {
         method: "POST",
         headers: JSON_AUTH,

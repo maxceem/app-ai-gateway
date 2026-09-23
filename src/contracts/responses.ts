@@ -555,7 +555,11 @@ export const AppListResponseSchema = z.object({
 export const AppValidateResponseSchema = z.object({
   valid: z.literal(true),
   app_id: z.string(),
-  exists: z.boolean(),
+});
+
+/** A configuration for an application that does not exist yet would be accepted. */
+export const AppDraftValidateResponseSchema = z.object({
+  valid: z.literal(true),
 });
 
 export const CreatedApiKeySchema = z.object({
@@ -709,6 +713,7 @@ export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
 export type AppSummary = z.infer<typeof AppSummarySchema>;
 export type AppListResponse = z.infer<typeof AppListResponseSchema>;
 export type AppValidateResponse = z.infer<typeof AppValidateResponseSchema>;
+export type AppDraftValidateResponse = z.infer<typeof AppDraftValidateResponseSchema>;
 export type CreatedApiKey = z.infer<typeof CreatedApiKeySchema>;
 export type CreatedAppResponse = z.infer<typeof CreatedAppResponseSchema>;
 export type ApiKey = z.infer<typeof ApiKeySchema>;

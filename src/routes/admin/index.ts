@@ -1,7 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { Hono, type Context, type Next } from "hono";
 import prices from "../../core/prices.json";
-import { operationPath } from "../../contracts/catalog";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
@@ -31,23 +30,11 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
     where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
   });
 
-  if (!row) {
-    const validationOnly = c.req.method === "POST"
-      && c.req.path === operationPath("validateApp", { app: appId });
-    const upsertOnly = (c.req.method === "POST" || c.req.method === "PUT")
-      && c.req.path === operationPath("updateApp", { app: appId });
-    if (validationOnly || upsertOnly) {
-      const occupied = await database(c.env.DB).query.app.findFirst({
-        columns: { id: true },
-        where: eq(app.id, appId),
-      });
-      if (!occupied) {
-        await next();
-        return;
-      }
-    }
-    throw new GatewayError(404, "app_not_found", "App is not registered");
-  }
+  // Every route under `/apps/:app` is about an application that exists in the
+  // caller's account; one that is not there is not there for any of them. A
+  // configuration for an application that does not exist yet is validated at
+  // `/app-drafts/validate` instead.
+  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
 
   c.set("adminApp", row);
   await next();

@@ -23,8 +23,7 @@ type AppRow = typeof app.$inferSelect;
  * this is does not need the whole grammar run over it, and a row whose stored
  * configuration no longer parses is still unambiguously one kind or the other.
  */
-function apiKeyApp(row: AppRow | undefined): AppRow {
-  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
+function apiKeyApp(row: AppRow): AppRow {
   if (row.authType !== "api_key") {
     throw new GatewayError(400, "invalid_request", "API keys can only be managed for api_key apps");
   }
@@ -45,7 +44,7 @@ function serialized(row: typeof appApiKey.$inferSelect): ApiKey {
 export async function createAppKey(
   scope: ManagementScope,
   actor: Actor,
-  appRow: AppRow | undefined,
+  appRow: AppRow,
   input: unknown,
   boundary?: ResourceWriteBoundary,
 ): Promise<CreatedApiKey> {
@@ -81,7 +80,7 @@ export async function createAppKey(
 
 export async function listAppKeys(
   scope: ManagementScope,
-  appRow: AppRow | undefined,
+  appRow: AppRow,
 ): Promise<ApiKeyListResponse> {
   const appId = apiKeyApp(appRow).id;
   const rows = await database(scope.env.DB)
@@ -94,7 +93,7 @@ export async function listAppKeys(
 
 export async function revokeAppKey(
   scope: ManagementScope,
-  appRow: AppRow | undefined,
+  appRow: AppRow,
   keyId: string,
 ): Promise<ApiKeyRevokeResponse> {
   const appId = apiKeyApp(appRow).id;

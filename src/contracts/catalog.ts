@@ -68,6 +68,7 @@ import {
   AppDeleteResponseSchema,
   AppListResponseSchema,
   AppResponseSchema,
+  AppDraftValidateResponseSchema,
   AppValidateResponseSchema,
   AuthEventListSchema,
   AuthEventSummarySchema,
@@ -616,7 +617,8 @@ export const CATALOG = {
     method: "POST",
     path: "/v1/admin/apps/{app}/validate",
     tags: ["Admin applications"],
-    summary: "Validate an application configuration without saving it",
+    summary: "Validate an edit of an application without saving it",
+    description: "Judged as an update of this application would be: provider slugs its stored configuration already names stay acceptable even if their provider has since been deleted. Use the draft validation for an application that does not exist yet.",
     security: "management",
     // A POST that stores nothing: it answers whether a body would be accepted,
     // which is a read of the configuration rules and not a write.
@@ -625,6 +627,19 @@ export const CATALOG = {
     request: AppWriteSchema,
     response: AppValidateResponseSchema,
     responseDescription: "Resolved valid configuration.",
+  },
+
+  validateAppDraft: {
+    method: "POST",
+    path: "/v1/admin/app-drafts/validate",
+    tags: ["Admin applications"],
+    summary: "Validate a new application configuration without saving it",
+    description: "Judged as a creation would be, against the account's current providers and prices.",
+    security: "management",
+    policy: { role: "member", access: "read" },
+    request: AppWriteSchema,
+    response: AppDraftValidateResponseSchema,
+    responseDescription: "The configuration would be accepted.",
   },
 
   deleteApp: {

@@ -1,4 +1,7 @@
+import type { Context } from "hono";
 import { GatewayError } from "../../core/errors";
+import type { app } from "../../db/schema";
+import type { AdminVariables } from "../../middleware/admin";
 import type { ManagementScope } from "../../management/scope";
 import type { RequestVariables } from "../../middleware/request-scope";
 
@@ -38,4 +41,15 @@ export async function jsonBody(c: { req: { json: () => Promise<unknown> } }): Pr
   } catch {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
   }
+}
+
+/**
+ * The application an `/apps/:app` route is about, which the admin scope has
+ * already found in the caller's account. Its absence means a route was mounted
+ * outside that scope, which is a bug here rather than a request to refuse.
+ */
+export function scopedApp(c: Context<{ Bindings: Env; Variables: AdminVariables }>): typeof app.$inferSelect {
+  const row = c.get("adminApp");
+  if (!row) throw new GatewayError(500, "internal_error", "Route is not scoped to an application");
+  return row;
 }

@@ -432,7 +432,7 @@ const cases: Case[] = [
     command: "app check",
     result: {
       appId: "app_1",
-      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: true },
+      validation: { local: true, remote: true, valid: true, app_id: "app_1" },
       status: "active",
       providers: [{ id: "prv_1", slug: "openai", status: "active" }],
       ready: true,
@@ -463,7 +463,7 @@ const cases: Case[] = [
         status: "active",
         config: UNLIMITED_SERVER_CONFIG,
       },
-      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: false },
+      validation: { local: true, remote: true, valid: true, app_id: "app_1" },
     },
     includes: ["Dry run: Example is valid here and on the gateway.", "Nothing was written."],
   },
@@ -616,7 +616,7 @@ test("colour marks the headline, the labels and the state words, and nothing els
     "app check",
     {
       appId: "app_1",
-      validation: { local: true, remote: true, valid: true, app_id: "app_1", exists: true },
+      validation: { local: true, remote: true, valid: true, app_id: "app_1" },
       status: "disabled",
       providers: [],
       ready: false,

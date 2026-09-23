@@ -545,7 +545,9 @@ function app(
           ["Gateway", context.url],
           ["Status", result.definition.status],
           ["Authentication", result.definition.config.authentication.type],
-          ["App ID", result.validation.remote ? result.validation.app_id : undefined],
+          // Only an edit of an application that exists has an id to show; a
+          // new one is judged as a draft and has none yet.
+          ["App ID", result.validation.remote && "app_id" in result.validation ? result.validation.app_id : undefined],
         ],
         style,
       ),

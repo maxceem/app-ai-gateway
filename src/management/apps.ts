@@ -5,6 +5,7 @@ import type {
   AppDeleteResponse,
   AppListResponse,
   AppResponse,
+  AppDraftValidateResponse,
   AppValidateResponse,
   CreatedAppResponse,
 } from "../contracts/responses";
@@ -42,7 +43,6 @@ import type { ResourceWriteBoundary } from "./write-boundary";
 
 type AppRow = typeof app.$inferSelect;
 
-const APP_ID = /^[a-z0-9][a-z0-9-]{0,62}$/u;
 const APP_ID_MAX_LENGTH = 63;
 /**
  * Crockford's base32: the digits and letters that survive being read aloud or
@@ -111,11 +111,6 @@ function appUpdateBody(value: unknown): AppWriteBody & { revision: number | unde
   // knows how to name the field at fault — `revision` is lifted out first
   // because the write body admits no key it does not define.
   return { ...appBody(write), revision: revision as number | undefined };
-}
-
-function assertAppId(appId: string): string {
-  if (!APP_ID.test(appId)) throw new GatewayError(400, "invalid_request", "App id must be a lowercase slug");
-  return appId;
 }
 
 function slugifyAppName(name: string): string {
@@ -444,8 +439,7 @@ export async function createApp(
   throw new GatewayError(409, "conflict", "Could not allocate a unique app ID; retry the same request");
 }
 
-export function getApp(row: AppRow | undefined): AppResponse {
-  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
+export function getApp(row: AppRow): AppResponse {
   // A row is answered exactly as it is stored, parseable or not: `config_error`
   // is what tells the console to open the repair editor over the raw JSON.
   let configError: string | null = null;
@@ -457,41 +451,46 @@ export function getApp(row: AppRow | undefined): AppResponse {
   return { app: serializeRow(row), config_error: configError };
 }
 
+/** Whether an edit of an existing application would be accepted, judged as its update would be. */
 export async function validateApp(
   scope: ManagementScope,
   actor: Actor,
-  appId: string,
+  existing: AppRow,
   input: unknown,
-  existing: AppRow | undefined,
 ): Promise<AppValidateResponse> {
-  const { env } = scope;
   await requireEntitlement(scope, actor.organizationId);
-  assertAppId(appId);
   const body = appBody(input);
   validatedConfig(
     body.config,
-    await authoritativeOrganizationProviders(env, actor.organizationId),
-    existing ? referencedProviderSlugs(existing.config) : undefined,
+    await authoritativeOrganizationProviders(scope.env, actor.organizationId),
+    referencedProviderSlugs(existing.config),
   );
-  return { valid: true, app_id: appId, exists: existing !== undefined };
+  return { valid: true, app_id: existing.id };
+}
+
+/** Whether a configuration for a new application would be accepted, judged as its creation would be. */
+export async function validateAppDraft(
+  scope: ManagementScope,
+  actor: Actor,
+  input: unknown,
+): Promise<AppDraftValidateResponse> {
+  await requireEntitlement(scope, actor.organizationId);
+  const body = appBody(input);
+  validatedConfig(body.config, await authoritativeOrganizationProviders(scope.env, actor.organizationId));
+  return { valid: true };
 }
 
 export async function updateApp(
   scope: ManagementScope,
   actor: Actor,
-  appId: string,
+  existing: AppRow,
   input: unknown,
-  existing: AppRow | undefined,
 ): Promise<AppResponse> {
   const { env } = scope;
   await requireEntitlement(scope, actor.organizationId);
-  assertAppId(appId);
+  const appId = existing.id;
   const body = appUpdateBody(input);
   const organizationId = actor.organizationId;
-  // Update only. Applications are created through `POST /v1/admin/apps`, which
-  // is the sole place an id is minted; a path id nobody has ever been given is
-  // simply an app that does not exist, whoever asked for it.
-  if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
   if (body.revision === undefined) {
     throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
   }
