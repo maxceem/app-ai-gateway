@@ -535,17 +535,22 @@ export async function deleteApp(
     where: and(eq(app.id, appId), eq(app.organizationId, actor.organizationId)),
   });
   if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const removedUsers = await db.delete(appUser).where(eq(appUser.appId, appId)).returning({ id: appUser.id });
-  await db.delete(appAuthChallenge).where(eq(appAuthChallenge.appId, appId));
-  // Authentication history is diagnostic and reachable only under `/apps/:app`,
-  // so it dies with the app it describes. Usage below is the exception: it is
-  // billing history, and it is deliberately kept.
-  await db.delete(appAuthEvent).where(eq(appAuthEvent.appId, appId));
-  await db.delete(appApiKey).where(eq(appApiKey.appId, appId));
-  await db.delete(app).where(and(
-    eq(app.id, appId),
-    eq(app.organizationId, actor.organizationId),
-  ));
+  // One D1 batch, which is one transaction: a failure part-way rolls every
+  // statement back instead of leaving an application with no keys, or keys and
+  // users belonging to no application.
+  const [removedUsers] = await db.batch([
+    db.delete(appUser).where(eq(appUser.appId, appId)).returning({ id: appUser.id }),
+    db.delete(appAuthChallenge).where(eq(appAuthChallenge.appId, appId)),
+    // Authentication history is diagnostic and reachable only under
+    // `/apps/:app`, so it dies with the app it describes. Usage is the
+    // exception: it is billing history, and it is deliberately kept.
+    db.delete(appAuthEvent).where(eq(appAuthEvent.appId, appId)),
+    db.delete(appApiKey).where(eq(appApiKey.appId, appId)),
+    db.delete(app).where(and(
+      eq(app.id, appId),
+      eq(app.organizationId, actor.organizationId),
+    )),
+  ]);
   invalidateAppConfig(appId);
   return {
     deleted: true,

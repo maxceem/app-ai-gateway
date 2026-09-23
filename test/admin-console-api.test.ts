@@ -492,6 +492,34 @@ describe("admin console API", () => {
     expect(await counted("app_auth_event")).toBe(0);
   });
 
+  it("deletes an app atomically, leaving everything in place when any step fails", async () => {
+    await seedApp("delete-atomic");
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, ?)")
+      .bind("delete-atomic", "user-1", "active")
+      .run();
+    // The app row goes last, so refusing it proves the deletes before it are
+    // rolled back rather than merely never reached.
+    await env.DB.prepare(
+      `CREATE TRIGGER refuse_delete_atomic BEFORE DELETE ON app
+       WHEN OLD.id = 'delete-atomic'
+       BEGIN SELECT RAISE(ABORT, 'refused by test'); END`,
+    ).run();
+    try {
+      const failed = await exports.default.fetch(
+        `${ORIGIN}/v1/admin/apps/delete-atomic?confirm=delete-atomic`,
+        { method: "DELETE", headers: AUTH },
+      );
+      expect(failed.status).toBe(500);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER refuse_delete_atomic").run();
+    }
+    expect((await get("/v1/admin/apps/delete-atomic")).status).toBe(200);
+    const users = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_user WHERE app_id = ?")
+      .bind("delete-atomic")
+      .first<{ count: number }>();
+    expect(users?.count).toBe(1);
+  });
+
   it("lists users with month-to-date usage and supports search", async () => {
     await seedApp("user-list");
     for (const id of ["alpha-user", "beta-user"]) {
