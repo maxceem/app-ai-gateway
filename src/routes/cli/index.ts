@@ -7,13 +7,12 @@ import { getBillingQuotaResolution } from "../../billing/quota";
 import {
   assertAccountAccess,
 } from "../../core/account-lifecycle";
-import { GatewayError } from "../../core/errors";
 import {
   providerCapability,
   providerDescriptor,
   PROVIDER_TYPES,
 } from "../../core/providers";
-import { currentMonth } from "../../management/usage-queries";
+import { assertMonth, currentMonth } from "../../management/usage-queries";
 import { bootstrap, deploymentMeta } from "./bootstrap";
 import { authState, createOperation, pollOperation } from "./operations";
 import {
@@ -112,11 +111,6 @@ routes.handle("getCliUsage", async (c) => {
     resolved = (await cfAuth()).requireOrganization(state);
   await assertAccountAccess(c.get("deployment"), c.env, resolved.organization.id, "read");
   const month = c.req.query("month") ?? currentMonth();
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      "month must use YYYY-MM format",
-    );
+  assertMonth(month);
   return accountMonthUsage(c.env.DB, resolved.organization.id, month);
 });

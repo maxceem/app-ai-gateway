@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { MONTH_PATTERN } from "../contracts/schemas";
 
 /**
  * State that has to be instantly consistent: the block flag an operator sets,
@@ -230,7 +231,7 @@ export class UserLimiter extends DurableObject<Env> {
    * of those cases harmless without retaining event identities in the object.
    */
   setMonthlyCost(month: string, revision: number, microusd: number): boolean {
-    if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(month)) {
+    if (!MONTH_PATTERN.test(month)) {
       throw new TypeError("month must use a valid YYYY-MM");
     }
     if (!Number.isSafeInteger(revision) || revision <= 0) {

@@ -48,6 +48,7 @@ import {
   AppUpdateSchema,
   AppWriteSchema,
   ManagementKeyCreateRequestSchema,
+  MonthSchema,
   OrganizationSelectRequestSchema,
   PROVIDER_SLUG_PATTERN,
   ProviderCreateRequestSchema,
@@ -239,7 +240,7 @@ const GatewayClientHeadersSchema = z.object({
 });
 
 const MonthQuerySchema = z.object({
-  month: z.string().optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
+  month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
 });
 const RangeQuerySchema = z.object({
   from: z.string().optional().meta({ description: "Inclusive YYYY-MM-DD start; defaults to 29 days before `to`." }),
@@ -937,7 +938,7 @@ export const CATALOG = {
     security: "management",
     params: APP_PARAM,
     query: z.object({
-      month: z.string().optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
+      month: MonthSchema.optional().meta({ description: "YYYY-MM; defaults to the current UTC month." }),
       query: z.string().optional().meta({ description: "Substring match on the user id." }),
       status: z.enum(["active", "blocked"]).optional(),
       limit: z.number().int().optional(),
@@ -1111,7 +1112,7 @@ export const CATALOG = {
     description: "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
     security: "management",
     query: z.object({
-      month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional()
+      month: MonthSchema.optional()
         .meta({ description: "YYYY-MM; defaults to the current UTC month." }),
     }),
     response: CliUsageResponseSchema,

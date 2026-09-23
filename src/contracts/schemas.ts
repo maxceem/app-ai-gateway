@@ -21,6 +21,15 @@ export const DEFAULT_END_USER_HEADER = "x-end-user-id";
 export const ENDPOINT_SLUG = /^[a-z0-9-]{1,64}$/;
 export const PROVIDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const HTTP_FIELD_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/**
+ * A UTC calendar month as `YYYY-MM`, with a month that exists. Flag-free for
+ * the same reason as the slug patterns: it is published as an OpenAPI
+ * `pattern`.
+ */
+export const MONTH_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])$/;
+export const MONTH_FORMAT_MESSAGE = "month must use YYYY-MM format";
+/** Every `month` a request names: a query parameter or a body field alike. */
+export const MonthSchema = z.string().regex(MONTH_PATTERN, { error: MONTH_FORMAT_MESSAGE });
 
 /** Apple's ten-character team identifier, as the developer portal prints it. */
 const APPLE_TEAM_ID = /^[A-Z0-9]{10}$/;
@@ -498,7 +507,7 @@ export const ApiKeyTokenRequestSchema = z.object({
 export const UsageRepriceRequestSchema = z.object({
   provider: ProviderTypeSchema,
   model: z.string().min(1),
-  month: z.string().regex(/^\d{4}-\d{2}$/),
+  month: MonthSchema,
   apply: z.boolean().default(false),
 }).strict().meta({ id: "UsageRepriceRequest" });
 

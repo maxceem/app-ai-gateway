@@ -12,6 +12,7 @@ import { database } from "../../db";
 import { appUsageEvent, provider as providerTable } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import {
+  assertMonth,
   currentMonth,
   inRange,
   isRollupDimension,
@@ -87,9 +88,7 @@ const EMPTY_MONTH_TOTALS = {
 routes.handle("getAppUsage", async (c) => {
   const appId = c.req.param("app");
   const month = c.req.query("month") ?? currentMonth();
-  if (!/^\d{4}-\d{2}$/u.test(month)) {
-    throw new GatewayError(400, "invalid_request", "month must use YYYY-MM format");
-  }
+  assertMonth(month);
   // `.first()` is typed nullable, though an aggregate with no GROUP BY always
   // answers with one row. Filled in rather than spread away, so the documented
   // shape holds even if that ever stops being true: six zeros is the honest

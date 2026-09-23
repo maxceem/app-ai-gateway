@@ -40,6 +40,18 @@ describe("admin API", () => {
       output_tokens: 5,
       cost_usd: 0.03,
     });
+
+    // A month that does not exist is refused, not read as an empty one.
+    for (const bad of ["2026-13", "2026-00", "2026-1"]) {
+      const refused = await exports.default.fetch(
+        `https://example.test/v1/admin/apps/admin-rollup/usage?month=${bad}`,
+        { headers: { authorization: "Bearer agw_mgmt_test-admin-secret" } },
+      );
+      expect(refused.status).toBe(400);
+      await expect(refused.json()).resolves.toMatchObject({
+        error: { code: "invalid_request", message: "month must use YYYY-MM format" },
+      });
+    }
   });
 
   it("already projects app spend recorded before app-wide limits are enabled", async () => {

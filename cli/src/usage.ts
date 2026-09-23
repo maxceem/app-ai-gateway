@@ -3,6 +3,7 @@ import type {
   BreakdownResponse,
   MonthlyUsageResponse,
 } from "../../src/contracts/responses.ts";
+import { MONTH_PATTERN } from "../../src/contracts/schemas.ts";
 import { fail } from "./common.ts";
 import type { Context } from "./context.ts";
 import type { Flags } from "./parser.ts";
@@ -21,7 +22,7 @@ export type UsageResult =
   | (BreakdownResponse & { coverage: BreakdownCoverage });
 
 export function month(value: string): string {
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value))
+  if (!MONTH_PATTERN.test(value))
     fail(
       "invalid_input",
       "Month must use YYYY-MM with a valid calendar month.",

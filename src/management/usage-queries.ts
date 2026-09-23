@@ -7,10 +7,10 @@
  */
 import { and, eq, gte, lte, sql, type SQL } from "drizzle-orm";
 import { GatewayError } from "../core/errors";
+import { MONTH_FORMAT_MESSAGE, MONTH_PATTERN } from "../contracts/schemas";
 import { appUsageEvent } from "../db/schema";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/u;
-const MONTH = /^\d{4}-\d{2}$/u;
 
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -18,8 +18,8 @@ export function currentMonth(): string {
 
 /** Rejects a caller-supplied month before it reaches a query. */
 export function assertMonth(month: string): void {
-  if (!MONTH.test(month)) {
-    throw new GatewayError(400, "invalid_request", "month must use YYYY-MM format");
+  if (!MONTH_PATTERN.test(month)) {
+    throw new GatewayError(400, "invalid_request", MONTH_FORMAT_MESSAGE);
   }
 }
 
