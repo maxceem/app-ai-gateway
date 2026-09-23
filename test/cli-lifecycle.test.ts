@@ -941,7 +941,7 @@ describe("CLI account lifecycle", () => {
       .run();
     accountLifecycleCache.clear();
     await expect(
-      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "claim"),
+      assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "read"),
     ).rejects.toMatchObject({ code: "account_expired" });
     const human = await seedHuman();
     await env.DB.batch([

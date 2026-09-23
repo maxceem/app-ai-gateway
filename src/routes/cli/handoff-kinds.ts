@@ -17,15 +17,39 @@ import type { HandoffRow } from "./types";
  * Every decision a kind makes is a field here, and adding a kind is an entry in
  * this table. Nothing outside this module may test a kind's text, so a seventh
  * kind is one entry rather than a search for every place the text is matched.
+ *
+ * Two families, told apart by `type` rather than by which optional fields an
+ * entry happens to carry: the account claim, which settles an identity and is
+ * completed by cf-auth, and the resource handoffs, each of which approves one
+ * resource write under the handoff's transaction boundary.
  */
-export interface HandoffKind {
+export type HandoffKind = ClaimHandoffKind | ResourceHandoffKind;
+
+interface HandoffKindBase {
   /** Account access the initiator needs to open a handoff of this kind. */
   readonly open: AccountAccessMode;
   /** Account access the approving browser needs to view and submit it. */
   readonly view: AccountAccessMode;
+  /** Where the person goes afterwards. */
+  readonly continueTo: CliHandoffContinuation;
+}
+
+/**
+ * The account claim: it takes an unowned account for the person approving it,
+ * so it is the one kind that asks anything of whoever holds the browser, the
+ * one that may register a sign-in, and the one that leaves its approver in the
+ * console.
+ */
+export interface ClaimHandoffKind extends HandoffKindBase {
+  readonly type: "claim";
+}
+
+/** A handoff that approves one resource write, and whose secret the browser supplies. */
+export interface ResourceHandoffKind extends HandoffKindBase {
+  readonly type: "resource";
   /**
    * The existing row the payload's `id` names, snapshotted at creation for the
-   * approval page and pinned by revision; null for creates and for claim.
+   * approval page and pinned by revision; null for creates.
    */
   readonly target: HandoffTargetTable | null;
   /**
@@ -34,19 +58,9 @@ export interface HandoffKind {
    */
   readonly pinsGateway: boolean;
   /** What the browser must send as the secret. */
-  readonly secret: "required" | "optional" | "none";
-  /** Where the person goes afterwards. */
-  readonly continueTo: CliHandoffContinuation;
-  /**
-   * The one service call approving this kind makes, or absent where approving
-   * is not a resource write at all.
-   *
-   * Its presence is what tells the browser endpoint which half of the package
-   * completes the handoff: a kind with a write is completed by
-   * `completeProviderSubmission` under the handoff's transaction boundary, and
-   * the one kind without is the account claim, which cf-auth settles itself.
-   */
-  readonly write?: HandoffWrite;
+  readonly secret: "required" | "optional";
+  /** The one service call approving this kind makes. */
+  readonly write: HandoffWrite;
 }
 
 /** The two tables a handoff can be bound to an existing row in. */
@@ -118,21 +132,25 @@ const writeProviderUpdate: HandoffWrite = (scope, actor, submission, boundary) =
   );
 };
 
+/**
+ * The claim's kind text, for the one query that has to name it in SQL: the
+ * OAuth callback's check that a claim is still pending.
+ */
+export const CLAIM_KIND = "claim" satisfies CliOperationKind;
+
 export const HANDOFF_KINDS: Record<CliOperationKind, HandoffKind> = {
   /**
-   * The one handoff that settles an identity rather than a resource, which is
-   * why it is also the only one whose access mode is `claim` on both sides and
-   * the only one that leaves its approver in the console.
+   * Read access on both sides: an unclaimed account whose free window has
+   * closed can still be claimed, and claiming is what reopens it.
    */
-  claim: {
-    open: "claim",
-    view: "claim",
-    target: null,
-    pinsGateway: false,
-    secret: "none",
+  [CLAIM_KIND]: {
+    type: "claim",
+    open: "read",
+    view: "read",
     continueTo: "console",
   },
   "provider.add": {
+    type: "resource",
     open: "setup",
     view: "read",
     target: null,
@@ -148,6 +166,7 @@ export const HANDOFF_KINDS: Record<CliOperationKind, HandoffKind> = {
       ),
   },
   "provider.update": {
+    type: "resource",
     open: "setup",
     view: "read",
     target: "provider",
@@ -157,6 +176,7 @@ export const HANDOFF_KINDS: Record<CliOperationKind, HandoffKind> = {
     write: writeProviderUpdate,
   },
   "provider.rotate-key": {
+    type: "resource",
     open: "setup",
     view: "read",
     target: "provider",
@@ -166,6 +186,7 @@ export const HANDOFF_KINDS: Record<CliOperationKind, HandoffKind> = {
     write: writeProviderUpdate,
   },
   "provider-gateway.add": {
+    type: "resource",
     open: "setup",
     view: "read",
     target: null,
@@ -176,6 +197,7 @@ export const HANDOFF_KINDS: Record<CliOperationKind, HandoffKind> = {
       createProviderGateway(scope, actor, { ...payload, token: secret }, boundary),
   },
   "provider-gateway.rotate-key": {
+    type: "resource",
     open: "setup",
     view: "read",
     target: "provider_gateway",

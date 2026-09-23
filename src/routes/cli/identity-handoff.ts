@@ -48,7 +48,8 @@ export async function completeIdentity(
   c: CliContext,
   row: HandoffRow,
 ): Promise<void> {
-  if (handoffKind(row.kind).view !== "claim")
+  const kind = handoffKind(row.kind);
+  if (kind.type !== "claim")
     throw new GatewayError(400, "invalid_request", "Unsupported identity handoff");
   const state = await authState(c, true);
   const refusal = claimRefusal(state, row.organization_id);
@@ -69,7 +70,7 @@ export async function completeIdentity(
     );
 
   const target = row.organization_id;
-  await assertAccountAccess(c.get("deployment"), c.env, target, "claim");
+  await assertAccountAccess(c.get("deployment"), c.env, target, kind.view);
 
   // Every row this moves — the owner membership, the account's deadline, the
   // service identity's key — belongs to cf-auth, so cf-auth moves them, in one

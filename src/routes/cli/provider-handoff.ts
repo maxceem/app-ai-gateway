@@ -16,9 +16,9 @@ export async function completeProviderSubmission(
 ): Promise<void> {
   if (row.consumed_at && row.outcome) return;
   const kind = handoffKind(row.kind);
-  const write = kind.write;
-  if (!write)
+  if (kind.type !== "resource")
     throw new GatewayError(400, "invalid_request", "Unsupported provider submission purpose");
+  const { write } = kind;
   const actor = actorFromHandoff(row);
   const scope = managementScope(c);
   await assertAccountAccess(scope.deployment, c.env, actor.organizationId, "setup");

@@ -12,7 +12,7 @@ export interface AccountLifecycle {
   expiresAt: string | null;
 }
 
-export type AccountAccessMode = "read" | "setup" | "proxy" | "claim";
+export type AccountAccessMode = "read" | "setup" | "proxy";
 export type AccountAccessDenial = "account_expired" | "billing_trial_expired";
 
 /** D1 defaults omit a zone; ISO values already carry one. Invalid stored values stay invalid. */

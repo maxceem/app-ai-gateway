@@ -115,7 +115,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
     );
     // Claim access is asked for by the one kind that takes an unowned account,
     // so it is also the one kind an owner already makes pointless.
-    if (kind.open === "claim" && account.claimed)
+    if (kind.type === "claim" && account.claimed)
       throw new GatewayError(409, "conflict", "Account is already claimed");
   const pollHash = await digest(input.pollToken),
     id = `cli-operation:${pollHash}`;
@@ -140,7 +140,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
     );
   const submissionToken = await derive(input.pollToken, `browser:${meta.id}`);
   if (!row) {
-    if (kind.target !== null) {
+    if (kind.type === "resource" && kind.target !== null) {
       if (typeof input.payload.id !== "string")
         throw new GatewayError(
           400,
@@ -170,7 +170,7 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
         __requestHash: requestHash,
       });
     }
-    if (kind.pinsGateway) {
+    if (kind.type === "resource" && kind.pinsGateway) {
       const captured = JSON.parse(value) as Record<string, unknown>;
       const snapshot = captured.snapshot as Record<string, unknown> | undefined;
       const gatewayId = Object.hasOwn(input.payload, "providerGatewayId")

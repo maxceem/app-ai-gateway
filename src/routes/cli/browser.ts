@@ -33,7 +33,7 @@ import type { CliContext, HandoffRow } from "./types";
  * the approving side.
  */
 function refusalFor(row: HandoffRow, state: AuthState): CliApprovalRefusal | null {
-  return handoffKind(row.kind).view === "claim"
+  return handoffKind(row.kind).type === "claim"
     ? claimRefusal(state, row.organization_id)
     : null;
 }
@@ -124,7 +124,7 @@ export async function browserRegister(c: CliContext): Promise<Response> {
   const { row, input } = await verifiedSubmission(c);
   // The one door a handoff opens onto registration, and only the kind whose
   // approver is expected to have no account yet may open it.
-  if (handoffKind(row.kind).view !== "claim" || row.consumed_at)
+  if (handoffKind(row.kind).type !== "claim" || row.consumed_at)
     throw new GatewayError(
       403,
       "forbidden",
@@ -153,10 +153,9 @@ export async function browserSubmit(c: CliContext): Promise<CliBrowserSubmitResp
       "Explicit approval is required",
     );
   // Which half of the package completes this handoff is the registry's answer:
-  // a kind with a write is a resource change, and the one without is the
-  // account claim cf-auth settles.
+  // a resource kind is a write, and the claim is settled by cf-auth.
   const kind = handoffKind(row.kind);
-  if (kind.write) await completeProviderSubmission(c, row, input.secret);
+  if (kind.type === "resource") await completeProviderSubmission(c, row, input.secret);
   else await completeIdentity(c, row);
   return outcomeFor(kind);
 }
