@@ -47,14 +47,11 @@ export const adminAuth: MiddlewareHandler<{
     }
   }
 
-  const { requireOrganization } = await cfAuth();
   await (await identityAuthFor(c)).middleware<{
     Bindings: Env;
     Variables: AdminVariables;
   }>()(c, async () => {
     const state = c.get("authState");
-    const resolved = requireOrganization(state);
-
     if (
       state.credentialType === "session"
       && c.req.header(CONSOLE_REQUEST_HEADER) !== "1"
@@ -65,25 +62,35 @@ export const adminAuth: MiddlewareHandler<{
         `Cookie-authenticated admin requests must set ${CONSOLE_REQUEST_HEADER}: 1`,
       );
     }
-
-    const user = state.user;
-    if (
-      !user
-      || (state.credentialType !== "session" && state.credentialType !== "apiKey")
-    ) {
-      throw new GatewayError(401, "auth_required", "Authentication is required");
-    }
-
-    c.set("actor", {
-      organizationId: resolved.organization.id,
-      userId: user.id,
-      // Null rather than the empty string: a session with no credential id has
-      // none, and `""` is a value.
-      credentialId: state.actor?.credentialId ?? null,
-      role: resolved.role,
-      credentialType: state.credentialType,
-      identityKind: user.kind,
-    });
+    c.set("actor", await managementActor(state));
     await next();
   });
 };
+
+/**
+ * The one {@link AdminActor} an authenticated management caller is, whichever
+ * surface authenticated it: the admin API here, or the CLI's management
+ * operations with their own cf-auth options. What it may then do is the
+ * operation's catalog policy, applied by `catalogRouter`.
+ */
+export async function managementActor(state: AuthState): Promise<AdminActor> {
+  const { requireOrganization } = await cfAuth();
+  const resolved = requireOrganization(state);
+  const user = state.user;
+  if (
+    !user
+    || (state.credentialType !== "session" && state.credentialType !== "apiKey")
+  ) {
+    throw new GatewayError(401, "auth_required", "Authentication is required");
+  }
+  return {
+    organizationId: resolved.organization.id,
+    userId: user.id,
+    // Null rather than the empty string: a session with no credential id has
+    // none, and `""` is a value.
+    credentialId: state.actor?.credentialId ?? null,
+    role: resolved.role,
+    credentialType: state.credentialType,
+    identityKind: user.kind,
+  };
+}

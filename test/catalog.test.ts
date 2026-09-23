@@ -8,7 +8,8 @@ import {
 // Imported for its side effect: mounting every management route module is what
 // fills `MOUNTED_OPERATIONS`, and this is the module that pulls them all in.
 import "../src/routes/management";
-import { MOUNTED_OPERATIONS } from "../src/routes/catalog-router";
+import { Hono } from "hono";
+import { MOUNTED_OPERATIONS, catalogRouter } from "../src/routes/catalog-router";
 
 /** The half of the catalog the management app is supposed to serve. */
 const SERVED = Object.keys(CATALOG).filter((name) => {
@@ -25,6 +26,19 @@ describe("operation catalog", () => {
    */
   it("serves every admin and CLI operation it documents, and nothing else", () => {
     expect([...MOUNTED_OPERATIONS].sort()).toEqual([...SERVED].sort());
+  });
+
+  it("refuses to mount a management operation where its policy would not run", () => {
+    // Authorization is the entry's, so the router is what makes it
+    // unskippable: a module that built a non-authorizing router for a
+    // management or session operation fails as it loads, not in production.
+    expect(() => catalogRouter(new Hono(), "/v1/cli").handle("getCliAccount", () => {
+      throw new Error("unreachable");
+    })).toThrow(/must be mounted through an authorizing router/u);
+    // Public operations need no policy and may be mounted anywhere.
+    expect(() => catalogRouter(new Hono(), "/v1/cli").handle("getCliCapabilities", () => {
+      throw new Error("unreachable");
+    })).not.toThrow();
   });
 
   it("documents every path parameter it names", () => {

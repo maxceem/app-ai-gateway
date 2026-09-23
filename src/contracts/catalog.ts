@@ -1074,6 +1074,10 @@ export const CATALOG = {
     summary: "Create or recover a browser handoff",
     description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
     security: "management",
+    // Admin, like every write; read access because the claim is the one kind
+    // an account past its free window may still open. Every resource kind then
+    // asks for setup access of its own, in the handler, from its kind entry.
+    policy: { role: "admin", access: "read" },
     request: CliOperationRequestSchema,
     response: CliOperationResponseSchema,
     responseDescription: "Browser URL for the pending handoff.",

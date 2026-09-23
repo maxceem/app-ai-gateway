@@ -103,12 +103,28 @@ export type OperationContext<E extends HonoEnv, K extends OperationName> =
 export function catalogRouter<E extends HonoEnv>(
   app: Hono<E>,
   base: string,
-  options: { authorized?: boolean } = {},
+  options: {
+    authorized?: boolean;
+    /**
+     * Establishes `authState` and `actor` for a management or session entry,
+     * where the surface is not already behind a middleware that does. Runs
+     * right before the entry's policy is applied.
+     */
+    authenticate?: (c: Context<E>) => Promise<void>;
+  } = {},
 ) {
   const mount = (name: OperationName, handler: (c: Context<E>) => Promise<Response>): void => {
     const spec: OperationSpec = CATALOG[name];
+    const guarded = spec.security === "management" || spec.security === "session";
+    // Authorization is the entry's, so an entry that has some is never mounted
+    // where it would not be applied: a route module cannot opt out of it by
+    // building the wrong router.
+    if (guarded && !options.authorized) {
+      throw new Error(`${name} is a ${spec.security} operation and must be mounted through an authorizing router`);
+    }
     const served = options.authorized
       ? async (c: Context<E>) => {
+          if (guarded && options.authenticate) await options.authenticate(c);
           await authorize(c as unknown as AuthorizedContext, spec);
           return handler(c);
         }

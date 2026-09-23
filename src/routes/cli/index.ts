@@ -2,11 +2,8 @@ import { accountMonthUsage } from "../../core/account-usage";
 import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
-import { cfAuth } from "../../auth/identity";
 import { getBillingQuotaResolution } from "../../billing/quota";
-import {
-  assertAccountAccess,
-} from "../../core/account-lifecycle";
+import { accountLifecycle } from "../../core/account-lifecycle";
 import {
   providerCapability,
   providerDescriptor,
@@ -14,7 +11,7 @@ import {
 } from "../../core/providers";
 import { assertMonth, currentMonth } from "../../management/usage-queries";
 import { bootstrap, deploymentMeta } from "./bootstrap";
-import { authState, createOperation, pollOperation } from "./operations";
+import { cliAuthenticate, createOperation, pollOperation } from "./operations";
 import {
   browserDetails,
   browserSubmit,
@@ -26,7 +23,12 @@ import { SERVER_VERSION } from "../../core/version";
 import type { CliEnv } from "./types";
 
 export const cliRoutes = new Hono<CliEnv>();
-const routes = catalogRouter(cliRoutes, "/v1/cli");
+// Authorizing, like the admin router: the CLI's management operations run
+// their catalog policy, and only authenticate differently.
+const routes = catalogRouter(cliRoutes, "/v1/cli", {
+  authorized: true,
+  authenticate: cliAuthenticate,
+});
 cliRoutes.use("*", async (c, next) => {
   c.header("Cache-Control", "no-store");
   c.header("Referrer-Policy", "no-referrer");
@@ -78,14 +80,7 @@ routes.handle("cliBrowserSubmit", browserSubmit);
 routes.relay("cliBrowserRegister", browserRegister);
 routes.relay("cliBrowserGoogle", browserGoogle);
 routes.handle("getCliAccount", async (c) => {
-  const state = await authState(c),
-    resolved = (await cfAuth()).requireOrganization(state);
-  const account = await assertAccountAccess(
-    c.get("deployment"),
-    c.env,
-    resolved.organization.id,
-    "read",
-  );
+  const account = await accountLifecycle(c.env, c.get("actor").organizationId);
   const billing = await getBillingQuotaResolution(
     c.env,
     account.id,
@@ -107,10 +102,7 @@ routes.handle("getCliAccount", async (c) => {
   };
 });
 routes.handle("getCliUsage", async (c) => {
-  const state = await authState(c),
-    resolved = (await cfAuth()).requireOrganization(state);
-  await assertAccountAccess(c.get("deployment"), c.env, resolved.organization.id, "read");
   const month = c.req.query("month") ?? currentMonth();
   assertMonth(month);
-  return accountMonthUsage(c.env.DB, resolved.organization.id, month);
+  return accountMonthUsage(c.env.DB, c.get("actor").organizationId, month);
 });

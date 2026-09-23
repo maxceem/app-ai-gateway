@@ -1,5 +1,6 @@
 import { cliJson } from "./security";
-import { cfAuth, identityAuthFor } from "../../auth/identity";
+import { identityAuthFor } from "../../auth/identity";
+import { managementActor } from "../../middleware/admin";
 import {
   assertAccountAccess,
   accountLifecycle,
@@ -35,6 +36,16 @@ import type { HandoffRow, CliContext, CliEnv } from "./types";
  */
 export function browserPath(id: string): string {
   return `/cli/approve/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Authenticates a CLI management operation the way the CLI does — with no
+ * default organization provisioned for a new sign-in — and establishes the same
+ * actor the admin surface does, so the catalog policy that follows is the
+ * admin surface's own.
+ */
+export async function cliAuthenticate(c: CliContext): Promise<void> {
+  c.set("actor", await managementActor(await authState(c)));
 }
 
 export async function authState(c: CliContext, interactive = false) {
@@ -138,29 +149,22 @@ export async function createOperation(c: CliContext): Promise<CliOperationRespon
   );
   const meta = deploymentMeta(c);
   const kind = handoffKind(input.kind);
-  const state = await authState(c);
-  const resolved = (await cfAuth()).requireOrganization(state);
-  if (
-    state.credentialType === "session" &&
-    c.req.header("origin") !== meta.consoleOrigin
-  )
+  // Who may open a handoff at all is the operation's catalog policy, applied
+  // before this runs; what is left is the kind's own standing.
+  const actor = c.get("actor");
+  if (actor.credentialType === "session" && c.req.header("origin") !== meta.consoleOrigin)
     throw new GatewayError(
       403,
       "forbidden",
       "Use the first-party console for browser operations",
     );
-  if (
-    !state.actor ||
-    (resolved.role !== "owner" && resolved.role !== "admin")
-  )
-    throw new GatewayError(
-      403,
-      "forbidden",
-      "Account administration is required",
-    );
-  const organizationId = resolved.organization.id;
-  const userId = state.actor.id;
-  const credentialId = state.actor.credentialId;
+  // Approval re-checks the very credential that opened the handoff, so one it
+  // could not name could never be approved.
+  if (actor.credentialId === null)
+    throw new GatewayError(403, "forbidden", "Account administration is required");
+  const organizationId = actor.organizationId;
+  const userId = actor.userId;
+  const credentialId = actor.credentialId;
   const account = await assertAccountAccess(
     c.get("deployment"),
     c.env,
