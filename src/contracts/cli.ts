@@ -156,11 +156,25 @@ export const CliBrowserGoogleResponseSchema = z.object({
 export const CliCredentialSchema = z.object({
   token: z.string(),
 });
+const UnclaimedAccessSchema = z
+  .object({ endsAt: z.string(), limit: z.number().int().optional() })
+  .nullable();
+
 export const CliBootstrapResponseSchema = z.object({
   deployment: CliDeploymentSchema,
   account: CliAccountSchema,
   credential: CliCredentialSchema,
-  trial: z.object({ endsAt: z.string(), limit: z.number().int().optional() }).nullable(),
+  /**
+   * On a hosted deployment, when this unclaimed account's free access ends and
+   * the request allowance it has until then; null on a self-host, where an
+   * account has no such window.
+   */
+  unclaimedAccess: UnclaimedAccessSchema,
+  /**
+   * The same value under the name CLIs up to 0.2.1 require, which they parse
+   * a bootstrap response with. Removed once no such CLI can still be installed.
+   */
+  trial: UnclaimedAccessSchema.meta({ deprecated: true, description: "Deprecated alias of unclaimedAccess." }),
 });
 export const CliOperationResponseSchema = z.object({
   id: z.string(),

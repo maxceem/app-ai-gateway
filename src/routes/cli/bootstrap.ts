@@ -10,7 +10,7 @@ import { GatewayError } from "../../core/errors";
 import { CliBootstrapRequestSchema } from "../../contracts/cli";
 import type { CliBootstrapResponse } from "../../contracts/cli";
 import { schemaBody } from "../../management/validation";
-import { accountTrialDeadline } from "../../policy/accounts";
+import { unclaimedAccessDeadline } from "../../policy/accounts";
 import { bootstrapDecision } from "../../policy/deployment";
 import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
 import {
@@ -274,19 +274,19 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
     organizationId: account.id,
   });
 
-  let trial: { endsAt: string; limit?: number } | null = null;
+  let unclaimedAccess: { endsAt: string; limit?: number } | null = null;
   if (deployment.mode === "cloud") {
-    const trialDeadline = accountTrialDeadline(account.createdAt);
-    if (trialDeadline === null) {
+    const deadline = unclaimedAccessDeadline(account.createdAt);
+    if (deadline === null) {
       throw new GatewayError(
         403,
-        "billing_trial_expired",
-        "The trial has ended; claim your account to continue",
+        "unclaimed_access_expired",
+        "This unclaimed account's free access has ended; claim your account to continue",
       );
     }
-    const quota = await resolveBillingQuota(c.env, account.id);
-    trial = {
-      endsAt: new Date(trialDeadline).toISOString(),
+    const quota = await resolveBillingQuota(deployment, c.env, account.id);
+    unclaimedAccess = {
+      endsAt: new Date(deadline).toISOString(),
       ...(quota.limit === undefined ? {} : { limit: quota.limit }),
     };
   }
@@ -294,6 +294,7 @@ export async function bootstrap(c: CliContext): Promise<CliBootstrapResponse> {
     deployment: meta,
     account: await accountLifecycle(c.env, account.id),
     credential: await openCredential(c.env, id, proofHash, row.protected_credential),
-    trial,
+    unclaimedAccess,
+    trial: unclaimedAccess,
   };
 }

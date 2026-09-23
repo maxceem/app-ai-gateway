@@ -1,6 +1,6 @@
 import type { DeploymentMode, RegistrationRule } from "./deployment";
 import type { AccountAccessMode } from "./accounts";
-import { ACCOUNT_TRIAL_MS, requiresActiveTrial } from "./accounts";
+import { UNCLAIMED_ACCESS_MS, requiresUnclaimedAccess } from "./accounts";
 import { sql, type SQL } from "drizzle-orm";
 import type { CfAuthTables } from "@maxceem/cf-auth/schema";
 
@@ -87,11 +87,11 @@ export function accountAccessCondition(
     `julianday(o.expires_at)>${effectiveNow}`,
   ];
   const params: unknown[] = [organizationId, new Date(nowMs).toISOString()];
-  if (requiresActiveTrial(deploymentMode, accessMode)) {
+  if (requiresUnclaimedAccess(deploymentMode, accessMode)) {
     deadlineChecks.push(
       `(julianday(o.created_at)+(?/86400000.0))>${effectiveNow}`,
     );
-    params.push(ACCOUNT_TRIAL_MS, new Date(nowMs).toISOString());
+    params.push(UNCLAIMED_ACCESS_MS, new Date(nowMs).toISOString());
   }
   return {
     sql: `EXISTS (SELECT 1 FROM mgmt_organization o WHERE o.id=? AND (

@@ -6,6 +6,13 @@ import worker from "../src/index";
 import { resolveBillingQuota } from "../src/billing/quota";
 import { BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../src/billing/gateway";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
+import { resolveDeployment } from "../src/policy/deployment";
+
+/** Resolves a quota the way a request does: with the deployment its environment describes. */
+const quotaFor = (
+  quotaEnv: Env,
+  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
+) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
 
 const ORIGIN = "https://example.test";
 
@@ -376,7 +383,7 @@ describe("organization monthly request quota", () => {
     await seedOrganization(organizationId);
     const quota = env.ORG_QUOTA.getByName(organizationId);
     const now = Date.now();
-    const resolved = await resolveBillingQuota(
+    const resolved = await quotaFor(
       hosted({ maxRequestsPerMonth: 10 }),
       organizationId,
       undefined,
@@ -749,7 +756,7 @@ it("refreshes a superseded schedule once and then returns a retriable 503", asyn
   const billing = new Proxy(env, {
     get: (target, property, receiver) => property === "BILLING" ? billingStub(calls) : Reflect.get(target, property, receiver),
   }) as Env;
-  const resolved = await resolveBillingQuota(billing, organizationId);
+  const resolved = await quotaFor(billing, organizationId);
   await env.ORG_QUOTA.getByName(organizationId).usage({
     ...resolved.period, scheduleRevision: resolved.period.scheduleRevision + 1,
   });

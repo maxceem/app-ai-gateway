@@ -65,6 +65,7 @@ routes.handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
 async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusResponse> {
   const organizationId = c.get("actor").organizationId;
   let resolved = await getBillingQuotaResolution(
+    c.get("deployment"),
     c.env,
     organizationId,
     c.get("billingRequestCache"),
@@ -85,7 +86,12 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
   let usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   if ("superseded" in usage && usage.superseded) {
     invalidateBillingRequestAccess(organizationId, c.get("billingRequestCache"));
-    resolved = await getBillingQuotaResolution(c.env, organizationId, c.get("billingRequestCache"));
+    resolved = await getBillingQuotaResolution(
+      c.get("deployment"),
+      c.env,
+      organizationId,
+      c.get("billingRequestCache"),
+    );
     if (!resolved.period) return { access: resolved.access, limits, quota: null };
     usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
   }

@@ -107,7 +107,7 @@ async function monthlyRequestAllowance(
   // No billing service means self-hosted, which is unlimited and must never
   // depend on a hosted plan lookup that cannot happen.
   if (deployment.mode === "self_hosted") return undefined;
-  return resolveBillingQuota(env, organizationId, cache);
+  return resolveBillingQuota(deployment, env, organizationId, cache);
 }
 
 /** What admitting one prepared request needs to know, and where to leave its diagnostics. */
@@ -317,7 +317,12 @@ export async function admitRequest(
       // be a retry that could return the same superseded answer.
       invalidateAccountLifecycle(app.organizationId);
       invalidateBillingRequestAccess(app.organizationId, input.billingCache);
-      const refreshed = await resolveBillingQuota(env, app.organizationId, input.billingCache);
+      const refreshed = await resolveBillingQuota(
+        input.deployment,
+        env,
+        app.organizationId,
+        input.billingCache,
+      );
       return claim(refreshed, false);
     }
     throw new GatewayError(

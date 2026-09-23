@@ -104,11 +104,11 @@ export async function assertAccountAccess(
       "The account recovery deadline has passed",
     );
   }
-  if (denial === "billing_trial_expired") {
+  if (denial === "unclaimed_access_expired") {
     throw new GatewayError(
       403,
-      "billing_trial_expired",
-      "The trial has ended; claim your account to continue",
+      "unclaimed_access_expired",
+      "This unclaimed account's free access has ended; claim your account to continue",
     );
   }
   return account;

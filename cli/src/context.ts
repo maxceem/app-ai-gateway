@@ -134,7 +134,7 @@ export interface KeyOutput extends ReservedOutput {
 
 export interface Onboarding {
   account: CliAccount;
-  trial: { endsAt: string; limit?: number } | null;
+  unclaimedAccess: { endsAt: string; limit?: number } | null;
   deployment: CliDeployment;
 }
 
@@ -588,7 +588,7 @@ export class Context {
     await this.select(CLOUD, data);
     this.onboarding = {
       account: data.account,
-      trial: data.trial,
+      unclaimedAccess: data.unclaimedAccess,
       deployment: data.deployment,
     };
     delete this.state.bootstrap;

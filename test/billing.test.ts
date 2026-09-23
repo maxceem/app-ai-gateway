@@ -26,6 +26,12 @@ import {
   validateConfig,
 } from "./helpers";
 
+/** Resolves a quota the way a request does: with the deployment its environment describes. */
+const quotaFor = (
+  quotaEnv: Env,
+  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
+) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+
 const ORIGIN = "https://example.test";
 const MANAGEMENT_HEADERS = {
   authorization: "Bearer agw_mgmt_test-admin-secret",
@@ -383,7 +389,7 @@ describe("billing gateway", () => {
     );
     const quota = env.ORG_QUOTA.getByName(TEST_ORGANIZATION_ID);
     const now = Date.now();
-    const resolved = await resolveBillingQuota(billingEnv, TEST_ORGANIZATION_ID, undefined, now);
+    const resolved = await quotaFor(billingEnv, TEST_ORGANIZATION_ID, undefined, now);
     expect((await quota.admit({ limit: 50, ...resolved.period })).allowed).toBe(true);
     expect((await quota.admit({ limit: 50, ...resolved.period })).allowed).toBe(true);
 

@@ -82,6 +82,7 @@ routes.relay("cliBrowserGoogle", browserGoogle);
 routes.handle("getCliAccount", async (c) => {
   const account = await accountLifecycle(c.env, c.get("actor").organizationId);
   const billing = await getBillingQuotaResolution(
+    c.get("deployment"),
     c.env,
     account.id,
     c.get("billingRequestCache"),

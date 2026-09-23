@@ -134,9 +134,9 @@ describe("CLI account lifecycle", () => {
     });
     const response = await request(testEnv, "/bootstrap", { idempotencyKey: random(), pollToken: random() });
     expect(response.status).toBe(200);
-    const data = await response.json() as { trial: { limit?: number } };
-    if (limit === null) expect(data.trial).not.toHaveProperty("limit");
-    else expect(data.trial.limit).toBe(limit);
+    const data = await response.json() as { unclaimedAccess: { limit?: number } };
+    if (limit === null) expect(data.unclaimedAccess).not.toHaveProperty("limit");
+    else expect(data.unclaimedAccess.limit).toBe(limit);
   });
   it("holds a bootstrap a pre-0006 Worker recorded to its own proof", async () => {
     // What a Worker older than the bootstrap table leaves behind when it
@@ -962,7 +962,7 @@ describe("CLI account lifecycle", () => {
     accountLifecycleCache.clear();
     await expect(
       assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "proxy"),
-    ).rejects.toMatchObject({ code: "billing_trial_expired" });
+    ).rejects.toMatchObject({ code: "unclaimed_access_expired" });
     await expect(
       assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "read"),
     ).resolves.toMatchObject({ id: data.account.id });
@@ -1154,5 +1154,5 @@ it("keeps the completed trial counter readable during recovery without renewing 
     usage: { used: 0, periodStart: origin, periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString() },
   });
   await expect(assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "setup"))
-    .rejects.toMatchObject({ code: "billing_trial_expired" });
+    .rejects.toMatchObject({ code: "unclaimed_access_expired" });
 });

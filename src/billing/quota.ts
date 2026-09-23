@@ -1,6 +1,6 @@
 import { accountLifecycle } from "../core/account-lifecycle";
-import { resolveDeployment } from "../policy/deployment";
-import { accountOnTrial, accountTrialDeadline } from "../policy/accounts";
+import type { Deployment } from "../policy/deployment";
+import { accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
 import { GatewayError } from "../core/errors";
 import {
   billingPlanLimits,
@@ -104,16 +104,13 @@ function latest(...values: Array<number | null>): number {
  * Default plans always return to the organization's original Free schedule.
  */
 export async function getBillingQuotaResolution(
+  deployment: Deployment,
   env: Env,
   organizationId: string,
   cache?: BillingRequestCache,
   now?: number,
 ): Promise<BillingQuotaResolution> {
-  // Resolved from `env` rather than taken from the request: this is called
-  // from the dispatch gate, the console and the CLI alike, and `mode` and
-  // `billing` are pure functions of the environment, so the value is the same
-  // one `requestScope` put on the context.
-  const access = await getBillingAccess(resolveDeployment(env), organizationId, cache);
+  const access = await getBillingAccess(deployment, organizationId, cache);
   if (access.state !== "billed" || access.plan === null) return { access };
 
   let scheduleId: string;
@@ -163,9 +160,9 @@ export async function getBillingQuotaResolution(
     // draw a second month. Claiming it resumes the ordinary monthly renewals.
     // Measured from the schedule's own anchor, so the window can never close
     // before the period it belongs to opens.
-    if (accountOnTrial(account)) {
+    if (accountUnclaimed(account)) {
       // normalizedInstant above already validated this same stored value.
-      const deadline = accountTrialDeadline(account.createdAt);
+      const deadline = unclaimedAccessDeadline(account.createdAt);
       if (deadline === null) throw invalidSchedule("organization creation time");
       trialEnd = deadline;
     }
@@ -222,12 +219,13 @@ export async function getBillingQuotaResolution(
 }
 
 export async function resolveBillingQuota(
+  deployment: Deployment,
   env: Env,
   organizationId: string,
   cache?: BillingRequestCache,
   now?: number,
 ): Promise<ResolvedBillingQuota> {
-  const resolved = await getBillingQuotaResolution(env, organizationId, cache, now);
+  const resolved = await getBillingQuotaResolution(deployment, env, organizationId, cache, now);
   if (!resolved.period) {
     requireActiveBilling(resolved.access);
     throw new Error("Billing quota periods only exist for hosted plans");

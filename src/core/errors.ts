@@ -15,8 +15,13 @@ export type ErrorCode =
   | "not_found"
   | "not_a_member"
   | "last_owner"
-  /** The organization has no active subscription. */
-  | "billing_trial_expired"
+  /**
+   * An account nobody has claimed yet may serve traffic and change resources
+   * only for its first thirty days; claiming it lifts that. Not billing, and
+   * not the billing service's own trial: this is the gateway's window for an
+   * account a CLI bootstrap created and no person owns.
+   */
+  | "unclaimed_access_expired"
   | "account_expired"
   | "billing_payment_required"
   | "billing_unavailable"

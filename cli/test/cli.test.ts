@@ -36,6 +36,7 @@ const credential = {
     apiUrl: "https://api.example.com",
     consoleOrigin: "https://console.example.com",
   },
+  unclaimedAccess: null,
   trial: null,
 };
 
@@ -732,7 +733,7 @@ test("fresh onboarding output includes exact free access dates without managemen
       transport: {
         request: async (_url, path) => {
           if (path.endsWith("/bootstrap"))
-            return { data: { ...credential, account, trial } };
+            return { data: { ...credential, account, unclaimedAccess: trial, trial } };
           if (path.endsWith("/apps"))
             return {
               data: {

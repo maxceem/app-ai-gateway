@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { database } from "../src/db";
 import {
   ACCOUNT_RECOVERY_MS,
-  ACCOUNT_TRIAL_MS,
+  UNCLAIMED_ACCESS_MS,
   accountAccessDenial,
   type AccountAccessMode,
   type AccountLifecycle,
@@ -140,7 +140,7 @@ function expectedDenial(
     expected === "trial" &&
     mode === "cloud" &&
     (action === "setup" || action === "proxy")
-  ) return "billing_trial_expired";
+  ) return "unclaimed_access_expired";
   return null;
 }
 
@@ -157,28 +157,28 @@ describe("account deadline policy", () => {
     }> = [
       {
         label: "trial-just-before-iso",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS + 1, "iso"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS + 1, "iso"),
         expiresAt: storedInstant(now + 60 * DAY + 1, "iso"),
         claimed: false,
         expected: "open",
       },
       {
         label: "trial-exact-iso",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS, "iso"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS, "iso"),
         expiresAt: storedInstant(now + 60 * DAY, "iso"),
         claimed: false,
         expected: "trial",
       },
       {
         label: "trial-exact-sqlite",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS, "sqlite"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS, "sqlite"),
         expiresAt: storedInstant(now + 60 * DAY, "sqlite"),
         claimed: false,
         expected: "trial",
       },
       {
         label: "trial-after-iso",
-        createdAt: storedInstant(now - ACCOUNT_TRIAL_MS - 1, "iso"),
+        createdAt: storedInstant(now - UNCLAIMED_ACCESS_MS - 1, "iso"),
         expiresAt: storedInstant(now + 60 * DAY - 1, "iso"),
         claimed: false,
         expected: "trial",
