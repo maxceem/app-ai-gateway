@@ -238,16 +238,24 @@ const AppAttestEndUserSchema = z.discriminatedUnion("source", [
   AppInstallEndUserSchema,
 ], { error: "authentication.end_user.source must be one of issuer, app_install" });
 
+/**
+ * The two values that name one iOS application to Apple. Its own schema so a
+ * form can ask whether they are acceptable before the rest of a configuration
+ * exists, against the same rules the stored configuration is held to.
+ */
+export const AppleAppIdentitySchema = z.object({
+  team_id: z.string().regex(APPLE_TEAM_ID, {
+    error: "team_id must contain ten uppercase letters or digits",
+  }),
+  bundle_id: z.string().regex(APPLE_BUNDLE_ID, {
+    error: "bundle_id must be a reverse DNS identifier",
+  }),
+});
+
 const AppleAppAttestAuthenticationSchema = z.object({
   type: z.literal("apple_app_attest"),
   end_user: AppAttestEndUserSchema,
-  app_attest: z.object({
-    team_id: z.string().regex(APPLE_TEAM_ID, {
-      error: "team_id must contain ten uppercase letters or digits",
-    }),
-    bundle_id: z.string().regex(APPLE_BUNDLE_ID, {
-      error: "bundle_id must be a reverse DNS identifier",
-    }),
+  app_attest: AppleAppIdentitySchema.extend({
     /**
      * Which of Apple's two App Attest environments this application accepts.
      * Defaulted to `["production"]` alone, because a development-signed build

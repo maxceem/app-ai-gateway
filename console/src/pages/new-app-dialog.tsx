@@ -22,6 +22,7 @@ import { ExternalHint } from "@/components/external-hint";
 import { PresetPicker } from "@/components/preset-picker";
 import { clientApiOrigin } from "@/lib/client-api";
 import { DEFAULT_END_USER_HEADER, type AppAttestEnvironment } from "@/lib/config-types";
+import { appleIdentityProblem } from "@shared/app-config";
 import { newAppConfig, type NewAppInput } from "@shared/app-defaults";
 import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
@@ -156,12 +157,22 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
     issuerFragment.issuer.length > 0 &&
     issuerFragment.audience.length > 0;
 
+  // What the save would say about the two ids, from the schema that judges it.
+  // Empty fields are simply unfinished, so they disable the step without an
+  // error beside a field nobody has typed into yet.
+  const appleIdentity = appleIdentityProblem({
+    team_id: appleTeamId.trim(),
+    bundle_id: appleBundleId.trim(),
+  });
+  const appleIdentityShown =
+    appleTeamId.trim().length > 0 && appleBundleId.trim().length > 0 ? appleIdentity : null;
+
   const stepComplete = (() => {
     switch (step.id) {
       case "basics":
         return name.trim().length > 0 && applicationType !== null;
       case "app_identity":
-        return appleTeamId.trim().length > 0 && appleBundleId.trim().length > 0;
+        return appleIdentity === null;
       case "users":
         return userSource !== null;
       case "identity_provider":
@@ -419,6 +430,11 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
                     </p>
                   </div>
                 </div>
+                {appleIdentityShown ? (
+                  <p role="alert" className="text-xs text-destructive">
+                    {appleIdentityShown}
+                  </p>
+                ) : null}
                 <AppAttestEnvironments value={environments} onChange={setEnvironments} compact />
               </div>
             ) : null}

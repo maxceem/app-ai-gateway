@@ -1,3 +1,4 @@
+import { appleIdentityProblem } from "@shared/app-config";
 import type { Draft } from "@/lib/app-draft";
 import { authIssuer, type AuthConfig, type ClaimRequirement } from "@/lib/config-types";
 
@@ -29,6 +30,8 @@ export function draftProblem(draft: Draft): string | null {
   if (authentication.type === "apple_app_attest") {
     const { team_id, bundle_id } = authentication.app_attest;
     if (!team_id.trim() || !bundle_id.trim()) return "Enter the Apple Team ID and Bundle ID.";
+    const identity = appleIdentityProblem({ team_id, bundle_id });
+    if (identity) return identity;
   }
   if (authentication.type === "api_key" && authentication.end_user?.source === "header") {
     if (!authentication.end_user.header.trim()) return "Enter the header name.";

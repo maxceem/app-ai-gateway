@@ -82,6 +82,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("the app identity step", () => {
+  it("holds the step until the ids are ones the gateway accepts, and says why", async () => {
+    stubCreate();
+    renderAuthenticated(<NewAppDialog />);
+    const user = await startWizard("Calorie Tracker", "iOS application");
+
+    await user.type(screen.getByLabelText("Apple Team ID"), "abcde12345");
+    await user.type(screen.getByLabelText("Bundle ID"), "com.example.calories");
+    expect(next()).toHaveProperty("disabled", true);
+    expect(screen.getByRole("alert").textContent).toMatch(/team_id must contain ten uppercase/u);
+
+    await user.clear(screen.getByLabelText("Apple Team ID"));
+    await user.type(screen.getByLabelText("Apple Team ID"), "ABCDE12345");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(next()).toHaveProperty("disabled", false);
+  });
+});
+
 describe("the first step", () => {
   it("asks only for a name and a type, and never shows or sends an id", async () => {
     const attempts = stubCreate();

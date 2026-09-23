@@ -8,6 +8,7 @@
  * here and the Auth policy tab renders what it returns.
  */
 
+import { appleIdentityProblem } from "@shared/app-config";
 import type { Draft } from "@/lib/app-draft";
 import { authIssuer, type AuthConfig } from "@/lib/config-types";
 import { claimComplete, issuerComplete } from "@/lib/draft-problems";
@@ -48,7 +49,9 @@ export function levelStatuses(
     authentication.type === "apple_app_attest"
       ? !authentication.app_attest.team_id.trim() || !authentication.app_attest.bundle_id.trim()
         ? { tone: "incomplete", text: "Team or bundle id missing" }
-        : { tone: "secure", text: "Verified with App Attest" }
+        : appleIdentityProblem(authentication.app_attest)
+          ? { tone: "incomplete", text: "Team or bundle id invalid" }
+          : { tone: "secure", text: "Verified with App Attest" }
       : keysActive === false
         ? { tone: "incomplete", text: "No active API key" }
         : { tone: "secure", text: "Verified with API keys" };

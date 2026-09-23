@@ -14,7 +14,12 @@
  */
 
 import type { z } from "zod";
-import { AppConfigSchema, type AppConfig, type LimitScopeConfig } from "../contracts/schemas.ts";
+import {
+  AppConfigSchema,
+  AppleAppIdentitySchema,
+  type AppConfig,
+  type LimitScopeConfig,
+} from "../contracts/schemas.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
@@ -95,6 +100,16 @@ export function parseAppConfig(raw: unknown): AppConfig {
   const parsed = AppConfigSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
   throw configErrorFor(parsed.error);
+}
+
+/**
+ * Why an Apple team and bundle id would be refused, or null when they would
+ * not. The stored configuration's own rules, so a form that is not yet a whole
+ * configuration can still be told exactly what the save would say.
+ */
+export function appleIdentityProblem(identity: { team_id: string; bundle_id: string }): string | null {
+  const parsed = AppleAppIdentitySchema.safeParse(identity);
+  return parsed.success ? null : (parsed.error.issues[0]?.message ?? "Invalid Apple app identity");
 }
 
 /** The issuer that identifies this application's end users, if one does. */
