@@ -493,6 +493,24 @@ function resolveModel(input: {
   };
 }
 
+/**
+ * Where the wire model has to be written, when it differs from the one the
+ * client named: back into the path it was captured from, or into the body
+ * field it came in. A fixed model is policy metadata and is never injected,
+ * and a model that needs no translation leaves the request untouched — which
+ * on a multipart upload is what keeps its original bytes and boundary.
+ */
+function modelPlacement(
+  match: MatchedPath,
+  model: { requestedModel: string; wireModel: string },
+): { path: string } | { bodyModel: string } | null {
+  if (model.wireModel === model.requestedModel) return null;
+  if (match.modelFromPath) {
+    return { path: match.entry.path.replace("{model}", encodeURIComponent(model.wireModel)) };
+  }
+  return match.entry.fixed_model ? null : { bodyModel: model.wireModel };
+}
+
 export async function prepareProxyRequest(input: {
   request: Request;
   app: AppRecord;
@@ -546,29 +564,26 @@ export async function prepareProxyRequest(input: {
       }).formData();
     }
     const modelField = parsed?.get("model");
-    const { requestedModel, actualModel, wireModel } = resolveModel({
+    const model = resolveModel({
       match,
       bodyModel: typeof modelField === "string" && modelField.length > 0 ? modelField : undefined,
       policy: config,
       rewrites: input.app.config.routing.model_rewrites,
       resolved,
     });
-    if (match.modelFromPath && wireModel !== requestedModel) {
-      providerPath = match.entry.path.replace("{model}", encodeURIComponent(wireModel));
-      body = bytes;
-    } else if (!match.modelFromPath && !match.entry.fixed_model && wireModel !== requestedModel) {
-      parsed!.set("model", wireModel);
+    const placement = modelPlacement(match, model);
+    body = bytes;
+    if (placement && "path" in placement) providerPath = placement.path;
+    if (placement && "bodyModel" in placement && parsed) {
+      // Re-encoded only here, so fetch writes a fresh boundary for it.
+      parsed.set("model", placement.bodyModel);
       headers.delete("content-type");
-      body = parsed!;
-    } else {
-      // Preserve the original multipart boundary and bytes when no rewrite is
-      // needed. A fixed model is policy metadata and is never injected.
-      body = bytes;
+      body = parsed;
     }
     return {
       provider,
       providerPath,
-      model: actualModel,
+      model: model.actualModel,
       apiStyle,
       body,
       headers,
@@ -580,7 +595,7 @@ export async function prepareProxyRequest(input: {
   // the body, the outbound request itself.
   const text = new TextDecoder().decode(bytes);
   const parsed = jsonObjectFromText(text);
-  const { requestedModel, actualModel, wireModel } = resolveModel({
+  const model = resolveModel({
     match,
     bodyModel: typeof parsed.model === "string" && parsed.model.length > 0
       ? parsed.model
@@ -589,15 +604,11 @@ export async function prepareProxyRequest(input: {
     rewrites: input.app.config.routing.model_rewrites,
     resolved,
   });
-  if (match.modelFromPath) {
-    providerPath = wireModel === requestedModel
-      ? input.providerPath
-      : match.entry.path.replace("{model}", encodeURIComponent(wireModel));
-  } else if (!match.entry.fixed_model) {
-    if (wireModel !== requestedModel) {
-      parsed.model = wireModel;
-      bodyChanged = true;
-    }
+  const placement = modelPlacement(match, model);
+  if (placement && "path" in placement) providerPath = placement.path;
+  if (placement && "bodyModel" in placement) {
+    parsed.model = placement.bodyModel;
+    bodyChanged = true;
   }
   bodyChanged =
     validateOrInjectOutputCap(clampStyle, provider, parsed, config.max_output_tokens)
@@ -620,7 +631,7 @@ export async function prepareProxyRequest(input: {
   return {
     provider,
     providerPath,
-    model: actualModel,
+    model: model.actualModel,
     apiStyle,
     body,
     headers,
