@@ -467,8 +467,6 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
             style,
           )
         : ["No app usage recorded."]),
-      "",
-      result.coverage.historicalAttribution,
     ];
   if ("requests" in result)
     return kv(

@@ -36,8 +36,8 @@ async function recordAuth(
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_auth_event(
-       app_id, user_id, event, auth_method, outcome, reason, claim_delay_ms, latency_ms, created_at
-     ) VALUES (?, ?, ?, 'api_key', ?, ?, ?, 5, ?)`,
+       event_id, app_id, user_id, event, auth_method, outcome, reason, claim_delay_ms, latency_ms, created_at
+     ) VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'api_key', ?, ?, ?, 5, ?)`,
   )
     .bind(appId, userId, event, outcome, reason, claimDelayMs, createdAt)
     .run();
@@ -70,13 +70,13 @@ describe("application auth event summary", () => {
 
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, status, created_at
-       ) VALUES ('auth-summary', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, ?)`,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, status, created_at
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'auth-summary', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, ?)`,
     ).bind("provider_error", daysAgo(0)).run();
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, status, created_at
-       ) VALUES ('auth-summary', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok', ?)`,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, status, created_at
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'auth-summary', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok', ?)`,
     ).bind(daysAgo(0)).run();
 
     await env.DB.prepare(

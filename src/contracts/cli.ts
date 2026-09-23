@@ -264,7 +264,6 @@ export const CliUsageResponseSchema = z.object({
   coverage: z.object({
     scope: z.literal("retained_account_usage"),
     firstRecord: z.string().nullable(),
-    historicalAttribution: z.string(),
   }),
 });
 export const CliCapabilitiesResponseSchema = z.object({

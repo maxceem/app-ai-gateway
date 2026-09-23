@@ -162,7 +162,7 @@ export const app = sqliteTable(
      * No CHECK: the database is permissive and the runtime is authoritative,
      * which is this schema's standing position.
      */
-    authType: text("auth_type").notNull().default(""),
+    authType: text("auth_type").notNull(),
     revision: integer("revision").notNull().default(1),
     status: text("status").$type<AppStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -294,8 +294,7 @@ export const appUser = sqliteTable(
     /**
      * Which App Attest environment registered the stored key, so that removing
      * an application's development opt-in also stops the keys that opt-in
-     * admitted. Null for a row written before the column existed, which can
-     * only have been production: nothing else was acceptable then.
+     * admitted. Set exactly when a key is, which the check below holds.
      */
     attestEnvironment: text("attest_env").$type<AttestEnvironment>(),
     status: text("status").$type<UserStatus>().notNull().default("active"),
@@ -313,6 +312,12 @@ export const appUser = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.appId, table.id] }),
     check("users_status_check", sql`${table.status} IN ('active', 'blocked')`),
+    // A registered key is its id, its public key and the environment that
+    // attested it, all three; a user identified by an issuer has none of them.
+    check(
+      "users_attest_key_check",
+      sql`(${table.attestKeyId} IS NULL) = (${table.attestPublicKey} IS NULL) AND (${table.attestKeyId} IS NULL) = (${table.attestEnvironment} IS NULL)`,
+    ),
   ],
 );
 
@@ -339,14 +344,12 @@ export const appUsageEvent = sqliteTable(
     id: integer("id").primaryKey(),
     /**
      * Recording identity, generated once per event and reused by every retry so
-     * the insert can be replayed without duplicating the row. Null on rows
-     * written before recording became idempotent; SQLite's unique index treats
-     * each NULL as distinct, so those rows coexist.
+     * the insert can be replayed without duplicating the row.
      */
-    eventId: text("event_id"),
+    eventId: text("event_id").notNull(),
     appId: text("app_id").notNull(),
-    /** Durable ownership; empty only for historical rows that cannot be attributed. */
-    organizationId: text("organization_id").notNull().default(""),
+    /** Durable ownership: the account the request was served for, which outlives the app. */
+    organizationId: text("organization_id").notNull(),
     /**
      * Null for an application that identifies no end users, where the request
      * was made by the API key itself and there is nobody else to name. The
@@ -382,10 +385,9 @@ export const appUsageEvent = sqliteTable(
     costUsd: real("cost_usd").notNull().default(0),
     /**
      * How `cost_usd` was arrived at, for events that reached a provider. Null on
-     * blocked traffic, which never had a cost to source, and on rows written
-     * before the column existed. Deliberately unconstrained text: the value set
-     * grows as new cost sources land, and a CHECK on this table would make each
-     * addition a full rebuild.
+     * blocked traffic, which never had a cost to source. Deliberately
+     * unconstrained text: the value set grows as new cost sources land, and a
+     * CHECK on this table would make each addition a full rebuild.
      */
     costSource: text("cost_source").$type<CostSource>(),
     /**
@@ -453,8 +455,7 @@ export const appUsageSpend = sqliteTable(
   "app_usage_spend",
   {
     id: integer("id").primaryKey(),
-    /** Null only when historical usage cannot be attributed to an account. */
-    organizationId: text("organization_id"),
+    organizationId: text("organization_id").notNull(),
     appId: text("app_id").notNull(),
     scope: text("scope").$type<AppUsageSpendScope>().notNull(),
     userKey: text("user_key").notNull(),
@@ -512,8 +513,8 @@ export const appUsageRollup = sqliteTable(
     /** `YYYY-MM-DD` at day grain, `YYYY-MM` at month grain. Compares lexically. */
     bucket: text("bucket").notNull(),
     appId: text("app_id").notNull(),
-    /** Durable ownership; empty only for historical rows that cannot be attributed. */
-    organizationId: text("organization_id").notNull().default(""),
+    /** Durable ownership, carried over from the events the bucket folds. */
+    organizationId: text("organization_id").notNull(),
     model: text("model").notNull(),
     providerType: text("provider_type").notNull(),
     status: text("status").$type<UsageStatus>().notNull(),
@@ -565,7 +566,7 @@ export const appAuthEvent = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     /** Recording identity, so a retried insert converges instead of duplicating. */
-    eventId: text("event_id"),
+    eventId: text("event_id").notNull(),
     /**
      * No foreign key, but for a different reason than usage's. Usage outlives
      * the app it belongs to because it is billing history; this table is

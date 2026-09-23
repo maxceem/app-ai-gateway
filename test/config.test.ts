@@ -90,11 +90,10 @@ describe("the application configuration grammar", () => {
   });
 
   /*
-   * Stored rows predate the defaults. A configuration written before `limits`
-   * and `environments` were always materialised must still load, or a
-   * deployment's own applications go offline on the upgrade that added them.
+   * `limits`, `endpoints` and `environments` are optional on the way in and
+   * always present on the way out, so a client may omit them.
    */
-  it("still reads a stored configuration written before the defaults existed", () => {
+  it("fills in the blocks a configuration leaves out", () => {
     const parsed = parseAppConfig({
       authentication: {
         type: "apple_app_attest",

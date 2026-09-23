@@ -1147,7 +1147,7 @@ export const CATALOG = {
     path: "/v1/cli/usage",
     tags: ["CLI"],
     summary: "Read retained account usage for a UTC month",
-    description: "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
+    description: "Includes retained usage for deleted apps, with durable account attribution.",
     security: "management",
     query: z.object({
       month: MonthSchema.optional()

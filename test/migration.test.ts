@@ -74,17 +74,16 @@ describe("initial database migration", () => {
       "organization_id",
       "name",
       "config_json",
+      // What kind of application this is, lifted out of the JSON so the queries
+      // that only need that never parse a configuration.
+      "auth_type",
       "revision",
       "status",
       "created_at",
       "updated_at",
-      // Added by 0003 and backfilled from config_json: what kind of application
-      // this is, lifted out of the JSON so the queries that only need that
-      // never parse a configuration.
-      "auth_type",
     ]);
     expect(appColumns.results.find((column) => column.name === "auth_type"))
-      .toMatchObject({ notnull: 1, dflt_value: "''" });
+      .toMatchObject({ notnull: 1, dflt_value: null });
     expect(appColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
     expect(spendColumns.results.map((column) => column.name)).toEqual([
       "id",
@@ -95,7 +94,12 @@ describe("initial database migration", () => {
       "month",
       "microusd",
     ]);
-    expect(spendColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(0);
+    // Every event names its account, so every total it feeds does too.
+    expect(spendColumns.results.find((column) => column.name === "organization_id")?.notnull).toBe(1);
+    for (const name of ["event_id", "organization_id"]) {
+      expect(usageColumns.results.find((column) => column.name === name))
+        .toMatchObject({ notnull: 1, dflt_value: null });
+    }
     const spendTriggers = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'app_usage_event_%' ORDER BY name",
     ).all<{ name: string }>();
@@ -277,23 +281,20 @@ describe("initial database migration", () => {
   it("rejects usage events without a cost", async () => {
     await expect(
       env.DB.prepare(
-        `INSERT INTO app_usage_event(app_id, user_id, provider_type, model, route, cost_usd, status)
-         VALUES ('migration-cost', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', NULL, 'ok')`,
+        `INSERT INTO app_usage_event(event_id, organization_id, app_id, user_id, provider_type, model, route, cost_usd, status)
+         VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'migration-cost', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', NULL, 'ok')`,
       ).run(),
     ).rejects.toThrow(/NOT NULL constraint failed: app_usage_event.cost_usd/u);
   });
 
-  it("rejects a repeated usage event id while tolerating rows that carry none", async () => {
+  it("requires every usage event to carry its own id", async () => {
     const insert = (eventId: string | null) =>
       env.DB.prepare(
-        `INSERT INTO app_usage_event(event_id, app_id, user_id, provider_type, model, route, cost_usd, status)
-         VALUES (?, 'migration-event-id', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 0, 'ok')`,
+        `INSERT INTO app_usage_event(organization_id, event_id, app_id, user_id, provider_type, model, route, cost_usd, status)
+         VALUES ('operator-test-organization', ?, 'migration-event-id', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 0, 'ok')`,
       ).bind(eventId).run();
 
-    // `event_id` is nullable, and SQLite counts every NULL as distinct, so the
-    // uniqueness guarantee only binds rows that actually carry one.
-    await insert(null);
-    await expect(insert(null)).resolves.toBeDefined();
+    await expect(insert(null)).rejects.toThrow(/NOT NULL constraint failed: app_usage_event.event_id/u);
     await insert("migration-event-1");
     await expect(insert("migration-event-1")).rejects.toThrow(/UNIQUE constraint failed/u);
   });

@@ -7,7 +7,7 @@ import { SPEND_REFRESH_MS, type UserLimiter } from "../src/do/UserLimiter";
 async function spent(appId: string, userKey: string | null, month: string, microusd: number) {
   await env.DB.prepare(
     `INSERT INTO app_usage_spend(organization_id, app_id, scope, user_key, month, microusd)
-     VALUES (NULL, ?, ?, ?, ?, ?)
+     VALUES ('operator-test-organization', ?, ?, ?, ?, ?)
      ON CONFLICT(scope, app_id, user_key, month) DO UPDATE SET microusd = excluded.microusd`,
   ).bind(appId, userKey === null ? "app" : "user", userKey ?? "", month, microusd).run();
 }

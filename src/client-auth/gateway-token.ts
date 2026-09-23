@@ -98,9 +98,7 @@ export async function verifyGatewayToken(
       typeof payload.exp !== "number" ||
       (payload.api_key_id !== undefined &&
         (typeof payload.api_key_id !== "string" || payload.api_key_id.length === 0)) ||
-      (payload.auth_method !== undefined &&
-        payload.auth_method !== "attest" &&
-        payload.auth_method !== "api_key")
+      (payload.auth_method !== "attest" && payload.auth_method !== "api_key")
     ) {
       throw new Error("Required gateway token claims are missing");
     }
@@ -109,7 +107,7 @@ export async function verifyGatewayToken(
       userId: payload.sub,
       jti: payload.jti,
       expiresAt: payload.exp,
-      authMethod: (payload.auth_method as GatewayAuthMethod | undefined) ?? "attest",
+      authMethod: payload.auth_method as GatewayAuthMethod,
       credentialType: "gateway_token",
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };

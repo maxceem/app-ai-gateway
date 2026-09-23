@@ -366,6 +366,7 @@ describe("blocked App Attest users", () => {
       status: "blocked",
       attestKeyId: "registered-key",
       attestPublicKey: "not-used",
+      attestEnvironment: "production",
     });
     await env.DB.prepare(
       "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
@@ -442,7 +443,7 @@ describe("App Attest environments", () => {
 describe("withdrawing an App Attest environment", () => {
   async function seedRegisteredKey(
     appId: string,
-    attestEnvironment: "production" | "development" | null,
+    attestEnvironment: "production" | "development",
   ) {
     const fixture = await signingFixture(appId);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
@@ -453,7 +454,7 @@ describe("withdrawing an App Attest environment", () => {
       id: "registered-user",
       attestKeyId: "registered-key",
       attestPublicKey: "not-used",
-      ...(attestEnvironment === null ? {} : { attestEnvironment }),
+      attestEnvironment,
     });
     await env.DB.prepare(
       "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
@@ -486,12 +487,12 @@ describe("withdrawing an App Attest environment", () => {
     });
   });
 
-  it("treats a key predating the recorded environment as production", async () => {
-    const response = await seedRegisteredKey("attest-env-legacy", null);
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.not.toMatchObject({
-      error: { message: "The registered App Attest environment is no longer allowed" },
-    });
+  it("never stores a key without the environment that attested it", async () => {
+    await seedApp("attest-env-missing");
+    await expect(env.DB.prepare(
+      `INSERT INTO app_user(app_id, id, attest_key_id, attest_public_key)
+       VALUES ('attest-env-missing', 'registered-user', 'registered-key', 'not-used')`,
+    ).run()).rejects.toThrow(/users_attest_key_check/u);
   });
 });
 

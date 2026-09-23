@@ -863,8 +863,6 @@ test("retained account usage preserves deleted app attribution and actual backen
     coverage: {
       scope: "retained_account_usage" as const,
       firstRecord: "2026-09-01",
-      historicalAttribution:
-        "Earlier unowned history cannot be assigned or counted for this account.",
     },
   };
   assert.deepEqual(CATALOG.getCliUsage.response.parse(response), response);

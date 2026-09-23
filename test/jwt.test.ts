@@ -4,23 +4,22 @@ import { issueGatewayToken, verifyGatewayToken } from "../src/client-auth/gatewa
 
 afterEach(() => vi.restoreAllMocks());
 
-const secret = "legacy-gateway-secret-with-at-least-32-bytes";
+const secret = "method-gateway-secret-with-at-least-32-bytes";
 
 describe("gateway JWT auth method", () => {
-  it("treats a legacy token without auth_method as attested", async () => {
+  it("refuses a token that does not name how it was obtained", async () => {
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ app: "legacy-app" })
+    const token = await new SignJWT({ app: "method-app" })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-      .setSubject("legacy-user")
-      .setJti("legacy-jti")
+      .setSubject("method-user")
+      .setJti("method-jti")
       .setIssuedAt(now)
       .setExpirationTime(now + 300)
       .sign(new TextEncoder().encode(secret));
 
-    await expect(verifyGatewayToken(token, secret, "legacy-app")).resolves.toMatchObject({
-      userId: "legacy-user",
-      authMethod: "attest",
-      credentialType: "gateway_token",
+    await expect(verifyGatewayToken(token, secret, "method-app")).rejects.toMatchObject({
+      status: 401,
+      code: "auth_required",
     });
   });
 });

@@ -33,8 +33,8 @@ const listApps = async (month?: string) => {
 const recordRequest = (appId: string, status: string) =>
   env.DB.prepare(
     `INSERT INTO app_usage_event(
-       app_id, user_id, provider_type, model, route, status
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
+       event_id, organization_id, app_id, user_id, provider_type, model, route, status
+     ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, ?, ?, ?, ?)`,
   ).bind(appId, "user-1", "openai", "gpt-test", "openai/v1/responses", status).run();
 
 describe("whether an organization has ever proxied a request", () => {

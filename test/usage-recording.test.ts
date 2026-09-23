@@ -9,6 +9,7 @@ import {
   type UsageEvent,
 } from "../src/usage/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
+import { TEST_ORGANIZATION_ID } from "./apply-migrations";
 import type { GatewayIdentity } from "../src/core/types";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 
@@ -56,6 +57,7 @@ function usageEvent(input: {
     row: {
       eventId,
       appId: input.appId,
+      organizationId: TEST_ORGANIZATION_ID,
       userId,
       apiKeyId: null,
       providerType: "openai",

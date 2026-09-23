@@ -341,10 +341,9 @@ const cases: Case[] = [
       coverage: {
         scope: "retained_account_usage",
         firstRecord: null,
-        historicalAttribution: "Deleted apps keep their usage.",
       },
     },
-    includes: ["Requests:", "12", "No app usage recorded.", "Deleted apps keep their usage."],
+    includes: ["Requests:", "12", "No app usage recorded."],
   },
   {
     name: "account-wide usage lists the apps the totals came from",
@@ -360,7 +359,6 @@ const cases: Case[] = [
       coverage: {
         scope: "retained_account_usage",
         firstRecord: "2026-09-01",
-        historicalAttribution: "Deleted apps keep their usage.",
       },
     },
     includes: ["APP", "COST USD", "app_1", "app_2 (deleted)", "1.5000"],

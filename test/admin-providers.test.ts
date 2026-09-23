@@ -571,8 +571,8 @@ describe("admin provider instances", () => {
     });
     const summary = created.body.provider as ProviderSummary;
     await env.DB.prepare(
-      `INSERT INTO app_usage_event(app_id, user_id, provider_type, provider_id, provider_slug, model, route, cost_usd, status)
-       VALUES ('deleted-provider-app', 'user-1', 'openai', ?, ?, 'gpt-5.6-sol', 'openai/v1/responses', 0.5, 'ok')`,
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, user_id, provider_type, provider_id, provider_slug, model, route, cost_usd, status)
+       VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'deleted-provider-app', 'user-1', 'openai', ?, ?, 'gpt-5.6-sol', 'openai/v1/responses', 0.5, 'ok')`,
     ).bind(summary.id, summary.slug).run();
 
     expect((await call("DELETE", `/v1/admin/providers/${summary.id}`)).status).toBe(200);

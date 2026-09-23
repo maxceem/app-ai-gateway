@@ -517,10 +517,9 @@ async function appAttestExchange(
   }
   // Withdrawing an environment has to stop the keys it admitted, not just new
   // registrations: an assertion carries no aaguid, so the environment the key
-  // was registered in is the only record of it. Null predates the column and
-  // can only be production, which no application can refuse.
+  // was registered in is the only record of it. A stored key always has one.
   if (
-    user.attestEnvironment !== null &&
+    user.attestEnvironment === null ||
     !auth.app_attest.environments.includes(user.attestEnvironment)
   ) {
     throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");

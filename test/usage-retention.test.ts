@@ -25,7 +25,7 @@ import {
   usageMonthTotals,
   usageTimeseries,
 } from "../src/management/usage-queries";
-import { TEST_ORGANIZATION_ID, seedServerApp } from "./helpers";
+import { TEST_ORGANIZATION_ID, TEST_SERVICE_USER_ID, seedServerApp } from "./helpers";
 
 /** Fixed so every cutoff below is arithmetic rather than a moving target. */
 const NOW = Date.parse("2026-06-01T00:00:00Z");
@@ -55,7 +55,16 @@ interface EventInput {
   time?: string;
 }
 
+/** The account that owns every app but {@link APP}, created on first use. */
+const OTHER_ORGANIZATION_ID = "usage-retention-other-organization";
+
 async function insertEvent(input: EventInput): Promise<void> {
+  if ((input.appId ?? APP) !== APP) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
+       VALUES (?, 'Other', ?, datetime('now'), datetime('now'))`,
+    ).bind(OTHER_ORGANIZATION_ID, TEST_SERVICE_USER_ID).run();
+  }
   await env.DB.prepare(
     `
       INSERT INTO app_usage_event
@@ -66,7 +75,7 @@ async function insertEvent(input: EventInput): Promise<void> {
     .bind(
       timeOrderedId(),
       input.appId ?? APP,
-      (input.appId ?? APP) === APP ? TEST_ORGANIZATION_ID : "",
+      (input.appId ?? APP) === APP ? TEST_ORGANIZATION_ID : OTHER_ORGANIZATION_ID,
       input.provider ?? "openai",
       input.model ?? "gpt-4o-mini",
       input.inputTokens ?? 10,

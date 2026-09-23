@@ -53,10 +53,10 @@ async function recordUsage(
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
-       app_id, user_id, provider_type, provider_slug, model, route, input_tokens,
+       event_id, organization_id, app_id, user_id, provider_type, provider_slug, model, route, input_tokens,
        cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at,
        api_key_id
-     ) VALUES (?, ?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
+     ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
   )
     .bind(appId, user, provider, providerSlug, model, `${providerSlug}/v1/responses`, cost, status, createdAt, apiKeyId)
     .run();
@@ -453,8 +453,8 @@ describe("admin console API", () => {
 
   it("treats a stored config that no longer parses as an internal error", async () => {
     await env.DB.prepare(
-      `INSERT INTO app(id, organization_id, name, config_json, status)
-       VALUES (?, 'operator-test-organization', ?, ?, 'active')`,
+      `INSERT INTO app(id, organization_id, name, config_json, auth_type, status)
+       VALUES (?, 'operator-test-organization', ?, ?, 'api_key', 'active')`,
     )
       .bind("broken-config", "Broken", JSON.stringify({ authentication: {}, routing: {}, limits: {} }))
       .run();
@@ -471,7 +471,7 @@ describe("admin console API", () => {
       .bind("delete-me", "user-1", "active")
       .run();
     await env.DB.prepare(
-      "INSERT INTO app_auth_event(app_id, event, outcome) VALUES (?, 'token_exchange', 'ok')",
+      "INSERT INTO app_auth_event(event_id, app_id, event, outcome) VALUES (lower(hex(randomblob(16))), ?, 'token_exchange', 'ok')",
     )
       .bind("delete-me")
       .run();

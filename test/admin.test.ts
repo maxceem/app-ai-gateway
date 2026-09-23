@@ -10,15 +10,15 @@ describe("admin API", () => {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO app_usage_event(
-           app_id, user_id, provider_type, model, route, input_tokens,
+           event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind("admin-rollup", "user-1", "openai", "known", "openai/v1/responses", 10, 2, 0, 3, 0.01, "ok"),
       env.DB.prepare(
         `INSERT INTO app_usage_event(
-           app_id, user_id, provider_type, model, route, input_tokens,
+           event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
            cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind("admin-rollup", "user-1", "openai", "known-2", "openai/v1/responses", 4, 0, 1, 2, 0.02, "ok"),
     ]);
     const month = new Date().toISOString().slice(0, 7);
@@ -59,8 +59,8 @@ describe("admin API", () => {
     await seedApp(appId);
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, cost_usd, status
-       ) VALUES (?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok')`,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, cost_usd, status
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok')`,
     ).bind(appId, "spender", 0.08).run();
     const month = new Date().toISOString().slice(0, 7);
 
@@ -121,9 +121,9 @@ describe("admin API", () => {
     await seedApp(appId, { appBudgetUsd: 100 });
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, input_tokens,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       appId,
       userId,
@@ -187,9 +187,9 @@ describe("admin API", () => {
       for (let index = offset; index < Math.min(offset + 100, 501); index += 1) {
         statements.push(env.DB.prepare(
           `INSERT INTO app_usage_event(
-             event_id, app_id, user_id, provider_type, model, route,
+             organization_id, event_id, app_id, user_id, provider_type, model, route,
              input_tokens, output_tokens, cost_usd, status
-           ) VALUES (?, ?, ?, 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+           ) VALUES ('operator-test-organization', ?, ?, ?, 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
              50, 20, 0.000184, 'ok')`,
         ).bind(`bulk-${index}`, appId, userId));
       }
@@ -253,10 +253,10 @@ describe("admin API", () => {
     await seedApp(appId);
     const insert = (costSource: string | null, costUsd: number) => env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, input_tokens,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
          cost_source, reported_cost_usd, status
-       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
                  50, 40, 10, 20, ?, ?, ?, 'ok')`,
     ).bind(appId, costUsd, costSource, costSource === "reported" ? costUsd : null).run();
     await insert(null, 0.000184);
@@ -296,15 +296,15 @@ describe("admin API", () => {
     await seedApp(appId);
     const insert = (costSource: string | null) => env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, input_tokens,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
          cost_source, status
-       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
                  50, 40, 10, 20, 0, ?, 'ok')`,
     ).bind(appId, costSource).run();
     // The row the fix is for: metered tokens, no cost anyone could stand behind.
     await insert("unresolved");
-    // And an untouched-marker row from before the column existed.
+    // And a row that names no cost source at all.
     await insert(null);
     const month = new Date().toISOString().slice(0, 7);
     const applied = await exports.default.fetch(
@@ -358,10 +358,10 @@ describe("admin API", () => {
       costUsd = 0,
     ) => env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, input_tokens,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
          cost_source, status
-       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
                  ?, 0, 0, ?, ?, ?, 'ok')`,
     ).bind(appId, tokens.input, tokens.output, costUsd, costSource).run();
 
@@ -417,10 +417,10 @@ describe("admin API", () => {
     await seedApp(appId);
     await env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, model, route, input_tokens,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, cost_usd,
          cost_source, status
-       ) VALUES (?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'openai', 'gpt-5.6-luna', 'openai/v1/responses',
                  0, 0, 0, 0, 0.75, 'unresolved', 'ok')`,
     ).bind(appId).run();
     const month = new Date().toISOString().slice(0, 7);
@@ -453,9 +453,9 @@ describe("admin API", () => {
     });
     const insert = env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, provider_id, provider_slug, model, route,
+         event_id, organization_id, app_id, user_id, provider_type, provider_id, provider_slug, model, route,
          input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
-       ) VALUES (?, 'user-1', 'openai', ?, ?, 'gpt-5.6-luna', ?, 50, 40, 10, 20, 1, 'ok')`,
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'openai', ?, ?, 'gpt-5.6-luna', ?, 50, 40, 10, 20, 1, 'ok')`,
     );
     await env.DB.batch([
       insert.bind(
@@ -510,9 +510,9 @@ describe("admin API", () => {
     });
     const insert = env.DB.prepare(
       `INSERT INTO app_usage_event(
-         app_id, user_id, provider_type, provider_id, provider_slug, model, route,
+         event_id, organization_id, app_id, user_id, provider_type, provider_id, provider_slug, model, route,
          input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status
-       ) VALUES (?, 'user-1', 'openai', ?, ?, 'custom-only-model', 'openai/v1/responses',
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1', 'openai', ?, ?, 'custom-only-model', 'openai/v1/responses',
          1000000, 0, 0, 0, 0.5, 'ok')`,
     );
     await env.DB.batch([

@@ -82,8 +82,6 @@ export async function accountMonthUsage(
           first === null || row.firstRecord < first ? row.firstRecord : first,
         null,
       ),
-      historicalAttribution:
-        "Existing rows were attributed only where the application owner was still known at migration. Earlier unowned history cannot be assigned or counted for this account.",
     },
   };
 }

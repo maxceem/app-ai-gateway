@@ -666,7 +666,7 @@ describe("CLI account lifecycle", () => {
     const other = await start(testEnv);
     const appId = "retained-app";
     await env.DB.prepare(
-      "INSERT INTO app(id,organization_id,name,config_json) VALUES (?,?,'Retained','{}')",
+      "INSERT INTO app(id,organization_id,name,config_json,auth_type) VALUES (?,?,'Retained','{}','api_key')",
     )
       .bind(appId, data.account.id)
       .run();
@@ -701,7 +701,7 @@ describe("CLI account lifecycle", () => {
     await foldUsageRollupMonths(testEnv.DB, Date.parse("2026-09-01T00:00:00Z"));
     expect((await read(data.credential.token)).totals.requests).toBe(1);
     await env.DB.prepare(
-      "INSERT INTO app(id,organization_id,name,config_json) VALUES (?,?,'Restored','{}')",
+      "INSERT INTO app(id,organization_id,name,config_json,auth_type) VALUES (?,?,'Restored','{}','api_key')",
     )
       .bind(appId, data.account.id)
       .run();

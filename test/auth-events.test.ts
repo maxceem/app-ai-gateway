@@ -480,17 +480,17 @@ describe("auth event retention", () => {
   it("drops attempts past the window and leaves billing history alone", async () => {
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO app_auth_event(app_id, event, outcome, created_at)
-         VALUES ('prune-app', 'token_exchange', 'ok', datetime('now', '-91 days'))`,
+        `INSERT INTO app_auth_event(event_id, app_id, event, outcome, created_at)
+         VALUES (lower(hex(randomblob(16))), 'prune-app', 'token_exchange', 'ok', datetime('now', '-91 days'))`,
       ),
       env.DB.prepare(
-        `INSERT INTO app_auth_event(app_id, event, outcome, created_at)
-         VALUES ('prune-app', 'token_exchange', 'ok', datetime('now', '-89 days'))`,
+        `INSERT INTO app_auth_event(event_id, app_id, event, outcome, created_at)
+         VALUES (lower(hex(randomblob(16))), 'prune-app', 'token_exchange', 'ok', datetime('now', '-89 days'))`,
       ),
       env.DB.prepare(
         `INSERT INTO app_usage_event(
-           app_id, user_id, provider_type, model, route, status, created_at
-         ) VALUES ('prune-app', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok',
+           event_id, organization_id, app_id, user_id, provider_type, model, route, status, created_at
+         ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'prune-app', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok',
                    datetime('now', '-400 days'))`,
       ),
     ]);
@@ -528,12 +528,12 @@ describe("auth event retention", () => {
 
   it("takes the retention window it is given, and reports what it took", async () => {
     await env.DB.prepare(
-      `INSERT INTO app_auth_event(app_id, event, outcome, created_at)
-       VALUES ('prune-window', 'register', 'ok', datetime('now', '-2 days'))`,
+      `INSERT INTO app_auth_event(event_id, app_id, event, outcome, created_at)
+       VALUES (lower(hex(randomblob(16))), 'prune-window', 'register', 'ok', datetime('now', '-2 days'))`,
     ).run();
     await env.DB.prepare(
-      `INSERT INTO app_auth_event(app_id, event, outcome)
-       VALUES ('prune-window', 'register', 'ok')`,
+      `INSERT INTO app_auth_event(event_id, app_id, event, outcome)
+       VALUES (lower(hex(randomblob(16))), 'prune-window', 'register', 'ok')`,
     ).run();
 
     // Counted across the deployment, not per app: it is one sweep.

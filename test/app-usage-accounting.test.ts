@@ -9,6 +9,7 @@ import {
   type UsageEvent,
 } from "../src/usage/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
+import { TEST_ORGANIZATION_ID } from "./apply-migrations";
 import app, { MAINTENANCE_CRON } from "../src/index";
 
 const PREFIX = "accounting-";
@@ -31,9 +32,9 @@ async function insertEvent(input: {
   const eventId = input.eventId ?? crypto.randomUUID();
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
-       event_id, app_id, user_id, provider_type, model, route,
+       organization_id, event_id, app_id, user_id, provider_type, model, route,
        cost_usd, status, created_at
-     ) VALUES (?, ?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok', ?)`,
+     ) VALUES ('operator-test-organization', ?, ?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok', ?)`,
   ).bind(
     eventId,
     input.appId,
@@ -68,8 +69,8 @@ describe("app usage accounting", () => {
     const eventId = await insertEvent({ appId, userId: "", costUsd: 0.000184 });
     await env.DB.prepare(
       `INSERT OR IGNORE INTO app_usage_event(
-         event_id, app_id, user_id, provider_type, model, route, cost_usd, status
-       ) VALUES (?, ?, '', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 9, 'ok')`,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, cost_usd, status
+       ) VALUES (?, 'operator-test-organization', ?, '', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 9, 'ok')`,
     ).bind(eventId, appId).run();
 
     expect(await spend(appId)).toEqual([
@@ -126,6 +127,7 @@ describe("app usage accounting", () => {
       row: {
         eventId,
         appId,
+        organizationId: TEST_ORGANIZATION_ID,
         userId: "user-1",
         providerType: "openai",
         model: "gpt-5.6-sol",
