@@ -1,5 +1,5 @@
 import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
-import { consumedRequestHeaders } from "./app-auth";
+import { clientAuth } from "./app-auth";
 import { DEFAULT_END_USER_HEADER } from "./config";
 import { GatewayError } from "./errors";
 import type { ResolvedProvider } from "./provider-store";
@@ -291,7 +291,7 @@ export function sanitizedHeaders(
   stripClientHeaders(
     headers,
     "pending",
-    consumedRequestHeaders(app.config.authentication, tokenHeader),
+    [...clientAuth(app).consumedHeaders, tokenHeader],
   );
   return headers;
 }

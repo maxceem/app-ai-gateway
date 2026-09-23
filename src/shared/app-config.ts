@@ -61,8 +61,6 @@ export type {
 import {
   APP_ID_IS_SERVER_ASSIGNED,
   scopeHasLimits,
-  type AuthenticationConfig,
-  type IssuerAuthentication,
   type ProviderPolicy,
   type RoutingConfig,
 } from "../contracts/schemas.ts";
@@ -148,20 +146,6 @@ export function appConfigIssues(raw: unknown): ConfigIssue[] {
 /** Whether `path` is `prefix` or lies under it. */
 export function issueUnder(issue: ConfigIssue, prefix: readonly PropertyKey[]): boolean {
   return prefix.every((segment, index) => issue.path[index] === segment);
-}
-
-/** The issuer that identifies this application's end users, if one does. */
-export function endUserIssuer(
-  authentication: AuthenticationConfig,
-): IssuerAuthentication | undefined {
-  return authentication.end_user?.source === "issuer" ? authentication.end_user.issuer : undefined;
-}
-
-/** The header this application reads its end-user id from, if it reads one. */
-export function endUserHeader(authentication: AuthenticationConfig): string | undefined {
-  return authentication.type === "api_key" && authentication.end_user?.source === "header"
-    ? authentication.end_user.header
-    : undefined;
 }
 
 /**

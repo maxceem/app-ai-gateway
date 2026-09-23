@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { clientAuth } from "../src/core/app-auth";
 import { providersForEndpointStyle } from "../src/core/capabilities";
 import { AppConfigSchema } from "../src/contracts/schemas";
 import { parseAppConfig } from "../src/shared/app-config";
@@ -863,5 +864,51 @@ describe("organization-scoped configuration references", () => {
 describe("the published schema", () => {
   it("accepts what the parser produces", () => {
     expect(AppConfigSchema.safeParse(parseAppConfig(serverConfig())).success).toBe(true);
+  });
+});
+
+describe("how each configuration authenticates its clients", () => {
+  const issuer = {
+    jwks_url: "https://issuer.test/jwks",
+    issuer: "https://issuer.test/",
+    audience: ["my-app"],
+    user_id_claim: "sub",
+    token_header: "X-Id-Token",
+    required_claims: [],
+    max_token_lifetime_seconds: 3600,
+    provider: "custom",
+    entitlement: "custom",
+  };
+  const appAttest = { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" };
+  const auth = (authentication: Record<string, unknown>) => clientAuth({
+    id: "app",
+    organizationId: "org",
+    name: "App",
+    status: "active",
+    revision: 1,
+    config: parseAppConfig(serverConfig({ authentication })),
+  });
+  const summary = (authentication: Record<string, unknown>) => {
+    const { exchange, tokenHeader, consumedHeaders } = auth(authentication);
+    return { exchange: exchange?.type ?? null, tokenHeader, consumedHeaders };
+  };
+
+  it("settles the five configurations into three ways of authenticating", () => {
+    expect(summary({ type: "api_key" }))
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: [] });
+    expect(summary({ type: "api_key", end_user: { source: "header", header: "X-User" } }))
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user"] });
+    expect(summary({ type: "api_key", end_user: { source: "issuer", issuer } }))
+      .toEqual({ exchange: "api_key_issuer", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+    expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "issuer", issuer } }))
+      .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+    expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "app_install" } }))
+      .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: [] });
+  });
+
+  it("refuses a request that names no end user before verifying its credential", () => {
+    const headerAuth = auth({ type: "api_key", end_user: { source: "header", header: "X-User" } });
+    expect(() => headerAuth.verifier({} as Env, "app", new Headers(), { token: "k", headerName: "authorization" }))
+      .toThrow("x-user is required");
   });
 });

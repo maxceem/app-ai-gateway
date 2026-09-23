@@ -1,23 +1,31 @@
 /**
  * How an application's clients authenticate, read off its configuration once.
  *
- * Two questions, answered separately because the configuration answers them
- * separately: how the client proves itself — its API key on every request, or a
- * gateway token it exchanged for one — and who the request acts for, which is
- * nobody, a user id its backend names in a header, or the subject a gateway
- * token was minted for. Everything that asks either question on the client
- * path — the served request, `/me`, the token exchange and the header
- * sanitizer — asks it here, so none of them re-derives it from the raw union.
+ * Five configurations, three ways to authenticate: an API key alone, an API
+ * key with the end user named in a header, or a gateway token minted by one of
+ * two exchanges — an API key plus an issuer token, or an App Attest assertion
+ * with the user taken from an issuer token or the installation itself.
+ * {@link clientAuth} settles which once, into a {@link ClientAuth} whose fields
+ * answer every question the client path asks — which header a credential may
+ * arrive in, which headers the gateway consumes, how a credential is verified,
+ * and which exchange `/auth/token` runs — so none of those callers re-derives
+ * it from the raw union.
  */
 
 import { lookupActiveApiKeyById, verifyApiKey } from "./apikeys";
-import { endUserHeader, endUserIssuer } from "./config";
 import { GatewayError } from "./errors";
 import { verifyGatewayToken } from "./jwt";
 import { organizationProviders, type OrganizationProviders } from "./provider-store";
 import { providerDescriptor, PROVIDER_SLUG_PATTERN } from "./providers";
 import { lookup } from "../shared/records";
-import type { AppRecord, AuthenticationConfig, GatewayIdentity, ProviderType } from "./types";
+import type {
+  AppRecord,
+  AppleAppAttestAuthentication,
+  AuthenticationConfig,
+  GatewayIdentity,
+  IssuerAuthentication,
+  ProviderType,
+} from "./types";
 
 /** A credential as the request carried it, and the header it came in. */
 export interface RequestCredential {
@@ -48,13 +56,12 @@ export function authorizationCredential(headers: Headers): RequestCredential | n
  */
 export function requestCredential(
   headers: Headers,
-  authentication: AuthenticationConfig,
+  auth: ClientAuth,
   provider: ProviderType | undefined,
 ): RequestCredential {
   const candidates: string[] = ["authorization"];
   if (provider) candidates.push(providerDescriptor(provider).auth.header);
-  const custom = endUserIssuer(authentication)?.token_header;
-  if (custom && !candidates.includes(custom.toLowerCase())) candidates.push(custom.toLowerCase());
+  if (auth.tokenHeader && !candidates.includes(auth.tokenHeader)) candidates.push(auth.tokenHeader);
   for (const name of candidates) {
     const token = tokenFromHeader(headers.get(name));
     if (token) return { token, headerName: name };
@@ -85,41 +92,112 @@ function requiredEndUserId(headers: Headers, header: string): string {
 }
 
 /**
- * The verification a request's credential needs, ready to start.
- *
- * A header-sourced end user is read before anything is verified, as it always
- * has been: a request that names no user is refused for that, not for its
- * credential. The returned function is what the caller overlaps with its other
- * reads.
+ * Which token exchange an application offers, with the configuration it runs
+ * on: its API key plus a user's issuer token, or an App Attest assertion.
  */
-export function credentialVerifier(
-  env: Env,
-  app: AppRecord,
-  headers: Headers,
-  credential: RequestCredential,
-): () => Promise<GatewayIdentity> {
-  const { authentication } = app.config;
-  const header = endUserHeader(authentication);
-  if (header !== undefined) {
-    const userId = requiredEndUserId(headers, header);
-    return () => verifyApiKey(credential.token, env, app.id, userId);
-  }
-  if (authentication.type === "api_key" && authentication.end_user === undefined) {
-    // No end users: the key is the whole identity, and `null` says so rather
-    // than standing in for a user that does not exist.
-    return () => verifyApiKey(credential.token, env, app.id, null);
-  }
-  // Everything else authenticates with a gateway token minted by the exchange.
-  return async () => {
-    const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, app.id);
-    if (identity.apiKeyId !== undefined) {
-      const apiKey = await lookupActiveApiKeyById(env, identity.apiKeyId);
-      if (!apiKey || apiKey.appId !== app.id) {
-        throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
-      }
-    }
-    return identity;
+export type TokenExchange =
+  | { type: "api_key_issuer"; issuer: IssuerAuthentication }
+  | { type: "app_attest"; authentication: AppleAppAttestAuthentication };
+
+/** One application's way of authenticating its clients. */
+export interface ClientAuth {
+  /**
+   * The exchange `/auth/token` runs, or null where the API key is presented
+   * on every request and there is nothing to exchange.
+   */
+  readonly exchange: TokenExchange | null;
+  /** The issuer token header, lowercased: one more place a client may send its credential. */
+  readonly tokenHeader: string | undefined;
+  /**
+   * Headers the gateway reads for itself and so never forwards upstream: the
+   * issuer token header and the end-user header, whatever they are called.
+   * The header a credential arrived in is added per request.
+   */
+  readonly consumedHeaders: readonly string[];
+  /**
+   * The verification a request's credential needs, ready to start. Whatever
+   * the request must name besides its credential is read before anything is
+   * verified — a request that names no user is refused for that, not for its
+   * credential — and the returned function is what the caller overlaps with
+   * its other reads.
+   */
+  verifier(env: Env, appId: string, headers: Headers, credential: RequestCredential): () => Promise<GatewayIdentity>;
+}
+
+/**
+ * The API key on every request. With no end-user header the key is the whole
+ * identity, and a `null` user says so rather than standing in for a user that
+ * does not exist.
+ */
+function apiKeyAuth(endUserHeader: string | null): ClientAuth {
+  return {
+    exchange: null,
+    tokenHeader: undefined,
+    consumedHeaders: endUserHeader === null ? [] : [endUserHeader],
+    verifier(env, appId, headers, credential) {
+      const userId = endUserHeader === null ? null : requiredEndUserId(headers, endUserHeader);
+      return () => verifyApiKey(credential.token, env, appId, userId);
+    },
   };
+}
+
+/**
+ * A gateway token minted by the application's exchange on every request. One
+ * minted from an API key names it, and is refused as soon as that key is
+ * revoked rather than when the token expires.
+ */
+function gatewayTokenAuth(exchange: TokenExchange, issuer: IssuerAuthentication | undefined): ClientAuth {
+  const tokenHeader = issuer?.token_header?.toLowerCase();
+  return {
+    exchange,
+    tokenHeader,
+    consumedHeaders: tokenHeader === undefined ? [] : [tokenHeader],
+    verifier(env, appId, _headers, credential) {
+      return async () => {
+        const identity = await verifyGatewayToken(credential.token, env.JWT_SECRET, appId);
+        if (identity.apiKeyId !== undefined) {
+          const apiKey = await lookupActiveApiKeyById(env, identity.apiKeyId);
+          if (!apiKey || apiKey.appId !== appId) {
+            throw new GatewayError(401, "auth_required", "A valid gateway access token is required");
+          }
+        }
+        return identity;
+      };
+    },
+  };
+}
+
+function resolveClientAuth(authentication: AuthenticationConfig): ClientAuth {
+  if (authentication.type === "apple_app_attest") {
+    const endUser = authentication.end_user;
+    return gatewayTokenAuth(
+      { type: "app_attest", authentication },
+      endUser.source === "issuer" ? endUser.issuer : undefined,
+    );
+  }
+  const endUser = authentication.end_user;
+  switch (endUser?.source) {
+    case undefined:
+      return apiKeyAuth(null);
+    case "header":
+      return apiKeyAuth(endUser.header);
+    case "issuer":
+      return gatewayTokenAuth({ type: "api_key_issuer", issuer: endUser.issuer }, endUser.issuer);
+  }
+}
+
+/** Keyed by the parsed block, which lives exactly as long as the cached app record holding it. */
+const resolved = new WeakMap<AuthenticationConfig, ClientAuth>();
+
+/** How this application's clients authenticate. */
+export function clientAuth(app: AppRecord): ClientAuth {
+  const { authentication } = app.config;
+  let auth = resolved.get(authentication);
+  if (!auth) {
+    auth = resolveClientAuth(authentication);
+    resolved.set(authentication, auth);
+  }
+  return auth;
 }
 
 /**
@@ -143,12 +221,13 @@ export async function authenticateRequest(input: {
   providers?: Promise<OrganizationProviders> | undefined;
 }): Promise<{ identity: GatewayIdentity; credential: RequestCredential }> {
   const { env, app, headers } = input;
+  const auth = clientAuth(app);
   const credential = authorizationCredential(headers) ?? requestCredential(
     headers,
-    app.config.authentication,
+    auth,
     await providerTypeForHeader(env, app.organizationId, input.providerSlug, input.providers),
   );
-  const verify = credentialVerifier(env, app, headers, credential);
+  const verify = auth.verifier(env, app.id, headers, credential);
   const [verified] = await Promise.allSettled([verify(), input.providers ?? Promise.resolve()]);
   if (verified.status === "rejected") throw verified.reason;
   return { identity: verified.value, credential };
@@ -166,32 +245,4 @@ async function providerTypeForHeader(
 ): Promise<ProviderType | undefined> {
   if (slug === undefined || !PROVIDER_SLUG_PATTERN.test(slug)) return undefined;
   return lookup(await (providers ?? organizationProviders(env, organizationId)), slug)?.type;
-}
-
-/**
- * Headers the gateway consumes on a request and so never forwards upstream:
- * the one the credential arrived in, the issuer token header, and the header an
- * application reads its end-user id from, whatever it is called.
- */
-export function consumedRequestHeaders(
-  authentication: AuthenticationConfig,
-  credentialHeader: string,
-): string[] {
-  return [
-    endUserIssuer(authentication)?.token_header,
-    endUserHeader(authentication),
-    credentialHeader,
-  ].filter((name): name is string => name !== undefined);
-}
-
-/**
- * Which token exchange an application offers, if any: its API key plus a
- * user's issuer token, or an App Attest assertion. An API-key application with
- * no issuer has nothing to exchange — its key is presented on every request.
- */
-export type TokenExchange = "api_key_issuer" | "app_attest" | null;
-
-export function tokenExchange(authentication: AuthenticationConfig): TokenExchange {
-  if (authentication.type === "apple_app_attest") return "app_attest";
-  return endUserIssuer(authentication) ? "api_key_issuer" : null;
 }

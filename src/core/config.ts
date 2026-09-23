@@ -9,8 +9,6 @@ import type { AppRecord } from "./types";
 export {
   DEFAULT_END_USER_HEADER,
   ENDPOINT_SLUG,
-  endUserHeader,
-  endUserIssuer,
   hasAppLevelLimits,
   hasUserLevelLimits,
   identifiesEndUsers,
