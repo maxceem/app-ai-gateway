@@ -64,7 +64,7 @@ export async function insertApp(
   return row ? hydrate(row) : null;
 }
 
-/** Shared app insert used by ordinary writes and transactional create receipts. */
+/** Shared app insert used by ordinary writes and by CLI operations. */
 export function appInsertStatement(
   d1: D1Database,
   values: AtomicAppWrite,

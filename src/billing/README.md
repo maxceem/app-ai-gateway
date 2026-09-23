@@ -126,7 +126,7 @@ becomes readable again.
 
 Configuration ceilings count stored rows rather than traffic, so nothing resets
 them on a schedule. Each is enforced inside the statement that inserts the row,
-as an extra condition on its `WHERE`, alongside whatever receipt or handoff
+as an extra condition on its `WHERE`, alongside whatever CLI operation
 already guards that write — count and write are one statement, so two concurrent
 creates cannot both read a count below the ceiling and then both succeed. A
 refused write answers `409 billing_plan_limit_reached` and never succeeds on

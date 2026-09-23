@@ -727,8 +727,8 @@ export const ProviderUpdateRequestSchema = ProviderUpdateFieldsSchema.extend({
 const HandoffTargetFields = {
   /** The existing row the handoff edits. */
   id: z.string().trim().min(1),
-  /** The revision the CLI read, when it read one; the server pins the current one either way. */
-  revision: z.number().int().positive().optional(),
+  /** The revision the CLI read; the write lands only while the row is still at it. */
+  revision: z.number().int().positive(),
 };
 
 export const HandoffProviderAddPayloadSchema = ProviderCreateFieldsSchema.strict()

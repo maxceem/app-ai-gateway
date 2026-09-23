@@ -107,11 +107,11 @@ function render(
   context: OutputContext,
   style: Style,
 ): string[] {
-  // A browser handoff answers whichever command opened it, so it is recognized
+  // A browser step answers whichever command opened it, so it is recognized
   // before that command's own renderer ever sees the result.
-  if ("state" in result && result.state === "pending" && "url" in result)
+  if ("state" in result && result.state === "pending" && "url" in result && result.url)
     return [
-      style.headline(`Waiting for browser handoff (${result.id}).`),
+      style.headline(`Waiting for browser approval (${result.id}).`),
       result.url,
       `Resume: agw operation wait ${result.id}`,
     ];
@@ -487,7 +487,7 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
   return [style.json(result)];
 }
 
-/** A handoff that is no longer pending: `operation status`, `operation wait`. */
+/** An operation that is no longer pending: `operation status`, `operation wait`. */
 function operation(result: RenderedResult, style: Style): string[] {
   if (!("state" in result)) return [style.json(result)];
   const stored = "result" in result ? result.result : undefined;

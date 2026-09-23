@@ -1,8 +1,5 @@
-import type { CliCredential } from "../../contracts/cli";
 import { GatewayError } from "../../core/errors";
-import { openSecret, sealSecret } from "../../vault/secrets";
 
-export const TTL = 15 * 60_000;
 const encoder = new TextEncoder();
 export async function digest(value: string): Promise<string> {
   return Array.from(
@@ -43,34 +40,6 @@ export async function proofMatches(
   const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(hash));
   return crypto.subtle.verify("HMAC", key, signature, encoder.encode(expected));
 }
-export function proof(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{32,256}$/.test(value))
-    throw new GatewayError(
-      400,
-      "invalid_request",
-      "A random 32-character or longer proof is required",
-    );
-  return value;
-}
-export async function protectCredential(
-  env: Env,
-  id: string,
-  pollHash: string,
-  value: unknown,
-): Promise<string> {
-  return sealSecret(env, "cliCredential", [id, pollHash], JSON.stringify(value));
-}
-export async function openCredential(
-  env: Env,
-  id: string,
-  pollHash: string,
-  ciphertext: string,
-): Promise<CliCredential> {
-  return JSON.parse(
-    await openSecret(env, "cliCredential", [id, pollHash], ciphertext),
-  ) as CliCredential;
-}
-
 export async function cliJson(request: Request): Promise<unknown> {
   const reader = request.body?.getReader();
   if (!reader)

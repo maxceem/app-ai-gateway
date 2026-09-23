@@ -806,18 +806,13 @@ describe("billing gateway", () => {
       },
       cappedEnv,
     );
-    // The receipt guard and the ceiling both refuse by matching no rows, so
-    // without the second count this would be the generic "resource changed".
+    // The ceiling refuses by matching no rows, so without the second count this
+    // would be the generic "resource changed".
     expect(refused.status).toBe(409);
     await expect(refused.json()).resolves.toMatchObject({
       error: { code: "billing_plan_limit_reached", data: { limit: providers, used: providers } },
     });
-    // The receipt is written only alongside a write that happened, so a refused
-    // create leaves no record that would make a retry replay this refusal.
-    const stored = await env.DB.prepare(
-      "SELECT COUNT(*) AS total FROM mgmt_resource_receipt WHERE organization_id = ?",
-    ).bind(TEST_ORGANIZATION_ID).first<{ total: number }>();
-    expect(stored?.total).toBe(0);
+
   });
 
   /**

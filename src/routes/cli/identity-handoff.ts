@@ -5,11 +5,11 @@ import {
   invalidateAccountLifecycle,
 } from "../../core/account-lifecycle";
 import { GatewayError } from "../../core/errors";
-import { consumeHandoffStatement, handoffKind } from "./handoff-kinds";
-import { authState } from "./operations";
+import { operationKind } from "./operation-kinds";
+import { authState, completeStatement, operationRow } from "./operations";
 import type { CliApprovalRefusal } from "../../contracts/cli";
 import type { AuthState } from "@maxceem/cf-auth";
-import type { CliContext, HandoffRow } from "./types";
+import type { CliContext, OperationRow } from "./types";
 
 /**
  * What has to happen before this browser may claim `organizationId`, or null
@@ -43,14 +43,14 @@ export function claimRefusal(
   return null;
 }
 
-/** Claim is the sole interactive identity handoff. It never fabricates a key session. */
+/** Claim is the sole interactive identity operation. It never fabricates a key session. */
 export async function completeIdentity(
   c: CliContext,
-  row: HandoffRow,
+  row: OperationRow,
 ): Promise<void> {
-  const kind = handoffKind(row.kind);
-  if (kind.type !== "claim")
-    throw new GatewayError(400, "invalid_request", "Unsupported identity handoff");
+  const kind = operationKind(row.kind);
+  if (kind.type !== "claim" || !row.organization_id || !row.initiating_user_id || !row.initiating_credential_id)
+    throw new GatewayError(400, "invalid_request", "Unsupported identity operation");
   const state = await authState(c, true);
   const refusal = claimRefusal(state, row.organization_id);
   const approver = state.user;
@@ -70,17 +70,18 @@ export async function completeIdentity(
     );
 
   const target = row.organization_id;
-  await assertAccountAccess(c.get("deployment"), c.env, target, kind.view);
+  await assertAccountAccess(c.get("deployment"), c.env, target, kind.open);
 
   // Every row this moves — the owner membership, the account's deadline, the
   // service identity's key — belongs to cf-auth, so cf-auth moves them, in one
   // transaction guarded by its own re-read of this session and of the CLI
   // credential that asked for the claim.
   //
-  // Ordered before the handoff is consumed, not inside it, because the two
+  // Ordered before the operation is completed, not inside it, because the two
   // failures are not equally recoverable: a claim that landed can simply be
   // approved again, since claiming settles on the same owner rather than
-  // refusing, while a request consumed without a claim could never be retried.
+  // refusing, while an operation completed without a claim could never be
+  // retried.
   await (await identityAuthFor(c, { suppressDefaultOrganization: true }))
     .service.claimOrganization({
       actor: state,
@@ -98,32 +99,24 @@ export async function completeIdentity(
 
   const now = Date.now();
   await c.env.DB.batch([
-    // Unguarded by `changes()`, unlike a provider submission's: the claim
-    // landed before this batch was built, so there is no preceding write in it
-    // for the consumption to ride on.
-    consumeHandoffStatement(
+    // Unguarded by `changes()`, unlike a resource write's: the claim landed
+    // before this batch was built, so there is no preceding write in it for
+    // the completion to ride on. A claim that is already complete stays so.
+    completeStatement(
       c.env.DB,
       row,
-      { accountId: target, approvedBy: approver.id },
+      { outcome: JSON.stringify({ accountId: target, approvedBy: approver.id }), sealed: null, sealedUntil: null },
       now,
     ),
-    // Bootstrap authority ends with the claim: the encrypted credential the
-    // poller would otherwise collect goes with it.
+    // Bootstrap authority ends with the claim: the sealed credential the CLI
+    // could otherwise collect goes with it.
     c.env.DB.prepare(
-      `UPDATE mgmt_bootstrap SET state='retired',protected_credential=NULL,
-       protected_credential_expires_at=NULL,updated_at=?
-       WHERE organization_id=? AND state='active'`,
+      `UPDATE mgmt_operation SET state='retired',sealed_outcome=NULL,sealed_until=NULL,updated_at=?
+       WHERE kind='bootstrap' AND organization_id=? AND state='completed'`,
     ).bind(now, target),
   ]);
-  const completed = await c.env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
-    .bind(row.id)
-    .first<{ consumed_at: number | null }>();
-  if (!completed?.consumed_at)
-    throw new GatewayError(
-      409,
-      "conflict",
-      "Operation could not be approved; create a fresh request",
-    );
+  if ((await operationRow(c.env.DB, row.id))?.state !== "completed")
+    throw new GatewayError(409, "conflict", "Operation could not be approved; create a fresh request");
   // The account now has a human owner and no deadline. Both are read from
   // caches keyed on this account, and a claim only ever widens what they allow.
   invalidateAccountLifecycle(target);

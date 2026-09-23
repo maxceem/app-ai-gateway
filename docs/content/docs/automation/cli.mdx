@@ -100,8 +100,9 @@ from the install. Back that directory up privately: losing the vault key makes
 stored provider credentials unreadable.
 
 Remote key replay lasts 15 minutes. After it expires, recovery identifies the
-existing resource; inspect it and replace its key intentionally. Durable receipts
-prevent duplicate creation. Account usage includes retained records from deleted
+existing resource; inspect it and replace its key intentionally. Each creation
+is saved as an operation before it is sent, so running the same command again
+after a lost response never creates a duplicate. Account usage includes retained records from deleted
 apps; the response describes any historical attribution limitation.
 
 `agw deployment update --dry-run` and `agw deployment domain --hostname

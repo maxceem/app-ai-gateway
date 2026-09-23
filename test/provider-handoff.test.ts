@@ -56,7 +56,13 @@ async function operation(
     {
       method: "POST",
       headers: { authorization: `Bearer ${key.plaintext}`, "content-type": "application/json" },
-      body: JSON.stringify({ kind, payload, pollToken }),
+      // A kind that may also run at once is asked for its browser step.
+      body: JSON.stringify({
+        kind,
+        payload,
+        token: pollToken,
+        ...(kind === "provider.add" || kind === "provider-gateway.add" ? { browser: true } : {}),
+      }),
     },
     operationEnv,
   );
@@ -148,26 +154,24 @@ describe("provider browser submissions", () => {
     expect(text).not.toContain("browser-provider-secret");
     expect(text).not.toContain("secretBlob");
     const challenge = await env.DB.prepare(
-      "SELECT request_json,outcome FROM mgmt_handoff WHERE id=?",
+      "SELECT request_json,outcome_json FROM mgmt_operation WHERE id=?",
     )
       .bind(op.id)
       .first();
     expect(JSON.stringify(challenge)).not.toContain("browser-provider-secret");
   });
 
-  it("rejects wrong proof/origin and revoked initiating credentials without consumption", async () => {
+  it("rejects wrong proof/origin and revoked initiating credentials without completing", async () => {
     const op = await operation("provider.add", providerBody());
     expect((await op.submit("secret", crypto.randomUUID())).status).toBe(403);
     expect((await op.submit("secret", undefined, "https://attacker.test")).status).toBe(403);
     await env.DB.prepare("UPDATE mgmt_api_key SET enabled=0 WHERE id=?").bind(op.key.id).run();
     expect((await op.submit("secret")).status).toBe(409);
     expect(
-      (
-        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
-          .bind(op.id)
-          .first<{ consumed_at: number | null }>()
-      )?.consumed_at,
-    ).toBeNull();
+      await env.DB.prepare("SELECT state FROM mgmt_operation WHERE id=?")
+        .bind(op.id)
+        .first("state"),
+    ).toBe("pending");
   });
 
   it("rolls back submission when the initiating member is demoted before the mutation", async () => {
@@ -204,12 +208,10 @@ describe("provider browser submissions", () => {
     expect((await op.submit("secret-after-demotion")).status).toBe(409);
     expect(commitInterceptions).toBe(1);
     expect(
-      (
-        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
-          .bind(op.id)
-          .first<{ consumed_at: number | null }>()
-      )?.consumed_at,
-    ).toBeNull();
+      await env.DB.prepare("SELECT state FROM mgmt_operation WHERE id=?")
+        .bind(op.id)
+        .first("state"),
+    ).toBe("pending");
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM provider WHERE slug=?")
         .bind(body.slug)
@@ -220,15 +222,14 @@ describe("provider browser submissions", () => {
   it("keeps rotation bound to the reviewed provider configuration", async () => {
     const create = await operation("provider.add", providerBody());
     expect((await create.submit("initial-secret")).status).toBe(200);
-    const { result } = await (await create.poll()).json<{ result: { provider: { id: string } } }>();
-    const rotate = await operation("provider.rotate-key", { id: result.provider.id });
+    const { result } = await (await create.poll()).json<{ result: { provider: { id: string; revision: number } } }>();
+    const rotate = await operation("provider.rotate-key", { id: result.provider.id, revision: result.provider.revision });
     const reviewed = await (await rotate.details()).json<{ payload: Record<string, any> }>();
     expect(reviewed.payload.snapshot).toMatchObject({
       id: result.provider.id,
       name: "Browser connection",
       baseUrl: null,
     });
-    expect(JSON.stringify(reviewed.payload)).not.toContain("expectedRevision");
     expect(JSON.stringify(reviewed.payload)).not.toContain("__requestHash");
     await env.DB.prepare(
       "UPDATE provider SET base_url='https://changed.example.com',revision=revision+1,updated_at=? WHERE id=?",
@@ -237,15 +238,13 @@ describe("provider browser submissions", () => {
       .run();
     expect((await rotate.submit("new-secret")).status).toBe(409);
     expect(
-      (
-        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
-          .bind(rotate.id)
-          .first<{ consumed_at: number | null }>()
-      )?.consumed_at,
-    ).toBeNull();
+      await env.DB.prepare("SELECT state FROM mgmt_operation WHERE id=?")
+        .bind(rotate.id)
+        .first("state"),
+    ).toBe("pending");
   });
 
-  it("rejects invalid, stale, and caller-supplied internal revision snapshots", async () => {
+  it("rejects invalid and caller-supplied revisions, and a stale one when it is approved", async () => {
     const create = await operation("provider.add", providerBody());
     expect((await create.submit("initial-secret")).status).toBe(200);
     const { result } = await (await create.poll()).json<{ result: { provider: { id: string; revision: number } } }>();
@@ -254,18 +253,18 @@ describe("provider browser submissions", () => {
       {
         method: "POST",
         headers: { authorization: `Bearer ${create.key.plaintext}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          kind: "provider.rotate-key",
-          payload,
-          pollToken: crypto.randomUUID(),
-        }),
+        body: JSON.stringify({ kind: "provider.rotate-key", payload, token: crypto.randomUUID() }),
       },
       runtime,
     );
     expect((await request({ id: result.provider.id, revision: "1" })).status).toBe(400);
-    expect((await request({ id: result.provider.id, revision: result.provider.revision + 1 })).status).toBe(409);
+    expect((await request({ id: result.provider.id })).status).toBe(400);
     expect((await request({ id: result.provider.id, snapshot: { revision: result.provider.revision } })).status).toBe(400);
-    expect((await request({ id: result.provider.id, expectedRevision: result.provider.revision })).status).toBe(400);
+    // A revision the row has moved past is refused by the write it pins, when
+    // the person approves it, and the operation stays pending.
+    const stale = await operation("provider.rotate-key", { id: result.provider.id, revision: result.provider.revision + 1 });
+    expect((await stale.submit("rotated-secret")).status).toBe(409);
+    await expect((await stale.poll()).json()).resolves.toMatchObject({ state: "pending" });
   });
 
   it("refuses a payload its kind's write would refuse before anyone reviews it", async () => {
@@ -277,13 +276,18 @@ describe("provider browser submissions", () => {
       {
         method: "POST",
         headers: { authorization: `Bearer ${seed.key.plaintext}`, "content-type": "application/json" },
-        body: JSON.stringify({ kind, payload, pollToken: crypto.randomUUID() }),
+        body: JSON.stringify({
+          kind,
+          payload,
+          token: crypto.randomUUID(),
+          ...(kind === "provider.add" || kind === "provider-gateway.add" ? { browser: true } : {}),
+        }),
       },
       runtime,
     );
     // No provider type, a type nobody serves, a key in the payload, a field the
     // write does not take, and a gateway missing its Cloudflare ids: each is
-    // refused when the handoff is opened, not after a person has approved it.
+    // refused when the browser step is opened, not after a person approved it.
     for (const [kind, payload] of [
       ["provider.add", { name: "No type" }],
       ["provider.add", { type: "not-a-provider", name: "Unknown" }],
@@ -299,36 +303,14 @@ describe("provider browser submissions", () => {
     }
   });
 
-  it("keeps a provider submission pending when its reviewed gateway changes", async () => {
-    const createGateway = await operation("provider-gateway.add", {
-      type: "vercel",
-      name: "Reviewed gateway",
-    });
-    expect((await createGateway.submit("gateway-secret")).status).toBe(200);
-    const { result } = await (await createGateway.poll()).json<{ result: { gateway: { id: string } } }>();
-    const add = await operation("provider.add", {
-      type: "openai",
-      name: "Bound provider",
-      slug: `bound-${crypto.randomUUID()}`,
-      providerGatewayId: result.gateway.id,
-    });
-    await env.DB.prepare("UPDATE provider_gateway SET revision=revision+1 WHERE id=?")
-      .bind(result.gateway.id)
-      .run();
-    expect((await add.submit()).status).toBe(409);
-    expect((await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
-      .bind(add.id)
-      .first<{ consumed_at: number | null }>())?.consumed_at).toBeNull();
-  });
-
   it("creates and rotates a shared gateway through the same atomic path", async () => {
     const create = await operation("provider-gateway.add", {
       type: "vercel",
       name: "Browser gateway",
     });
     expect((await create.submit("gateway-first-secret")).status).toBe(200);
-    const { result } = await (await create.poll()).json<{ result: { gateway: { id: string } } }>();
-    const rotate = await operation("provider-gateway.rotate-key", { id: result.gateway.id });
+    const { result } = await (await create.poll()).json<{ result: { gateway: { id: string; revision: number } } }>();
+    const rotate = await operation("provider-gateway.rotate-key", { id: result.gateway.id, revision: result.gateway.revision });
     expect((await rotate.submit("gateway-second-secret")).status).toBe(200);
     const response = await (await rotate.poll()).text();
     expect(response).toContain('"state":"completed"');
@@ -336,7 +318,7 @@ describe("provider browser submissions", () => {
     expect((await create.submit("replayed")).status).toBe(200);
   });
 
-  it("leaves the handoff pending when the guarded write matches no row, and replays a recorded success", async () => {
+  it("leaves the operation pending when the guarded write matches no row, and replays a recorded success", async () => {
     const account = await seedAccount();
     const create = await operation(
       "provider-gateway.add",
@@ -346,7 +328,7 @@ describe("provider browser submissions", () => {
     );
     expect((await create.submit("gateway-first-secret")).status).toBe(200);
     const { result } = await (await create.poll()).json<{
-      result: { gateway: { id: string; secretHint: string } };
+      result: { gateway: { id: string; secretHint: string; revision: number } };
     }>();
     // A submission that already landed answers with what it recorded rather
     // than writing a second time.
@@ -356,7 +338,7 @@ describe("provider browser submissions", () => {
 
     // The reviewed revision moves after the service has read it and before its
     // guarded UPDATE runs, so the write matches no row for a reason none of the
-    // handoff's own conditions can see. Consumption rides on that write, so it
+    // operation's own conditions can see. Completion rides on that write, so it
     // must not land either.
     let moveAtCommit = false;
     const db = new Proxy(runtime.DB, {
@@ -380,7 +362,7 @@ describe("provider browser submissions", () => {
     }) as Env;
     const rotate = await operation(
       "provider-gateway.rotate-key",
-      { id: result.gateway.id },
+      { id: result.gateway.id, revision: result.gateway.revision },
       interleavedEnv,
       account,
     );
@@ -390,15 +372,13 @@ describe("provider browser submissions", () => {
     // The refusal the guarded write reaches, not the one the service's own
     // revision read would have answered before the batch was built.
     await expect(refused.json()).resolves.toMatchObject({
-      error: { message: "The resource or its authorization changed; start a new submission" },
+      error: { message: "The resource or its authorization changed; send a new operation" },
     });
     expect(
-      (
-        await env.DB.prepare("SELECT consumed_at FROM mgmt_handoff WHERE id=?")
-          .bind(rotate.id)
-          .first<{ consumed_at: number | null }>()
-      )?.consumed_at,
-    ).toBeNull();
+      await env.DB.prepare("SELECT state FROM mgmt_operation WHERE id=?")
+        .bind(rotate.id)
+        .first("state"),
+    ).toBe("pending");
     await expect((await rotate.poll()).json()).resolves.toMatchObject({ state: "pending" });
     expect(
       await env.DB.prepare("SELECT secret_hint FROM provider_gateway WHERE id=?")
@@ -408,10 +388,10 @@ describe("provider browser submissions", () => {
   });
 });
 
-describe("direct provider creation receipts", () => {
+describe("immediate provider operations", () => {
   it("returns the winning provider and gateway after concurrent retries without duplicates", async () => {
     const auth = await createIdentityAuth(resolveDeployment(runtime), runtime, origin);
-    const user = await auth.service.createServiceIdentity({ name: "Receipt service" });
+    const user = await auth.service.createServiceIdentity({ name: "Operation service" });
     await auth.repository.addOrganizationUser({
       organizationId: TEST_ORGANIZATION_ID,
       userId: user.id,
@@ -420,49 +400,51 @@ describe("direct provider creation receipts", () => {
     const key = await auth.service.issueServiceApiKey({
       userId: user.id,
       organizationId: TEST_ORGANIZATION_ID,
-      name: "Receipts",
+      name: "Operations",
     });
-    for (const [path, body, resultName] of [
-      ["providers", { ...providerBody(), secret: "direct-provider-secret" }, "provider"],
+    for (const [kind, payload, resultName] of [
+      ["provider.add", { ...providerBody(), secret: "direct-provider-secret" }, "provider"],
       [
-        "provider-gateways",
-        { type: "vercel", name: "Receipt gateway", token: "direct-gateway-secret" },
+        "provider-gateway.add",
+        { type: "vercel", name: "Operation gateway", token: "direct-gateway-secret" },
         "gateway",
       ],
     ] as const) {
-      const headers = {
-        authorization: `Bearer ${key.plaintext}`,
-        "content-type": "application/json",
-        "Idempotency-Key": crypto.randomUUID(),
-        "X-Idempotency-Proof": crypto.randomUUID(),
-      };
-      const call = (payload: unknown = body, suppliedHeaders = headers) =>
+      const token = crypto.randomUUID();
+      const call = (body: unknown = payload) =>
         worker.request(
-          `${origin}/v1/admin/${path}`,
-          { method: "POST", headers: suppliedHeaders, body: JSON.stringify(payload) },
+          `${origin}/v1/cli/operations`,
+          {
+            method: "POST",
+            headers: { authorization: `Bearer ${key.plaintext}`, "content-type": "application/json" },
+            body: JSON.stringify({ kind, payload: body, token }),
+          },
           runtime,
         );
       const responses = await Promise.all([call(), call()]);
       for (const response of responses)
-        expect(response.status, await response.clone().text()).toBe(201);
+        expect(response.status, await response.clone().text()).toBe(200);
       const values = await Promise.all(
-        responses.map((response) => response.json<Record<string, { id: string }>>()),
+        responses.map((response) => response.json<{ state: string; result: Record<string, { id: string }> }>()),
       );
-      expect(values[0]![resultName]!.id).toBe(values[1]![resultName]!.id);
+      expect(values.map((value) => value.state)).toEqual(["completed", "completed"]);
+      expect(values[0]!.result[resultName]!.id).toBe(values[1]!.result[resultName]!.id);
       const replay = await call();
-      expect((await replay.json<Record<string, { id: string }>>())[resultName]!.id).toBe(
-        values[0]![resultName]!.id,
-      );
-      expect((await call({ ...body, name: "Changed request" })).status).toBe(409);
-      expect(
-        (await call(body, { ...headers, "X-Idempotency-Proof": crypto.randomUUID() })).status,
-      ).toBe(403);
+      expect((await replay.json<{ result: Record<string, { id: string }> }>()).result[resultName]!.id)
+        .toBe(values[0]!.result[resultName]!.id);
+      expect((await call({ ...payload, name: "Changed request" })).status).toBe(409);
       const table = resultName === "provider" ? "provider" : "provider_gateway";
       expect(
         await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE id=?`)
-          .bind(values[0]![resultName]!.id)
+          .bind(values[0]!.result[resultName]!.id)
           .first("n"),
       ).toBe(1);
+      // An immediate write's payload may carry its secret, so none is stored.
+      expect(
+        await env.DB.prepare("SELECT request_json FROM mgmt_operation WHERE id LIKE 'op:%' AND kind=? ORDER BY created_at DESC")
+          .bind(kind)
+          .first("request_json"),
+      ).toBeNull();
     }
   });
 });

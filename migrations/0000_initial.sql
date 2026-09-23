@@ -165,24 +165,6 @@ CREATE TABLE `mgmt_api_key` (
 CREATE UNIQUE INDEX `mgmt_api_key_token_hash_unique` ON `mgmt_api_key` (`token_hash`);--> statement-breakpoint
 CREATE INDEX `mgmt_idx_api_key_user_id` ON `mgmt_api_key` (`user_id`);--> statement-breakpoint
 CREATE INDEX `mgmt_idx_api_key_organization_id` ON `mgmt_api_key` (`organization_id`);--> statement-breakpoint
-CREATE TABLE `mgmt_handoff` (
-	`id` text PRIMARY KEY NOT NULL,
-	`kind` text NOT NULL,
-	`request_json` text NOT NULL,
-	`organization_id` text NOT NULL,
-	`initiating_user_id` text NOT NULL,
-	`initiating_credential_id` text NOT NULL,
-	`submission_proof_hash` text NOT NULL,
-	`poll_proof_hash` text NOT NULL,
-	`consumed_at` integer,
-	`outcome` text,
-	`expires_at` integer NOT NULL,
-	`created_at` integer NOT NULL,
-	`updated_at` integer NOT NULL,
-	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE cascade
-);
---> statement-breakpoint
-CREATE INDEX `idx_mgmt_handoff_pending` ON `mgmt_handoff` (`organization_id`,`expires_at`);--> statement-breakpoint
 CREATE TABLE `mgmt_organization` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text NOT NULL,
@@ -209,25 +191,6 @@ CREATE TABLE `mgmt_organization_user` (
 CREATE UNIQUE INDEX `mgmt_organization_user_organization_id_user_id_unique` ON `mgmt_organization_user` (`organization_id`,`user_id`);--> statement-breakpoint
 CREATE INDEX `mgmt_idx_organization_user_user_id` ON `mgmt_organization_user` (`user_id`);--> statement-breakpoint
 CREATE INDEX `mgmt_idx_organization_user_organization_id` ON `mgmt_organization_user` (`organization_id`);--> statement-breakpoint
-CREATE TABLE `mgmt_resource_receipt` (
-	`id` text PRIMARY KEY NOT NULL,
-	`kind` text NOT NULL,
-	`organization_id` text,
-	`initiating_user_id` text,
-	`initiating_credential_id` text,
-	`proof_hash` text NOT NULL,
-	`request_hash` text NOT NULL,
-	`outcome` text,
-	`protected_credential` text,
-	`protected_credential_expires_at` integer,
-	`consumed_at` integer,
-	`expires_at` integer NOT NULL,
-	`created_at` integer NOT NULL,
-	`updated_at` integer NOT NULL,
-	FOREIGN KEY (`organization_id`) REFERENCES `mgmt_organization`(`id`) ON UPDATE no action ON DELETE set null
-);
---> statement-breakpoint
-CREATE INDEX `idx_mgmt_resource_receipt_organization` ON `mgmt_resource_receipt` (`organization_id`);--> statement-breakpoint
 CREATE TABLE `mgmt_user_session` (
 	`id` text PRIMARY KEY NOT NULL,
 	`expires_at` integer NOT NULL,

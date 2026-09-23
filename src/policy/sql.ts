@@ -9,7 +9,7 @@ import type { CfAuthTables } from "@maxceem/cf-auth/schema";
  * parameters.
  *
  * One shape for all three of them — an account-lifecycle guard, a plan ceiling
- * and a resource receipt or browser handoff boundary — because every call site
+ * and a CLI operation boundary — because every call site
  * interpolates one `sql` into a statement and binds the matching `params`, and
  * they compose with {@link andCondition}.
  */

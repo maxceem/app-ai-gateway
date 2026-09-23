@@ -196,21 +196,18 @@ function accountCleanupStatements(cutoffMs: number): {
       params: [...cutoff],
     });
   }
-  // Keep only the proof-bound bootstrap tombstone: deleting it would let an old
-  // bootstrap recreate the same expired account. No account identity or secret survives.
+  // Keep only the token-bound bootstrap tombstone: deleting it would let an
+  // old bootstrap recreate the same expired account. No account identity or
+  // secret survives.
   statements.push({
-    sql: `UPDATE mgmt_bootstrap SET state='expired', organization_id=NULL,
-      service_user_id=NULL, credential_id=NULL, protected_credential=NULL,
-      protected_credential_expires_at=NULL, updated_at=?
-      WHERE organization_id IN (${expired})`,
+    sql: `UPDATE mgmt_operation SET state='expired', organization_id=NULL,
+      initiating_user_id=NULL, initiating_credential_id=NULL, credential_id=NULL,
+      sealed_outcome=NULL, sealed_until=NULL, updated_at=?
+      WHERE kind='bootstrap' AND organization_id IN (${expired})`,
     params: [cutoffMs, ...cutoff],
   });
   statements.push({
-    sql: `DELETE FROM mgmt_resource_receipt WHERE organization_id IN (${expired})`,
-    params: [...cutoff],
-  });
-  statements.push({
-    sql: `DELETE FROM mgmt_handoff WHERE organization_id IN (${expired})`,
+    sql: `DELETE FROM mgmt_operation WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
     params: [...cutoff],
   });
   const accounts = statements.length;
@@ -271,29 +268,20 @@ export async function pruneExpiredAccounts(
 }
 
 /**
- * Expires the two short-lived authorizations, wherever this gateway runs.
- *
- * Unlike the account cleanup above, this is not about a deadline only a hosted
- * account has: a receipt's one-time response copy and a browser handoff are
- * written by the CLI against any deployment, so both are swept on a self-host
- * too. Receipt tombstones themselves are kept — they are what stops an expired
- * retry creating a second app or key — and only the encrypted response inside
- * them is dropped once its recovery window has passed.
+ * Expires what CLI operations hold for a short while, wherever this gateway
+ * runs: a sealed one-time outcome past its recovery window, and every
+ * operation past its deadline. Bootstrap rows are kept whatever their age —
+ * they are what stops an old token recreating an account — and only the
+ * secret inside them is dropped.
  */
 export async function pruneExpiredAuthorizations(db: D1Database): Promise<void> {
+  const now = Date.now();
   await db.prepare(
-    "UPDATE mgmt_resource_receipt SET protected_credential = NULL WHERE protected_credential_expires_at <= ?",
+    "UPDATE mgmt_operation SET sealed_outcome = NULL, sealed_until = NULL WHERE sealed_until <= ?",
   )
-    .bind(Date.now())
+    .bind(now)
     .run();
-  await db.prepare(
-    "UPDATE mgmt_bootstrap SET protected_credential = NULL WHERE protected_credential_expires_at <= ?",
-  )
-    .bind(Date.now())
-    .run();
-  await db.prepare(
-    "DELETE FROM mgmt_handoff WHERE expires_at < ?",
-  )
-    .bind(Date.now())
+  await db.prepare("DELETE FROM mgmt_operation WHERE kind != 'bootstrap' AND expires_at < ?")
+    .bind(now)
     .run();
 }

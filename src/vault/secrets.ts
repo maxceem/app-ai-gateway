@@ -42,15 +42,10 @@ const SECRET_CONTEXTS = {
     organizationId,
     providerGatewayId,
   }),
-  cliCredential: (operationId: string, pollProofHash: string) => ({
-    purpose: "cli-credential-exchange",
+  /** Everything a CLI operation produced, one-time keys included; see `mgmt_operation`. */
+  cliOperation: (operationId: string) => ({
+    purpose: "cli-operation-outcome",
     operationId,
-    pollProofHash,
-  }),
-  resourceReceipt: (receiptId: string, proofHash: string) => ({
-    purpose: "resource-create-receipt",
-    receiptId,
-    proofHash,
   }),
 } as const satisfies Record<string, (...args: string[]) => Record<string, string>>;
 

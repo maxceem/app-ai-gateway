@@ -12,10 +12,9 @@ import {
   reserveOutput,
   stateDirectory,
   type CliState,
-  type StoredKeyMetadata,
 } from "../src/state.ts";
 import { Transport } from "../src/transport.ts";
-import { Context } from "../src/context.ts";
+import { Context, operationIdFor } from "../src/context.ts";
 import { date, month, positive } from "../src/usage.ts";
 import { main, type OutputSink } from "../src/main.ts";
 import { fail } from "../src/common.ts";
@@ -177,7 +176,7 @@ test("a state file this release cannot read is refused, never replaced", async (
   }
 });
 
-test("lost bootstrap response reuses proofs, and logout never bootstraps again", async () => {
+test("lost bootstrap response reuses its token, and logout never bootstraps again", async () => {
   const state = fresh();
   const bodies: unknown[] = [];
   let failing = true;
@@ -191,7 +190,7 @@ test("lost bootstrap response reuses proofs, and logout never bootstraps again",
           failing = false;
           throw new Error("lost response");
         }
-        return { data: credential };
+        return answered(options, bootstrapped);
       },
     },
     {},
@@ -200,6 +199,8 @@ test("lost bootstrap response reuses proofs, and logout never bootstraps again",
   await ctx.bootstrap();
   assert.deepEqual(bodies[0], bodies[1]);
   assert.equal(state.active?.credential, credential.credential.token);
+  // The bootstrap is done, so its record is too.
+  assert.deepEqual(state.operations, {});
   delete state.active!.credential;
   state.active!.authenticated = false;
   await assert.rejects(() => ctx.bootstrap(), hasCode("login_required"));
@@ -210,6 +211,7 @@ test("lost bootstrap response reuses proofs, and logout never bootstraps again",
 function pollResponse(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: "op",
+    kind: "claim",
     expiresAt: "2030-01-01T00:00:00.000Z",
     deployment: credential.deployment,
     state: "completed",
@@ -217,7 +219,33 @@ function pollResponse(extra: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-test("operation initiation retries persisted proof, then completed polling cannot undo logout", async () => {
+/** How the deployment answers an operation: its id is the digest of the token it was sent. */
+function answered(options: { body?: unknown }, extra: Record<string, unknown> = {}) {
+  const body = options.body as { token: string; kind?: string };
+  return {
+    data: {
+      id: operationIdFor(body.token),
+      kind: body.kind ?? "bootstrap",
+      state: "completed",
+      expiresAt: "2030-01-01T00:00:00.000Z",
+      deployment: credential.deployment,
+      ...extra,
+    },
+  };
+}
+
+/** What a completed bootstrap carries beyond its envelope. */
+const bootstrapped = {
+  account: credential.account,
+  result: { credential: { token: credential.credential.token }, unclaimedAccess: null },
+};
+
+/** A stored operation record for a token, as `reserveOperation` writes one. */
+function record(token: string, kind: string, url = "https://example.com") {
+  return { url, token, kind, requestHash: `hash-${token}`, accountId: credential.account.id, createdAt: "now" };
+}
+
+test("operation initiation retries its saved token, then completed polling cannot undo logout", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
@@ -226,7 +254,7 @@ test("operation initiation retries persisted proof, then completed polling canno
     authenticated: true,
   };
   let first = true;
-  const proofs: unknown[] = [];
+  const tokens: string[] = [];
   const transport = {
     request: async (_url: string, path: string, options: { body?: unknown } = {}) => {
       if (path.endsWith("/capabilities"))
@@ -241,23 +269,19 @@ test("operation initiation retries persisted proof, then completed polling canno
           }
         };
       if (path.endsWith("/operations")) {
-        proofs.push((options.body as { pollToken?: string } | undefined)?.pollToken);
+        tokens.push((options.body as { token: string }).token);
         if (first) {
           first = false;
           throw new Error("lost response");
         }
-        return {
-          data: {
-            id: "op",
-            state: "pending",
-            url: "https://console.example/handoff",
-            expiresAt: "2030-01-01T00:00:00.000Z",
-            deployment: credential.deployment,
-          }
-        };
+        return answered(options, { state: "pending", url: "https://console.example/cli/approve/op" });
       }
       return {
-        data: pollResponse({ account: credential.account, result: { accountId: credential.account.id } })
+        data: pollResponse({
+          id: operationIdFor(tokens[0]!),
+          account: credential.account,
+          result: { accountId: credential.account.id },
+        }),
       };
     },
   };
@@ -266,35 +290,130 @@ test("operation initiation retries persisted proof, then completed polling canno
     json: true,
   });
   await assert.rejects(() => ctx.operation("claim", {}));
-  await ctx.operation("claim", {});
-  assert.equal(proofs[0], proofs[1]);
-  const result = await ctx.poll("op");
-  assert.equal("credential" in result, false);
+  const pending = await ctx.operation("claim", {});
+  assert.equal(tokens[0], tokens[1]);
+  assert.equal(pending.id, operationIdFor(tokens[0]!));
+  const result = await ctx.poll(pending.id);
+  assert.equal(result.result?.credential, undefined);
   assert.equal(state.active?.credential, credential.credential.token);
   delete state.active!.credential;
   state.active!.authenticated = false;
-  state.generation = (state.generation ?? 0) + 1;
-  await ctx.poll("op");
+  await ctx.poll(pending.id);
   assert.equal(state.active?.credential, undefined);
 });
 
-test("stale authentication operation refuses activating account after connection changed", async () => {
+test("an operation is polled only on the deployment it was sent to", async () => {
   const state = fresh();
-  state.generation = 2;
-  state.operations["op"] = {
+  state.active = { url: "https://other.example", credential: "management", authenticated: true };
+  const id = operationIdFor("proof");
+  state.operations[id] = record("proof", "claim");
+  const ctx = new Context(
+    makeStore(),
+    state,
+    { request: async () => assert.fail("no request to the wrong deployment") },
+    {},
+  );
+  await assert.rejects(() => ctx.poll(id), hasCode("operation_context"));
+});
+
+test("an operation that delivers a key is never polled to stdout", async () => {
+  const state = fresh();
+  state.active = { url: "https://example.com", credential: "management", authenticated: true };
+  const id = operationIdFor("proof");
+  state.operations[id] = record("proof", "app.key.add");
+  const ctx = new Context(
+    makeStore(),
+    state,
+    { request: async () => assert.fail("a key is only ever collected by the command that files it") },
+    {},
+  );
+  await assert.rejects(() => ctx.poll(id), hasCode("operation_key_output"));
+  assert.ok(state.operations[id]);
+});
+
+test("a claim polled from another account's connection leaves that connection alone", async () => {
+  const state = fresh();
+  const other = { ...credential.account, id: "account-2", name: "Other" };
+  state.active = { url: "https://example.com", credential: "other", account: other, authenticated: true };
+  const id = operationIdFor("proof");
+  state.operations[id] = record("proof", "claim");
+  const ctx = new Context(
+    makeStore(),
+    state,
+    {
+      request: async () => ({
+        data: pollResponse({ id, account: { ...credential.account, claimed: true } }),
+      }),
+    },
+    {},
+  );
+  await ctx.poll(id);
+  assert.deepEqual(state.active.account, other);
+  assert.equal(state.active.credential, "other");
+});
+
+test("an expired browser step retires its token, so the same command starts afresh", async () => {
+  const state = fresh();
+  state.active = {
     url: "https://example.com",
-    pollToken: "proof",
-    kind: "claim",
-    generation: 1,
+    account: credential.account,
+    credential: "management",
+    authenticated: true,
+  };
+  const tokens: string[] = [];
+  const ctx = new Context(
+    makeStore(),
+    state,
+    {
+      request: async (_url: string, path: string, options: { body?: unknown } = {}) => {
+        if (path.endsWith("/operations")) {
+          tokens.push((options.body as { token: string }).token);
+          return answered(options, { state: "expired" });
+        }
+        return { data: pollResponse({ state: "expired" }) };
+      },
+    },
+    { "no-open": true, json: true },
+  );
+  await assert.rejects(() => ctx.operation("claim", {}), hasCode("operation_expired"));
+  assert.deepEqual(state.operations, {});
+  await assert.rejects(() => ctx.operation("claim", {}), hasCode("operation_expired"));
+  assert.notEqual(tokens[0], tokens[1]);
+  // Polling one that expired retires it the same way.
+  const id = operationIdFor("proof");
+  state.operations[id] = record("proof", "claim");
+  await assert.rejects(() => ctx.wait(id, 1), hasCode("operation_expired"));
+  assert.equal(state.operations[id], undefined);
+});
+
+test("an unfinished operation older than the deployment keeps it is not resent", async () => {
+  const state = fresh();
+  state.active = {
+    url: "https://example.com",
+    account: credential.account,
+    credential: "management",
+    authenticated: true,
   };
   const ctx = new Context(
     makeStore(),
     state,
-    { request: async () => ({ data: pollResponse() }) },
+    {
+      request: async (_url: string, path: string, options: { body?: unknown } = {}) => {
+        if (path.endsWith("/operations")) return answered(options, { kind: "app.add", result: {} });
+        return assert.fail(`unexpected ${path}`);
+      },
+    },
     {},
   );
-  await assert.rejects(() => ctx.poll("op"), hasCode("operation_context"));
-  assert.equal(state.active, null);
+  const [id] = await (ctx as unknown as {
+    reserveOperation(kind: string, payload: unknown, url: string): Promise<[string, { createdAt: string }]>;
+  }).reserveOperation("provider.add", { slug: "old" }, "https://example.com");
+  state.operations[id]!.createdAt = new Date(Date.now() - 91 * 86_400_000).toISOString();
+  await assert.rejects(
+    () => ctx.operation("provider.add", { slug: "old" } as never),
+    hasCode("operation_retry_expired"),
+  );
+  assert.equal(state.operations[id], undefined);
 });
 
 test("response parsing emits only declared fields, so no unknown credential reaches stdout", () => {
@@ -342,7 +461,9 @@ test("response parsing emits only declared fields, so no unknown credential reac
   assert.equal(provider.providers[0]?.secretHint, "…safe");
 });
 
-test("a completed key creation leaves no plaintext in protected state, and replays from its metadata", async () => {
+test("a key creation never puts its plaintext in protected state, and replays from its metadata", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-key-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const state = fresh();
   state.active = {
     url: "https://example.com",
@@ -357,6 +478,8 @@ test("a completed key creation leaves no plaintext in protected state, and repla
     write: async (value: CliState) => {
       written.push(JSON.stringify(value));
     },
+    keyOutput: (_path: string | undefined, options: Parameters<typeof reserveOutput>[1]) =>
+      reserveOutput(join(dir, "key"), options),
   };
   const minted = {
     id: "key-1",
@@ -365,67 +488,31 @@ test("a completed key creation leaves no plaintext in protected state, and repla
     key_prefix: "agw_",
     created_at: "now",
   };
+  let requests = 0;
   const transport = {
-    request: async (_url: string, _path: string, options: { method?: string } = {}) =>
-      options.method === "POST"
-        ? { data: minted }
-        : {
-            data: {
-              app_id: "app-1",
-              keys: [
-                {
-                  id: "key-1",
-                  name: "CI",
-                  key_prefix: "agw_",
-                  status: "active",
-                  created_at: "now",
-                  last_used_at: null,
-                },
-              ],
-            }
-          },
+    request: async (_url: string, _path: string, options: { body?: unknown } = {}) => {
+      requests++;
+      return answered(options, { result: { api_key: minted } });
+    },
   };
   const ctx = new Context(store, state, transport, {});
-  const created = await ctx.create("createAppKey", { params: { app: "app-1" }, body: { name: "CI" } });
-  assert.equal("key" in created.data && created.data.key, minted.key);
-  const stored: StoredKeyMetadata = {
-    id: minted.id,
-    name: minted.name,
-    key_prefix: minted.key_prefix,
-    created_at: minted.created_at,
-    storagePath: "/tmp/agw-key",
-    contentHash: "hash",
-  };
-  await created.keyStored?.(stored);
-  // Until here the plaintext is on disk on purpose: that recovery copy is what
-  // lets a failed `--key-output` write be retried without minting a new key.
-  assert.ok(
-    written.some((value) => value.includes("SENTINEL")),
-    "the recovery copy is written before the key output is",
-  );
-  const beforeCompletion = written.length;
-  await created.complete();
+  const created = await ctx.keyOperation("app.key.add", { app: "app-1", name: "CI" }, undefined);
+  assert.equal(await readFile(join(dir, "key"), "utf8"), `${minted.key}\n`);
+  assert.equal(created.key.id, minted.id);
+  // The deployment holds the key sealed for a lost response; this machine
+  // never writes it anywhere but the output file.
+  assert.deepEqual(written.filter((value) => value.includes("SENTINEL")), []);
+  assert.equal(JSON.stringify(created.operation).includes("SENTINEL"), false);
 
-  // Delivery ends that lifetime. The receipt that outlives it — until stdout is
-  // acknowledged, and across a crash in between — must carry no key at all.
-  const receipt = Object.values(state.mutations ?? {})[0]!;
-  assert.equal(receipt.response, undefined);
-  assert.equal(JSON.stringify(receipt).includes("SENTINEL"), false);
-  assert.deepEqual(
-    written.slice(beforeCompletion).filter((value) => value.includes("SENTINEL")),
-    [],
-    "no state write after delivery may contain the plaintext",
-  );
-
-  // A replay before acknowledgment still answers, from the recorded metadata.
+  // A replay before acknowledgment answers from the recorded metadata, and
+  // asks the deployment nothing.
   const resumed = new Context(store, state, transport, {});
-  const replayed = await resumed.create("createAppKey", { params: { app: "app-1" }, body: { name: "CI" } });
-  assert.deepEqual(replayed.keyMetadata, stored);
-  assert.equal("key" in replayed.data, false);
-  assert.equal(JSON.stringify(replayed.data).includes("SENTINEL"), false);
+  const replayed = await resumed.keyOperation("app.key.add", { app: "app-1", name: "CI" }, undefined);
+  assert.deepEqual(replayed.key, created.key);
+  assert.equal(requests, 1);
 });
 
-test("a completed handoff reports only declared outcome fields", async () => {
+test("a completed operation reports only declared outcome fields", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
@@ -433,33 +520,27 @@ test("a completed handoff reports only declared outcome fields", async () => {
     account: credential.account,
     authenticated: true,
   };
-  state.generation = 1;
-  state.operations["claim"] = {
-    url: "https://example.com",
-    pollToken: "proof",
-    kind: "claim",
-    generation: 1,
-  };
+  const id = operationIdFor("proof");
+  state.operations[id] = record("proof", "claim");
   const ctx = new Context(
     makeStore(),
     state,
     {
       request: async () => ({
         data: pollResponse({
-          id: "claim",
+          id,
           result: {
             accountId: "account-1",
-            // The approving human and the internal compare-and-swap marker the
-            // gateway stores beside the outcome; neither is the caller's.
+            // The approving human, which the gateway stores beside the
+            // outcome and which is not the caller's.
             approvedBy: "user-SENTINEL",
-            transition: "b2f0e6c4-SENTINEL",
           },
         })
       }),
     },
     {},
   );
-  const result = await ctx.poll("claim");
+  const result = await ctx.poll(id);
   assert.deepEqual(result.result, { accountId: "account-1" });
   assert.equal(JSON.stringify(result).includes("SENTINEL"), false);
 });
@@ -473,7 +554,7 @@ test("calendar and wait validation rejects impossible dates and unbounded waits"
   assert.equal(positive("300"), 300);
 });
 
-test("resource creates reuse pre-persisted idempotency authorization after a lost response", async () => {
+test("an operation reuses its saved token after a lost response, and a new one follows acknowledgment", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
@@ -481,48 +562,45 @@ test("resource creates reuse pre-persisted idempotency authorization after a los
     account: credential.account,
     authenticated: true,
   };
-  let attempts = 0;
-  const headers: unknown[] = [];
+  const tokens: string[] = [];
   const ctx = new Context(
     makeStore(),
     state,
     {
       request: async (_url, _path, options = {}) => {
-        attempts++;
-        headers.push(options.headers);
-        if (attempts === 1) throw new Error("lost response");
-        return {
-          data: {
+        tokens.push((options.body as { token: string }).token);
+        if (tokens.length === 1) throw new Error("lost response");
+        return answered(options, {
+          result: {
             app: {
               id: "stable-app",
               revision: 1,
               name: "Test",
-              config: parseAppConfig({ authentication: { type: "api_key" }, routing: { providers: { mode: "all" }, model_rewrites: {} } }),
+              config: appBody().config,
               status: "active",
               created_at: "now",
               updated_at: "now",
             },
-            resolved: null,
             api_key: null,
-          }
-        };
+          },
+        });
       },
     },
     {},
   );
-  await assert.rejects(() => ctx.create("createApp", { body: appBody() }));
-  const result = await ctx.create("createApp", { body: appBody() });
-  assert.deepEqual(headers[0], headers[1]);
-  assert.equal(Object.keys(state.mutations ?? {}).length, 1);
-  await result.complete();
-  const mutation = Object.values(state.mutations ?? {})[0]!;
-  assert.ok(mutation.completedAt);
-  assert.equal(mutation.response, undefined);
-  await ctx.create("createApp", { body: appBody() });
-  assert.equal(attempts, 2);
+  await assert.rejects(() => ctx.operation("app.add", appBody()));
+  assert.equal(Object.keys(state.operations).length, 1);
+  const result = await ctx.operation("app.add", appBody());
+  assert.equal(result.result?.app?.id, "stable-app");
+  assert.equal(tokens[0], tokens[1]);
+  // Printed, so released: the same command run again is a new operation.
+  await ctx.acknowledgeOutput();
+  assert.deepEqual(state.operations, {});
+  await ctx.operation("app.add", appBody());
+  assert.notEqual(tokens[2], tokens[0]);
 });
 
-test("a rate limited creation keeps its receipt, a refused one leaves none behind", async () => {
+test("a rate limited operation keeps its token, a refused one leaves none behind", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
@@ -530,16 +608,14 @@ test("a rate limited creation keeps its receipt, a refused one leaves none behin
     account: credential.account,
     authenticated: true,
   };
-  let attempts = 0;
-  const authorizations: unknown[] = [];
+  const tokens: string[] = [];
   const ctx = new Context(
     makeStore(),
     state,
     {
       request: async (_url, _path, options = {}) => {
-        attempts++;
-        authorizations.push(options.headers?.["Idempotency-Key"]);
-        return attempts === 1
+        tokens.push((options.body as { token: string }).token);
+        return tokens.length === 1
           ? fail("rate_limited", "Too many attempts.", undefined, 3, { status: 429 })
           : fail("invalid_request", "Duplicate slug.", undefined, 3, { status: 400 });
       },
@@ -547,17 +623,16 @@ test("a rate limited creation keeps its receipt, a refused one leaves none behin
     {},
   );
 
-  // Refused for now, so the receipt stays and the retry arrives under the same
-  // authorization rather than as a second creation.
-  await assert.rejects(() => ctx.create("createApp", { body: appBody() }), hasCode("rate_limited"));
-  assert.equal(Object.keys(state.mutations ?? {}).length, 1);
+  // Refused for now, so the record stays and the retry arrives under the same
+  // token rather than as a second operation.
+  await assert.rejects(() => ctx.operation("app.add", appBody()), hasCode("rate_limited"));
+  assert.equal(Object.keys(state.operations).length, 1);
 
-  // Refused for good: nothing was created, the deployment committed no receipt
-  // of its own, and keeping this one would only refuse the same command as an
-  // unfinished creation once it is ninety days old.
-  await assert.rejects(() => ctx.create("createApp", { body: appBody() }), hasCode("invalid_request"));
-  assert.equal(authorizations[0], authorizations[1]);
-  assert.deepEqual(state.mutations, {});
+  // Refused for good: nothing was written, so keeping the record would only
+  // send the refused token again.
+  await assert.rejects(() => ctx.operation("app.add", appBody()), hasCode("invalid_request"));
+  assert.equal(tokens[0], tokens[1]);
+  assert.deepEqual(state.operations, {});
 });
 
 test("a refused bootstrap leaves no pending account reservation", async () => {
@@ -568,14 +643,16 @@ test("a refused bootstrap leaves no pending account reservation", async () => {
       { request: async () => fail(code, "Refused.", undefined, 3, { status }) },
       {},
     );
+  const bootstraps = (ctx: Context) =>
+    Object.values(ctx.state.operations).filter((entry) => entry.kind === "bootstrap");
 
   const limited = refusal("rate_limited", 429);
   await assert.rejects(() => limited.bootstrap(), hasCode("rate_limited"));
-  assert.ok(limited.state.bootstrap, "a retryable refusal keeps one reserved proof");
+  assert.equal(bootstraps(limited).length, 1, "a retryable refusal keeps one reserved token");
 
   const expired = refusal("account_expired", 403);
   await assert.rejects(() => expired.bootstrap(), hasCode("account_expired"));
-  assert.equal(expired.state.bootstrap, undefined);
+  assert.deepEqual(bootstraps(expired), []);
 });
 
 /** The smallest application write the contract accepts. */
@@ -658,20 +735,15 @@ test("claim completion records the claimed account and keeps this connection sig
     account: credential.account,
     authenticated: true,
   };
-  state.generation = 1;
-  state.operations["claim"] = {
-    url: state.active.url,
-    pollToken: "proof",
-    kind: "claim",
-    generation: 1,
-  };
+  const id = operationIdFor("proof");
+  state.operations[id] = record("proof", "claim", state.active.url);
   const ctx = new Context(
     makeStore(),
     state,
     {
       request: async () => ({
         data: pollResponse({
-          id: "claim",
+          id,
           result: { accountId: credential.account.id },
           account: { ...credential.account, claimed: true },
         })
@@ -679,32 +751,10 @@ test("claim completion records the claimed account and keeps this connection sig
     },
     {},
   );
-  await ctx.poll("claim");
+  await ctx.poll(id);
   assert.equal(state.active?.credential, "bootstrap");
   assert.equal(state.active?.authenticated, true);
   assert.equal(state.active?.account?.claimed, true);
-});
-
-test("expired local creation proofs never retry a forgotten remote mutation", async () => {
-  const state = fresh();
-  state.active = {
-    url: "https://example.com",
-    account: credential.account,
-    credential: "secret",
-    authenticated: true,
-  };
-  const ctx = new Context(
-    makeStore(),
-    state,
-    { request: async () => assert.fail("no network") },
-    {},
-  );
-  const pending = await ctx.prepareCreate("/v1/admin/apps", appBody());
-  pending.createdAt = "2020-01-01T00:00:00Z";
-  await assert.rejects(
-    () => ctx.create("createApp", { body: appBody() }),
-    hasCode("resource_retry_expired"),
-  );
 });
 
 test("fresh onboarding output includes exact free access dates without management secrets", async () => {
@@ -729,12 +779,15 @@ test("fresh onboarding output includes exact free access dates without managemen
         },
       },
       transport: {
-        request: async (_url, path) => {
+        request: async (_url, path, options = {}) => {
           if (path.endsWith("/bootstrap"))
-            return { data: { ...credential, account, unclaimedAccess: trial } };
-          if (path.endsWith("/apps"))
-            return {
-              data: {
+            return answered(options, {
+              account,
+              result: { credential: { token: credential.credential.token }, unclaimedAccess: trial },
+            });
+          if (path.endsWith("/operations"))
+            return answered(options, {
+              result: {
                 app: {
                   id: "app",
                   revision: 1,
@@ -744,10 +797,9 @@ test("fresh onboarding output includes exact free access dates without managemen
                   created_at: "now",
                   updated_at: "now",
                 },
-                resolved: null,
                 api_key: null,
-              }
-            };
+              },
+            });
           return { data: { providers: [] } };
         },
       },
@@ -784,25 +836,6 @@ function appleConfig() {
     },
   };
 }
-
-test("expired or undated pending bootstrap refuses network and preserves recovery proof", async () => {
-  for (const createdAt of [undefined, "2020-01-01T00:00:00Z"]) {
-    const state = fresh();
-    state.bootstrap = {
-      idempotencyKey: "saved-id",
-      pollToken: "saved-proof",
-      ...(createdAt ? { createdAt } : {}),
-    };
-    const ctx = new Context(
-      makeStore(),
-      state,
-      { request: async () => assert.fail("must not recreate") },
-      {},
-    );
-    await assert.rejects(() => ctx.bootstrap(), hasCode("bootstrap_retry_expired"));
-    assert.equal(state.bootstrap.pollToken, "saved-proof");
-  }
-});
 
 test("retained account usage preserves deleted app attribution and actual backend coverage", () => {
   const totals = {
@@ -850,18 +883,18 @@ test("successful stdout acknowledges creation so delete and re-add makes a new r
     read: async () => state,
   };
   const created = new Set<string>();
-  const proofs: unknown[] = [];
+  const tokens: string[] = [];
   const transport = {
     request: async (
       _url: string,
-      _path: string,
-      options: { method?: string; headers?: Record<string, string> } = {},
+      path: string,
+      options: { method?: string; body?: unknown } = {},
     ) => {
-      if (options.method === "POST") {
-        const id = `app-${proofs.length}`;
-        proofs.push(options.headers?.["Idempotency-Key"]);
+      if (path.endsWith("/operations")) {
+        const id = `app-${tokens.length}`;
+        tokens.push((options.body as { token: string }).token);
         created.add(id);
-        return { data: appResponse(id) };
+        return answered(options, { result: appResponse(id) });
       }
       if (options.method === "DELETE") {
         created.clear();
@@ -883,18 +916,18 @@ test("successful stdout acknowledges creation so delete and re-add makes a new r
   ];
   const stdout = new Writable({
     write(chunk, _encoding, callback) {
-      // The completed recovery receipt must remain durable until output flushes.
+      // The operation's record must stay durable until output flushes.
       const printed = JSON.parse(String(chunk)) as { result?: { app?: unknown } };
-      if (printed.result?.app) assert.equal(Object.keys(state.mutations ?? {}).length, 1);
+      if (printed.result?.app) assert.equal(Object.keys(state.operations).length, 1);
       setImmediate(callback);
     },
   });
   assert.equal(await main(args, { store, transport, stdout }), 0);
-  assert.equal(Object.keys(state.mutations ?? {}).length, 0);
+  assert.equal(Object.keys(state.operations).length, 0);
   await transport.request(state.active.url, "/v1/admin/apps/app-0", { method: "DELETE" });
   assert.equal(await main(args, { store, transport, stdout }), 0);
-  assert.equal(proofs.length, 2);
-  assert.notEqual(proofs[0], proofs[1]);
+  assert.equal(tokens.length, 2);
+  assert.notEqual(tokens[0], tokens[1]);
   assert.equal(created.size, 1);
 });
 
@@ -904,17 +937,16 @@ function appResponse(id: string) {
       id,
       revision: 1,
       name: "Example",
-      config: appleConfig(),
+      config: parseAppConfig(appleConfig()),
       status: "active",
       created_at: "now",
       updated_at: "now",
     },
-    resolved: null,
     api_key: null,
   };
 }
 
-test("pre-output crash replays completed creation once, then acknowledgment permits another", async () => {
+test("a pre-output crash resends the same token, then acknowledgment permits another", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
@@ -922,24 +954,27 @@ test("pre-output crash replays completed creation once, then acknowledgment perm
     credential: "management",
     authenticated: true,
   };
-  let posts = 0;
+  const tokens: string[] = [];
   const transport = {
-    request: async () => {
-      posts++;
-      return { data: { provider: providerRow(`provider-${posts}`) } };
+    request: async (_url: string, _path: string, options: { body?: unknown } = {}) => {
+      const token = (options.body as { token: string }).token;
+      if (!tokens.includes(token)) tokens.push(token);
+      // The deployment answers a token it already ran with what that run made.
+      return answered(options, { result: { provider: providerRow(`provider-${tokens.indexOf(token) + 1}`) } });
     },
   };
   const first = new Context(makeStore(), state, transport, {});
-  await (await first.create("createProvider", { body: providerBody() })).complete();
+  await first.operation("provider.add", providerBody());
+  // The command died before stdout: nothing acknowledged it.
   const resumed = new Context(makeStore(), state, transport, {});
   assert.equal(
-    (await resumed.create("createProvider", { body: providerBody() })).data.provider.id,
+    (await resumed.operation("provider.add", providerBody())).result?.provider?.id,
     "provider-1",
   );
-  assert.equal(posts, 1);
+  assert.equal(tokens.length, 1);
   await resumed.acknowledgeOutput();
-  await resumed.create("createProvider", { body: providerBody() });
-  assert.equal(posts, 2);
+  await resumed.operation("provider.add", providerBody());
+  assert.equal(tokens.length, 2);
 });
 
 function providerBody() {
@@ -965,7 +1000,7 @@ function providerRow(id: string) {
   };
 }
 
-test("failed stdout acknowledgment retains the completed receipt without failing success", async () => {
+test("failed stdout acknowledgment retains the operation's record without failing success", async () => {
   const state: CliState = fresh();
   state.active = {
     url: "https://example.com",
@@ -983,14 +1018,13 @@ test("failed stdout acknowledgment retains the completed receipt without failing
   const ctx = new Context(
     store,
     state,
-    { request: async () => ({ data: { provider: providerRow("provider") } }) },
+    { request: async (_url, _path, options = {}) => answered(options, { result: { provider: providerRow("provider") } }) },
     {},
   );
-  await (await ctx.create("createProvider", { body: providerBody() })).complete();
+  await ctx.operation("provider.add", providerBody());
   failSave = true;
   await ctx.acknowledgeOutput();
-  assert.equal(Object.keys(state.mutations ?? {}).length, 1);
-  assert.ok(Object.values(state.mutations ?? {})[0]?.completedAt);
+  assert.equal(Object.keys(state.operations).length, 1);
 });
 
 /** The injected sink `main` accepts is deliberately minimal. */
@@ -1011,17 +1045,9 @@ test("a write breaks a lock whose owner is gone and keeps a concurrent command's
   );
   const other = new StateStore(dir);
   const theirs = await other.read();
-  theirs.operations["theirs"] = {
-    url: "https://example.com",
-    pollToken: "b",
-    kind: "claim",
-  };
+  theirs.operations["theirs"] = record("b", "claim");
   await other.write(theirs);
-  mine.operations["mine"] = {
-    url: "https://example.com",
-    pollToken: "a",
-    kind: "claim",
-  };
+  mine.operations["mine"] = record("a", "claim");
   await store.write(mine);
   assert.deepEqual(Object.keys(mine.operations).sort(), ["mine", "theirs"]);
   const merged = await new StateStore(dir).read();
@@ -1029,7 +1055,15 @@ test("a write breaks a lock whose owner is gone and keeps a concurrent command's
   // A write this command made itself still wins over the copy on disk.
   delete mine.operations["theirs"];
   await store.write(mine);
-  assert.deepEqual(Object.keys((await new StateStore(dir).read()).operations), ["mine"]);
+  assert.deepEqual(Object.keys((await new StateStore(dir).read()).operations), ["mine"]);  // And a record another command dropped stays dropped when this one, which
+  // never touched it, writes something unrelated.
+  const third = new StateStore(dir);
+  const later = await third.read();
+  delete later.operations["mine"];
+  await third.write(later);
+  mine.operations["unrelated"] = record("c", "claim");
+  await store.write(mine);
+  assert.deepEqual(Object.keys((await new StateStore(dir).read()).operations), ["unrelated"]);
 });
 
 test("a state file keeps working on Windows, where every file reports mode 0666", async (t) => {
@@ -1048,16 +1082,11 @@ test("a state file keeps working on Windows, where every file reports mode 0666"
   await store.write(fresh());
 });
 
-test("logout strips the credential of the connection this one replaced", async () => {
+test("logout strips the connection's credential without a request", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
     credential: "SENTINEL-ACTIVE",
-    authenticated: true,
-  };
-  state.previous = {
-    url: "https://old.example",
-    credential: "SENTINEL-PREVIOUS",
     authenticated: true,
   };
   const code = await main(["account", "logout", "--json"], {
@@ -1071,7 +1100,7 @@ test("logout strips the credential of the connection this one replaced", async (
   });
   assert.equal(code, 0);
   assert.equal(JSON.stringify(state).includes("SENTINEL"), false);
-  assert.equal(state.previous?.authenticated, false);
+  assert.equal(state.active?.authenticated, false);
 });
 
 test("a deployment's vault key lives in its own file and is never regenerated", async (t) => {
@@ -1090,10 +1119,11 @@ test("a deployment's vault key lives in its own file and is never regenerated", 
   await assert.rejects(() => store.vaultKey("deployment-1"), hasCode("unsafe_storage"));
 });
 
-test("commands started side by side reserve one account and one creation receipt", async (t) => {
+test("commands started side by side reserve one account and one operation token", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-claim-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const proofs = new Set<unknown>();
+  const bootstrapTokens = new Set<string>();
+  const operationTokens: string[] = [];
   // Both commands read the state before either of them has written anything.
   const start = async () => {
     const store = new StateStore(dir);
@@ -1102,9 +1132,14 @@ test("commands started side by side reserve one account and one creation receipt
       store,
       state,
       {
-        request: async (_url, _path, options = {}) => {
-          proofs.add((options.body as { idempotencyKey?: unknown }).idempotencyKey);
-          return { data: credential };
+        request: async (_url, path, options = {}) => {
+          const token = (options.body as { token: string }).token;
+          if (path.endsWith("/bootstrap")) {
+            bootstrapTokens.add(token);
+            return answered(options, bootstrapped);
+          }
+          operationTokens.push(token);
+          return answered(options, { result: appResponse("same") });
         },
       },
       {},
@@ -1114,12 +1149,12 @@ test("commands started side by side reserve one account and one creation receipt
   const second = await start();
   await first.bootstrap();
   await second.bootstrap();
-  assert.equal(proofs.size, 1);
+  assert.equal(bootstrapTokens.size, 1);
   assert.equal(second.active?.credential, credential.credential.token);
-  const one = await first.prepareCreate("/v1/admin/apps", { name: "Same" });
-  const other = await second.prepareCreate("/v1/admin/apps", { name: "Same" });
-  assert.equal(other.id, one.id);
-  assert.equal(other.proof, one.proof);
-  const different = await second.prepareCreate("/v1/admin/apps", { name: "Other" });
-  assert.notEqual(different.id, one.id);
+  const body = { name: "Same", config: parseAppConfig(appleConfig()) };
+  await first.operation("app.add", body);
+  await second.operation("app.add", body);
+  assert.equal(operationTokens[0], operationTokens[1]);
+  await second.operation("app.add", { ...body, name: "Other" });
+  assert.notEqual(operationTokens[2], operationTokens[0]);
 });

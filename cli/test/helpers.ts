@@ -17,7 +17,7 @@ export const served = (type: ProviderType) => {
 };
 
 export const fresh = (): CliState => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   active: null,
   operations: {},
 });

@@ -103,8 +103,6 @@ export type ErrorCode =
   | "provider_key_invalid"
   | "invalid_request"
   | "app_not_found"
-  | "resource_key_unavailable"
-  | "resource_receipt_expired"
   | "app_revision_required"
   | "app_revision_conflict"
   | "app_disabled"

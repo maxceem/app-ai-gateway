@@ -44,22 +44,12 @@ const securitySchemes: Record<Exclude<SecurityKind, "public">, RouteConfig["secu
   cliPoll: [{ CliPollProof: [] }],
 };
 
-/** The proof pair an idempotent creation may carry, and what it promises. */
-const RECEIPT_DESCRIPTION =
-  " Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.";
-const RECEIPT_PROOF = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/).optional();
-const RECEIPT_ERRORS: Record<number, string> = {
-  409: "A request proof was reused with different content or resource creation conflicted.",
-  410: "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
-};
-
 /** One catalog entry as the generator wants it. */
 function routeConfig(name: OperationName): RouteConfig {
   // Widened deliberately: indexing the catalog with a generic name yields a
   // union of entry shapes, and this function reads the optional fields that
   // only some of them carry.
   const entry: OperationSpec = CATALOG[name];
-  const receipt = entry.receipt === true;
   const parameters = Object.entries(entry.params ?? {}).map(([param, spec]) => {
     const base = spec.pattern === undefined ? z.string() : z.string().regex(spec.pattern);
     return [param, base.openapi({
@@ -80,12 +70,7 @@ function routeConfig(name: OperationName): RouteConfig {
         }
       : { required: true, content: { "application/json": { schema: entry.request } } };
 
-  const headers = receipt
-    ? (entry.headers ?? z.object({})).extend({
-        "Idempotency-Key": RECEIPT_PROOF,
-        "X-Idempotency-Proof": RECEIPT_PROOF,
-      })
-    : entry.headers;
+  const headers = entry.headers;
 
   const request = {
     ...(parameters.length === 0 ? {} : { params: z.object(Object.fromEntries(parameters)) }),
@@ -97,10 +82,9 @@ function routeConfig(name: OperationName): RouteConfig {
   const errors: Record<number, string> = {
     ...(entry.errors === "none" ? {} : sharedErrors),
     ...(typeof entry.errors === "object" ? entry.errors : {}),
-    ...(receipt ? RECEIPT_ERRORS : {}),
   };
 
-  const description = `${entry.description ?? ""}${receipt ? RECEIPT_DESCRIPTION : ""}`;
+  const description = entry.description ?? "";
 
   return {
     method: entry.method.toLowerCase() as Lowercase<typeof entry.method>,
@@ -138,7 +122,7 @@ for (const target of [registry, documentationRegistry]) {
     description: "The console's session cookie. Admin requests from the console also send x-console-request: 1.",
   });
   target.openAPIRegistry.registerComponent("securitySchemes", "CliPollProof", {
-    type: "http", scheme: "bearer", description: "The initiating CLI's private pollToken, distinct from the browser submission proof.",
+    type: "http", scheme: "bearer", description: "The initiating CLI's private operation token, distinct from the browser's approval proof.",
   });
   target.openAPIRegistry.registerComponent("securitySchemes", "GatewayBearer", {
     type: "http",

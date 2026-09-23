@@ -109,95 +109,50 @@ export const {
   apiKey: mgmtApiKey,
 } = mgmtAuthTables;
 
-/** Durable, proof-bound recovery for create operations and bootstrap. */
-export const mgmtResourceReceipt = sqliteTable(
-  "mgmt_resource_receipt",
+/**
+ * One CLI operation: a bootstrap, an account claim, or a resource write, sent
+ * immediately or after a browser step. The id is `op:` and the digest of the
+ * one token the CLI holds, so holding the token is the whole proof, and a
+ * retry with it finds this row rather than repeating the work.
+ *
+ * `state` is `pending` until the work lands, then `completed`. A bootstrap is
+ * `retired` once its account is claimed and `expired` once account cleanup
+ * collected it; that last row is kept on purpose, identities and secrets
+ * cleared, so the same token cannot recreate an account the deadline removed.
+ *
+ * `outcome_json` is what the operation achieved with any one-time secret taken
+ * out; the whole of it is sealed in `sealed_outcome` until `sealed_until`, so a
+ * CLI whose response was lost can still collect a key it has not stored yet.
+ */
+export const mgmtOperation = sqliteTable(
+  "mgmt_operation",
   {
     id: text("id").primaryKey(),
     kind: text("kind").notNull(),
+    state: text("state", { enum: ["pending", "completed", "retired", "expired"] }).notNull(),
     organizationId: text("organization_id").references(() => mgmtOrganization.id, {
       onDelete: "set null",
     }),
     initiatingUserId: text("initiating_user_id"),
     initiatingCredentialId: text("initiating_credential_id"),
-    proofHash: text("proof_hash").notNull(),
+    /** The reviewable payload of a browser step, exactly as its schema accepted it. */
+    request: text("request_json"),
+    /** Digest of the whole request, which a retry with the same token must match. */
     requestHash: text("request_hash").notNull(),
-    outcome: text("outcome"),
-    protectedCredential: text("protected_credential"),
-    protectedCredentialExpiresAt: integer("protected_credential_expires_at"),
-    consumedAt: integer("consumed_at"),
-    expiresAt: integer("expires_at").notNull(),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [index("idx_mgmt_resource_receipt_organization").on(table.organizationId)],
-);
-
-/**
- * One CLI bootstrap: the proof that created an account, and the management key
- * it may still collect.
- *
- * `active` until the account is claimed (`retired`, the key's authority ends
- * with the claim) or collected as expired (`expired`, every identity and secret
- * cleared). The expired row is kept on purpose: it is what stops the same
- * proof from recreating an account the deadline has already removed.
- */
-export const mgmtBootstrap = sqliteTable(
-  "mgmt_bootstrap",
-  {
-    id: text("id").primaryKey(),
-    state: text("state", { enum: ["active", "retired", "expired"] }).notNull(),
-    organizationId: text("organization_id").references(() => mgmtOrganization.id, {
-      onDelete: "set null",
-    }),
-    /** The service identity the bootstrap created the account for. */
-    serviceUserId: text("service_user_id"),
-    proofHash: text("proof_hash").notNull(),
-    /** The management key the protected credential below is, once one is committed. */
+    /** Digest of the browser's own proof, present only while a browser step is owed. */
+    browserProofHash: text("browser_proof_hash"),
+    outcome: text("outcome_json"),
+    sealedOutcome: text("sealed_outcome"),
+    sealedUntil: integer("sealed_until"),
+    /** A bootstrap's management key, the one it stands behind. */
     credentialId: text("credential_id"),
-    protectedCredential: text("protected_credential"),
-    protectedCredentialExpiresAt: integer("protected_credential_expires_at"),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [index("idx_mgmt_bootstrap_organization").on(table.organizationId)],
-);
-
-/** An unfinished administrative act: human claim approval, or a provider-secret browser handoff. */
-export const mgmtHandoff = sqliteTable(
-  "mgmt_handoff",
-  {
-    id: text("id").primaryKey(),
-    kind: text("kind").notNull(),
-    /** The kind's payload exactly as its schema accepted it, and nothing the server added. */
-    request: text("request_json").notNull(),
-    /** Digest of the payload, which is what a replay of the same proof must match. */
-    requestHash: text("request_hash").notNull(),
-    /** The existing row a targeted kind edits, and the revision it was pinned to on opening. */
-    targetId: text("target_id"),
-    targetRevision: integer("target_revision"),
-    /** The provider gateway a provider handoff routes through, pinned the same way. */
-    gatewayId: text("gateway_id"),
-    gatewayRevision: integer("gateway_revision"),
-    /**
-     * What the approval page is shown of the pinned rows: `{ target?, gateway? }`,
-     * the reviewable configuration and never a sealed secret.
-     */
-    snapshot: text("snapshot_json"),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
-    initiatingUserId: text("initiating_user_id").notNull(),
-    initiatingCredentialId: text("initiating_credential_id").notNull(),
-    submissionProofHash: text("submission_proof_hash").notNull(),
-    pollProofHash: text("poll_proof_hash").notNull(),
-    consumedAt: integer("consumed_at"),
-    outcome: text("outcome"),
     expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
-  (table) => [index("idx_mgmt_handoff_pending").on(table.organizationId, table.expiresAt)],
+  (table) => [
+    index("idx_mgmt_operation_organization").on(table.organizationId, table.state, table.expiresAt),
+  ],
 );
 
 export const app = sqliteTable(

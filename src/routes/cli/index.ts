@@ -10,8 +10,8 @@ import {
   PROVIDER_TYPES,
 } from "../../core/providers";
 import { currentMonth } from "../../management/usage-queries";
-import { bootstrap, deploymentMeta } from "./bootstrap";
-import { cliAuthenticate, createOperation, pollOperation } from "./operations";
+import { bootstrap } from "./bootstrap";
+import { cliAuthenticate, createOperation, deploymentMeta, pollOperation } from "./operations";
 import {
   browserDetails,
   browserSubmit,

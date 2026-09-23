@@ -436,12 +436,17 @@ the client base URL for any app; where each secret was stored; and anything
 you could not do, such as a provider whose key was not available. Do not
 include secret values.
 
-## Direct API creation retries
+## Retrying creation safely
 
-For app, application-key, provider and provider-gateway creation, persist an
-`Idempotency-Key` and a separate `X-Idempotency-Proof` before POST. Both are
-random URL-safe strings of 32–256 characters and must be sent together. Repeat
-the same body and proofs to recover the original result. A body mismatch is
-409 and an incorrect proof is 403. Encrypted key exchange lasts 15 minutes;
-410 `resource_receipt_expired` reports nonsecret resource IDs without minting
-another key. Nonsecret receipts prevent duplicate creation until account deletion.
+A plain `POST` to create an app, application key, provider or provider gateway
+is not safe to repeat: a response lost in transit leaves you not knowing
+whether it landed. Send the creation as an operation instead:
+`POST /v1/cli/operations` with `{ kind, payload, token }`, where `kind` is
+`app.add`, `app.key.add`, `provider.add` or `provider-gateway.add`, `payload`
+is the body the plain endpoint takes (plus `app` for `app.key.add`), and
+`token` is a random URL-safe string of 32–256 characters you persist before
+sending. Repeat the same kind, payload and token to recover the original
+result; a different payload under the same token is 409. A new application
+key is returned in `result.api_key.key` for 15 minutes after creation; past
+that the result still names the resource and the key's id, and no second key
+is minted. Records are kept for 90 days.

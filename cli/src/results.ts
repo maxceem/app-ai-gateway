@@ -1,8 +1,7 @@
 import type {
   CliAccountResponse,
   CliCapabilitiesResponse,
-  CliOperationResponse,
-  CliPollResponse,
+  CliOperation,
 } from "../../src/contracts/cli.ts";
 import type { AppResult } from "./apps.ts";
 import type { Onboarding } from "./context.ts";
@@ -26,8 +25,7 @@ export type CommandResult =
   | DeploymentStatusResult
   | CliAccountResponse
   | (CliAccountResponse & { connected: true })
-  | CliOperationResponse
-  | CliPollResponse
+  | CliOperation
   | { loggedOut: true };
 
 /**

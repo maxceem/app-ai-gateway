@@ -14,8 +14,7 @@ import {
 } from "../../src/contracts/schemas.ts";
 import type {
   CliCapabilitiesResponse,
-  CliOperationResponse,
-  CliPollResponse,
+  CliOperation,
 } from "../../src/contracts/cli.ts";
 import type {
   ProviderDeleteResponse,
@@ -48,8 +47,7 @@ export type ResourceResult =
   | ProviderGatewayResponse
   | ProviderDeleteResponse
   | ProviderGatewayDeleteResponse
-  | CliOperationResponse
-  | CliPollResponse;
+  | CliOperation;
 
 export async function jsonFile(path: string): Promise<unknown> {
   try {
@@ -196,10 +194,9 @@ export async function resourceCommand(
         body = validate(ProviderGatewayCreateRequestSchema, { ...draft, token });
       await ctx.bootstrap();
       if (flags.browser)
-        return ctx.operation("provider-gateway.add", { ...draft });
-      const created = await ctx.create("createProviderGateway", { body: body! });
-      await created.complete();
-      return created.data;
+        return ctx.operation("provider-gateway.add", { ...draft }, { browser: true });
+      const created = await ctx.operation("provider-gateway.add", body!);
+      return { gateway: created.result!.gateway! };
     }
     if (
       flags["provider-gateway"] &&
@@ -240,10 +237,9 @@ export async function resourceCommand(
     if (!flags.browser) body = validate(ProviderCreateRequestSchema, draft);
     await ctx.bootstrap();
     if (flags.browser)
-      return ctx.operation("provider.add", validate(HandoffProviderAddPayloadSchema, draft));
-    const created = await ctx.create("createProvider", { body: body! });
-    await created.complete();
-    return created.data;
+      return ctx.operation("provider.add", validate(HandoffProviderAddPayloadSchema, draft), { browser: true });
+    const created = await ctx.operation("provider.add", body!);
+    return { provider: created.result!.provider! };
   }
   if (action === "rotate-key") {
     if (gateway) {

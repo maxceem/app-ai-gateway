@@ -3,7 +3,7 @@ import { andCondition, type SqlCondition } from "../policy/sql";
 import type { PlanCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
 
-/** Trusted transaction boundary supplied by a verified browser handoff or request receipt. */
+/** Trusted transaction boundary supplied by the CLI operation a write runs under. */
 export interface ResourceWriteBoundary {
   condition: SqlCondition;
   /**

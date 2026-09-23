@@ -200,11 +200,9 @@ describe("initial database migration", () => {
     ).all<{ name: string }>();
     expect(mgmtTables.results.map((row) => row.name)).toEqual([
       "mgmt_api_key",
-      "mgmt_bootstrap",
-      "mgmt_handoff",
+      "mgmt_operation",
       "mgmt_organization",
       "mgmt_organization_user",
-      "mgmt_resource_receipt",
       "mgmt_user",
       "mgmt_user_account",
       "mgmt_user_session",
@@ -244,28 +242,22 @@ describe("initial database migration", () => {
       "created_at",
       "revoked_at",
     ]);
-    // The server's own handoff fields are columns, never fields mixed into the
-    // payload the CLI sent.
-    const handoffColumns = await env.DB.prepare("PRAGMA table_info(mgmt_handoff)")
+    // Every CLI operation is one table: its proof is the id, and the server's
+    // own fields are columns, never fields mixed into the payload the CLI sent.
+    const operationColumns = await env.DB.prepare("PRAGMA table_info(mgmt_operation)")
       .all<{ name: string; notnull: number }>();
-    expect(handoffColumns.results.map((column) => column.name)).toEqual(expect.arrayContaining([
+    expect(operationColumns.results.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "kind",
+      "state",
       "request_json",
       "request_hash",
-      "target_id",
-      "target_revision",
-      "gateway_id",
-      "gateway_revision",
-      "snapshot_json",
+      "browser_proof_hash",
+      "outcome_json",
+      "sealed_outcome",
+      "sealed_until",
     ]));
-    expect(handoffColumns.results.find((column) => column.name === "request_hash"))
+    expect(operationColumns.results.find((column) => column.name === "request_hash"))
       .toMatchObject({ notnull: 1 });
-    const gatewayStateTables = await env.DB.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mgmt_handoff','cli_rate_limit','mgmt_resource_receipt') ORDER BY name",
-    ).all<{ name: string }>();
-    expect(gatewayStateTables.results.map((row) => row.name)).toEqual([
-      "mgmt_handoff",
-      "mgmt_resource_receipt",
-    ]);
     expect(apiKeyColumns.results.map((column) => column.name)).toEqual([
       "id",
       "app_id",

@@ -27,15 +27,13 @@ import {
 } from "./billing.ts";
 import {
   CliBootstrapRequestSchema,
-  CliBootstrapResponseSchema,
   CliBrowserDetailsResponseSchema,
   CliBrowserGoogleResponseSchema,
   CliBrowserRegisterResponseSchema,
   CliBrowserSubmitResponseSchema,
   CliCapabilitiesResponseSchema,
   CliOperationRequestSchema,
-  CliOperationResponseSchema,
-  CliPollResponseSchema,
+  CliOperationSchema,
   CliSubmissionRequestSchema,
   CliUsageResponseSchema,
   CliAccountResponseSchema,
@@ -165,8 +163,6 @@ export interface OperationSpec {
     readonly access?: "read" | "setup";
     readonly identity?: "human";
   };
-  /** Creations that honour Idempotency-Key / X-Idempotency-Proof. */
-  readonly receipt?: true;
   /** Registered in the full document but not the published one. */
   readonly hidden?: true;
 }
@@ -494,7 +490,6 @@ export const CATALOG = {
     errors: {
       409: "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
     },
-    receipt: true,
   },
 
   listBillingPlans: {
@@ -716,7 +711,6 @@ export const CATALOG = {
     response: ProviderResponseSchema,
     responseDescription: "Stored provider.",
     errors: { 409: "The requested active provider slug is already in use." },
-    receipt: true,
   },
 
   testProviderCredential: {
@@ -780,7 +774,6 @@ export const CATALOG = {
     status: 201,
     response: ProviderGatewayResponseSchema,
     responseDescription: "Created provider gateway.",
-    receipt: true,
   },
 
   testProviderGateway: {
@@ -954,7 +947,6 @@ export const CATALOG = {
     status: 201,
     response: CreatedApiKeySchema,
     responseDescription: "One-time plaintext application API key.",
-    receipt: true,
   },
 
   revokeAppKey: {
@@ -1101,11 +1093,11 @@ export const CATALOG = {
     path: "/v1/cli/bootstrap",
     tags: ["CLI"],
     summary: "Initialize a recoverable CLI account",
-    description: "Persist both random proofs before sending. An identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
+    description: "Persist the random token before sending: its digest is the operation's id, and an identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
     security: "public",
     request: CliBootstrapRequestSchema,
-    response: CliBootstrapResponseSchema,
-    responseDescription: "Initial account and credential. Never print or log the credential.",
+    response: CliOperationSchema,
+    responseDescription: "The completed bootstrap: its account, and the credential in `result`. Never print or log the credential.",
     errors: CLI_ERRORS,
   },
 
@@ -1113,16 +1105,16 @@ export const CATALOG = {
     method: "POST",
     path: "/v1/cli/operations",
     tags: ["CLI"],
-    summary: "Create or recover a browser handoff",
-    description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+    summary: "Send or recover a CLI operation",
+    description: "Persist the random token before sending: its digest is the operation's id, and repeating the same token and payload recovers the same operation instead of repeating it. A current account key is required. An operation without a browser step runs at once and answers completed, with any one-time key in `result` for 15 minutes. One with a browser step answers pending with the approval `url`: claims require interactive human sign-in and explicit consent, and provider and gateway operations collect their secret on that page after showing the exact configuration. A browser step expires after 15 minutes.",
     security: "management",
     // Admin, like every write; read access because the claim is the one kind
     // an account past its free window may still open. Every resource kind then
     // asks for setup access of its own, in the handler, from its kind entry.
     policy: { role: "admin", access: "read" },
     request: CliOperationRequestSchema,
-    response: CliOperationResponseSchema,
-    responseDescription: "Browser URL for the pending handoff.",
+    response: CliOperationSchema,
+    responseDescription: "Where the operation stands: completed with its result, or pending with the approval URL.",
     errors: CLI_ERRORS,
   },
 
@@ -1130,12 +1122,12 @@ export const CATALOG = {
     method: "GET",
     path: "/v1/cli/operations/{id}",
     tags: ["CLI"],
-    summary: "Poll a browser handoff",
-    description: "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
+    summary: "Poll a CLI operation",
+    description: "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes.",
     security: "cliPoll",
     params: { id: {} },
-    response: CliPollResponseSchema,
-    responseDescription: "Current operation state and nonsecret result.",
+    response: CliOperationSchema,
+    responseDescription: "Where the operation stands, and its result once completed.",
     errors: CLI_ERRORS,
   },
 
@@ -1291,10 +1283,6 @@ export type BodiedOperation = {
   [K in OperationName]: unknown extends OperationResponse<K> ? never : K;
 }[OperationName];
 
-/** The creations that honour Idempotency-Key and X-Idempotency-Proof. */
-export type ReceiptOperation = {
-  [K in OperationName]: Catalog[K] extends { readonly receipt: true } ? K : never;
-}[OperationName];
 
 /** Whether an operation takes any `{name}` segment at all. */
 type HasParams<K extends OperationName> =

@@ -1,44 +1,77 @@
 import { z } from "zod";
-import { ProviderGatewaySummarySchema, ProviderSummarySchema } from "./responses.ts";
 import {
+  AppResponseSchema,
+  CreatedApiKeySchema,
+  ProviderGatewaySummarySchema,
+  ProviderSummarySchema,
+} from "./responses.ts";
+import {
+  ApiKeyCreateRequestSchema,
+  AppWriteSchema,
   HandoffProviderAddPayloadSchema,
   HandoffProviderGatewayAddPayloadSchema,
   HandoffProviderUpdatePayloadSchema,
   HandoffRotatePayloadSchema,
+  ProviderCreateRequestSchema,
+  ProviderGatewayCreateRequestSchema,
 } from "./schemas.ts";
+/** The one random secret a CLI operation is proven with; its digest is the operation's id. */
 export const CliProofSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/);
-export const CliBootstrapRequestSchema = z
-  .object({ idempotencyKey: CliProofSchema, pollToken: CliProofSchema })
-  .strict();
+export const CliBootstrapRequestSchema = z.object({ token: CliProofSchema }).strict();
+
+/**
+ * Every kind of CLI operation. `bootstrap` has an endpoint of its own because
+ * it is the one that needs no credential; every other kind is sent to
+ * `/v1/cli/operations`. All of them are polled the same way.
+ */
 export const CliOperationKindSchema = z.enum([
+  "bootstrap",
   "claim",
+  "app.add",
+  "app.key.add",
   "provider.add",
-  "provider.rotate-key",
   "provider.update",
+  "provider.rotate-key",
   "provider-gateway.add",
   "provider-gateway.rotate-key",
 ]);
 
+/** The kinds a client sends to `/v1/cli/operations`. */
+export type CliRequestedOperationKind = Exclude<z.infer<typeof CliOperationKindSchema>, "bootstrap">;
+
+/** A key for an existing application: the key's own fields, and the application it belongs to. */
+export const CliAppKeyAddPayloadSchema = ApiKeyCreateRequestSchema.extend({ app: z.string().min(1) }).strict();
+
 /**
- * One member per kind, each with the payload that kind's write takes minus its
- * secret. Checked when the handoff is opened, so a malformed request is refused
- * in the terminal that sent it rather than on the approval page after a
- * person has read it.
+ * One member per kind, each with the payload that kind's write takes. A kind
+ * whose secret may be supplied in a browser instead takes `browser: true` and
+ * the payload without it; the kinds that edit a secret always ask the browser
+ * for it. Checked when the operation is sent, so a malformed request is
+ * refused in the terminal that sent it rather than on the approval page.
  */
 function operationRequest<
-  const Kind extends z.infer<typeof CliOperationKindSchema>,
+  const Kind extends CliRequestedOperationKind,
   Payload extends z.ZodType,
->(kind: Kind, payload: Payload) {
-  return z.object({ kind: z.literal(kind), payload, pollToken: CliProofSchema }).strict();
+>(kind: Kind, payload: Payload, browser: "never" | "optional" | "always") {
+  const fields = { kind: z.literal(kind), payload, token: CliProofSchema };
+  return browser === "optional"
+    ? z.object({ ...fields, browser: z.literal(true).optional() }).strict()
+    : z.object(fields).strict();
 }
 
 export const CliOperationRequestSchema = z.discriminatedUnion("kind", [
-  operationRequest("claim", z.object({}).strict().default({})),
-  operationRequest("provider.add", HandoffProviderAddPayloadSchema),
-  operationRequest("provider.rotate-key", HandoffRotatePayloadSchema),
-  operationRequest("provider.update", HandoffProviderUpdatePayloadSchema),
-  operationRequest("provider-gateway.add", HandoffProviderGatewayAddPayloadSchema),
-  operationRequest("provider-gateway.rotate-key", HandoffRotatePayloadSchema),
+  operationRequest("claim", z.object({}).strict().default({}), "always"),
+  operationRequest("app.add", AppWriteSchema, "never"),
+  operationRequest("app.key.add", CliAppKeyAddPayloadSchema, "never"),
+  operationRequest("provider.add", z.union([ProviderCreateRequestSchema, HandoffProviderAddPayloadSchema]), "optional"),
+  operationRequest("provider.update", HandoffProviderUpdatePayloadSchema, "always"),
+  operationRequest("provider.rotate-key", HandoffRotatePayloadSchema, "always"),
+  operationRequest(
+    "provider-gateway.add",
+    z.union([ProviderGatewayCreateRequestSchema, HandoffProviderGatewayAddPayloadSchema]),
+    "optional",
+  ),
+  operationRequest("provider-gateway.rotate-key", HandoffRotatePayloadSchema, "always"),
 ]);
 export const CliSubmissionRequestSchema = z
   .object({
@@ -160,47 +193,50 @@ const UnclaimedAccessSchema = z
   .object({ endsAt: z.string(), limit: z.number().int().optional() })
   .nullable();
 
-export const CliBootstrapResponseSchema = z.object({
-  deployment: CliDeploymentSchema,
-  account: CliAccountSchema,
-  credential: CliCredentialSchema,
-  /**
-   * On a hosted deployment, when this unclaimed account's free access ends and
-   * the request allowance it has until then; null on a self-host, where an
-   * account has no such window.
-   */
-  unclaimedAccess: UnclaimedAccessSchema,
-});
-export const CliOperationResponseSchema = z.object({
-  id: z.string(),
-  url: z.url(),
-  expiresAt: z.string(),
-  state: z.enum(["pending", "completed", "failed", "expired"]),
-  deployment: CliDeploymentSchema,
-});
 /**
- * What a completed browser handoff leaves behind for the CLI to print.
+ * What a completed operation leaves behind for the CLI to print.
  *
  * Declared field by field rather than passed through. The gateway records its
- * own outcome for each kind of handoff, and those records carry more than the
- * caller has any business seeing: a completed claim also holds the user id of
- * the human who approved it. Naming the publishable fields here is what keeps
- * the rest off the CLI's stdout, because zod drops what a schema does not
- * declare.
+ * own outcome for each kind, and those records carry more than the caller has
+ * any business seeing: a completed claim also holds the user id of the human
+ * who approved it. Naming the publishable fields here is what keeps the rest
+ * off the CLI's stdout, because zod drops what a schema does not declare.
+ *
+ * A one-time secret — a bootstrap's management key, a new application key —
+ * is here only while the operation still holds it sealed.
  */
 export const CliOperationResultSchema = z.object({
+  /** A bootstrap's management key. Never print or log it. */
+  credential: CliCredentialSchema.optional(),
+  /**
+   * On a hosted deployment, when a bootstrapped account's free access ends and
+   * the request allowance it has until then; null on a self-host.
+   */
+  unclaimedAccess: UnclaimedAccessSchema.optional(),
   /** The account a claim acted on. */
   accountId: z.string().optional(),
-  /** The stored row a provider submission created or rotated. */
+  app: AppResponseSchema.shape.app.optional(),
+  /**
+   * The application key an `app.add` or `app.key.add` created. `key` is its
+   * plaintext, present only while the operation still holds it sealed.
+   */
+  api_key: CreatedApiKeySchema.partial({ key: true }).nullable().optional(),
   provider: ProviderSummarySchema.optional(),
   gateway: ProviderGatewaySummarySchema.optional(),
 });
 
-export const CliPollResponseSchema = z.object({
+/**
+ * Where one operation stands, as both sending it and polling it answer. `url`
+ * is the approval page while a browser step is owed; `result` arrives once it
+ * has completed.
+ */
+export const CliOperationSchema = z.object({
   id: z.string(),
+  kind: CliOperationKindSchema,
+  state: z.enum(["pending", "completed", "expired"]),
   expiresAt: z.string(),
+  url: z.url().optional(),
   deployment: CliDeploymentSchema,
-  state: z.enum(["pending", "completed", "failed", "expired"]),
   result: CliOperationResultSchema.optional(),
   account: CliAccountSchema.nullable().optional(),
 });
@@ -310,9 +346,7 @@ export const CliAccountResponseSchema = z.object({
 export type CliDeployment = z.infer<typeof CliDeploymentSchema>;
 export type CliAccount = z.infer<typeof CliAccountSchema>;
 export type CliCredential = z.infer<typeof CliCredentialSchema>;
-export type CliBootstrapResponse = z.infer<typeof CliBootstrapResponseSchema>;
-export type CliOperationResponse = z.infer<typeof CliOperationResponseSchema>;
-export type CliPollResponse = z.infer<typeof CliPollResponseSchema>;
+export type CliOperation = z.infer<typeof CliOperationSchema>;
 export type CliOperationResult = z.infer<typeof CliOperationResultSchema>;
 export type CliUsageResponse = z.infer<typeof CliUsageResponseSchema>;
 export type CliCapabilitiesResponse = z.infer<typeof CliCapabilitiesResponseSchema>;
@@ -328,8 +362,8 @@ export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterRespon
 export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
 export type CliOperationKind = z.infer<typeof CliOperationKindSchema>;
 export type CliOperationRequestInput = z.input<typeof CliOperationRequestSchema>;
-/** The payload a handoff of one kind carries, as a client writes it. */
-export type CliOperationPayload<Kind extends CliOperationKind> = NonNullable<
+/** The payload an operation of one kind carries, as a client writes it. */
+export type CliOperationPayload<Kind extends CliRequestedOperationKind> = NonNullable<
   Extract<CliOperationRequestInput, { kind: Kind }>["payload"]
 >;
 

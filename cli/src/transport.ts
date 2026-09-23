@@ -50,9 +50,6 @@ export function reported(value: unknown, sent?: unknown): string {
   return text.length > MESSAGE_LIMIT ? text.slice(0, MESSAGE_LIMIT) + "…" : text;
 }
 
-const RECOVERABLE_RESOURCE_CODES = ["resource_receipt_expired", "resource_key_unavailable"];
-const RECOVERABLE_RESOURCE_FIELDS = ["appId", "keyId", "providerId", "providerGatewayId"] as const;
-
 /**
  * The refusals that name a ceiling, and the facts each one reports about it.
  *
@@ -166,11 +163,6 @@ export class Transport {
             : `http_${response.status}`;
       const details: CliErrorDetails = { status: response.status };
       const facts = wire.error?.data ?? {};
-      if (RECOVERABLE_RESOURCE_CODES.includes(code))
-        for (const field of RECOVERABLE_RESOURCE_FIELDS) {
-          const value = facts[field];
-          if (typeof value === "string") details[field] = value;
-        }
       if (LIMIT_CODES.includes(code)) {
         for (const field of LIMIT_TEXT_FIELDS) {
           const value = facts[field];

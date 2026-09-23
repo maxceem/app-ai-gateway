@@ -338,7 +338,8 @@ export async function listApps(
 }
 
 /**
- * Creates one application, its default key and its receipt in one batch.
+ * Creates one application and its default key in one batch, completing the
+ * operation it runs under, if any, in the same one.
  *
  * The id is generated rather than chosen, so the only retry this loop makes is
  * for an id that was already taken; every other refusal is the caller's answer.
@@ -390,7 +391,7 @@ export async function createApp(
       ).bind(generated.id, appId, generated.keyHash, generated.keyPrefix, now,
         ...condition.params, appId, organizationId));
     }
-    // The application, default key and retry receipt are all committed together.
+    // The application, default key and operation outcome are committed together.
     // A response lost after this batch can redeliver the original ID and key.
     try {
       if (boundary) await boundary.commit(statements, outcome);
@@ -405,7 +406,7 @@ export async function createApp(
     } catch (error) {
       // The one retryable failure: the generated id was already taken, so the
       // next attempt generates another. Everything else is rethrown, and the
-      // receipt this write may be running under answers with what it recorded.
+      // operation this write may be running under answers with what it recorded.
       if (databaseErrorMatches(error, /UNIQUE constraint failed: app\.id/u)) continue;
       // Both guards refuse by matching no rows, so the failure above says nothing
       // about which one did. Counting again, on this path alone, separates a

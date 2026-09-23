@@ -406,16 +406,17 @@ const cases: Case[] = [
       deployment,
     },
     includes: [
-      "Waiting for browser handoff (op_1).",
+      "Waiting for browser approval (op_1).",
       "https://console.example/cli/op_1",
       "Resume: agw operation wait op_1",
     ],
   },
   {
-    name: "a completed handoff reports its state and what it created",
+    name: "a completed operation reports its state and what it created",
     command: "operation wait",
     result: {
       id: "op_1",
+      kind: "provider.add",
       expiresAt: "2026-09-17T00:00:00Z",
       deployment,
       state: "completed",
@@ -726,8 +727,11 @@ test("error details are printed as indented fields under the text failure", asyn
         operations: {
           op_1: {
             url: "https://gw.example",
-            pollToken: "t".repeat(40),
+            token: "t".repeat(40),
             kind: "claim",
+            requestHash: "hash",
+            accountId: null,
+            createdAt: "now",
           },
         },
       }),

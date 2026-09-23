@@ -47,15 +47,8 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
     if (ctx.active) {
       delete ctx.active.credential;
       ctx.active.authenticated = false;
-      ctx.state.generation = (ctx.state.generation ?? 0) + 1;
+      await ctx.save();
     }
-    // The connection this one replaced carries a credential of its own. Leaving
-    // it behind would keep management access the logout was meant to remove.
-    if (ctx.state.previous) {
-      delete ctx.state.previous.credential;
-      ctx.state.previous.authenticated = false;
-    }
-    if (ctx.active || ctx.state.previous) await ctx.save();
     return { loggedOut: true };
   }
   if (command === "deployment connect") {

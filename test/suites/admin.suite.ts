@@ -5,4 +5,4 @@ import "../admin-app-writes.test";
 import "../admin-auth-events.test";
 import "../admin-providers.test";
 
-import "../resource-receipts.test";
+import "../app-operations.test";

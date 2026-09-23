@@ -21,8 +21,8 @@ routes.handle("testProviderGateway", async (c) =>
 routes.handle("listProviderGateways", (c) =>
   listProviderGateways(managementScope(c), c.get("actor")));
 
-routes.handleReceipted("createProviderGateway", (c, { body, boundary }) =>
-  createProviderGateway(managementScope(c), c.get("actor"), body, boundary));
+routes.handle("createProviderGateway", async (c) =>
+  createProviderGateway(managementScope(c), c.get("actor"), await jsonBody(c)));
 
 routes.handle("updateProviderGateway", async (c) =>
   updateProviderGateway(managementScope(c), c.get("actor"), c.req.param("id"), await jsonBody(c)));

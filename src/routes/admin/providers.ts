@@ -19,8 +19,8 @@ routes.handle("listProviders", (c) => listProviders(managementScope(c), c.get("a
 routes.handle("testProviderCredential", async (c) =>
   testProvider(managementScope(c), c.get("actor"), await jsonBody(c)));
 
-routes.handleReceipted("createProvider", (c, { body, boundary }) =>
-  createProvider(managementScope(c), c.get("actor"), body, boundary));
+routes.handle("createProvider", async (c) =>
+  createProvider(managementScope(c), c.get("actor"), await jsonBody(c)));
 
 routes.handle("updateProvider", async (c) =>
   updateProvider(managementScope(c), c.get("actor"), c.req.param("id"), await jsonBody(c)));

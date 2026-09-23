@@ -1,9 +1,8 @@
 import { identityAuthFor, relaySocialSignIn } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
-import { CLAIM_KIND, handoffKind } from "./handoff-kinds";
+import { operationKind } from "./operation-kinds";
 import { derive, digest, proofMatches } from "./security";
-import { deploymentMeta } from "./bootstrap";
-import { browserPath } from "./operations";
+import { browserPath, deploymentMeta } from "./operations";
 import { verifiedSubmission } from "./browser";
 import type { CliContext } from "./types";
 export const CLAIM_OAUTH_COOKIE = "cli_claim_oauth";
@@ -29,9 +28,9 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
     const expected = await derive(env.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
     if (!(await proofMatches(signature, await digest(expected)))) return false;
     const row = await env.DB.prepare(
-      "SELECT id FROM mgmt_handoff WHERE id=? AND kind=? AND consumed_at IS NULL AND expires_at>?",
+      "SELECT id FROM mgmt_operation WHERE id=? AND kind='claim' AND state='pending' AND expires_at>?",
     )
-      .bind(data.id, CLAIM_KIND, Date.now())
+      .bind(data.id, Date.now())
       .first();
     return Boolean(row);
   } catch {
@@ -40,7 +39,7 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
 }
 export async function browserGoogle(c: CliContext): Promise<Response> {
   const { row } = await verifiedSubmission(c);
-  if (handoffKind(row.kind).type !== "claim" || row.consumed_at)
+  if (operationKind(row.kind).type !== "claim" || row.state !== "pending")
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
   const meta = deploymentMeta(c);
   const encoded = btoa(JSON.stringify({ id: row.id, expires: row.expires_at }));

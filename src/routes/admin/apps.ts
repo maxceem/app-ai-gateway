@@ -19,8 +19,8 @@ const routes = adminRouter(appRoutes);
 routes.handle("listApps", (c, { query }) =>
   listApps(managementScope(c), c.get("actor"), query.month ?? currentMonth()));
 
-routes.handleReceipted("createApp", (c, { body, boundary }) =>
-  createApp(managementScope(c), c.get("actor"), body, boundary));
+routes.handle("createApp", async (c) =>
+  createApp(managementScope(c), c.get("actor"), await jsonBody(c)));
 
 routes.handle("getApp", (c) => getApp(scopedApp(c)));
 
