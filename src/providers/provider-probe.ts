@@ -1,9 +1,10 @@
-import type { GatewayType, ProviderGatewayConfig } from "../db/schema";
-import { GatewayError } from "./errors";
-import { log } from "./log";
-import { providerProbeHeaders } from "./providers";
-import { DIRECT_ADAPTER, routeAdapter, type RouteRequest } from "./routes";
-import type { ProviderType } from "./types";
+import type { ProviderGatewayConfig } from "../db/schema";
+import { GatewayError } from "../core/errors";
+import { log } from "../core/log";
+import { providerProbeHeaders } from "./provider-type";
+import { DIRECT_ADAPTER, routeAdapter, type RouteRequest } from "./route-adapters";
+import type { ProviderType } from "../shared/providers";
+import type { GatewayType } from "../shared/capabilities";
 
 const PROBE_TIMEOUT_MS = 4_000;
 

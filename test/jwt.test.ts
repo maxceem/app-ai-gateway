@@ -1,6 +1,6 @@
 import { SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { issueGatewayToken, verifyGatewayToken } from "../src/core/jwt";
+import { issueGatewayToken, verifyGatewayToken } from "../src/client-auth/gateway-token";
 
 afterEach(() => vi.restoreAllMocks());
 

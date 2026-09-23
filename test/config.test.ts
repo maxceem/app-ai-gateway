@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clientAuth } from "../src/core/app-auth";
-import { providersForEndpointStyle } from "../src/core/capabilities";
+import { clientAuth } from "../src/client-auth/client-auth";
+import { providersForEndpointStyle } from "../src/shared/providers";
 import { AppConfigSchema } from "../src/contracts/schemas";
 import { parseAppConfig } from "../src/shared/app-config";
 import { serverConfig, validateConfig } from "./helpers";

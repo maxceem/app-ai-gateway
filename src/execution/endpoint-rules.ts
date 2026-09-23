@@ -1,17 +1,17 @@
-import { supportsEndpointStyle } from "./capabilities";
-import { GatewayError } from "./errors";
-import { isBillable } from "./pricing";
+import { supportsEndpointStyle } from "../providers/capability-matrix";
+import { GatewayError } from "../core/errors";
+import { isBillable } from "../usage/pricing";
 import {
   requireProvider,
   resolveProvider,
   type ResolvedProvider,
-} from "./provider-store";
-import { clampStyleFor, PROTOCOLS } from "./protocols";
-import { providerDescriptor } from "./providers";
-import { routeWireModel } from "./routes";
+} from "../providers/provider-store";
+import { clampStyleFor, PROTOCOLS } from "../providers/protocols";
+import { providerDescriptor, type ProviderType } from "../shared/providers";
+import { routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
-import type { ExecutionAttempt } from "../execution/plan";
-import { sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxyrules";
+import type { ExecutionAttempt } from "./plan";
+import { sanitizedHeaders, unpricedMessage, type PreparedProxyRequest } from "./proxy-rules";
 import {
   finishJsonBody,
   formWithModel,
@@ -19,14 +19,10 @@ import {
   jsonObject,
   parseForm,
   readBodyLimited,
-} from "./request-body";
-import type {
-  AppRecord,
-  EndpointApiStyle,
-  EndpointConfig,
-  EndpointTarget,
-  ProviderType,
-} from "./types";
+} from "../providers/request-body";
+import type { AppRecord, EndpointTarget } from "../core/types";
+import type { EndpointApiStyle } from "../shared/capabilities";
+import type { EndpointConfig } from "../shared/app-config";
 
 /**
  * A named endpoint is fully described by server configuration, so the gateway

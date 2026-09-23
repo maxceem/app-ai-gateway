@@ -1,28 +1,22 @@
-import { assertApiStyleSupported, type ProviderRoute } from "./capabilities";
-import { clientAuth } from "./app-auth";
-import { DEFAULT_END_USER_HEADER } from "./config";
-import { GatewayError } from "./errors";
-import type { ResolvedProvider } from "./provider-store";
-import { clampStyleFor, classifyPath, type ApiStyle } from "./protocols";
+import { assertApiStyleSupported } from "../providers/capability-matrix";
+import { clientAuth } from "../client-auth/client-auth";
+import { GatewayError } from "../core/errors";
+import type { ResolvedProvider } from "../providers/provider-store";
+import { clampStyleFor, classifyPath } from "../providers/protocols";
 import {
   finishJsonBody,
   isMultipart,
   jsonObjectFromText,
   parseForm,
   readBodyLimited,
-} from "./request-body";
-import { ROUTE_ADAPTERS, routeWireModel } from "./routes";
+} from "../providers/request-body";
+import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
 import { lookup } from "../shared/records";
-import { isBillable } from "./pricing";
-import { isDefaultProxyApiStyle } from "../shared/capabilities";
-import { providerPolicyFor } from "../shared/app-config";
-import type {
-  AllowedPath,
-  AllowedPathConfig,
-  AppRecord,
-  ProviderType,
-  ProviderPolicy,
-} from "./types";
+import { isBillable } from "../usage/pricing";
+import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
+import { providerPolicyFor, DEFAULT_END_USER_HEADER, type ProviderPolicy } from "../shared/app-config";
+import type { AllowedPath, AllowedPathConfig, AppRecord } from "../core/types";
+import type { ProviderType } from "../shared/providers";
 
 export interface PreparedProxyRequest {
   provider: ProviderType;

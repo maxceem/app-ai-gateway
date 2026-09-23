@@ -9,9 +9,9 @@ import {
   AUTH_EVENT_RETENTION_DAYS,
   pruneAuthChallenges,
   pruneAuthEvents,
-} from "./core/auth-events";
+} from "./client-auth/auth-events";
 import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
-import { runUsageRetention } from "./core/usage-retention";
+import { runUsageRetention } from "./usage/usage-retention";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";

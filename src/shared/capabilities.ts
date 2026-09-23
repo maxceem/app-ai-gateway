@@ -7,10 +7,10 @@
  *
  * This module imports nothing at runtime, on purpose. The console bundles it
  * directly, so a single import of `drizzle-orm`, the Worker's environment
- * types, or anything else from `src/core` would pull the server into a browser
+ * types, or anything else from the Worker would pull the server into a browser
  * build. Everything here is a plain table or a pure function over one; the
  * behaviour that reads these tables — adapters, validation, request
- * construction — stays in `src/core`, and the console has its own presentation
+ * construction — stays in the Worker, and the console has its own presentation
  * layer over them.
  *
  * A console that offers a combination the server refuses is a bug report, so

@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { hasUserLevelLimits } from "../core/config";
+import { hasUserLevelLimits } from "../shared/app-config";
 import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
-import { monthlySpendMicrousd } from "../core/app-usage-accounting";
+import { monthlySpendMicrousd } from "../usage/app-usage-accounting";
 
 export const meRoutes = new Hono<{ Bindings: Env; Variables: GatewayVariables }>();
 

@@ -11,10 +11,9 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-/** Re-exported for the tables below; defined in `src/shared/capabilities.ts`. */
-export type { GatewayType } from "../shared/capabilities";
-import type { GatewayType } from "../shared/capabilities";
-import type { AppConfig, ProviderType } from "../core/types";
+import type { CredentialSource, GatewayType } from "../shared/capabilities";
+import type { AppConfig } from "../shared/app-config";
+import type { ProviderType } from "../shared/providers";
 
 export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
@@ -52,7 +51,7 @@ export type VercelConfig = Record<string, never>;
 /**
  * What `provider_gateway.config_json` holds, discriminated at runtime by the
  * row's `type`. The adapter registry resolves the pair — see `gatewayConfig` in
- * `src/core/gateways.ts`, the one place a stored config is read as an adapter's
+ * `src/providers/gateway-adapters.ts`, the one place a stored config is read as an adapter's
  * own shape.
  */
 export type ProviderGatewayConfig = CfAigConfig | VercelConfig;
@@ -70,16 +69,6 @@ export interface GatewayRouteConfig {
 /** Per-1M-token overrides for models the shipped catalog does not cover. */
 export type ProviderPricing = Record<string, { input: number; output: number }>;
 /**
- * How one proxied request ended.
- *
- * The `blocked_*` values name the system that refused it, and the prefix after
- * `blocked_` matches the error code's: `blocked_app_*` is the organization's own
- * app configuration refusing its end user, `blocked_billing` is the plan
- * allowance the organization itself is metered by. Keeping them distinct is the
- * whole point — one is the customer's decision, the other is ours.
- */
-export type { UsageStatus };
-/**
  * Where a proxied request's `cost_usd` came from. `reported` is the upstream's
  * own figure for that request, which outranks a local estimate because it is
  * definitionally what the operator was charged; `computed` is this deployment's
@@ -88,9 +77,6 @@ export type { UsageStatus };
  * measurement.
  */
 export type CostSource = "computed" | "reported" | "unresolved";
-/** Re-exported for the tables below; defined in `src/shared/capabilities.ts`. */
-export type { CredentialSource } from "../shared/capabilities.ts";
-import type { CredentialSource } from "../shared/capabilities.ts";
 
 // Table naming rule: `mgmt_` is who administers the gateway, their credentials
 // and their unfinished administrative acts; a bare noun (`app`, `provider`,
@@ -457,7 +443,7 @@ export type AppUsageSpendScope = "app" | "user";
  * triggers installed with this table: an insert adds the event's cost, a
  * reprice applies its delta, both in the same write as the event. The request
  * gate reads one row by its unique key and caches it briefly — see
- * `src/core/app-usage-accounting.ts`.
+ * `src/usage/app-usage-accounting.ts`.
  *
  * `user_key` is deliberately non-null. App rows use the empty string, while a
  * user row may also name a real empty user id; `scope` keeps those identities

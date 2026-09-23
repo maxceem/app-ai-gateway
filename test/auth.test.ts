@@ -4,15 +4,15 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { apiKeyCache } from "../src/core/apikeys";
-import { appAttestEnvironment } from "../src/core/appattest";
-import { pruneAuthChallenges } from "../src/core/auth-events";
-import { appConfigCache } from "../src/core/config";
+import { apiKeyCache } from "../src/client-auth/api-keys";
+import { appAttestEnvironment } from "../src/client-auth/app-attest";
+import { pruneAuthChallenges } from "../src/client-auth/auth-events";
+import { appConfigCache } from "../src/core/app-records";
 import {
   ENDPOINT_RATE_LIMITS,
   enforceEndpointRateLimit,
 } from "../src/core/endpoint-rate-limit";
-import { verifyGatewayToken } from "../src/core/jwt";
+import { verifyGatewayToken } from "../src/client-auth/gateway-token";
 import { database } from "../src/db";
 import { appApiKey, appUser } from "../src/db/schema";
 import app from "../src/index";

@@ -4,30 +4,6 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 
-export type { EndpointApiStyle } from "../shared/capabilities.ts";
-export type { ProviderType } from "../shared/providers.ts";
-export { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "../shared/app-config.ts";
-export type {
-  AppAttestEnvironment,
-  AppAttestEndUser,
-  AppleAppAttestAuthentication,
-  ApiKeyEndUser,
-  ApiKeyAuthentication,
-  AppConfig,
-  AuthenticationConfig,
-  ClaimRequirement,
-  EndpointConfig,
-  EndpointsConfig,
-  EntitlementCheck,
-  IssuerAuthentication,
-  IssuerProvider,
-  LimitScopeConfig,
-  LimitsConfig,
-  ProviderPolicy,
-  RoutingConfig,
-} from "../shared/app-config.ts";
-export type { OutputClampStyle } from "../shared/capabilities.ts";
-
 export type GatewayAuthMethod = "attest" | "api_key";
 
 export type AllowedPath = ProviderPolicy["allowed_paths"][number];

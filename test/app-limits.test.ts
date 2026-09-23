@@ -4,7 +4,7 @@ import { createExecutionContext, runInDurableObject, waitOnExecutionContext } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
-import { monthlySpendMicrousd } from "../src/core/app-usage-accounting";
+import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 import { SPEND_REFRESH_MS } from "../src/do/UserLimiter";
 
 /**

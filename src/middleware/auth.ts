@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
-import { authenticateRequest } from "../core/app-auth";
-import { assertAppActive, loadApp } from "../core/config";
+import { authenticateRequest } from "../client-auth/client-auth";
+import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "./request-scope";

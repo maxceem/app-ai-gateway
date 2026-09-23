@@ -6,7 +6,7 @@
  * what a first example request looks like, which named endpoints it composes,
  * how it reports cost — is one entry in {@link PROVIDER_DESCRIPTORS}. Adding a
  * type is that entry plus its prices, and nothing else: the tables below are
- * derived, and the behaviour that reads them lives in `src/core`.
+ * derived, and the behaviour that reads them lives in `src/providers`.
  *
  * Shared with the console, which bundles this module directly: it imports only
  * `./capabilities.ts`, `./cost-report.ts` and `./records.ts`, all of which are
@@ -101,7 +101,7 @@ export interface ProviderDescriptor {
   /**
    * Whether this type's model IDs namespace the model's author, so authorship
    * can be read off the slug itself (`MODEL_AUTHOR_NAMESPACES` in
-   * `src/core/providers.ts`). Set for aggregators, whose catalogs span every lab
+   * `src/providers/provider-type.ts`). Set for aggregators, whose catalogs span every lab
    * and bypass the price catalog that carries authorship for everyone else.
    */
   authorNamespacedModels?: boolean;
@@ -124,7 +124,7 @@ export interface ProviderDescriptor {
 
 /**
  * Gateway routing is deliberately absent: which gateway reaches which provider
- * type is the gateway adapter's business (`src/core/gateways.ts`), so adding a
+ * type is the gateway adapter's business (`src/providers/gateway-adapters.ts`), so adding a
  * provider type never means editing an adapter.
  */
 export const PROVIDER_DESCRIPTORS = {

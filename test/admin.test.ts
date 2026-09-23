@@ -1,6 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { monthlySpendMicrousd } from "../src/core/app-usage-accounting";
+import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 import worker from "../src/index";
 import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
 

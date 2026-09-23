@@ -2,14 +2,14 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { API_STYLES, clampStyleFor, classifyPath, PROTOCOLS, type ApiStyle } from "../src/core/protocols";
+import { clampStyleFor, classifyPath, PROTOCOLS } from "../src/providers/protocols";
 
 const apiStyleFromPath = (path: string) => classifyPath(path).protocol.style;
 const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyleFor>[1]) =>
   clampStyleFor(PROTOCOLS[style], provider);
-import { providerDescriptor, PROVIDER_TYPES } from "../src/core/providers";
-import { costReportBodyMutation } from "../src/core/request-body";
-import type { OutputClampStyle, ProviderType } from "../src/core/types";
+import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "../src/shared/providers";
+import { costReportBodyMutation } from "../src/providers/request-body";
+import { API_STYLES, type ApiStyle, type OutputClampStyle } from "../src/shared/capabilities";
 import {
   clearProviderCaches,
   clearIsolateCaches,

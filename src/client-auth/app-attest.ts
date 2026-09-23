@@ -3,8 +3,8 @@ import { createPublicKey, createVerify, X509Certificate } from "node:crypto";
 import * as asn1js from "asn1js";
 import { decode } from "cbor-x";
 import { Certificate } from "pkijs";
-import { GatewayError } from "./errors";
-import type { AppAttestEnvironment } from "./types";
+import { GatewayError } from "../core/errors";
+import type { AppAttestEnvironment } from "../shared/app-config";
 
 const APPLE_APP_ATTEST_ROOT_PEM = `-----BEGIN CERTIFICATE-----
 MIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw

@@ -1,8 +1,8 @@
 import {
   compactUsageEvents,
   foldUsageRollupMonths,
-} from "../src/core/usage-retention";
-import { recordBlockedUsageEvent } from "../src/core/usage-record";
+} from "../src/usage/usage-retention";
+import { recordBlockedUsageEvent } from "../src/usage/usage-record";
 import { claimOAuthAuthorized } from "../src/routes/cli/oauth";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { Hono, type Context, type Next } from "hono";
-import prices from "../../core/prices.json";
+import prices from "../../usage/prices.json";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";

@@ -3,7 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { API_STYLES, clampStyleFor, classifyPath, PROTOCOLS, type ApiStyle } from "../src/core/protocols";
+import { clampStyleFor, classifyPath, PROTOCOLS } from "../src/providers/protocols";
 
 const apiStyleFromPath = (path: string) => classifyPath(path).protocol.style;
 const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyleFor>[1]) =>
@@ -11,26 +11,19 @@ const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyl
 import {
   assertApiStyleSupported,
   assertRouteServesProvider,
-  ENDPOINT_PROVIDER_TYPES,
-  narrowedCapability,
-  providersForEndpointStyle,
   routeCapability,
   supportsApiStyle,
   supportsEndpointStyle,
-  type ProviderRoute,
-} from "../src/core/capabilities";
-import { appConfigCache } from "../src/core/config";
-import { CF_AI_GATEWAY_BASE_URL } from "../src/core/gateways";
-import { probeProviderGateway } from "../src/core/provider-probe";
+} from "../src/providers/capability-matrix";
+import { appConfigCache } from "../src/core/app-records";
+import { CF_AI_GATEWAY_BASE_URL } from "../src/providers/gateway-adapters";
+import { probeProviderGateway } from "../src/providers/provider-probe";
 import {
   providerAuthValue,
-  providerDescriptor,
   providerModelAuthor,
   providerProbeHeaders,
   providerRequestHeaders,
-  PROVIDER_TYPES,
-  reportsCost,
-} from "../src/core/providers";
+} from "../src/providers/provider-type";
 import {
   DIRECT_ROUTE,
   routeAdapter,
@@ -39,18 +32,28 @@ import {
   routeWireModel,
   ROUTE_ADAPTERS,
   type ResolvedRoute,
-} from "../src/core/routes";
-import { RESERVED_UPSTREAM_HEADERS } from "../src/core/proxyrules";
+} from "../src/providers/route-adapters";
+import { RESERVED_UPSTREAM_HEADERS } from "../src/execution/proxy-rules";
 import * as SHARED from "../src/shared/capabilities";
 import * as SHARED_PROVIDERS from "../src/shared/providers";
-import type {
-  GatewayRouteConfig,
-  GatewayType,
-  ProviderGatewayConfig,
-} from "../src/db/schema";
-import type { OutputClampStyle, ProviderType } from "../src/core/types";
+import { type GatewayRouteConfig, provider, type ProviderGatewayConfig } from "../src/db/schema";
+import {
+  API_STYLES,
+  type ApiStyle,
+  type GatewayType,
+  narrowedCapability,
+  type OutputClampStyle,
+  type ProviderRoute,
+} from "../src/shared/capabilities";
+import {
+  ENDPOINT_PROVIDER_TYPES,
+  PROVIDER_TYPES,
+  providerDescriptor,
+  providersForEndpointStyle,
+  type ProviderType,
+  reportsCost,
+} from "../src/shared/providers";
 import { database } from "../src/db";
-import { provider } from "../src/db/schema";
 import { clearProviderCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;

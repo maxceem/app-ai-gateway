@@ -1,8 +1,8 @@
-import { log } from "./log";
-import { timeOrderedId } from "./ids";
-import { database } from "../db";
+import { log } from "../core/log";
+import { timeOrderedId } from "../core/ids";
+import { database } from "../db/index";
 import { appAuthEvent, type AuthEventName, type AuthMethod } from "../db/schema";
-import { storedAppVersion } from "./app-version";
+import { storedAppVersion } from "../core/app-version";
 
 /**
  * How long an authentication attempt stays on file. Long enough to answer "did

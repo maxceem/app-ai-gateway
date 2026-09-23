@@ -6,7 +6,7 @@ import type {
   ApiKeyRevokeResponse,
   CreatedApiKey,
 } from "../contracts/responses";
-import { generateApiKey } from "../core/apikeys";
+import { generateApiKey } from "../client-auth/api-keys";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appApiKey, type app } from "../db/schema";

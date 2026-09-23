@@ -1,19 +1,3 @@
-// Explicit `.ts`, unlike most of `src/core`: the OpenAPI generator runs this
-// module's import graph through Node's type stripping, which resolves specifiers
-// literally rather than bundling them.
-import type { CostReport } from "../shared/cost-report.ts";
-import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
-// Flag-free on purpose: this source string is published verbatim as an
-// OpenAPI `pattern`, where a trailing JS flag would make the regex invalid.
-export { PROVIDER_SLUG_PATTERN } from "../shared/app-config.ts";
-
-// The endpoint styles are shared with the console — see
-// `src/shared/capabilities.ts`.
-export {
-  ENDPOINT_API_STYLES,
-  type EndpointApiStyle,
-} from "../shared/capabilities.ts";
-
 /**
  * A provider type is one object in `src/shared/providers.ts`; this module is
  * what the Worker asks that object questions with — the header a call
@@ -21,16 +5,9 @@ export {
  * model. The descriptors themselves are shared with the console, so nothing
  * below may need anything a browser build cannot have.
  */
-export {
-  isProviderType,
-  providerCapability,
-  providerDescriptor,
-  PROVIDER_TYPES,
-  reportsCost,
-  type ProviderAuth,
-  type ProviderDescriptor,
-  type ProviderType,
-} from "../shared/providers.ts";
+
+import type { CostReport } from "../shared/cost-report";
+import { providerDescriptor, type ProviderType } from "../shared/providers";
 
 /**
  * Model-slug namespaces to the lab that made the model, for the provider types

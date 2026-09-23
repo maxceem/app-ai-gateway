@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { seedApp } from "./helpers";
-import { compactUsageEvents } from "../src/core/usage-retention";
+import { compactUsageEvents } from "../src/usage/usage-retention";
 
 /**
  * `has_proxied_requests` on the application list.

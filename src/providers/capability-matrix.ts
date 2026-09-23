@@ -1,25 +1,15 @@
-import type { ProviderRoute, RouteCapability } from "../shared/capabilities";
+import type { ApiStyle, EndpointApiStyle, ProviderRoute, RouteCapability } from "../shared/capabilities";
 import type { GatewayRouteConfig } from "../db/schema";
-import type { ApiStyle } from "./protocols";
-import { GatewayError } from "./errors";
-import { PROVIDER_TYPES, type EndpointApiStyle, type ProviderType } from "./providers";
-import { ROUTE_ADAPTERS } from "./routes";
+import { GatewayError } from "../core/errors";
+import { PROVIDER_TYPES, type ProviderType } from "../shared/providers";
+import { ROUTE_ADAPTERS } from "./route-adapters";
 
 // The matrix's own shapes and the tables derived purely from them live with the
-// data, so the console reads the same definitions the Worker enforces. What
-// stays here is the resolved (route × provider type) matrix and the assertions
-// that refuse a combination — everything that is keyed by a *route kind*, which
-// is all a management caller ever holds.
-export {
-  narrowedCapability,
-  type ProviderRoute,
-  type RouteCapability,
-} from "../shared/capabilities";
-export {
-  ENDPOINT_PROVIDER_TYPES,
-  providersForEndpointStyle,
-  type EndpointProvider,
-} from "../shared/providers";
+// data in `src/shared/capabilities.ts`, so the console reads the same
+// definitions the Worker enforces. What stays here is the resolved (route ×
+// provider type) matrix and the assertions that refuse a combination —
+// everything that is keyed by a *route kind*, which is all a management caller
+// ever holds.
 
 /**
  * The whole (route × provider type) matrix, resolved once at module load.

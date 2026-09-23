@@ -10,14 +10,15 @@
  */
 
 import { readProviderReport, type ProviderReport } from "../shared/cost-report";
-import { PROTOCOLS, type ApiStyle, type UsageFormat } from "./protocols";
+import { PROTOCOLS, type UsageFormat } from "../providers/protocols";
 import { type ObservedText, wholeBody } from "./body-observer";
 import { EMPTY_USAGE, type UsageObservation } from "./pricing";
-import { costReport } from "./providers";
+import { costReport } from "../providers/provider-type";
 import { asRecord } from "../shared/records";
-import type { ProviderType, UsageCounts } from "./types";
+import type { UsageCounts } from "../core/types";
+import type { ProviderType } from "../shared/providers";
+import type { ApiStyle } from "../shared/capabilities";
 
-export type { ProviderReport } from "../shared/cost-report";
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;

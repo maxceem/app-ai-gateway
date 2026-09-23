@@ -13,7 +13,7 @@
  * description — the generated document is byte-identical either way.
  */
 import { z } from "zod";
-import { PROVIDER_TYPES } from "../core/providers.ts";
+import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { API_STYLES, ENDPOINT_API_STYLES, GATEWAY_TYPES } from "../shared/capabilities.ts";
 import {
   AppConfigSchema,
@@ -38,6 +38,11 @@ export const USAGE_STATUSES = [
   "blocked_billing",
   "blocked_user",
 ] as const;
+/**
+ * One of {@link USAGE_STATUSES}. A `blocked_*` prefix matches the refusing
+ * error code's, and keeping `blocked_app_*` apart from `blocked_billing` is the
+ * point: one is the customer's decision, the other is ours.
+ */
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
 
 /** The dimensions a usage breakdown can group by. */

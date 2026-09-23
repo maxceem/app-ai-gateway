@@ -1,9 +1,9 @@
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
-import { database, type Database } from "../db";
+import { database, type Database } from "../db/index";
 import { appApiKey } from "../db/schema";
-import { GatewayError } from "./errors";
-import { ttlCache } from "./ttl-cache";
-import type { GatewayIdentity } from "./types";
+import { GatewayError } from "../core/errors";
+import { ttlCache } from "../core/ttl-cache";
+import type { GatewayIdentity } from "../core/types";
 
 interface ApiKeyRecord {
   id: string;

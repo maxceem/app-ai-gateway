@@ -14,13 +14,9 @@ import {
   type RouteCapability,
 } from "../shared/capabilities";
 import { recordOr } from "../shared/records";
-import { GatewayError } from "./errors";
-import { providerCapability, providerDescriptor, type ProviderType } from "./providers";
-import type { RouteAdapter } from "./routes";
-
-// The route tables are shared with the console, which describes a gateway-routed
-// row from exactly the mapping the adapters below route with.
-export { type GatewayProviderRoute } from "../shared/capabilities";
+import { GatewayError } from "../core/errors";
+import { providerCapability, providerDescriptor, type ProviderType } from "../shared/providers";
+import type { RouteAdapter } from "./route-adapters";
 
 /**
  * A gateway route only ever narrows what the provider already offers: an

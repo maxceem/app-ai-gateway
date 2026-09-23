@@ -1,16 +1,16 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { observeUpstreamBody, type ObservedBody } from "../src/core/body-observer";
+import { observeUpstreamBody, type ObservedBody } from "../src/usage/body-observer";
 import {
   persistUsageEvent,
   recordBlockedUsageEvent,
   recordUsageEvent,
   type AttemptAttribution,
   type UsageEvent,
-} from "../src/core/usage-record";
+} from "../src/usage/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
 import type { GatewayIdentity } from "../src/core/types";
-import { monthlySpendMicrousd } from "../src/core/app-usage-accounting";
+import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 
 afterEach(() => {
   vi.restoreAllMocks();

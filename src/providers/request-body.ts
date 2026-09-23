@@ -9,12 +9,12 @@
  * steps live here once, so the two paths cannot drift into two policies.
  */
 
-import type { ApiStyle } from "../shared/capabilities.ts";
-import { GatewayError } from "./errors.ts";
+import type { ApiStyle, OutputClampStyle } from "../shared/capabilities.ts";
+import { GatewayError } from "../core/errors.ts";
 import { clampOutput } from "./protocols.ts";
-import { costReport, type ProviderType } from "./providers.ts";
-import type { ResolvedRoute } from "./routes.ts";
-import type { OutputClampStyle } from "./types.ts";
+import { costReport } from "./provider-type.ts";
+import type { ResolvedRoute } from "./route-adapters.ts";
+import type { ProviderType } from "../shared/providers.ts";
 
 export const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
 

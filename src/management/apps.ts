@@ -9,14 +9,14 @@ import type {
   AppValidateResponse,
   CreatedAppResponse,
 } from "../contracts/responses";
-import { generateApiKey } from "../core/apikeys";
-import { appRecordFromRow, invalidateAppConfig } from "../core/config";
-import { referencedProviderSlugs, validateConfigurationReferences } from "../core/config-references";
+import { generateApiKey } from "../client-auth/api-keys";
+import { appRecordFromRow, invalidateAppConfig } from "../core/app-records";
+import { referencedProviderSlugs, validateConfigurationReferences } from "./config-references";
 import { GatewayError } from "../core/errors";
 import {
   authoritativeOrganizationProviders,
   type OrganizationProviders,
-} from "../core/provider-store";
+} from "../providers/provider-store";
 import { database } from "../db";
 import {
   app,

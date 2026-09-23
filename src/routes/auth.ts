@@ -1,21 +1,15 @@
 import { Hono, type Context } from "hono";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
-import { pruneAuthChallenges, recordAuthEvent } from "../core/auth-events";
-import { assertAppActive, loadApp } from "../core/config";
+import { pruneAuthChallenges, recordAuthEvent } from "../client-auth/auth-events";
+import { assertAppActive, loadApp } from "../core/app-records";
 import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
-import { lookupApiKeyUncached } from "../core/apikeys";
-import { clientAuth } from "../core/app-auth";
-import { verifyIssuerToken } from "../core/issuer";
-import { issueGatewayToken } from "../core/jwt";
-import type {
-  AppAttestEndUser,
-  AppAttestEnvironment,
-  AppRecord,
-  AppleAppAttestAuthentication,
-  IssuerAuthentication,
-} from "../core/types";
+import { lookupApiKeyUncached } from "../client-auth/api-keys";
+import { clientAuth } from "../client-auth/client-auth";
+import { verifyIssuerToken } from "../client-auth/issuer";
+import { issueGatewayToken } from "../client-auth/gateway-token";
+import type { AppRecord } from "../core/types";
 import { database } from "../db";
 import { schemaBody } from "../management/validation";
 import { jsonBody } from "./admin/body";
@@ -25,6 +19,12 @@ import {
   AppAttestTokenRequestSchema,
   ApiKeyTokenRequestSchema,
 } from "../contracts/schemas";
+import type {
+  AppAttestEndUser,
+  AppAttestEnvironment,
+  AppleAppAttestAuthentication,
+  IssuerAuthentication,
+} from "../shared/app-config";
 
 const GATEWAY_TOKEN_TTL_SECONDS = 3600;
 
@@ -396,7 +396,7 @@ authRoutes.post("/register", async (c) => {
     // Imported here rather than at the top of the module: App Attest verification
     // pulls in pkijs, asn1js and cbor-x, which would otherwise be parsed at every
     // isolate cold start for the sake of these two handlers.
-    const { verifyAppAttestation } = await import("../core/appattest");
+    const { verifyAppAttestation } = await import("../client-auth/app-attest");
     const verifiedAttestation = await verifyAppAttestation({
       appId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,
       allowedEnvironments: auth.app_attest.environments,
@@ -526,7 +526,7 @@ async function appAttestExchange(
     throw new GatewayError(403, "attest_failed", "The registered App Attest environment is no longer allowed");
   }
   await consumeChallenge(env, appId, body.challenge);
-  const { verifyAppAssertion } = await import("../core/appattest");
+  const { verifyAppAssertion } = await import("../client-auth/app-attest");
   const counter = await verifyAppAssertion({
     gatewayAppId: appId,
     rpId: `${auth.app_attest.team_id}.${auth.app_attest.bundle_id}`,

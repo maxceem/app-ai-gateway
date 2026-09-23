@@ -12,22 +12,20 @@ import type {
   ProviderSummary,
   ProviderTestResponse,
 } from "../contracts/responses";
-import { assertRouteServesProvider, instanceCapability, type ProviderRoute } from "../core/capabilities";
+import { assertRouteServesProvider, instanceCapability } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../core/routes";
+import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../providers/route-adapters";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../core/provider-probe";
-import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../core/provider-store";
-import { PROVIDER_TYPES } from "../core/providers";
-import type { ProviderType } from "../core/types";
+import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../providers/provider-probe";
+import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../providers/provider-store";
+import { PROVIDER_TYPES, type ProviderType } from "../shared/providers";
 import { database } from "../db";
 import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
-  type GatewayType,
   type ProviderGatewayConfig,
   type ProviderStatus,
 } from "../db/schema";
@@ -38,6 +36,7 @@ import {
   commitResourceWrite,
   type ResourceWriteBoundary,
 } from "./write-boundary";
+import type { GatewayType, ProviderRoute } from "../shared/capabilities";
 
 type ProviderRow = typeof provider.$inferSelect;
 

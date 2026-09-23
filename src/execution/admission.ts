@@ -1,14 +1,13 @@
 import type { BillingRequestCache } from "../billing/gateway";
 import { resolveBillingQuota } from "../billing/quota";
-import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
-import { monthlyBudgetMicrousd } from "../shared/app-config";
+import { monthlyBudgetMicrousd, hasAppLevelLimits, hasUserLevelLimits } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
 import { ttlCache } from "../core/ttl-cache";
-import { recordBlockedUsageEvent } from "../core/usage-record";
+import { recordBlockedUsageEvent } from "../usage/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { AppRecord, GatewayIdentity } from "../core/types";
-import type { UsageStatus } from "../db/schema";
+import type { UsageStatus } from "../contracts/responses";
 import { attemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
 

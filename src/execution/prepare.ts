@@ -1,9 +1,8 @@
-import { ENDPOINT_SLUG } from "../core/config";
-import { prepareEndpointRequest, resolveEndpointAttempts } from "../core/endpointrules";
+import { ENDPOINT_SLUG, PROVIDER_SLUG_PATTERN } from "../shared/app-config";
+import { prepareEndpointRequest, resolveEndpointAttempts } from "./endpoint-rules";
 import { GatewayError } from "../core/errors";
-import { requireProvider } from "../core/provider-store";
-import { PROVIDER_SLUG_PATTERN } from "../core/providers";
-import { prepareProxyRequest } from "../core/proxyrules";
+import { requireProvider } from "../providers/provider-store";
+import { prepareProxyRequest } from "./proxy-rules";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import { lookup } from "../shared/records";
 import { preparedExecutionAttempt, type ExecutionPlan } from "./plan";

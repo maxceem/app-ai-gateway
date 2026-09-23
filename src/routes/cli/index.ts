@@ -1,14 +1,10 @@
-import { accountMonthUsage } from "../../core/account-usage";
+import { accountMonthUsage } from "../../usage/account-usage";
 import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
 import { getBillingQuotaResolution } from "../../billing/quota";
 import { accountLifecycle } from "../../core/account-lifecycle";
-import {
-  providerCapability,
-  providerDescriptor,
-  PROVIDER_TYPES,
-} from "../../core/providers";
+import { providerCapability, providerDescriptor, PROVIDER_TYPES } from "../../shared/providers";
 import { currentMonth } from "../../management/usage-queries";
 import { bootstrap } from "./bootstrap";
 import { cliAuthenticate, createOperation, deploymentMeta, pollOperation } from "./operations";

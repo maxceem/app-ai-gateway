@@ -4,7 +4,7 @@ import {
   getBillingAccess,
   requireActiveBilling,
 } from "../billing/gateway";
-import { loadApp } from "../core/config";
+import { loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
 import type { RequestVariables } from "./request-scope";
 

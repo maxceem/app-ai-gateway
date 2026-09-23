@@ -7,7 +7,7 @@ import {
   providerRowsCache,
   providerSecretCache,
   resolveProvider,
-} from "../src/core/provider-store";
+} from "../src/providers/provider-store";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { secretVault } from "../src/vault";

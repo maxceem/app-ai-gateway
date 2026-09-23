@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { database, type Database } from "../db";
+import { database, type Database } from "../db/index";
 import {
   provider as providerTable,
   providerGateway as providerGatewayTable,
@@ -9,20 +9,20 @@ import {
   type ProviderPricing,
   type ProviderStatus,
 } from "../db/schema";
-import { isVaultTransportFailure } from "../vault";
+import { isVaultTransportFailure } from "../vault/index";
 import { openSecret } from "../vault/secrets";
-import type { ProviderRoute } from "./capabilities";
-import { GatewayError } from "./errors";
-import { log } from "./log";
-import { ttlCache } from "./ttl-cache";
+import type { ProviderRoute } from "../shared/capabilities";
+import { GatewayError } from "../core/errors";
+import { log } from "../core/log";
+import { ttlCache } from "../core/ttl-cache";
 import {
   DIRECT_ROUTE,
   isGatewayType,
   routeThroughGateway,
   type ResolvedRoute,
-} from "./routes";
+} from "./route-adapters";
 import { recordFromEntries } from "../shared/records";
-import type { ProviderType } from "./types";
+import type { ProviderType } from "../shared/providers";
 
 export interface ResolvedProvider {
   id: string;

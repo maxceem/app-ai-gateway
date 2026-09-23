@@ -1,18 +1,10 @@
 import { eq } from "drizzle-orm";
-import { database } from "../db";
+import { database } from "../db/index";
 import { app } from "../db/schema";
 import { GatewayError } from "./errors";
 import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
 import type { AppRecord } from "./types";
-
-export {
-  DEFAULT_END_USER_HEADER,
-  ENDPOINT_SLUG,
-  hasAppLevelLimits,
-  hasUserLevelLimits,
-  identifiesEndUsers,
-} from "../shared/app-config";
 
 const CONFIG_CACHE_TTL_MS = 60_000;
 

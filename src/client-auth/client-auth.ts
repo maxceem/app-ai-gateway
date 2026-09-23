@@ -12,20 +12,19 @@
  * it from the raw union.
  */
 
-import { lookupActiveApiKeyById, verifyApiKey } from "./apikeys";
-import { GatewayError } from "./errors";
-import { verifyGatewayToken } from "./jwt";
-import { organizationProviders, type OrganizationProviders } from "./provider-store";
-import { providerDescriptor, PROVIDER_SLUG_PATTERN } from "./providers";
+import { lookupActiveApiKeyById, verifyApiKey } from "./api-keys";
+import { GatewayError } from "../core/errors";
+import { verifyGatewayToken } from "./gateway-token";
+import { organizationProviders, type OrganizationProviders } from "../providers/provider-store";
+import { providerDescriptor, type ProviderType } from "../shared/providers";
+import {
+  type AppleAppAttestAuthentication,
+  type AuthenticationConfig,
+  type IssuerAuthentication,
+  PROVIDER_SLUG_PATTERN,
+} from "../shared/app-config";
 import { lookup } from "../shared/records";
-import type {
-  AppRecord,
-  AppleAppAttestAuthentication,
-  AuthenticationConfig,
-  GatewayIdentity,
-  IssuerAuthentication,
-  ProviderType,
-} from "./types";
+import type { AppRecord, GatewayIdentity } from "../core/types";
 
 /** A credential as the request carried it, and the header it came in. */
 export interface RequestCredential {

@@ -1,9 +1,9 @@
 import { env, exports } from "cloudflare:workers";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import { appConfigCache, loadApp } from "../src/core/config";
-import { organizationProviders } from "../src/core/provider-store";
-import { PROVIDER_TYPES } from "../src/core/providers";
+import { appConfigCache, loadApp } from "../src/core/app-records";
+import { organizationProviders } from "../src/providers/provider-store";
+import { PROVIDER_TYPES } from "../src/shared/providers";
 import { database } from "../src/db";
 import type { AdminVariables } from "../src/middleware/admin";
 import type { AuthState } from "@maxceem/cf-auth";

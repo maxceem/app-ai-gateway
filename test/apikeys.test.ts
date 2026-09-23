@@ -7,9 +7,9 @@ import {
   hashApiKey,
   markApiKeyUsed,
   verifyApiKey,
-} from "../src/core/apikeys";
+} from "../src/client-auth/api-keys";
 import { clearAllCaches } from "../src/core/ttl-cache";
-import { issueGatewayToken } from "../src/core/jwt";
+import { issueGatewayToken } from "../src/client-auth/gateway-token";
 import { database } from "../src/db";
 import { appApiKey } from "../src/db/schema";
 import { gatewayToken, seedApp, seedServerApp } from "./helpers";

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { monthlySpendMicrousd, type SpendKey } from "../core/app-usage-accounting";
+import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 
 /**
  * State that has to be instantly consistent: the block flag an operator sets,

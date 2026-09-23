@@ -1,7 +1,7 @@
 import { jwtVerify, SignJWT } from "jose";
-import { GatewayError } from "./errors";
-import { ttlCache } from "./ttl-cache";
-import type { GatewayAuthMethod, GatewayIdentity } from "./types";
+import { GatewayError } from "../core/errors";
+import { ttlCache } from "../core/ttl-cache";
+import type { GatewayAuthMethod, GatewayIdentity } from "../core/types";
 
 const encoder = new TextEncoder();
 

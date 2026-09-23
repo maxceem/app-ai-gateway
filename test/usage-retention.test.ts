@@ -18,7 +18,7 @@ import {
   runUsageRetention,
   USAGE_EVENT_RETENTION_DAYS,
   USAGE_ROLLUP_DAY_RETENTION_DAYS,
-} from "../src/core/usage-retention";
+} from "../src/usage/usage-retention";
 import {
   organizationMonthUsage,
   usageBreakdown,

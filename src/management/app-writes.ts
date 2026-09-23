@@ -1,5 +1,5 @@
 import type { app } from "../db/schema";
-import type { AppConfig } from "../core/types";
+import type { AppConfig } from "../shared/app-config";
 import type { SqlCondition } from "../policy/sql";
 
 export interface AtomicAppWrite {

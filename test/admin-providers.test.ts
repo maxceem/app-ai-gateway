@@ -1,12 +1,12 @@
 import { env, exports } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { supportsEndpointStyle } from "../src/core/capabilities";
+import { supportsEndpointStyle } from "../src/providers/capability-matrix";
 import {
   organizationProviders,
   resolveProvider,
-} from "../src/core/provider-store";
-import { PROVIDER_TYPES } from "../src/core/providers";
+} from "../src/providers/provider-store";
+import { PROVIDER_TYPES } from "../src/shared/providers";
 import { database } from "../src/db";
 import { provider, providerGateway } from "../src/db/schema";
 import { updateProvider } from "../src/management/providers";

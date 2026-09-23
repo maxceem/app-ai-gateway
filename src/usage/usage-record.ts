@@ -5,22 +5,22 @@
  * nothing here re-derives any of the three.
  */
 
-import { markApiKeyUsed } from "./apikeys";
+import { markApiKeyUsed } from "../client-auth/api-keys";
 import type { ProviderReport } from "../shared/cost-report";
-import { routeCanonicalModel } from "./routes";
-import { log } from "./log";
-import { timeOrderedId } from "./ids";
-import { storedAppVersion } from "./app-version";
-import { claimDiagnosticSample } from "./endpoint-rate-limit";
+import { type ResolvedRoute, routeCanonicalModel } from "../providers/route-adapters";
+import { log } from "../core/log";
+import { timeOrderedId } from "../core/ids";
+import { storedAppVersion } from "../core/app-version";
+import { claimDiagnosticSample } from "../core/endpoint-rate-limit";
 import { type ObservedBody } from "./body-observer";
 import { computeCost, EMPTY_USAGE, resolveModelAuthor, type UsageObservation } from "./pricing";
 import { observeResponse } from "./usage-readers";
-import { reportsCost } from "./providers";
-import type { ApiStyle } from "./protocols";
-import type { ResolvedRoute } from "./routes";
-import type { GatewayIdentity, ProviderType } from "./types";
-import { database } from "../db";
-import { appUsageEvent, type CostSource, type ProviderPricing, type UsageStatus } from "../db/schema";
+import { type ProviderType, reportsCost } from "../shared/providers";
+import type { ApiStyle } from "../shared/capabilities";
+import type { GatewayIdentity } from "../core/types";
+import { database } from "../db/index";
+import { appUsageEvent, type CostSource, type ProviderPricing } from "../db/schema";
+import type { UsageStatus } from "../contracts/responses";
 
 /** Everything a usage row records about which provider served an attempt. */
 export interface AttemptAttribution {

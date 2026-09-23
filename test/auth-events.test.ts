@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pruneAuthEvents, recordAuthEvent } from "../src/core/auth-events";
+import { pruneAuthEvents, recordAuthEvent } from "../src/client-auth/auth-events";
 import app from "../src/index";
 import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
 

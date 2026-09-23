@@ -1,31 +1,30 @@
 import { env } from "cloudflare:workers";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
-import { issueGatewayToken } from "../src/core/jwt";
-import { hashApiKey } from "../src/core/apikeys";
-import { providerRowsCache, providerSecretCache } from "../src/core/provider-store";
+import { issueGatewayToken } from "../src/client-auth/gateway-token";
+import { hashApiKey } from "../src/client-auth/api-keys";
+import { type OrganizationProviders, providerRowsCache, providerSecretCache } from "../src/providers/provider-store";
 import { sealSecret } from "../src/vault/secrets";
 import { clearAllCaches } from "../src/core/ttl-cache";
-import { PROVIDER_TYPES } from "../src/core/providers";
+import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
 import { database } from "../src/db";
 import {
   app,
   appApiKey,
-  provider,
-  providerGateway,
   type CfAigConfig,
   type GatewayRouteConfig,
-  type GatewayType,
+  mgmtAuthTables,
+  provider,
+  providerGateway,
   type ProviderPricing,
 } from "../src/db/schema";
-import type { GatewayIdentity, ProviderType } from "../src/core/types";
-import { DIRECT_ROUTE } from "../src/core/routes";
-import type { AttemptAttribution } from "../src/core/usage-record";
+import type { GatewayIdentity } from "../src/core/types";
+import { DIRECT_ROUTE } from "../src/providers/route-adapters";
+import type { AttemptAttribution } from "../src/usage/usage-record";
 import { parseAppConfig } from "../src/shared/app-config";
-import { validateConfigurationReferences } from "../src/core/config-references";
-import type { OrganizationProviders } from "../src/core/provider-store";
+import { validateConfigurationReferences } from "../src/management/config-references";
 import { recordFromEntries } from "../src/shared/records";
 import { createCfAuth } from "@maxceem/cf-auth";
-import { mgmtAuthTables } from "../src/db/schema";
+import type { GatewayType } from "../src/shared/capabilities";
 
 /**
  * Every cache the Worker keeps in its isolate, emptied in one call.

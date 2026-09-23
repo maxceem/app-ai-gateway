@@ -6,9 +6,9 @@ import {
   type JWTPayload,
   type JWK,
 } from "jose";
-import { GatewayError } from "./errors";
-import { ttlCache } from "./ttl-cache";
-import type { ClaimRequirement, IssuerAuthentication } from "./types";
+import { GatewayError } from "../core/errors";
+import { ttlCache } from "../core/ttl-cache";
+import type { ClaimRequirement, IssuerAuthentication } from "../shared/app-config";
 
 interface JwksCacheEntry {
   keys: JWK[];

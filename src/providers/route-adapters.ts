@@ -13,23 +13,22 @@ import type {
   ProviderGatewayConfig,
 } from "../db/schema";
 import type {
+  ApiStyle,
   CredentialSource,
   GatewayProviderRoute,
   GatewayType,
   ProviderRoute,
   RouteCapability,
 } from "../shared/capabilities";
-import type { ApiStyle } from "./protocols";
-import { GatewayError } from "./errors";
-import { cfAigAdapter, vercelAdapter } from "./gateways";
+import { GatewayError } from "../core/errors";
+import { cfAigAdapter, vercelAdapter } from "./gateway-adapters";
+import { providerAuthValue, providerRequestHeaders } from "./provider-type";
 import {
-  providerAuthValue,
   providerCapability,
   providerDescriptor,
-  providerRequestHeaders,
   PROVIDER_TYPES,
   type ProviderType,
-} from "./providers";
+} from "../shared/providers";
 
 /** An upstream call the adapter owns end to end: URL plus its own headers. */
 export interface RouteRequest {

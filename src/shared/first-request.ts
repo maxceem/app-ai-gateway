@@ -4,7 +4,7 @@
  * One source for the console's example card and the CLI's `app snippet`, so the
  * two cannot show different examples. It imports
  * only from `src/shared`, for the reason `./capabilities.ts` gives: the console
- * bundles it, so nothing from `src/core` may reach it.
+ * bundles it, so nothing from the Worker modules may reach it.
  *
  * The example is always produced. An application created a minute ago has no
  * provider, no catalogued model, and sometimes a policy that allows no path

@@ -16,13 +16,13 @@
  * month buckets past {@link USAGE_ROLLUP_DAY_RETENTION_DAYS}, so even the rollup
  * stops growing.
  */
-import { log } from "./log";
+import { log } from "../core/log";
 import { pruneSettledUsageSpend } from "./app-usage-accounting";
 import {
   DEFAULT_MAINTENANCE_QUERY_BUDGET,
   MAINTENANCE_SLACK_QUERIES,
   QueryBudget,
-} from "./query-budget";
+} from "../core/query-budget";
 
 /** How long a raw, per-event row survives. */
 export const USAGE_EVENT_RETENTION_DAYS = 90;

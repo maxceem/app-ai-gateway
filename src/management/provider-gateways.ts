@@ -13,17 +13,16 @@ import type {
   ProviderGatewayTestResponse,
 } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
-import { requireGatewayAdapter } from "../core/routes";
+import { requireGatewayAdapter } from "../providers/route-adapters";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { probeGatewayPreset, type ProbeResult } from "../core/provider-probe";
-import { invalidateOrganizationProviders } from "../core/provider-store";
+import { probeGatewayPreset, type ProbeResult } from "../providers/provider-probe";
+import { invalidateOrganizationProviders } from "../providers/provider-store";
 import { database } from "../db";
 import {
   provider,
   providerGateway,
   type CfAigConfig,
-  type GatewayType,
   type ProviderGatewayConfig,
 } from "../db/schema";
 import { sealSecret } from "../vault/secrets";
@@ -33,6 +32,7 @@ import {
   commitResourceWrite,
   type ResourceWriteBoundary,
 } from "./write-boundary";
+import type { GatewayType } from "../shared/capabilities";
 
 type ProviderGatewayRow = typeof providerGateway.$inferSelect;
 interface GatewayCounts { active: number; total: number }

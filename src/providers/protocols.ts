@@ -12,17 +12,12 @@
  * nothing in a browser build clamps a body or reads a usage object.
  */
 
-import {
-  API_STYLES,
-  type ApiStyle,
-  type OutputClampStyle,
-} from "../shared/capabilities.ts";
+import type { ApiStyle, OutputClampStyle } from "../shared/capabilities.ts";
 import { providerDescriptor, type ProviderType } from "../shared/providers.ts";
-import { GatewayError } from "./errors.ts";
+import { GatewayError } from "../core/errors.ts";
 
-export { API_STYLES, type ApiStyle };
 
-/** The usage object an answer carries, which picks the reader in `./usage-readers.ts`. */
+/** The usage object an answer carries, which picks the reader in `../usage/usage-readers.ts`. */
 export type UsageFormat = "openai" | "anthropic" | "gemini" | "audio" | "unknown";
 
 export interface Protocol {

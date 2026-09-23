@@ -1,13 +1,13 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { monthlySpendMicrousd, pruneSettledUsageSpend } from "../src/core/app-usage-accounting";
-import { wholeBody, type ObservedBody } from "../src/core/body-observer";
+import { monthlySpendMicrousd, pruneSettledUsageSpend } from "../src/usage/app-usage-accounting";
+import { wholeBody, type ObservedBody } from "../src/usage/body-observer";
 import {
   persistUsageEvent,
   recordUsageEvent,
   type UsageEvent,
-} from "../src/core/usage-record";
+} from "../src/usage/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
 import app, { MAINTENANCE_CRON } from "../src/index";
 
