@@ -130,7 +130,7 @@ async function settle(): Promise<void> {
 function used(organizationId: string): Promise<number> {
   const quota = env.ORG_QUOTA.getByName(organizationId);
   return runInDurableObject(quota, (_instance, state) => state.storage.sql
-    .exec<{ used: number }>("SELECT COALESCE(SUM(used), 0) AS used FROM quota_periods")
+    .exec<{ used: number }>("SELECT COALESCE(SUM(used), 0) AS used FROM allowance")
     .one().used);
 }
 
@@ -177,7 +177,7 @@ describe("organization monthly request quota", () => {
     expect(body.error.data).toEqual({
       limit: 3,
       used: 3,
-      periodId: expect.stringMatching(/^paid:/u),
+      periodId: expect.stringMatching(/^\d{4}-\d{2}$/u),
       periodStart: expect.stringMatching(/Z$/u),
       periodEnd: expect.stringMatching(/Z$/u),
       resetAt: expect.stringMatching(/Z$/u),
@@ -746,26 +746,3 @@ describe("the per-user block flag", () => {
   });
 });
 
-
-it("refreshes a superseded schedule once and then returns a retriable 503", async () => {
-  const organizationId = "quota-superseded-retry";
-  await seedOrganization(organizationId);
-  const key = await seedServerApp("quota-superseded-retry-app", { organizationId });
-  const access = onPlan({ maxRequestsPerMonth: 10 });
-  const calls = vi.fn(async () => access);
-  const billing = new Proxy(env, {
-    get: (target, property, receiver) => property === "BILLING" ? billingStub(calls) : Reflect.get(target, property, receiver),
-  }) as Env;
-  const resolved = await quotaFor(billing, organizationId);
-  await env.ORG_QUOTA.getByName(organizationId).usage({
-    ...resolved.period, scheduleRevision: resolved.period.scheduleRevision + 1,
-  });
-  const upstream = vi.fn(async () => ok());
-  vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
-  const response = await proxyRequest({ appId: "quota-superseded-retry-app", key, env: billing });
-  expect(response.status).toBe(503);
-  expect(response.headers.get("retry-after")).toBe("1");
-  await expect(response.json()).resolves.toMatchObject({ error: { code: "billing_unavailable" } });
-  expect(calls).toHaveBeenCalledTimes(2);
-  expect(upstream).not.toHaveBeenCalled();
-});

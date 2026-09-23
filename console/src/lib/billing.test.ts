@@ -18,13 +18,13 @@ import type {
   SubscriptionState,
 } from "./types";
 
-const RESETS = "2026-10-08T03:15:00.000Z";
-const STARTS = "2026-09-08T03:15:00.000Z";
+const RESETS = "2026-10-01T00:00:00.000Z";
+const STARTS = "2026-09-01T00:00:00.000Z";
 /** The recovery deadline a cloud bootstrap sets; its presence is what marks an account unclaimed. */
 const EXPIRES = "2026-12-07T03:15:00.000Z";
 
 const quota = (overrides: Partial<OrganizationQuota> = {}): OrganizationQuota => ({
-  periodId: `free:${STARTS}`,
+  periodId: "2026-09",
   periodStart: STARTS,
   periodEnd: RESETS,
   used: 2_500,
@@ -205,15 +205,6 @@ describe("quotaMeter", () => {
     expect(meter?.tone).toBe("destructive");
   });
 
-  it("reports a plain count for a plan with no ceiling", () => {
-    const { limit: _limit, ...quotaWithoutLimit } = quota({ used: 1_234 });
-    const meter = quotaMeter(quotaWithoutLimit);
-    expect(meter?.limit).toBeNull();
-    expect(meter?.ratio).toBeNull();
-    expect(meter?.tone).toBe("normal");
-    expect(meter?.label).toBe("1,234 requests this period");
-  });
-
   it("states the exact reset instant in the viewer's time zone", () => {
     expect(quotaMeter(quota())?.caption).toBe(`Resets ${formatBillingDateTime(RESETS)}`);
   });
@@ -226,8 +217,7 @@ describe("quotaMeter", () => {
 describe("quotaNotice", () => {
   it("stays silent while the allowance is comfortable, or absent", () => {
     expect(quotaNotice(quota({ used: 10 }))).toBeNull();
-    const { limit: _limit, ...quotaWithoutLimit } = quota({ used: 10_000_000 });
-    expect(quotaNotice(quotaWithoutLimit)).toBeNull();
+    // A plan with no monthly limit has no quota to report at all.
     expect(quotaNotice(null)).toBeNull();
   });
 

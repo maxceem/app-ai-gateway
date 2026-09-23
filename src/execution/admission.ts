@@ -1,8 +1,4 @@
-import { invalidateAccountLifecycle } from "../core/account-lifecycle";
-import {
-  invalidateBillingRequestAccess,
-  type BillingRequestCache,
-} from "../billing/gateway";
+import type { BillingRequestCache } from "../billing/gateway";
 import { resolveBillingQuota } from "../billing/quota";
 import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
 import { monthlyBudgetMicrousd } from "../shared/app-config";
@@ -282,75 +278,33 @@ export async function admitRequest(
   // depend on what the organization is allowed to spend.
   if (allowanceResult.status === "rejected") throw allowanceResult.reason;
 
-  let resolvedQuota = allowanceResult.value;
-  if (resolvedQuota === undefined) {
-    // Self-hosted: no coordination object is touched at all, so this
-    // deployment pays nothing for a quota it does not have.
-    return finish();
-  }
+  const resolved = allowanceResult.value;
+  // Self-hosted, or a plan with no monthly limit: no coordination object is
+  // touched at all, so neither pays for a count nothing enforces.
+  if (resolved === undefined || resolved.limit === undefined) return finish();
 
-  const quota = env.ORG_QUOTA.getByName(app.organizationId);
-  const claim = async (
-    resolved: NonNullable<typeof resolvedQuota>,
-    retry: boolean,
-  ): Promise<
-    | { kind: "unlimited" }
-    | { kind: "admission"; value: Exclude<Awaited<ReturnType<typeof quota.admit>>, { superseded: true }> }
-  > => {
-    const periodInput = { ...resolved.period };
-    if (resolved.limit === undefined) {
-      // Hosted unlimited plans still observe revisions to reject stale downgrades.
-      const observation = await quota.usage(periodInput);
-      if (!("superseded" in observation && observation.superseded)) {
-        return { kind: "unlimited" };
-      }
-    } else {
-      const admission = await quota.admit({ ...periodInput, limit: resolved.limit });
-      if (!("superseded" in admission)) {
-        return { kind: "admission", value: admission };
-      }
-    }
-    if (retry) {
-      // Re-resolve from nothing this isolate already believed. Only billing can
-      // supersede a schedule today, but the resolver reads the lifecycle row
-      // too, and a retry that kept a cached copy of one of its two inputs would
-      // be a retry that could return the same superseded answer.
-      invalidateAccountLifecycle(app.organizationId);
-      invalidateBillingRequestAccess(app.organizationId, input.billingCache);
-      const refreshed = await resolveBillingQuota(
-        input.deployment,
-        env,
-        app.organizationId,
-        input.billingCache,
-      );
-      return claim(refreshed, false);
-    }
-    throw new GatewayError(
-      503,
-      "billing_unavailable",
-      "Billing changed while this request was being checked; retry the request",
-      { "Retry-After": "1" },
-    );
-  };
-  const claimResult = await claim(resolvedQuota, true);
+  const { period } = resolved;
+  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
+    periodId: period.periodId,
+    periodEnd: period.periodEnd,
+    limit: resolved.limit,
+  });
   const durationMs = finish();
-  if (claimResult.kind === "unlimited") return durationMs;
-  const admission = claimResult.value;
   if (!admission.allowed) {
     blockedEvent("blocked_billing", durationMs);
     throw new GatewayError(
       429,
       "billing_request_quota_exceeded",
-      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${admission.resetAt}`,
+      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${period.resetAt}`,
       { "Retry-After": String(admission.retryAfterSeconds) },
       {
         data: {
           limit: admission.limit,
           used: admission.used,
-          periodId: admission.periodId,
-          periodStart: admission.periodStart,
-          periodEnd: admission.periodEnd,
-          resetAt: admission.resetAt,
+          periodId: period.periodId,
+          periodStart: period.periodStart,
+          periodEnd: period.periodEnd,
+          resetAt: period.resetAt,
         },
       },
     );

@@ -109,7 +109,7 @@ async function settle(): Promise<void> {
 const used = (organizationId: string): Promise<number> => {
   const quota = env.ORG_QUOTA.getByName(organizationId);
   return runInDurableObject(quota, (_instance, state) => state.storage.sql
-    .exec<{ used: number }>("SELECT COALESCE(SUM(used), 0) AS used FROM quota_periods")
+    .exec<{ used: number }>("SELECT COALESCE(SUM(used), 0) AS used FROM allowance")
     .one().used);
 };
 

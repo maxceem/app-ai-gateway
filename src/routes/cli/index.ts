@@ -87,20 +87,11 @@ routes.handle("getCliAccount", async (c) => {
     account.id,
     c.get("billingRequestCache"),
   );
-  const reading = billing.period
-    ? await (Date.parse(billing.period.periodEnd) <= Date.now()
-        ? c.env.ORG_QUOTA.getByName(account.id).pastUsage(billing.period)
-        : c.env.ORG_QUOTA.getByName(account.id).usage(billing.period))
+  // A plan with no monthly limit counts nothing, so there is no figure to report.
+  const usage = billing.period && billing.limit !== undefined
+    ? { ...billing.period, used: await c.env.ORG_QUOTA.getByName(account.id).usage(billing.period.periodId) }
     : null;
-  return {
-    deployment: deploymentMeta(c),
-    account,
-    billing,
-    // A count whose period was replaced while it was being read describes
-    // nothing, and the marker saying so is internal, so it is reported as an
-    // empty object — which is what every client has always reduced it to.
-    usage: reading !== null && "superseded" in reading && reading.superseded ? {} : reading,
-  };
+  return { deployment: deploymentMeta(c), account, billing, usage };
 });
 routes.handle("getCliUsage", async (c, { query }) => {
   const month = query.month ?? currentMonth();

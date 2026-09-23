@@ -1120,7 +1120,13 @@ it("keeps the completed trial counter readable during recovery without renewing 
   expect(await response.json()).toMatchObject({
     account: { createdAt: origin, claimed: false },
     billing: { access: { subscription: null }, limit: 1000 },
-    usage: { used: 0, periodStart: origin, periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString() },
+    // Still the month the account was created in: an unclaimed window never renews.
+    usage: {
+      used: 0,
+      periodId: origin.slice(0, 7),
+      periodStart: `${origin.slice(0, 7)}-01T00:00:00.000Z`,
+      periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString(),
+    },
   });
   await expect(assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "setup"))
     .rejects.toMatchObject({ code: "unclaimed_access_expired" });

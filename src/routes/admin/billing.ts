@@ -5,7 +5,6 @@ import {
   billingPlanLimits,
   billingRpcError,
   invalidateBillingAccess,
-  invalidateBillingRequestAccess,
   subscriptionActions,
 } from "../../billing/gateway";
 import { accountLifecycle } from "../../core/account-lifecycle";
@@ -67,7 +66,7 @@ routes.handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
  */
 async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusResponse> {
   const organizationId = c.get("actor").organizationId;
-  let resolved = await getBillingQuotaResolution(
+  const resolved = await getBillingQuotaResolution(
     c.get("deployment"),
     c.env,
     organizationId,
@@ -96,24 +95,10 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
     actions: subscriptionActions(resolved.access),
     unclaimedAccessEndsAt,
   });
-  if (!resolved.period) return answer(null);
-  const quota = c.env.ORG_QUOTA.getByName(organizationId);
-  let usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
-  if ("superseded" in usage && usage.superseded) {
-    invalidateBillingRequestAccess(organizationId, c.get("billingRequestCache"));
-    resolved = await getBillingQuotaResolution(
-      c.get("deployment"),
-      c.env,
-      organizationId,
-      c.get("billingRequestCache"),
-    );
-    if (!resolved.period) return answer(null);
-    usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
-  }
-  if ("superseded" in usage && usage.superseded) {
-    throw new GatewayError(503, "billing_unavailable", "Billing changed while status was being read");
-  }
-  return answer({ ...usage, ...(resolved.limit === undefined ? {} : { limit: resolved.limit }) });
+  // A plan with no monthly limit counts nothing, so there is no figure to report.
+  if (!resolved.period || resolved.limit === undefined) return answer(null);
+  const used = await c.env.ORG_QUOTA.getByName(organizationId).usage(resolved.period.periodId);
+  return answer({ ...resolved.period, used, limit: resolved.limit });
 }
 
 routes.handle("getBillingStatus", status);

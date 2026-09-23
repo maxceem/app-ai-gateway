@@ -1,198 +1,88 @@
 import { DurableObject } from "cloudflare:workers";
 
-export interface QuotaPeriodInput {
-  limit: number;
-  scheduleId: string;
-  scheduleRevision: number;
+export interface QuotaAdmissionInput {
+  /** The allowance period's `YYYY-MM`, which is all the counter is keyed by. */
   periodId: string;
-  periodStart: string;
+  /** When the period resets, which is all a refusal's `Retry-After` needs. */
   periodEnd: string;
-  resetAt: string;
-}
-
-interface QuotaState {
   limit: number;
-  used: number;
-  periodId: string;
-  periodStart: string;
-  periodEnd: string;
-  resetAt: string;
 }
 
 export type QuotaAdmission =
-  | (QuotaState & { allowed: true })
-  | (QuotaState & { allowed: false; retryAfterSeconds: number })
-  | { allowed: false; superseded: true };
-
-export type QuotaUsage =
-  | (Omit<QuotaState, "limit"> & { superseded?: false })
-  | { superseded: true };
+  | { allowed: true; used: number; limit: number }
+  | { allowed: false; used: number; limit: number; retryAfterSeconds: number };
 
 /**
- * The organization-wide allowance counter. The caller resolves the billing
- * schedule; this object atomically adopts it and admits against its counter.
+ * The organization-wide allowance counter: one row per allowance period.
+ *
+ * The caller resolves which period a request falls in and what the plan's
+ * limit is; this object only counts. The limit arrives with every admission
+ * rather than being stored, so a plan change within the month takes effect on
+ * the next request and the count it has already spent carries over.
  *
  * There is exactly one instance per organization, so every request that
  * organization makes is serialized through it and pays a round trip to
  * wherever it lives — a pinned serialization point by design, and what makes
- * the allowance an exact count rather than an estimate. The gate's own
- * documentation, above `quotaGate` in `src/middleware/gate.ts`, explains what
- * that costs per request and why leasing admissions per isolate was refused.
+ * the allowance an exact count rather than an estimate. The admission module,
+ * `src/execution/admission.ts`, explains what that costs per request and why
+ * leasing admissions per isolate was refused.
  */
 export class OrgQuota extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS quota_periods (
-          schedule_id TEXT NOT NULL,
-          period_start TEXT NOT NULL,
-          used INTEGER NOT NULL,
-          PRIMARY KEY (schedule_id, period_start)
-        );
-        CREATE TABLE IF NOT EXISTS quota_schedule (
-          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-          schedule_id TEXT NOT NULL,
-          revision INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS quota_period_watermarks (
-          schedule_id TEXT PRIMARY KEY,
-          period_start TEXT NOT NULL
+        CREATE TABLE IF NOT EXISTS allowance (
+          period_id TEXT PRIMARY KEY,
+          used INTEGER NOT NULL
         );
       `);
     });
   }
 
-  private adopt(input: Omit<QuotaPeriodInput, "limit">): boolean {
-    const { scheduleId, scheduleRevision: revision, periodStart } = input;
-    const current = this.ctx.storage.sql
-      .exec<{ schedule_id: string; revision: number }>(
-        "SELECT schedule_id, revision FROM quota_schedule WHERE singleton = 1",
-      )
-      .toArray()[0];
-    if (current) {
-      if (revision < current.revision) return false;
-      if (revision === current.revision && scheduleId !== current.schedule_id) return false;
-    }
-    const watermark = this.ctx.storage.sql
-      .exec<{ period_start: string }>(
-        "SELECT period_start FROM quota_period_watermarks WHERE schedule_id = ?",
-        scheduleId,
-      )
-      .toArray()[0]?.period_start;
-    if (watermark && periodStart < watermark) return false;
-    if (!current || revision > current.revision) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO quota_schedule(singleton, schedule_id, revision) VALUES (1, ?, ?)
-         ON CONFLICT(singleton) DO UPDATE SET
-           schedule_id = excluded.schedule_id,
-           revision = excluded.revision`,
-        scheduleId,
-        revision,
-      );
-    }
-    if (!watermark || periodStart > watermark) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO quota_period_watermarks(schedule_id, period_start) VALUES (?, ?)
-         ON CONFLICT(schedule_id) DO UPDATE SET period_start = excluded.period_start`,
-        scheduleId,
-        periodStart,
-      );
-    }
-    return true;
-  }
-
-  private valid(input: Omit<QuotaPeriodInput, "limit">, now: number): boolean {
-    const start = Date.parse(input.periodStart);
-    const end = Date.parse(input.periodEnd);
-    return input.scheduleId.length > 0
-      && Number.isSafeInteger(input.scheduleRevision)
-      && input.scheduleRevision >= 0
-      && input.periodId.length > 0
-      && Number.isFinite(start)
-      && Number.isFinite(end)
-      && start < end
-      && input.resetAt === input.periodEnd
-      && now >= start
-      && now < end;
-  }
-
-  private used(scheduleId: string, periodStart: string): number {
-    return this.ctx.storage.sql
-      .exec<{ used: number }>(
-        `SELECT COALESCE((
-           SELECT used FROM quota_periods WHERE schedule_id = ? AND period_start = ?
-         ), 0) AS used`,
-        scheduleId,
-        periodStart,
-      )
-      .one().used;
-  }
-
   /**
-   * The conditional upsert prevents concurrent callers from overshooting.
-   * Historical rows remain so a return to Free recovers its earlier count.
+   * Admits one request against the period, or refuses it. Synchronous, so the
+   * conditional upsert and the read behind a refusal cannot be interleaved by
+   * a concurrent caller and the limit can never be overshot.
+   *
+   * The period is the caller's, resolved when its request arrived, and is
+   * never judged against the clock here: a request that crosses midnight on
+   * its way in counts toward the month it started in rather than being refused
+   * as though that month were exhausted. An unclaimed account whose one window
+   * has closed never gets this far — the account gate refuses it first.
    */
-  admit(input: QuotaPeriodInput): QuotaAdmission {
+  admit(input: QuotaAdmissionInput): QuotaAdmission {
     const now = Date.now();
-    if (!this.valid(input, now) || !this.adopt(input)) {
-      return { allowed: false, superseded: true };
-    }
     const end = Date.parse(input.periodEnd);
     const limit = Number.isFinite(input.limit) ? Math.max(0, Math.trunc(input.limit)) : 0;
-    const state = (used: number): QuotaState => ({
-      limit,
-      used,
-      periodId: input.periodId,
-      periodStart: input.periodStart,
-      periodEnd: input.periodEnd,
-      resetAt: input.resetAt,
-    });
-    const refuse = (used: number): QuotaAdmission => ({
+    const refuse = (): QuotaAdmission => ({
       allowed: false,
-      ...state(used),
-      retryAfterSeconds: Math.max(1, Math.ceil((end - now) / 1_000)),
+      used: this.usage(input.periodId),
+      limit,
+      retryAfterSeconds: Number.isFinite(end) ? Math.max(1, Math.ceil((end - now) / 1_000)) : 1,
     });
-    if (limit < 1) return refuse(this.used(input.scheduleId, input.periodStart));
-
+    if (limit < 1) return refuse();
     const admitted = this.ctx.storage.sql
       .exec<{ used: number }>(
-        `INSERT INTO quota_periods(schedule_id, period_start, used) VALUES (?, ?, 1)
-         ON CONFLICT(schedule_id, period_start) DO UPDATE SET used = used + 1
-         WHERE quota_periods.used < ?
+        `INSERT INTO allowance(period_id, used) VALUES (?, 1)
+         ON CONFLICT(period_id) DO UPDATE SET used = used + 1
+         WHERE allowance.used < ?
          RETURNING used`,
-        input.scheduleId,
-        input.periodStart,
+        input.periodId,
         limit,
       )
       .toArray();
-    if (admitted.length !== 1) {
-      return refuse(this.used(input.scheduleId, input.periodStart));
-    }
-    return { allowed: true, ...state(admitted[0]!.used) };
+    if (admitted.length !== 1) return refuse();
+    return { allowed: true, used: admitted[0]!.used, limit };
   }
 
-  /** Read a completed period without changing the live schedule or its watermark. */
-  pastUsage(input: Omit<QuotaPeriodInput, "limit">): QuotaUsage {
-    const start = Date.parse(input.periodStart);
-    if (Date.parse(input.periodEnd) > Date.now() || !this.valid(input, start)) return { superseded: true };
-    return {
-      periodId: input.periodId,
-      periodStart: input.periodStart,
-      periodEnd: input.periodEnd,
-      resetAt: input.resetAt,
-      used: this.used(input.scheduleId, input.periodStart),
-    };
-  }
-
-  usage(input: Omit<QuotaPeriodInput, "limit">): QuotaUsage {
-    if (!this.valid(input, Date.now()) || !this.adopt(input)) return { superseded: true };
-    return {
-      periodId: input.periodId,
-      periodStart: input.periodStart,
-      periodEnd: input.periodEnd,
-      resetAt: input.resetAt,
-      used: this.used(input.scheduleId, input.periodStart),
-    };
+  /** Requests admitted in one period so far. */
+  usage(periodId: string): number {
+    return this.ctx.storage.sql
+      .exec<{ used: number }>(
+        "SELECT COALESCE((SELECT used FROM allowance WHERE period_id = ?), 0) AS used",
+        periodId,
+      )
+      .one().used;
   }
 }

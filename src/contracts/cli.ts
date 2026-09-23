@@ -253,10 +253,8 @@ export const CliCapabilitiesResponseSchema = z.object({
  * What `GET /v1/cli/account` answers with.
  *
  * `billing` and `usage` are declared field by field rather than passed through,
- * because the CLI prints this verbatim on stdout: the resolution it is built
- * from also carries the internal schedule identity (`scheduleId`,
- * `scheduleRevision`) and the `superseded` marker, none of which is any of the
- * caller's business. Parsing against this schema is what keeps them off stdout.
+ * because the CLI prints this verbatim on stdout: parsing against this schema
+ * is what keeps anything the resolution carries beyond them off it.
  */
 export const CliEntitledPlanSchema = z.object({
   planKey: z.string(),
@@ -294,13 +292,13 @@ export const CliBillingSchema = z.object({
     resetAt: z.string(),
   }).optional(),
 });
-/** `{}` while a period is superseded, and null outside a billed plan. */
+/** Null outside a billed plan, and for a plan with no monthly limit, which counts nothing. */
 export const CliQuotaUsageSchema = z.object({
-  periodId: z.string().optional(),
-  periodStart: z.string().optional(),
-  periodEnd: z.string().optional(),
-  resetAt: z.string().optional(),
-  used: z.number().optional(),
+  periodId: z.string(),
+  periodStart: z.string(),
+  periodEnd: z.string(),
+  resetAt: z.string(),
+  used: z.number(),
 }).nullable();
 export const CliAccountResponseSchema = z.object({
   deployment: CliDeploymentSchema,

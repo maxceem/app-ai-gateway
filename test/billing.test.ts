@@ -417,7 +417,7 @@ describe("billing gateway", () => {
   });
 
   /** A plan with no ceiling still reports the count; it just has nothing to be measured against. */
-  it("reports a plan without a ceiling as an uncapped count", async () => {
+  it("reports no quota for a plan without a ceiling, which counts nothing", async () => {
     const billingEnv = withBilling(
       stub({
         getTenantAccess: async () => onPlan({ planKey: "unlimited" }),
@@ -429,9 +429,8 @@ describe("billing gateway", () => {
       billingEnv,
     );
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { quota: Record<string, unknown> };
-    expect(body.quota).toMatchObject({ used: expect.any(Number) as unknown as number });
-    expect(body.quota).not.toHaveProperty("limit");
+    const body = (await response.json()) as { quota: Record<string, unknown> | null };
+    expect(body.quota).toBeNull();
   });
 
   /**

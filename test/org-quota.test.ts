@@ -2,44 +2,22 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const JULY = Date.UTC(2026, 6, 23, 12);
-
-function period(overrides: Partial<{
-  limit: number;
-  scheduleId: string;
-  scheduleRevision: number;
-  periodId: string;
-  periodStart: string;
-  periodEnd: string;
-  resetAt: string;
-}> = {}) {
-  const periodStart = overrides.periodStart ?? "2026-07-15T00:00:00.000Z";
-  const periodEnd = overrides.periodEnd ?? "2026-08-15T00:00:00.000Z";
-  return {
-    limit: 10,
-    scheduleId: "paid:generation-a",
-    scheduleRevision: Date.UTC(2026, 6, 15),
-    periodId: `period:${periodStart}`,
-    periodStart,
-    periodEnd,
-    resetAt: periodEnd,
-    ...overrides,
-  };
-}
+const PERIOD = { periodId: "2026-07", periodEnd: "2026-08-01T00:00:00.000Z" };
 
 afterEach(() => vi.useRealTimers());
 
 describe("OrgQuota", () => {
-  it("admits exactly the allowance and reports the anniversary boundary", async () => {
+  it("admits exactly the allowance and says when it resets", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(JULY);
     const quota = env.ORG_QUOTA.getByName("quota:sequential");
-    const input = period({ limit: 2 });
-    expect(await quota.admit(input)).toMatchObject({ allowed: true, used: 1 });
-    expect(await quota.admit(input)).toMatchObject({ allowed: true, used: 2 });
-    expect(await quota.admit(input)).toMatchObject({
+    expect(await quota.admit({ ...PERIOD, limit: 2 })).toMatchObject({ allowed: true, used: 1 });
+    expect(await quota.admit({ ...PERIOD, limit: 2 })).toMatchObject({ allowed: true, used: 2 });
+    expect(await quota.admit({ ...PERIOD, limit: 2 })).toEqual({
       allowed: false,
       used: 2,
-      retryAfterSeconds: Math.ceil((Date.parse(input.periodEnd) - JULY) / 1_000),
+      limit: 2,
+      retryAfterSeconds: Math.ceil((Date.parse(PERIOD.periodEnd) - JULY) / 1_000),
     });
   });
 
@@ -48,82 +26,46 @@ describe("OrgQuota", () => {
     vi.setSystemTime(JULY);
     const quota = env.ORG_QUOTA.getByName("quota:concurrent");
     const results = await Promise.all(
-      Array.from({ length: 50 }, () => quota.admit(period({ limit: 20 }))),
+      Array.from({ length: 25 }, () => quota.admit({ ...PERIOD, limit: 10 })),
     );
-    expect(results.filter((result) => result.allowed)).toHaveLength(20);
-    const counts = results
-      .filter((result) => result.allowed && "used" in result)
-      .map((result) => "used" in result ? result.used : 0)
-      .sort((a, b) => a - b);
-    expect(counts).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+    expect(results.filter((result) => result.allowed)).toHaveLength(10);
+    expect(await quota.usage(PERIOD.periodId)).toBe(10);
   });
 
-  it("keeps Free history across paid and Free transitions", async () => {
+  it("applies whatever limit arrives, over the count already spent", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(JULY);
-    const quota = env.ORG_QUOTA.getByName("quota:history");
-    const free = period({ scheduleId: "free:created", scheduleRevision: 1 });
-    expect(await quota.admit(free)).toMatchObject({ allowed: true, used: 1 });
-    expect(await quota.admit(period({
-      scheduleId: "paid:generation",
-      scheduleRevision: 2,
-    }))).toMatchObject({ allowed: true, used: 1 });
-    expect(await quota.admit(period({
-      scheduleId: "free:created",
-      scheduleRevision: 3,
-    }))).toMatchObject({ allowed: true, used: 2 });
+    const quota = env.ORG_QUOTA.getByName("quota:plan-change");
+    expect(await quota.admit({ ...PERIOD, limit: 1 })).toMatchObject({ allowed: true, used: 1 });
+    expect(await quota.admit({ ...PERIOD, limit: 1 })).toMatchObject({ allowed: false });
+    // An upgrade lifts the ceiling; a downgrade below what was spent refuses.
+    expect(await quota.admit({ ...PERIOD, limit: 5 })).toMatchObject({ allowed: true, used: 2 });
+    expect(await quota.admit({ ...PERIOD, limit: 2 })).toMatchObject({ allowed: false, used: 2 });
   });
 
-  it("preserves usage on upgrades and rejects a stale larger limit", async () => {
+  it("counts each period on its own", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(JULY);
-    const quota = env.ORG_QUOTA.getByName("quota:upgrade");
-    expect(await quota.admit(period({ scheduleRevision: 10, limit: 5 })))
-      .toMatchObject({ used: 1 });
-    expect(await quota.admit(period({ scheduleRevision: 11, limit: 5 })))
-      .toMatchObject({ used: 2 });
-    expect(await quota.admit(period({ scheduleRevision: 12, limit: 2 })))
-      .toMatchObject({ allowed: false, used: 2 });
-    expect(await quota.admit(period({ scheduleRevision: 10, limit: 100 })))
-      .toEqual({ allowed: false, superseded: true });
+    const quota = env.ORG_QUOTA.getByName("quota:periods");
+    expect(await quota.admit({ ...PERIOD, limit: 5 })).toMatchObject({ used: 1 });
+    expect(await quota.usage("2026-07")).toBe(1);
+    expect(await quota.usage("2026-08")).toBe(0);
   });
 
-  it("does not let a delayed old period reopen after the next period starts", async () => {
+  it("counts a request that crosses midnight toward the month it was resolved in", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(Date.UTC(2026, 7, 16));
-    const quota = env.ORG_QUOTA.getByName("quota:late-period");
-    const next = period({
-      periodStart: "2026-08-15T00:00:00.000Z",
-      periodEnd: "2026-09-15T00:00:00.000Z",
-      resetAt: "2026-09-15T00:00:00.000Z",
-    });
-    expect(await quota.admit(next)).toMatchObject({ allowed: true, used: 1 });
-    expect(await quota.admit(period())).toEqual({ allowed: false, superseded: true });
+    // The period was resolved in July; the admission lands a moment into August.
+    vi.setSystemTime(Date.parse("2026-08-01T00:00:00.050Z"));
+    const quota = env.ORG_QUOTA.getByName("quota:midnight");
+    expect(await quota.admit({ ...PERIOD, limit: 100 })).toMatchObject({ allowed: true, used: 1 });
+    expect(await quota.usage("2026-07")).toBe(1);
   });
 
-  it("validates periods before adopting their revision", async () => {
+  it("refuses everything under a zero or malformed limit", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(JULY);
-    const quota = env.ORG_QUOTA.getByName("quota:invalid");
-    expect(await quota.admit(period({
-      scheduleRevision: 100,
-      periodEnd: "not-a-date",
-      resetAt: "not-a-date",
-    }))).toEqual({ allowed: false, superseded: true });
-    expect(await quota.admit(period({ scheduleRevision: 1 })))
-      .toMatchObject({ allowed: true, used: 1 });
+    const quota = env.ORG_QUOTA.getByName("quota:zero");
+    expect(await quota.admit({ ...PERIOD, limit: 0 })).toMatchObject({ allowed: false, used: 0 });
+    expect(await quota.admit({ ...PERIOD, limit: Number.NaN })).toMatchObject({ allowed: false });
   });
-});
-
-
-it("uses its own clock to reject both future and expired periods", async () => {
-  vi.useFakeTimers();
-  const quota = env.ORG_QUOTA.getByName("quota:clock-boundaries");
-  const input = period();
-  vi.setSystemTime(Date.parse(input.periodStart) - 1);
-  expect(await quota.admit(input)).toEqual({ allowed: false, superseded: true });
-  vi.setSystemTime(Date.parse(input.periodStart));
-  expect(await quota.admit(input)).toMatchObject({ allowed: true, used: 1 });
-  vi.setSystemTime(Date.parse(input.periodEnd));
-  expect(await quota.admit(input)).toEqual({ allowed: false, superseded: true });
 });
