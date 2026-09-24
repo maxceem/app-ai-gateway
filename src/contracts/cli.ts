@@ -4,6 +4,7 @@ import {
   CreatedApiKeySchema,
   ProviderGatewaySummarySchema,
   ProviderSummarySchema,
+  UsageTotalsSchema,
 } from "./responses.ts";
 import {
   ApiKeyCreateRequestSchema,
@@ -240,22 +241,12 @@ export const CliOperationSchema = z.object({
   result: CliOperationResultSchema.optional(),
   account: CliAccountSchema.nullable().optional(),
 });
-export const CliUsageTotalsSchema = z.object({
-  requests: z.number(),
-  input_tokens: z.number(),
-  cached_input_tokens: z.number(),
-  cache_write_tokens: z.number(),
-  output_tokens: z.number(),
-  cost_usd: z.number(),
-  errors: z.number(),
-  blocked: z.number(),
-});
 export const CliUsageResponseSchema = z.object({
   accountId: z.string(),
   month: z.string(),
-  totals: CliUsageTotalsSchema,
+  totals: UsageTotalsSchema,
   apps: z.array(
-    CliUsageTotalsSchema.extend({
+    UsageTotalsSchema.extend({
       appId: z.string(),
       deleted: z.boolean(),
       firstRecord: z.string(),

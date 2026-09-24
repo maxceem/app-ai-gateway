@@ -1,9 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
-import {
-  ProviderGatewayCreateRequestSchema,
-  ProviderGatewayRotateRequestSchema,
-  ProviderGatewayTestRequestSchema,
-  ProviderGatewayUpdateRequestSchema,
+import type {
+  ProviderGatewayCreateRequest,
+  ProviderGatewayRotateRequest,
+  ProviderGatewayTestRequest,
+  ProviderGatewayUpdateRequest,
 } from "../contracts/schemas";
 import type {
   ProviderGatewayDeleteResponse,
@@ -26,7 +26,7 @@ import {
   type ProviderGatewayConfig,
 } from "../db/schema";
 import { sealSecret } from "../vault/secrets";
-import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
+import { databaseErrorMatches, secretHint } from "./validation";
 import type { Actor } from "./actor";
 import {
   commitResourceWrite,
@@ -72,8 +72,11 @@ function requestedGateway(
     : { type: "vercel", config: {} };
 }
 
-export async function testProviderGateway(input: unknown): Promise<ProviderGatewayTestResponse> {
-  const body = schemaBody(ProviderGatewayTestRequestSchema, input);
+export async function testProviderGateway(
+  _scope: ManagementScope,
+  _actor: Actor,
+  body: ProviderGatewayTestRequest,
+): Promise<ProviderGatewayTestResponse> {
   return probeReport(await probeGatewayPreset(requestedGateway(body), body.token));
 }
 
@@ -94,11 +97,10 @@ export async function listProviderGateways(scope: ManagementScope, actor: Actor)
 export async function createProviderGateway(
   scope: ManagementScope,
   actor: Actor,
-  input: unknown,
+  body: ProviderGatewayCreateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderGatewayCreateRequestSchema, input);
   const gateway = requestedGateway(body);
   const id = crypto.randomUUID();
   const secretBlob = await sealSecret(env, "providerGatewayToken", [actor.organizationId, id], body.token);
@@ -125,11 +127,10 @@ export async function updateProviderGateway(
   scope: ManagementScope,
   actor: Actor,
   id: string,
-  input: unknown,
+  body: ProviderGatewayUpdateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderGatewayUpdateRequestSchema, input);
   const existing = await database(env.DB).query.providerGateway.findFirst({
     where: and(eq(providerGateway.id, id), eq(providerGateway.organizationId, actor.organizationId), eq(providerGateway.status, "active")),
   });
@@ -157,11 +158,10 @@ export async function rotateProviderGateway(
   scope: ManagementScope,
   actor: Actor,
   id: string,
-  input: unknown,
+  body: ProviderGatewayRotateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderGatewayRotateRequestSchema, input);
   const existing = await database(env.DB).query.providerGateway.findFirst({
     where: and(eq(providerGateway.id, id), eq(providerGateway.organizationId, actor.organizationId), eq(providerGateway.status, "active")),
   });

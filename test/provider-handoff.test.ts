@@ -112,6 +112,27 @@ const providerBody = () => ({
 });
 
 describe("provider browser submissions", () => {
+  it("refuses another origin before reading the body", async () => {
+    for (const step of ["details", "submit"]) {
+      const send = (url: string, suppliedOrigin: string) =>
+        worker.request(
+          `${url}/v1/cli/browser/op%3Aunknown/${step}`,
+          {
+            method: "POST",
+            headers: { origin: suppliedOrigin, "content-type": "application/json" },
+            body: "not json at all",
+          },
+          runtime,
+        );
+      // Reached on the API's own origin: there is no page here to find.
+      expect((await send("https://elsewhere.test", origin)).status).toBe(404);
+      // Reached from another page: refused before the malformed body is judged.
+      const foreign = await send(origin, "https://elsewhere.test");
+      expect(foreign.status).toBe(403);
+      await expect(foreign.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+    }
+  });
+
   it("creates once under replay/concurrency and never exposes the submitted secret in polling", async () => {
     const body = providerBody();
     const op = await operation("provider.add", body);

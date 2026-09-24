@@ -7,8 +7,7 @@ import {
 } from "../../core/account-lifecycle";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
-import { CliBootstrapRequestSchema, type CliOperation } from "../../contracts/cli";
-import { schemaBody } from "../../management/validation";
+import type { CliOperation } from "../../contracts/cli";
 import { ACCOUNT_RECOVERY_MS, unclaimedAccessDeadline } from "../../policy/accounts";
 import { bootstrapDecision } from "../../policy/deployment";
 import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
@@ -19,7 +18,8 @@ import {
   operationRow,
   SEALED_TTL,
 } from "./operations";
-import { cliJson, digest } from "./security";
+import { digest } from "./security";
+import type { OperationInput } from "../catalog-router";
 import type { CliContext, OperationRow } from "./types";
 
 async function retireKey(
@@ -41,8 +41,10 @@ async function retireKey(
  * and `expired` once account cleanup collected the account; that last row is
  * kept, so the same token cannot recreate an account the deadline removed.
  */
-export async function bootstrap(c: CliContext): Promise<CliOperation> {
-  const input = schemaBody(CliBootstrapRequestSchema, await cliJson(c.req.raw));
+export async function bootstrap(
+  c: CliContext,
+  { body: input }: OperationInput<"bootstrapCliAccount">,
+): Promise<CliOperation> {
   const deployment = c.get("deployment");
   const meta = deploymentMeta(c);
   const id = await operationId(input.token);

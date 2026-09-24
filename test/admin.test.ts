@@ -178,6 +178,27 @@ describe("admin API", () => {
     expect(await appTotal()).toBe(37);
   });
 
+  it("names the field at fault in a reprice request", async () => {
+    const appId = "admin-reprice-bad-month";
+    await seedApp(appId);
+    const response = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.6-luna", month: "not-a-month" }),
+      },
+    );
+    expect(response.status).toBe(400);
+    const body = await response.json<{ error: { code: string; message: string } }>();
+    expect(body.error.code).toBe("invalid_request");
+    // The month schema's own message names its field, so it is not prefixed again.
+    expect(body.error.message).toBe("month must use YYYY-MM format");
+  });
+
   it("rolls back every reprice chunk when a later chunk fails", async () => {
     const appId = "admin-reprice-atomic-chunks";
     const userId = "bulk-user";

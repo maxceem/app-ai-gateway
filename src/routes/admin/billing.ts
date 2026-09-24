@@ -10,14 +10,7 @@ import {
 import { accountLifecycle } from "../../core/account-lifecycle";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../../policy/accounts";
 import { getBillingQuotaResolution } from "../../billing/quota";
-import {
-  BillingCheckoutRequestSchema,
-  BillingPlanSelectionSchema,
-  BillingTrialRequestSchema,
-  type BillingStatusResponse,
-} from "../../contracts/billing";
-import { schemaBody } from "../../management/validation";
-import { jsonBody } from "./body";
+import type { BillingStatusResponse } from "../../contracts/billing";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
@@ -103,8 +96,7 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
 
 routes.handle("getBillingStatus", status);
 
-routes.handle("startCheckout", async (c) => {
-  const input = schemaBody(BillingCheckoutRequestSchema, await jsonBody(c));
+routes.handle("startCheckout", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).createCheckout({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -117,8 +109,7 @@ routes.handle("startCheckout", async (c) => {
   return result;
 });
 
-routes.handle("changePlan", async (c) => {
-  const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
+routes.handle("changePlan", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).changePlan({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -138,8 +129,7 @@ routes.handle("cancelSubscription", async (c) => {
   return result;
 });
 
-routes.handle("resumeSubscription", async (c) => {
-  const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
+routes.handle("resumeSubscription", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).resumeSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -150,8 +140,7 @@ routes.handle("resumeSubscription", async (c) => {
   return result;
 });
 
-routes.handle("startTrial", async (c) => {
-  const input = schemaBody(BillingTrialRequestSchema, await jsonBody(c));
+routes.handle("startTrial", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).startTrial({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,

@@ -1262,13 +1262,13 @@
           },
           "revision": {
             "type": "integer",
-            "exclusiveMinimum": 0
+            "exclusiveMinimum": 0,
+            "description": "Required: the revision the application was read at. An absent one answers 400 app_revision_required, a stale one 409 app_revision_conflict."
           }
         },
         "required": [
           "name",
-          "config",
-          "revision"
+          "config"
         ],
         "additionalProperties": false
       },

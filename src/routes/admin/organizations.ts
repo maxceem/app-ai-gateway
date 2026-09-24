@@ -1,10 +1,7 @@
 import type { AuthState } from "@maxceem/cf-auth";
 import { Hono } from "hono";
 import { identityAuthFor } from "../../auth/identity";
-import { OrganizationSelectRequestSchema } from "../../contracts/schemas";
 import type { IdentitySession } from "../../contracts/responses";
-import { schemaBody } from "../../management/validation";
-import { jsonBody } from "./body";
 import { adminRouter } from "../catalog-router";
 import type { AdminVariables } from "../../middleware/admin";
 
@@ -56,10 +53,7 @@ routes.handle("listOrganizations", async (c) => {
  * library's own rule that such a credential may not read or move between the
  * others its owner belongs to.
  */
-routes.handle("selectOrganization", async (c) => {
-  const actor = c.get("actor");
-  const { organizationId } = schemaBody(OrganizationSelectRequestSchema, await jsonBody(c));
-
+routes.handle("selectOrganization", async (c, { actor, body: { organizationId } }) => {
   const identityAuth = await identityAuthFor(c);
   const state = await identityAuth.service.selectOrganization(
     c.get("authState"),

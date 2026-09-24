@@ -9,6 +9,7 @@ import { currentMonth } from "../../management/usage-queries";
 import { bootstrap } from "./bootstrap";
 import { cliAuthenticate, createOperation, deploymentMeta, pollOperation } from "./operations";
 import {
+  assertConsoleOrigin,
   browserDetails,
   browserSubmit,
   browserRegister,
@@ -16,6 +17,7 @@ import {
 import type { CliCapabilitiesResponse } from "../../contracts/cli";
 import { catalogRouter } from "../catalog-router";
 import { SERVER_VERSION } from "../../core/version";
+import { cliJson } from "./security";
 import type { CliEnv } from "./types";
 
 export const cliRoutes = new Hono<CliEnv>();
@@ -24,6 +26,8 @@ export const cliRoutes = new Hono<CliEnv>();
 const routes = catalogRouter(cliRoutes, "/v1/cli", {
   authorized: true,
   authenticate: cliAuthenticate,
+  // Bounded, because the bootstrap and the browser handoff are public.
+  readBody: (c) => cliJson(c.req.raw),
 });
 cliRoutes.use("*", async (c, next) => {
   c.header("Cache-Control", "no-store");
@@ -66,8 +70,8 @@ routes.handle("getCliCapabilities", (c) => {
 routes.handle("bootstrapCliAccount", bootstrap);
 routes.handle("createCliOperation", createOperation);
 routes.handle("pollCliOperation", pollOperation);
-routes.handle("cliBrowserDetails", browserDetails);
-routes.handle("cliBrowserSubmit", browserSubmit);
+routes.handle("cliBrowserDetails", browserDetails, { before: assertConsoleOrigin });
+routes.handle("cliBrowserSubmit", browserSubmit, { before: assertConsoleOrigin });
 /*
  * Two of the four browser endpoints relay Better Auth's own `Response` — its
  * status and its `Set-Cookie` are the answer, not merely its body — so they are
@@ -75,8 +79,8 @@ routes.handle("cliBrowserSubmit", browserSubmit);
  */
 routes.relay("cliBrowserRegister", browserRegister);
 routes.relay("cliBrowserGoogle", browserGoogle);
-routes.handle("getCliAccount", async (c) => {
-  const account = await accountLifecycle(c.env, c.get("actor").organizationId);
+routes.handle("getCliAccount", async (c, { actor }) => {
+  const account = await accountLifecycle(c.env, actor.organizationId);
   const billing = await getBillingQuotaResolution(
     c.get("deployment"),
     c.env,
@@ -89,7 +93,7 @@ routes.handle("getCliAccount", async (c) => {
     : null;
   return { deployment: deploymentMeta(c), account, billing, usage };
 });
-routes.handle("getCliUsage", async (c, { query }) => {
+routes.handle("getCliUsage", async (c, { actor, query }) => {
   const month = query.month ?? currentMonth();
-  return accountMonthUsage(c.env.DB, c.get("actor").organizationId, month);
+  return accountMonthUsage(c.env.DB, actor.organizationId, month);
 });

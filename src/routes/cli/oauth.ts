@@ -3,7 +3,7 @@ import { GatewayError } from "../../core/errors";
 import { operationKind } from "./operation-kinds";
 import { derive, digest, proofMatches } from "./security";
 import { browserPath, deploymentMeta } from "./operations";
-import { verifiedSubmission } from "./browser";
+import { relayedSubmission } from "./browser";
 import type { CliContext } from "./types";
 export const CLAIM_OAUTH_COOKIE = "cli_claim_oauth";
 
@@ -38,7 +38,7 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
   }
 }
 export async function browserGoogle(c: CliContext): Promise<Response> {
-  const { row } = await verifiedSubmission(c);
+  const { row } = await relayedSubmission(c);
   if (operationKind(row.kind).type !== "claim" || row.state !== "pending")
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
   const meta = deploymentMeta(c);

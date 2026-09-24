@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import { ApiKeyCreateRequestSchema } from "../contracts/schemas";
+import type { ApiKeyCreateRequest } from "../contracts/schemas";
 import type {
   ApiKey,
   ApiKeyListResponse,
@@ -13,7 +13,6 @@ import { appApiKey, type app } from "../db/schema";
 import type { Actor } from "./actor";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { schemaBody } from "./validation";
 import { commitResourceWrite, type ResourceWriteBoundary } from "./write-boundary";
 
 type AppRow = typeof app.$inferSelect;
@@ -44,11 +43,10 @@ export async function createAppKey(
   scope: ManagementScope,
   actor: Actor,
   appRow: AppRow,
-  input: unknown,
+  { name }: ApiKeyCreateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<CreatedApiKey> {
   const appId = apiKeyApp(appRow).id;
-  const { name } = schemaBody(ApiKeyCreateRequestSchema, input);
   const generated = await generateApiKey();
   const now = new Date().toISOString();
   const outcome: CreatedApiKey = {
@@ -79,6 +77,7 @@ export async function createAppKey(
 
 export async function listAppKeys(
   scope: ManagementScope,
+  _actor: Actor,
   appRow: AppRow,
 ): Promise<ApiKeyListResponse> {
   const appId = apiKeyApp(appRow).id;
@@ -92,6 +91,7 @@ export async function listAppKeys(
 
 export async function revokeAppKey(
   scope: ManagementScope,
+  _actor: Actor,
   appRow: AppRow,
   keyId: string,
 ): Promise<ApiKeyRevokeResponse> {

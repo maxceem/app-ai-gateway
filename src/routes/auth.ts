@@ -11,7 +11,7 @@ import { verifyIssuerToken } from "../client-auth/issuer";
 import { issueGatewayToken } from "../client-auth/gateway-token";
 import type { AppRecord } from "../core/types";
 import { database } from "../db";
-import { schemaBody } from "../management/validation";
+import { parseRequest } from "../management/validation";
 import { jsonBody } from "./admin/body";
 import { appAuthChallenge, appUser, type AuthEventName, type AuthMethod } from "../db/schema";
 import {
@@ -386,7 +386,7 @@ authRoutes.post("/register", async (c) => {
     assertAppActive(app);
     const auth = appleAuth(app);
     attempt.authMethod = "attest";
-    const body = schemaBody(AppAttestRegisterRequestSchema, rawBody);
+    const body = parseRequest(AppAttestRegisterRequestSchema, rawBody);
     const { userId, trusted } = await attestedUserId(auth.end_user, body);
     if (trusted) attempt.userId = userId;
     // Do not spend a challenge or ask Apple to attest a replacement key for a
@@ -459,7 +459,7 @@ async function apiKeyExchange(
     throw new GatewayError(400, "invalid_request", "api_key and issuer_token are required");
   }
   attempt.authMethod = "api_key";
-  const body = schemaBody(ApiKeyTokenRequestSchema, rawBody);
+  const body = parseRequest(ApiKeyTokenRequestSchema, rawBody);
   // Token exchange is a security boundary where revocation must take effect
   // immediately. Issuer-less data-plane authentication keeps the short
   // verification cache, but an exchange always confirms the key's current
@@ -493,7 +493,7 @@ async function appAttestExchange(
     );
   }
   attempt.authMethod = "attest";
-  const body = schemaBody(AppAttestTokenRequestSchema, rawBody);
+  const body = parseRequest(AppAttestTokenRequestSchema, rawBody);
   const { userId, trusted } = await attestedUserId(auth.end_user, body);
   if (trusted) attempt.userId = userId;
   const user = await database(env.DB).query.appUser.findFirst({

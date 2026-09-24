@@ -1,7 +1,4 @@
-import type { Context } from "hono";
 import { GatewayError } from "../../core/errors";
-import type { app } from "../../db/schema";
-import type { AdminVariables } from "../../middleware/admin";
 import type { ManagementScope } from "../../management/scope";
 import type { RequestVariables } from "../../middleware/request-scope";
 
@@ -29,7 +26,7 @@ export function managementScope(c: {
  *
  * One reader for every route that takes a body, so an unparseable request is
  * refused with the same sentence wherever it arrives. What the parsed value
- * has to *be* is a schema's business — see `schemaBody`.
+ * has to *be* is a schema's business — see `parseRequest`.
  *
  * Typed by what it uses rather than by one surface's `Context`, so the
  * application-authentication routes, which carry different variables, read
@@ -41,15 +38,4 @@ export async function jsonBody(c: { req: { json: () => Promise<unknown> } }): Pr
   } catch {
     throw new GatewayError(400, "invalid_request", "A JSON object is required");
   }
-}
-
-/**
- * The application an `/apps/:app` route is about, which the admin scope has
- * already found in the caller's account. Its absence means a route was mounted
- * outside that scope, which is a bug here rather than a request to refuse.
- */
-export function scopedApp(c: Context<{ Bindings: Env; Variables: AdminVariables }>): typeof app.$inferSelect {
-  const row = c.get("adminApp");
-  if (!row) throw new GatewayError(500, "internal_error", "Route is not scoped to an application");
-  return row;
 }

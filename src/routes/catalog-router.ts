@@ -5,14 +5,20 @@ import {
   type BodiedOperation,
   type Catalog,
   type OperationName,
+  type OperationParams,
   type OperationResponse,
   type OperationSpec,
   type ParsedOperationQuery,
+  type ParsedOperationRequest,
 } from "../contracts/catalog";
-import type { z } from "zod";
 import { assertAccountAccess } from "../core/account-lifecycle";
 import { GatewayError } from "../core/errors";
+import type { app as appTable } from "../db/schema";
+import type { AdminActor } from "../management/actor";
+import { parseRequest } from "../management/validation";
+import type { ManagementScope } from "../management/scope";
 import type { AdminVariables } from "../middleware/admin";
+import { jsonBody, managementScope } from "./admin/body";
 
 /**
  * Every operation a route module has mounted through here.
@@ -85,27 +91,36 @@ async function authorize(c: AuthorizedContext, spec: OperationSpec): Promise<voi
   }
 }
 
+type AppRow = typeof appTable.$inferSelect;
+
 /**
- * A query string through its operation's schema, or a 400 naming the first
- * parameter at fault. Most of these messages name their parameter already
- * ("limit must be…"); the rest are prefixed with it.
+ * The application an `/apps/{app}` operation is about, which the admin scope
+ * has already found in the caller's account. Its absence means an operation was
+ * mounted outside that scope, which is a bug here rather than a request to
+ * refuse.
  */
-function parsedQuery(schema: z.ZodType, raw: Record<string, string>): unknown {
-  const parsed = schema.safeParse(raw);
-  if (parsed.success) return parsed.data;
-  const issue = parsed.error.issues[0];
-  const name = issue?.path.join(".") ?? "";
-  const message = issue?.message ?? "Invalid query string";
-  throw new GatewayError(
-    400,
-    "invalid_request",
-    name === "" || message.startsWith(`${name} `) ? message : `${name}: ${message}`,
-  );
+function scopedApp(c: AuthorizedContext): AppRow {
+  const row = c.get("adminApp");
+  if (!row) throw new GatewayError(500, "internal_error", "Route is not scoped to an application");
+  return row;
 }
 
 /** What a mounted handler is handed: the request, typed by the catalog's path. */
 export type OperationContext<E extends HonoEnv, K extends OperationName> =
   Context<E, HonoPath<Catalog[K]["path"]>>;
+
+/**
+ * Everything else a handler is handed, already parsed and resolved: the query
+ * and the body through the operation's own schemas, the request's management
+ * scope, the actor on an operation that has one, and the application an
+ * `/apps/{app}` operation is about.
+ */
+export type OperationInput<K extends OperationName> = {
+  query: ParsedOperationQuery<K>;
+  body: ParsedOperationRequest<K>;
+  scope: ManagementScope;
+} & (Catalog[K]["security"] extends "management" | "session" ? { actor: AdminActor } : unknown)
+  & ("app" extends keyof OperationParams<K> ? { app: AppRow } : unknown);
 
 /**
  * Mounts handlers on the paths the catalog declares.
@@ -114,7 +129,9 @@ export type OperationContext<E extends HonoEnv, K extends OperationName> =
  * the path and the success status come from the entry, and the body's type is
  * the entry's response schema, so a handler that drifts from the contract fails
  * `pnpm run check` at its own `return`. The path reaches the handler too, so
- * `c.req.param("app")` is a string rather than a maybe-string.
+ * `c.req.param("id")` is a string rather than a maybe-string, and so does
+ * everything in {@link OperationInput}: a service is handed a typed body and
+ * never parses one itself.
  *
  * Anything a response needs beyond its body — a cookie, a cache header — is set
  * on `c` before returning, as cf-auth already does when it writes the
@@ -131,8 +148,14 @@ export function catalogRouter<E extends HonoEnv>(
      * right before the entry's policy is applied.
      */
     authenticate?: (c: Context<E>) => Promise<void>;
+    /**
+     * Reads a request body before its schema parses it. The same refusal for
+     * an unparseable body everywhere unless a surface has limits of its own.
+     */
+    readBody?: (c: Context<E>) => Promise<unknown>;
   } = {},
 ) {
+  const readBody = options.readBody ?? jsonBody;
   const mount = (name: OperationName, handler: (c: Context<E>) => Promise<Response>): void => {
     const spec: OperationSpec = CATALOG[name];
     const guarded = spec.security === "management" || spec.security === "session";
@@ -158,19 +181,41 @@ export function catalogRouter<E extends HonoEnv>(
       name: K,
       handler: (
         c: OperationContext<E, K>,
-        input: { query: ParsedOperationQuery<K> },
+        input: OperationInput<K>,
       ) => OperationResponse<K> | Promise<OperationResponse<K>>,
+      options: {
+        /**
+         * A refusal of this operation's own that must come before its body is
+         * read: after the policy, before any parsing.
+         */
+        before?: (c: OperationContext<E, K>) => void | Promise<void>;
+      } = {},
     ): void {
       // The catalog's status is `200 | 201` for everything mounted here; the one
       // 302 in the table is the Google redirect, which answers with no body and
       // is served by better-auth rather than from this router.
       const spec: OperationSpec = CATALOG[name];
       const status = (spec.status ?? 200) as 200 | 201;
+      const request = spec.request;
+      if (request !== undefined && "content" in request) {
+        throw new Error(`${name} takes a multipart body, which is not parsed through this router`);
+      }
+      const actor = spec.security === "management" || spec.security === "session";
+      const scoped = spec.path.includes("{app}");
       mount(name, async (c) => {
         // Parsed after the policy has run, so a caller who may not ask is told
         // that rather than what is wrong with how they asked.
-        const query = (spec.query ? parsedQuery(spec.query, c.req.query()) : {}) as ParsedOperationQuery<K>;
-        return c.json(await handler(c as unknown as OperationContext<E, K>, { query }), status);
+        const context = c as unknown as OperationContext<E, K>;
+        if (options.before) await options.before(context);
+        const admin = c as unknown as AuthorizedContext;
+        const input = {
+          query: spec.query ? parseRequest(spec.query, c.req.query()) : {},
+          body: request ? parseRequest(request, await readBody(c)) : undefined,
+          scope: managementScope(admin),
+          ...(actor ? { actor: admin.get("actor") } : {}),
+          ...(scoped ? { app: scopedApp(admin) } : {}),
+        } as OperationInput<K>;
+        return c.json(await handler(context, input), status);
       });
     },
 

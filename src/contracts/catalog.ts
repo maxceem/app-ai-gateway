@@ -1251,6 +1251,17 @@ export type OperationQuery<K extends OperationName> = z.input<QuerySchema[K]>;
 /** The same query once the router has parsed it, which is what a handler reads. */
 export type ParsedOperationQuery<K extends OperationName> = z.output<QuerySchema[K]>;
 /**
+ * The body once the router has parsed it, which is what a handler reads:
+ * `undefined` for an operation that takes none, or takes the multipart form no
+ * catalog-mounted handler serves.
+ */
+export type ParsedOperationRequest<K extends OperationName> = ParsedBody[K];
+type ParsedBody = {
+  [K in OperationName]: Catalog[K] extends { readonly request: infer S extends z.ZodType }
+    ? z.output<S>
+    : undefined;
+};
+/**
  * A request body as a *client composes* it, before the schema's defaults and
  * normalizations apply — `z.input` rather than `z.infer`. An application
  * configuration may name one issuer as a bare string where the stored form is

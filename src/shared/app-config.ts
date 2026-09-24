@@ -13,7 +13,6 @@
  * and one parser that ships everywhere cannot.
  */
 
-import type { z } from "zod";
 import {
   AppConfigSchema,
   AppleAppIdentitySchema,
@@ -22,6 +21,7 @@ import {
   type AppWrite,
   type LimitScopeConfig,
 } from "../contracts/schemas.ts";
+import { schemaIssueMessage } from "./schema-issues.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
@@ -59,7 +59,6 @@ export type {
 } from "../contracts/schemas.ts";
 
 import {
-  APP_ID_IS_SERVER_ASSIGNED,
   scopeHasLimits,
   type ProviderPolicy,
   type RoutingConfig,
@@ -74,24 +73,6 @@ export class ConfigError extends Error {
 }
 
 /**
- * The one way a schema rejection is worded, wherever one is reported.
- *
- * The first issue only: a configuration is repaired one field at a time, and a
- * list of every consequence of a single missing key is noise in an error
- * message. The path comes first because it is what the reader has to find.
- */
-export function configErrorFor(error: z.ZodError<unknown>): ConfigError {
-  const issue = error.issues[0];
-  if (issue === undefined) return new ConfigError("Invalid application configuration");
-  // The one rejection a client is likely to hit while catching up with the
-  // contract, and "unrecognized key" would not tell it what to do instead.
-  if (issue.code === "unrecognized_keys" && issue.keys.includes("id")) {
-    return new ConfigError(APP_ID_IS_SERVER_ASSIGNED);
-  }
-  return new ConfigError(`${issue.path.join(".") || "body"}: ${issue.message}`);
-}
-
-/**
  * Raw JSON as a configuration, or a {@link ConfigError} naming the first field
  * at fault. Stored rows, request bodies and console drafts all come through
  * here, which is what makes "what is stored" and "what is accepted" one answer.
@@ -99,7 +80,7 @@ export function configErrorFor(error: z.ZodError<unknown>): ConfigError {
 export function parseAppConfig(raw: unknown): AppConfig {
   const parsed = AppConfigSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
-  throw configErrorFor(parsed.error);
+  throw new ConfigError(schemaIssueMessage(parsed.error));
 }
 
 /**
@@ -120,7 +101,7 @@ export function appleIdentityProblem(identity: { team_id: string; bundle_id: str
 export function parseAppWrite(raw: unknown): AppWrite {
   const parsed = AppWriteSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
-  throw configErrorFor(parsed.error);
+  throw new ConfigError(schemaIssueMessage(parsed.error));
 }
 
 /** One reason a configuration would be refused, and the field it is about. */

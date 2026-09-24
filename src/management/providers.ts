@@ -1,9 +1,8 @@
 import { and, eq } from "drizzle-orm";
-import {
-  BASE_URL_REQUIRES_SECRET,
-  ProviderCreateRequestSchema,
-  ProviderTestRequestSchema,
-  ProviderUpdateRequestSchema,
+import type {
+  ProviderCreateRequest,
+  ProviderTestRequest,
+  ProviderUpdateRequest,
 } from "../contracts/schemas";
 import type {
   ProviderDeleteResponse,
@@ -30,7 +29,7 @@ import {
   type ProviderStatus,
 } from "../db/schema";
 import { openSecret, sealSecret } from "../vault/secrets";
-import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
+import { databaseErrorMatches, secretHint } from "./validation";
 import type { Actor } from "./actor";
 import {
   commitResourceWrite,
@@ -162,9 +161,8 @@ export async function listProviders(scope: ManagementScope, actor: Actor): Promi
   return { providers: rows.map(({ row, gatewayType }) => serialize(row, storedRoute(gatewayType))) };
 }
 
-export async function testProvider(scope: ManagementScope, actor: Actor, input: unknown): Promise<ProviderTestResponse> {
+export async function testProvider(scope: ManagementScope, actor: Actor, body: ProviderTestRequest): Promise<ProviderTestResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderTestRequestSchema, input);
   if (body.secret !== undefined) {
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
     return assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl));
@@ -182,11 +180,10 @@ export async function testProvider(scope: ManagementScope, actor: Actor, input: 
 export async function createProvider(
   scope: ManagementScope,
   actor: Actor,
-  input: unknown,
+  body: ProviderCreateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderCreateRequestSchema, input);
   const slug = body.slug ?? body.type;
   assertReservedSlug(body.type, slug);
   const existing = await database(env.DB).query.provider.findFirst({
@@ -204,8 +201,8 @@ export async function createProvider(
     routeAdapter("direct").validateRouteConfig(gatewayRoute);
     secret = body.secret;
   } else {
-    const gatewayId = body.providerGatewayId;
-    if (!gatewayId) throw new GatewayError(400, "invalid_request", "providerGatewayId is required");
+    // The schema admits exactly one of `secret` and `providerGatewayId`.
+    const gatewayId = body.providerGatewayId!;
     providerGatewayId = gatewayId;
     const gatewayType = await gatewayAdapterType(env, actor.organizationId, gatewayId);
     assertRouteServesProvider(gatewayType, body.type);
@@ -257,11 +254,10 @@ export async function updateProvider(
   scope: ManagementScope,
   actor: Actor,
   id: string,
-  input: unknown,
+  body: ProviderUpdateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderUpdateRequestSchema, input);
   const row = await database(env.DB).query.provider.findFirst({
     where: and(eq(provider.id, id), eq(provider.organizationId, actor.organizationId)),
   });
@@ -285,9 +281,6 @@ export async function updateProvider(
   if (body.baseUrl !== undefined) {
     if (body.baseUrl !== null && row.providerGatewayId !== null) {
       throw new GatewayError(400, "invalid_request", "A gateway-routed instance cannot carry a base URL: the gateway owns the upstream origin");
-    }
-    if (body.baseUrl !== null && body.secret === undefined && row.secretBlob !== null) {
-      throw new GatewayError(400, "invalid_request", BASE_URL_REQUIRES_SECRET);
     }
     baseUrl = body.baseUrl === null ? null : guardedBaseUrl(body.baseUrl);
     updates.baseUrl = baseUrl;

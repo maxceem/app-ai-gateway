@@ -13,6 +13,8 @@ import {
   HandoffRotatePayloadSchema,
   ProviderCreateRequestSchema,
   ProviderGatewayCreateRequestSchema,
+  ProviderGatewayRotateRequestSchema,
+  ProviderUpdateRequestSchema,
 } from "../../contracts/schemas";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
@@ -26,6 +28,7 @@ import {
 } from "../../management/provider-gateways";
 import { createProvider, updateProvider } from "../../management/providers";
 import type { ManagementScope } from "../../management/scope";
+import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import type { AccountAccessMode } from "../../policy/accounts";
 
@@ -55,11 +58,21 @@ export interface ClaimKind extends KindBase {
   readonly type: "claim";
 }
 
-/** The input one resource write runs with: the accepted payload, and a browser's secret if one was sent. */
+/**
+ * What one resource write is made from: the payload as the CLI sent it, or as
+ * a browser step stored it, and the secret that step's approver supplied.
+ */
 export interface ResourceInput {
   payload: Record<string, unknown>;
   secret: string | undefined;
 }
+
+/** One management write, bound to its body, waiting for the operation's boundary. */
+export type ResourceWrite = (
+  scope: ManagementScope,
+  actor: Actor,
+  boundary: ResourceWriteBoundary,
+) => Promise<unknown>;
 
 export interface ResourceKind extends KindBase {
   readonly type: "resource";
@@ -69,15 +82,18 @@ export interface ResourceKind extends KindBase {
   readonly secret: "required" | "optional" | null;
   /** The existing row its browser step edits, shown to the approver as it now stands. */
   readonly target: "provider" | "provider_gateway" | null;
-  /** The payload grammar for each path; the request schema already admitted their union. */
-  payload(browser: boolean): z.ZodType<Record<string, unknown>>;
-  /** The one management write, through the operation's boundary. */
-  run(
-    scope: ManagementScope,
-    actor: Actor,
-    input: ResourceInput,
-    boundary: ResourceWriteBoundary,
-  ): Promise<unknown>;
+  /**
+   * What a browser step stores and shows its approver: the reviewable part of
+   * the write, never its secret. Null for a kind that has no browser step.
+   */
+  readonly handoff: z.ZodType<Record<string, unknown>> | null;
+  /**
+   * The one management write, its body parsed from the input by the
+   * service's own schema — the only parse that body gets, and the one that
+   * refuses it. Called before an immediate operation is recorded, and when a
+   * browser step has supplied its secret.
+   */
+  prepare(input: ResourceInput): ResourceWrite;
   /** What the write's own answer is recorded as, in `CliOperationResult`'s shape. */
   result(outcome: Record<string, unknown>): Record<string, unknown>;
   /**
@@ -96,27 +112,27 @@ function withoutKey(result: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** The application an `app.key.add` names, which must be this account's. */
-async function ownedApp(scope: ManagementScope, actor: Actor, appId: unknown) {
-  const row = typeof appId === "string"
-    ? await database(scope.env.DB).query.app.findFirst({
-      where: and(eq(app.id, appId), eq(app.organizationId, actor.organizationId)),
-    })
-    : undefined;
+async function ownedApp(scope: ManagementScope, actor: Actor, appId: string) {
+  const row = await database(scope.env.DB).query.app.findFirst({
+    where: and(eq(app.id, appId), eq(app.organizationId, actor.organizationId)),
+  });
   if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
   return row;
 }
 
 /** Both provider edits are one write; a rotation is an update whose changed field is the secret. */
-const updateProviderKind = (secret: "required" | "optional", payload: z.ZodType<Record<string, unknown>>): ResourceKind => ({
+const updateProviderKind = (secret: "required" | "optional", handoff: z.ZodType<Record<string, unknown>>): ResourceKind => ({
   type: "resource",
   open: "setup",
   continueTo: "cli",
   browser: "always",
   secret,
   target: "provider",
-  payload: () => payload,
-  run: (scope, actor, { payload: { id, ...fields }, secret: value }, boundary) =>
-    updateProvider(scope, actor, String(id), { ...fields, ...(value === undefined ? {} : { secret: value }) }, boundary),
+  handoff,
+  prepare: ({ payload: { id, ...fields }, secret: value }) => {
+    const body = parseRequest(ProviderUpdateRequestSchema, { ...fields, ...(value === undefined ? {} : { secret: value }) });
+    return (scope, actor, boundary) => updateProvider(scope, actor, String(id), body, boundary);
+  },
   result: (outcome) => ({ provider: outcome.provider }),
 });
 
@@ -134,8 +150,11 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     browser: "never",
     secret: null,
     target: null,
-    payload: () => AppWriteSchema,
-    run: (scope, actor, { payload }, boundary) => createApp(scope, actor, payload, boundary),
+    handoff: null,
+    prepare: ({ payload }) => {
+      const body = parseRequest(AppWriteSchema, payload);
+      return (scope, actor, boundary) => createApp(scope, actor, body, boundary);
+    },
     result: (outcome) => ({ app: outcome.app, api_key: outcome.api_key }),
     redact: withoutKey,
   },
@@ -146,9 +165,12 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     browser: "never",
     secret: null,
     target: null,
-    payload: () => CliAppKeyAddPayloadSchema,
-    run: async (scope, actor, { payload: { app: appId, ...body } }, boundary) =>
-      createAppKey(scope, actor, await ownedApp(scope, actor, appId), body, boundary),
+    handoff: null,
+    prepare: ({ payload }) => {
+      const { app: appId, ...body } = parseRequest(CliAppKeyAddPayloadSchema, payload);
+      return async (scope, actor, boundary) =>
+        createAppKey(scope, actor, await ownedApp(scope, actor, appId), body, boundary);
+    },
     result: (outcome) => ({ api_key: outcome }),
     redact: withoutKey,
   },
@@ -159,9 +181,11 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     browser: "optional",
     secret: "optional",
     target: null,
-    payload: (browser) => browser ? HandoffProviderAddPayloadSchema : ProviderCreateRequestSchema,
-    run: (scope, actor, { payload, secret }, boundary) =>
-      createProvider(scope, actor, { ...payload, ...(secret === undefined ? {} : { secret }) }, boundary),
+    handoff: HandoffProviderAddPayloadSchema,
+    prepare: ({ payload, secret }) => {
+      const body = parseRequest(ProviderCreateRequestSchema, { ...payload, ...(secret === undefined ? {} : { secret }) });
+      return (scope, actor, boundary) => createProvider(scope, actor, body, boundary);
+    },
     result: (outcome) => ({ provider: outcome.provider }),
   },
   "provider.update": updateProviderKind("optional", HandoffProviderUpdatePayloadSchema),
@@ -173,9 +197,11 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     browser: "optional",
     secret: "required",
     target: null,
-    payload: (browser) => browser ? HandoffProviderGatewayAddPayloadSchema : ProviderGatewayCreateRequestSchema,
-    run: (scope, actor, { payload, secret }, boundary) =>
-      createProviderGateway(scope, actor, { ...payload, ...(secret === undefined ? {} : { token: secret }) }, boundary),
+    handoff: HandoffProviderGatewayAddPayloadSchema,
+    prepare: ({ payload, secret }) => {
+      const body = parseRequest(ProviderGatewayCreateRequestSchema, { ...payload, ...(secret === undefined ? {} : { token: secret }) });
+      return (scope, actor, boundary) => createProviderGateway(scope, actor, body, boundary);
+    },
     result: (outcome) => ({ gateway: outcome.gateway }),
   },
   "provider-gateway.rotate-key": {
@@ -185,9 +211,11 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     browser: "always",
     secret: "required",
     target: "provider_gateway",
-    payload: () => HandoffRotatePayloadSchema,
-    run: (scope, actor, { payload: { id, revision }, secret }, boundary) =>
-      rotateProviderGateway(scope, actor, String(id), { revision, token: secret }, boundary),
+    handoff: HandoffRotatePayloadSchema,
+    prepare: ({ payload: { id, revision }, secret }) => {
+      const body = parseRequest(ProviderGatewayRotateRequestSchema, { revision, token: secret });
+      return (scope, actor, boundary) => rotateProviderGateway(scope, actor, String(id), body, boundary);
+    },
     result: (outcome) => ({ gateway: outcome.gateway }),
   },
 };

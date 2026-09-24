@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { getBillingAccess, requireActiveBilling } from "../billing/gateway";
-import { AppUpdateSchema, AppWriteSchema } from "../contracts/schemas";
+import type { AppUpdate, AppWrite } from "../contracts/schemas";
 import type {
   AppDeleteResponse,
   AppListResponse,
@@ -28,7 +28,6 @@ import {
 import { andCondition } from "../policy/sql";
 import {
   ConfigError,
-  configErrorFor,
   selectedProviderPolicies,
   type AppConfig,
 } from "../shared/app-config";
@@ -37,7 +36,8 @@ import { appInsertStatement, updateApp as writeAppRow } from "./app-writes";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
 import { databaseErrorMatches } from "./validation";
-import { assertMonth, organizationMonthUsage } from "./usage-queries";
+import { assertMonth, EMPTY_USAGE_TOTALS, organizationMonthUsage } from "./usage-queries";
+import { endUserIdentities } from "./users";
 import type { ResourceWriteBoundary } from "./write-boundary";
 
 type AppRow = typeof app.$inferSelect;
@@ -73,44 +73,6 @@ const APP_ID_ATTEMPTS = 16;
 
 const APP_REVISION_REQUIRED =
   "Send the revision the application was read at as revision";
-
-interface AppWriteBody {
-  name: string;
-  config: AppConfig;
-  status?: "active" | "disabled";
-}
-
-function appBody(value: unknown): AppWriteBody {
-  const parsed = AppWriteSchema.safeParse(value);
-  // One formatter, shared with the console and the CLI, so a body rejected here
-  // reads the same wherever it was composed.
-  if (!parsed.success) throw new GatewayError(400, "invalid_request", configErrorFor(parsed.error).message);
-  const body = parsed.data;
-  return {
-    name: body.name,
-    config: body.config,
-    ...(body.status === "active" || body.status === "disabled" ? { status: body.status } : {}),
-  };
-}
-
-/**
- * An update body: a write, plus the revision it is made against.
- *
- * The revision is only shape-checked here. Whether one is *present* is settled
- * by the caller after it has looked the application up, so that an id nobody
- * holds still answers `404` rather than being told what a well-formed body
- * would have looked like.
- */
-function appUpdateBody(value: unknown): AppWriteBody & { revision: number | undefined } {
-  const { revision, ...write } = (value ?? {}) as { revision?: unknown } & Record<string, unknown>;
-  if (revision !== undefined && AppUpdateSchema.shape.revision.safeParse(revision).error) {
-    throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
-  }
-  // The rest is reported exactly as it is on create, by the one parser that
-  // knows how to name the field at fault — `revision` is lifted out first
-  // because the write body admits no key it does not define.
-  return { ...appBody(write), revision: revision as number | undefined };
-}
 
 function slugifyAppName(name: string): string {
   const slug = name
@@ -252,32 +214,14 @@ export async function listApps(
     .where(eq(app.organizationId, organizationId))
     .orderBy(app.id);
   const { results: usage } = await organizationMonthUsage(env.DB, organizationId, month);
-  const usageByApp = new Map(usage.map((row) => [row.app_id, row]));
+  const usageByApp = new Map(usage.map(({ app_id, ...totals }) => [app_id, totals]));
+  const identities = endUserIdentities({ organizationId });
   const counts = await env.DB.prepare(
-    `WITH identities AS (
-       SELECT app_user.app_id, app_user.id, app_user.status
-         FROM app_user
-         JOIN app AS owned_app ON owned_app.id = app_user.app_id
-        WHERE owned_app.organization_id = ?
-       UNION ALL
-       SELECT events.app_id, events.user_id AS id, 'active' AS status
-         FROM app_usage_event AS events
-         JOIN app AS owned_app ON owned_app.id = events.app_id
-        WHERE owned_app.organization_id = ?
-          -- Userless traffic belongs to no user, so it synthesizes none. Every
-          -- such row carries a NULL that would otherwise group into one
-          -- phantom identity and be counted here.
-          AND events.user_id IS NOT NULL
-          AND
-          NOT EXISTS (
-          SELECT 1 FROM app_user WHERE app_user.app_id = events.app_id AND app_user.id = events.user_id
-        )
-        GROUP BY events.app_id, events.user_id
-     )
+    `${identities.sql}
      SELECT app_id, COUNT(*) AS total,
             SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
        FROM identities GROUP BY app_id`,
-  ).bind(organizationId, organizationId).all<{
+  ).bind(...identities.params).all<{
     app_id: string;
     total: number;
     blocked: number;
@@ -311,7 +255,6 @@ export async function listApps(
     month,
     has_proxied_requests: proxied !== null,
     apps: rows.map((row) => {
-      const totals = usageByApp.get(row.id);
       const userCounts = countsByApp.get(row.id);
       const config = appRecordFromRow(row).config;
       return {
@@ -322,16 +265,7 @@ export async function listApps(
         authentication_type: config.authentication.type,
         ...summary(config, providerIndex),
         users: { total: userCounts?.total ?? 0, blocked: userCounts?.blocked ?? 0 },
-        usage: {
-          requests: totals?.requests ?? 0,
-          input_tokens: totals?.input_tokens ?? 0,
-          cached_input_tokens: totals?.cached_input_tokens ?? 0,
-          cache_write_tokens: totals?.cache_write_tokens ?? 0,
-          output_tokens: totals?.output_tokens ?? 0,
-          cost_usd: totals?.cost_usd ?? 0,
-          errors: totals?.errors ?? 0,
-          blocked: totals?.blocked ?? 0,
-        },
+        usage: usageByApp.get(row.id) ?? EMPTY_USAGE_TOTALS,
       };
     }),
   };
@@ -347,16 +281,12 @@ export async function listApps(
 export async function createApp(
   scope: ManagementScope,
   actor: Actor,
-  input: unknown,
+  body: AppWrite,
   boundary?: ResourceWriteBoundary,
 ): Promise<CreatedAppResponse> {
   const { env } = scope;
   await requireEntitlement(scope, actor.organizationId);
-  const body = appBody(input);
-  const name = body.name.trim();
-  if (name.length === 0 || name.length > 100) {
-    throw new GatewayError(400, "invalid_request", "name must be 1-100 characters");
-  }
+  const { name } = body;
   const organizationId = actor.organizationId;
   const config = validatedConfig(
     body.config,
@@ -420,7 +350,7 @@ export async function createApp(
   throw new GatewayError(409, "conflict", "Could not allocate a unique app ID; retry the same request");
 }
 
-export function getApp(row: AppRow): AppResponse {
+export function getApp(_scope: ManagementScope, _actor: Actor, row: AppRow): AppResponse {
   return { app: serializeRow(row) };
 }
 
@@ -429,10 +359,9 @@ export async function validateApp(
   scope: ManagementScope,
   actor: Actor,
   existing: AppRow,
-  input: unknown,
+  body: AppWrite,
 ): Promise<AppValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  const body = appBody(input);
   validatedConfig(
     body.config,
     await authoritativeOrganizationProviders(scope.env, actor.organizationId),
@@ -445,10 +374,9 @@ export async function validateApp(
 export async function validateAppDraft(
   scope: ManagementScope,
   actor: Actor,
-  input: unknown,
+  body: AppWrite,
 ): Promise<AppDraftValidateResponse> {
   await requireEntitlement(scope, actor.organizationId);
-  const body = appBody(input);
   validatedConfig(body.config, await authoritativeOrganizationProviders(scope.env, actor.organizationId));
   return { valid: true };
 }
@@ -457,13 +385,14 @@ export async function updateApp(
   scope: ManagementScope,
   actor: Actor,
   existing: AppRow,
-  input: unknown,
+  body: AppUpdate,
 ): Promise<AppResponse> {
   const { env } = scope;
   await requireEntitlement(scope, actor.organizationId);
   const appId = existing.id;
-  const body = appUpdateBody(input);
   const organizationId = actor.organizationId;
+  // Optional in the shape only so that its absence has a code of its own; see
+  // `AppUpdateSchema`.
   if (body.revision === undefined) {
     throw new GatewayError(400, "app_revision_required", APP_REVISION_REQUIRED);
   }
@@ -497,16 +426,12 @@ export async function updateApp(
 export async function deleteApp(
   scope: ManagementScope,
   actor: Actor,
-  appId: string,
+  existing: AppRow,
   confirm: string | undefined,
 ): Promise<AppDeleteResponse> {
-  const { env } = scope;
+  const appId = existing.id;
   if (confirm !== appId) throw new GatewayError(400, "invalid_request", "Pass ?confirm=<app-id> to delete an app");
-  const db = database(env.DB);
-  const existing = await db.query.app.findFirst({
-    where: and(eq(app.id, appId), eq(app.organizationId, actor.organizationId)),
-  });
-  if (!existing) throw new GatewayError(404, "app_not_found", "App is not registered");
+  const db = database(scope.env.DB);
   // One D1 batch, which is one transaction: a failure part-way rolls every
   // statement back instead of leaving an application with no keys, or keys and
   // users belonging to no application.

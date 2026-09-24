@@ -36,17 +36,22 @@ The primary target is iOS applications, with secure measures for calling AI APIs
   `src/middleware/admin.ts` only authenticates: it establishes the one `Actor`
   (`src/management/actor.ts`) and decides nothing about it. Never write a path
   string or a method test to gate a route.
-- What an admin route does lives in `src/management/`, not beside its path: a
-  route reads the body, builds a `ManagementScope`, and calls one service
-  function taking `(scope, actor, …)`. Nothing under `src/management` may
+- What an admin route does lives in `src/management/`, not beside its path: the
+  router parses the operation's query and body with the catalog's schemas and
+  hands the route the `ManagementScope`, the actor and, under `/apps/{app}`,
+  the application; the route calls one service function taking
+  `(scope, actor, …)` with that typed body, and no service parses one itself.
+  Nothing under `src/management` may
   import from `src/routes`; when a route file holds something a service needs,
   move it into `src/management` rather than importing upwards.
 - `AppConfigSchema` in `src/contracts/schemas.ts` is the only parser of an
   application configuration, and its output is what is stored. The server, the
   console and the CLI all reach it through `parseAppConfig` in
-  `src/shared/app-config.ts`, which is also the one place a rejection is worded.
-  Add a rule there and nowhere else; a check written beside a caller is a second
-  grammar, and this project has had one before.
+  `src/shared/app-config.ts`. Add a rule there and nowhere else; a check written
+  beside a caller is a second grammar, and this project has had one before.
+  `schemaIssueMessage` in `src/shared/schema-issues.ts` words every schema
+  rejection the server answers with — a request body or a query — and the ones
+  `parseAppConfig` and `parseAppWrite` throw.
 - A catalog-mounted handler returns the operation's response body; its type is
   the catalog's, so a handler that drifts from its own document fails
   `pnpm run check` at its `return`. `satisfies` is for the few routes mounted

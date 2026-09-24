@@ -1,15 +1,29 @@
 /**
  * Every query and calendar calculation the usage surfaces read through.
  *
- * It lives here rather than beside the routes because the application service
- * in `./apps.ts` needs the same month totals the usage endpoints report, and
- * nothing under `src/management` may reach into `src/routes` to get them.
+ * It lives in the management layer because the services beside it — the
+ * application list and the end-user list — read the same totals the usage
+ * endpoints report, the auth-event summary reads the same day and range
+ * helpers, and the CLI's account usage sums the same counters, so each is
+ * written once.
  */
 import { and, eq, gte, lte, sql, type SQL } from "drizzle-orm";
 import { GatewayError } from "../core/errors";
+import type { UsageTotals } from "../contracts/responses";
 import { MONTH_FORMAT_MESSAGE, MONTH_PATTERN } from "../contracts/schemas";
 import { appUsageEvent } from "../db/schema";
 
+/** The totals of a scope with nothing recorded, which every usage answer falls back to. */
+export const EMPTY_USAGE_TOTALS: Readonly<UsageTotals> = Object.freeze({
+  requests: 0,
+  input_tokens: 0,
+  cached_input_tokens: 0,
+  cache_write_tokens: 0,
+  output_tokens: 0,
+  cost_usd: 0,
+  errors: 0,
+  blocked: 0,
+});
 
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -89,7 +103,7 @@ export const usageTotals = {
  */
 
 /** The counters, over per-event rows, where one row is one request. */
-function rawTotals(t: string): string {
+export function rawTotals(t: string): string {
   return `
       COUNT(*) AS requests,
       COALESCE(SUM(${t}.input_tokens), 0) AS input_tokens,
@@ -106,7 +120,7 @@ function rawTotals(t: string): string {
  * `requests` events and the two status counters therefore weigh by it rather
  * than counting rows.
  */
-function rollupTotals(t: string): string {
+export function rollupTotals(t: string): string {
   return `
       COALESCE(SUM(${t}.requests), 0) AS requests,
       COALESCE(SUM(${t}.input_tokens), 0) AS input_tokens,
@@ -119,7 +133,7 @@ function rollupTotals(t: string): string {
 }
 
 /** Re-sums the union's two already-grouped halves into one row per key. */
-const UNION_TOTALS = `
+export const UNION_TOTALS = `
     SUM(requests) AS requests,
     SUM(input_tokens) AS input_tokens,
     SUM(cached_input_tokens) AS cached_input_tokens,
@@ -129,19 +143,8 @@ const UNION_TOTALS = `
     SUM(errors) AS errors,
     SUM(blocked) AS blocked`;
 
-export interface UsageBucket {
-  requests: number;
-  input_tokens: number;
-  cached_input_tokens: number;
-  cache_write_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  errors: number;
-  blocked: number;
-}
-
 /** The six figures the month summary endpoint has always reported. */
-export type MonthTotals = Omit<UsageBucket, "errors" | "blocked">;
+export type MonthTotals = Omit<UsageTotals, "errors" | "blocked">;
 
 /**
  * Which `by` values survive compaction.
@@ -177,7 +180,7 @@ export function usageTimeseries(
   db: D1Database,
   appId: string,
   range: DateRange,
-): Promise<{ results: (UsageBucket & { date: string; provider: string })[] }> {
+): Promise<{ results: (UsageTotals & { date: string; provider: string })[] }> {
   return db
     .prepare(`
 SELECT date, provider,${UNION_TOTALS}
@@ -223,7 +226,7 @@ export function usageBreakdown(
   range: DateRange,
   by: RollupDimension,
   limit: number,
-): Promise<{ results: (UsageBucket & { key: string })[] }> {
+): Promise<{ results: (UsageTotals & { key: string })[] }> {
   // Interpolated because a column name cannot be a bound parameter. The value is
   // a lookup on ROLLUP_DIMENSIONS, never caller text.
   const column = ROLLUP_DIMENSIONS[by];
@@ -261,13 +264,17 @@ LIMIT ?4`)
  * never as both. `errors` and `blocked` are summed by the halves and then
  * dropped: this endpoint has never reported them, and widening a documented
  * response is not this change's business.
+ *
+ * An aggregate with no GROUP BY always answers with one row, though `.first()`
+ * is typed nullable; the empty month is filled in rather than spread away, so
+ * the documented shape holds even if that ever stops being true.
  */
-export function usageMonthTotals(
+export async function usageMonthTotals(
   db: D1Database,
   appId: string,
   month: string,
-): Promise<MonthTotals | null> {
-  return db
+): Promise<MonthTotals> {
+  const row = await db
     .prepare(`
 SELECT
     COALESCE(SUM(requests), 0) AS requests,
@@ -287,6 +294,9 @@ FROM (
 )`)
     .bind(appId, month)
     .first<MonthTotals>();
+  if (row) return row;
+  const { errors: _errors, blocked: _blocked, ...empty } = EMPTY_USAGE_TOTALS;
+  return empty;
 }
 
 /**
@@ -300,7 +310,7 @@ export function organizationMonthUsage(
   db: D1Database,
   organizationId: string,
   month: string,
-): Promise<{ results: (UsageBucket & { app_id: string })[] }> {
+): Promise<{ results: (UsageTotals & { app_id: string })[] }> {
   return db
     .prepare(`
 SELECT app_id,${UNION_TOTALS}

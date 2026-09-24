@@ -2,6 +2,7 @@ import { cliJson, proofMatches } from "./security";
 import { GatewayError } from "../../core/errors";
 import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { CliSubmissionRequestSchema } from "../../contracts/cli";
+import type { ParsedOperationRequest } from "../../contracts/catalog";
 import type {
   CliApprovalRefusal,
   CliBrowserDetailsResponse,
@@ -9,7 +10,7 @@ import type {
   CliHandoffContinuation,
   CliOperationKind,
 } from "../../contracts/cli";
-import { schemaBody } from "../../management/validation";
+import { parseRequest } from "../../management/validation";
 import {
   accountLifecycle,
   assertAccountAccess,
@@ -19,6 +20,7 @@ import { operationKind, TARGET_SNAPSHOTS, type OperationKind } from "./operation
 import { authState, browserOperation, runResourceOperation } from "./operations";
 import { claimRefusal, completeIdentity } from "./identity-handoff";
 import type { AuthState } from "@maxceem/cf-auth";
+import type { OperationInput } from "../catalog-router";
 import type { CliContext, OperationRow } from "./types";
 
 /**
@@ -52,13 +54,24 @@ function outcomeFor(kind: OperationKind): CliBrowserSubmitResponse {
   };
 }
 
-export async function verifiedSubmission(c: CliContext) {
+/**
+ * Refuses a browser endpoint reached other than from the first-party approval
+ * page. Runs before the body is read, so a request from anywhere else learns
+ * nothing about what it sent.
+ */
+export function assertConsoleOrigin(c: CliContext): void {
   const consoleOrigin = c.get("deployment").identity().consoleOrigin;
   if (new URL(c.req.url).origin !== consoleOrigin)
     throw new GatewayError(404, "not_found", "Page was not found");
   if (c.req.header("origin") !== consoleOrigin)
     throw new GatewayError(403, "forbidden", "Use the first-party approval page");
-  const input = schemaBody(CliSubmissionRequestSchema, await cliJson(c.req.raw));
+}
+
+/**
+ * The operation a browser submission proves it may act on, once
+ * {@link assertConsoleOrigin} has passed and the body has been parsed.
+ */
+export async function verifiedSubmission(c: CliContext, input: ParsedOperationRequest<"cliBrowserSubmit">) {
   const row = await browserOperation(c);
   if (row.state === "pending" && row.expires_at <= Date.now())
     throw new GatewayError(410, "invalid_request", "Operation has expired");
@@ -67,6 +80,15 @@ export async function verifiedSubmission(c: CliContext) {
   await enforceEndpointRateLimit(c.env, "submission", row.id);
   await assertAccountAccess(c.get("deployment"), c.env, row.organization_id!, "read");
   return { input, row };
+}
+
+/**
+ * The same verification for the two relayed endpoints, which are not mounted
+ * through the catalog router and so check the origin and read the body here.
+ */
+export async function relayedSubmission(c: CliContext) {
+  assertConsoleOrigin(c);
+  return verifiedSubmission(c, parseRequest(CliSubmissionRequestSchema, await cliJson(c.req.raw)));
 }
 
 /**
@@ -94,8 +116,11 @@ async function reviewSnapshots(
   };
 }
 
-export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsResponse> {
-  const { row } = await verifiedSubmission(c);
+export async function browserDetails(
+  c: CliContext,
+  { body }: OperationInput<"cliBrowserDetails">,
+): Promise<CliBrowserDetailsResponse> {
+  const { row } = await verifiedSubmission(c, body);
   const state = await authState(c, true);
   const payload = row.request_json ? JSON.parse(row.request_json) as Record<string, unknown> : {};
   return {
@@ -115,7 +140,7 @@ export async function browserDetails(c: CliContext): Promise<CliBrowserDetailsRe
 }
 
 export async function browserRegister(c: CliContext): Promise<Response> {
-  const { row, input } = await verifiedSubmission(c);
+  const { row, input } = await relayedSubmission(c);
   // The one door an operation opens onto registration, and only the kind whose
   // approver is expected to have no account yet may open it.
   if (operationKind(row.kind).type !== "claim" || row.state !== "pending")
@@ -129,8 +154,11 @@ export async function browserRegister(c: CliContext): Promise<Response> {
   });
 }
 
-export async function browserSubmit(c: CliContext): Promise<CliBrowserSubmitResponse> {
-  const { row, input } = await verifiedSubmission(c);
+export async function browserSubmit(
+  c: CliContext,
+  { body }: OperationInput<"cliBrowserSubmit">,
+): Promise<CliBrowserSubmitResponse> {
+  const { row, input } = await verifiedSubmission(c, body);
   if (input.approve !== true)
     throw new GatewayError(400, "invalid_request", "Explicit approval is required");
   const kind = operationKind(row.kind);
@@ -145,9 +173,12 @@ export async function browserSubmit(c: CliContext): Promise<CliBrowserSubmitResp
     throw new GatewayError(400, "invalid_request", "A nonempty credential is required");
   if (kind.secret === "required" && secret === undefined)
     throw new GatewayError(400, "invalid_request", "A provider credential is required");
-  await runResourceOperation(c, row, kind, {
+  // A step already approved is answered as approved, before its payload is
+  // judged again.
+  if (row.state !== "pending") return outcomeFor(kind);
+  await runResourceOperation(c, row, kind, kind.prepare({
     payload: row.request_json ? JSON.parse(row.request_json) as Record<string, unknown> : {},
     secret,
-  });
+  }));
   return outcomeFor(kind);
 }

@@ -649,12 +649,7 @@ export const UserBlockResponseSchema = z.object({
 export const MonthlyUsageResponseSchema = z.object({
   app_id: z.string(),
   month: z.string(),
-  requests: z.number(),
-  input_tokens: z.number(),
-  cached_input_tokens: z.number(),
-  cache_write_tokens: z.number(),
-  output_tokens: z.number(),
-  cost_usd: z.number(),
+  ...UsageTotalsSchema.omit({ errors: true, blocked: true }).shape,
 });
 
 export const TimeseriesBucketSchema = UsageTotalsSchema.extend({

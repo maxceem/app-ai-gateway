@@ -1,10 +1,21 @@
 import type { CliUsageResponse } from "../contracts/cli";
+import type { UsageTotals } from "../contracts/responses";
+import {
+  EMPTY_USAGE_TOTALS,
+  rawTotals,
+  rollupTotals,
+  UNION_TOTALS,
+} from "../management/usage-queries";
 
 /**
  * Durable ownership survives app deletion and both retention passes.
  *
  * Typed as the documented response rather than inferred, because it is answered
  * verbatim by `GET /v1/cli/usage`: the query and the contract move together.
+ * The counters are the ones every usage aggregate sums, from
+ * `src/management/usage-queries.ts`; what is this query's own is matching on
+ * the organization each row was recorded under rather than on the apps it owns
+ * now, which is what keeps a deleted app's usage in the account's.
  */
 export async function accountMonthUsage(
   db: D1Database,
@@ -17,50 +28,27 @@ export async function accountMonthUsage(
   const result = await db
     .prepare(
       `
-    SELECT app_id AS appId, SUM(requests) AS requests,
-      SUM(input_tokens) AS input_tokens, SUM(cached_input_tokens) AS cached_input_tokens,
-      SUM(cache_write_tokens) AS cache_write_tokens, SUM(output_tokens) AS output_tokens,
-      SUM(cost_usd) AS cost_usd, SUM(errors) AS errors, SUM(blocked) AS blocked,
+    SELECT app_id AS appId,${UNION_TOTALS},
       MIN(first_record) AS firstRecord
     FROM (
-      SELECT app_id, COUNT(*) AS requests, SUM(input_tokens) AS input_tokens,
-        SUM(cached_input_tokens) AS cached_input_tokens, SUM(cache_write_tokens) AS cache_write_tokens,
-        SUM(output_tokens) AS output_tokens, SUM(cost_usd) AS cost_usd,
-        SUM(status='provider_error') AS errors, SUM(status LIKE 'blocked_%') AS blocked,
-        MIN(created_at) AS first_record
-      FROM app_usage_event WHERE organization_id=?1 AND created_at>=?2 AND created_at<?3 GROUP BY app_id
+      SELECT events.app_id AS app_id,${rawTotals("events")},
+        MIN(events.created_at) AS first_record
+      FROM app_usage_event AS events
+      WHERE events.organization_id=?1 AND events.created_at>=?2 AND events.created_at<?3
+      GROUP BY events.app_id
       UNION ALL
-      SELECT app_id, SUM(requests), SUM(input_tokens), SUM(cached_input_tokens),SUM(cache_write_tokens),
-        SUM(output_tokens),SUM(cost_usd),SUM(CASE WHEN status='provider_error' THEN requests ELSE 0 END),
-        SUM(CASE WHEN status LIKE 'blocked_%' THEN requests ELSE 0 END),MIN(bucket)
-      FROM app_usage_rollup WHERE organization_id=?1 AND bucket>=?2 AND bucket<?3 GROUP BY app_id
+      SELECT rollup.app_id AS app_id,${rollupTotals("rollup")},
+        MIN(rollup.bucket) AS first_record
+      FROM app_usage_rollup AS rollup
+      WHERE rollup.organization_id=?1 AND rollup.bucket>=?2 AND rollup.bucket<?3
+      GROUP BY rollup.app_id
     ) GROUP BY app_id ORDER BY app_id`,
     )
     .bind(accountId, month, end)
-    .all<{
-      appId: string;
-      requests: number;
-      input_tokens: number;
-      cached_input_tokens: number;
-      cache_write_tokens: number;
-      output_tokens: number;
-      cost_usd: number;
-      errors: number;
-      blocked: number;
-      firstRecord: string;
-    }>();
-  const totals = {
-    requests: 0,
-    input_tokens: 0,
-    cached_input_tokens: 0,
-    cache_write_tokens: 0,
-    output_tokens: 0,
-    cost_usd: 0,
-    errors: 0,
-    blocked: 0,
-  };
+    .all<UsageTotals & { appId: string; firstRecord: string }>();
+  const totals = { ...EMPTY_USAGE_TOTALS };
   for (const row of result.results)
-    for (const key of Object.keys(totals) as Array<keyof typeof totals>)
+    for (const key of Object.keys(totals) as (keyof UsageTotals)[])
       totals[key] += row[key];
   const current = await db
     .prepare("SELECT id FROM app WHERE organization_id=?")

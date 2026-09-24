@@ -19,21 +19,18 @@ import {
 } from "../../core/account-lifecycle";
 import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
-import {
-  CliOperationRequestSchema,
-  type CliOperation,
-  type CliOperationResult,
-} from "../../contracts/cli";
+import type { CliOperation, CliOperationResult } from "../../contracts/cli";
 import { mgmtAuthTables } from "../../db/schema";
 import { actorFromOperation } from "../../management/actor";
-import { schemaBody } from "../../management/validation";
+import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import { managementActor } from "../../middleware/admin";
 import { accountAccessCondition } from "../../policy/sql";
 import { openSecret, sealSecret } from "../../vault/secrets";
 import { managementScope } from "../admin/body";
-import { operationKind, type ResourceInput, type ResourceKind } from "./operation-kinds";
-import { cliJson, derive, digest } from "./security";
+import type { OperationInput } from "../catalog-router";
+import { operationKind, type ResourceKind, type ResourceWrite } from "./operation-kinds";
+import { derive, digest } from "./security";
 import type { CliContext, CliEnv, OperationRow } from "./types";
 
 /** How long a browser step may take before its operation expires. */
@@ -211,7 +208,7 @@ export async function runResourceOperation(
   c: CliContext,
   row: OperationRow,
   kind: ResourceKind,
-  input: ResourceInput,
+  write: ResourceWrite,
 ): Promise<void> {
   if (row.state !== "pending") return;
   const actor = actorFromOperation(row);
@@ -254,7 +251,7 @@ export async function runResourceOperation(
     },
   };
   try {
-    await kind.run(scope, actor, input, boundary);
+    await write(scope, actor, boundary);
   } catch (error) {
     if (await settled()) return;
     throw error;
@@ -271,10 +268,11 @@ export async function runResourceOperation(
  * with the same operation — rerun if its write never landed, reported if it
  * did.
  */
-export async function createOperation(c: CliContext): Promise<CliOperation> {
-  const input = schemaBody(CliOperationRequestSchema, await cliJson(c.req.raw));
+export async function createOperation(
+  c: CliContext,
+  { body: input, actor }: OperationInput<"createCliOperation">,
+): Promise<CliOperation> {
   const kind = operationKind(input.kind);
-  const actor = c.get("actor");
   const meta = deploymentMeta(c);
   if (actor.credentialType === "session" && c.req.header("origin") !== meta.consoleOrigin) {
     throw new GatewayError(403, "forbidden", "Use the first-party console for browser operations");
@@ -289,9 +287,15 @@ export async function createOperation(c: CliContext): Promise<CliOperation> {
   const browser = kind.type === "claim"
     || (kind.type === "resource"
       && (kind.browser === "always" || (kind.browser === "optional" && "browser" in input && input.browser === true)));
-  const payload = kind.type === "resource"
-    ? schemaBody(kind.payload(browser), input.payload)
-    : {};
+  // A browser step stores what its approver will review; anything else is
+  // prepared now, so a payload its write would refuse is refused before the
+  // operation is recorded. The request schema admits `browser` only for a kind
+  // with a handoff.
+  const handoff = kind.type === "resource" && browser ? kind.handoff : null;
+  const payload = handoff ? parseRequest(handoff, input.payload) : {};
+  const write = kind.type === "resource" && !browser
+    ? kind.prepare({ payload: input.payload, secret: undefined })
+    : null;
   const id = await operationId(input.token);
   const requestHash = await digest(JSON.stringify({ kind: input.kind, payload: input.payload, browser }));
 
@@ -339,8 +343,8 @@ export async function createOperation(c: CliContext): Promise<CliOperation> {
   ) {
     throw new GatewayError(409, "conflict", "This operation token is already bound to a different request");
   }
-  if (kind.type === "resource" && !browser && row.state === "pending") {
-    await runResourceOperation(c, row, kind, { payload, secret: undefined });
+  if (kind.type === "resource" && write && row.state === "pending") {
+    await runResourceOperation(c, row, kind, write);
     row = (await operationRow(c.env.DB, id))!;
   }
   return operationStatus(c, row, input.token);

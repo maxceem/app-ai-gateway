@@ -434,6 +434,10 @@ export const AppConfigSchema = z.object({
 export type AppConfig = z.output<typeof AppConfigSchema>;
 export type AppConfigInput = z.input<typeof AppConfigSchema>;
 
+/** The answer to a body that still names an id, wherever one is rejected. */
+export const APP_ID_IS_SERVER_ASSIGNED =
+  "id is assigned by the server: omit it and read app.id from the response";
+
 /**
  * The body of every application write. It carries no `id`: the gateway derives
  * one from `name` on create and answers with it as `app.id`, and no request may
@@ -445,6 +449,9 @@ export const AppWriteSchema = z.object({
   name: z.string().trim().min(1).max(100),
   config: AppConfigSchema,
   status: z.enum(["active", "disabled"]).optional(),
+}, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.includes("id") ? APP_ID_IS_SERVER_ASSIGNED : undefined,
 }).strict().meta({ id: "AppWrite" });
 
 /**
@@ -454,18 +461,19 @@ export const AppWriteSchema = z.object({
  * resource — every read already answers with it — and a body is the one channel
  * neither a CDN nor a browser's CORS rules interfere with: an `ETag` is
  * rewritten to its weak form by anything that compresses the response, and is
- * unreadable to a cross-origin client unless the server exposes it. Requiring
- * it here rather than accepting its absence means a client that has not read
- * the application cannot overwrite it blind.
+ * unreadable to a cross-origin client unless the server exposes it. It is
+ * required all the same, so a client that has not read the application cannot
+ * overwrite it blind; the shape leaves it optional only so that its absence is
+ * answered with a code of its own, `app_revision_required`, once the
+ * application has been found.
  */
 export const AppUpdateSchema = AppWriteSchema.extend({
-  revision: z.number().int().positive(),
+  revision: z.number().int().positive().optional().meta({
+    description:
+      "Required: the revision the application was read at. An absent one answers 400 app_revision_required, a stale one 409 app_revision_conflict.",
+  }),
 }).meta({ id: "AppUpdate" });
 export type AppUpdate = z.infer<typeof AppUpdateSchema>;
-
-/** The answer to a body that still names an id, wherever one is rejected. */
-export const APP_ID_IS_SERVER_ASSIGNED =
-  "id is assigned by the server: omit it and read app.id from the response";
 
 /**
  * Apple's key id is the base64 SHA-256 of the public key — 44 characters — and

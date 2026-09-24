@@ -725,6 +725,20 @@ describe("application conditional writes", () => {
     expect(latest.body.app.revision).toBe(2);
     expect(latest.body.app.name).toBe("Edited");
   });
+
+  it("names a malformed revision as the field at fault", async () => {
+    const appId = "conditional-edit-malformed";
+    await seedServerApp(appId);
+    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
+      method: "PUT",
+      headers: { ...AUTH, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Edited", config: serverConfig(), revision: 0 }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json<{ error: { code: string; message: string } }>();
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).toMatch(/^revision/u);
+  });
 });
 
 describe("authoritative admin configuration", () => {
