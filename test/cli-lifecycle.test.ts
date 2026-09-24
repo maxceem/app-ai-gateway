@@ -1087,7 +1087,7 @@ it("rejects browser submissions on the API host with explicit and fallback conso
     ).toBe(0);
     expect(
       (
-        await request(testEnv, `/browser/${op.id}/details`, input, {
+        await request(testEnv, `/browser/${op.id}/details`, { submissionToken: input.submissionToken }, {
           origin: "https://example.test",
         })
       ).status,

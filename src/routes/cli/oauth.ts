@@ -1,9 +1,9 @@
 import { identityAuthFor, relaySocialSignIn } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
-import { operationKind } from "./operation-kinds";
 import { derive, digest, proofMatches } from "./security";
 import { browserPath, deploymentMeta } from "./operations";
 import { relayedSubmission } from "./browser";
+import { CliBrowserProofSchema } from "../../contracts/cli";
 import type { CliContext } from "./types";
 export const CLAIM_OAUTH_COOKIE = "cli_claim_oauth";
 
@@ -38,11 +38,11 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
   }
 }
 export async function browserGoogle(c: CliContext): Promise<Response> {
-  const { row } = await relayedSubmission(c);
-  if (operationKind(row.kind).type !== "claim" || row.state !== "pending")
+  const { row } = await relayedSubmission(c, CliBrowserProofSchema);
+  if (row.family !== "claim" || row.state !== "pending")
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim");
   const meta = deploymentMeta(c);
-  const encoded = btoa(JSON.stringify({ id: row.id, expires: row.expires_at }));
+  const encoded = btoa(JSON.stringify({ id: row.id, expires: row.expiresAt }));
   const signature = await derive(c.env.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
   const rawResult = await (await identityAuthFor(c, { claimRegistration: true })).auth.api.signInSocial({
     body: {
@@ -62,7 +62,7 @@ export async function browserGoogle(c: CliContext): Promise<Response> {
   const headers = new Headers(relayed.headers);
   headers.append(
     "Set-Cookie",
-    `${CLAIM_OAUTH_COOKIE}=${encoded}.${signature}; Path=/v1/auth/callback/google; HttpOnly; SameSite=Lax; Max-Age=${Math.max(1, Math.floor((row.expires_at - Date.now()) / 1000))}${meta.consoleOrigin.startsWith("https:") ? "; Secure" : ""}`,
+    `${CLAIM_OAUTH_COOKIE}=${encoded}.${signature}; Path=/v1/auth/callback/google; HttpOnly; SameSite=Lax; Max-Age=${Math.max(1, Math.floor((row.expiresAt - Date.now()) / 1000))}${meta.consoleOrigin.startsWith("https:") ? "; Secure" : ""}`,
   );
   return new Response(relayed.body, { status: relayed.status, headers });
 }

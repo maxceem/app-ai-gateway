@@ -23,7 +23,6 @@ import { GatewayError } from "../../core/errors";
 import type { CliOperation, CliOperationResult } from "../../contracts/cli";
 import { mgmtAuthTables } from "../../db/schema";
 import { fromCompiled } from "../../db/sql";
-import { actorFromOperation } from "../../management/actor";
 import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import { managementActor } from "../../middleware/admin";
@@ -31,9 +30,16 @@ import { accountAccessCondition } from "../../policy/sql";
 import { openSecret, sealSecret } from "../../vault/secrets";
 import { managementScope } from "../admin/body";
 import type { OperationInput } from "../catalog-router";
-import { operationKind, type ResourceKind, type ResourceWrite } from "./operation-kinds";
+import { operationKind, type ResourceWrite } from "./operation-kinds";
+import {
+  completeStatement,
+  operationRow,
+  type ActorOperation,
+  type BrowserStep,
+  type ResourceOperation,
+} from "./operation-store";
 import { derive, digest } from "./security";
-import type { CliContext, CliEnv, OperationRow } from "./types";
+import type { CliContext, CliEnv } from "./types";
 
 /** How long a browser step may take before its operation expires. */
 export const BROWSER_TTL = 15 * 60_000;
@@ -80,17 +86,16 @@ export async function authState(c: CliContext, interactive = false) {
   return c.get("authState");
 }
 
-export async function operationRow(db: D1Database, id: string): Promise<OperationRow | null> {
-  return db.prepare("SELECT * FROM mgmt_operation WHERE id=?").bind(id).first<OperationRow>();
-}
+/** An operation that asks a browser for something. */
+export type BrowserOperation = ActorOperation & { browser: BrowserStep };
 
-/** The row an approval page addresses, which must be one that asks a browser for something. */
-export async function browserOperation(c: CliContext): Promise<OperationRow> {
+/** The operation an approval page addresses, which must be one that asks a browser for something. */
+export async function browserOperation(c: CliContext): Promise<BrowserOperation> {
   const row = await operationRow(c.env.DB, c.req.param("id") ?? "");
-  if (!row || row.browser_proof_hash === null) {
+  if (!row || row.family === "bootstrap" || row.browser === null) {
     throw new GatewayError(404, "not_found", "Operation was not found");
   }
-  return row;
+  return { ...row, browser: row.browser };
 }
 
 /**
@@ -100,7 +105,7 @@ export async function browserOperation(c: CliContext): Promise<OperationRow> {
  */
 export async function storedOutcome(
   env: Env,
-  row: Pick<OperationRow, "id">,
+  row: { id: string },
   result: Record<string, unknown>,
   redact: ((result: Record<string, unknown>) => Record<string, unknown>) | undefined,
   now: number,
@@ -114,37 +119,13 @@ export async function storedOutcome(
 }
 
 /**
- * The statement that completes a pending operation, recording what it achieved.
- *
- * `onlyIfPreviousChanged` ties completion to the statement before it in the
- * same batch: `changes()` is the previous statement's row count on the same
- * connection, and a D1 batch is one transaction on one connection, so the
- * operation completes exactly when the write it authorized changed exactly one
- * row. A write that matched nothing leaves the operation pending and
- * retryable.
- */
-export function completeStatement(
-  db: D1Database,
-  row: Pick<OperationRow, "id">,
-  stored: { outcome: string; sealed: string | null; sealedUntil: number | null },
-  now: number,
-  options: { onlyIfPreviousChanged?: boolean } = {},
-): D1PreparedStatement {
-  return db.prepare(
-    `UPDATE mgmt_operation
-     SET state='completed',outcome_json=?,sealed_outcome=?,sealed_until=?,updated_at=?
-     WHERE id=? AND state='pending'${options.onlyIfPreviousChanged ? " AND changes()=1" : ""}`,
-  ).bind(stored.outcome, stored.sealed, stored.sealedUntil, now, row.id);
-}
-
-/**
  * What a completed operation reports: the sealed whole while it lasts, and
  * the redacted record after, whose missing key is how the CLI that sent it
  * learns the recovery window has passed.
  */
-async function completedResult(env: Env, row: OperationRow): Promise<CliOperationResult> {
-  const redacted = (row.outcome_json ? JSON.parse(row.outcome_json) : {}) as CliOperationResult;
-  if (row.sealed_outcome === null || (row.sealed_until ?? 0) <= Date.now()) return redacted;
+async function completedResult(env: Env, row: ActorOperation): Promise<CliOperationResult> {
+  const redacted = (row.outcome ? JSON.parse(row.outcome) : {}) as CliOperationResult;
+  if (row.sealed === null || row.sealed.until <= Date.now()) return redacted;
   // A key revoked since it was minted is not handed over: the CLI would store a
   // credential that no longer works and report it as delivered. Without its
   // plaintext the answer reads as a key that can no longer be recovered.
@@ -155,43 +136,40 @@ async function completedResult(env: Env, row: OperationRow): Promise<CliOperatio
       .first<{ status: string }>();
     if (key?.status !== "active") return redacted;
   }
-  return JSON.parse(await openSecret(env, "cliOperation", [row.id], row.sealed_outcome)) as CliOperationResult;
+  return JSON.parse(await openSecret(env, "cliOperation", [row.id], row.sealed.value)) as CliOperationResult;
 }
 
 /** Where an operation stands, as sending it and polling it both answer. */
 export async function operationStatus(
   c: CliContext,
-  row: OperationRow,
+  row: ActorOperation,
   token: string,
 ): Promise<CliOperation> {
   const now = Date.now();
   const meta = deploymentMeta(c);
-  // A stored kind this deployment no longer knows is refused, not reported.
-  operationKind(row.kind);
   const base = {
     id: row.id,
-    kind: row.kind as CliOperation["kind"],
-    expiresAt: new Date(row.expires_at).toISOString(),
+    kind: row.kind,
+    expiresAt: new Date(row.expiresAt).toISOString(),
     deployment: meta,
   };
   if (row.state !== "completed") {
-    if (row.state !== "pending" || row.expires_at <= now) return { ...base, state: "expired" };
+    if (row.state !== "pending" || row.expiresAt <= now) return { ...base, state: "expired" };
     return {
       ...base,
       state: "pending",
-      ...(row.browser_proof_hash === null
+      ...(row.browser === null
         ? {}
         : { url: `${meta.consoleOrigin}${browserPath(row.id)}#${await browserToken(c, token)}` }),
     };
   }
   const result = await completedResult(c.env, row);
-  const accountId = result.accountId ?? row.organization_id;
   return {
     ...base,
     state: "completed",
     result,
-    ...(row.kind === "claim" || row.kind === "bootstrap"
-      ? { account: accountId ? await accountLifecycle(c.env, accountId) : null }
+    ...(row.entry.reportsAccount
+      ? { account: await accountLifecycle(c.env, result.accountId ?? row.actor.organizationId) }
       : {}),
   };
 }
@@ -208,26 +186,24 @@ export async function operationStatus(
  */
 export async function runResourceOperation(
   c: CliContext,
-  row: OperationRow,
-  kind: ResourceKind,
+  row: ResourceOperation,
   write: ResourceWrite,
 ): Promise<void> {
   if (row.state !== "pending") return;
-  const actor = actorFromOperation(row);
+  const { actor, entry: kind } = row;
   const scope = managementScope(c);
-  const browser = row.browser_proof_hash !== null;
   const now = Date.now();
   const pending = sql`EXISTS (SELECT 1 FROM mgmt_operation WHERE id=${row.id} AND state='pending'
-      AND request_hash=${row.request_hash}
+      AND request_hash=${row.requestHash}
       AND expires_at>MAX(${now},CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)))`;
   let condition = pending;
-  if (browser) {
+  if (row.browser !== null) {
     await assertAccountAccess(scope.deployment, c.env, actor.organizationId, "setup");
     const { credentialAuthorityCondition } = await cfAuth();
     const liveCredential = credentialAuthorityCondition(mgmtAuthTables, {
       organizationId: actor.organizationId,
       userId: actor.userId,
-      credentialId: actor.credentialId!,
+      credentialId: actor.credentialId,
       allowedRoles: ["owner", "admin"],
       nowMs: now,
     });
@@ -339,16 +315,19 @@ export async function createOperation(
   // token both find nothing, and the one whose insert was ignored must not go on
   // to run its own payload under the row the other one wrote.
   if (
-    row.kind !== input.kind
-    || row.organization_id !== actor.organizationId
-    || row.initiating_user_id !== actor.userId
-    || row.request_hash !== requestHash
+    row.family === "bootstrap"
+    || row.kind !== input.kind
+    || row.actor.organizationId !== actor.organizationId
+    || row.actor.userId !== actor.userId
+    || row.requestHash !== requestHash
   ) {
     throw new GatewayError(409, "conflict", "This operation token is already bound to a different request");
   }
-  if (kind.type === "resource" && write && row.state === "pending") {
-    await runResourceOperation(c, row, kind, write);
-    row = (await operationRow(c.env.DB, id))!;
+  if (row.family === "resource" && write && row.state === "pending") {
+    await runResourceOperation(c, row, write);
+    const after = await operationRow(c.env.DB, id);
+    if (after?.family !== "resource") throw new GatewayError(500, "internal_error", "The operation was lost while it ran");
+    row = after;
   }
   return operationStatus(c, row, input.token);
 }
@@ -356,13 +335,15 @@ export async function createOperation(
 export async function pollOperation(c: CliContext): Promise<CliOperation> {
   const token = c.req.header("authorization")?.replace(/^Bearer /, "") ?? "";
   const id = c.req.param("id") ?? "";
-  const row = await operationRow(c.env.DB, id);
-  if (!row || !/^[A-Za-z0-9_-]{32,256}$/.test(token) || (await operationId(token)) !== id) {
-    throw new GatewayError(403, "forbidden", "Invalid operation token");
-  }
+  // The token is checked before the row is read, so nothing about a row
+  // reaches a caller that does not hold it.
+  const row = /^[A-Za-z0-9_-]{32,256}$/.test(token) && (await operationId(token)) === id
+    ? await operationRow(c.env.DB, id)
+    : null;
+  if (!row) throw new GatewayError(403, "forbidden", "Invalid operation token");
   // A bootstrap is recovered by sending it again, which is also what activates
   // the key it delivers; a poll could hand over a key that never works.
-  if (row.kind === "bootstrap")
+  if (row.family === "bootstrap")
     throw new GatewayError(400, "invalid_request", "Recover a bootstrap by sending it again");
   return operationStatus(c, row, token);
 }

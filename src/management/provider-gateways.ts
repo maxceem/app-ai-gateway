@@ -64,9 +64,10 @@ function serialize(
 }
 
 function probeReport(probe: ProbeResult): ProviderGatewayTestResponse {
+  if (probe.validated) return { validated: true };
   return {
-    validated: probe.validated,
-    ...(probe.reason === undefined ? {} : { reason: probe.reason }),
+    validated: false,
+    reason: probe.reason,
     ...(probe.status === undefined ? {} : { status: probe.status }),
   };
 }

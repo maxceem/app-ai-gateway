@@ -7,7 +7,7 @@ import type { StoredGateway } from "../shared/gateways";
 
 const PROBE_TIMEOUT_MS = 4_000;
 
-/** Why a probe did not confirm the credential. Absent when it did. */
+/** Why a probe did not confirm the credential. */
 export type ProbeReason =
   /** This provider offers no cheap authenticated call to probe with. */
   | "no_probe"
@@ -18,23 +18,25 @@ export type ProbeReason =
   /** The upstream refused the credential outright — the one negative verdict. */
   | "rejected";
 
-export interface ProbeResult {
-  /** `false` means "not proven good"; only `rejected` means "proven bad". */
-  validated: boolean;
-  reason?: ProbeReason;
-  /** The status behind an `unexpected_status` or `rejected`, which names the fault. */
-  status?: number;
-}
-
 /**
- * What is left of a {@link ProbeResult} once {@link assertNotRejected} has had
- * it: the same shape without the one verdict that raises instead of returning.
- * Named because it is what the providers dry run answers with, and its
- * published contract says so.
+ * Every answer but the one that raises: the credential proven good, or not
+ * proven either way. Named because it is what the providers dry run answers
+ * with once {@link assertNotRejected} has had it, and its published contract
+ * says so.
  */
-export type InconclusiveProbeResult = Omit<ProbeResult, "reason"> & {
-  reason?: Exclude<ProbeReason, "rejected">;
-};
+export type InconclusiveProbeResult =
+  | { validated: true }
+  | {
+      validated: false;
+      reason: Exclude<ProbeReason, "rejected">;
+      /** The status behind an `unexpected_status`, which names the fault. */
+      status?: number;
+    };
+
+/** `validated: false` means "not proven good"; only `rejected` means "proven bad". */
+export type ProbeResult =
+  | InconclusiveProbeResult
+  | { validated: false; reason: "rejected"; status: number };
 
 /**
  * A probe has exactly two outcomes worth acting on: the upstream said the
@@ -84,7 +86,7 @@ async function runProbe(
  * not evidence against a credential the operator has reason to trust.
  */
 export function assertNotRejected(result: ProbeResult): InconclusiveProbeResult {
-  if (result.reason !== "rejected") return result as InconclusiveProbeResult;
+  if (result.validated || result.reason !== "rejected") return result;
   throw new GatewayError(
     400,
     "provider_key_invalid",

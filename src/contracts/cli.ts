@@ -74,14 +74,27 @@ export const CliOperationRequestSchema = z.discriminatedUnion("kind", [
   ),
   operationRequest("provider-gateway.rotate-key", HandoffRotatePayloadSchema, "always"),
 ]);
-export const CliSubmissionRequestSchema = z
+/** What every browser endpoint is sent: the proof from the approval URL's fragment. */
+export const CliBrowserProofSchema = z.object({ submissionToken: CliProofSchema }).strict();
+/**
+ * The approval itself. The secret is what a provider or gateway step asks its
+ * approver for; whether a kind requires one is the kind's own rule.
+ */
+export const CliBrowserSubmitRequestSchema = z
   .object({
     submissionToken: CliProofSchema,
-    approve: z.literal(true).optional(),
-    email: z.email().optional(),
-    password: z.string().min(8).max(256).optional(),
-    name: z.string().min(1).max(100).optional(),
-    secret: z.string().max(16384).optional(),
+    approve: z.literal(true),
+    // Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
+    secret: z.string().max(16384).regex(/\S/, { error: "must not be blank" }).optional(),
+  })
+  .strict();
+/** The sign-in a claim's approver creates, when they have none here yet. */
+export const CliBrowserRegisterRequestSchema = z
+  .object({
+    submissionToken: CliProofSchema,
+    email: z.email(),
+    password: z.string().min(8).max(256),
+    name: z.string().min(1).max(100),
   })
   .strict();
 
@@ -343,7 +356,9 @@ export type CliCapabilitiesResponse = z.infer<typeof CliCapabilitiesResponseSche
 export type CliAccountResponse = z.infer<typeof CliAccountResponseSchema>;
 export type CliBootstrapRequest = z.infer<typeof CliBootstrapRequestSchema>;
 export type CliOperationRequest = z.infer<typeof CliOperationRequestSchema>;
-export type CliSubmissionRequest = z.infer<typeof CliSubmissionRequestSchema>;
+export type CliBrowserProof = z.infer<typeof CliBrowserProofSchema>;
+export type CliBrowserSubmitRequest = z.infer<typeof CliBrowserSubmitRequestSchema>;
+export type CliBrowserRegisterRequest = z.infer<typeof CliBrowserRegisterRequestSchema>;
 export type CliApprovalRefusal = z.infer<typeof CliApprovalRefusalSchema>;
 export type CliBrowserDetailsResponse = z.infer<typeof CliBrowserDetailsResponseSchema>;
 export type CliHandoffContinuation = z.infer<typeof CliHandoffContinuationSchema>;

@@ -48,6 +48,8 @@ interface KindBase {
   readonly open: AccountAccessMode;
   /** Where the person who approved its browser step goes next. */
   readonly continueTo: CliHandoffContinuation;
+  /** Whether its completed answer reports the account it settled on. */
+  readonly reportsAccount: boolean;
 }
 
 export interface BootstrapKind extends KindBase {
@@ -125,6 +127,7 @@ const updateProviderKind = (secret: "required" | "optional", handoff: z.ZodType<
   type: "resource",
   open: "setup",
   continueTo: "cli",
+  reportsAccount: false,
   browser: "always",
   secret,
   target: "provider",
@@ -137,16 +140,17 @@ const updateProviderKind = (secret: "required" | "optional", handoff: z.ZodType<
 });
 
 export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
-  bootstrap: { type: "bootstrap", open: "read", continueTo: "cli" },
+  bootstrap: { type: "bootstrap", open: "read", continueTo: "cli", reportsAccount: true },
   /**
    * Read access: an unclaimed account whose free window has closed can still
    * be claimed, and claiming is what reopens it.
    */
-  claim: { type: "claim", open: "read", continueTo: "console" },
+  claim: { type: "claim", open: "read", continueTo: "console", reportsAccount: true },
   "app.add": {
     type: "resource",
     open: "setup",
     continueTo: "cli",
+    reportsAccount: false,
     browser: "never",
     secret: null,
     target: null,
@@ -162,6 +166,7 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     type: "resource",
     open: "setup",
     continueTo: "cli",
+    reportsAccount: false,
     browser: "never",
     secret: null,
     target: null,
@@ -178,6 +183,7 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     type: "resource",
     open: "setup",
     continueTo: "cli",
+    reportsAccount: false,
     browser: "optional",
     secret: "optional",
     target: null,
@@ -194,6 +200,7 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     type: "resource",
     open: "setup",
     continueTo: "cli",
+    reportsAccount: false,
     browser: "optional",
     secret: "required",
     target: null,
@@ -208,6 +215,7 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     type: "resource",
     open: "setup",
     continueTo: "cli",
+    reportsAccount: false,
     browser: "always",
     secret: "required",
     target: "provider_gateway",
@@ -220,17 +228,24 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
   },
 };
 
+function isKnownKind(kind: string): kind is CliOperationKind {
+  return Object.hasOwn(OPERATION_KINDS, kind);
+}
+
 /**
- * The entry for a kind, whether it arrived in a request or out of a stored row.
- * A stored kind this deployment no longer knows is refused rather than guessed
- * at, because every rule that would govern it lives in the entry.
+ * A kind as this deployment knows it, whether it arrived in a request or out
+ * of a stored row. A stored kind this deployment no longer knows is refused
+ * rather than guessed at, because every rule that would govern it lives in its
+ * entry.
  */
+export function knownKind(kind: string): CliOperationKind {
+  if (!isKnownKind(kind)) throw new GatewayError(400, "invalid_request", "Unsupported operation kind");
+  return kind;
+}
+
+/** The entry for a kind; see {@link knownKind}. */
 export function operationKind(kind: string): OperationKind {
-  const entry = Object.hasOwn(OPERATION_KINDS, kind)
-    ? OPERATION_KINDS[kind as CliOperationKind]
-    : undefined;
-  if (!entry) throw new GatewayError(400, "invalid_request", "Unsupported operation kind");
-  return entry;
+  return OPERATION_KINDS[knownKind(kind)];
 }
 
 /**

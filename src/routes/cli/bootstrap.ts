@@ -15,15 +15,11 @@ import { ACCOUNT_RECOVERY_MS, unclaimedAccessDeadline } from "../../policy/accou
 import { bootstrapDecision } from "../../policy/deployment";
 import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
 import { openSecret, sealSecret } from "../../vault/secrets";
-import {
-  deploymentMeta,
-  operationId,
-  operationRow,
-  SEALED_TTL,
-} from "./operations";
+import { deploymentMeta, operationId, SEALED_TTL } from "./operations";
+import { operationRow, type BootstrapOperation, type Operation } from "./operation-store";
 import { digest } from "./security";
 import type { OperationInput } from "../catalog-router";
-import type { CliContext, OperationRow } from "./types";
+import type { CliContext } from "./types";
 
 async function retireKey(
   identity: CfAuth,
@@ -31,6 +27,19 @@ async function retireKey(
   apiKeyId: string,
 ): Promise<void> {
   await identity.service.revokeServiceApiKey({ apiKeyId, organizationId });
+}
+
+/** The bootstrap a token names, refusing a token already bound to another kind. */
+async function bootstrapRow(db: D1Database, id: string): Promise<BootstrapOperation | null> {
+  const row = await operationRow(db, id);
+  if (row && row.family !== "bootstrap")
+    throw new GatewayError(409, "conflict", "This operation token is already bound to a different request");
+  return row;
+}
+
+/** The key a stored bootstrap stands behind, if it is one that still names any. */
+function namedCredential(row: Operation | null): string | null {
+  return row?.family === "bootstrap" && row.state !== "expired" ? row.credentialId : null;
 }
 
 /**
@@ -58,11 +67,7 @@ export async function bootstrap(
     requestHash: hash,
     nowMs: now,
   });
-  let row = await operationRow(c.env.DB, id);
-  if (row && row.kind !== "bootstrap")
-    throw new GatewayError(409, "conflict", "This operation token is already bound to a different request");
-  if (row?.state === "expired")
-    throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
+  let row = await bootstrapRow(c.env.DB, id);
 
   // A self-host belongs to whoever initializes it first, exactly as its first
   // console registration does. Once an account exists, neither door reopens.
@@ -104,19 +109,19 @@ export async function bootstrap(
          AND NOT EXISTS (SELECT 1 FROM mgmt_operation WHERE kind='bootstrap' AND organization_id=${accountId})
          ${decision.requiresEmptyDeployment ? sql`AND NOT EXISTS (SELECT 1 FROM mgmt_operation WHERE kind='bootstrap')` : sql.empty()}`),
     ]);
-    row = await operationRow(c.env.DB, id);
+    row = await bootstrapRow(c.env.DB, id);
     if (!row)
       throw new GatewayError(409, "conflict", "This deployment has already been initialized");
   }
 
-  if (!row.organization_id || !row.initiating_user_id)
+  if (row.state === "expired")
     throw new GatewayError(403, "account_expired", "The account recovery deadline has passed");
-  const account = await assertAccountAccess(deployment, c.env, row.organization_id, "read");
+  const account = await assertAccountAccess(deployment, c.env, row.organizationId, "read");
   if (account.claimed || row.state !== "completed")
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
 
   const identity = await identityAuthFor(c);
-  row = await currentCredential(c, identity, row, account.id, now);
+  const credential = await currentCredential(c, identity, row, account.id, now);
 
   // Issued inactive, activated only now: a key becomes usable once the row that
   // names it is committed, so a run that dies in between leaves a credential
@@ -124,7 +129,7 @@ export async function bootstrap(
   // and refuses a revoked key, so repeating a request finishes an interrupted
   // run without resurrecting what a claim has already retired.
   await identity.service.enableServiceApiKey({
-    apiKeyId: row.credential_id!,
+    apiKeyId: credential.id,
     organizationId: account.id,
   });
 
@@ -145,23 +150,24 @@ export async function bootstrap(
       ...(quota.kind === "metered" ? { limit: quota.limit } : {}),
     };
   }
-  const credential = JSON.parse(
-    await openSecret(c.env, "cliOperation", [row.id], row.sealed_outcome!),
+  const delivered = JSON.parse(
+    await openSecret(c.env, "cliOperation", [row.id], credential.sealed),
   ) as { token: string };
   return {
     id: row.id,
     kind: "bootstrap",
     state: "completed",
-    expiresAt: new Date(row.expires_at).toISOString(),
+    expiresAt: new Date(row.expiresAt).toISOString(),
     deployment: meta,
     account: await accountLifecycle(c.env, account.id),
-    result: { credential, unclaimedAccess },
+    result: { credential: delivered, unclaimedAccess },
   };
 }
 
 /**
- * The row with a sealed management key the CLI can still collect, issuing and
- * sealing a new one when there is none or the last one's window has passed.
+ * The management key the row names and its sealed plaintext, which the CLI can
+ * still collect, issuing and sealing a new one when there is none or the last
+ * one's window has passed.
  *
  * The row is the single durable record of which key this bootstrap stands
  * behind. Whichever key it does not name is retired, whether that is the one
@@ -170,15 +176,16 @@ export async function bootstrap(
 async function currentCredential(
   c: CliContext,
   identity: CfAuth,
-  row: OperationRow,
+  row: Exclude<BootstrapOperation, { state: "expired" }>,
   accountId: string,
   now: number,
-): Promise<OperationRow> {
-  if (row.sealed_outcome && (row.sealed_until ?? 0) > now && row.credential_id) return row;
+): Promise<{ id: string; sealed: string }> {
+  if (row.sealed && row.sealed.until > now && row.credentialId)
+    return { id: row.credentialId, sealed: row.sealed.value };
   // No expiry of its own: the account's `expires_at` is the one deadline, and
   // cf-auth refuses any key whose organization has passed it.
   const issued = await identity.service.issueServiceApiKey({
-    userId: row.initiating_user_id!,
+    userId: row.initiatingUserId,
     organizationId: accountId,
     name: "CLI bootstrap",
     enabled: false,
@@ -188,7 +195,7 @@ async function currentCredential(
       await retireKey(identity, accountId, issued.id);
       throw error;
     });
-  const previous = row.credential_id;
+  const previous = row.credentialId;
   await prepared(c.env.DB, sql`UPDATE mgmt_operation
      SET sealed_outcome=${sealed},sealed_until=${now + SEALED_TTL},credential_id=${issued.id},updated_at=${now}
      WHERE id=${row.id} AND state='completed'
@@ -198,15 +205,14 @@ async function currentCredential(
     .catch(async (error) => {
       // A failed RPC can still have committed, so ask the row who won before
       // retiring the key this call minted.
-      const committed = await operationRow(c.env.DB, row.id);
-      if (!committed || committed.credential_id !== issued.id)
+      if (namedCredential(await operationRow(c.env.DB, row.id)) !== issued.id)
         await retireKey(identity, accountId, issued.id);
       throw error;
     });
-  const current = (await operationRow(c.env.DB, row.id))!;
-  if (current.credential_id !== issued.id) await retireKey(identity, accountId, issued.id);
+  const current = await operationRow(c.env.DB, row.id);
+  if (namedCredential(current) !== issued.id) await retireKey(identity, accountId, issued.id);
   else if (previous) await retireKey(identity, accountId, previous);
-  if (current.state !== "completed" || !current.sealed_outcome || !current.credential_id)
+  if (current?.family !== "bootstrap" || current.state !== "completed" || !current.sealed || !current.credentialId)
     throw new GatewayError(403, "forbidden", "Bootstrap authority has been retired");
-  return current;
+  return { id: current.credentialId, sealed: current.sealed.value };
 }

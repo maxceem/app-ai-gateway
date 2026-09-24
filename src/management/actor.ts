@@ -1,5 +1,4 @@
 import type { OrganizationRole } from "@maxceem/cf-auth";
-import { GatewayError } from "../core/errors";
 
 /**
  * Who is writing, in the one shape the management layer understands.
@@ -22,18 +21,3 @@ export interface AdminActor extends Actor {
   identityKind: "human" | "service";
 }
 
-/** The three columns a CLI operation carries its initiator in, read in one place. */
-export function actorFromOperation(row: {
-  organization_id: string | null;
-  initiating_user_id: string | null;
-  initiating_credential_id: string | null;
-}): Actor {
-  if (!row.organization_id || !row.initiating_user_id || !row.initiating_credential_id) {
-    throw new GatewayError(403, "forbidden", "This operation has no management identity binding");
-  }
-  return {
-    organizationId: row.organization_id,
-    userId: row.initiating_user_id,
-    credentialId: row.initiating_credential_id,
-  };
-}

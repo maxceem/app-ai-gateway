@@ -69,6 +69,17 @@ describe("immediate app operations", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) AS count FROM app WHERE name = 'Wrong operation body'").first<{ count: number }>())?.count).toBe(0);
   });
 
+  it("answers a stored row that breaks its kind's rules as an internal error", async () => {
+    const operationToken = token();
+    const first = await send("app.add", appBody("Operation malformed row"), operationToken);
+    expect(first.status).toBe(200);
+    const { id } = await first.json() as { id: string };
+    await env.DB.prepare("UPDATE mgmt_operation SET initiating_credential_id=NULL WHERE id=?").bind(id).run();
+    const retry = await send("app.add", appBody("Operation malformed row"), operationToken);
+    expect(retry.status).toBe(500);
+    await expect(retry.json()).resolves.toMatchObject({ error: { code: "internal_error" } });
+  });
+
   it("judges the token on the row a racing request stored, not on the first read", async () => {
     const operationToken = token();
     const body = appBody("Operation lost race");

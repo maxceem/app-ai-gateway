@@ -1,14 +1,14 @@
 import { cliJson, proofMatches } from "./security";
 import { GatewayError } from "../../core/errors";
 import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
-import { CliSubmissionRequestSchema } from "../../contracts/cli";
-import type { ParsedOperationRequest } from "../../contracts/catalog";
+import type { z } from "zod";
+import { CliBrowserRegisterRequestSchema } from "../../contracts/cli";
 import type {
   CliApprovalRefusal,
   CliBrowserDetailsResponse,
+  CliBrowserProof,
   CliBrowserSubmitResponse,
   CliHandoffContinuation,
-  CliOperationKind,
 } from "../../contracts/cli";
 import { parseRequest } from "../../management/validation";
 import {
@@ -16,22 +16,20 @@ import {
   assertAccountAccess,
 } from "../../core/account-lifecycle";
 import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
-import { operationKind, TARGET_SNAPSHOTS, type OperationKind } from "./operation-kinds";
-import { authState, browserOperation, runResourceOperation } from "./operations";
+import { TARGET_SNAPSHOTS, type OperationKind } from "./operation-kinds";
+import { authState, browserOperation, runResourceOperation, type BrowserOperation } from "./operations";
 import { claimRefusal, completeIdentity } from "./identity-handoff";
 import type { AuthState } from "@maxceem/cf-auth";
 import type { OperationInput } from "../catalog-router";
-import type { CliContext, OperationRow } from "./types";
+import type { CliContext } from "./types";
 
 /**
  * The page's copy of the verdict the submission endpoint will reach. Only a
  * claim asks anything of whoever holds the browser, so the button a person is
  * offered and the answer they would get from pressing it can never disagree.
  */
-function refusalFor(row: OperationRow, state: AuthState): CliApprovalRefusal | null {
-  return operationKind(row.kind).type === "claim"
-    ? claimRefusal(state, row.organization_id!)
-    : null;
+function refusalFor(row: BrowserOperation, state: AuthState): CliApprovalRefusal | null {
+  return row.family === "claim" ? claimRefusal(state, row.actor.organizationId) : null;
 }
 
 /**
@@ -71,14 +69,14 @@ export function assertConsoleOrigin(c: CliContext): void {
  * The operation a browser submission proves it may act on, once
  * {@link assertConsoleOrigin} has passed and the body has been parsed.
  */
-export async function verifiedSubmission(c: CliContext, input: ParsedOperationRequest<"cliBrowserSubmit">) {
+export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliContext, input: Input) {
   const row = await browserOperation(c);
-  if (row.state === "pending" && row.expires_at <= Date.now())
+  if (row.state === "pending" && row.expiresAt <= Date.now())
     throw new GatewayError(410, "invalid_request", "Operation has expired");
-  if (!(await proofMatches(input.submissionToken, row.browser_proof_hash)))
+  if (!(await proofMatches(input.submissionToken, row.browser.proofHash)))
     throw new GatewayError(403, "forbidden", "Invalid submission proof");
   await enforceEndpointRateLimit(c.env, "submission", row.id);
-  await assertAccountAccess(c.get("deployment"), c.env, row.organization_id!, "read");
+  await assertAccountAccess(c.get("deployment"), c.env, row.actor.organizationId, "read");
   return { input, row };
 }
 
@@ -86,9 +84,9 @@ export async function verifiedSubmission(c: CliContext, input: ParsedOperationRe
  * The same verification for the two relayed endpoints, which are not mounted
  * through the catalog router and so check the origin and read the body here.
  */
-export async function relayedSubmission(c: CliContext) {
+export async function relayedSubmission<Schema extends z.ZodType<CliBrowserProof>>(c: CliContext, schema: Schema) {
   assertConsoleOrigin(c);
-  return verifiedSubmission(c, parseRequest(CliSubmissionRequestSchema, await cliJson(c.req.raw)));
+  return verifiedSubmission(c, parseRequest(schema, await cliJson(c.req.raw)));
 }
 
 /**
@@ -97,15 +95,11 @@ export async function relayedSubmission(c: CliContext) {
  * payload's own revision, so what is shown here is what it will be judged
  * against.
  */
-async function reviewSnapshots(
-  c: CliContext,
-  row: OperationRow,
-  payload: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const kind = operationKind(row.kind);
-  if (kind.type !== "resource") return {};
+async function reviewSnapshots(c: CliContext, row: BrowserOperation): Promise<Record<string, unknown>> {
+  if (row.family !== "resource") return {};
+  const { entry: kind, browser: { request: payload } } = row;
   const read = (table: keyof typeof TARGET_SNAPSHOTS, id: unknown) => typeof id === "string"
-    ? c.env.DB.prepare(TARGET_SNAPSHOTS[table]).bind(id, row.organization_id).first<Record<string, unknown>>()
+    ? c.env.DB.prepare(TARGET_SNAPSHOTS[table]).bind(id, row.actor.organizationId).first<Record<string, unknown>>()
     : Promise.resolve(null);
   const target = kind.target === null ? null : await read(kind.target, payload.id);
   const gatewayId = payload.providerGatewayId ?? (kind.target === "provider" ? target?.providerGatewayId : undefined);
@@ -122,11 +116,10 @@ export async function browserDetails(
 ): Promise<CliBrowserDetailsResponse> {
   const { row } = await verifiedSubmission(c, body);
   const state = await authState(c, true);
-  const payload = row.request_json ? JSON.parse(row.request_json) as Record<string, unknown> : {};
   return {
-    kind: row.kind as CliOperationKind,
-    payload: { ...payload, ...(await reviewSnapshots(c, row, payload)) },
-    account: await accountLifecycle(c.env, row.organization_id!),
+    kind: row.kind,
+    payload: { ...row.browser.request, ...(await reviewSnapshots(c, row)) },
+    account: await accountLifecycle(c.env, row.actor.organizationId),
     // Named rather than reduced to a flag: the page shows who is about to
     // approve, so a person who is signed in as the wrong human can see it.
     viewer:
@@ -135,18 +128,16 @@ export async function browserDetails(
         : null,
     blockedBy: refusalFor(row, state),
     googleEnabled: googleAuthEnabled(c.env),
-    expiresAt: new Date(row.expires_at).toISOString(),
+    expiresAt: new Date(row.expiresAt).toISOString(),
   };
 }
 
 export async function browserRegister(c: CliContext): Promise<Response> {
-  const { row, input } = await relayedSubmission(c);
+  const { row, input } = await relayedSubmission(c, CliBrowserRegisterRequestSchema);
   // The one door an operation opens onto registration, and only the kind whose
   // approver is expected to have no account yet may open it.
-  if (operationKind(row.kind).type !== "claim" || row.state !== "pending")
+  if (row.family !== "claim" || row.state !== "pending")
     throw new GatewayError(403, "forbidden", "Registration is only available for a pending account claim");
-  if (!input.email || !input.password || !input.name)
-    throw new GatewayError(400, "invalid_request", "Name, email and password are required");
   return (await identityAuthFor(c, { claimRegistration: true })).auth.api.signUpEmail({
     body: { email: input.email, password: input.password, name: input.name },
     headers: c.req.raw.headers,
@@ -158,27 +149,17 @@ export async function browserSubmit(
   c: CliContext,
   { body }: OperationInput<"cliBrowserSubmit">,
 ): Promise<CliBrowserSubmitResponse> {
-  const { row, input } = await verifiedSubmission(c, body);
-  if (input.approve !== true)
-    throw new GatewayError(400, "invalid_request", "Explicit approval is required");
-  const kind = operationKind(row.kind);
-  if (kind.type === "claim") {
+  const { row, input: { secret } } = await verifiedSubmission(c, body);
+  if (row.family === "claim") {
     await completeIdentity(c, row);
-    return outcomeFor(kind);
+    return outcomeFor(row.entry);
   }
-  if (kind.type !== "resource")
-    throw new GatewayError(400, "invalid_request", "This operation has no browser step");
-  const secret = input.secret;
-  if (secret !== undefined && !secret.trim())
-    throw new GatewayError(400, "invalid_request", "A nonempty credential is required");
+  const kind = row.entry;
   if (kind.secret === "required" && secret === undefined)
     throw new GatewayError(400, "invalid_request", "A provider credential is required");
   // A step already approved is answered as approved, before its payload is
   // judged again.
   if (row.state !== "pending") return outcomeFor(kind);
-  await runResourceOperation(c, row, kind, kind.prepare({
-    payload: row.request_json ? JSON.parse(row.request_json) as Record<string, unknown> : {},
-    secret,
-  }));
+  await runResourceOperation(c, row, kind.prepare({ payload: row.browser.request, secret }));
   return outcomeFor(kind);
 }

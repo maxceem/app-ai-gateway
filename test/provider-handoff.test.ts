@@ -182,6 +182,27 @@ describe("provider browser submissions", () => {
     expect(JSON.stringify(challenge)).not.toContain("browser-provider-secret");
   });
 
+  it("refuses a blank credential or a missing approval before anything runs", async () => {
+    const op = await operation("provider.add", providerBody());
+    const blank = await op.submit("   ");
+    expect(blank.status).toBe(400);
+    await expect(blank.json()).resolves.toMatchObject({ error: { code: "invalid_request", message: expect.stringContaining("secret") } });
+    const unapproved = await worker.request(
+      `${origin}/v1/cli/browser/${encodeURIComponent(op.id)}/submit`,
+      {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ submissionToken: new URL(op.url).hash.slice(1), secret: "secret" }),
+      },
+      runtime,
+    );
+    expect(unapproved.status).toBe(400);
+    await expect(unapproved.json()).resolves.toMatchObject({ error: { code: "invalid_request", message: expect.stringContaining("approve") } });
+    expect(
+      await env.DB.prepare("SELECT state FROM mgmt_operation WHERE id=?").bind(op.id).first("state"),
+    ).toBe("pending");
+  });
+
   it("rejects wrong proof/origin and revoked initiating credentials without completing", async () => {
     const op = await operation("provider.add", providerBody());
     expect((await op.submit("secret", crypto.randomUUID())).status).toBe(403);
