@@ -34,7 +34,11 @@ describe("the imported HMAC key", () => {
 
   it("imports once per secret, whatever it then signs and verifies", async () => {
     const importKey = vi.spyOn(crypto.subtle, "importKey");
-    const { token } = await issueGatewayToken(secretOne, "key-cache-app", "user-1", "attest", 300);
+    const { token } = await issueGatewayToken(secretOne, {
+      appId: "key-cache-app",
+      userId: "user-1",
+      authMethod: "attest",
+    });
     expect(importKey).toHaveBeenCalledTimes(1);
 
     // A token signed with the cached key still verifies, twice over, and the
@@ -50,7 +54,11 @@ describe("the imported HMAC key", () => {
 
     // Another secret is another key, and a token signed with it is not this
     // application's: the cache never makes one secret answer for another.
-    const other = await issueGatewayToken(secretTwo, "key-cache-app", "user-2", "attest", 300);
+    const other = await issueGatewayToken(secretTwo, {
+      appId: "key-cache-app",
+      userId: "user-2",
+      authMethod: "attest",
+    });
     expect(importKey).toHaveBeenCalledTimes(2);
     await expect(verifyGatewayToken(other.token, secretOne, "key-cache-app"))
       .rejects.toMatchObject({ status: 401, code: "auth_required" });

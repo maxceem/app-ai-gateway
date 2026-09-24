@@ -11,6 +11,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type { AuthMethod } from "../core/types";
 import type { CredentialSource } from "../shared/capabilities";
 import type { GatewayConnectionConfig, GatewayType } from "../shared/gateways";
 import type { AppConfig } from "../shared/app-config";
@@ -18,7 +19,6 @@ import type { ProviderType } from "../shared/providers";
 
 export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
-export type AuthMethod = "attest" | "api_key";
 export type AttestEnvironment = "production" | "development";
 export type ApiKeyStatus = "active" | "revoked";
 /**

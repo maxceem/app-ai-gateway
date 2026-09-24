@@ -193,8 +193,6 @@ export async function verifyApiKey(
      * `apiKeyId` below already records which credential served the request.
      */
     userId,
-    jti: value.id,
-    expiresAt: Number.MAX_SAFE_INTEGER,
     authMethod: "api_key",
     credentialType: "api_key",
     apiKeyId: value.id,

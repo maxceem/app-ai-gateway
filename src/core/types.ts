@@ -4,7 +4,8 @@ import type {
   ProviderPolicy,
 } from "../shared/app-config.ts";
 
-export type GatewayAuthMethod = "attest" | "api_key";
+/** How a client first proved itself to an application: an API key, or an App Attest key. */
+export type AuthMethod = "attest" | "api_key";
 
 export type AllowedPath = ProviderPolicy["allowed_paths"][number];
 export type AllowedPathConfig = Exclude<AllowedPath, string>;
@@ -29,9 +30,15 @@ export interface AppRecord {
 export interface GatewayIdentity {
   appId: string;
   userId: string | null;
-  jti: string;
-  expiresAt: number;
-  authMethod: GatewayAuthMethod;
+  /**
+   * How the client proved itself, which a gateway token carries over from its
+   * exchange: one minted from an API key is `api_key` here.
+   */
+  authMethod: AuthMethod;
+  /**
+   * What this request presented, which is a different fact: that same token
+   * is a `gateway_token`, and only a key sent on every request is `api_key`.
+   */
   credentialType: "api_key" | "gateway_token";
   apiKeyId?: string;
 }

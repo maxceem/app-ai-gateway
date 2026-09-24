@@ -1,7 +1,8 @@
 import { log } from "../core/log";
 import { timeOrderedId } from "../core/ids";
 import { database } from "../db/index";
-import { appAuthEvent, type AuthEventName, type AuthMethod } from "../db/schema";
+import type { AuthMethod } from "../core/types";
+import { appAuthEvent, type AuthEventName } from "../db/schema";
 import { storedAppVersion } from "../core/app-version";
 
 /**

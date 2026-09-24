@@ -90,13 +90,24 @@ function requiredEndUserId(headers: Headers, header: string): string {
   return value;
 }
 
+/** The configuration each token exchange runs on. */
+interface ExchangeConfigs {
+  api_key_issuer: { issuer: IssuerAuthentication };
+  app_attest: { authentication: AppleAppAttestAuthentication };
+}
+
+export type ExchangeType = keyof ExchangeConfigs;
+
 /**
  * Which token exchange an application offers, with the configuration it runs
  * on: its API key plus a user's issuer token, or an App Attest assertion.
+ *
+ * Written as a map over {@link ExchangeType} so a function generic in the type
+ * can hand one member to the handler for that same member.
  */
-export type TokenExchange =
-  | { type: "api_key_issuer"; issuer: IssuerAuthentication }
-  | { type: "app_attest"; authentication: AppleAppAttestAuthentication };
+export type TokenExchange<K extends ExchangeType = ExchangeType> = {
+  [P in K]: { type: P } & ExchangeConfigs[P];
+}[K];
 
 /** One application's way of authenticating its clients. */
 export interface ClientAuth {

@@ -321,14 +321,31 @@ describe("issuer-backed API key exchange", () => {
 
   it("rejects unsupported token-exchange combinations clearly", async () => {
     await seedApp("attest-rejects-api-key");
-    const attest = await exchangeToken("attest-rejects-api-key", {
-      api_key: "agw_not-for-attest",
-      issuer_token: "unused",
-    });
+    const ctx = createExecutionContext();
+    const attest = await app.fetch(
+      new Request("https://example.test/v1/apps/attest-rejects-api-key/auth/token", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ api_key: "agw_not-for-attest", issuer_token: "unused" }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
     expect(attest.status).toBe(400);
     await expect(attest.json()).resolves.toMatchObject({
-      error: { code: "auth_method_not_supported" },
+      error: {
+        code: "auth_method_not_supported",
+        message: "API key token exchange is not supported for this app",
+      },
     });
+    // Refused before the attempt is attributed to App Attest: the body named
+    // the other exchange, and the row says neither was tried.
+    const event = await env.DB
+      .prepare("SELECT auth_method, outcome FROM app_auth_event WHERE app_id = ? ORDER BY id DESC LIMIT 1")
+      .bind("attest-rejects-api-key")
+      .first<{ auth_method: string | null; outcome: string }>();
+    expect(event).toEqual({ auth_method: null, outcome: "auth_method_not_supported" });
 
     const machineKey = await seedServerApp("machine-no-exchange");
     const machine = await exchangeToken("machine-no-exchange", {
@@ -350,7 +367,10 @@ describe("issuer-backed API key exchange", () => {
     });
     expect(attestBody.status).toBe(400);
     await expect(attestBody.json()).resolves.toMatchObject({
-      error: { code: "invalid_request", message: "api_key and issuer_token are required" },
+      error: {
+        code: "invalid_request",
+        message: "issuer_token: Invalid input: expected string, received undefined",
+      },
     });
   });
 });
@@ -675,7 +695,10 @@ describe("App Attest applications identified by installation", () => {
     });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
-      error: { code: "invalid_request", message: "issuer_token is required" },
+      error: {
+        code: "invalid_request",
+        message: "issuer_token: Invalid input: expected string, received undefined",
+      },
     });
   });
 });

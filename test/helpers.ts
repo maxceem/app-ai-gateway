@@ -60,8 +60,6 @@ export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayI
   return {
     appId: "test-app",
     userId: "user-1",
-    jti: "test-jti",
-    expiresAt: 0,
     authMethod: "api_key",
     credentialType: "api_key",
     ...overrides,
@@ -434,7 +432,7 @@ export async function seedServerApp(
 }
 
 export async function gatewayToken(appId: string, userId = "user-1"): Promise<string> {
-  const issued = await issueGatewayToken(env.JWT_SECRET, appId, userId, "attest", 3600);
+  const issued = await issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "attest" });
   return issued.token;
 }
 

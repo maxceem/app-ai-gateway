@@ -491,11 +491,11 @@ const AppAttestKeyIdSchema = z.string().min(1).max(200);
 const ChallengeSchema = z.string().min(1).max(200);
 
 /**
- * `issuer_token` is optional here and required by the route instead, because
- * whether one is needed is a property of the application: an `app_install`
- * application identifies its user by the attested key alone and has no issuer to
- * present a token from. The route answers for the mismatch, which is the only
- * place that knows what the application asked for.
+ * `issuer_token` is optional here because one document serves every
+ * application, and whether one is needed is a property of the application: an
+ * `app_install` application identifies its user by the attested key alone and
+ * has no issuer to present a token from. The App Attest exchange narrows it to
+ * required or refused by the application's `end_user.source` before parsing.
  */
 export const AppAttestRegisterRequestSchema = z.object({
   issuer_token: z.string().min(1).optional(),

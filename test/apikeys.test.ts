@@ -95,14 +95,12 @@ describe("server tenant API keys", () => {
     await seedServerApp("jwt-key-cache", { issuer: {} });
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now);
-    const { token } = await issueGatewayToken(
-      env.JWT_SECRET,
-      "jwt-key-cache",
-      "customer-42",
-      "api_key",
-      3600,
-      { apiKeyId: "key_jwt-key-cache" },
-    );
+    const { token } = await issueGatewayToken(env.JWT_SECRET, {
+      appId: "jwt-key-cache",
+      userId: "customer-42",
+      authMethod: "api_key",
+      apiKeyId: "key_jwt-key-cache",
+    });
     const request = () => exports.default.fetch(
       "https://example.test/v1/apps/jwt-key-cache/me",
       { headers: { authorization: `Bearer ${token}` } },
@@ -130,14 +128,12 @@ describe("server tenant API keys", () => {
   it("rejects gateway tokens tied to missing or different-app keys", async () => {
     await seedServerApp("jwt-key-owner", { issuer: {} });
     await seedServerApp("jwt-key-target", { issuer: {} });
-    const token = async (apiKeyId: string) => (await issueGatewayToken(
-      env.JWT_SECRET,
-      "jwt-key-target",
-      "customer-42",
-      "api_key",
-      3600,
-      { apiKeyId },
-    )).token;
+    const token = async (apiKeyId: string) => (await issueGatewayToken(env.JWT_SECRET, {
+      appId: "jwt-key-target",
+      userId: "customer-42",
+      authMethod: "api_key",
+      apiKeyId,
+    })).token;
     const request = (credential: string) => exports.default.fetch(
       "https://example.test/v1/apps/jwt-key-target/me",
       { headers: { authorization: `Bearer ${credential}` } },

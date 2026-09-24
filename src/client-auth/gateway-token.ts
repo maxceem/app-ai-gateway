@@ -1,9 +1,12 @@
 import { jwtVerify, SignJWT } from "jose";
 import { GatewayError } from "../core/errors";
 import { ttlCache } from "../core/ttl-cache";
-import type { GatewayAuthMethod, GatewayIdentity } from "../core/types";
+import type { AuthMethod, GatewayIdentity } from "../core/types";
 
 const encoder = new TextEncoder();
+
+/** How long a gateway token lives; the client runs its exchange again after that. */
+const GATEWAY_TOKEN_TTL_SECONDS = 3600;
 
 /**
  * How many imported keys to hold. A deployment signs and verifies with one
@@ -55,23 +58,20 @@ function key(secret: string): Promise<CryptoKey> {
   return imported;
 }
 
+/** A gateway token for one user of one application, naming the API key it was minted from, if any. */
 export async function issueGatewayToken(
   secret: string,
-  appId: string,
-  userId: string,
-  authMethod: GatewayAuthMethod,
-  ttlSeconds: number,
-  options: { apiKeyId?: string } = {},
+  claims: { appId: string; userId: string; authMethod: AuthMethod; apiKeyId?: string },
 ): Promise<{ token: string; expiresIn: number }> {
-  const expiresIn = Math.min(3600, Math.max(60, ttlSeconds));
+  const expiresIn = GATEWAY_TOKEN_TTL_SECONDS;
   const now = Math.floor(Date.now() / 1000);
   const token = await new SignJWT({
-    app: appId,
-    auth_method: authMethod,
-    ...(options.apiKeyId === undefined ? {} : { api_key_id: options.apiKeyId }),
+    app: claims.appId,
+    auth_method: claims.authMethod,
+    ...(claims.apiKeyId === undefined ? {} : { api_key_id: claims.apiKeyId }),
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setSubject(userId)
+    .setSubject(claims.userId)
     .setIssuedAt(now)
     .setExpirationTime(now + expiresIn)
     .setJti(crypto.randomUUID())
@@ -105,9 +105,7 @@ export async function verifyGatewayToken(
     return {
       appId: expectedAppId,
       userId: payload.sub,
-      jti: payload.jti,
-      expiresAt: payload.exp,
-      authMethod: payload.auth_method as GatewayAuthMethod,
+      authMethod: payload.auth_method,
       credentialType: "gateway_token",
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
