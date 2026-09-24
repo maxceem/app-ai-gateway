@@ -5,50 +5,29 @@ import { sql, type SQL } from "drizzle-orm";
 import type { CfAuthTables } from "@maxceem/cf-auth/schema";
 
 /**
- * A predicate carried into the statement that writes, as SQL plus its bound
- * parameters.
+ * The predicates a guarded write carries into its own statement, as drizzle
+ * `sql` templates: every value is bound where it appears, and a condition
+ * composes into a statement, or into another condition, by being embedded.
  *
- * One shape for all three of them — an account-lifecycle guard, a plan ceiling
- * and a CLI operation boundary — because every call site
- * interpolates one `sql` into a statement and binds the matching `params`, and
- * they compose with {@link andCondition}.
+ * Each one a write ANDs into its guard is a single term — an `EXISTS`, a
+ * comparison, or a parenthesized conjunction — so it can be ANDed as it is:
+ * drizzle's `and()` parenthesizes the conjunction it builds, not its members.
  */
-export interface SqlCondition {
-  sql: string;
-  params: unknown[];
-}
-
-const UNCONDITIONAL: SqlCondition = { sql: "1", params: [] };
 
 /**
- * Joins conditions into one, preserving order.
- *
- * Order is the whole contract: every call site interpolates `sql` at one point
- * in a statement and binds `params` at the matching point, so the parameters of
- * the earlier condition must stay ahead of the later one's.
+ * Whether the organization `organization` names has a human owner. Takes a
+ * column reference, never a value.
  */
-export function andCondition(
-  ...parts: Array<SqlCondition | undefined>
-): SqlCondition {
-  const present = parts.filter((part): part is SqlCondition => part !== undefined);
-  if (present.length === 0) return UNCONDITIONAL;
-  if (present.length === 1) return present[0]!;
-  return {
-    sql: present.map((part) => `(${part.sql})`).join(" AND "),
-    params: present.flatMap((part) => part.params),
-  };
-}
-
-export function humanOwnerCondition(organizationExpression: string): string {
-  return `EXISTS (
+export function humanOwnerCondition(organization: SQL): SQL {
+  return sql`EXISTS (
     SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
-    WHERE m.organization_id=${organizationExpression} AND m.role='owner' AND u.kind='human'
+    WHERE m.organization_id=${organization} AND m.role='owner' AND u.kind='human'
   )`;
 }
 
-export function emptyDeploymentCondition(): string {
-  return `NOT EXISTS (SELECT 1 FROM mgmt_organization)
-    AND NOT EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human')`;
+export function emptyDeploymentCondition(): SQL {
+  return sql`(NOT EXISTS (SELECT 1 FROM mgmt_organization)
+    AND NOT EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human'))`;
 }
 
 export function registrationCreateCondition(
@@ -70,7 +49,10 @@ export function registrationCreateCondition(
   `;
 }
 
-const effectiveNow = "MAX(julianday(?),julianday('now'))";
+/** The caller's clock, never earlier than SQLite's own. */
+function effectiveNow(nowMs: number): SQL {
+  return sql`MAX(julianday(${new Date(nowMs).toISOString()}),julianday('now'))`;
+}
 
 /**
  * Transactional equivalent of accountAccessDenial. The account id and caller
@@ -82,33 +64,26 @@ export function accountAccessCondition(
   organizationId: string,
   accessMode: AccountAccessMode,
   nowMs: number,
-): SqlCondition {
-  const deadlineChecks = [
-    `julianday(o.expires_at)>${effectiveNow}`,
-  ];
-  const params: unknown[] = [organizationId, new Date(nowMs).toISOString()];
+): SQL {
+  const deadlineChecks = [sql`julianday(o.expires_at)>${effectiveNow(nowMs)}`];
   if (requiresUnclaimedAccess(deploymentMode, accessMode)) {
     deadlineChecks.push(
-      `(julianday(o.created_at)+(?/86400000.0))>${effectiveNow}`,
+      sql`(julianday(o.created_at)+(${UNCLAIMED_ACCESS_MS}/86400000.0))>${effectiveNow(nowMs)}`,
     );
-    params.push(UNCLAIMED_ACCESS_MS, new Date(nowMs).toISOString());
   }
-  return {
-    sql: `EXISTS (SELECT 1 FROM mgmt_organization o WHERE o.id=? AND (
-      ${humanOwnerCondition("o.id")}
+  return sql`EXISTS (SELECT 1 FROM mgmt_organization o WHERE o.id=${organizationId} AND (
+      ${humanOwnerCondition(sql.raw("o.id"))}
       OR o.expires_at IS NULL
-      OR (${deadlineChecks.join(" AND ")})
-    ))`,
-    params,
-  };
+      OR (${sql.join(deadlineChecks, sql` AND `)})
+    ))`;
 }
 
-/** Fixed-cutoff cleanup predicate; every statement in a batch binds the same instant. */
-export function expiredUnclaimedAccountsCondition(cutoffMs: number): SqlCondition {
-  return {
-    sql: `o.expires_at IS NOT NULL
-      AND julianday(o.expires_at)<=julianday(?)
-      AND NOT ${humanOwnerCondition("o.id")}`,
-    params: [new Date(cutoffMs).toISOString()],
-  };
+/**
+ * Fixed-cutoff cleanup predicate over `mgmt_organization o`; every statement in
+ * a batch binds the same instant.
+ */
+export function expiredUnclaimedAccountsCondition(cutoffMs: number): SQL {
+  return sql`(o.expires_at IS NOT NULL
+      AND julianday(o.expires_at)<=julianday(${new Date(cutoffMs).toISOString()})
+      AND NOT ${humanOwnerCondition(sql.raw("o.id"))})`;
 }

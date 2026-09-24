@@ -1,4 +1,5 @@
 import type { CfAuth } from "@maxceem/cf-auth";
+import { sql } from "drizzle-orm";
 import { identityAuthFor } from "../../auth/identity";
 import { resolveBillingQuota } from "../../billing/quota";
 import {
@@ -7,6 +8,7 @@ import {
 } from "../../core/account-lifecycle";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
+import { prepared } from "../../db/sql";
 import type { CliOperation } from "../../contracts/cli";
 import { ACCOUNT_RECOVERY_MS, unclaimedAccessDeadline } from "../../policy/accounts";
 import { bootstrapDecision } from "../../policy/deployment";
@@ -64,9 +66,7 @@ export async function bootstrap(
   // A self-host belongs to whoever initializes it first, exactly as its first
   // console registration does. Once an account exists, neither door reopens.
   if (!row && decision.requiresEmptyDeployment) {
-    if (await c.env.DB.prepare(
-      `SELECT 1 WHERE NOT (${emptyDeploymentCondition()})`,
-    ).first())
+    if (await prepared(c.env.DB, sql`SELECT 1 WHERE NOT ${emptyDeploymentCondition()}`).first())
       throw new GatewayError(409, "conflict", "This deployment has already been initialized");
   }
 
@@ -83,43 +83,25 @@ export async function bootstrap(
     if (decision.rateLimited)
       await enforceEndpointRateLimit(c.env, "bootstrap", clientAddress(c.req.raw));
     const { accountId, userId, createdAt, recoveryEndsAt } = decision;
-    const guard = decision.requiresEmptyDeployment ? emptyDeploymentCondition() : "1";
+    const guard = decision.requiresEmptyDeployment ? emptyDeploymentCondition() : sql`1`;
+    const created = sql`EXISTS (
+      SELECT 1 FROM mgmt_organization WHERE id=${accountId} AND created_by_user_id=${userId})`;
     await c.env.DB.batch([
-      c.env.DB.prepare(
-        `INSERT OR IGNORE INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at)
-         SELECT ?,'CLI service',NULL,0,'service',?,? WHERE ${guard}`,
-      ).bind(userId, now, now),
-      c.env.DB.prepare(
-        `INSERT OR IGNORE INTO mgmt_organization(id,name,created_by_user_id,expires_at,created_at,updated_at)
-         SELECT ?,'My account',?,?,?,? WHERE ${guard}`,
-      ).bind(accountId, userId, recoveryEndsAt, createdAt, createdAt),
-      c.env.DB.prepare(
-        `INSERT OR IGNORE INTO mgmt_organization_user(id,organization_id,user_id,role,status,joined_at)
-         SELECT ?,?,?,'owner','active',? WHERE EXISTS (
-           SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)`,
-      ).bind(`member-${accountId}`, accountId, userId, createdAt, accountId, userId),
-      c.env.DB.prepare(
-        `INSERT OR IGNORE INTO mgmt_operation(
+      prepared(c.env.DB, sql`INSERT OR IGNORE INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at)
+         SELECT ${userId},'CLI service',NULL,0,'service',${now},${now} WHERE ${guard}`),
+      prepared(c.env.DB, sql`INSERT OR IGNORE INTO mgmt_organization(id,name,created_by_user_id,expires_at,created_at,updated_at)
+         SELECT ${accountId},'My account',${userId},${recoveryEndsAt},${createdAt},${createdAt} WHERE ${guard}`),
+      prepared(c.env.DB, sql`INSERT OR IGNORE INTO mgmt_organization_user(id,organization_id,user_id,role,status,joined_at)
+         SELECT ${`member-${accountId}`},${accountId},${userId},'owner','active',${createdAt} WHERE ${created}`),
+      prepared(c.env.DB, sql`INSERT OR IGNORE INTO mgmt_operation(
            id,kind,state,organization_id,initiating_user_id,request_hash,
            expires_at,created_at,updated_at)
-         SELECT ?,'bootstrap','completed',?,?,?,?,?,? WHERE EXISTS (
-           SELECT 1 FROM mgmt_organization WHERE id=? AND created_by_user_id=?)
+         SELECT ${id},'bootstrap','completed',${accountId},${userId},${hash},${now + ACCOUNT_RECOVERY_MS},${now},${now}
+         WHERE ${created}
          -- One bootstrap per account: a second token never attaches to an
          -- account another bootstrap already holds.
-         AND NOT EXISTS (SELECT 1 FROM mgmt_operation WHERE kind='bootstrap' AND organization_id=?)
-         ${decision.requiresEmptyDeployment ? "AND NOT EXISTS (SELECT 1 FROM mgmt_operation WHERE kind='bootstrap')" : ""}`,
-      ).bind(
-        id,
-        accountId,
-        userId,
-        hash,
-        now + ACCOUNT_RECOVERY_MS,
-        now,
-        now,
-        accountId,
-        userId,
-        accountId,
-      ),
+         AND NOT EXISTS (SELECT 1 FROM mgmt_operation WHERE kind='bootstrap' AND organization_id=${accountId})
+         ${decision.requiresEmptyDeployment ? sql`AND NOT EXISTS (SELECT 1 FROM mgmt_operation WHERE kind='bootstrap')` : sql.empty()}`),
     ]);
     row = await operationRow(c.env.DB, id);
     if (!row)
@@ -205,14 +187,11 @@ async function currentCredential(
       throw error;
     });
   const previous = row.credential_id;
-  await c.env.DB.prepare(
-    `UPDATE mgmt_operation
-     SET sealed_outcome=?,sealed_until=?,credential_id=?,updated_at=?
-     WHERE id=? AND state='completed'
-       AND (sealed_outcome IS NULL OR sealed_until<=?)
-       AND NOT ${humanOwnerCondition("mgmt_operation.organization_id")}`,
-  )
-    .bind(sealed, now + SEALED_TTL, issued.id, now, row.id, now)
+  await prepared(c.env.DB, sql`UPDATE mgmt_operation
+     SET sealed_outcome=${sealed},sealed_until=${now + SEALED_TTL},credential_id=${issued.id},updated_at=${now}
+     WHERE id=${row.id} AND state='completed'
+       AND (sealed_outcome IS NULL OR sealed_until<=${now})
+       AND NOT ${humanOwnerCondition(sql.raw("mgmt_operation.organization_id"))}`)
     .run()
     .catch(async (error) => {
       // A failed RPC can still have committed, so ask the row who won before

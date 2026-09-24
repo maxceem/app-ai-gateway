@@ -1,46 +1,48 @@
+import { sql, type SQL } from "drizzle-orm";
 import {
   billingPlanLimits,
   getBillingAccess,
   type PlanLimits,
 } from "../billing/gateway";
 import { GatewayError } from "../core/errors";
-import type { SqlCondition } from "../policy/sql";
+import { prepared } from "../db/sql";
 import type { ManagementScope } from "./scope";
-
-const UNCONDITIONAL: SqlCondition = { sql: "1", params: [] };
 
 /**
  * The resources a plan can put a ceiling on, and how each one is counted.
  *
- * `from` carries the count's own `WHERE`, whose single parameter is the scope
- * being counted within: the organization for everything it owns directly, the
- * application for its keys. `subject` names the thing in the refusal, and is
- * plural because a ceiling is always a count.
+ * `count` counts within one scope: the organization for everything it owns
+ * directly, the application for its keys. `subject` names the thing in the
+ * refusal, and is plural because a ceiling is always a count.
  */
 const CAPPED_RESOURCES = {
   app: {
     limit: "maxApps",
-    from: "app WHERE organization_id = ?",
+    count: (scopeId) => sql`SELECT COUNT(*) FROM app WHERE organization_id = ${scopeId}`,
     subject: "applications",
   },
   provider: {
     limit: "maxProviders",
-    from: "provider WHERE organization_id = ?",
+    count: (scopeId) => sql`SELECT COUNT(*) FROM provider WHERE organization_id = ${scopeId}`,
     subject: "providers",
   },
   providerGateway: {
     limit: "maxProviderGateways",
-    from: "provider_gateway WHERE organization_id = ?",
+    count: (scopeId) => sql`SELECT COUNT(*) FROM provider_gateway WHERE organization_id = ${scopeId}`,
     subject: "provider gateways",
   },
   // Revoking is the only status transition a key has, so counting at insert
   // time is complete: nothing ever moves back into `active`.
   appKey: {
     limit: "maxActiveKeysPerApp",
-    from: "app_api_key WHERE app_id = ? AND status = 'active'",
+    count: (scopeId) =>
+      sql`SELECT COUNT(*) FROM app_api_key WHERE app_id = ${scopeId} AND status = 'active'`,
     subject: "active API keys per application",
   },
-} as const satisfies Record<string, { limit: keyof PlanLimits; from: string; subject: string }>;
+} as const satisfies Record<
+  string,
+  { limit: keyof PlanLimits; count: (scopeId: string) => SQL; subject: string }
+>;
 
 export type CappedResource = keyof typeof CAPPED_RESOURCES;
 
@@ -48,9 +50,9 @@ export interface PlanCap {
   /**
    * ANDs into the WHERE of the statement that inserts, so the count and the
    * write are one statement and a concurrent create cannot slip between them.
-   * Unconditional when the plan sets no ceiling on this resource.
+   * Absent when the plan sets no ceiling on this resource.
    */
-  condition: SqlCondition;
+  condition: SQL | undefined;
   /**
    * Explains a write that changed nothing.
    *
@@ -64,7 +66,7 @@ export interface PlanCap {
 }
 
 const UNCAPPED: PlanCap = {
-  condition: UNCONDITIONAL,
+  condition: undefined,
   assertNotReached: () => Promise.resolve(),
 };
 
@@ -92,15 +94,10 @@ export async function planCap(
   )[capped.limit];
   if (limit === undefined) return UNCAPPED;
   return {
-    condition: {
-      sql: `(SELECT COUNT(*) FROM ${capped.from}) < ?`,
-      params: [scopeId, limit],
-    },
+    condition: sql`(${capped.count(scopeId)}) < ${limit}`,
     async assertNotReached(): Promise<void> {
-      const row = await scope.env.DB.prepare(`SELECT COUNT(*) AS used FROM ${capped.from}`)
-        .bind(scopeId)
-        .first<{ used: number }>();
-      const used = row?.used ?? 0;
+      const used = (await prepared(scope.env.DB, sql`SELECT (${capped.count(scopeId)}) AS used`)
+        .first<number>("used")) ?? 0;
       if (used < limit) return;
       throw new GatewayError(
         409,

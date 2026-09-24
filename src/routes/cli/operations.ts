@@ -12,6 +12,7 @@
  * repeated.
  */
 
+import { and, sql } from "drizzle-orm";
 import { cfAuth, identityAuthFor } from "../../auth/identity";
 import {
   accountLifecycle,
@@ -21,6 +22,7 @@ import { enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
 import type { CliOperation, CliOperationResult } from "../../contracts/cli";
 import { mgmtAuthTables } from "../../db/schema";
+import { fromCompiled } from "../../db/sql";
 import { actorFromOperation } from "../../management/actor";
 import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
@@ -215,11 +217,10 @@ export async function runResourceOperation(
   const scope = managementScope(c);
   const browser = row.browser_proof_hash !== null;
   const now = Date.now();
-  const conditions = [
-    `EXISTS (SELECT 1 FROM mgmt_operation WHERE id=? AND state='pending' AND request_hash=?
-      AND expires_at>MAX(?,CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)))`,
-  ];
-  const parameters: unknown[] = [row.id, row.request_hash, now];
+  const pending = sql`EXISTS (SELECT 1 FROM mgmt_operation WHERE id=${row.id} AND state='pending'
+      AND request_hash=${row.request_hash}
+      AND expires_at>MAX(${now},CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)))`;
+  let condition = pending;
   if (browser) {
     await assertAccountAccess(scope.deployment, c.env, actor.organizationId, "setup");
     const { credentialAuthorityCondition } = await cfAuth();
@@ -230,17 +231,19 @@ export async function runResourceOperation(
       allowedRoles: ["owner", "admin"],
       nowMs: now,
     });
-    const accountAccess = accountAccessCondition(scope.deployment.mode, actor.organizationId, "setup", now);
-    conditions.push(liveCredential.sql, accountAccess.sql);
-    parameters.push(...liveCredential.params, ...accountAccess.params);
+    condition = and(
+      pending,
+      fromCompiled(liveCredential),
+      accountAccessCondition(scope.deployment.mode, actor.organizationId, "setup", now),
+    )!;
   }
   const settled = async () => (await operationRow(c.env.DB, row.id))?.state === "completed";
   const boundary: ResourceWriteBoundary = {
-    condition: { sql: conditions.join(" AND "), params: parameters },
-    async commit(statement, outcome) {
+    condition,
+    async commit(statements, outcome) {
       const stored = await storedOutcome(c.env, row, kind.result(outcome), kind.redact, now);
       await c.env.DB.batch([
-        ...(Array.isArray(statement) ? statement : [statement]),
+        ...statements,
         completeStatement(c.env.DB, row, stored, now, { onlyIfPreviousChanged: true }),
       ]);
       // Still pending means the write matched no row — the authority was

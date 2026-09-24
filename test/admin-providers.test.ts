@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { supportsEndpointStyle } from "../src/providers/capability-matrix";
 import {
@@ -417,12 +417,12 @@ describe("admin provider instances", () => {
     let release!: () => void;
     const ready = new Promise<void>((resolve) => { release = resolve; });
     const boundary = (): ResourceWriteBoundary => ({
-      condition: { sql: "1", params: [] },
-      async commit(statement) {
+      condition: sql`1`,
+      async commit(statements) {
         entered++;
         if (entered === 2) release();
         await ready;
-        const result = await (Array.isArray(statement) ? statement[0]! : statement).run();
+        const result = await statements[0]!.run();
         if (result.meta.changes !== 1) throw new GatewayError(409, "conflict", "lost CAS");
       },
     });

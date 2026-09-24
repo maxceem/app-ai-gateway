@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import type { ParsedOperationQuery } from "../contracts/catalog";
 import type {
   UserBlockResponse,
@@ -8,6 +8,7 @@ import type {
 } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
+import { prepared } from "../db/sql";
 import { appUsageEvent, appUser, type app } from "../db/schema";
 import { invalidateBlockedCache } from "../execution/admission";
 import type { Actor } from "./actor";
@@ -31,7 +32,7 @@ export interface EndUserIdentityRow {
 
 /**
  * The end users of an organization's applications, as an `identities` common
- * table expression to select from, with the parameters it binds first.
+ * table expression for a query to begin with.
  *
  * An end user is an `app_user` row, which the token exchange writes; or, for
  * an application whose clients name their users without ever exchanging a
@@ -49,28 +50,24 @@ export function endUserIdentities(where: {
   organizationId: string;
   appId?: string;
   userId?: string;
-}): { sql: string; params: string[] } {
-  const users = ["owner.organization_id = ?"];
-  const events = ["owner.organization_id = ?"];
-  const params = [where.organizationId];
+}): SQL {
+  const users = [sql`owner.organization_id = ${where.organizationId}`];
+  const events = [sql`owner.organization_id = ${where.organizationId}`];
   if (where.appId !== undefined) {
-    users.push("users.app_id = ?");
-    events.push("events.app_id = ?");
-    params.push(where.appId);
+    users.push(sql`users.app_id = ${where.appId}`);
+    events.push(sql`events.app_id = ${where.appId}`);
   }
   if (where.userId !== undefined) {
-    users.push("users.id = ?");
-    events.push("events.user_id = ?");
-    params.push(where.userId);
+    users.push(sql`users.id = ${where.userId}`);
+    events.push(sql`events.user_id = ${where.userId}`);
   }
-  return {
-    sql: `
+  return sql`
   WITH identities AS (
     SELECT users.app_id, users.id, users.status, users.attest_key_id, users.attest_public_key,
            users.attest_counter, users.created_at, users.last_seen_at, 0 AS is_virtual
       FROM app_user AS users
       JOIN app AS owner ON owner.id = users.app_id
-     WHERE ${users.join(" AND ")}
+     WHERE ${sql.join(users, sql` AND `)}
     UNION ALL
     SELECT events.app_id, events.user_id AS id, 'active' AS status, NULL AS attest_key_id,
            NULL AS attest_public_key, 0 AS attest_counter,
@@ -78,17 +75,14 @@ export function endUserIdentities(where: {
            1 AS is_virtual
       FROM app_usage_event AS events
       JOIN app AS owner ON owner.id = events.app_id
-     WHERE ${events.join(" AND ")}
+     WHERE ${sql.join(events, sql` AND `)}
        AND events.user_id IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM app_user
           WHERE app_user.app_id = events.app_id AND app_user.id = events.user_id
        )
      GROUP BY events.app_id, events.user_id
-  )`,
-    // Each half binds the same values, in the same order.
-    params: [...params, ...params],
-  };
+  )`;
 }
 
 function serializeUser(row: EndUserIdentityRow) {
@@ -118,18 +112,14 @@ export async function listAppUsers(
   const identities = endUserIdentities({ organizationId: actor.organizationId, appId });
   const status = query.status ?? null;
   const match = query.query ? `%${query.query}%` : null;
-  const filter = "WHERE (? IS NULL OR status = ?) AND (? IS NULL OR id LIKE ?)";
-  const filterParams = [status, status, match, match];
-  const total = await DB.prepare(`${identities.sql} SELECT COUNT(*) AS value FROM identities ${filter}`)
-    .bind(...identities.params, ...filterParams)
+  const filter = sql`WHERE (${status} IS NULL OR status = ${status})
+    AND (${match} IS NULL OR id LIKE ${match})`;
+  const total = await prepared(DB, sql`${identities} SELECT COUNT(*) AS value FROM identities ${filter}`)
     .first<{ value: number }>();
-  const rows = await DB.prepare(
-    `${identities.sql}
+  const rows = await prepared(DB, sql`${identities}
      SELECT * FROM identities ${filter}
       ORDER BY COALESCE(last_seen_at, created_at) DESC
-      LIMIT ? OFFSET ?`,
-  )
-    .bind(...identities.params, ...filterParams, limit, offset)
+      LIMIT ${limit} OFFSET ${offset}`)
     .all<EndUserIdentityRow>();
 
   const usageByUser = new Map<string, UsageTotals>();
@@ -180,8 +170,7 @@ export async function getAppUser(
   const month = query.month ?? currentMonth();
   const bounds = monthBounds(month);
   const identities = endUserIdentities({ organizationId: actor.organizationId, appId, userId });
-  const row = await DB.prepare(`${identities.sql} SELECT * FROM identities`)
-    .bind(...identities.params)
+  const row = await prepared(DB, sql`${identities} SELECT * FROM identities`)
     .first<EndUserIdentityRow>();
   if (!row) throw new GatewayError(404, "not_found", "User was not found");
 

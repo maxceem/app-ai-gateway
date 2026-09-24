@@ -6,6 +6,8 @@ import {
   type AccountAccessMode,
   type AccountLifecycle,
 } from "../policy/accounts";
+import { sql, type SQL } from "drizzle-orm";
+import { prepared } from "../db/sql";
 import type { Deployment } from "../policy/deployment";
 import {
   expiredUnclaimedAccountsCondition,
@@ -59,16 +61,11 @@ export async function accountLifecycle(
   const cached = accountLifecycleCache.get(id);
   if (cached) return cached;
   // Fill from the authoritative primary. The ten-second TTL is the entire
-  // intentional lifecycle staleness window. The raw statement is used rather
-  // than drizzle because the claim predicate is a correlated EXISTS.
-  const row = await env.DB.prepare(
-    `SELECT o.id, o.name, o.created_at AS createdAt,
-    ${humanOwnerCondition("o.id")} AS claimed,
+  // intentional lifecycle staleness window.
+  const row = await prepared(env.DB, sql`SELECT o.id, o.name, o.created_at AS createdAt,
+    ${humanOwnerCondition(sql.raw("o.id"))} AS claimed,
     o.expires_at AS expiresAt
-    FROM mgmt_organization o WHERE o.id = ?`,
-  )
-    .bind(id)
-    .first<AccountLifecycle>();
+    FROM mgmt_organization o WHERE o.id = ${id}`).first<AccountLifecycle>();
   if (!row) throw new GatewayError(404, "not_found", "Account was not found");
   const value = { ...row, claimed: Boolean(row.claimed) };
   accountLifecycleCache.set(id, value);
@@ -154,13 +151,8 @@ const ORGANIZATION_SCOPED_TABLES = [
   "mgmt_organization_user",
 ] as const;
 
-interface CleanupStatement {
-  sql: string;
-  params: unknown[];
-}
-
 /**
- * The statements one cleanup pass issues, as SQL and parameters.
+ * The statements one cleanup pass issues.
  *
  * Built apart from the database so the pass's size is knowable before any of it
  * is issued — {@link ACCOUNT_CLEANUP_STATEMENTS} is this list's length, not a
@@ -173,52 +165,37 @@ interface CleanupStatement {
  * its account from every statement; no claim can commit midway through it.
  */
 function accountCleanupStatements(cutoffMs: number): {
-  statements: CleanupStatement[];
+  statements: SQL[];
   /** Index of the statement whose `changes` counts the accounts collected. */
   accounts: number;
 } {
-  const expiredCondition = expiredUnclaimedAccountsCondition(cutoffMs);
-  const expired = `SELECT id FROM mgmt_organization o WHERE ${expiredCondition.sql}
-    ORDER BY o.id LIMIT ${ACCOUNT_CLEANUP_BATCH}`;
-  const cutoff = expiredCondition.params;
-  const apps = `SELECT id FROM app WHERE organization_id IN (${expired})`;
-  const statements: CleanupStatement[] = [];
+  const expired = sql`SELECT id FROM mgmt_organization o
+    WHERE ${expiredUnclaimedAccountsCondition(cutoffMs)}
+    ORDER BY o.id LIMIT ${sql.raw(String(ACCOUNT_CLEANUP_BATCH))}`;
+  const apps = sql`SELECT id FROM app WHERE organization_id IN (${expired})`;
+  const statements: SQL[] = [];
   for (const table of APP_SCOPED_TABLES) {
-    const stamped = ORGANIZATION_STAMPED_TABLES.has(table);
-    statements.push({
-      sql: `DELETE FROM ${table} WHERE app_id IN (${apps})${stamped ? ` OR organization_id IN (${expired})` : ""}`,
-      params: stamped ? [...cutoff, ...cutoff] : [...cutoff],
-    });
+    const stamped = ORGANIZATION_STAMPED_TABLES.has(table)
+      ? sql` OR organization_id IN (${expired})`
+      : sql.empty();
+    statements.push(sql`DELETE FROM ${sql.identifier(table)} WHERE app_id IN (${apps})${stamped}`);
   }
   for (const table of ORGANIZATION_SCOPED_TABLES) {
-    statements.push({
-      sql: `DELETE FROM ${table} WHERE organization_id IN (${expired})`,
-      params: [...cutoff],
-    });
+    statements.push(sql`DELETE FROM ${sql.identifier(table)} WHERE organization_id IN (${expired})`);
   }
   // Keep only the token-bound bootstrap tombstone: deleting it would let an
   // old bootstrap recreate the same expired account. No account identity or
   // secret survives.
-  statements.push({
-    sql: `UPDATE mgmt_operation SET state='expired', organization_id=NULL,
+  statements.push(sql`UPDATE mgmt_operation SET state='expired', organization_id=NULL,
       initiating_user_id=NULL, initiating_credential_id=NULL, credential_id=NULL,
-      sealed_outcome=NULL, sealed_until=NULL, updated_at=?
-      WHERE kind='bootstrap' AND organization_id IN (${expired})`,
-    params: [cutoffMs, ...cutoff],
-  });
-  statements.push({
-    sql: `DELETE FROM mgmt_operation WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
-    params: [...cutoff],
-  });
+      sealed_outcome=NULL, sealed_until=NULL, updated_at=${cutoffMs}
+      WHERE kind='bootstrap' AND organization_id IN (${expired})`);
+  statements.push(
+    sql`DELETE FROM mgmt_operation WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
+  );
   const accounts = statements.length;
-  statements.push({
-    sql: `DELETE FROM mgmt_organization WHERE id IN (${expired})`,
-    params: [...cutoff],
-  });
-  statements.push({
-    sql: `DELETE FROM mgmt_user WHERE id IN (SELECT id FROM mgmt_user WHERE kind='service' AND NOT EXISTS (SELECT 1 FROM mgmt_organization WHERE created_by_user_id=mgmt_user.id) AND NOT EXISTS (SELECT 1 FROM mgmt_organization_user WHERE user_id=mgmt_user.id) LIMIT 100)`,
-    params: [],
-  });
+  statements.push(sql`DELETE FROM mgmt_organization WHERE id IN (${expired})`);
+  statements.push(sql`DELETE FROM mgmt_user WHERE id IN (SELECT id FROM mgmt_user WHERE kind='service' AND NOT EXISTS (SELECT 1 FROM mgmt_organization WHERE created_by_user_id=mgmt_user.id) AND NOT EXISTS (SELECT 1 FROM mgmt_organization_user WHERE user_id=mgmt_user.id) LIMIT 100)`);
   return { statements, accounts };
 }
 
@@ -234,11 +211,7 @@ const ACCOUNT_CLEANUP_STATEMENTS = accountCleanupStatements(0).statements.length
 /** Deletes one batch of expired accounts, and answers how many it found. */
 async function deleteExpiredAccountBatch(db: D1Database): Promise<number> {
   const { statements, accounts } = accountCleanupStatements(Date.now());
-  const results = await db.batch(
-    statements.map(({ sql, params }) =>
-      params.length === 0 ? db.prepare(sql) : db.prepare(sql).bind(...params),
-    ),
-  );
+  const results = await db.batch(statements.map((statement) => prepared(db, statement)));
   return results[accounts]?.meta.changes ?? 0;
 }
 

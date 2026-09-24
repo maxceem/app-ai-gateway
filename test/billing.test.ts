@@ -700,6 +700,31 @@ describe("billing gateway", () => {
     expect(updated.status).toBe(200);
   });
 
+  it("caps the app row alone, so the app that fills the last slot still gets its default key", async () => {
+    const owned = (await env.DB.prepare("SELECT COUNT(*) AS total FROM app WHERE organization_id = ?")
+      .bind(TEST_ORGANIZATION_ID).first<{ total: number }>())!.total;
+    const lastSlotEnv = withBilling(
+      stub({ getTenantAccess: async () => onPlan({ limits: { maxApps: owned + 1 } }) }),
+    );
+    const created = await worker.request(
+      `${ORIGIN}/v1/admin/apps`,
+      {
+        method: "POST",
+        headers: { ...MANAGEMENT_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({ name: "billing-last-slot", config: serverConfig() }),
+      },
+      lastSlotEnv,
+    );
+    expect(created.status).toBe(201);
+    const body = await created.json<{ app: { id: string }; api_key: { id: string } | null }>();
+    expect(body.api_key).not.toBeNull();
+    // By the time the key's statement runs the new app is counted, so a key
+    // guarded by the app cap would match nothing while the app still landed.
+    const key = await env.DB.prepare("SELECT app_id, status FROM app_api_key WHERE id = ?")
+      .bind(body.api_key!.id).first<{ app_id: string; status: string }>();
+    expect(key).toEqual({ app_id: body.app.id, status: "active" });
+  });
+
   /**
    * The ceilings that replaced a set of database triggers. They are plan data
    * now, so the interesting part is that the same enforcement reads whichever

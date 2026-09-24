@@ -3,6 +3,7 @@ import { createCfAuthTables } from "@maxceem/cf-auth/schema";
 import { getTableName, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { database } from "../src/db";
+import { prepared } from "../src/db/sql";
 import {
   ACCOUNT_RECOVERY_MS,
   UNCLAIMED_ACCESS_MS,
@@ -267,8 +268,7 @@ describe("account deadline policy", () => {
             implementation: "pure",
           })).toBe(expected);
           const condition = accountAccessCondition(mode, account.id, action, now);
-          const allowed = await env.DB.prepare(`SELECT ${condition.sql} AS allowed`)
-            .bind(...condition.params)
+          const allowed = await prepared(env.DB, sql`SELECT ${condition} AS allowed`)
             .first<number>("allowed");
           expect(Boolean(allowed), JSON.stringify({
             case: definition.label,
@@ -281,8 +281,8 @@ describe("account deadline policy", () => {
     }
 
     const missing = accountAccessCondition("cloud", "missing-account", "read", now);
-    expect(Boolean(await env.DB.prepare(`SELECT ${missing.sql} AS allowed`)
-      .bind(...missing.params).first<number>("allowed"))).toBe(false);
+    expect(Boolean(await prepared(env.DB, sql`SELECT ${missing} AS allowed`)
+      .first<number>("allowed"))).toBe(false);
   });
 
   it("uses SQLite's later clock to reject a mutation from a stale caller", async () => {
@@ -297,9 +297,9 @@ describe("account deadline policy", () => {
       "read",
       staleCallerNow,
     );
-    const result = await env.DB.prepare(
-      `UPDATE mgmt_organization SET name='Mutated' WHERE id=? AND ${condition.sql}`,
-    ).bind(account.id, ...condition.params).run();
+    const result = await prepared(env.DB,
+      sql`UPDATE mgmt_organization SET name='Mutated' WHERE id=${account.id} AND ${condition}`,
+    ).run();
     expect(result.meta.changes).toBe(0);
     expect(await env.DB.prepare("SELECT name FROM mgmt_organization WHERE id=?")
       .bind(account.id).first<string>("name")).toBe("Policy account");
@@ -324,10 +324,8 @@ describe("account deadline policy", () => {
       claimed: true,
     });
     const condition = expiredUnclaimedAccountsCondition(cutoff);
-    const rows = await env.DB.prepare(
-      `SELECT o.id FROM mgmt_organization o
-       WHERE o.id IN (?,?,?) AND ${condition.sql} ORDER BY o.id`,
-    ).bind(expired.id, afterCutoff.id, claimed.id, ...condition.params)
+    const rows = await prepared(env.DB, sql`SELECT o.id FROM mgmt_organization o
+       WHERE o.id IN (${expired.id},${afterCutoff.id},${claimed.id}) AND ${condition} ORDER BY o.id`)
       .all<{ id: string }>();
     expect(rows.results.map((row) => row.id)).toEqual([expired.id]);
   });

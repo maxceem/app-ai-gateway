@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { getBillingAccess, requireActiveBilling } from "../billing/gateway";
 import type { AppUpdate, AppWrite } from "../contracts/schemas";
 import type {
@@ -18,6 +18,7 @@ import {
   type OrganizationProviders,
 } from "../providers/provider-store";
 import { database } from "../db";
+import { prepared } from "../db/sql";
 import {
   app,
   appApiKey,
@@ -25,20 +26,19 @@ import {
   appAuthEvent,
   appUser,
 } from "../db/schema";
-import { andCondition } from "../policy/sql";
 import {
   ConfigError,
   selectedProviderPolicies,
   type AppConfig,
 } from "../shared/app-config";
 import type { Actor } from "./actor";
-import { appInsertStatement, updateApp as writeAppRow } from "./app-writes";
+import { appInsert, updateApp as writeAppRow } from "./app-writes";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
 import { databaseErrorMatches } from "./validation";
 import { assertMonth, EMPTY_USAGE_TOTALS, organizationMonthUsage } from "./usage-queries";
 import { endUserIdentities } from "./users";
-import type { ResourceWriteBoundary } from "./write-boundary";
+import { commitResourceWrite, type ResourceWriteBoundary } from "./write-boundary";
 
 type AppRow = typeof app.$inferSelect;
 
@@ -216,12 +216,10 @@ export async function listApps(
   const { results: usage } = await organizationMonthUsage(env.DB, organizationId, month);
   const usageByApp = new Map(usage.map(({ app_id, ...totals }) => [app_id, totals]));
   const identities = endUserIdentities({ organizationId });
-  const counts = await env.DB.prepare(
-    `${identities.sql}
+  const counts = await prepared(env.DB, sql`${identities}
      SELECT app_id, COUNT(*) AS total,
             SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
-       FROM identities GROUP BY app_id`,
-  ).bind(...identities.params).all<{
+       FROM identities GROUP BY app_id`).all<{
     app_id: string;
     total: number;
     blocked: number;
@@ -306,42 +304,32 @@ export async function createApp(
       app: { id: appId, name, config, status, revision: 1, created_at: now, updated_at: now },
       api_key: createdKey,
     };
-    const condition = boundary?.condition ?? { sql: "1", params: [] };
     // The app cap guards the app row alone. The default key rides along with the
     // app it belongs to, and by the time its statement runs the app is already
     // counted, so sharing the guard would refuse the key of the very app that
     // just filled the plan's last slot. Keys added later are capped in `./keys.ts`.
-    const statements = [appInsertStatement(env.DB, { id: appId, organizationId, name, config,
-      status, createdAt: now, updatedAt: now }, andCondition(condition, cap.condition))];
-    if (generated) {
-      statements.push(env.DB.prepare(
-        `INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
-         SELECT ?,?,'Default key',?,?,'active',? WHERE ${condition.sql}
-         AND EXISTS (SELECT 1 FROM app WHERE id = ? AND organization_id = ?)`,
-      ).bind(generated.id, appId, generated.keyHash, generated.keyPrefix, now,
-        ...condition.params, appId, organizationId));
-    }
+    const keyGuard = boundary?.condition ?? sql`1`;
+    const build = (guard: SQL): SQL[] => [
+      appInsert({ id: appId, organizationId, name, config, status, createdAt: now, updatedAt: now }, guard),
+      ...(generated ? [sql`INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
+         SELECT ${generated.id},${appId},'Default key',${generated.keyHash},${generated.keyPrefix},'active',${now}
+         WHERE ${keyGuard}
+         AND EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId})`] : []),
+    ];
     // The application, default key and operation outcome are committed together.
     // A response lost after this batch can redeliver the original ID and key.
     try {
-      if (boundary) await boundary.commit(statements, outcome);
-      else {
-        const written = await env.DB.batch<unknown>(statements);
-        // The insert returns the row it stored, so an empty result is the guard
-        // refusing rather than a write that happened.
-        if (written[0]!.results.length === 0) {
-          throw new GatewayError(409, "conflict", "The application could not be created; retry the same request");
-        }
-      }
+      await commitResourceWrite(scope, build, outcome, {
+        boundary,
+        cap,
+        conflict: "The application could not be created; retry the same request",
+      });
     } catch (error) {
       // The one retryable failure: the generated id was already taken, so the
-      // next attempt generates another. Everything else is rethrown, and the
-      // operation this write may be running under answers with what it recorded.
+      // next attempt generates another. Everything else is the caller's answer,
+      // and the operation this write may be running under answers with what it
+      // recorded.
       if (databaseErrorMatches(error, /UNIQUE constraint failed: app\.id/u)) continue;
-      // Both guards refuse by matching no rows, so the failure above says nothing
-      // about which one did. Counting again, on this path alone, separates a
-      // reached plan ceiling from the concurrent write it otherwise looks like.
-      await cap.assertNotReached();
       throw error;
     }
     invalidateAppConfig(appId);

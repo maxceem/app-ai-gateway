@@ -1,6 +1,7 @@
+import { sql, type SQL } from "drizzle-orm";
 import type { app } from "../db/schema";
+import { prepared } from "../db/sql";
 import type { AppConfig } from "../shared/app-config";
-import type { SqlCondition } from "../policy/sql";
 
 export interface AtomicAppWrite {
   id: string;
@@ -16,7 +17,9 @@ export interface AtomicAppWrite {
 /** The stored app, as the writing statement itself returned it. */
 export type StoredAppRow = typeof app.$inferSelect;
 
-const RETURNED_COLUMNS = "id, organization_id, name, config_json, auth_type, status, created_at, updated_at, revision";
+const RETURNED_COLUMNS = sql.raw(
+  "id, organization_id, name, config_json, auth_type, status, created_at, updated_at, revision",
+);
 
 interface ReturnedRow {
   id: string;
@@ -59,27 +62,29 @@ export async function insertApp(
   d1: D1Database,
   values: AtomicAppWrite,
 ): Promise<StoredAppRow | null> {
-  const result = await appInsertStatement(d1, values, undefined, true).all<ReturnedRow>();
+  const result = await prepared(d1, appInsert(values, sql`1`, { ignoreCollision: true }))
+    .all<ReturnedRow>();
   const row = result.results[0];
   return row ? hydrate(row) : null;
 }
 
-/** Shared app insert used by ordinary writes and by CLI operations. */
-export function appInsertStatement(
-  d1: D1Database,
+/**
+ * The app insert shared by ordinary writes and by CLI operations: the row
+ * lands only where `guard` holds, and the statement returns what it stored.
+ */
+export function appInsert(
   values: AtomicAppWrite,
-  condition: SqlCondition = { sql: "1", params: [] },
-  ignoreCollision = false,
-): D1PreparedStatement {
+  guard: SQL,
+  options: { ignoreCollision?: boolean } = {},
+): SQL {
   const now = new Date().toISOString();
-  return d1.prepare(
-    `INSERT INTO app(id,organization_id,name,config_json,auth_type,status,created_at,updated_at,revision)
-     SELECT ?,?,?,?,?,?,?,?,1 WHERE ${condition.sql}
-     ${ignoreCollision ? "ON CONFLICT(id) DO NOTHING" : ""}
-     RETURNING ${RETURNED_COLUMNS}`,
-  ).bind(values.id, values.organizationId, values.name, JSON.stringify(values.config),
-    values.config.authentication.type, values.status,
-    values.createdAt ?? now, values.updatedAt ?? now, ...condition.params);
+  return sql`INSERT INTO app(id,organization_id,name,config_json,auth_type,status,created_at,updated_at,revision)
+     SELECT ${values.id},${values.organizationId},${values.name},${JSON.stringify(values.config)},
+       ${values.config.authentication.type},${values.status},
+       ${values.createdAt ?? now},${values.updatedAt ?? now},1
+     WHERE ${guard}
+     ${options.ignoreCollision ? sql`ON CONFLICT(id) DO NOTHING` : sql.empty()}
+     RETURNING ${RETURNED_COLUMNS}`;
 }
 
 /**
@@ -93,26 +98,16 @@ export async function updateApp(
   d1: D1Database,
   values: AtomicAppWrite & { expectedRevision: number },
 ): Promise<StoredAppRow | null> {
-  const result = await d1.prepare(
-    `UPDATE app SET
-       name = ?,
-       config_json = ?,
-       auth_type = ?,
-       status = ?,
-       updated_at = ?,
+  const result = await prepared(d1, sql`UPDATE app SET
+       name = ${values.name},
+       config_json = ${JSON.stringify(values.config)},
+       auth_type = ${values.config.authentication.type},
+       status = ${values.status},
+       updated_at = ${values.updatedAt ?? new Date().toISOString()},
        revision = revision + 1
-     WHERE id = ? AND organization_id = ? AND revision = ?
-     RETURNING ${RETURNED_COLUMNS}`,
-  ).bind(
-    values.name,
-    JSON.stringify(values.config),
-    values.config.authentication.type,
-    values.status,
-    values.updatedAt ?? new Date().toISOString(),
-    values.id,
-    values.organizationId,
-    values.expectedRevision,
-  ).all<ReturnedRow>();
+     WHERE id = ${values.id} AND organization_id = ${values.organizationId}
+       AND revision = ${values.expectedRevision}
+     RETURNING ${RETURNED_COLUMNS}`).all<ReturnedRow>();
   const row = result.results[0];
   return row ? hydrate(row) : null;
 }

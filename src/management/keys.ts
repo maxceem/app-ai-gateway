@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { ApiKeyCreateRequest } from "../contracts/schemas";
 import type {
   ApiKey,
@@ -61,16 +61,13 @@ export async function createAppKey(
   // land between the check and the write.
   await commitResourceWrite(
     scope,
-    `INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
-     SELECT ?,?,?,?,?,'active',?
-     WHERE EXISTS (SELECT 1 FROM app WHERE id = ? AND organization_id = ?
+    (guard) => sql`INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
+     SELECT ${generated.id},${appId},${name},${generated.keyHash},${generated.keyPrefix},'active',${now}
+     WHERE EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId}
        AND auth_type = 'api_key')
-     AND /* authorization */`,
-    [generated.id, appId, name, generated.keyHash, generated.keyPrefix, now,
-      appId, organizationId],
+     AND ${guard}`,
     outcome,
-    boundary,
-    cap,
+    { boundary, cap },
   );
   return outcome;
 }
