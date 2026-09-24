@@ -277,7 +277,7 @@ function UserAuthentication({
   state: AppDraft;
 }) {
   const reasonId = useId();
-  const source: UserSource = authentication.end_user?.source ?? "none";
+  const source: UserSource = authentication.end_user.source;
   const issuer = authIssuer(authentication);
   const choices = authentication.type === "api_key" ? SERVER_USER_CHOICES : IOS_USER_CHOICES;
 
@@ -307,11 +307,11 @@ function UserAuthentication({
               label="User authentication"
               choices={choices}
               value={source}
-              onChange={(next) => state.setEndUserSource(next === "none" ? undefined : next)}
+              onChange={state.setEndUserSource}
             />
           )}
 
-          {authentication.type === "api_key" && authentication.end_user?.source === "header" ? (
+          {authentication.type === "api_key" && authentication.end_user.source === "header" ? (
             <Field
               label="Header name"
               htmlFor="end-user-header"

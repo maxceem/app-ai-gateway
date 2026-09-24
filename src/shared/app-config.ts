@@ -46,6 +46,7 @@ export type {
   AuthenticationConfig,
   AuthenticationConfigInput,
   ClaimRequirement,
+  EndUserSource,
   EndpointConfig,
   EndpointsConfig,
   EntitlementCheck,

@@ -92,7 +92,7 @@ function renderApps(
                 },
                 end_user: { source: "app_install" },
               }
-            : { type: "api_key" },
+            : { type: "api_key", end_user: { source: "none" } },
           routing: {
             providers: {
               mode: "selected",

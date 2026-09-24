@@ -660,7 +660,7 @@ function appBody() {
   return {
     name: "Test",
     config: parseAppConfig({
-      authentication: { type: "api_key" },
+      authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { mode: "all" }, model_rewrites: {} },
     }),
   };
@@ -668,7 +668,7 @@ function appBody() {
 
 test("advanced public app config and provider gateway IDs survive response parsing", () => {
   const config = {
-    authentication: { type: "api_key" },
+    authentication: { type: "api_key", end_user: { source: "none" } },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
     endpoints: {
       answer: {

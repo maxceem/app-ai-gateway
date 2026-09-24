@@ -14,7 +14,7 @@ const APP_ROW = {
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
   config: {
-    authentication: { type: "api_key" },
+    authentication: { type: "api_key", end_user: { source: "none" } },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   },
 };

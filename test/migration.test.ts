@@ -1,5 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { parseAppConfig } from "../src/shared/app-config";
+import { TEST_ORGANIZATION_ID } from "./apply-migrations";
 
 /** Idempotent, so each test that needs an owning organization can ask for it. */
 async function seedProviderOrganization(): Promise<void> {
@@ -374,5 +376,53 @@ describe("initial database migration", () => {
     // The foreign key the rebuild carried over.
     await expect(insert("planned-orphan", "cf_aig", "org-missing"))
       .rejects.toThrow(/FOREIGN KEY constraint failed/u);
+  });
+});
+
+describe("the end_user none migration", () => {
+  const ROUTING = { providers: { mode: "all" }, model_rewrites: {} };
+  const rows = {
+    "migrated-no-users": { authentication: { type: "api_key" }, routing: ROUTING },
+    "migrated-header": {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: ROUTING,
+    },
+  };
+
+  /*
+   * The suite has already applied every migration, so the row this one exists
+   * for is written afterwards, as the configuration stored before it, and the
+   * migration's own statements are run over it again.
+   */
+  async function migrate(): Promise<void> {
+    const migration = env.TEST_MIGRATIONS.find((entry) => entry.name === "0001_end_user_none.sql");
+    expect(migration).toBeDefined();
+    for (const query of migration?.queries ?? []) await env.DB.prepare(query).run();
+  }
+
+  const stored = async (id: string): Promise<unknown> => {
+    const row = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(id)
+      .first<{ config_json: string }>();
+    return JSON.parse(row?.config_json ?? "null");
+  };
+
+  it("states none on an api_key application that omitted end_user, and nothing else", async () => {
+    await env.DB.batch(Object.entries(rows).map(([id, config]) =>
+      env.DB.prepare(
+        `INSERT INTO app(id, organization_id, name, config_json, auth_type, status)
+         VALUES (?, ?, ?, ?, 'api_key', 'active')`,
+      ).bind(id, TEST_ORGANIZATION_ID, id, JSON.stringify(config))));
+    expect(() => parseAppConfig(rows["migrated-no-users"]))
+      .toThrowError("authentication.end_user");
+
+    await migrate();
+
+    const migrated = await stored("migrated-no-users");
+    expect(migrated).toEqual({
+      authentication: { type: "api_key", end_user: { source: "none" } },
+      routing: ROUTING,
+    });
+    expect(parseAppConfig(migrated).authentication.end_user).toEqual({ source: "none" });
+    expect(await stored("migrated-header")).toEqual(rows["migrated-header"]);
   });
 });

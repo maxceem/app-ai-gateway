@@ -234,16 +234,22 @@ const AppInstallEndUserSchema = z.object({
   source: z.literal("app_install"),
 }).strict();
 
+const NoEndUserSchema = z.object({
+  source: z.literal("none"),
+}).strict();
+
 /**
  * Each application type admits only the sources that can mean anything for it,
  * so an impossible pairing is a schema error rather than a rule someone has to
- * remember: an `api_key` app has no attested key, and an App Attest client is
- * the end user's own device and so cannot be trusted to name itself.
+ * remember: an `api_key` app has no attested key and may have no end users at
+ * all, and an App Attest client is the end user's own device and so cannot be
+ * trusted to name itself, but always is somebody.
  */
 const ApiKeyEndUserSchema = z.discriminatedUnion("source", [
+  NoEndUserSchema,
   HeaderEndUserSchema,
   IssuerEndUserSchema,
-], { error: "authentication.end_user.source must be one of header, issuer" });
+], { error: "authentication.end_user.source must be one of none, header, issuer" });
 
 const AppAttestEndUserSchema = z.discriminatedUnion("source", [
   IssuerEndUserSchema,
@@ -288,12 +294,12 @@ const AppleAppAttestAuthenticationSchema = z.object({
 const ApiKeyAuthenticationSchema = z.object({
   type: z.literal("api_key"),
   /**
-   * Omitted means the application has no end users, which is a position rather
-   * than a default: nothing is metered or blocked per user, and `limits.per_user`
-   * is refused as meaningless. Naming a source is how an application opts into
-   * having users at all.
+   * Required, because having no end users is a position rather than a default:
+   * `none` states it, and then nothing is metered or blocked per user and
+   * `limits.per_user` is refused as meaningless. Naming any other source is how
+   * an application opts into having users at all.
    */
-  end_user: ApiKeyEndUserSchema.optional(),
+  end_user: ApiKeyEndUserSchema,
 }).strict();
 
 const AllowedPathSchema = z.union([
@@ -344,12 +350,12 @@ const UNLIMITED_SCOPE = {
 
 /**
  * Whether an application identifies its end users at all. An App Attest app
- * always does; an `api_key` app does only once it names a source.
+ * always does; an `api_key` app does unless its source is `none`. Typed on the
+ * source alone, so a form's draft, whose issuer is still being filled in, asks
+ * the same question as a parsed configuration.
  */
-export function identifiesEndUsers(
-  authentication: { type: string; end_user?: unknown },
-): boolean {
-  return authentication.type !== "api_key" || authentication.end_user !== undefined;
+export function identifiesEndUsers(authentication: { end_user: { source: EndUserSource } }): boolean {
+  return authentication.end_user.source !== "none";
 }
 
 /** Whether a scope sets any limit at all, as opposed to being written out in full as unlimited. */
@@ -417,8 +423,8 @@ export const AppConfigSchema = z.object({
    * that never applies — and an operator who believes they have capped their
    * users. `per_app` is what such an application caps instead.
    */
-  // Defensive reads: zod still runs a whole-object check when a member has
-  // already been rejected, and then neither of these has been parsed.
+  // Casts rather than guards: zod runs this check only once every member has
+  // parsed, so both of these are the parsed values here.
   const authentication = config.authentication as AuthenticationConfig | undefined;
   const perUser = config.limits?.per_user as LimitScopeConfig | undefined;
   if (
@@ -431,7 +437,7 @@ export const AppConfigSchema = z.object({
       code: "custom",
       path: ["limits", "per_user"],
       message:
-        "needs an authentication.end_user source: this application identifies no end users, so use limits.per_app",
+        "needs an authentication.end_user source other than none: this application identifies no end users, so use limits.per_app",
     });
   }
 }).meta({ id: "AppConfig" });
@@ -813,6 +819,8 @@ export type IssuerProvider = (typeof ISSUER_PROVIDERS)[number];
 export type EntitlementCheck = (typeof ENTITLEMENT_CHECKS)[number];
 export type ApiKeyEndUser = z.output<typeof ApiKeyEndUserSchema>;
 export type AppAttestEndUser = z.output<typeof AppAttestEndUserSchema>;
+/** Every way an application of either type can identify its end users, `none` included. */
+export type EndUserSource = (ApiKeyEndUser | AppAttestEndUser)["source"];
 export type AppAttestEnvironment = (typeof APP_ATTEST_ENVIRONMENTS)[number];
 export type AuthenticationConfig = AppConfig["authentication"];
 /** The same block as a client may send it, which is what a half-filled form is. */

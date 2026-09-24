@@ -73,7 +73,7 @@ export type AppDraftAction =
   | { kind: "updateConfig"; appId: string; partial: Partial<AppConfigDraft> }
   | { kind: "updateAuthentication"; appId: string; authentication: AuthenticationDraft }
   | { kind: "updateIssuer"; appId: string; partial: Partial<IssuerDraft> }
-  | { kind: "setEndUserSource"; appId: string; source: EndUserIdentity["source"] | undefined }
+  | { kind: "setEndUserSource"; appId: string; source: EndUserIdentity["source"] }
   | { kind: "updateEndUserHeader"; appId: string; header: string }
   | { kind: "updateProxy"; appId: string; partial: Partial<ProxyConfig> }
   | { kind: "updateLimits"; appId: string; limits: LimitsConfig }
@@ -105,15 +105,14 @@ function loadedSession(appId: string, app: AppRow): EditorSession {
 }
 
 /**
- * Switches which source identifies this application's end users. `undefined`
- * is only reachable on an api_key app and means it has none, which drops the
- * block rather than blanking it — the saved config then matches an app that
- * never had one. An issuer that was configured is kept in memory, so moving
- * away and back returns the JWKS URL and claims instead of a blank form.
+ * Switches which source identifies this application's end users. `none` is
+ * only reachable on an api_key app and means it has none. An issuer that was
+ * configured is kept in memory, so moving away and back returns the JWKS URL
+ * and claims instead of a blank form.
  */
 function switchEndUserSource(
   session: EditorSession,
-  source: EndUserIdentity["source"] | undefined,
+  source: EndUserIdentity["source"],
 ): EditorSession {
   const current = session.draft;
   const authentication = current.config.authentication;
@@ -137,19 +136,23 @@ function switchEndUserSource(
             source: "header",
             // Keeps a name the operator already typed rather than resetting
             // it every time the picker passes through another option.
-            header: authentication.end_user?.source === "header"
+            header: authentication.end_user.source === "header"
               ? authentication.end_user.header
               : DEFAULT_END_USER_HEADER,
           },
         }
         : authentication;
     }
-    return withIssuer(authentication, undefined);
+    // `none`: only an api_key app can have no end users. An attested client
+    // always resolves to some user, so an App Attest app keeps what it has.
+    return authentication.type === "api_key"
+      ? { ...authentication, end_user: { source: "none" } }
+      : authentication;
   })();
   /*
    * Per-user limits go with the users. The gateway refuses a `per_user`
    * block on an application that identifies nobody, and the Limits tab hides
-   * the card once there is no source — so leaving the numbers behind would
+   * the card once the source is `none` — so leaving the numbers behind would
    * be a save that fails against fields the operator can no longer see.
    */
   const config = identifiesEndUsers(next)
@@ -247,7 +250,7 @@ export function reduceAppDraft(
       const current = sessionOf(session, action.appId);
       if (!current) return session;
       const authentication = current.draft.config.authentication;
-      if (authentication.type !== "api_key" || authentication.end_user?.source !== "header") {
+      if (authentication.type !== "api_key" || authentication.end_user.source !== "header") {
         return session;
       }
       return withDraft(current, {

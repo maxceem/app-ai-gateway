@@ -68,7 +68,7 @@ export function useAppDraft(appId: string) {
     dispatch({ kind: "updateIssuer", appId, partial });
   }, [appId]);
 
-  const setEndUserSource = useCallback((source: EndUserIdentity["source"] | undefined) => {
+  const setEndUserSource = useCallback((source: EndUserIdentity["source"]) => {
     dispatch({ kind: "setEndUserSource", appId, source });
   }, [appId]);
 

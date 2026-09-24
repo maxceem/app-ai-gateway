@@ -249,7 +249,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
     if (userSource === "header") {
       return { type: "api_key", endUser: { source: "header", header: DEFAULT_END_USER_HEADER } };
     }
-    return { type: "api_key" };
+    return { type: "api_key", endUser: { source: "none" } };
   }
 
   const create = async () => {

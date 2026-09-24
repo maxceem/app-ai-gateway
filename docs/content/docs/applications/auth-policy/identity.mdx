@@ -98,8 +98,12 @@ token for a gateway token instead, and bare keys are refused on requests. See
 ### In the configuration
 
 ```json
-"authentication": { "type": "api_key" }
+"authentication": { "type": "api_key", "end_user": { "source": "none" } }
 ```
+
+`end_user` is required here too. `none` means the app has no end users; the
+other sources are covered under
+[User authentication](/applications/auth-policy/user-authentication).
 
 Keys are not part of the configuration. `POST /v1/admin/apps/{app}/keys`
 creates one and returns `key` once; `POST /v1/admin/apps/{app}/keys/{key}/revoke`

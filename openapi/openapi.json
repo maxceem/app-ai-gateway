@@ -445,6 +445,21 @@
                           "source": {
                             "type": "string",
                             "enum": [
+                              "none"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "source"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "enum": [
                               "header"
                             ]
                           },
@@ -607,7 +622,8 @@
                   }
                 },
                 "required": [
-                  "type"
+                  "type",
+                  "end_user"
                 ],
                 "additionalProperties": false
               }

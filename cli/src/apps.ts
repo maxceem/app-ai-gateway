@@ -147,7 +147,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
               flags["attest-environments"] ?? "production,development",
             ),
           })
-        : newAppConfig({ type: "api_key" }),
+        : newAppConfig({ type: "api_key", endUser: { source: "none" } }),
     });
   }
   if (flags.name) doc.name = flags.name;

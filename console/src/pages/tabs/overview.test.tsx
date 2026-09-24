@@ -15,6 +15,7 @@ const APP_ROW = {
   config: {
     authentication: {
       type: "api_key",
+      end_user: { source: "none" },
     },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   },

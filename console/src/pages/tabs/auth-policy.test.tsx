@@ -42,7 +42,7 @@ const FIREBASE: IssuerDraft = {
 
 const serverApp = (issuer?: IssuerDraft): AuthenticationDraft => ({
   type: "api_key",
-  ...(issuer ? { end_user: { source: "issuer" as const, issuer } } : {}),
+  end_user: issuer ? { source: "issuer", issuer } : { source: "none" },
 });
 
 const headerApp = (header = "x-end-user-id"): AuthenticationDraft => ({
@@ -225,7 +225,7 @@ describe("AuthPolicyTab user authentication", () => {
     expect(state.setEndUserSource).toHaveBeenCalledWith("issuer");
 
     await userEvent.click(await option(/no user identity/i));
-    expect(state.setEndUserSource).toHaveBeenCalledWith(undefined);
+    expect(state.setEndUserSource).toHaveBeenCalledWith("none");
   });
 
   it("reveals the header name only for a backend-sent id", async () => {

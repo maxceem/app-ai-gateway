@@ -232,7 +232,7 @@ export function serverConfig(input: {
     endpoints: input.endpoints ?? {},
     // No end users unless a test says otherwise: it is the smallest valid
     // server application, and the shape most configuration tests care about.
-    authentication: input.authentication ?? { type: "api_key" },
+    authentication: input.authentication ?? { type: "api_key", end_user: { source: "none" } },
     routing: routingConfig(input.proxy ?? {}),
     limits: input.limits ?? limitsConfig({}).limits,
   };
@@ -393,12 +393,13 @@ export async function seedServerApp(
         type: "api_key",
         /*
          * An issuer when the test asks for one, a header source otherwise, and
-         * nothing at all when the test is about an application with no end
-         * users. The header default is what keeps per-user limits, blocks and
-         * usage exercisable from a plain seeded app.
+         * `none` when the test is about an application with no end users. The
+         * header default is what keeps per-user limits, blocks and usage
+         * exercisable from a plain seeded app.
          */
-        ...(options.endUser === "none" ? {} : {
-          end_user: options.issuer === undefined
+        end_user: options.endUser === "none"
+          ? { source: "none" }
+          : options.issuer === undefined
             ? { source: "header", header: options.endUserHeader ?? "x-end-user-id" }
             : {
               source: "issuer",
@@ -412,7 +413,6 @@ export async function seedServerApp(
                 max_token_lifetime_seconds: options.issuer.max_token_lifetime_seconds ?? 3600,
               },
             },
-        }),
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       ...limitsConfig(options),

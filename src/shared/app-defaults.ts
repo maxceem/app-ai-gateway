@@ -77,8 +77,8 @@ type ApiKeyAuthentication = Extract<AuthenticationConfigInput, { type: "api_key"
 
 /** How an App Attest application may identify its end users. */
 export type AppAttestEndUserInput = AppAttestAuthentication["end_user"];
-/** How an `api_key` application may identify its end users, when it has any. */
-export type ApiKeyEndUserInput = NonNullable<ApiKeyAuthentication["end_user"]>;
+/** How an `api_key` application may identify its end users, `none` included. */
+export type ApiKeyEndUserInput = ApiKeyAuthentication["end_user"];
 
 /**
  * What a caller has decided about a new application, which is only ever its
@@ -101,11 +101,7 @@ export type NewAppInput =
     }
   | {
       type: "api_key";
-      /**
-       * Omitted means the application has no end users at all — a position the
-       * configuration states by leaving the block out, not a missing default.
-       */
-      endUser?: ApiKeyEndUserInput;
+      endUser: ApiKeyEndUserInput;
     };
 
 /**
@@ -128,7 +124,7 @@ export function newAppConfig(input: NewAppInput): AppConfigInput {
     return {
       authentication: {
         type: "api_key",
-        ...(input.endUser ? { end_user: input.endUser } : {}),
+        end_user: input.endUser,
       },
       routing,
     };

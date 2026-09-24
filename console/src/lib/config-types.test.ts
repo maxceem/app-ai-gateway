@@ -191,6 +191,7 @@ describe("named endpoint targets", () => {
 describe("the issuer as an end-user source", () => {
   const serverApp: AuthenticationDraft = {
     type: "api_key",
+    end_user: { source: "none" },
   };
 
   it("reports no issuer while the application identifies nobody", () => {
@@ -216,15 +217,7 @@ describe("the issuer as an end-user source", () => {
     });
   });
 
-  it("drops the block entirely when the issuer is cleared again", () => {
-    const enabled = withIssuer(serverApp, { jwks_url: "https://issuer.example.test/jwks.json" });
-    const disabled = withIssuer(enabled, undefined);
-
-    expect(disabled).toEqual(serverApp);
-    expect("end_user" in disabled).toBe(false);
-  });
-
-  it("keeps the issuer on an App Attest app without discarding it", () => {
+  it("reads the issuer of an App Attest app", () => {
     const appleApp: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
@@ -232,19 +225,16 @@ describe("the issuer as an end-user source", () => {
     };
 
     expect(authIssuer(appleApp)).toEqual({ jwks_url: "https://issuer.example.test/jwks.json" });
-    // An attested client always resolves to some user, so clearing keeps what
-    // is configured rather than leaving it identifying nobody.
-    expect(withIssuer(appleApp, undefined)).toEqual(appleApp);
   });
 
-  it("materializes an issuer for an App Attest config that carries none", () => {
+  it("moves an install-only App Attest app onto an issuer", () => {
     const installOnly: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
       end_user: { source: "app_install" },
     };
 
-    expect(withIssuer(installOnly, undefined)).toEqual({
+    expect(withIssuer(installOnly, emptyIssuer())).toEqual({
       ...installOnly,
       end_user: { source: "issuer", issuer: emptyIssuer() },
     });

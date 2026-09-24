@@ -72,6 +72,7 @@ function appRow(routing: ProxyConfig) {
     config: {
       authentication: {
         type: "api_key",
+        end_user: { source: "none" },
       },
       routing,
     },

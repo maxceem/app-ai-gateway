@@ -166,7 +166,7 @@ describe("a server application", () => {
     await user.click(createButton());
 
     await waitFor(() => expect(attempts).toHaveLength(1));
-    expect(attempts[0]?.config?.authentication).toEqual({ type: "api_key" });
+    expect(attempts[0]?.config?.authentication).toEqual({ type: "api_key", end_user: { source: "none" } });
     /*
      * A backend without users is one identity, so a per-user limit would not
      * meter users, it would cap the whole backend at ten requests a minute.

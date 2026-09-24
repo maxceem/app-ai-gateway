@@ -22,11 +22,11 @@ const issuer = {
 describe("draftProblem", () => {
   it("passes a complete draft", () => {
     expect(draftProblem(draft({ type: "api_key", end_user: { source: "issuer", issuer } }))).toBeNull();
-    expect(draftProblem(draft({ type: "api_key" }))).toBeNull();
+    expect(draftProblem(draft({ type: "api_key", end_user: { source: "none" } }))).toBeNull();
   });
 
   it("names the first thing the Worker would refuse", () => {
-    expect(draftProblem(draft({ type: "api_key" }, "  "))).toMatch(/name/i);
+    expect(draftProblem(draft({ type: "api_key", end_user: { source: "none" } }, "  "))).toMatch(/name/i);
     expect(draftProblem(draft({
       type: "apple_app_attest",
       app_attest: { team_id: "", bundle_id: "com.example" },

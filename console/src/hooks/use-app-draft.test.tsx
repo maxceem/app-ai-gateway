@@ -11,6 +11,7 @@ const APP_ID = "my-app";
 
 const SERVER_AUTH: AuthenticationDraft = {
   type: "api_key",
+  end_user: { source: "none" },
 };
 
 const APPLE_ISSUER = {
@@ -69,10 +70,10 @@ const auth = (view: Awaited<ReturnType<typeof loadedDraft>>) =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe("choosing an end-user source on an api_key draft", () => {
-  it("loads an application that identifies nobody with no end_user key at all", async () => {
+  it("loads an application that identifies nobody as the none source", async () => {
     const view = await loadedDraft(SERVER_AUTH);
 
-    expect("end_user" in auth(view)).toBe(false);
+    expect(auth(view).end_user).toEqual({ source: "none" });
     expect(view.result.current.dirty).toBe(false);
   });
 
@@ -81,7 +82,7 @@ describe("choosing an end-user source on an api_key draft", () => {
 
     act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
 
-    expect("end_user" in auth(view)).toBe(false);
+    expect(auth(view)).toEqual(SERVER_AUTH);
     expect(view.result.current.dirty).toBe(false);
   });
 
@@ -144,15 +145,14 @@ describe("choosing an end-user source on an api_key draft", () => {
     });
   });
 
-  it("drops the block on the way back to no users, leaving the config byte-identical", async () => {
+  it("states none on the way back to no users, leaving the config byte-identical", async () => {
     const view = await loadedDraft(SERVER_AUTH);
 
     act(() => view.result.current.setEndUserSource("issuer"));
     act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
 
     expect(auth(view)).toEqual(SERVER_AUTH);
-    expect("end_user" in auth(view)).toBe(false);
     // Nothing was left behind, so the save bar goes away too.
     expect(view.result.current.dirty).toBe(false);
   });
@@ -186,7 +186,7 @@ describe("choosing an end-user source on an api_key draft", () => {
 
     act(() => view.result.current.setEndUserSource("issuer"));
     act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
     act(() => view.result.current.setEndUserSource("issuer"));
 
     expect(auth(view)).toMatchObject({
@@ -196,7 +196,7 @@ describe("choosing an end-user source on an api_key draft", () => {
 
   it("clears per-user limits when the application stops having users", async () => {
     // The gateway refuses `per_user` on an application that identifies nobody,
-    // and the Limits tab hides the card once there is no source — so leaving
+    // and the Limits tab hides the card once the source is `none` — so leaving
     // the numbers behind would be a save that fails against fields the operator
     // can no longer see.
     stubApi({
@@ -223,7 +223,7 @@ describe("choosing an end-user source on an api_key draft", () => {
     const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
     await waitFor(() => expect(view.result.current.draft).not.toBeNull());
 
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
 
     expect(view.result.current.draft!.config.limits!.per_user).toEqual({
       requests: { per_minute: null, per_day: null },
@@ -271,9 +271,9 @@ describe("the end-user source on an App Attest draft", () => {
   it("cannot be left with no source at all", async () => {
     const view = await loadedDraft(APPLE_AUTH);
 
-    // An attested client always resolves to some user, so `undefined` keeps
+    // An attested client always resolves to some user, so `none` keeps
     // what is configured rather than blanking it.
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
 
     expect(auth(view)).toEqual(APPLE_AUTH);
     expect(view.result.current.dirty).toBe(false);

@@ -85,7 +85,7 @@ curl --fail-with-body "$GATEWAY_URL/v1/admin/apps" \
 {
   "name": "Search service",
   "config": {
-    "authentication": { "type": "api_key" },
+    "authentication": { "type": "api_key", "end_user": { "source": "none" } },
     "routing": {
       "providers": {
         "mode": "selected",

@@ -245,7 +245,7 @@ Discriminated on `type`.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `type` | `"api_key"` | The backend proves itself with an API key |
-| `end_user` | object, optional | Omit for no user identity. `{ "source": "header", "header": "x-end-user-id" }` when the backend names the user in a header. `{ "source": "issuer", "issuer": {…} }` for signed-in users, in which case the key is exchanged with the user's ID token for a gateway token |
+| `end_user` | object, required | `{ "source": "none" }` for no user identity. `{ "source": "header", "header": "x-end-user-id" }` when the backend names the user in a header. `{ "source": "issuer", "issuer": {…} }` for signed-in users, in which case the key is exchanged with the user's ID token for a gateway token |
 
 **The `issuer` object** (signed-in users):
 

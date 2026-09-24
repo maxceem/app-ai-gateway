@@ -79,7 +79,7 @@ describe("the application configuration grammar", () => {
 
   it("applies every default on a minimal configuration", () => {
     const parsed = parseAppConfig({
-      authentication: { type: "api_key" },
+      authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { mode: "all" }, model_rewrites: {} },
     });
     expect(parsed.endpoints).toEqual({});
@@ -112,7 +112,7 @@ describe("the application configuration grammar", () => {
     expect(() => parseAppConfig({ ...serverConfig(), surprise: true }))
       .toThrowError("Unrecognized key");
     const withDevelopmentAccess = serverConfig({
-      authentication: { type: "api_key", development_access: true },
+      authentication: { type: "api_key", end_user: { source: "none" }, development_access: true },
     });
     expect(() => parseAppConfig(withDevelopmentAccess))
       .toThrowError('authentication: Unrecognized key: "development_access"');
@@ -121,6 +121,12 @@ describe("the application configuration grammar", () => {
   it("rejects a missing discriminator instead of inferring a legacy default", () => {
     expect(() => parseAppConfig({ authentication: {}, routing: {} }))
       .toThrowError("authentication.type");
+  });
+
+  it("refuses an api_key application that does not say whether it has end users", () => {
+    const { authentication: _omitted, ...rest } = serverConfig();
+    expect(() => parseAppConfig({ ...rest, authentication: { type: "api_key" } }))
+      .toThrowError("authentication.end_user");
   });
 
   describe("authentication.issuer", () => {
@@ -464,7 +470,7 @@ describe("the application configuration grammar", () => {
      */
     it("refuses per-user limits on an application with no end users", () => {
       expect(() => parseAppConfig({ ...serverConfig(), limits: { per_user: scope() } }))
-        .toThrowError("limits.per_user: needs an authentication.end_user source");
+        .toThrowError("limits.per_user: needs an authentication.end_user source other than none");
       // All-null is not a configured limit, so it is accepted on the same app.
       expect(() => parseAppConfig({
         ...serverConfig(),
@@ -893,7 +899,7 @@ describe("how each configuration authenticates its clients", () => {
   };
 
   it("settles the five configurations into three ways of authenticating", () => {
-    expect(summary({ type: "api_key" }))
+    expect(summary({ type: "api_key", end_user: { source: "none" } }))
       .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: [] });
     expect(summary({ type: "api_key", end_user: { source: "header", header: "X-User" } }))
       .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user"] });

@@ -3,7 +3,7 @@ import { normalizeAppConfigDraft, toAppWrite } from "./config-conversion";
 import type { AppConfigDraft } from "./config-types";
 
 const base = (): AppConfigDraft => ({
-  authentication: { type: "api_key" },
+  authentication: { type: "api_key", end_user: { source: "none" } },
   routing: { providers: { mode: "all" } },
 });
 

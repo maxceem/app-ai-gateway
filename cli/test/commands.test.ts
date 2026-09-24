@@ -31,7 +31,7 @@ const server: AppWrite = {
   name: "Server",
   status: "active",
   config: parseAppConfig({
-    authentication: { type: "api_key" },
+    authentication: { type: "api_key", end_user: { source: "none" } },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   }),
 };

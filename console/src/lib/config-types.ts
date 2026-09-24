@@ -77,20 +77,23 @@ export function gatewayLabel(type: GatewayType): string {
  */
 export type IssuerDraft = Partial<IssuerAuthenticationInput>;
 
-export type HeaderEndUserDraft = { source: "header"; header: string };
-export type IssuerEndUserDraft = { source: "issuer"; issuer: IssuerDraft };
-export type AppInstallEndUserDraft = { source: "app_install" };
-export type ApiKeyEndUserDraft = HeaderEndUserDraft | IssuerEndUserDraft;
-export type AppAttestEndUserDraft = IssuerEndUserDraft | AppInstallEndUserDraft;
-export type EndUserIdentity = ApiKeyEndUserDraft | AppAttestEndUserDraft;
+/** An end-user source as the form holds it: the schema's own, with its issuer still being filled in. */
+type EndUserDraft<EndUser> = EndUser extends { source: "issuer" }
+  ? Omit<EndUser, "issuer"> & { issuer: IssuerDraft }
+  : EndUser;
 
-export type AuthenticationDraft =
-  | (Omit<Extract<AuthenticationConfigInput, { type: "apple_app_attest" }>, "end_user"> & {
-      end_user: AppAttestEndUserDraft;
-    })
-  | (Omit<Extract<AuthenticationConfigInput, { type: "api_key" }>, "end_user"> & {
-      end_user?: ApiKeyEndUserDraft;
-    });
+/**
+ * The authentication block as the form holds it: each arm of the schema's
+ * input, with only the issuer draft substituted, so the sources an application
+ * type admits are the schema's and are not spelled out a second time.
+ */
+export type AuthenticationDraft = AuthenticationConfigInput extends infer Arm
+  ? Arm extends { end_user: infer EndUser }
+    ? Omit<Arm, "end_user"> & { end_user: EndUserDraft<EndUser> }
+    : never
+  : never;
+
+export type EndUserIdentity = AuthenticationDraft["end_user"];
 
 /** A limits block as the form holds it: either scope may not have been written yet. */
 export type LimitsDraft = NonNullable<AppConfigInput["limits"]>;
@@ -190,14 +193,13 @@ export interface AppConfigDraft extends Omit<AppConfigInput, "authentication" | 
   authentication: AuthenticationDraft;
   routing: ProxyConfig;
 }
-/** The issuer block, which api_key apps only have once an operator enables one. */
+/** The issuer block, which an application only has while `issuer` is its source. */
 export const authIssuer = (auth: AuthenticationDraft): IssuerDraft | undefined =>
-  auth.end_user?.source === "issuer" ? auth.end_user.issuer : undefined;
+  auth.end_user.source === "issuer" ? auth.end_user.issuer : undefined;
 
-/** The end-user source an application uses, or `undefined` when it has none. */
-export const endUserSource = (
-  auth: AuthenticationDraft,
-): EndUserIdentity["source"] | undefined => auth.end_user?.source;
+/** The end-user source an application uses, `none` included. */
+export const endUserSource = (auth: AuthenticationDraft): EndUserIdentity["source"] =>
+  auth.end_user.source;
 
 /**
  * A fresh issuer block, matching the defaults the Worker applies. Firebase is
@@ -215,24 +217,8 @@ export function emptyIssuer(): IssuerDraft {
   };
 }
 
-/**
- * Replaces the issuer block, leaving the rest of the application alone. Clearing
- * it on an api_key app drops `end_user` entirely — the application then has no
- * end users, which is a position the config can state. An App Attest app always
- * resolves to some user, so clearing there keeps what is configured rather than
- * leaving it with nothing to identify anyone by.
- */
-export function withIssuer(
-  auth: AuthenticationDraft,
-  issuer: IssuerDraft | undefined,
-): AuthenticationDraft {
-  if (auth.type === "apple_app_attest") {
-    return { ...auth, end_user: { source: "issuer", issuer: issuer ?? authIssuer(auth) ?? emptyIssuer() } };
-  }
-  if (!issuer) {
-    const { end_user: _removed, ...rest } = auth;
-    return rest;
-  }
+/** Makes the issuer the end-user source, with this block, leaving the rest of the application alone. */
+export function withIssuer(auth: AuthenticationDraft, issuer: IssuerDraft): AuthenticationDraft {
   return { ...auth, end_user: { source: "issuer", issuer } };
 }
 

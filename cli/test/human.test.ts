@@ -92,7 +92,7 @@ const stored = {
 
 /** The smallest valid server configuration, as the schema's own parse produces it. */
 const UNLIMITED_SERVER_CONFIG = parseAppConfig({
-  authentication: { type: "api_key" },
+  authentication: { type: "api_key", end_user: { source: "none" } },
   routing: { providers: { mode: "all" }, model_rewrites: {} },
 });
 

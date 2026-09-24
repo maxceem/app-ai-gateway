@@ -2009,8 +2009,8 @@ describe("cost report body mutation", () => {
 });
 
 /**
- * An application with no `end_user` source has no end users, and that is a
- * position rather than a missing value. Nothing downstream may invent one: the
+ * An application whose `end_user` source is `none` has no end users, and that
+ * is a position rather than a missing value. Nothing downstream may invent one: the
  * usage row records no user, the per-user machinery is skipped rather than
  * pointed at a stand-in, and `/me` has nothing to report.
  */

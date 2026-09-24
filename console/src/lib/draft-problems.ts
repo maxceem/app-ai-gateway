@@ -43,7 +43,7 @@ export function draftProblem(draft: Draft): string | null {
     const { team_id, bundle_id } = authentication.app_attest;
     if (!team_id.trim() || !bundle_id.trim()) return "Enter the Apple Team ID and Bundle ID.";
   }
-  if (authentication.type === "api_key" && authentication.end_user?.source === "header"
+  if (authentication.type === "api_key" && authentication.end_user.source === "header"
     && !authentication.end_user.header.trim()) {
     return "Enter the header name.";
   }

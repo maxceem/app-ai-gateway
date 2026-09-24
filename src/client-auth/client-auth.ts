@@ -186,8 +186,8 @@ function resolveClientAuth(authentication: AuthenticationConfig): ClientAuth {
     );
   }
   const endUser = authentication.end_user;
-  switch (endUser?.source) {
-    case undefined:
+  switch (endUser.source) {
+    case "none":
       return apiKeyAuth(null);
     case "header":
       return apiKeyAuth(endUser.header);

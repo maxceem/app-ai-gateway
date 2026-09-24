@@ -57,7 +57,7 @@ export function levelStatuses(
         : { tone: "secure", text: "Verified with API keys" };
 
   const users: LevelStatus = (() => {
-    const source: UserSource = authentication.end_user?.source ?? "none";
+    const source: UserSource = authentication.end_user.source;
     switch (source) {
       case "issuer":
         return issuer && clearUnder(issues, DRAFT_PATHS.issuer, DRAFT_PATHS.claims)
@@ -69,7 +69,7 @@ export function levelStatuses(
           : { tone: "incomplete", text: "Header name missing or not allowed" };
       case "app_install":
         return { tone: "weak", text: "Unauthenticated users allowed" };
-      default:
+      case "none":
         return { tone: "weak", text: "No user identity" };
     }
   })();

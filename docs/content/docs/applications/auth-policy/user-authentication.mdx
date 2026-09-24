@@ -150,5 +150,10 @@ For a server with no users to speak of, such as a batch job. Requests record
 no user, per-user limits cannot be set, and `GET /v1/apps/{app}/me` answers
 `404`. Use the application limits instead.
 
-This is the result of omitting `end_user` on an `api_key` app. Naming a
-source is how an app opts into having users at all.
+`end_user` is required on an `api_key` app, so an app with no users says so
+with the `none` source. Naming any other source is how an app opts into having
+users at all.
+
+```json
+"end_user": { "source": "none" }
+```
