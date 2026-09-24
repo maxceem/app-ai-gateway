@@ -50,9 +50,9 @@ export type ErrorCode =
    */
   | "auth_method_not_supported"
   /**
-   * The organization used up its plan's calendar-month request allowance. The
-   * accompanying `data` carries the allowance, the count, and when a fresh
-   * month begins.
+   * The organization used up its plan's monthly request allowance. The
+   * accompanying `data` carries the allowance, the count, and when the next
+   * period begins.
    *
    * Billing, not app configuration: this is the gateway operator metering what
    * an organization pays for. The limits an organization sets on its own app's

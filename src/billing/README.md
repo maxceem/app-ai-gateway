@@ -66,30 +66,46 @@ point.
 
 `maxRequestsPerMonth` counts requests dispatched during the current allowance
 period, shared by every application, credential and end user the account owns,
-and spent on the data plane only. The period is the UTC calendar month, for
-every plan: the counter is keyed by `YYYY-MM` and nothing else, so the billing
-service's subscription anchors play no part in it. Annual subscriptions receive
-a fresh allowance each month like everyone else.
+and spent on the data plane only. The period is a month measured from the
+plan's own anchor, so an account's allowance resets on the date its plan does:
 
-A plan change is a new limit over the same counter. Upgrading, downgrading,
-cancelling or resuming within a month keeps what that month has already spent;
-a downgrade below it refuses further requests until the month turns. That is
-the whole of what a change can do, which is why no schedule identity, revision
-or superseded marker exists to reconcile a stale cached plan with a new one.
-What a stale cache can do instead is apply the previous plan's limit for as
-long as it lives: up to 30 seconds normally, and up to an hour while the
-billing service is unreachable and the last known answer is served instead.
-That includes a stale unlimited plan, which counts nothing while it is served.
-It is an availability trade taken on purpose — the alternative is refusing
-every request during a billing outage — and a downgrade is enforced everywhere
-once each isolate's cache has turned over.
+- A paid plan renews on its subscription's billing anchor, as the billing
+  service reports it (`billingAnchorAt`, and `billingAnchorDay` where a short
+  month clamps it). Annual subscriptions still receive a fresh allowance each
+  month, on that day.
+- The default free plan renews on the day the account was created.
+
+A schedule that starts on the 31st renews on the last day of shorter months and
+returns to the 31st, counted from the original anchor each time rather than
+from the previous renewal.
+
+The counter is keyed by `periodId`: the schedule (`free:` and the account's
+creation instant, or `paid:` and the subscription generation's) and the
+period's start. A change of limit within the same schedule is a new limit over
+the same counter, so a downgrade below what the period has spent refuses
+further requests until it renews. A change of schedule is a new counter:
+subscribing starts the subscription's own period from zero, and returning to
+the free plan resumes the free period the account was in, with what it had
+already spent, so cancelling never hands out a second free allowance.
+
+No schedule revision or superseded marker reconciles a stale cached plan with
+a new one. What a stale cache can do instead is count against the previous
+schedule, or apply the previous plan's limit, for as long as it lives: up to 30
+seconds normally, and up to an hour while the billing service is unreachable
+and the last known answer is served instead. That includes a stale unlimited
+plan, which counts nothing while it is served. It is an availability trade
+taken on purpose — the alternative is refusing every request during a billing
+outage — and a change is enforced everywhere once each isolate's cache has
+turned over.
 
 A plan with no monthly limit counts nothing and touches no quota object, so
 the billing status and the CLI report no usage figure for it rather than a
 zero nobody measured.
 
-A request is counted toward the month it was admitted in, even if it crosses
-midnight on its way through the gate.
+A request is counted toward the period it was admitted in, even if it crosses
+the renewal instant on its way through the gate. An anchor slightly in the
+future is clock skew between this Worker and billing and is answered with a
+retry; one further off is refused as invalid billing data.
 
 ### Unclaimed accounts
 
@@ -102,11 +118,13 @@ clock stay entirely in gateway D1.
 Nothing records the free window. The account's `created_at` dates it, and
 `mgmt_organization.expires_at` — written only by a cloud bootstrap, cleared only
 by a claim — is the whole test for "never had a human owner". While unclaimed
-the account holds the month it was created in until its free window closes,
-however far into the next month that runs, so nobody can draw a second
-allowance without attaching a human identity; past its end the period stays
-readable but admits nothing. Claiming within that month keeps the same key and
-so the same count; from then on the account renews with the calendar.
+the account holds its first period until its free window closes, however far
+past the first renewal that runs, so nobody can draw a second allowance without
+attaching a human identity; past its end the period stays readable but admits
+nothing. Claiming before the first renewal keeps the same key and so the same
+count; claiming after it, while the free window is still open, moves the
+account onto the renewed period. From then on it renews on the day it was
+created.
 
 Ownership changes must invalidate both the request-scoped and the last-known
 billing caches. The console reads the free window from the account summary it

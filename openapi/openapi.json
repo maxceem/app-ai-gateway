@@ -4361,7 +4361,7 @@
                       "properties": {
                         "periodId": {
                           "type": "string",
-                          "description": "The allowance period, as the UTC calendar month (YYYY-MM) it is counted over."
+                          "description": "Opaque identifier for the allowance period: the plan's schedule and the period's start. A paid plan's months run from its subscription's billing anchor, the free plan's from the account's creation."
                         },
                         "periodStart": {
                           "type": "string",

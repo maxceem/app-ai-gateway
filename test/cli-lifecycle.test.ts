@@ -1111,11 +1111,11 @@ it("keeps the completed trial counter readable during recovery without renewing 
   expect(await response.json()).toMatchObject({
     account: { createdAt: origin, claimed: false },
     billing: { access: { subscription: null }, limit: 1000 },
-    // Still the month the account was created in: an unclaimed window never renews.
+    // Still the first period, past its renewal: an unclaimed window never renews.
     usage: {
       used: 0,
-      periodId: origin.slice(0, 7),
-      periodStart: `${origin.slice(0, 7)}-01T00:00:00.000Z`,
+      periodId: `free:${origin}:${origin}`,
+      periodStart: origin,
       periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString(),
     },
   });

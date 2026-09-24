@@ -146,7 +146,7 @@ export interface QuotaMeter {
   tone: "normal" | "warning" | "destructive";
   /** "8,420 of 10,000 requests". */
   label: string;
-  /** "Resets Oct 1, 2026, 8:00 AM GMT+8". Only the notices state it. */
+  /** "Resets Oct 14, 2026, 5:20 PM GMT+8". Only the notices state it. */
   caption: string;
 }
 

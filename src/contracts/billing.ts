@@ -65,13 +65,11 @@ export const SubscriptionStateSchema = z.object({
   /** This subscription generation */
   createdAt: z.string(),
   updatedAt: z.string(),
-  /**
-   * The billing provider's own renewal schedule, reported as it states it. The
-   * gateway's request allowance follows the calendar month and reads none of
-   * these.
-   */
+  /** Original provider day, retained when short months clamp the exact anchor. */
   billingAnchorDay: z.number().nullable(),
+  /** Exact UTC origin of the subscription's monthly allowance schedule. */
   billingAnchorAt: z.string(),
+  /** When the current billing schedule took effect. */
   billingScheduleUpdatedAt: z.string(),
 }).meta({ id: "Subscription" });
 
@@ -141,7 +139,7 @@ export const PlanLimitsSchema = z.object({
  * the only place an operator can see it before the allowance runs out.
  */
 export const OrganizationQuotaStatusSchema = z.object({
-  periodId: z.string().meta({ description: "The allowance period, as the UTC calendar month (YYYY-MM) it is counted over." }),
+  periodId: z.string().meta({ description: "Opaque identifier for the allowance period: the plan's schedule and the period's start. A paid plan's months run from its subscription's billing anchor, the free plan's from the account's creation." }),
   periodStart: z.string().meta({ description: "Inclusive UTC instant at which this allowance period began." }),
   periodEnd: z.string().meta({ description: "Exclusive UTC instant at which this allowance period ends." }),
   used: z.number().int().meta({ description: "Requests dispatched to a provider in this period, across all apps." }),

@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 export interface QuotaAdmissionInput {
-  /** The allowance period's `YYYY-MM`, which is all the counter is keyed by. */
+  /** The allowance period's schedule and start, which is all the counter is keyed by. */
   periodId: string;
   /** When the period resets, which is all a refusal's `Retry-After` needs. */
   periodEnd: string;
@@ -17,8 +17,8 @@ export type QuotaAdmission =
  *
  * The caller resolves which period a request falls in and what the plan's
  * limit is; this object only counts. The limit arrives with every admission
- * rather than being stored, so a plan change within the month takes effect on
- * the next request and the count it has already spent carries over.
+ * rather than being stored, so a limit change on the same schedule takes effect
+ * on the next request and the count the period has already spent carries over.
  *
  * There is exactly one instance per organization, so every request that
  * organization makes is serialized through it and pays a round trip to

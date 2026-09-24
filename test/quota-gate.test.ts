@@ -177,7 +177,7 @@ describe("organization monthly request quota", () => {
     expect(body.error.data).toEqual({
       limit: 3,
       used: 3,
-      periodId: expect.stringMatching(/^\d{4}-\d{2}$/u),
+      periodId: expect.stringMatching(/^(free|paid):.+Z:.+Z$/u),
       periodStart: expect.stringMatching(/Z$/u),
       periodEnd: expect.stringMatching(/Z$/u),
       resetAt: expect.stringMatching(/Z$/u),
