@@ -10,7 +10,8 @@
 
 import type { Draft } from "@/lib/app-draft";
 import { authIssuer, type IssuerDraft } from "@/lib/config-types";
-import { clearUnder, DRAFT_PATHS, draftIssues } from "@/lib/draft-problems";
+import type { ConfigIssue } from "@shared/app-config";
+import { clearUnder, DRAFT_PATHS } from "@/lib/draft-problems";
 import type { UserSource } from "@/lib/user-sources";
 
 export type AuthLevel = "identity" | "users" | "subscription";
@@ -31,19 +32,20 @@ export interface LevelStatus {
 export type Subscription = "paid" | "any";
 
 export const subscriptionOf = (issuer: IssuerDraft): Subscription =>
-  (issuer.required_claims ?? []).length > 0 || issuer.entitlement !== undefined ? "paid" : "any";
+  issuer.required_claims.length > 0 || issuer.entitlement !== undefined ? "paid" : "any";
 
 /**
- * Each level's standing, in the order the levels are asked. `keysActive` is
- * what the key list says for a server app, or undefined while unknown.
+ * Each level's standing, in the order the levels are asked, judged on the
+ * draft's own `issues`. `keysActive` is what the key list says for a server
+ * app, or undefined while unknown.
  */
 export function levelStatuses(
   draft: Draft,
+  issues: readonly ConfigIssue[],
   keysActive: boolean | undefined,
 ): Record<AuthLevel, LevelStatus> {
   const authentication = draft.config.authentication;
   const issuer = authIssuer(authentication);
-  const issues = draftIssues(draft);
 
   const identity: LevelStatus =
     authentication.type === "apple_app_attest"
@@ -77,7 +79,7 @@ export function levelStatuses(
   const subscription: LevelStatus = !issuer
     ? { tone: "off", text: "Needs signed-in users" }
     : subscriptionOf(issuer) === "paid"
-      ? clearUnder(issues, DRAFT_PATHS.claims) && (issuer.required_claims ?? []).length > 0
+      ? clearUnder(issues, DRAFT_PATHS.claims) && issuer.required_claims.length > 0
         ? { tone: "secure", text: "Paid users only" }
         : { tone: "incomplete", text: "Paid check not finished" }
       : { tone: "weak", text: "Any signed-in user" };

@@ -179,6 +179,25 @@ describe("a server application", () => {
     });
   });
 
+  it("says why a header name cannot be used, and holds the step until it can", async () => {
+    stubCreate();
+    renderAuthenticated(<NewAppDialog />);
+
+    const user = await startWizard("Search service", "Server");
+    await user.click(radio(/Your backend sends the user id/u));
+    const header = screen.getByLabelText("Header name");
+    expect(header).toHaveProperty("value", "x-end-user-id");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await user.clear(header);
+    expect(screen.getByRole("alert").textContent).toBe("Enter the header name.");
+    expect(createButton()).toHaveProperty("disabled", true);
+
+    await user.type(header, "authorization");
+    expect(screen.getByRole("alert").textContent).toMatch(/cannot be authorization/u);
+    expect(createButton()).toHaveProperty("disabled", true);
+  });
+
   it("offers the answers most secure first", async () => {
     stubCreate();
     renderAuthenticated(<NewAppDialog />);
@@ -300,6 +319,36 @@ describe("an iOS application", () => {
     });
   });
 
+  it("writes the paid-user check as the RevenueCat claim", async () => {
+    const attempts = stubCreate();
+    renderAuthenticated(<NewAppDialog />);
+
+    const user = await startWizard("Calorie Tracker", "iOS application");
+    await identifyApp(user);
+    await user.click(radio(/Signed-in users only/u));
+    await user.click(next());
+    await user.type(screen.getByLabelText("Firebase project id"), "calories-1a2b3");
+    await user.click(next());
+
+    await user.click(radio(/Paid users only/u));
+    // A paid check with no entitlement named would admit nobody.
+    expect(createButton()).toHaveProperty("disabled", true);
+    await user.type(screen.getByLabelText("Entitlement identifier"), "pro");
+    await user.click(createButton());
+
+    await waitFor(() => expect(attempts).toHaveLength(1));
+    expect(attempts[0]?.config?.authentication).toMatchObject({
+      end_user: {
+        source: "issuer",
+        issuer: {
+          provider: "firebase",
+          entitlement: "revenuecat",
+          required_claims: [{ path: "revenueCatEntitlements", contains: "pro" }],
+        },
+      },
+    });
+  });
+
   it("lets someone without provider details fall back to unauthenticated users", async () => {
     const attempts = stubCreate();
     renderAuthenticated(<NewAppDialog />);
@@ -371,6 +420,23 @@ describe("moving between steps", () => {
     await identifyApp(user);
     expect(screen.queryByRole("radio", { name: /Your backend sends the user id/u })).toBeNull();
     expect(createButton()).toHaveProperty("disabled", true);
+  });
+
+  it("keeps the iOS identity through a detour to the other type", async () => {
+    stubCreate();
+    renderAuthenticated(<NewAppDialog />);
+
+    const user = await startWizard("Calorie Tracker", "iOS application");
+    await user.type(screen.getByLabelText("Apple Team ID"), "ABCDE12345");
+    await user.type(screen.getByLabelText("Bundle ID"), "com.example.calories");
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(radio(/Server/u));
+    await user.click(radio(/iOS application/u));
+    await user.click(next());
+
+    expect(screen.getByLabelText("Apple Team ID")).toHaveProperty("value", "ABCDE12345");
+    expect(screen.getByLabelText("Bundle ID")).toHaveProperty("value", "com.example.calories");
+    expect(next()).toHaveProperty("disabled", false);
   });
 
   it("offers the passed steps as dots to jump back to", async () => {

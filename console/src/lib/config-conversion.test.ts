@@ -4,7 +4,7 @@ import type { AppConfigDraft } from "./config-types";
 
 const base = (): AppConfigDraft => ({
   authentication: { type: "api_key", end_user: { source: "none" } },
-  routing: { providers: { mode: "all" } },
+  routing: { providers: { mode: "all" }, model_rewrites: {} },
 });
 
 describe("console configuration conversion", () => {
@@ -18,6 +18,7 @@ describe("console configuration conversion", () => {
           jwks_url: "https://issuer.example.test/jwks.json",
           issuer: "https://issuer.example.test",
           audience: "my-app",
+          user_id_claim: "",
           required_claims: [],
           max_token_lifetime_seconds: 3600,
         },
@@ -25,30 +26,20 @@ describe("console configuration conversion", () => {
     };
 
     expect(() => toAppWrite({ name: "My app", config: draft }))
-      .toThrowError("authentication.end_user.issuer.user_id_claim: Invalid input");
+      .toThrowError("authentication.end_user.issuer.user_id_claim: Too small: expected string to have >=1 characters");
   });
 
-  it("materializes editable maps and filters deselected provider entries", () => {
+  it("sends a selection exactly as the draft holds it", () => {
     const draft = base();
     draft.routing = {
       providers: {
         mode: "selected",
-        selected: {
-          openai: { allowed_models: ["gpt-5-mini"] },
-          removed: undefined,
-        },
-      },
-    };
-
-    expect(normalizeAppConfigDraft(draft).routing).toEqual({
-      providers: {
-        mode: "selected",
-        selected: {
-          openai: { allowed_paths: [], allowed_models: ["gpt-5-mini"] },
-        },
+        selected: { openai: { allowed_paths: [], allowed_models: ["gpt-5-mini"] } },
       },
       model_rewrites: {},
-    });
+    };
+
+    expect(normalizeAppConfigDraft(draft).routing).toEqual(draft.routing);
   });
 
   it("preserves provider-native endpoint params", () => {

@@ -1,5 +1,5 @@
 import { appConfigIssues, ConfigError, issueUnder, type ConfigIssue } from "@shared/app-config";
-import { materializeAppConfigDraft, toAppWrite } from "@/lib/config-conversion";
+import { toAppWrite } from "@/lib/config-conversion";
 import type { Draft } from "@/lib/app-draft";
 
 /**
@@ -14,9 +14,13 @@ export const DRAFT_PATHS = {
   claims: ["authentication", "end_user", "issuer", "required_claims"],
 } as const satisfies Record<string, readonly string[]>;
 
-/** Every reason the gateway would refuse this draft's configuration, each with its path. */
+/**
+ * Every reason the gateway would refuse this draft's configuration, each with
+ * its path. A whole-schema parse, so a form asks it once per draft and hands
+ * the answer to every reader rather than each reader asking again.
+ */
 export function draftIssues(draft: Draft): ConfigIssue[] {
-  return appConfigIssues(materializeAppConfigDraft(draft.config));
+  return appConfigIssues(draft.config);
 }
 
 /** Whether no issue lies under `path`, ignoring those under `except`. */
@@ -30,15 +34,18 @@ export function clearUnder(
 
 /**
  * What stops the draft from being saved, in one sentence, or null when nothing
- * does. The schema decides; the console only words a section's refusal in the
- * form's own terms, and says a field is empty where that is all that is wrong.
- * Saying so before the save is what keeps a half-filled form from becoming a
- * rejected request against fields the operator may have scrolled away from.
+ * does, given the draft's {@link draftIssues}. The schema decides; the console
+ * only words a section's refusal in the form's own terms, and says a field is
+ * empty where that is all that is wrong. Saying so before the save is what
+ * keeps a half-filled form from becoming a rejected request against fields the
+ * operator may have scrolled away from.
  */
-export function draftProblem(draft: Draft): string | null {
+export function draftProblem(draft: Draft, issues: readonly ConfigIssue[]): string | null {
   if (!draft.name.trim()) return "Give the app a name.";
+  // A configuration the schema has nothing against is saveable: the name is
+  // the only other field, and its one refusal a form can reach is asked above.
+  if (issues.length === 0) return null;
   const authentication = draft.config.authentication;
-  const issues = draftIssues(draft);
   if (authentication.type === "apple_app_attest") {
     const { team_id, bundle_id } = authentication.app_attest;
     if (!team_id.trim() || !bundle_id.trim()) return "Enter the Apple Team ID and Bundle ID.";

@@ -20,10 +20,6 @@ import {
   type PresetInput,
 } from "@/lib/presets";
 
-const CHECKS = ENTITLEMENT_PRESETS.filter(
-  (preset): preset is typeof preset & { id: EntitlementCheck } => preset.id !== "none",
-);
-
 /** The default claim the paid check starts from: RevenueCat, entitlement unnamed. */
 export const DEFAULT_PAID_CLAIM: ClaimRequirement = revenueCatClaim("");
 
@@ -43,7 +39,7 @@ export function SubscriptionFields({
   disabled?: boolean;
   onChange: (partial: Partial<IssuerDraft>) => void;
 }) {
-  const claims = issuer.required_claims ?? [];
+  const claims = issuer.required_claims;
   const entitlement = revenueCatEntitlement(claims);
   /*
    * Which form was filled in. The stored label is the console's own record of
@@ -56,7 +52,7 @@ export function SubscriptionFields({
     ?? (claims[0]?.path === REVENUECAT_CLAIM_PATH ? "revenuecat" : "custom");
   const check: EntitlementCheck =
     chosen === "revenuecat" && entitlement !== null ? "revenuecat" : "custom";
-  const selected = CHECKS.find((preset) => preset.id === check) ?? CHECKS[0]!;
+  const selected = ENTITLEMENT_PRESETS.find((preset) => preset.id === check) ?? ENTITLEMENT_PRESETS[0]!;
 
   const choose = (next: EntitlementCheck) => {
     if (next === check) return;
@@ -78,7 +74,7 @@ export function SubscriptionFields({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {CHECKS.map((preset) => (
+            {ENTITLEMENT_PRESETS.map((preset) => (
               <SelectItem key={preset.id} value={preset.id}>
                 <PresetName preset={preset} />
               </SelectItem>

@@ -15,7 +15,6 @@
 
 import {
   AppConfigSchema,
-  AppleAppIdentitySchema,
   AppWriteSchema,
   type AppConfig,
   type AppWrite,
@@ -82,16 +81,6 @@ export function parseAppConfig(raw: unknown): AppConfig {
   const parsed = AppConfigSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
   throw new ConfigError(schemaIssueMessage(parsed.error));
-}
-
-/**
- * Why an Apple team and bundle id would be refused, or null when they would
- * not. The stored configuration's own rules, so a form that is not yet a whole
- * configuration can still be told exactly what the save would say.
- */
-export function appleIdentityProblem(identity: { team_id: string; bundle_id: string }): string | null {
-  const parsed = AppleAppIdentitySchema.safeParse(identity);
-  return parsed.success ? null : (parsed.error.issues[0]?.message ?? "Invalid Apple app identity");
 }
 
 /**

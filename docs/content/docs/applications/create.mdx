@@ -46,7 +46,8 @@ For a server:
 - **Signed-in users only**: your backend forwards each user's sign-in token,
   and the gateway verifies it.
 - **Your backend sends the user id**: in the `x-end-user-id` header on every
-  request.
+  request. Choosing it shows a **Header name** field, where you can name a
+  different header.
 - **No user identity**: requests are not linked to any user.
 
 If you do not have your identity provider's details yet, the step offers to
@@ -73,10 +74,14 @@ Each preset has a note about what its provider needs. See
 Whether the user must have paid before they can call AI providers through
 this app.
 
-- **No entitlement check**: any user the issuer signs a token for may call.
-- **RevenueCat entitlement**: enter the entitlement identifier, for example
-  `pro`.
-- **Custom claim**: enter the claim path and the required value.
+- **Any signed-in user**: signing in is enough. Nothing about payment is
+  checked.
+- **Paid users only**: the sign-in token must carry a claim that says the
+  user has paid. Then choose which claim:
+  - **RevenueCat entitlement**: enter the entitlement identifier, for example
+    `pro`. Several, comma separated, admit a user carrying any one of them.
+  - **Custom claim**: one or more rows of **Path**, **Match** and **Value**,
+    edited the same way as on the app's own Subscription check page.
 
 See [Subscription check](/applications/auth-policy/subscription-check).
 

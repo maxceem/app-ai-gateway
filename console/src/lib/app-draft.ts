@@ -6,9 +6,10 @@
  * so a transition can be read and tested without a component, a query client
  * or a render.
  *
- * `useAppDraft` in `@/hooks/use-app-draft` is the only caller: it holds this
- * state in a reducer, dispatches `loaded` when the query answers, and owns the
- * save. Nothing about React belongs here.
+ * `useAppDraft` in `@/hooks/use-app-draft` holds this state in a reducer for
+ * an application that exists, dispatches `loaded` when the query answers, and
+ * owns the save; the creation wizard holds a {@link draftSession} of its own
+ * in the same reducer. Nothing about React belongs here.
  */
 
 import {
@@ -92,14 +93,16 @@ const withDraft = (session: EditorSession, draft: Draft): EditorSession =>
 const remembering = (draft: Draft): IssuerDraft | null =>
   authIssuer(draft.config.authentication) ?? null;
 
-/** The session a fresh read of an application opens. */
-function loadedSession(appId: string, app: AppRow): EditorSession {
-  const draft = toDraft(app);
+/**
+ * A session opened on a draft, at a revision. With no revision it is one no
+ * server has seen yet: the creation wizard's, whose baseline is where it began.
+ */
+export function draftSession(appId: string, draft: Draft, revision = 0): EditorSession {
   return {
     appId,
     draft,
     baseline: draft,
-    revision: app.revision,
+    revision,
     rememberedIssuer: remembering(draft),
   };
 }
@@ -207,7 +210,7 @@ export function reduceAppDraft(
       // A dirty editor owns both its working value and the revision it opened
       // at, even when a background refetch changes the revision.
       if (session?.appId === action.appId && sessionDirty(session)) return session;
-      return loadedSession(action.appId, action.response.app);
+      return draftSession(action.appId, toDraft(action.response.app), action.response.app.revision);
     }
 
     case "update": {

@@ -237,6 +237,21 @@ describe("the application configuration grammar", () => {
     ])("refuses %s, which is a half-filled form rather than a requirement", (_case, requirement, at) => {
       expect(() => parseAppConfig(withIssuer({ required_claims: [requirement] }))).toThrowError(at);
     });
+
+    it("stores claim text trimmed, so a pasted space is not part of what must match", () => {
+      const issuer = parsedIssuer(withIssuer({
+        required_claims: [
+          { path: " revenueCatEntitlements ", contains: "pro " },
+          { path: "scope", contains: [" ai.invoke", "ai.read "] },
+          { path: "tier", equals: " gold" },
+        ],
+      }));
+      expect(issuer.required_claims).toEqual([
+        { path: "revenueCatEntitlements", contains: "pro" },
+        { path: "scope", contains: ["ai.invoke", "ai.read"] },
+        { path: "tier", equals: "gold" },
+      ]);
+    });
   });
 
   describe("authentication.end_user.header", () => {
@@ -316,6 +331,12 @@ describe("the application configuration grammar", () => {
           .toThrowError("team_id must contain ten uppercase letters or digits");
       },
     );
+
+    it("stores the team and bundle id trimmed, rather than refusing a pasted space", () => {
+      const attest = parsedAttest(appleConfig({ team_id: " AAAAAAAAAA ", bundle_id: "com.example.test\n" }));
+      expect(attest.team_id).toBe("AAAAAAAAAA");
+      expect(attest.bundle_id).toBe("com.example.test");
+    });
 
     it.each(["com", "", "com..example", "com example"])(
       "refuses the bundle id %s",

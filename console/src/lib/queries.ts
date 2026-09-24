@@ -33,9 +33,13 @@ export const keys = {
   providerGateways: ["provider-gateways"] as const,
   billingStatus: ["billing", "status"] as const,
   billingPlans: ["billing", "plans"] as const,
+  /** Every month's apps list, for an invalidation that is about all of them. */
+  appsPrefix: ["apps"] as const,
   apps: (month: string) => ["apps", month] as const,
   app: (appId: string) => ["app", appId] as const,
   apiKeys: (appId: string) => ["api-keys", appId] as const,
+  /** Every page of one app's users, for an invalidation that is about all of them. */
+  usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, params: unknown) => ["users", appId, params] as const,
   usage: (appId: string, month: string) => ["usage", appId, month] as const,
   timeseries: (appId: string, from: string, to: string) => ["timeseries", appId, from, to] as const,
@@ -304,7 +308,7 @@ export function useUpdateProvider() {
     onSuccess: (_result, variables) => {
       void client.invalidateQueries({ queryKey: keys.providers });
       if (variables.body.status !== undefined) {
-        void client.invalidateQueries({ queryKey: ["apps"] });
+        void client.invalidateQueries({ queryKey: keys.appsPrefix });
       }
     },
   });
@@ -422,7 +426,7 @@ export function useSaveApp(appId: string) {
       call("updateApp", { params: { app: appId }, body: { ...toAppWrite(body), revision } }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });
-      void client.invalidateQueries({ queryKey: ["apps"] });
+      void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },
   });
 }
@@ -437,7 +441,7 @@ export function useCreateApp() {
       // Attest rather than an API key is what this product is built for.
       captureAppCreated(body.config.authentication.type);
       void client.invalidateQueries({ queryKey: keys.app(created.app.id) });
-      void client.invalidateQueries({ queryKey: ["apps"] });
+      void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },
   });
 }
@@ -446,7 +450,7 @@ export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (appId: string) => call("deleteApp", { params: { app: appId }, query: { confirm: appId } }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["apps"] }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.appsPrefix }),
   });
 }
 
@@ -498,8 +502,8 @@ export function useUserAction(appId: string) {
         params: { app: appId, user: userId },
       }),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ["users", appId] });
-      void client.invalidateQueries({ queryKey: ["apps"] });
+      void client.invalidateQueries({ queryKey: keys.usersPrefix(appId) });
+      void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },
   });
 }

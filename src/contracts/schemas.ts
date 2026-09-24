@@ -110,12 +110,14 @@ export const SlugSchema = safeKey(
 );
 
 /**
- * A claim path or value an operator typed. Blank is refused rather than stored:
- * it is a half-filled form, not a requirement, and it would match only a claim
- * that is itself blank — a paid-user check that never admits a paying user.
+ * A claim path or value an operator typed, stored trimmed: a space pasted
+ * around an entitlement id would otherwise never match the claim it names.
+ * Blank is refused rather than stored: it is a half-filled form, not a
+ * requirement, and it would match only a claim that is itself blank — a
+ * paid-user check that never admits a paying user.
  */
 // Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
-const ClaimTextSchema = z.string().regex(/\S/, { error: "must not be blank" });
+const ClaimTextSchema = z.string().trim().regex(/\S/, { error: "must not be blank" });
 
 const ClaimRequirementSchema = z.object({
   path: ClaimTextSchema,
@@ -257,15 +259,14 @@ const AppAttestEndUserSchema = z.discriminatedUnion("source", [
 ], { error: "authentication.end_user.source must be one of issuer, app_install" });
 
 /**
- * The two values that name one iOS application to Apple. Its own schema so a
- * form can ask whether they are acceptable before the rest of a configuration
- * exists, against the same rules the stored configuration is held to.
+ * The two values that name one iOS application to Apple, stored trimmed so a
+ * space pasted with either is not what every attestation is compared against.
  */
-export const AppleAppIdentitySchema = z.object({
-  team_id: z.string().regex(APPLE_TEAM_ID, {
+const AppleAppIdentitySchema = z.object({
+  team_id: z.string().trim().regex(APPLE_TEAM_ID, {
     error: "team_id must contain ten uppercase letters or digits",
   }),
-  bundle_id: z.string().regex(APPLE_BUNDLE_ID, {
+  bundle_id: z.string().trim().regex(APPLE_BUNDLE_ID, {
     error: "bundle_id must be a reverse DNS identifier",
   }),
 });

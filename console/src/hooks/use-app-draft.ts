@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useReducer } from "react";
-import { reduceAppDraft, sessionDirty, type Draft } from "@/lib/app-draft";
+import { useCallback, useEffect, useMemo, useReducer, type Dispatch } from "react";
+import { reduceAppDraft, sessionDirty, type AppDraftAction, type Draft } from "@/lib/app-draft";
 import type {
   AppConfigDraft,
   IssuerDraft,
@@ -9,6 +9,7 @@ import type {
   LimitsConfig,
   ProxyConfig,
 } from "@/lib/config-types";
+import { draftIssues } from "@/lib/draft-problems";
 import { useApp, useSaveApp } from "@/lib/queries";
 import type { AppUpsertBody } from "@/lib/types";
 
@@ -30,18 +31,44 @@ export type SaveOutcome =
   | { ok: false; message: string; inline?: true };
 
 /**
+ * Every edit a form can make to one session, as callbacks that dispatch the
+ * reducer's actions for `appId`. Shared by the editor and the creation wizard,
+ * so a question asked in both moves the draft the same way in both.
+ */
+export function useDraftTransitions(appId: string, dispatch: Dispatch<AppDraftAction>) {
+  return useMemo(() => ({
+    update: (partial: Partial<Draft>) => dispatch({ kind: "update", appId, partial }),
+    updateConfig: (partial: Partial<AppConfigDraft>) => dispatch({ kind: "updateConfig", appId, partial }),
+    updateAuthentication: (authentication: AuthenticationDraft) =>
+      dispatch({ kind: "updateAuthentication", appId, authentication }),
+    updateIssuer: (partial: Partial<IssuerDraft>) => dispatch({ kind: "updateIssuer", appId, partial }),
+    setEndUserSource: (source: EndUserIdentity["source"]) =>
+      dispatch({ kind: "setEndUserSource", appId, source }),
+    updateEndUserHeader: (header: string) => dispatch({ kind: "updateEndUserHeader", appId, header }),
+    updateProxy: (partial: Partial<ProxyConfig>) => dispatch({ kind: "updateProxy", appId, partial }),
+    updateLimits: (limits: LimitsConfig) => dispatch({ kind: "updateLimits", appId, limits }),
+    updateEndpoints: (endpoints: EndpointsConfig) => dispatch({ kind: "updateEndpoints", appId, endpoints }),
+    reset: () => dispatch({ kind: "reset", appId }),
+  }), [appId, dispatch]);
+}
+
+export type DraftTransitions = ReturnType<typeof useDraftTransitions>;
+
+/**
  * One application, held as the editor's session, with the transitions it can
  * make living in `@/lib/app-draft`.
  *
  * What is left here is everything that needs React or the network: the query
- * whose answer opens a session, and the save, which submits the draft and the
- * revision it was opened at and then hands the reply back to the reducer for
- * the race guard to judge.
+ * whose answer opens a session, the draft's schema issues — parsed once per
+ * change of the draft, for every reader on the page — and the save, which
+ * submits the draft and the revision it was opened at and then hands the reply
+ * back to the reducer for the race guard to judge.
  */
 export function useAppDraft(appId: string) {
   const query = useApp(appId);
   const saveMutation = useSaveApp(appId);
   const [session, dispatch] = useReducer(reduceAppDraft, null);
+  const transitions = useDraftTransitions(appId, dispatch);
 
   useEffect(() => {
     if (!query.data) return;
@@ -51,46 +78,7 @@ export function useAppDraft(appId: string) {
   const activeSession = session?.appId === appId ? session : null;
   const activeDraft = activeSession?.draft ?? null;
   const dirty = activeSession ? sessionDirty(activeSession) : false;
-
-  const update = useCallback((partial: Partial<Draft>) => {
-    dispatch({ kind: "update", appId, partial });
-  }, [appId]);
-
-  const updateConfig = useCallback((partial: Partial<AppConfigDraft>) => {
-    dispatch({ kind: "updateConfig", appId, partial });
-  }, [appId]);
-
-  const updateAuthentication = useCallback((authentication: AuthenticationDraft) => {
-    dispatch({ kind: "updateAuthentication", appId, authentication });
-  }, [appId]);
-
-  const updateIssuer = useCallback((partial: Partial<IssuerDraft>) => {
-    dispatch({ kind: "updateIssuer", appId, partial });
-  }, [appId]);
-
-  const setEndUserSource = useCallback((source: EndUserIdentity["source"]) => {
-    dispatch({ kind: "setEndUserSource", appId, source });
-  }, [appId]);
-
-  const updateEndUserHeader = useCallback((header: string) => {
-    dispatch({ kind: "updateEndUserHeader", appId, header });
-  }, [appId]);
-
-  const updateProxy = useCallback((partial: Partial<ProxyConfig>) => {
-    dispatch({ kind: "updateProxy", appId, partial });
-  }, [appId]);
-
-  const updateLimits = useCallback((limits: LimitsConfig) => {
-    dispatch({ kind: "updateLimits", appId, limits });
-  }, [appId]);
-
-  const updateEndpoints = useCallback((endpoints: EndpointsConfig) => {
-    dispatch({ kind: "updateEndpoints", appId, endpoints });
-  }, [appId]);
-
-  const reset = useCallback(() => {
-    dispatch({ kind: "reset", appId });
-  }, [appId]);
+  const issues = useMemo(() => (activeDraft ? draftIssues(activeDraft) : []), [activeDraft]);
 
   const save = useCallback(async (): Promise<SaveOutcome> => {
     if (!activeSession) {
@@ -113,17 +101,9 @@ export function useAppDraft(appId: string) {
   return {
     query,
     draft: activeDraft,
+    issues,
     dirty,
-    update,
-    updateConfig,
-    updateAuthentication,
-    updateIssuer,
-    setEndUserSource,
-    updateEndUserHeader,
-    updateProxy,
-    updateLimits,
-    updateEndpoints,
-    reset,
+    ...transitions,
     save,
     saving: saveMutation.isPending,
   };

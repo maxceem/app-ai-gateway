@@ -3,6 +3,7 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuthPolicyTab } from "./auth-policy";
 import { levelStatuses } from "@/lib/auth-levels";
+import { draftIssues } from "@/lib/draft-problems";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AppDraft, Draft } from "@/hooks/use-app-draft";
 import type { IssuerDraft, AuthenticationDraft } from "@/lib/config-types";
@@ -14,12 +15,14 @@ const APP_ID = "my-app";
  * rather than reproducing the whole `useAppDraft` surface.
  */
 function draftFor(authentication: AuthenticationDraft): AppDraft {
+  const draft: Draft = {
+    name: "My app",
+    status: "active",
+    config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },
+  };
   return {
-    draft: {
-      name: "My app",
-      status: "active",
-      config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },
-    },
+    draft,
+    issues: draftIssues(draft),
     dirty: false,
     save: vi.fn(),
     updateIssuer: vi.fn(),
@@ -85,27 +88,29 @@ describe("levelStatuses", () => {
     status: "active",
     config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },
   });
+  const statusesOf = (draft: Draft, keysActive: boolean | undefined) =>
+    levelStatuses(draft, draftIssues(draft), keysActive);
 
   it("reads the strictest answer as secure and a looser one as weak", () => {
-    const strict = levelStatuses(draft(appleApp()), undefined);
+    const strict = statusesOf(draft(appleApp()), undefined);
     expect(strict.identity.tone).toBe("secure");
     expect(strict.users.tone).toBe("secure");
     expect(strict.subscription.tone).toBe("weak");
 
-    const loose = levelStatuses(draft(appInstallApp()), undefined);
+    const loose = statusesOf(draft(appInstallApp()), undefined);
     expect(loose.users).toEqual({ tone: "weak", text: "Unauthenticated users allowed" });
     // Nothing to check when nobody signs in.
     expect(loose.subscription.tone).toBe("off");
   });
 
   it("flags an answer the gateway could not act on yet", () => {
-    const halfDone = levelStatuses(
+    const halfDone = statusesOf(
       draft(appleApp({ ...FIREBASE, issuer: "https://securetoken.google.com/", audience: "" })),
       undefined,
     );
     expect(halfDone.users.tone).toBe("incomplete");
 
-    const paidWithoutClaim = levelStatuses(
+    const paidWithoutClaim = statusesOf(
       draft(appleApp({
         ...FIREBASE,
         entitlement: "revenuecat",
@@ -117,18 +122,18 @@ describe("levelStatuses", () => {
   });
 
   it("judges a backend-sent header by the schema, not by whether it is empty", () => {
-    expect(levelStatuses(draft(headerApp()), true).users.tone).toBe("weak");
+    expect(statusesOf(draft(headerApp()), true).users.tone).toBe("weak");
     // A name the gateway already uses is refused on save, so it is not an
     // answer the level can call done.
-    expect(levelStatuses(draft(headerApp("authorization")), true).users.tone).toBe("incomplete");
+    expect(statusesOf(draft(headerApp("authorization")), true).users.tone).toBe("incomplete");
   });
 
   it("reads a server app's identity off its keys", () => {
-    expect(levelStatuses(draft(serverApp()), false).identity)
+    expect(statusesOf(draft(serverApp()), false).identity)
       .toEqual({ tone: "incomplete", text: "No active API key" });
-    expect(levelStatuses(draft(serverApp()), true).identity.tone).toBe("secure");
+    expect(statusesOf(draft(serverApp()), true).identity.tone).toBe("secure");
     // Unknown is not a problem; it is a list still loading.
-    expect(levelStatuses(draft(serverApp()), undefined).identity.tone).toBe("secure");
+    expect(statusesOf(draft(serverApp()), undefined).identity.tone).toBe("secure");
   });
 });
 
@@ -274,7 +279,9 @@ describe("AuthPolicyTab user authentication", () => {
       jwks_url: "https://issuer.example.test/jwks.json",
       issuer: "https://issuer.example.test",
       audience: "my-api",
+      user_id_claim: "sub",
       required_claims: [],
+      max_token_lifetime_seconds: 86400,
     };
     renderTab(draftFor(serverApp(custom)), "users");
 

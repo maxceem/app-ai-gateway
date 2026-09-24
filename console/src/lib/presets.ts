@@ -65,11 +65,6 @@ function normalize(
 export const buildIssuer = (preset: IssuerPreset, values: Record<string, string>): IssuerFragment =>
   preset.build(normalize(preset, values));
 
-export const buildEntitlement = (
-  preset: EntitlementPreset,
-  values: Record<string, string>,
-): ClaimRequirement[] => preset.build(normalize(preset, values));
-
 export const ISSUER_PRESETS: IssuerPreset[] = [
   {
     id: "firebase",
@@ -242,10 +237,10 @@ export const issuerPreset = (id: IssuerProvider): IssuerPreset =>
  * A list of several is beyond what any preset writes; the first is shown.
  */
 export function storedIssuer(issuer: IssuerDraft): StoredIssuer {
-  const single = (value: string | string[] | undefined): string =>
-    Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
+  const single = (value: string | string[]): string =>
+    Array.isArray(value) ? (value[0] ?? "") : value;
   return {
-    jwks_url: issuer.jwks_url ?? "",
+    jwks_url: issuer.jwks_url,
     issuer: single(issuer.issuer),
     audience: single(issuer.audience),
   };
@@ -273,7 +268,7 @@ export function matchIssuerPreset(
   }
 
   const custom = { preset: CUSTOM_ISSUER_PRESET, values: { ...stored } };
-  const several = (value: string | string[] | undefined) => Array.isArray(value) && value.length > 1;
+  const several = (value: string | string[]) => Array.isArray(value) && value.length > 1;
   if (several(issuer.issuer) || several(issuer.audience)) return custom;
 
   for (const preset of ISSUER_PRESETS) {
@@ -293,14 +288,13 @@ export function matchIssuerPreset(
 }
 
 export interface EntitlementPreset {
-  id: "none" | EntitlementCheck;
+  id: EntitlementCheck;
   label: string;
   vendor?: string;
   /** Absent when the preset's one input already says what the check does. */
   description?: string;
   inputs: PresetInput[];
   note?: string;
-  build: (values: Record<string, string>) => ClaimRequirement[];
 }
 
 /**
@@ -354,13 +348,6 @@ export const ENTITLEMENT_FIELD_LABEL = "Which claim says the user has paid";
 
 export const ENTITLEMENT_PRESETS: EntitlementPreset[] = [
   {
-    id: "none",
-    label: "No entitlement check",
-    description: "Any user the issuer signs a token for may call the gateway.",
-    inputs: [],
-    build: () => [],
-  },
-  {
     id: "revenuecat",
     label: "RevenueCat entitlement",
     vendor: "RevenueCat",
@@ -378,7 +365,6 @@ export const ENTITLEMENT_PRESETS: EntitlementPreset[] = [
         },
       },
     ],
-    build: ({ entitlement }) => (entitlement ? [revenueCatClaim(entitlement)] : []),
   },
   {
     id: "custom",
@@ -388,8 +374,6 @@ export const ENTITLEMENT_PRESETS: EntitlementPreset[] = [
       { key: "path", label: "Claim path", placeholder: "scope" },
       { key: "value", label: "Required value", placeholder: "ai.invoke" },
     ],
-    build: ({ path, value }) =>
-      path && value ? [{ path, contains: value }] : [],
   },
 ];
 

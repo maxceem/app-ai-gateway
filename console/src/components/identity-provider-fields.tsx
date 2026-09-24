@@ -27,7 +27,7 @@ export function IdentityProviderFields({
       jwks_url: fragment.jwks_url,
       issuer: fragment.issuer,
       audience: fragment.audience,
-      user_id_claim: issuer.user_id_claim ?? fragment.user_id_claim,
+      user_id_claim: issuer.user_id_claim,
     });
   };
 

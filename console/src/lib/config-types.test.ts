@@ -131,15 +131,6 @@ describe("provider configuration defaults", () => {
     expect(enabledProviders(proxy, [])).toEqual(["openai"]);
   });
 
-  it("treats a switched-off instance as unselected before the save drops it", () => {
-    const proxy = {
-      providers: { mode: "selected" as const, selected: { openai: undefined } },
-      model_rewrites: {},
-    };
-    expect(selectedSlugs(proxy)).toEqual([]);
-    expect(enabledProviders(proxy, INSTANCES)).toEqual([]);
-  });
-
   it("can explicitly select no providers", () => {
     const proxy = { providers: { mode: "selected" as const, selected: {} }, model_rewrites: {} };
     expect(providerMode(proxy)).toBe("selected");
@@ -221,10 +212,10 @@ describe("the issuer as an end-user source", () => {
     const appleApp: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
-      end_user: { source: "issuer", issuer: { jwks_url: "https://issuer.example.test/jwks.json" } },
+      end_user: { source: "issuer", issuer: { ...emptyIssuer(), jwks_url: "https://issuer.example.test/jwks.json" } },
     };
 
-    expect(authIssuer(appleApp)).toEqual({ jwks_url: "https://issuer.example.test/jwks.json" });
+    expect(authIssuer(appleApp)).toEqual({ ...emptyIssuer(), jwks_url: "https://issuer.example.test/jwks.json" });
   });
 
   it("moves an install-only App Attest app onto an issuer", () => {

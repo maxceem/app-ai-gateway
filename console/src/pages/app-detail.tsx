@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -38,6 +38,10 @@ const EndpointsTab = lazy(() =>
 export function AppDetailPage() {
   const { appId = "", tab = "overview", section } = useParams();
   const state = useAppDraft(appId);
+  const { query, draft, dirty, issues } = state;
+  // What would make the Worker refuse the draft, said on the button instead:
+  // worked out once per change of the draft, not on every render.
+  const problem = useMemo(() => (draft ? draftProblem(draft, issues) : null), [draft, issues]);
   // The month belongs to the page, because the control that picks it sits in
   // the page header beside the section's name.
   const [month, setMonth] = useState(currentMonth());
@@ -58,10 +62,6 @@ export function AppDetailPage() {
   if (!heading) {
     return <Navigate to={`/apps/${encodeURIComponent(appId)}/${DEFAULT_APP_SECTION}`} replace />;
   }
-
-  const { query, draft, dirty } = state;
-  // What would make the Worker refuse the draft, said on the button instead.
-  const problem = draft ? draftProblem(draft) : null;
 
   /*
    * Saving is the hook's; saying so is this page's. The editor reports an
@@ -114,7 +114,9 @@ export function AppDetailPage() {
       ) : tab === "auth" ? (
         <AuthPolicyTab appId={appId} level={section} state={state} />
       ) : tab === "proxy" ? (
-        <ProxyPolicyTab state={state} />
+        // Keyed, because the tab remembers switched-off policies by slug, and
+        // a slug names an instance of the whole account, not of this app.
+        <ProxyPolicyTab key={appId} state={state} />
       ) : tab === "limits" ? (
         <LimitsTab state={state} />
       ) : tab === "users" ? (

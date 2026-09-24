@@ -28,7 +28,7 @@ import {
   selectedSlugs,
   type AllowedPathObject,
   type Provider,
-  type ProviderConfig,
+  type ProviderPolicy,
 } from "@/lib/config-types";
 import { API_STYLE_LABELS, routedSurface } from "@/lib/capabilities";
 import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
@@ -129,10 +129,13 @@ function ProviderCard({
   row,
   config,
   onChange,
+  onEnabledChange,
 }: {
   row: PolicyRow;
-  config: ProviderConfig | undefined;
-  onChange: (next: ProviderConfig | undefined) => void;
+  /** Absent while the instance is switched off. */
+  config: ProviderPolicy | undefined;
+  onChange: (next: ProviderPolicy) => void;
+  onEnabledChange: (enabled: boolean) => void;
 }) {
   const paths = (config?.allowed_paths ?? []).map(pathObject);
   const knownModels = row.knownModels;
@@ -155,7 +158,7 @@ function ProviderCard({
             <Switch
               aria-label={`Enable ${row.slug}`}
               checked={config !== undefined}
-              onCheckedChange={(checked) => onChange(checked ? emptyPolicy() : undefined)}
+              onCheckedChange={onEnabledChange}
             />
           }
         />
@@ -281,7 +284,7 @@ function ProviderCard({
             hint="Leave empty to allow every model with configured pricing. A non-empty list restricts this provider; rewrites are resolved before pricing is checked."
           >
             <StringList
-              values={config.allowed_models ?? []}
+              values={config.allowed_models}
               suggestions={knownModels}
               placeholder="gpt-5.6-terra"
               onChange={(next) => onChange({ ...config, allowed_models: next })}
@@ -464,7 +467,15 @@ function ModelRewrites({
 export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const proxy = state.draft!.config.routing;
   const mode = providerMode(proxy);
+  const policies = proxy.providers.mode === "selected" ? proxy.providers.selected : {};
   const selected = selectedSlugs(proxy);
+  /*
+   * An instance switched off leaves the draft, which only ever holds the ones
+   * that are on. Its policy is kept here instead, for as long as the tab is
+   * open, so switching it back on restores its restrictions rather than
+   * starting over — and a draft switched off and on again is not dirty.
+   */
+  const [switchedOff, setSwitchedOff] = useState<Record<string, ProviderPolicy>>({});
   const instanceList = useProviderInstances();
   const instances = instanceList.data ?? [];
   const gatewayList = useProviderGateways();
@@ -472,6 +483,19 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const rows = policyRows(instances, gateways, selected, providerPrices);
+
+  const setPolicies = (next: Record<string, ProviderPolicy>) =>
+    state.updateProxy({ providers: { mode: "selected", selected: next } });
+
+  const setEnabled = (slug: string, enabled: boolean) => {
+    if (enabled) {
+      setPolicies({ ...policies, [slug]: switchedOff[slug] ?? emptyPolicy() });
+      return;
+    }
+    const { [slug]: policy, ...rest } = policies;
+    if (policy) setSwitchedOff((current) => ({ ...current, [slug]: policy }));
+    setPolicies(rest);
+  };
 
   const setIndividualConfiguration = (enabled: boolean) => {
     state.updateProxy(
@@ -602,19 +626,15 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
             <ProviderCard
               key={row.slug}
               row={row}
-              config={proxy.providers.selected?.[row.slug]}
-              onChange={(next) => state.updateProxy({
-                providers: {
-                  mode: "selected",
-                  selected: { ...proxy.providers.selected, [row.slug]: next },
-                },
-              })}
+              config={policies[row.slug]}
+              onChange={(next) => setPolicies({ ...policies, [row.slug]: next })}
+              onEnabledChange={(enabled) => setEnabled(row.slug, enabled)}
             />
           ))
         : null}
 
       <ModelRewrites
-        rewrites={proxy.model_rewrites ?? {}}
+        rewrites={proxy.model_rewrites}
         onChange={(model_rewrites) => state.updateProxy({ model_rewrites })}
       />
     </div>

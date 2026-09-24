@@ -3,9 +3,9 @@
  *
  * The wire shapes are not restated here: they come from `@shared/app-config`,
  * which is the one grammar the Worker parses with and the console runs
- * directly. What this file adds is the *draft* — the partially filled, named
- * intermediate states a form passes through and a saved configuration has no
- * vocabulary for — plus the labels and copy that go around them.
+ * directly. What this file adds is the *draft* — the names the forms give the
+ * schema's own input shapes, which a half-filled form is simply an unparsed
+ * instance of — plus the labels and copy that go around them.
  */
 
 import type { EndpointApiStyle } from "@shared/capabilities";
@@ -30,7 +30,6 @@ import {
   type LimitScopeConfig,
   type LimitsConfig,
   type ProviderPolicy,
-  type RoutingConfig,
 } from "@shared/app-config";
 import { unlimitedScope } from "@shared/app-defaults";
 
@@ -44,6 +43,7 @@ export type {
   IssuerProvider,
   LimitScopeConfig,
   LimitsConfig,
+  ProviderPolicy,
 };
 
 // The capability facts come from `src/shared/capabilities.ts`,
@@ -71,27 +71,16 @@ export function gatewayLabel(type: GatewayType): string {
 }
 
 /**
- * Incomplete issuer state while the form is being edited. Built on the schema's
- * *input* type, because a half-typed form is exactly a body that has not been
- * parsed yet — and a saved one round-trips through it unchanged.
+ * The issuer block as the form holds it: the schema's own input. A half-typed
+ * form is empty strings rather than absent keys — {@link emptyIssuer} is its
+ * zero — so every field a reader needs is there to read. The two labels,
+ * `provider` and `entitlement`, stay optional: the schema takes only a name it
+ * knows, so "no provider named" and "no paid check" are said by leaving them out.
  */
-export type IssuerDraft = Partial<IssuerAuthenticationInput>;
+export type IssuerDraft = IssuerAuthenticationInput;
 
-/** An end-user source as the form holds it: the schema's own, with its issuer still being filled in. */
-type EndUserDraft<EndUser> = EndUser extends { source: "issuer" }
-  ? Omit<EndUser, "issuer"> & { issuer: IssuerDraft }
-  : EndUser;
-
-/**
- * The authentication block as the form holds it: each arm of the schema's
- * input, with only the issuer draft substituted, so the sources an application
- * type admits are the schema's and are not spelled out a second time.
- */
-export type AuthenticationDraft = AuthenticationConfigInput extends infer Arm
-  ? Arm extends { end_user: infer EndUser }
-    ? Omit<Arm, "end_user"> & { end_user: EndUserDraft<EndUser> }
-    : never
-  : never;
+/** The authentication block as the form holds it, which is the schema's input unchanged. */
+export type AuthenticationDraft = AuthenticationConfigInput;
 
 export type EndUserIdentity = AuthenticationDraft["end_user"];
 
@@ -107,14 +96,6 @@ export const draftLimits = (limits: LimitsDraft | undefined): LimitsConfig => ({
 export type AllowedPath = ProviderPolicy["allowed_paths"][number];
 export type AllowedPathObject = Exclude<AllowedPath, string>;
 export type EndpointTarget = Pick<EndpointConfig, "provider" | "model">;
-
-export interface ProviderConfig extends Partial<ProviderPolicy> {
-  /** Missing or empty allows the default inference APIs; a non-empty list replaces that default. */
-  allowed_paths?: AllowedPath[];
-  /** Missing or empty allows every model; a non-empty list restricts access. */
-  allowed_models?: string[];
-  max_output_tokens?: number;
-}
 
 /**
  * A provider row as policy authoring sees it. The slug — not the type — is what
@@ -153,19 +134,12 @@ export function instanceModels(
 }
 
 /**
- * The routing block as the form holds it: one flat object rather than the
- * saved discriminated union, because the mode toggle and the per-instance
- * policies are edited independently and a half-edited draft has to be able to
- * carry both. `normalizeAppConfigDraft` is where it becomes the union again.
+ * The routing block as the form holds it: the schema's own union, so all-mode
+ * names no selection and every selected instance has a whole policy. A policy
+ * switched off is gone from the draft; the Proxy tab remembers it, not the
+ * configuration.
  */
-export interface ProxyConfig {
-  providers: {
-    mode: RoutingConfig["providers"]["mode"];
-    /** Keyed by provider instance slug, matching `/proxy/{slug}/…`. */
-    selected?: Partial<Record<string, ProviderConfig>>;
-  };
-  model_rewrites?: Record<string, string>;
-}
+export type ProxyConfig = AppConfigInput["routing"];
 
 /**
  * The instances a named endpoint of this style may target: the ones whose own
@@ -182,17 +156,14 @@ export function endpointInstances<T extends { capability: { endpointStyles: read
 }
 
 /**
- * The explicitly incomplete shape edited by the structured form.
- *
- * Built on the schema's *input* type rather than its output: a form holds a
- * configuration on its way to being one, so everything the schema defaults —
- * `limits`, `endpoints`, the App Attest environments — is still optional here,
- * and a saved configuration is simply an input that needs nothing filled in.
+ * The shape edited by the structured form: the schema's *input* type rather
+ * than its output. A form holds a configuration on its way to being one, so
+ * everything the schema defaults — `limits`, `endpoints`, the App Attest
+ * environments — is still optional here, and a saved configuration is simply
+ * an input that needs nothing filled in.
  */
-export interface AppConfigDraft extends Omit<AppConfigInput, "authentication" | "routing"> {
-  authentication: AuthenticationDraft;
-  routing: ProxyConfig;
-}
+export type AppConfigDraft = AppConfigInput;
+
 /** The issuer block, which an application only has while `issuer` is its source. */
 export const authIssuer = (auth: AuthenticationDraft): IssuerDraft | undefined =>
   auth.end_user.source === "issuer" ? auth.end_user.issuer : undefined;
@@ -274,11 +245,7 @@ export function providerMode(proxy: ProxyConfig): "all" | "selected" {
 
 /** The instance slugs an app allows; empty in `all` mode, which names none. */
 export function selectedSlugs(proxy: ProxyConfig): string[] {
-  if (providerMode(proxy) === "all") return [];
-  const selected = proxy.providers.selected ?? {};
-  // A draft records a switched-off instance as an undefined value, which the
-  // save drops; it is not an allowed provider in the meantime.
-  return Object.keys(selected).filter((slug) => selected[slug] !== undefined);
+  return proxy.providers.mode === "all" ? [] : Object.keys(proxy.providers.selected);
 }
 
 /**

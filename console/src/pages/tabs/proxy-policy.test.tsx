@@ -87,11 +87,13 @@ function Harness() {
       <ProxyPolicyTab state={state} />
       {/* What a save would send, so a row on screen can be told from a row in the draft. */}
       <pre data-testid="rewrites">{JSON.stringify(state.draft.config.routing.model_rewrites ?? {})}</pre>
+      <pre data-testid="providers">{JSON.stringify(state.draft.config.routing.providers)}</pre>
     </>
   );
 }
 
 const draftRewrites = () => JSON.parse(screen.getByTestId("rewrites").textContent ?? "null");
+const draftProviders = () => JSON.parse(screen.getByTestId("providers").textContent ?? "null");
 
 function renderTab(routing: ProxyConfig, providers = PROVIDERS) {
   stubApi({
@@ -171,6 +173,19 @@ describe("ProxyPolicyTab", () => {
     await userEvent.click(orphan);
     await waitFor(() =>
       expect(screen.getByText("0 of 3 provider instances enabled")).toBeTruthy());
+  });
+
+  it("takes a switched-off instance out of the draft, and restores its policy when switched back on", async () => {
+    const policy = { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-luna"] };
+    renderTab(selectedRouting({ "openai-dev": policy }));
+
+    await userEvent.click(await screen.findByRole("switch", { name: "Enable openai-dev" }));
+    // Gone, rather than kept under its slug as a value the save has to drop.
+    await waitFor(() => expect(draftProviders()).toEqual({ mode: "selected", selected: {} }));
+
+    await userEvent.click(screen.getByRole("switch", { name: "Enable openai-dev" }));
+    await waitFor(() =>
+      expect(draftProviders()).toEqual({ mode: "selected", selected: { "openai-dev": policy } }));
   });
 
   /**
