@@ -1,5 +1,5 @@
 import { API_STYLE_PATHS, type ApiStyle as CoreApiStyle } from "@shared/capabilities";
-import { PROVIDER_LABELS } from "./config-types";
+import { providerLabel } from "./config-types";
 import type { ProviderCredential } from "./types";
 
 /**
@@ -66,7 +66,7 @@ export function routedSurface(
       path: API_STYLE_PATHS[style],
     })),
     modelIds: prefix
-      ? `${PROVIDER_LABELS[instance.type]} model IDs with no "${prefix}" prefix — the gateway adds it upstream`
-      : `${PROVIDER_LABELS[instance.type]} model IDs, unchanged`,
+      ? `${providerLabel(instance.type)} model IDs with no "${prefix}" prefix — the gateway adds it upstream`
+      : `${providerLabel(instance.type)} model IDs, unchanged`,
   };
 }

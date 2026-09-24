@@ -9,7 +9,6 @@ import {
   instanceModels,
   nextEndpointSlug,
   providerMode,
-  PROVIDER_LABELS,
   renameEndpoint,
   reportsCost,
   selectedSlugs,
@@ -30,13 +29,7 @@ const INSTANCES: ProviderInstance[] = [
 ];
 
 describe("the provider list the console offers", () => {
-  it("labels every provider type it can create", () => {
-    // A type in the list with no label would render as `undefined` in the
-    // picker, the policy cards and the missing-credential alert.
-    for (const provider of PROVIDERS) {
-      expect([provider, typeof PROVIDER_LABELS[provider]]).toEqual([provider, "string"]);
-      expect(PROVIDER_LABELS[provider].length).toBeGreaterThan(0);
-    }
+  it("lists every provider type it can create once", () => {
     expect(new Set(PROVIDERS).size).toBe(PROVIDERS.length);
   });
 

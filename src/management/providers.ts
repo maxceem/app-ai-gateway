@@ -13,19 +13,19 @@ import type {
 } from "../contracts/responses";
 import { assertRouteServesProvider, instanceCapability } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../providers/route-adapters";
+import { requireGatewayAdapter, routeAdapter } from "../providers/route-adapters";
+import { storedGatewayConnection } from "../providers/gateway-adapters";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
 import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../providers/provider-probe";
 import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../providers/provider-store";
-import { PROVIDER_TYPES, type ProviderType } from "../shared/providers";
+import { isProviderType, type ProviderType } from "../shared/providers";
 import { database } from "../db";
 import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
-  type ProviderGatewayConfig,
   type ProviderStatus,
 } from "../db/schema";
 import { openSecret, sealSecret } from "../vault/secrets";
@@ -35,7 +35,8 @@ import {
   commitResourceWrite,
   type ResourceWriteBoundary,
 } from "./write-boundary";
-import type { GatewayType, ProviderRoute } from "../shared/capabilities";
+import type { ProviderRoute } from "../shared/capabilities";
+import { isGatewayType, type GatewayType } from "../shared/gateways";
 
 type ProviderRow = typeof provider.$inferSelect;
 
@@ -102,50 +103,37 @@ function slugConflict(slug: string, holder: ProviderStatus = "active"): GatewayE
 }
 
 function assertReservedSlug(type: ProviderType, slug: string): void {
-  if (PROVIDER_TYPES.includes(slug as ProviderType) && slug !== type) {
+  if (isProviderType(slug) && slug !== type) {
     throw new GatewayError(400, "invalid_request", `Reserved slug ${slug} may only be used by a ${slug} provider`);
   }
 }
 
-async function gatewayToken(env: Env, organizationId: string, gatewayId: string): Promise<{ type: GatewayType; config: ProviderGatewayConfig; token: string }> {
-  const row = await database(env.DB).query.providerGateway.findFirst({
-    where: and(
-      eq(providerGateway.id, gatewayId),
-      eq(providerGateway.organizationId, organizationId),
-      eq(providerGateway.status, "active"),
-    ),
+/** One of this organization's gateway rows, whatever its status. */
+async function findGateway(env: Env, organizationId: string, gatewayId: string) {
+  return database(env.DB).query.providerGateway.findFirst({
+    where: and(eq(providerGateway.id, gatewayId), eq(providerGateway.organizationId, organizationId)),
   });
-  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  return {
-    type: requireGatewayAdapter(row.type),
-    config: row.config,
-    token: await decryptProviderGatewaySecret(env, organizationId, row.id, row.secretBlob),
-  };
 }
 
-async function gatewayAdapterType(env: Env, organizationId: string, gatewayId: string): Promise<GatewayType> {
-  const row = await database(env.DB).query.providerGateway.findFirst({
-    columns: { type: true },
-    where: and(
-      eq(providerGateway.id, gatewayId),
-      eq(providerGateway.organizationId, organizationId),
-      eq(providerGateway.status, "active"),
-    ),
-  });
-  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  return requireGatewayAdapter(row.type);
+/** One of this organization's gateways that can carry traffic now, or a 404. */
+async function activeGateway(env: Env, organizationId: string, gatewayId: string) {
+  const row = await findGateway(env, organizationId, gatewayId);
+  if (!row || row.status !== "active") throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  return row;
 }
 
+/**
+ * The adapter a routing configuration update is judged by. With no routing
+ * configuration there is nothing to judge, so a missing gateway or one with no
+ * adapter is simply no adapter; a configuration needs one that exists.
+ */
 async function gatewayRouteAdapter(
   env: Env,
   organizationId: string,
   gatewayId: string,
   route: GatewayRouteConfig | null,
 ): Promise<GatewayType | null> {
-  const row = await database(env.DB).query.providerGateway.findFirst({
-    columns: { type: true },
-    where: and(eq(providerGateway.id, gatewayId), eq(providerGateway.organizationId, organizationId)),
-  });
+  const row = await findGateway(env, organizationId, gatewayId);
   if (route === null) return row && isGatewayType(row.type) ? row.type : null;
   if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   return requireGatewayAdapter(row.type);
@@ -167,14 +155,11 @@ export async function testProvider(scope: ManagementScope, actor: Actor, body: P
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
     return assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl));
   }
-  const gateway = await gatewayToken(env, actor.organizationId, body.providerGatewayId!);
-  assertRouteServesProvider(gateway.type, body.type);
-  return assertNotRejected(await probeProviderGateway({
-    type: body.type,
-    gatewayType: gateway.type,
-    gatewayConfig: gateway.config,
-    token: gateway.token,
-  }));
+  const gateway = await activeGateway(env, actor.organizationId, body.providerGatewayId!);
+  const stored = storedGatewayConnection(requireGatewayAdapter(gateway.type), gateway.config);
+  const token = await decryptProviderGatewaySecret(env, actor.organizationId, gateway.id, gateway.secretBlob);
+  assertRouteServesProvider(stored.type, body.type);
+  return assertNotRejected(await probeProviderGateway({ type: body.type, gateway: stored, token }));
 }
 
 export async function createProvider(
@@ -204,7 +189,7 @@ export async function createProvider(
     // The schema admits exactly one of `secret` and `providerGatewayId`.
     const gatewayId = body.providerGatewayId!;
     providerGatewayId = gatewayId;
-    const gatewayType = await gatewayAdapterType(env, actor.organizationId, gatewayId);
+    const gatewayType = requireGatewayAdapter((await activeGateway(env, actor.organizationId, gatewayId)).type);
     assertRouteServesProvider(gatewayType, body.type);
     routeAdapter(gatewayType).validateRouteConfig(gatewayRoute);
     route = gatewayType;

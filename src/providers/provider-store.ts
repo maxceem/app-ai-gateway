@@ -4,7 +4,6 @@ import {
   provider as providerTable,
   providerGateway as providerGatewayTable,
   type GatewayRouteConfig,
-  type ProviderGatewayConfig,
   type ProviderGatewayStatus,
   type ProviderPricing,
   type ProviderStatus,
@@ -17,10 +16,11 @@ import { log } from "../core/log";
 import { ttlCache } from "../core/ttl-cache";
 import {
   DIRECT_ROUTE,
-  isGatewayType,
   routeThroughGateway,
   type ResolvedRoute,
 } from "./route-adapters";
+import { isGatewayType, type StoredGateway } from "../shared/gateways";
+import { invalidStoredGateway, readStoredGateway } from "./gateway-adapters";
 import { recordFromEntries } from "../shared/records";
 import type { ProviderType } from "../shared/providers";
 
@@ -62,7 +62,13 @@ interface ProviderRow {
    */
   gatewayType: string | null;
   gatewayStatus: ProviderGatewayStatus | null;
-  gatewayConfig: ProviderGatewayConfig | null;
+  /**
+   * The attached gateway read once, when the row was loaded: its checked
+   * connection, `invalid` where its type has an adapter but its stored
+   * configuration does not parse, or `null` where there is no gateway row or no
+   * adapter for its type. Requests read this and never parse it again.
+   */
+  gateway: StoredGateway | "invalid" | null;
   gatewaySecretBlob: string | null;
   gatewayRoute: GatewayRouteConfig | null;
   baseUrl: string | null;
@@ -175,11 +181,17 @@ export function invalidateOrganizationProviders(organizationId: string): void {
   providerRowsCache.delete(organizationId);
 }
 
+/** A joined gateway's columns, read as its checked connection once per load. */
+function loadedGateway(type: string | null, config: unknown): ProviderRow["gateway"] {
+  if (type === null || !isGatewayType(type)) return null;
+  return readStoredGateway(type, config) ?? "invalid";
+}
+
 async function queryOrganizationRows(
   db: Database,
   organizationId: string,
 ): Promise<ProviderRow[]> {
-  return db
+  const rows = await db
     .select({
       id: providerTable.id,
       slug: providerTable.slug,
@@ -209,6 +221,10 @@ async function queryOrganizationRows(
     // exist" are different answers, and only the full set can tell them apart.
     // They hold their slug too, so including them costs no ambiguity.
     .where(eq(providerTable.organizationId, organizationId));
+  return rows.map(({ gatewayConfig, ...row }) => ({
+    ...row,
+    gateway: loadedGateway(row.gatewayType, gatewayConfig),
+  }));
 }
 
 async function organizationRows(env: Env, organizationId: string): Promise<ProviderRow[]> {
@@ -342,16 +358,13 @@ export async function resolveProvider(
   // here, exactly like a revoked one: the database is permissive, the adapter
   // registry decides. This is the only place a stored gateway type is joined to
   // its adapter.
-  const gateway = row.providerGatewayId === null
-    ? null
-    : row.gatewayStatus === "active"
-        && row.gatewayType
-        && row.gatewayConfig
-        && isGatewayType(row.gatewayType)
-      ? { id: row.providerGatewayId, type: row.gatewayType, config: row.gatewayConfig }
-      : null;
-  if (row.providerGatewayId !== null && gateway === null) {
-    throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");
+  let gateway: (StoredGateway & { id: string }) | null = null;
+  if (row.providerGatewayId !== null) {
+    if (row.gatewayStatus !== "active" || row.gateway === null) {
+      throw new GatewayError(502, "provider_unavailable", "Provider gateway is missing or revoked");
+    }
+    if (row.gateway === "invalid") throw invalidStoredGateway(row.gatewayType ?? "unknown");
+    gateway = { ...row.gateway, id: row.providerGatewayId };
   }
   return {
     id: row.id,

@@ -10,7 +10,6 @@ import { database } from "../src/db";
 import {
   app,
   appApiKey,
-  type CfAigConfig,
   type GatewayRouteConfig,
   mgmtAuthTables,
   provider,
@@ -24,7 +23,7 @@ import { parseAppConfig } from "../src/shared/app-config";
 import { validateConfigurationReferences } from "../src/management/config-references";
 import { recordFromEntries } from "../src/shared/records";
 import { createCfAuth } from "@maxceem/cf-auth";
-import type { GatewayType } from "../src/shared/capabilities";
+import type { GatewayConnectionConfig, GatewayType } from "../src/shared/gateways";
 
 /**
  * Every cache the Worker keeps in its isolate, emptied in one call.
@@ -113,7 +112,7 @@ export async function seedProvider(input: {
   secret?: string;
   name?: string;
   gateway?: GatewayType;
-  gatewayConfig?: CfAigConfig;
+  gatewayConfig?: GatewayConnectionConfig<"cf_aig">;
   /** The row's gateway-type-specific routing configuration. */
   gatewayRoute?: GatewayRouteConfig;
   providerGatewayId?: string;

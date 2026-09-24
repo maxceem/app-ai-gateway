@@ -8,18 +8,20 @@
  * absence of one, so no consumer asks whether a gateway is present.
  */
 
-import type {
-  GatewayRouteConfig,
-  ProviderGatewayConfig,
-} from "../db/schema";
+import type { GatewayRouteConfig } from "../db/schema";
 import type {
   ApiStyle,
   CredentialSource,
   GatewayProviderRoute,
-  GatewayType,
   ProviderRoute,
   RouteCapability,
 } from "../shared/capabilities";
+import {
+  isGatewayType,
+  type GatewayDescriptor,
+  type GatewayType,
+  type StoredGateway,
+} from "../shared/gateways";
 import { GatewayError } from "../core/errors";
 import { cfAigAdapter, vercelAdapter } from "./gateway-adapters";
 import { providerAuthValue, providerRequestHeaders } from "./provider-type";
@@ -45,8 +47,8 @@ export interface RouteUpstreamInput {
   secret: string;
   /** The row's operator-supplied origin; only a direct route has one. */
   baseUrl: string | null;
-  /** The gateway row's non-secret configuration; null on a direct route. */
-  gatewayConfig: ProviderGatewayConfig | null;
+  /** The gateway row's type and checked configuration; null on a direct route. */
+  gateway: StoredGateway | null;
   /** The provider row's own routing configuration; null on a direct route. */
   routeConfig: GatewayRouteConfig | null;
   appId: string;
@@ -57,7 +59,7 @@ export interface RouteProbeInput {
   provider: ProviderType;
   secret: string;
   baseUrl: string | null;
-  gatewayConfig: ProviderGatewayConfig | null;
+  gateway: StoredGateway | null;
 }
 
 /** Body the adapter may rewrite in place, and what it is allowed to know. */
@@ -71,6 +73,11 @@ export interface RouteBodyInput {
 
 export interface RouteAdapter {
   readonly kind: ProviderRoute;
+  /**
+   * The gateway type's descriptor — its name, its connection schema, its route
+   * table — or `null` on a direct call, which is no gateway at all.
+   */
+  readonly descriptor: GatewayDescriptor | null;
   /**
    * Headers this route sets itself. A client value in any of them is stripped
    * on every route, so the sanitizer can never drift from the adapters.
@@ -131,6 +138,7 @@ export interface RouteAdapter {
  */
 export const DIRECT_ADAPTER: RouteAdapter = {
   kind: "direct",
+  descriptor: null,
   // Derived from the descriptors rather than listed: each one declares the
   // header it authenticates with and any it (or its cost-report integration)
   // needs the upstream to read, so the strip list cannot drift from them.
@@ -186,7 +194,11 @@ export const DIRECT_ADAPTER: RouteAdapter = {
   },
 };
 
-/** Closed registry: every route a row can take has exactly one adapter. */
+/**
+ * Closed registry: every route a row can take has exactly one adapter, and the
+ * key set is the descriptor registry's plus `direct`, so a gateway descriptor
+ * with no adapter fails to compile here.
+ */
 export const ROUTE_ADAPTERS: Record<ProviderRoute, RouteAdapter> = {
   direct: DIRECT_ADAPTER,
   cf_aig: cfAigAdapter,
@@ -198,28 +210,11 @@ export function routeAdapter(kind: ProviderRoute): RouteAdapter {
 }
 
 /**
- * Gateway types this deployment can actually serve: the registry minus the
- * direct adapter, which is not a gateway anybody can store on a row.
- */
-const GATEWAY_ADAPTER_KINDS: ReadonlySet<string> = new Set(
-  Object.keys(ROUTE_ADAPTERS).filter((kind) => kind !== "direct"),
-);
-
-/**
- * Whether a gateway type stored in D1 has an adapter. The column is deliberately
- * unconstrained — the runtime registry is what decides — so a stored row is not
- * proof that this deployment can serve it.
- */
-export function isGatewayType(name: string): name is GatewayType {
-  return GATEWAY_ADAPTER_KINDS.has(name);
-}
-
-/**
  * The stored type of a gateway row, narrowed to one this deployment can serve,
  * or a 400 naming the type it cannot. Every admin path that reads a stored
  * `provider_gateway.type` needs exactly this check and the same message, so it
- * lives here with {@link isGatewayType} rather than being written out at each
- * call site — where the day one of them forgot, a row with no adapter would be
+ * lives here beside the registry rather than being written out at each call
+ * site — where the day one of them forgot, a row with no adapter would be
  * read as another gateway's configuration.
  */
 export function requireGatewayAdapter(name: string): GatewayType {
@@ -239,7 +234,7 @@ export interface ResolvedRoute {
   readonly kind: ProviderRoute;
   readonly adapter: RouteAdapter;
   /** The gateway row behind a routed instance; null on direct. */
-  readonly gateway: { id: string; type: GatewayType; config: ProviderGatewayConfig } | null;
+  readonly gateway: (StoredGateway & { id: string }) | null;
   /** The provider row's own routing configuration for its gateway; null on direct. */
   readonly config: GatewayRouteConfig | null;
 }
@@ -258,7 +253,7 @@ export const DIRECT_ROUTE: ResolvedRoute = {
  * narrowed the stored type through {@link isGatewayType}.
  */
 export function routeThroughGateway(
-  gateway: { id: string; type: GatewayType; config: ProviderGatewayConfig },
+  gateway: StoredGateway & { id: string },
   config: GatewayRouteConfig | null,
 ): ResolvedRoute {
   return { kind: gateway.type, adapter: routeAdapter(gateway.type), gateway, config };

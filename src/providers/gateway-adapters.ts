@@ -1,18 +1,18 @@
-import type {
-  CfAigConfig,
-  GatewayRouteConfig,
-  ProviderGatewayConfig,
-  VercelConfig,
-} from "../db/schema";
+import type { GatewayRouteConfig } from "../db/schema";
 import {
-  CF_AIG_ROUTES,
   narrowedCapability,
   VERCEL_API_STYLES,
-  VERCEL_ROUTES,
   type GatewayProviderRoute,
-  type GatewayType,
   type RouteCapability,
 } from "../shared/capabilities";
+import {
+  GATEWAY_DESCRIPTORS,
+  gatewayDescriptor,
+  isGatewayType,
+  type GatewayConnectionConfig,
+  type GatewayType,
+  type StoredGateway,
+} from "../shared/gateways";
 import { recordOr } from "../shared/records";
 import { GatewayError } from "../core/errors";
 import { providerCapability, providerDescriptor, type ProviderType } from "../shared/providers";
@@ -31,20 +31,42 @@ function gatewayCapability(
 }
 
 /**
- * The gateway row's stored configuration as the adapter's own shape.
+ * A stored gateway row's type and configuration, read as that type's own
+ * shape, or `null` where the type has no descriptor or the configuration does
+ * not parse by the descriptor's `connection` schema — the same schema the
+ * create request's fields came through.
  *
- * One cast, and it is the honest one: nothing here validates the config against
- * the type. `config_json` is written only by the create route, which builds the
- * union field by field from a checked contract, so the pairing is guaranteed
- * upstream rather than here. Every adapter reads its config through this one
- * helper, behind `isGatewayType` or `requireGatewayAdapter`: branching on
- * `type` to pick which unchecked cast to apply would read like a
- * discrimination without being one.
+ * The one place a stored configuration is read at all. It runs where a row is
+ * loaded — once per organization row cache fill on the proxy path, once per
+ * management read — never per request: the adapters receive the checked pair
+ * and narrow it on `type`.
  */
-function gatewayConfig<Config extends ProviderGatewayConfig>(
-  config: ProviderGatewayConfig | null,
-): Config {
-  return (config ?? {}) as Config;
+export function readStoredGateway(type: string, config: unknown): StoredGateway | null {
+  if (!isGatewayType(type)) return null;
+  const parsed = gatewayDescriptor(type).connection.safeParse(config);
+  // The descriptor is widened to every type's shape; the one parsed above is
+  // this type's own, which is the pairing the cast restores.
+  return parsed.success ? ({ type, config: parsed.data } as StoredGateway) : null;
+}
+
+/**
+ * The 500 a stored gateway that does not read answers with: this
+ * deployment's own data gone wrong rather than a caller's mistake, exactly as
+ * an unparseable application configuration is.
+ */
+export function invalidStoredGateway(type: string): GatewayError {
+  return new GatewayError(
+    500,
+    "internal_error",
+    `The stored configuration of a ${type} provider gateway is invalid`,
+  );
+}
+
+/** {@link readStoredGateway}, for a caller that has one row and nothing to fall back to. */
+export function storedGatewayConnection(type: string, config: unknown): StoredGateway {
+  const gateway = readStoredGateway(type, config);
+  if (gateway === null) throw invalidStoredGateway(type);
+  return gateway;
 }
 
 export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
@@ -52,7 +74,7 @@ export const CF_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1";
 /** The single place a Cloudflare AI Gateway URL is built: live traffic and
  *  credential probes join the same segments from the same route entry. */
 function cfAigUrl(
-  config: CfAigConfig,
+  config: GatewayConnectionConfig<"cf_aig">,
   route: GatewayProviderRoute & { slug: string },
   path: string,
 ): string {
@@ -68,8 +90,23 @@ function cfAigUrl(
   ].join("/");
 }
 
+const CF_AIG = GATEWAY_DESCRIPTORS.cf_aig;
+
+/**
+ * The Cloudflare connection a route was resolved with. The resolver pairs the
+ * adapter with the gateway row it read, so another type here is a bug in this
+ * deployment rather than anything a caller did.
+ */
+function cfAigConnection(gateway: StoredGateway | null): GatewayConnectionConfig<"cf_aig"> {
+  if (gateway?.type !== "cf_aig") {
+    throw new GatewayError(500, "internal_error", "A Cloudflare AI Gateway route was resolved without its gateway");
+  }
+  return gateway.config;
+}
+
 export const cfAigAdapter: RouteAdapter = {
   kind: "cf_aig",
+  descriptor: CF_AIG,
   reservedHeaders: ["cf-aig-authorization", "cf-aig-metadata"],
   headerPrefix: "cf-aig-",
   clientHeaders: [
@@ -83,15 +120,15 @@ export const cfAigAdapter: RouteAdapter = {
   // store; there is no Cloudflare-supplied credential to fall back to. That is
   // configuration, not something read off a response.
   credentialSource: "byok",
-  capability: (provider) => gatewayCapability(CF_AIG_ROUTES, provider),
-  providerRoute: (provider) => CF_AIG_ROUTES[provider],
+  capability: (provider) => gatewayCapability(CF_AIG.routes, provider),
+  providerRoute: (provider) => CF_AIG.routes[provider],
   upstream(input) {
-    const route = CF_AIG_ROUTES[input.provider];
+    const route = CF_AIG.routes[input.provider];
     if (!route) throw unsupportedProvider("cf_aig", input.provider);
     return {
       // The gateway injects the provider key from its own store, so only the
       // gateway token travels and no provider-auth header is sent.
-      url: `${cfAigUrl(gatewayConfig<CfAigConfig>(input.gatewayConfig), route, input.providerPath)}${input.query}`,
+      url: `${cfAigUrl(cfAigConnection(input.gateway), route, input.providerPath)}${input.query}`,
       headers: {
         "cf-aig-authorization": `Bearer ${input.secret}`,
         // `user_id` is omitted rather than sent as null when the application
@@ -105,7 +142,7 @@ export const cfAigAdapter: RouteAdapter = {
     };
   },
   probe(input) {
-    const route = CF_AIG_ROUTES[input.provider];
+    const route = CF_AIG.routes[input.provider];
     // Cloudflare holds the provider's own key and forwards to the provider's
     // own API, so the only thing worth calling is a path that provider has,
     // adapted by the same rules as live traffic. A provider with no cheap
@@ -113,7 +150,7 @@ export const cfAigAdapter: RouteAdapter = {
     const path = providerDescriptor(input.provider).probePath;
     if (!route || path === undefined) return null;
     return {
-      url: cfAigUrl(gatewayConfig<CfAigConfig>(input.gatewayConfig), route, path),
+      url: cfAigUrl(cfAigConnection(input.gateway), route, path),
       headers: { "cf-aig-authorization": `Bearer ${input.secret}` },
     };
   },
@@ -199,8 +236,11 @@ function vercelReportingHeaders(appId: string, userId: string | null): Record<st
   return headers;
 }
 
+const VERCEL = GATEWAY_DESCRIPTORS.vercel;
+
 export const vercelAdapter: RouteAdapter = {
   kind: "vercel",
+  descriptor: VERCEL,
   reservedHeaders: [
     // Vercel accepts the gateway key in either header and lets it win over any
     // OIDC token, so a client value in either would spend somebody else's
@@ -220,14 +260,13 @@ export const vercelAdapter: RouteAdapter = {
   // exists at configuration time. Null means "read it per event or record
   // unknown", never a claim that the organization's own key paid.
   credentialSource: null,
-  capability: (provider) => gatewayCapability(VERCEL_ROUTES, provider),
-  providerRoute: (provider) => VERCEL_ROUTES[provider],
+  capability: (provider) => gatewayCapability(VERCEL.routes, provider),
+  providerRoute: (provider) => VERCEL.routes[provider],
   upstream(input) {
-    const route = VERCEL_ROUTES[input.provider];
+    const route = VERCEL.routes[input.provider];
     if (!route) throw unsupportedProvider("vercel", input.provider);
     // Vercel's stored configuration is empty by design — the token names the
     // team — so the URL below needs nothing out of it.
-    gatewayConfig<VercelConfig>(input.gatewayConfig);
     return {
       // No provider segment and no prefix surgery: the client path is already
       // the absolute path Vercel documents.
@@ -244,7 +283,7 @@ export const vercelAdapter: RouteAdapter = {
     // provider keys it may use live in Vercel's dashboard where this deployment
     // cannot see them. The credits call proves exactly what this row will
     // authenticate with.
-    if (!VERCEL_ROUTES[input.provider]) return null;
+    if (!VERCEL.routes[input.provider]) return null;
     return {
       url: `${VERCEL_AI_GATEWAY_BASE_URL}${VERCEL_PROBE_PATH}`,
       headers: { authorization: `Bearer ${input.secret}` },

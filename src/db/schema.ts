@@ -11,7 +11,8 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import type { CredentialSource, GatewayType } from "../shared/capabilities";
+import type { CredentialSource } from "../shared/capabilities";
+import type { GatewayConnectionConfig, GatewayType } from "../shared/gateways";
 import type { AppConfig } from "../shared/app-config";
 import type { ProviderType } from "../shared/providers";
 
@@ -37,28 +38,18 @@ export type ProviderGatewayStatus = "active" | "revoked";
  * refused by the contracts on the way in and treated as unroutable on the way
  * out — `isGatewayType` and `isProviderType` are that check, in code.
  */
-/** Non-secret configuration for the org's own Cloudflare AI Gateway. */
-export interface CfAigConfig {
-  accountId: string;
-  gatewayId: string;
-}
 /**
- * Vercel's AI Gateway is one fixed origin serving every team, and the team is
- * identified by the token alone: there is nothing per-connection to store. The
- * empty shape exists so the union has a place to grow without another rebuild.
+ * What `provider_gateway.config_json` holds: one gateway type's non-secret
+ * connection, discriminated at runtime by the row's `type`. Each shape is its
+ * descriptor's `connection` schema in `src/shared/gateways.ts`, and a stored
+ * value is read as its type's own shape only through `readStoredGateway` in
+ * `src/providers/gateway-adapters.ts`, which validates it on the way.
  */
-export type VercelConfig = Record<string, never>;
-/**
- * What `provider_gateway.config_json` holds, discriminated at runtime by the
- * row's `type`. The adapter registry resolves the pair — see `gatewayConfig` in
- * `src/providers/gateway-adapters.ts`, the one place a stored config is read as an adapter's
- * own shape.
- */
-export type ProviderGatewayConfig = CfAigConfig | VercelConfig;
+export type ProviderGatewayConfig = GatewayConnectionConfig;
 /**
  * What `provider.gateway_route_json` holds: how one provider row is routed
  * inside its gateway. The referenced `provider_gateway.type` selects the schema,
- * and the owning adapter validates it — `cf_aig` accepts nothing at all.
+ * and the owning adapter validates it — Cloudflare's accepts nothing at all.
  */
 export interface GatewayRouteConfig {
   /** Namespace the gateway expects in front of the canonical model ID. */
@@ -174,7 +165,7 @@ export const app = sqliteTable(
   ],
 );
 
-/** A reusable connection to an organization's Cloudflare AI Gateway. */
+/** A reusable connection to one of an organization's AI gateways. */
 export const providerGateway = sqliteTable(
   "provider_gateway",
   {

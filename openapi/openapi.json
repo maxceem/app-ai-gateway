@@ -1847,6 +1847,11 @@
                 "minLength": 1,
                 "maxLength": 100
               },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "accountId": {
                 "type": "string",
                 "minLength": 1,
@@ -1856,19 +1861,14 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
-              },
-              "token": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4096
               }
             },
             "required": [
               "type",
               "name",
+              "token",
               "accountId",
-              "gatewayId",
-              "token"
+              "gatewayId"
             ],
             "additionalProperties": false
           },
@@ -1912,6 +1912,11 @@
                   "cf_aig"
                 ]
               },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "accountId": {
                 "type": "string",
                 "minLength": 1,
@@ -1921,18 +1926,13 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
-              },
-              "token": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4096
               }
             },
             "required": [
               "type",
+              "token",
               "accountId",
-              "gatewayId",
-              "token"
+              "gatewayId"
             ],
             "additionalProperties": false
           },
@@ -10702,6 +10702,11 @@
                                 "minLength": 1,
                                 "maxLength": 100
                               },
+                              "token": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
                               "accountId": {
                                 "type": "string",
                                 "minLength": 1,
@@ -10711,19 +10716,14 @@
                                 "type": "string",
                                 "minLength": 1,
                                 "maxLength": 100
-                              },
-                              "token": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 4096
                               }
                             },
                             "required": [
                               "type",
                               "name",
+                              "token",
                               "accountId",
-                              "gatewayId",
-                              "token"
+                              "gatewayId"
                             ],
                             "additionalProperties": false
                           },

@@ -36,11 +36,13 @@ import {
 import { RESERVED_UPSTREAM_HEADERS } from "../src/execution/proxy-rules";
 import * as SHARED from "../src/shared/capabilities";
 import * as SHARED_PROVIDERS from "../src/shared/providers";
-import { type GatewayRouteConfig, provider, type ProviderGatewayConfig } from "../src/db/schema";
+import type { OperationRequest } from "../src/contracts/catalog";
+import { ProviderGatewayCreateRequestSchema } from "../src/contracts/schemas";
+import { GATEWAY_DESCRIPTORS, GATEWAY_TYPES, gatewayDescriptor, type StoredGateway } from "../src/shared/gateways";
+import { type GatewayRouteConfig, provider } from "../src/db/schema";
 import {
   API_STYLES,
   type ApiStyle,
-  type GatewayType,
   narrowedCapability,
   type OutputClampStyle,
   type ProviderRoute,
@@ -57,22 +59,16 @@ import { database } from "../src/db";
 import { clearProviderCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
 
 const CF_AIG = { type: "cf_aig", config: { accountId: "acct-1", gatewayId: "gw-1" } } as const;
+const VERCEL = { type: "vercel", config: {} } as const;
 
 /**
  * A route as `resolveProvider` builds one, so the adapter-level assertions below
  * read the same object the proxy path does rather than a second shape.
  */
-function routeOf(
-  kind: ProviderRoute,
-  config: GatewayRouteConfig | null = null,
-  gatewayConfig: ProviderGatewayConfig = kind === "cf_aig" ? { ...CF_AIG.config } : {},
-): ResolvedRoute {
-  return kind === "direct"
-    ? DIRECT_ROUTE
-    : routeThroughGateway(
-      { id: `gw-${kind}`, type: kind as GatewayType, config: gatewayConfig },
-      config,
-    );
+function routeOf(kind: ProviderRoute, config: GatewayRouteConfig | null = null): ResolvedRoute {
+  if (kind === "direct") return DIRECT_ROUTE;
+  const gateway: StoredGateway = kind === "cf_aig" ? CF_AIG : VERCEL;
+  return routeThroughGateway({ id: `gw-${kind}`, ...gateway }, config);
 }
 
 /**
@@ -306,17 +302,47 @@ describe("capability matrix", () => {
  */
 describe("the capability matrix the console shares", () => {
   it("routes gateways from the same tables the adapters do", () => {
-    for (const type of Object.keys(SHARED.GATEWAY_ROUTES) as GatewayType[]) {
-      const shared = SHARED.GATEWAY_ROUTES[type as keyof typeof SHARED.GATEWAY_ROUTES];
+    for (const type of GATEWAY_TYPES) {
+      const shared = GATEWAY_DESCRIPTORS[type].routes;
+      expect(routeAdapter(type).descriptor).toBe(GATEWAY_DESCRIPTORS[type]);
       for (const provider of PROVIDER_TYPES) {
         expect([type, provider, routeAdapter(type).providerRoute(provider)])
           .toEqual([type, provider, shared[provider]]);
       }
     }
     // Every route a row can take has an adapter, and the gateways among them are
-    // exactly the ones the shared table describes.
+    // exactly the ones the descriptors describe.
     expect(Object.keys(ROUTE_ADAPTERS).filter((kind) => kind !== "direct").sort())
-      .toEqual(Object.keys(SHARED.GATEWAY_ROUTES).sort());
+      .toEqual([...GATEWAY_TYPES].sort());
+    expect(routeAdapter("direct").descriptor).toBeNull();
+  });
+
+  it("types each gateway request with exactly its own type's connection", () => {
+    const cloudflare: OperationRequest<"createProviderGateway"> = {
+      type: "cf_aig", name: "CF", token: "t", accountId: "acct", gatewayId: "gw",
+    };
+    const vercel: OperationRequest<"createProviderGateway"> = {
+      type: "vercel", name: "Vercel", token: "t",
+      // @ts-expect-error A Vercel gateway has no Cloudflare account to name.
+      accountId: "acct",
+    };
+    // @ts-expect-error A Cloudflare gateway is unreachable without its gateway id.
+    const partial: OperationRequest<"createProviderGateway"> = {
+      type: "cf_aig", name: "CF", token: "t", accountId: "acct",
+    };
+    // The runtime schema agrees with the type it is inferred as.
+    expect([cloudflare, vercel, partial].map((body) =>
+      ProviderGatewayCreateRequestSchema.safeParse(body).success)).toEqual([true, false, false]);
+  });
+
+  it("asks for exactly the connection each gateway type stores", () => {
+    for (const type of GATEWAY_TYPES) {
+      const descriptor = gatewayDescriptor(type);
+      expect([type, descriptor.connectionFields.map((field) => field.key)])
+        .toEqual([type, Object.keys(descriptor.connection.shape)]);
+    }
+    expect(new Set(GATEWAY_TYPES.map((type) => GATEWAY_DESCRIPTORS[type].cliName)).size)
+      .toBe(GATEWAY_TYPES.length);
   });
 
   it("describes each provider type with the capability the direct route enforces", () => {
@@ -487,8 +513,7 @@ describe("provider descriptor entries", () => {
     });
     await probeProviderGateway({
       type: "anthropic",
-      gatewayType: "cf_aig",
-      gatewayConfig: CF_AIG.config,
+      gateway: CF_AIG,
       token: "cf-token",
     });
     expect(seen[0]?.get("anthropic-version")).toBe("2023-06-01");
@@ -602,7 +627,7 @@ describe("Cloudflare AI Gateway adapter", () => {
         query: "?stream=true",
         secret: "gateway-token",
         baseUrl: null,
-        gatewayConfig: CF_AIG.config,
+        gateway: CF_AIG,
         routeConfig: null,
         appId: "app-1",
         userId: "user-1",
@@ -624,7 +649,7 @@ describe("Cloudflare AI Gateway adapter", () => {
       query: "",
       secret: "gateway-token",
       baseUrl: null,
-      gatewayConfig: { accountId: "acct/1", gatewayId: "gw 1" },
+      gateway: { type: "cf_aig", config: { accountId: "acct/1", gatewayId: "gw 1" } },
       routeConfig: null,
       appId: "app-1",
       userId: "user-1",
@@ -639,7 +664,7 @@ describe("Cloudflare AI Gateway adapter", () => {
       provider,
       secret: "gateway-token",
       baseUrl: null,
-      gatewayConfig: CF_AIG.config,
+      gateway: CF_AIG,
     });
     expect(probe("openai")).toEqual({
       url: `${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/openai/models`,
@@ -667,8 +692,7 @@ describe("Cloudflare AI Gateway adapter", () => {
 
     await expect(probeProviderGateway({
       type: "anthropic",
-      gatewayType: "cf_aig",
-      gatewayConfig: { accountId: "acct-1", gatewayId: "gw-1" },
+      gateway: CF_AIG,
       token: "gateway-token",
     })).resolves.toEqual({ validated: true });
     expect(urls).toEqual([`${CF_AI_GATEWAY_BASE_URL}/acct-1/gw-1/anthropic/v1/models`]);
@@ -754,7 +778,7 @@ describe("Vercel AI Gateway adapter", () => {
       query: "?stream=true",
       secret: "vck_gateway_token",
       baseUrl: null,
-      gatewayConfig: {},
+      gateway: VERCEL,
       routeConfig: null,
       appId: "app-1",
       userId: "user-1",
@@ -776,7 +800,7 @@ describe("Vercel AI Gateway adapter", () => {
       query: "",
       secret: "vck_gateway_token",
       baseUrl: null,
-      gatewayConfig: {},
+      gateway: VERCEL,
       routeConfig: null,
       // Over Vercel's documented 256-character limit for `user`; sending a
       // truncated id would attribute the spend to somebody else, and sending
@@ -809,7 +833,7 @@ describe("Vercel AI Gateway adapter", () => {
       query: "",
       secret: "vck_gateway_token",
       baseUrl: null,
-      gatewayConfig: {},
+      gateway: VERCEL,
       routeConfig: null,
       appId: "app-1",
       userId,
@@ -830,7 +854,7 @@ describe("Vercel AI Gateway adapter", () => {
       query: "",
       secret: "vck_gateway_token",
       baseUrl: null,
-      gatewayConfig: {},
+      gateway: VERCEL,
       routeConfig: null,
       appId: "app-1",
       userId: "user 1 | ~tenant",
@@ -847,7 +871,7 @@ describe("Vercel AI Gateway adapter", () => {
         provider: type,
         secret: "vck_gateway_token",
         baseUrl: null,
-        gatewayConfig: {},
+        gateway: VERCEL,
       })).toEqual({
         url: "https://ai-gateway.vercel.sh/v1/credits",
         headers: { authorization: "Bearer vck_gateway_token" },
@@ -857,7 +881,7 @@ describe("Vercel AI Gateway adapter", () => {
       provider: "groq",
       secret: "vck_gateway_token",
       baseUrl: null,
-      gatewayConfig: {},
+      gateway: VERCEL,
     })).toBeNull();
   });
 

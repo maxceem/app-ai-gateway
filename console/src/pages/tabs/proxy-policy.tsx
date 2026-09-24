@@ -20,7 +20,7 @@ import { EmptyState, Field, SectionHeader } from "@/components/field";
 import { StringList } from "@/components/string-list";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
-  GATEWAY_TYPE_LABELS,
+  gatewayLabel,
   instanceModels,
   normalizePath,
   pathObject,
@@ -79,7 +79,7 @@ function gatewayHint(instance: ProviderCredential, gateways: ProviderGateway[]):
   if (!surface || instance.route === "direct") return null;
   const gateway = gateways.find((entry) => entry.id === instance.providerGatewayId);
   const paths = surface.available.map((entry) => `${entry.label} at ${entry.path}`).join(", ");
-  return `Routed through ${gateway?.name ?? GATEWAY_TYPE_LABELS[instance.route]}. Only these APIs are available on this route: ${paths}. Models: ${surface.modelIds}.`;
+  return `Routed through ${gateway?.name ?? gatewayLabel(instance.route)}. Only these APIs are available on this route: ${paths}. Models: ${surface.modelIds}.`;
 }
 
 /** One card per provider instance; an unknown slug still gets one so it can be removed. */

@@ -1,10 +1,9 @@
-import type { ProviderGatewayConfig } from "../db/schema";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { providerProbeHeaders } from "./provider-type";
 import { DIRECT_ADAPTER, routeAdapter, type RouteRequest } from "./route-adapters";
 import type { ProviderType } from "../shared/providers";
-import type { GatewayType } from "../shared/capabilities";
+import type { StoredGateway } from "../shared/gateways";
 
 const PROBE_TIMEOUT_MS = 4_000;
 
@@ -111,7 +110,7 @@ export async function probeProviderKey(
     provider: type,
     secret,
     baseUrl: baseUrl ?? null,
-    gatewayConfig: null,
+    gateway: null,
   });
   // Null where this provider type has no cheap authenticated call of its own;
   // the reason lives with the descriptor that declines to name one.
@@ -137,20 +136,19 @@ function probeHeaders(type: ProviderType, request: RouteRequest): Record<string,
  */
 export async function probeProviderGateway(input: {
   type: ProviderType;
-  gatewayType: GatewayType;
-  gatewayConfig: ProviderGatewayConfig;
+  gateway: StoredGateway;
   token: string;
 }): Promise<ProbeResult> {
-  const request = routeAdapter(input.gatewayType).probe({
+  const request = routeAdapter(input.gateway.type).probe({
     provider: input.type,
     secret: input.token,
     baseUrl: null,
-    gatewayConfig: input.gatewayConfig,
+    gateway: input.gateway,
   });
   // Nothing to prove: either this gateway does not serve the provider type, or
   // the only thing it could call is a provider path that does not exist.
   if (!request) return { validated: false, reason: "no_probe" };
-  return runProbe(`${input.type}_via_${input.gatewayType}`, request.url, probeHeaders(input.type, request));
+  return runProbe(`${input.type}_via_${input.gateway.type}`, request.url, probeHeaders(input.type, request));
 }
 
 /**
@@ -161,13 +159,8 @@ export async function probeProviderGateway(input: {
  * because its credential is, so both adapters answer for the connection itself.
  */
 export async function probeGatewayPreset(
-  gateway: { type: GatewayType; config: ProviderGatewayConfig },
+  gateway: StoredGateway,
   token: string,
 ): Promise<ProbeResult> {
-  return probeProviderGateway({
-    type: "openai",
-    gatewayType: gateway.type,
-    gatewayConfig: gateway.config,
-    token,
-  });
+  return probeProviderGateway({ type: "openai", gateway, token });
 }

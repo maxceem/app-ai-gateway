@@ -9,7 +9,13 @@
  */
 
 import type { EndpointApiStyle } from "@shared/capabilities";
-import { PROVIDER_TYPES, isProviderType, type ProviderType } from "@shared/providers";
+import {
+  PROVIDER_TYPES,
+  isProviderType,
+  providerDescriptor,
+  type ProviderType,
+} from "@shared/providers";
+import { gatewayDescriptor, type GatewayType } from "@shared/gateways";
 import {
   ENDPOINT_SLUG,
   type AppAttestEnvironment,
@@ -40,8 +46,9 @@ export type {
   LimitsConfig,
 };
 
-// The capability facts come from `src/shared/capabilities.ts` and
-// `src/shared/providers.ts`, which the Worker enforces from the same tables.
+// The capability facts come from `src/shared/capabilities.ts`,
+// `src/shared/providers.ts` and `src/shared/gateways.ts`, which the Worker
+// enforces from the same tables.
 // What stays here is presentation — labels, form copy, draft shapes — and the
 // config structures the console edits.
 export {
@@ -49,69 +56,19 @@ export {
   type EndpointApiStyle,
 } from "@shared/capabilities";
 export { reportsCost } from "@shared/providers";
+export { isGatewayType } from "@shared/gateways";
 
 export type Provider = ProviderType;
 
-export const PROVIDER_LABELS: Record<Provider, string> = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  xai: "xAI",
-  gemini: "Gemini",
-  perplexity: "Perplexity",
-  deepseek: "DeepSeek",
-  groq: "Groq",
-  mistral: "Mistral",
-  together: "Together AI",
-  fireworks: "Fireworks AI",
-  cerebras: "Cerebras",
-  moonshot: "Moonshot AI",
-  huggingface: "Hugging Face",
-  baseten: "Baseten",
-  bytedance: "ByteDance Ark",
-  openrouter: "OpenRouter",
-};
+/** A provider type's display name, from its own descriptor. */
+export function providerLabel(type: Provider): string {
+  return providerDescriptor(type).label;
+}
 
-/** Display names for every gateway type the API can return. */
-export const GATEWAY_TYPE_LABELS = {
-  cf_aig: "Cloudflare AI Gateway",
-  vercel: "Vercel AI Gateway",
-} as const;
-
-/**
- * Gateway types this console offers to create, and the fields each one asks
- * for. A type appears here only once the Worker has an adapter that can serve
- * it, so the list is what makes adding one a data change rather than a rewrite.
- */
-export const CREATABLE_GATEWAY_TYPES = [
-  {
-    value: "cf_aig",
-    label: GATEWAY_TYPE_LABELS.cf_aig,
-    defaultName: "Our CF gateway",
-    tokenDocsUrl: "https://developers.cloudflare.com/ai-gateway/configuration/authentication/",
-    /**
-     * Non-secret connection fields this gateway needs before a token means
-     * anything. Cloudflare's URL is built from the account and gateway pair.
-     */
-    needsCloudflareIds: true,
-    credentialNote:
-      "Requests use the provider keys stored in your Cloudflare AI Gateway's own key store.",
-  },
-  {
-    value: "vercel",
-    label: GATEWAY_TYPE_LABELS.vercel,
-    defaultName: "Our Vercel gateway",
-    tokenDocsUrl: "https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys",
-    // The origin is fixed in adapter code and the token identifies the Vercel
-    // team, so there is nothing else to ask for.
-    needsCloudflareIds: false,
-    // Deliberately not "using your key": Vercel documents BYOK as preferred,
-    // with a fallback to its own system credentials when a stored key fails.
-    credentialNote:
-      "Your provider credential stored in Vercel is preferred. Vercel may fall back to system credentials.",
-  },
-] as const;
-
-export type CreatableGatewayType = (typeof CREATABLE_GATEWAY_TYPES)[number]["value"];
+/** A gateway type's display name, from its own descriptor. */
+export function gatewayLabel(type: GatewayType): string {
+  return gatewayDescriptor(type).label;
+}
 
 /**
  * Incomplete issuer state while the form is being edited. Built on the schema's
@@ -336,14 +293,6 @@ export function selectedSlugs(proxy: ProxyConfig): string[] {
   // A draft records a switched-off instance as an undefined value, which the
   // save drops; it is not an allowed provider in the meantime.
   return Object.keys(selected).filter((slug) => selected[slug] !== undefined);
-}
-
-/**
- * Whether a string names a gateway type this console can describe. Read off the
- * label table, whose key set is what makes a type displayable at all.
- */
-export function isGatewayType(value: string): value is keyof typeof GATEWAY_TYPE_LABELS {
-  return Object.hasOwn(GATEWAY_TYPE_LABELS, value);
 }
 
 /**

@@ -14,6 +14,7 @@ import type {
 } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import { requireGatewayAdapter } from "../providers/route-adapters";
+import { readStoredGateway, storedGatewayConnection } from "../providers/gateway-adapters";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
 import { probeGatewayPreset, type ProbeResult } from "../providers/provider-probe";
@@ -22,8 +23,6 @@ import { database } from "../db";
 import {
   provider,
   providerGateway,
-  type CfAigConfig,
-  type ProviderGatewayConfig,
 } from "../db/schema";
 import { sealSecret } from "../vault/secrets";
 import { databaseErrorMatches, secretHint } from "./validation";
@@ -32,13 +31,23 @@ import {
   commitResourceWrite,
   type ResourceWriteBoundary,
 } from "./write-boundary";
-import type { GatewayType } from "../shared/capabilities";
+import type { StoredGateway } from "../shared/gateways";
+import { log } from "../core/log";
 
 type ProviderGatewayRow = typeof providerGateway.$inferSelect;
 interface GatewayCounts { active: number; total: number }
 const NO_REFERENCES: GatewayCounts = { active: 0, total: 0 };
 
-function serialize(row: ProviderGatewayRow, counts: GatewayCounts): ProviderGatewaySummary {
+/**
+ * One gateway as the API publishes it. `gateway` is the row's own type and
+ * connection, already read by `storedGatewayConnection` or `readStoredGateway`
+ * — every caller has one, and none reads the row's columns a second time.
+ */
+function serialize(
+  row: ProviderGatewayRow,
+  gateway: StoredGateway,
+  counts: GatewayCounts,
+): ProviderGatewaySummary {
   const common = {
     id: row.id,
     name: row.name,
@@ -51,9 +60,7 @@ function serialize(row: ProviderGatewayRow, counts: GatewayCounts): ProviderGate
     updatedAt: row.updatedAt,
     createdBy: row.createdBy,
   };
-  return row.type === "cf_aig"
-    ? { ...common, type: "cf_aig", config: row.config as CfAigConfig }
-    : { ...common, type: "vercel", config: {} };
+  return { ...common, ...gateway };
 }
 
 function probeReport(probe: ProbeResult): ProviderGatewayTestResponse {
@@ -64,12 +71,13 @@ function probeReport(probe: ProbeResult): ProviderGatewayTestResponse {
   };
 }
 
-function requestedGateway(
-  body: { type: "cf_aig"; accountId: string; gatewayId: string } | { type: "vercel" },
-): { type: GatewayType; config: ProviderGatewayConfig } {
-  return body.type === "cf_aig"
-    ? { type: "cf_aig", config: { accountId: body.accountId, gatewayId: body.gatewayId } }
-    : { type: "vercel", config: {} };
+/**
+ * The connection a test body names: its type and exactly its connection fields
+ * — the token is not configuration, and never stored as it — paired by the
+ * same reader a stored row goes through.
+ */
+function requestedGateway({ type, token: _token, ...connection }: ProviderGatewayTestRequest): StoredGateway {
+  return storedGatewayConnection(type, connection);
 }
 
 export async function testProviderGateway(
@@ -91,7 +99,20 @@ export async function listProviderGateways(scope: ManagementScope, actor: Actor)
     }).from(provider).where(eq(provider.organizationId, actor.organizationId)).groupBy(provider.providerGatewayId),
   ]);
   const countById = new Map(counts.flatMap((row) => row.providerGatewayId === null ? [] : [[row.providerGatewayId, { active: row.active, total: row.total }] as const]));
-  return { gateways: gateways.map((row) => serialize(row, countById.get(row.id) ?? NO_REFERENCES)) };
+  // A row this deployment cannot read — a type with no adapter, or a stored
+  // configuration that does not parse — is left out and logged rather than
+  // taking every healthy gateway in the list down with it, as the providers
+  // list does with an instance whose gateway it cannot route.
+  return {
+    gateways: gateways.flatMap((row) => {
+      const gateway = readStoredGateway(row.type, row.config);
+      if (gateway === null) {
+        log("error", "Unreadable provider gateway left out of the list", { providerGatewayId: row.id, type: row.type });
+        return [];
+      }
+      return [serialize(row, gateway, countById.get(row.id) ?? NO_REFERENCES)];
+    }),
+  };
 }
 
 export async function createProviderGateway(
@@ -101,7 +122,8 @@ export async function createProviderGateway(
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderGatewayResponse> {
   const { env } = scope;
-  const gateway = requestedGateway(body);
+  const { name: _name, ...connection } = body;
+  const gateway = requestedGateway(connection);
   const id = crypto.randomUUID();
   const secretBlob = await sealSecret(env, "providerGatewayToken", [actor.organizationId, id], body.token);
   const now = new Date().toISOString();
@@ -117,11 +139,11 @@ export async function createProviderGateway(
      SELECT ${row.id},${row.organizationId},${row.type},${row.name},${JSON.stringify(row.config)},${row.secretBlob},
        ${row.secretHint},${row.revision},${row.createdBy},${row.status},${row.createdAt},${row.updatedAt}
      WHERE ${guard}`,
-    { gateway: serialize(row, NO_REFERENCES) },
+    { gateway: serialize(row, gateway, NO_REFERENCES) },
     { boundary, cap },
   );
   invalidateOrganizationProviders(actor.organizationId);
-  return { gateway: serialize(row, NO_REFERENCES) };
+  return { gateway: serialize(row, gateway, NO_REFERENCES) };
 }
 
 export async function updateProviderGateway(
@@ -137,6 +159,7 @@ export async function updateProviderGateway(
   });
   if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   if (body.revision !== existing.revision) throw new GatewayError(409, "conflict", "The provider gateway changed; reload it before saving your changes");
+  const gateway = storedGatewayConnection(existing.type, existing.config);
   const row: ProviderGatewayRow = {
     ...existing,
     name: body.name,
@@ -149,11 +172,11 @@ export async function updateProviderGateway(
     (guard) => sql`UPDATE provider_gateway SET name=${row.name},revision=${row.revision},updated_at=${row.updatedAt}
      WHERE id=${id} AND organization_id=${actor.organizationId} AND revision=${body.revision}
        AND status='active' AND ${guard}`,
-    { gateway: serialize(row, counts) },
+    { gateway: serialize(row, gateway, counts) },
     { boundary },
   );
   invalidateOrganizationProviders(actor.organizationId);
-  return { gateway: serialize(row, counts) };
+  return { gateway: serialize(row, gateway, counts) };
 }
 
 export async function rotateProviderGateway(
@@ -169,7 +192,7 @@ export async function rotateProviderGateway(
   });
   if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   if (body.revision !== existing.revision) throw new GatewayError(409, "conflict", "The provider gateway changed; reload it before saving your changes");
-  requireGatewayAdapter(existing.type);
+  const gateway = storedGatewayConnection(requireGatewayAdapter(existing.type), existing.config);
   const secretBlob = await sealSecret(env, "providerGatewayToken", [actor.organizationId, id], body.token);
   const row: ProviderGatewayRow = {
     ...existing,
@@ -185,11 +208,11 @@ export async function rotateProviderGateway(
        revision=${row.revision},updated_at=${row.updatedAt}
      WHERE id=${row.id} AND organization_id=${row.organizationId} AND revision=${body.revision}
        AND status='active' AND ${guard}`,
-    { gateway: serialize(row, counts) },
+    { gateway: serialize(row, gateway, counts) },
     { boundary },
   );
   invalidateOrganizationProviders(actor.organizationId);
-  return { gateway: serialize(row, counts) };
+  return { gateway: serialize(row, gateway, counts) };
 }
 
 export async function deleteProviderGateway(scope: ManagementScope, actor: Actor, id: string): Promise<ProviderGatewayDeleteResponse> {

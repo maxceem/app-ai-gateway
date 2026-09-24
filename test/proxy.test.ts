@@ -9,7 +9,13 @@ const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyl
   clampStyleFor(PROTOCOLS[style], provider);
 import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "../src/shared/providers";
 import { costReportBodyMutation } from "../src/providers/request-body";
-import { API_STYLES, type ApiStyle, type OutputClampStyle } from "../src/shared/capabilities";
+import { examplePath } from "../src/shared/first-request";
+import {
+  API_STYLE_PATHS,
+  API_STYLES,
+  type ApiStyle,
+  type OutputClampStyle,
+} from "../src/shared/capabilities";
 import {
   clearProviderCaches,
   clearIsolateCaches,
@@ -351,6 +357,28 @@ describe("proxy API style classification", () => {
     const style = apiStyleFromPath(path);
     expect(style).toBe(expectedStyle);
     expect(outputClampStyle(style, "groq")).toBe(expectedGroqClamp);
+  });
+});
+
+/**
+ * The path tables and the classifier are separate declarations that have to
+ * agree: a canonical path or a descriptor's own path that the classifier does
+ * not know would silently read as `other`, which the default proxy policy
+ * refuses and the example card has no body for.
+ */
+describe("paths the tables declare classify as what they declare", () => {
+  it.each(Object.entries(API_STYLE_PATHS))("classifies the canonical %s path as its own style", (style, path) => {
+    expect(apiStyleFromPath(path.replace("{model}", "a-model"))).toBe(style);
+  });
+
+  it.each(PROVIDER_TYPES)("classifies every path the %s descriptor names", (type) => {
+    const descriptor = providerDescriptor(type);
+    const example = examplePath(type, { model: "a-model" });
+    expect(example).toBeDefined();
+    expect([example, apiStyleFromPath(example!)]).not.toEqual([example, "other"]);
+    for (const [style, path] of Object.entries(descriptor.endpointPaths ?? {})) {
+      expect([path, apiStyleFromPath(path)]).toEqual([path, style]);
+    }
   });
 });
 

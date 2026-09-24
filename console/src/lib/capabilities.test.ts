@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   API_STYLE_PATHS,
-  GATEWAY_ROUTES,
-  GATEWAY_TYPES,
   type ApiStyle as CoreApiStyle,
 } from "@shared/capabilities";
+import { GATEWAY_DESCRIPTORS } from "@shared/gateways";
 import { PROVIDER_TYPES, providerCapability } from "@shared/providers";
 import { API_STYLE_LABELS, routedSurface } from "./capabilities";
-import { GATEWAY_TYPE_LABELS, PROVIDER_LABELS } from "./config-types";
+import { providerLabel } from "./config-types";
 import { served } from "@/test/providers";
 
 /**
@@ -21,13 +20,6 @@ import { served } from "@/test/providers";
  * tables it renders, or an entry appears as `undefined`.
  */
 describe("the console's view of the shared capability matrix", () => {
-  it("labels every gateway type that has an adapter", () => {
-    for (const type of GATEWAY_TYPES) {
-      expect([type, typeof GATEWAY_TYPE_LABELS[type]]).toEqual([type, "string"]);
-    }
-    expect(Object.keys(GATEWAY_TYPE_LABELS).sort()).toEqual([...GATEWAY_TYPES].sort());
-  });
-
   it("labels every API style that has a path to show", () => {
     // The path table is what the console renders as "how to call this", so a
     // style with a path and no label would render a blank row.
@@ -51,15 +43,13 @@ describe("the console's view of the shared capability matrix", () => {
     // model IDs — both as the gateway reports them on the row.
     const vercel = routedSurface({ type: "gemini", ...served("gemini", "vercel") })!;
     expect(vercel.available.map((entry) => entry.style))
-      .toEqual(GATEWAY_ROUTES.vercel.gemini!.apiStyles);
+      .toEqual(GATEWAY_DESCRIPTORS.vercel.routes.gemini!.apiStyles);
     expect(vercel.modelIds).toContain("google/");
-    expect(vercel.modelIds).toContain(PROVIDER_LABELS.gemini);
+    expect(vercel.modelIds).toContain(providerLabel("gemini"));
   });
 
-  it("labels every provider type the shared list admits", () => {
+  it("describes a capability for every provider type the shared list admits", () => {
     for (const provider of PROVIDER_TYPES) {
-      expect([provider, typeof PROVIDER_LABELS[provider]]).toEqual([provider, "string"]);
-      // And every one of them has a capability the console can describe.
       expect([provider, providerCapability(provider).apiStyles.length > 0])
         .toEqual([provider, true]);
     }

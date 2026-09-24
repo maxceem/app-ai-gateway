@@ -81,9 +81,6 @@ export type CreatedManagementKey = CreatedManagementKeyResponse["key"];
 
 export type ProviderGateway = ProviderGatewaySummary;
 export type ProviderGatewayType = ProviderGatewaySummary["type"];
-export type CfAigConfig = Extract<ProviderGatewaySummary, { type: "cf_aig" }>["config"];
-/** Vercel's origin is fixed in adapter code, so its config is empty. */
-export type VercelGatewayConfig = Extract<ProviderGatewaySummary, { type: "vercel" }>["config"];
 
 export type ProviderCredential = ProviderSummary;
 

@@ -1,9 +1,9 @@
 # Brand marks
 
 One SVG per provider type, per gateway type, and per authentication vendor,
-named after the key it is looked up by — the `ProviderType` and
-`ProviderGatewayType` values in `src/shared/capabilities.ts`, and the `AuthBrand`
-values in `brand-icon.tsx`. `brand-icon.tsx` maps those keys exhaustively, so a
+named after the key it is looked up by — the `ProviderType` values in
+`src/shared/providers.ts`, the `GatewayType` values in `src/shared/gateways.ts`,
+and the `AuthBrand` values in `brand-icon.tsx`. `brand-icon.tsx` maps those keys exhaustively, so a
 provider type added to the matrix will not typecheck until its mark lands here.
 
 The authentication marks are `firebase`, `supabase`, `auth0`, `clerk`, `apple`

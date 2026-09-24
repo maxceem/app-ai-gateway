@@ -4,7 +4,6 @@ import type { UsageRepriceRequest } from "../contracts/schemas";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appUsageEvent, provider as providerTable, type app } from "../db/schema";
-import type { ProviderType } from "../shared/providers";
 import { computeCost, hasTokenModelPrice } from "../usage/pricing";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
@@ -49,7 +48,6 @@ export async function repriceAppUsage(
   const rows = await database(env.DB)
     .select({
       id: appUsageEvent.id,
-      providerType: appUsageEvent.providerType,
       inputTokens: appUsageEvent.inputTokens,
       cachedInputTokens: appUsageEvent.cachedInputTokens,
       cacheWriteTokens: appUsageEvent.cacheWriteTokens,
@@ -89,17 +87,18 @@ export async function repriceAppUsage(
     metered: boolean;
   }[] = [];
   const skipped: { id: number; previousCostUsd: number }[] = [];
+  // Every row was selected by the requested provider type, so that is the type
+  // each one is priced as.
   for (const row of rows) {
-    const providerType = row.providerType as ProviderType;
-    const costUsd = hasTokenModelPrice(providerType, model, row.pricing)
-      ? computeCost(providerType, model, row, row.pricing)
+    const costUsd = hasTokenModelPrice(provider, model, row.pricing)
+      ? computeCost(provider, model, row, row.pricing)
       : null;
     if (costUsd === null) {
       if (apply) {
         throw new GatewayError(
           400,
           "invalid_request",
-          `No token price is configured for ${providerType}/${model}`,
+          `No token price is configured for ${provider}/${model}`,
         );
       }
       skipped.push({ id: row.id, previousCostUsd: row.costUsd });

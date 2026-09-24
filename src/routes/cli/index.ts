@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { getBillingQuotaResolution } from "../../billing/quota";
 import { accountLifecycle } from "../../core/account-lifecycle";
 import { providerCapability, providerDescriptor, PROVIDER_TYPES } from "../../shared/providers";
+import { GATEWAY_TYPES, gatewayDescriptor } from "../../shared/gateways";
 import { currentMonth } from "../../management/usage-queries";
 import { bootstrap } from "./bootstrap";
 import { cliAuthenticate, createOperation, deploymentMeta, pollOperation } from "./operations";
@@ -53,17 +54,14 @@ routes.handle("getCliCapabilities", (c) => {
       const defaultPath = examplePath(type);
       return {
         type,
-        name: type,
+        name: descriptor.label,
         apiStyles: [...capability.apiStyles],
         endpointStyles: [...capability.endpointStyles],
         baseUrl: descriptor.directBaseUrl,
         ...(defaultPath === undefined ? {} : { defaultPath }),
       };
     }),
-    providerGateways: [
-      { type: "cf_aig", name: "Cloudflare AI Gateway" },
-      { type: "vercel", name: "Vercel AI Gateway" },
-    ],
+    providerGateways: GATEWAY_TYPES.map((type) => ({ type, name: gatewayDescriptor(type).label })),
   };
   return capabilities;
 });

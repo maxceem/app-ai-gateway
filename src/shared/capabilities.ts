@@ -3,7 +3,8 @@
  *
  * What a *provider type* is lives next door in `./providers.ts`; this module is
  * about the vocabulary both sides are described in — API styles, clamp styles,
- * gateway types — and about what a gateway does to a provider it carries.
+ * routes — and about what a gateway does to a provider it carries. A gateway
+ * type itself is an entry in `./gateways.ts`, which names its route table here.
  *
  * This module imports nothing at runtime, on purpose. The console bundles it
  * directly, so a single import of `drizzle-orm`, the Worker's environment
@@ -18,8 +19,10 @@
  * module, and the two cannot drift.
  */
 
-// Type-only, and it has to stay that way: `./providers.ts` imports API_STYLES
-// from here at runtime, so a value import back would be a cycle.
+// Type-only, and they have to stay that way: `./providers.ts` imports
+// API_STYLES from here at runtime, and `./gateways.ts` the route tables below,
+// so a value import back from either would be a cycle.
+import type { GatewayType } from "./gateways.ts";
 import type { ProviderType } from "./providers.ts";
 
 /**
@@ -109,11 +112,6 @@ export const OUTPUT_CLAMP_STYLES = [
 ] as const;
 
 export type OutputClampStyle = (typeof OUTPUT_CLAMP_STYLES)[number];
-
-/** Gateway types with an adapter, and so the only ones that can carry traffic. */
-export const GATEWAY_TYPES = ["cf_aig", "vercel"] as const;
-
-export type GatewayType = (typeof GATEWAY_TYPES)[number];
 
 /** Where a provider instance's traffic goes: the provider's own API, or a gateway. */
 export type ProviderRoute = "direct" | GatewayType;
@@ -254,15 +252,6 @@ export const VERCEL_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute>> 
   // Moonshot's own IDs are the Kimi ones, and Vercel publishes them verbatim
   // under the lab's name rather than the product's: `moonshotai/kimi-k3`.
   moonshot: vercelRoute("moonshotai/"),
-};
-
-/** Which provider types each gateway serves, and how. */
-export const GATEWAY_ROUTES: Record<
-  GatewayType,
-  Partial<Record<ProviderType, GatewayProviderRoute>>
-> = {
-  cf_aig: CF_AIG_ROUTES,
-  vercel: VERCEL_ROUTES,
 };
 
 /**

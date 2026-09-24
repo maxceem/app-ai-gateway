@@ -28,7 +28,7 @@ import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { useConsoleSession } from "@/lib/console-session";
-import { PROVIDER_LABELS } from "@/lib/config-types";
+import { providerLabel } from "@/lib/config-types";
 import { currentMonth } from "@/lib/format";
 import {
   useApps,
@@ -164,7 +164,7 @@ export function ProvidersSection() {
                   <TableCell>
                     <Badge variant="secondary">
                       <ProviderIcon type={row.type} />
-                      {PROVIDER_LABELS[row.type]}
+                      {providerLabel(row.type)}
                     </Badge>
                   </TableCell>
                   {/* The slug is a URL segment, so it is shown exactly as typed. */}
@@ -241,7 +241,7 @@ export function ProvidersSection() {
             <p>
               Apps using{" "}
               <span className="font-medium text-foreground">
-                {pendingDelete ? PROVIDER_LABELS[pendingDelete.type] : ""}
+                {pendingDelete ? providerLabel(pendingDelete.type) : ""}
               </span>{" "}
               start failing within a minute, and any custom pricing on this provider is deleted with
               it.

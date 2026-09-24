@@ -22,7 +22,7 @@ import supabase from "@/assets/brands/supabase.svg?raw";
 import together from "@/assets/brands/together.svg?raw";
 import vercel from "@/assets/brands/vercel.svg?raw";
 import xai from "@/assets/brands/xai.svg?raw";
-import { GATEWAY_TYPE_LABELS, PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import { gatewayLabel, providerLabel, type Provider } from "@/lib/config-types";
 import type { ProviderGatewayType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -149,7 +149,7 @@ export function ProviderName({ type, className }: { type: Provider; className?: 
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
       <ProviderIcon type={type} />
-      {PROVIDER_LABELS[type]}
+      {providerLabel(type)}
     </span>
   );
 }
@@ -158,7 +158,7 @@ export function GatewayName({ type, className }: { type: ProviderGatewayType; cl
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
       <GatewayIcon type={type} />
-      {GATEWAY_TYPE_LABELS[type]}
+      {gatewayLabel(type)}
     </span>
   );
 }

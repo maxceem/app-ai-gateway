@@ -4,6 +4,12 @@ import {
   ENDPOINT_API_STYLES,
   OUTPUT_CLAMP_STYLES,
 } from "../shared/capabilities.ts";
+import {
+  GATEWAY_DESCRIPTORS,
+  GATEWAY_TYPES,
+  type GatewayConnectionShape,
+  type GatewayType,
+} from "../shared/gateways.ts";
 import { PROVIDER_CREDENTIAL_HEADERS, PROVIDER_TYPES } from "../shared/providers.ts";
 
 /**
@@ -615,53 +621,63 @@ export const ProviderTestRequestSchema = z.object({
   assertBaseUrlIsDirect(value, context);
 }).meta({ id: "ProviderTestRequest" });
 
-/**
- * One member per gateway type that has an adapter, discriminated by `type`
- * because each gateway needs a different set of non-secret fields to be
- * reachable at all. The stored `type` column already admits every planned name,
- * so adding a gateway is an adapter plus a member here — never a table rebuild.
- *
- * Vercel asks for nothing but a name and a token: its origin is fixed in
- * adapter code, and the token alone identifies the Vercel team.
- */
-const CfAigGatewayFieldsSchema = z.object({
-  type: z.literal("cf_aig"),
-  name: ProviderNameSchema,
-  accountId: z.string().trim().min(1).max(100),
-  gatewayId: z.string().trim().min(1).max(100),
-});
-const VercelGatewayFieldsSchema = z.object({
-  type: z.literal("vercel"),
-  name: ProviderNameSchema,
-});
-const GATEWAY_TYPE_ERROR = "Provider gateway type must be one of cf_aig, vercel";
+/** One gateway type's member of {@link gatewayUnion}: its type, `Fields`, and its own connection. */
+type GatewayMember<T extends GatewayType, Fields extends z.ZodRawShape> = z.ZodObject<
+  { type: z.ZodLiteral<T> } & Fields & GatewayConnectionShape<T>,
+  z.core.$strict
+>;
+type GatewayMembers<Fields extends z.ZodRawShape> = {
+  [T in GatewayType]: GatewayMember<T, Fields>;
+}[GatewayType];
 
-export const ProviderGatewayCreateRequestSchema = z.discriminatedUnion("type", [
-  CfAigGatewayFieldsSchema.extend({ token: ProviderSecretSchema }).strict(),
-  VercelGatewayFieldsSchema.extend({ token: ProviderSecretSchema }).strict(),
-], {
-  error: GATEWAY_TYPE_ERROR,
-}).meta({ id: "ProviderGatewayCreateRequest" });
+/**
+ * A body discriminated by gateway `type`, one member per gateway descriptor:
+ * the common `fields` beside the type's own connection fields, because each
+ * gateway needs a different set of non-secret fields to be reachable at all.
+ * Every gateway request union in the contracts is built here from
+ * `GATEWAY_TYPES`, so adding a gateway is a descriptor and an adapter — never
+ * a member written out by hand.
+ */
+export function gatewayUnion<Fields extends z.ZodRawShape>(
+  fields: Fields,
+  params?: { error: string },
+) {
+  const members = GATEWAY_TYPES.map((type) => z.object({
+    type: z.literal(type),
+    ...fields,
+    ...GATEWAY_DESCRIPTORS[type].connection.shape,
+  }).strict());
+  // One member per type, built from that type's own descriptor; the mapped
+  // array cannot say which member is whose, and zod wants a non-empty tuple.
+  return z.discriminatedUnion(
+    "type",
+    members as [GatewayMembers<Fields>, ...GatewayMembers<Fields>[]],
+    params,
+  );
+}
+
+const GATEWAY_TYPE_ERROR = `Provider gateway type must be one of ${GATEWAY_TYPES.join(", ")}`;
+
+/**
+ * A gateway connection as a create request carries it: the type's own
+ * connection fields beside a name and the token. Vercel asks for nothing but a
+ * name and a token: its origin is fixed in adapter code, and the token alone
+ * identifies the Vercel team.
+ */
+export const ProviderGatewayCreateRequestSchema = gatewayUnion(
+  { name: ProviderNameSchema, token: ProviderSecretSchema },
+  { error: GATEWAY_TYPE_ERROR },
+).meta({ id: "ProviderGatewayCreateRequest" });
 
 /**
  * A dry run of {@link ProviderGatewayCreateRequestSchema}: the same members
  * minus the name, so the connection is probed exactly as a create would probe
  * it, without a row having to exist.
  */
-export const ProviderGatewayTestRequestSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("cf_aig"),
-    accountId: z.string().trim().min(1).max(100),
-    gatewayId: z.string().trim().min(1).max(100),
-    token: ProviderSecretSchema,
-  }).strict(),
-  z.object({
-    type: z.literal("vercel"),
-    token: ProviderSecretSchema,
-  }).strict(),
-], {
-  error: "Provider gateway type must be one of cf_aig, vercel",
-}).meta({ id: "ProviderGatewayTestRequest" });
+export const ProviderGatewayTestRequestSchema = gatewayUnion(
+  { token: ProviderSecretSchema },
+  { error: GATEWAY_TYPE_ERROR },
+).meta({ id: "ProviderGatewayTestRequest" });
 
 export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,
@@ -761,10 +777,11 @@ export const HandoffProviderUpdatePayloadSchema = ProviderUpdateFieldsSchema.ext
 
 export const HandoffRotatePayloadSchema = z.object(HandoffTargetFields).strict();
 
-export const HandoffProviderGatewayAddPayloadSchema = z.discriminatedUnion("type", [
-  CfAigGatewayFieldsSchema.strict(),
-  VercelGatewayFieldsSchema.strict(),
-], { error: GATEWAY_TYPE_ERROR });
+/** A gateway create request without its token, which the browser collects. */
+export const HandoffProviderGatewayAddPayloadSchema = gatewayUnion(
+  { name: ProviderNameSchema },
+  { error: GATEWAY_TYPE_ERROR },
+);
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 

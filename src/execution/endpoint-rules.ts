@@ -37,7 +37,7 @@ export interface PreparedEndpointRequest {
   headers: Headers;
   /** Present for a JSON style; the model is set per attempt. */
   json: Record<string, unknown> | null;
-  /** Present for the audio_transcription style; the model field is set per attempt. */
+  /** Present for a multipart style; the model field is set per attempt. */
   form: FormData | null;
 }
 
@@ -239,7 +239,7 @@ export async function prepareEndpointRequest(input: {
   const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
   const contentType = input.request.headers.get("content-type") ?? "";
 
-  if (input.endpoint.api_style === "audio_transcription") {
+  if (PROTOCOLS[input.endpoint.api_style].body === "multipart") {
     if (!isMultipart(contentType)) {
       throw new GatewayError(
         400,

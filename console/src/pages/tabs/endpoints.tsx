@@ -19,7 +19,7 @@ import { JsonEditor, parseJson } from "@/components/json-editor";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
   ENDPOINT_API_STYLES,
-  PROVIDER_LABELS,
+  providerLabel,
   emptyEndpoint,
   endpointInstances,
   endpointSlugError,
@@ -37,7 +37,7 @@ import type { ProviderCredential } from "@/lib/types";
 /** Only these provider types compose named-endpoint request shapes; read off the shared matrix. */
 const NO_ELIGIBLE_INSTANCE = `Add a provider of type ${
   new Intl.ListFormat("en", { type: "disjunction" }).format(
-    ENDPOINT_PROVIDER_TYPES.map((type) => PROVIDER_LABELS[type]),
+    ENDPOINT_PROVIDER_TYPES.map((type) => providerLabel(type)),
   )
 } first — no other instance can serve a named endpoint`;
 const NO_ELIGIBLE_INSTANCE_ID = "add-endpoint-disabled-reason";
@@ -107,7 +107,7 @@ function ProviderSelect({
     const known = instances.map((instance) => ({
       slug: instance.slug,
       type: instance.type,
-      label: `${instance.slug} — ${instance.name} (${PROVIDER_LABELS[instance.type]})`
+      label: `${instance.slug} — ${instance.name} (${providerLabel(instance.type)})`
         + (instance.status === "disabled" ? " (disabled)" : ""),
     }));
     // A slug no instance answers for stays selected and stays listed: the

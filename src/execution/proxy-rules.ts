@@ -515,7 +515,7 @@ export function providerUpstream(input: {
     query: input.query,
     secret: resolved.secret,
     baseUrl: resolved.baseUrl,
-    gatewayConfig: route.gateway?.config ?? null,
+    gateway: route.gateway,
     routeConfig: route.config,
     appId: input.appId,
     userId: input.userId,

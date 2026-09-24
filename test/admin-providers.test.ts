@@ -838,6 +838,38 @@ describe("admin provider gateway API", () => {
       .rejects.toThrow(/missing or revoked/u);
   });
 
+  it.each([
+    ["a type this deployment has no adapter for", "type = 'litellm'"],
+    ["a Cloudflare configuration that does not parse", `config_json = '{"accountId":""}'`],
+  ])("lists the healthy gateways around one with %s", async (_case, corruption) => {
+    stubProbe();
+    const broken = await createGateway();
+    const healthy = (await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Healthy gateway",
+      token: "vck-healthy-token",
+    })).body.gateway as GatewaySummary;
+    await env.DB.prepare(`UPDATE provider_gateway SET ${corruption} WHERE id = ?`).bind(broken.id).run();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const listed = await call("GET", "/v1/admin/provider-gateways");
+    expect(listed.status, listed.text).toBe(200);
+    expect((listed.body.gateways as GatewaySummary[]).map((gateway) => gateway.id))
+      .toEqual([healthy.id]);
+    // Left out loudly: one log line naming the row, and nothing about the rest.
+    const lines = logged.mock.calls.map(([line]) => String(line));
+    expect(lines.filter((line) => line.includes(broken.id))).toHaveLength(1);
+    expect(lines.some((line) => line.includes(healthy.id))).toBe(false);
+
+    // A read of that one row has nothing to fall back to, and says so.
+    const renamed = await call("PATCH", `/v1/admin/provider-gateways/${broken.id}`, {
+      name: "Renamed",
+      revision: broken.revision,
+    });
+    expect(renamed.status, renamed.text).toBe(500);
+    expect(renamed.body.error.code).toBe("internal_error");
+  });
+
   it("blocks gateway deletion while any provider row references it", async () => {
     stubProbe();
     const gateway = await createGateway();
@@ -928,6 +960,29 @@ describe("gateway routing configuration", () => {
       token: "cf-token",
     });
     expect(withoutCfFields.status, withoutCfFields.text).toBe(400);
+  });
+
+  it("stores exactly each type's own connection as its configuration", async () => {
+    stubProbe();
+    const bodies = {
+      cf_aig: { type: "cf_aig", name: "CF", accountId: " acct-1 ", gatewayId: "gw-1", token: "cf-token" },
+      vercel: { type: "vercel", name: "Vercel", token: "vck-token" },
+    } as const;
+    const stored = {
+      cf_aig: { accountId: "acct-1", gatewayId: "gw-1" },
+      vercel: {},
+    } as const;
+    for (const type of ["cf_aig", "vercel"] as const) {
+      const created = await call("POST", "/v1/admin/provider-gateways", bodies[type]);
+      expect(created.status, created.text).toBe(201);
+      expect(created.body.gateway).toMatchObject({ type, config: stored[type] });
+      // Neither the name nor the token is configuration: only the connection
+      // fields the type's descriptor declares reach `config_json`.
+      const row = await database(env.DB).query.providerGateway.findFirst({
+        where: eq(providerGateway.id, created.body.gateway.id),
+      });
+      expect([type, row?.config]).toEqual([type, stored[type]]);
+    }
   });
 
   it("creates a Vercel gateway from a name and a token alone", async () => {

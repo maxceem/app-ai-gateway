@@ -198,9 +198,8 @@ function mergeAnthropicUsage(left: UsageCounts, right: UsageCounts): UsageCounts
   };
 }
 
-type UsageShape = "openai" | "anthropic" | "gemini" | "audio";
-
-function usageShape(value: unknown): UsageShape | null {
+/** The format a value reports usage in, sniffed from its fields; null where it carries none. */
+function usageShape(value: unknown): Exclude<UsageFormat, "unknown"> | null {
   const root = asRecord(value);
   if (!root) return null;
   if (asRecord(root.usageMetadata)) return "gemini";

@@ -14,7 +14,13 @@
  */
 import { z } from "zod";
 import { PROVIDER_TYPES } from "../shared/providers.ts";
-import { API_STYLES, ENDPOINT_API_STYLES, GATEWAY_TYPES } from "../shared/capabilities.ts";
+import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
+import {
+  GATEWAY_DESCRIPTORS,
+  GATEWAY_TYPES,
+  type GatewayConnectionShape,
+  type GatewayType,
+} from "../shared/gateways.ts";
 import {
   AppConfigSchema,
   GatewayRouteConfigSchema,
@@ -391,25 +397,48 @@ const providerGatewayFields = {
   createdBy: z.string(),
 };
 
+type GatewaySummaryMember<T extends GatewayType, Fields extends z.ZodRawShape> = z.ZodObject<
+  Fields & { type: z.ZodLiteral<T>; config: z.ZodObject<GatewayConnectionShape<T>> }
+>;
+type GatewaySummaryMembers<Fields extends z.ZodRawShape> = {
+  [T in GatewayType]: GatewaySummaryMember<T, Fields>;
+}[GatewayType];
+
 /**
- * Discriminated by `type`, because each gateway's `config` is its own shape:
- * Cloudflare's account and gateway pair, and nothing at all for Vercel, whose
- * origin is fixed in adapter code and whose team is named by the token.
+ * The response-side sibling of `gatewayUnion` in `./schemas.ts`: the common
+ * `fields` beside the type and its connection nested under `config`, published
+ * as the stored strings without the request's own limits.
  */
-export const ProviderGatewaySummarySchema = z.discriminatedUnion("type", [
-  z.object({
-    ...providerGatewayFields,
-    type: z.literal("cf_aig"),
-    config: z.object({ accountId: z.string(), gatewayId: z.string() }),
-  }),
-  z.object({
-    ...providerGatewayFields,
-    type: z.literal("vercel"),
-    config: z.object({}).meta({
-      description: "Vercel's origin is fixed in adapter code, so it has no configuration of its own.",
-    }),
-  }),
-]).meta({ id: "ProviderGateway" });
+function gatewaySummaryUnion<Fields extends z.ZodRawShape>(fields: Fields) {
+  const members = GATEWAY_TYPES.map((type) => {
+    const { connection } = GATEWAY_DESCRIPTORS[type];
+    const config = z.object(
+      Object.fromEntries(Object.keys(connection.shape).map((key) => [key, z.string()])),
+    );
+    return z.object({
+      ...fields,
+      type: z.literal(type),
+      config: connection.description === undefined
+        ? config
+        : config.meta({ description: connection.description }),
+    });
+  });
+  // As in `gatewayUnion`: each member is its own type's, which the mapped
+  // array cannot say, and zod wants a non-empty tuple.
+  return z.discriminatedUnion(
+    "type",
+    members as [GatewaySummaryMembers<Fields>, ...GatewaySummaryMembers<Fields>[]],
+  );
+}
+
+/**
+ * Discriminated by `type`, because each gateway's `config` is its own
+ * connection: Cloudflare's account and gateway pair, and nothing at all for
+ * Vercel, whose origin is fixed in adapter code and whose team is named by the
+ * token.
+ */
+export const ProviderGatewaySummarySchema = gatewaySummaryUnion(providerGatewayFields)
+  .meta({ id: "ProviderGateway" });
 
 export const GatewayValidatedSchema = z.boolean().meta({
   description: "Whether the live probe confirmed the connection. Unlike the providers API, a refused token is not an error here: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported as reason: rejected and the caller decides what it means.",

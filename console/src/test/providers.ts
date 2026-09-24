@@ -1,4 +1,5 @@
-import { GATEWAY_ROUTES, narrowedCapability, type ProviderRoute } from "@shared/capabilities";
+import { narrowedCapability, type ProviderRoute } from "@shared/capabilities";
+import { gatewayDescriptor } from "@shared/gateways";
 import { providerCapability, type ProviderType } from "@shared/providers";
 import type { ProviderCredential } from "@/lib/types";
 
@@ -12,7 +13,7 @@ export function served(
   route: ProviderRoute = "direct",
 ): Pick<ProviderCredential, "route" | "capability"> {
   const own = providerCapability(type);
-  const gateway = route === "direct" ? undefined : GATEWAY_ROUTES[route][type];
+  const gateway = route === "direct" ? undefined : gatewayDescriptor(route).routes[type];
   const capability = route === "direct" ? own : narrowedCapability(own, gateway);
   return {
     route,
