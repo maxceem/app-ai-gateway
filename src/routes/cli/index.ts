@@ -2,7 +2,7 @@ import { accountMonthUsage } from "../../usage/account-usage";
 import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
-import { getBillingQuotaResolution } from "../../billing/quota";
+import { billingQuota, quotaUsage } from "../../billing/quota";
 import { accountLifecycle } from "../../core/account-lifecycle";
 import { providerCapability, providerDescriptor, PROVIDER_TYPES } from "../../shared/providers";
 import { GATEWAY_TYPES, gatewayDescriptor } from "../../shared/gateways";
@@ -79,16 +79,19 @@ routes.relay("cliBrowserRegister", browserRegister);
 routes.relay("cliBrowserGoogle", browserGoogle);
 routes.handle("getCliAccount", async (c, { actor }) => {
   const account = await accountLifecycle(c.env, actor.organizationId);
-  const billing = await getBillingQuotaResolution(
+  const quota = await billingQuota(
     c.get("deployment"),
     c.env,
     account.id,
     c.get("billingRequestCache"),
   );
+  const billing = quota.kind === "metered"
+    ? { access: quota.access, limit: quota.limit, period: quota.period }
+    : { access: quota.access };
   // A plan with no monthly limit counts nothing, so there is no figure to report.
-  const usage = billing.period && billing.limit !== undefined
-    ? { ...billing.period, used: await c.env.ORG_QUOTA.getByName(account.id).usage(billing.period.periodId) }
-    : null;
+  const status = await quotaUsage(c.env, account.id, quota);
+  if (status === null) return { deployment: deploymentMeta(c), account, billing, usage: null };
+  const { limit: _limit, ...usage } = status;
   return { deployment: deploymentMeta(c), account, billing, usage };
 });
 routes.handle("getCliUsage", async (c, { actor, query }) => {

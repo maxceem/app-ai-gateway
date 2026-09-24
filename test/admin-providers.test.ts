@@ -839,9 +839,11 @@ describe("admin provider gateway API", () => {
   });
 
   it.each([
-    ["a type this deployment has no adapter for", "type = 'litellm'"],
-    ["a Cloudflare configuration that does not parse", `config_json = '{"accountId":""}'`],
-  ])("lists the healthy gateways around one with %s", async (_case, corruption) => {
+    // A type with no adapter is refused like every other write to one; a row
+    // of a known type that does not parse is this deployment's own fault.
+    ["a type this deployment has no adapter for", "type = 'litellm'", 400, "invalid_request"],
+    ["a Cloudflare configuration that does not parse", `config_json = '{"accountId":""}'`, 500, "internal_error"],
+  ])("lists the healthy gateways around one with %s", async (_case, corruption, renameStatus, renameCode) => {
     stubProbe();
     const broken = await createGateway();
     const healthy = (await call("POST", "/v1/admin/provider-gateways", {
@@ -866,8 +868,8 @@ describe("admin provider gateway API", () => {
       name: "Renamed",
       revision: broken.revision,
     });
-    expect(renamed.status, renamed.text).toBe(500);
-    expect(renamed.body.error.code).toBe("internal_error");
+    expect(renamed.status, renamed.text).toBe(renameStatus);
+    expect(renamed.body.error.code).toBe(renameCode);
   });
 
   it("blocks gateway deletion while any provider row references it", async () => {

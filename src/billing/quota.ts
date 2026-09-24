@@ -2,10 +2,10 @@ import { accountLifecycle } from "../core/account-lifecycle";
 import type { Deployment } from "../policy/deployment";
 import { accountInstant, accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
 import { GatewayError } from "../core/errors";
+import type { OrganizationQuotaStatus } from "../contracts/billing";
 import {
   billingPlanLimits,
   getBillingAccess,
-  requireActiveBilling,
   type BillingRequestCache,
   type GatewayBillingAccess,
 } from "./gateway";
@@ -25,18 +25,23 @@ export interface AllowancePeriod {
   resetAt: string;
 }
 
-export interface ResolvedBillingQuota {
-  access: GatewayBillingAccess;
-  limit: number | undefined;
-  period: AllowancePeriod;
-}
-
-export type BillingQuotaResolution =
-  | ResolvedBillingQuota
-  | { access: GatewayBillingAccess; limit?: never; period?: never };
+/**
+ * What the organization's plan allowance is right now.
+ *
+ * `unmetered` means nothing is counted, not that traffic is admissible: a
+ * self-hosted deployment and a plan with no monthly limit answer it, but so do
+ * billing being unavailable and no plan resolving. A caller that admits traffic
+ * must still call `requireActiveBilling(quota.access)`. `metered` is a limit
+ * and the period it is counted over.
+ */
+export type BillingQuota =
+  | { kind: "unmetered"; access: GatewayBillingAccess }
+  | { kind: "metered"; access: GatewayBillingAccess; limit: number; period: AllowancePeriod };
 
 /** Where a plan's months are counted from. */
 export interface AllowanceSchedule {
+  /** Which plan the months belong to: the account's free one, or a subscription. */
+  kind: "free" | "paid";
   /** Public and stable for the schedule's life; provider ids never enter it. */
   origin: string;
   anchorAt: number;
@@ -126,7 +131,12 @@ function allowanceSchedule(
   if (access.plan?.isDefault !== false) {
     const anchorAt = instant(accountCreatedAt, "organization creation time");
     const createdAt = new Date(anchorAt).toISOString();
-    return { origin: `free:${createdAt}`, anchorAt, anchorDay: new Date(anchorAt).getUTCDate() };
+    return {
+      kind: "free",
+      origin: `free:${createdAt}`,
+      anchorAt,
+      anchorDay: new Date(anchorAt).getUTCDate(),
+    };
   }
   const subscription = access.subscription;
   if (!subscription) throw invalidSchedule("paid subscription schedule");
@@ -136,22 +146,27 @@ function allowanceSchedule(
     throw invalidSchedule("billing anchor day");
   }
   const generation = new Date(instant(subscription.createdAt, "subscription creation time")).toISOString();
-  return { origin: `paid:${generation}`, anchorAt, anchorDay };
+  return { kind: "paid", origin: `paid:${generation}`, anchorAt, anchorDay };
 }
 
 /**
- * The one resolver used by both dispatch enforcement and billing status: the
- * plan's monthly request limit and the period it is counted over.
+ * The one resolver used by dispatch enforcement, billing status and the CLI:
+ * the plan's monthly request limit and the period it is counted over.
+ *
+ * A self-hosted deployment is answered before anything is read, so admission
+ * there pays nothing for it.
  */
-export async function getBillingQuotaResolution(
+export async function billingQuota(
   deployment: Deployment,
   env: Env,
   organizationId: string,
   cache?: BillingRequestCache,
   now: number = Date.now(),
-): Promise<BillingQuotaResolution> {
+): Promise<BillingQuota> {
   const access = await getBillingAccess(deployment, organizationId, cache);
-  if (access.state !== "billed" || access.plan === null) return { access };
+  if (access.state !== "billed" || access.plan === null) return { kind: "unmetered", access };
+  const limit = billingPlanLimits(access).maxRequestsPerMonth;
+  if (limit === undefined) return { kind: "unmetered", access };
   // Ownership and the free-access clock are gateway D1's, not billing's. It is
   // the same lifecycle read the account gate on the request already made, so
   // it costs a warm isolate nothing.
@@ -169,28 +184,24 @@ export async function getBillingQuotaResolution(
     throw invalidSchedule("future billing anchor");
   }
   let unclaimedDeadline: number | null = null;
-  if (accountUnclaimed(account) && schedule.origin.startsWith("free:")) {
+  if (accountUnclaimed(account) && schedule.kind === "free") {
     unclaimedDeadline = unclaimedAccessDeadline(account.createdAt);
     if (unclaimedDeadline === null) throw invalidSchedule("organization creation time");
   }
-  return {
-    access,
-    limit: billingPlanLimits(access).maxRequestsPerMonth,
-    period: allowancePeriod(schedule, now, unclaimedDeadline),
-  };
+  return { kind: "metered", access, limit, period: allowancePeriod(schedule, now, unclaimedDeadline) };
 }
 
-export async function resolveBillingQuota(
-  deployment: Deployment,
+/**
+ * The live count against a metered quota, read out of the organization's quota
+ * object — the only place it lives, because only the dispatch path writes it.
+ * Null for an unmetered quota, which counts nothing.
+ */
+export async function quotaUsage(
   env: Env,
   organizationId: string,
-  cache?: BillingRequestCache,
-  now?: number,
-): Promise<ResolvedBillingQuota> {
-  const resolved = await getBillingQuotaResolution(deployment, env, organizationId, cache, now);
-  if (!resolved.period) {
-    requireActiveBilling(resolved.access);
-    throw new Error("Billing quota periods only exist for hosted plans");
-  }
-  return resolved;
+  quota: BillingQuota,
+): Promise<OrganizationQuotaStatus | null> {
+  if (quota.kind === "unmetered") return null;
+  const used = await env.ORG_QUOTA.getByName(organizationId).usage(quota.period.periodId);
+  return { ...quota.period, used, limit: quota.limit };
 }

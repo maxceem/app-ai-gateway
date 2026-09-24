@@ -1,7 +1,8 @@
 import type { CfAuth } from "@maxceem/cf-auth";
 import { sql } from "drizzle-orm";
 import { identityAuthFor } from "../../auth/identity";
-import { resolveBillingQuota } from "../../billing/quota";
+import { requireActiveBilling } from "../../billing/gateway";
+import { billingQuota } from "../../billing/quota";
 import {
   accountLifecycle,
   assertAccountAccess,
@@ -128,7 +129,7 @@ export async function bootstrap(
   });
 
   let unclaimedAccess: { endsAt: string; limit?: number } | null = null;
-  if (deployment.mode === "cloud") {
+  if (deployment.rules.accountDeadlines) {
     const deadline = unclaimedAccessDeadline(account.createdAt);
     if (deadline === null) {
       throw new GatewayError(
@@ -137,10 +138,11 @@ export async function bootstrap(
         "This unclaimed account's free access has ended; claim your account to continue",
       );
     }
-    const quota = await resolveBillingQuota(deployment, c.env, account.id);
+    const quota = await billingQuota(deployment, c.env, account.id);
+    requireActiveBilling(quota.access);
     unclaimedAccess = {
       endsAt: new Date(deadline).toISOString(),
-      ...(quota.limit === undefined ? {} : { limit: quota.limit }),
+      ...(quota.kind === "metered" ? { limit: quota.limit } : {}),
     };
   }
   const credential = JSON.parse(

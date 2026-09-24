@@ -1,5 +1,5 @@
 import { identityAuthFor } from "../../auth/identity";
-import { invalidateBillingRequestAccess } from "../../billing/gateway";
+import { invalidateBillingAccess } from "../../billing/gateway";
 import {
   assertAccountAccess,
   invalidateAccountLifecycle,
@@ -120,5 +120,5 @@ export async function completeIdentity(
   // The account now has a human owner and no deadline. Both are read from
   // caches keyed on this account, and a claim only ever widens what they allow.
   invalidateAccountLifecycle(target);
-  invalidateBillingRequestAccess(target, c.get("billingRequestCache"));
+  invalidateBillingAccess(target, c.get("billingRequestCache"));
 }

@@ -234,7 +234,7 @@ export async function runResourceOperation(
     condition = and(
       pending,
       fromCompiled(liveCredential),
-      accountAccessCondition(scope.deployment.mode, actor.organizationId, "setup", now),
+      accountAccessCondition(scope.deployment.rules, actor.organizationId, "setup", now),
     )!;
   }
   const settled = async () => (await operationRow(c.env.DB, row.id))?.state === "completed";

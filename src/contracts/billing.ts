@@ -134,6 +134,27 @@ export const PlanLimitsSchema = z.object({
 });
 
 /**
+ * One plan limit as the billing service's plan data may carry it. JSON has no
+ * integer type, so a count may arrive as `10000`, `10000.0` or `"10000"`, and
+ * all three mean the same number; a fraction, a negative, a boolean, `null`,
+ * an object or an empty string is not a count.
+ */
+const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1)])
+  .transform(Number)
+  .pipe(z.number().int().nonnegative())
+  .optional();
+
+/**
+ * The lenient grammar {@link PlanLimitsSchema} is read out of a plan's opaque
+ * `limits` with: the published schema's keys, each through
+ * `PlanLimitInputSchema`. Keys it does not know are dropped.
+ */
+export const PlanLimitsInputSchema = z.object(
+  Object.fromEntries(PlanLimitsSchema.keyof().options.map((key) => [key, PlanLimitInputSchema])) as
+    Record<keyof z.infer<typeof PlanLimitsSchema>, typeof PlanLimitInputSchema>,
+);
+
+/**
  * The organization's current monthly allowance period against the one allowance
  * a plan grants. Only the dispatch path writes this count, so a status read is
  * the only place an operator can see it before the allowance runs out.

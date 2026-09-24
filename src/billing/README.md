@@ -51,8 +51,9 @@ permission to buy all fall back to the ordinary landing page.
 
 ## Plan limits
 
-`limits` is opaque to the billing service and interpreted only by the gateway,
-which reads the keys defined by `PlanLimits` in `contract.ts`. Every key is
+`limits` is opaque to the billing service and interpreted only by the gateway.
+It reads them with `PlanLimitsInputSchema`, which accepts exactly the keys
+`PlanLimitsSchema` publishes, both in `src/contracts/billing.ts`. Every key is
 optional: an omitted key means that resource is unlimited, and a plan with no
 `limits` at all is unlimited in every respect. A value may be a number or a
 numeric string; anything else — a fraction, a negative, `null` — is a plan

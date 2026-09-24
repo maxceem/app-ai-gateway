@@ -12,7 +12,7 @@ function optionalUrl(value: string | undefined): string | undefined {
 }
 
 consoleRoutes.get("/capabilities", async (c) => c.json({
-  billing: c.get("deployment").mode === "cloud",
+  billing: c.get("deployment").billing !== null,
   registrationOpen: await registrationOpen(c.get("deployment"), c.env),
   googleAuth: googleAuthEnabled(c.env),
   // Legal documents are deployment-specific. The console shows the sign-up

@@ -65,7 +65,7 @@ async function authenticated(
   // organization set on its own users is consulted: an account that may not be
   // served has no claim on them.
   const deployment = c.get("deployment");
-  if (deployment.mode === "cloud") {
+  if (deployment.rules.accountDeadlines) {
     await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   }
   assertAppActive(app);

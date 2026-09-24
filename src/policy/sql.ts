@@ -1,4 +1,4 @@
-import type { DeploymentMode, RegistrationRule } from "./deployment";
+import type { DeploymentRules, RegistrationRule } from "./deployment";
 import type { AccountAccessMode } from "./accounts";
 import { UNCLAIMED_ACCESS_MS, requiresUnclaimedAccess } from "./accounts";
 import { sql, type SQL } from "drizzle-orm";
@@ -60,13 +60,13 @@ function effectiveNow(nowMs: number): SQL {
  * extending access.
  */
 export function accountAccessCondition(
-  deploymentMode: DeploymentMode,
+  rules: DeploymentRules,
   organizationId: string,
   accessMode: AccountAccessMode,
   nowMs: number,
 ): SQL {
   const deadlineChecks = [sql`julianday(o.expires_at)>${effectiveNow(nowMs)}`];
-  if (requiresUnclaimedAccess(deploymentMode, accessMode)) {
+  if (requiresUnclaimedAccess(rules, accessMode)) {
     deadlineChecks.push(
       sql`(julianday(o.created_at)+(${UNCLAIMED_ACCESS_MS}/86400000.0))>${effectiveNow(nowMs)}`,
     );

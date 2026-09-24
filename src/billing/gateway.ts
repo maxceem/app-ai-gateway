@@ -1,6 +1,11 @@
 import { billingErrorCodeOf, type BillingRuntime } from "./contract";
 import type { Deployment } from "../policy/deployment";
-import type { GatewayBillingAccess, PlanLimits, SubscriptionActions } from "../contracts/billing";
+import {
+  PlanLimitsInputSchema,
+  type GatewayBillingAccess,
+  type PlanLimits,
+  type SubscriptionActions,
+} from "../contracts/billing";
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
 import { ttlCache } from "../core/ttl-cache";
@@ -38,7 +43,8 @@ export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 /**
  * What a plan allows, read out of its opaque `limits` JSON — declared as
  * `PlanLimitsSchema` in `src/contracts/billing.ts`, because the billing status
- * endpoint publishes the same object the write path enforces.
+ * endpoint publishes the same object the write path enforces, and read through
+ * `PlanLimitsInputSchema` beside it.
  *
  * `maxRequestsPerMonth` is spent on the data plane. The rest are ceilings on
  * stored configuration, enforced by the write that would exceed them; see
@@ -49,14 +55,6 @@ export const BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
  * `app_*` codes and `src/do/UserLimiter.ts`, and no value here may cap them.
  */
 export type { PlanLimits };
-
-const PLAN_LIMIT_KEYS = [
-  "maxRequestsPerMonth",
-  "maxApps",
-  "maxProviders",
-  "maxProviderGateways",
-  "maxActiveKeysPerApp",
-] as const satisfies readonly (keyof PlanLimits)[];
 
 /**
  * The billing service's answer, plus the two states only the gateway can be in
@@ -96,12 +94,8 @@ const lastKnownAccess = ttlCache<string, GatewayBillingAccess & { state: "billed
   maxEntries: 5_000,
 });
 
-export function invalidateBillingAccess(organizationId: string): void {
-  billingAccessCache.delete(organizationId);
-  lastKnownAccess.delete(organizationId);
-}
-
-export function invalidateBillingRequestAccess(
+/** Forgets what this isolate, and the request's own cache when given, knows of an organization's plan. */
+export function invalidateBillingAccess(
   organizationId: string,
   cache?: BillingRequestCache,
 ): void {
@@ -275,50 +269,24 @@ export function requireActiveBilling(access: GatewayBillingAccess): GatewayBilli
 }
 
 /**
- * Reads one plan limit out of a hosted plan's `limits_json`.
+ * Reads the plan limits out of a hosted plan's `limits_json`.
  *
- * The value is authored by whoever configured the plan, and JSON has no integer
- * type, so a count may arrive as `10000`, `10000.0`, or `"10000"` and all three
- * mean the same number. Anything that is not one of those — a fraction, a
- * negative, a boolean, `null`, an object — is a misconfiguration this gateway
- * cannot resolve into a limit, and it refuses the request rather than guessing
- * one in either direction.
+ * The values are authored by whoever configured the plan, and anything
+ * `PlanLimitsInputSchema` refuses is a misconfiguration this gateway cannot
+ * resolve into a limit, so it refuses the request rather than guessing one in
+ * either direction.
  */
-function countLimit(value: unknown, key: string): number | undefined {
-  if (value === undefined) return undefined;
-  const numeric = typeof value === "string" && value.trim().length > 0
-    ? Number(value)
-    : value;
-  if (
-    typeof numeric !== "number"
-    || !Number.isFinite(numeric)
-    || !Number.isInteger(numeric)
-    || numeric < 0
-    || !Number.isSafeInteger(numeric)
-  ) {
-    throw new GatewayError(
-      502,
-      "billing_unavailable",
-      `Billing plan limit ${key} is invalid`,
-    );
-  }
-  return numeric;
-}
-
 export function billingPlanLimits(access: GatewayBillingAccess): PlanLimits {
   if (access.state !== "billed" || access.plan === null) return {};
-  const planLimits = access.plan.limits;
-  if (planLimits === undefined) return {};
-  if (typeof planLimits !== "object" || planLimits === null || Array.isArray(planLimits)) {
-    throw new GatewayError(502, "billing_unavailable", "Billing plan limits are invalid");
-  }
-  const limits = planLimits as Record<string, unknown>;
-  const resolved: PlanLimits = {};
-  for (const key of PLAN_LIMIT_KEYS) {
-    const value = countLimit(limits[key], key);
-    if (value !== undefined) resolved[key] = value;
-  }
-  return resolved;
+  if (access.plan.limits === undefined) return {};
+  const parsed = PlanLimitsInputSchema.safeParse(access.plan.limits);
+  if (parsed.success) return parsed.data;
+  const key = parsed.error.issues[0]?.path[0];
+  throw new GatewayError(
+    502,
+    "billing_unavailable",
+    key === undefined ? "Billing plan limits are invalid" : `Billing plan limit ${String(key)} is invalid`,
+  );
 }
 
 /** Subscription statuses LemonSqueezy can still cancel at the end of the period. */
@@ -333,11 +301,12 @@ const CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(["on_trial", "active",
  */
 export function subscriptionActions(access: GatewayBillingAccess): SubscriptionActions {
   const subscription = access.state === "billed" ? access.subscription : null;
-  const selfService = Boolean(subscription?.subscriptionId) && subscription?.source === "lemon_squeezy";
+  if (!subscription) return { cancel: false, resume: false, manual: false };
+  const selfService = Boolean(subscription.subscriptionId) && subscription.source === "lemon_squeezy";
   return {
-    cancel: selfService && CANCELLABLE_STATUSES.has(subscription!.status),
-    resume: selfService && subscription!.status === "cancelled",
-    manual: subscription?.source === "manual" && CANCELLABLE_STATUSES.has(subscription.status),
+    cancel: selfService && CANCELLABLE_STATUSES.has(subscription.status),
+    resume: selfService && subscription.status === "cancelled",
+    manual: subscription.source === "manual" && CANCELLABLE_STATUSES.has(subscription.status),
   };
 }
 

@@ -89,7 +89,7 @@ export async function assertAccountAccess(
 ): Promise<AccountLifecycle> {
   const account = await accountLifecycle(env, id);
   const denial = accountAccessDenial(
-    deployment.mode,
+    deployment.rules,
     account,
     mode,
     Date.now(),

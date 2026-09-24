@@ -1,5 +1,5 @@
-import type { BillingRequestCache } from "../billing/gateway";
-import { resolveBillingQuota } from "../billing/quota";
+import { requireActiveBilling, type BillingRequestCache } from "../billing/gateway";
+import { billingQuota } from "../billing/quota";
 import { monthlyBudgetMicrousd, hasAppLevelLimits, hasUserLevelLimits } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
 import { ttlCache } from "../core/ttl-cache";
@@ -91,18 +91,6 @@ async function isUserBlocked(env: Env, name: string): Promise<boolean> {
   const blocked = await env.USER_LIMITER.getByName(name).isBlocked();
   blockedUserCache.set(name, blocked);
   return blocked;
-}
-
-async function monthlyRequestAllowance(
-  deployment: Deployment,
-  env: Env,
-  organizationId: string,
-  cache: BillingRequestCache,
-): Promise<Awaited<ReturnType<typeof resolveBillingQuota>> | undefined> {
-  // No billing service means self-hosted, which is unlimited and must never
-  // depend on a hosted plan lookup that cannot happen.
-  if (deployment.mode === "self_hosted") return undefined;
-  return resolveBillingQuota(deployment, env, organizationId, cache);
 }
 
 /** What admitting one prepared request needs to know, and where to leave its diagnostics. */
@@ -203,8 +191,8 @@ export async function admitRequest(
    * Only the allowance *read* overlaps the block check. Claiming it cannot,
    * because it must not happen at all if an app limit refuses first.
    *
-   * A self-hosted deployment pays nothing for this: `monthlyRequestAllowance`
-   * returns without awaiting anything when there is no billing binding. In a
+   * A self-hosted deployment pays nothing for this: `billingQuota` answers
+   * `unmetered` without reading anything when there is no billing binding. In a
    * hosted one a warm isolate answers the plan out of its own TTL cache, so
    * this is not an RPC per request either.
    */
@@ -223,7 +211,7 @@ export async function admitRequest(
     identity.userId === null || hasUserLevelLimits(app.config)
       ? Promise.resolve(false)
       : isUserBlocked(env, `${identity.appId}:${identity.userId}`),
-    monthlyRequestAllowance(input.deployment, env, app.organizationId, input.billingCache),
+    billingQuota(input.deployment, env, app.organizationId, input.billingCache),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -279,16 +267,19 @@ export async function admitRequest(
   // depend on what the organization is allowed to spend.
   if (allowanceResult.status === "rejected") throw allowanceResult.reason;
 
-  const resolved = allowanceResult.value;
+  const quota = allowanceResult.value;
+  // Billing that cannot be read, or an organization no plan resolves for, is
+  // refused here rather than served uncounted.
+  requireActiveBilling(quota.access);
   // Self-hosted, or a plan with no monthly limit: no coordination object is
   // touched at all, so neither pays for a count nothing enforces.
-  if (resolved === undefined || resolved.limit === undefined) return finish();
+  if (quota.kind === "unmetered") return finish();
 
-  const { period } = resolved;
+  const { period } = quota;
   const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
     periodId: period.periodId,
     periodEnd: period.periodEnd,
-    limit: resolved.limit,
+    limit: quota.limit,
   });
   const durationMs = finish();
   if (!admission.allowed) {

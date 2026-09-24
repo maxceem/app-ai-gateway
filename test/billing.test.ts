@@ -14,7 +14,7 @@ import {
   type GatewayBillingAccess,
 } from "../src/billing/gateway";
 import worker from "../src/index";
-import { resolveBillingQuota } from "../src/billing/quota";
+import { billingQuota, type BillingQuota } from "../src/billing/quota";
 import { accountLifecycleCache } from "../src/core/account-lifecycle";
 import { clearAllCaches } from "../src/core/ttl-cache";
 import { resolveDeployment, type Deployment } from "../src/policy/deployment";
@@ -27,11 +27,16 @@ import {
   validateConfig,
 } from "./helpers";
 
-/** Resolves a quota the way a request does: with the deployment its environment describes. */
-const quotaFor = (
+/** Resolves a metered quota the way admission does: with the deployment its environment describes. */
+async function meteredFor(
   quotaEnv: Env,
-  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
-) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+  ...rest: Parameters<typeof billingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
+): Promise<Extract<BillingQuota, { kind: "metered" }>> {
+  const quota = await billingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+  requireActiveBilling(quota.access);
+  if (quota.kind !== "metered") throw new Error("Expected a metered quota");
+  return quota;
+}
 
 const ORIGIN = "https://example.test";
 const MANAGEMENT_HEADERS = {
@@ -266,6 +271,7 @@ describe("billing gateway", () => {
     ["a plain number", 10_000, 10_000],
     ["a whole float", 100_000.0, 100_000],
     ["a JSON string", "1000000", 1_000_000],
+    ["a padded JSON string", " 10000 ", 10_000],
     ["zero", 0, 0],
   ])("reads maxRequestsPerMonth given as %s", (_label, value, expected) => {
     expect(billingPlanLimits(billed({ maxRequestsPerMonth: value }))).toEqual({
@@ -295,27 +301,38 @@ describe("billing gateway", () => {
 
   it("names the offending key when a configuration ceiling is malformed", () => {
     expect(() => billingPlanLimits(billed({ maxApps: -1 }))).toThrowError(
-      /maxApps is invalid/u,
+      /^Billing plan limit maxApps is invalid$/u,
     );
   });
 
   it.each([
-    ["a fraction", 10.5],
+    ["a fraction", 1.5],
+    ["a fractional string", "1.5"],
     ["a negative", -1],
+    ["a negative string", "-1"],
+    ["an empty string", ""],
+    ["a blank string", "   "],
     ["a non-numeric string", "lots"],
+    ["an infinite string", "Infinity"],
     ["a boolean", true],
     ["null", null],
     ["an object", { value: 10 }],
+    ["an array", [10]],
+    ["one past the safe integers", 2 ** 53],
     ["beyond safe integers", 1e21],
   ])("fails closed on a malformed maxRequestsPerMonth given as %s", (_label, value) => {
     expect(() => billingPlanLimits(billed({ maxRequestsPerMonth: value }))).toThrowError(
-      /maxRequestsPerMonth is invalid/u,
+      /^Billing plan limit maxRequestsPerMonth is invalid$/u,
     );
   });
 
-  it("fails closed when the whole limits block is malformed", () => {
-    expect(() => billingPlanLimits(billed("10000"))).toThrowError(
-      /Billing plan limits are invalid/u,
+  it.each([
+    ["a string", "10000"],
+    ["null", null],
+    ["an array", [10_000]],
+  ])("fails closed when the whole limits block is %s", (_label, limits) => {
+    expect(() => billingPlanLimits(billed(limits))).toThrowError(
+      /^Billing plan limits are invalid$/u,
     );
   });
 
@@ -390,7 +407,7 @@ describe("billing gateway", () => {
     );
     const quota = env.ORG_QUOTA.getByName(TEST_ORGANIZATION_ID);
     const now = Date.now();
-    const resolved = await quotaFor(billingEnv, TEST_ORGANIZATION_ID, undefined, now);
+    const resolved = await meteredFor(billingEnv, TEST_ORGANIZATION_ID, undefined, now);
     expect((await quota.admit({ limit: 50, ...resolved.period })).allowed).toBe(true);
     expect((await quota.admit({ limit: 50, ...resolved.period })).allowed).toBe(true);
 
@@ -435,7 +452,8 @@ describe("billing gateway", () => {
 
   /**
    * A self-hosted deployment has no allowance and must never be told it has one.
-   * The whole subtree is refused rather than answering with an empty reading.
+   * The whole subtree is refused rather than answering with an empty reading,
+   * and a write is refused before its body is read.
    */
   it("reports no allowance where there is no billing service", async () => {
     const response = await worker.request(
@@ -444,6 +462,19 @@ describe("billing gateway", () => {
       env,
     );
     expect(response.status).toBe(404);
+    const checkout = await worker.request(
+      `${ORIGIN}/v1/admin/billing/checkout`,
+      {
+        method: "POST",
+        headers: { ...(await humanHeaders()), "content-type": "application/json" },
+        body: "{}",
+      },
+      env,
+    );
+    expect(checkout.status, await checkout.clone().text()).toBe(404);
+    await expect(checkout.json()).resolves.toMatchObject({
+      error: { code: "not_found", message: "Billing is not configured" },
+    });
   });
 
   /**

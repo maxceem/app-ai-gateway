@@ -19,13 +19,12 @@ export const billingEntitlementGate: MiddlewareHandler<{
   Variables: RequestVariables;
 }> = async (c, next) => {
   /*
-   * A deployment without a billing binding is self-hosted: it has no plan to
-   * check, and no account of its own ever carries a deadline, because only a
-   * cloud bootstrap writes one. So this whole gate — and the D1 read behind it
-   * — costs a self-hosted deployment nothing.
+   * Without a billing service there is no plan to check, and such a deployment
+   * writes no account deadlines either, so this whole gate — and the D1 read
+   * behind it — costs it nothing.
    */
   const deployment = c.get("deployment");
-  if (deployment.mode === "self_hosted") {
+  if (deployment.billing === null) {
     await next();
     return;
   }

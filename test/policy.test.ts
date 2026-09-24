@@ -261,13 +261,13 @@ describe("account deadline policy", () => {
       for (const mode of ["cloud", "self_hosted"] as const) {
         for (const action of actions) {
           const expected = expectedDenial(definition.expected, mode, action);
-          expect(accountAccessDenial(mode, account, action, now), JSON.stringify({
+          expect(accountAccessDenial(policy(mode).rules, account, action, now), JSON.stringify({
             case: definition.label,
             mode,
             action,
             implementation: "pure",
           })).toBe(expected);
-          const condition = accountAccessCondition(mode, account.id, action, now);
+          const condition = accountAccessCondition(policy(mode).rules, account.id, action, now);
           const allowed = await prepared(env.DB, sql`SELECT ${condition} AS allowed`)
             .first<number>("allowed");
           expect(Boolean(allowed), JSON.stringify({
@@ -280,7 +280,7 @@ describe("account deadline policy", () => {
       }
     }
 
-    const missing = accountAccessCondition("cloud", "missing-account", "read", now);
+    const missing = accountAccessCondition(policy("cloud").rules, "missing-account", "read", now);
     expect(Boolean(await prepared(env.DB, sql`SELECT ${missing} AS allowed`)
       .first<number>("allowed"))).toBe(false);
   });
@@ -292,7 +292,7 @@ describe("account deadline policy", () => {
       expiresAt: storedInstant(Date.now() - 5_000, "iso"),
       claimed: false,
     });
-    const condition = accountAccessCondition("self_hosted",
+    const condition = accountAccessCondition(policy("self_hosted").rules,
       account.id,
       "read",
       staleCallerNow,

@@ -235,7 +235,7 @@ async function prune(env: Env): Promise<void> {
   // deployment can have one to collect: a self-host's single account has no
   // `expires_at` at all, so running this there would spend a sixth of a Free
   // plan's nightly queries on a sweep that cannot match a row.
-  if (resolveDeployment(env).mode === "cloud") {
+  if (resolveDeployment(env).rules.accountDeadlines) {
     // At most half of what the fixed sweeps left, so a large expired backlog
     // cannot starve compaction. The share issues through its own view of the
     // database, so it spends the run's allowance without being able to overrun

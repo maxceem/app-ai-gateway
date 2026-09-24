@@ -1,17 +1,26 @@
 import type { BillingAccess, BillingRuntime, SubscriptionState } from "../src/billing/contract";
-import { invalidateBillingAccess } from "../src/billing/gateway";
-import { allowancePeriod, resolveBillingQuota } from "../src/billing/quota";
+import { invalidateBillingAccess, requireActiveBilling } from "../src/billing/gateway";
+import { allowancePeriod, billingQuota, type BillingQuota } from "../src/billing/quota";
 import { invalidateAccountLifecycle } from "../src/core/account-lifecycle";
 import { clearIsolateCaches } from "./helpers";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveDeployment } from "../src/policy/deployment";
 
-/** Resolves a quota the way a request does: with the deployment its environment describes. */
-const quotaFor = (
-  quotaEnv: Env,
-  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
-) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+type QuotaArgs = Parameters<typeof billingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never;
+
+/** Resolves a quota the way admission does: with the deployment its environment describes, refusing what it refuses. */
+async function quotaFor(quotaEnv: Env, ...rest: QuotaArgs): Promise<BillingQuota> {
+  const quota = await billingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+  requireActiveBilling(quota.access);
+  return quota;
+}
+
+async function meteredFor(quotaEnv: Env, ...rest: QuotaArgs): Promise<Extract<BillingQuota, { kind: "metered" }>> {
+  const quota = await quotaFor(quotaEnv, ...rest);
+  if (quota.kind !== "metered") throw new Error("Expected a metered quota");
+  return quota;
+}
 
 function subscription(overrides: Partial<SubscriptionState> = {}): SubscriptionState {
   return {
@@ -98,10 +107,16 @@ async function seedCliAccount(id: string, origin: string, claimed = false) {
 }
 
 describe("allowance periods", () => {
+  it("meters nothing on a self-hosted deployment, and reads nothing to decide so", async () => {
+    // No account by this id exists, so any lifecycle read would throw.
+    await expect(billingQuota(resolveDeployment(env), env, "self-hosted-no-such-account"))
+      .resolves.toEqual({ kind: "unmetered", access: { state: "self_hosted" } });
+  });
+
   it("renews a free plan on the day the account was created", async () => {
     const organizationId = "quota-free-anniversary";
     await seedOrganization(organizationId, "2026-01-31T05:06:07.008Z");
-    const resolved = await quotaFor(
+    const resolved = await meteredFor(
       hosted(freeAccess(1_000)),
       organizationId,
       undefined,
@@ -115,7 +130,7 @@ describe("allowance periods", () => {
       periodEnd: "2026-02-28T05:06:07.008Z",
       resetAt: "2026-02-28T05:06:07.008Z",
     });
-    const march = await quotaFor(
+    const march = await meteredFor(
       hosted(freeAccess(1_000)),
       organizationId,
       undefined,
@@ -130,7 +145,7 @@ describe("allowance periods", () => {
   it("renews a paid plan on its subscription's billing anchor", async () => {
     const organizationId = "quota-paid-anniversary";
     await seedOrganization(organizationId, "2025-06-10T00:00:00.000Z");
-    const resolved = await quotaFor(
+    const resolved = await meteredFor(
       hosted({
         plan: { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9_000 } },
         subscription: subscription(),
@@ -158,9 +173,9 @@ describe("allowance periods", () => {
     const access = freeAccess(1);
     const runtime = hosted(access);
     const quota = env.ORG_QUOTA.getByName(id);
-    const free = await quotaFor(runtime, id);
-    expect(await quota.admit({ ...free.period, limit: free.limit! })).toMatchObject({ allowed: true, used: 1 });
-    expect(await quota.admit({ ...free.period, limit: free.limit! })).toMatchObject({ allowed: false, used: 1 });
+    const free = await meteredFor(runtime, id);
+    expect(await quota.admit({ ...free.period, limit: free.limit })).toMatchObject({ allowed: true, used: 1 });
+    expect(await quota.admit({ ...free.period, limit: free.limit })).toMatchObject({ allowed: false, used: 1 });
 
     access.plan = { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9_000 } };
     access.subscription = subscription({
@@ -169,21 +184,21 @@ describe("allowance periods", () => {
       billingAnchorDay: 14,
     });
     invalidateBillingAccess(id);
-    const paid = await quotaFor(runtime, id);
+    const paid = await meteredFor(runtime, id);
     // The subscription's own period, counted from its anchor, from zero.
     expect(paid.period).toMatchObject({
       periodStart: "2026-02-14T09:00:00.000Z",
       periodEnd: "2026-03-14T09:00:00.000Z",
     });
-    expect(await quota.admit({ ...paid.period, limit: paid.limit! })).toMatchObject({ allowed: true, used: 1 });
+    expect(await quota.admit({ ...paid.period, limit: paid.limit })).toMatchObject({ allowed: true, used: 1 });
 
     // Back on the free plan within the same free period, what it spent is
     // still spent: cancelling does not hand out a second free allowance.
     access.plan = freeAccess(1).plan;
     invalidateBillingAccess(id);
-    const again = await quotaFor(runtime, id);
+    const again = await meteredFor(runtime, id);
     expect(again.period.periodId).toBe(free.period.periodId);
-    expect(await quota.admit({ ...again.period, limit: again.limit! })).toMatchObject({ allowed: false, used: 1 });
+    expect(await quota.admit({ ...again.period, limit: again.limit })).toMatchObject({ allowed: false, used: 1 });
   });
 
   it("refuses a schedule that has not started, and asks for a retry on clock skew", async () => {
@@ -214,7 +229,7 @@ describe("allowance periods", () => {
 });
 
 describe("the anniversary arithmetic", () => {
-  const schedule = { origin: "free:x", anchorAt: Date.parse("2026-01-31T00:00:00.000Z"), anchorDay: 31 };
+  const schedule = { kind: "free" as const, origin: "free:x", anchorAt: Date.parse("2026-01-31T00:00:00.000Z"), anchorDay: 31 };
 
   it("renews at the anchor instant exactly, never a millisecond early", () => {
     expect(allowancePeriod(schedule, Date.parse("2026-02-27T23:59:59.999Z")).periodStart)
@@ -226,7 +241,7 @@ describe("the anniversary arithmetic", () => {
   it("opens the first period on the anchor when the renewal day comes later that month", () => {
     // A trial that started on the 9th and bills on the 20th: its first period
     // runs to the 20th, and the paid period after it is a counter of its own.
-    const trial = { origin: "paid:x", anchorAt: Date.parse("2026-08-09T08:30:00.789Z"), anchorDay: 20 };
+    const trial = { kind: "paid" as const, origin: "paid:x", anchorAt: Date.parse("2026-08-09T08:30:00.789Z"), anchorDay: 20 };
     const first = allowancePeriod(trial, Date.parse("2026-08-10T00:00:00.000Z"));
     expect(first).toMatchObject({
       periodStart: "2026-08-09T08:30:00.789Z",
@@ -241,7 +256,7 @@ describe("the anniversary arithmetic", () => {
   });
 
   it("opens the first period on the anchor when the renewal day came earlier that month", () => {
-    const late = { origin: "paid:x", anchorAt: Date.parse("2026-08-25T00:00:00.000Z"), anchorDay: 5 };
+    const late = { kind: "paid" as const, origin: "paid:x", anchorAt: Date.parse("2026-08-25T00:00:00.000Z"), anchorDay: 5 };
     expect(allowancePeriod(late, Date.parse("2026-08-30T00:00:00.000Z"))).toMatchObject({
       periodStart: "2026-08-25T00:00:00.000Z",
       periodEnd: "2026-09-05T00:00:00.000Z",
@@ -268,7 +283,7 @@ describe("unclaimed accounts", () => {
     vi.setSystemTime(new Date("2026-02-28T12:34:56.789Z"));
     await seedCliAccount("unclaimed", origin);
     const runtime = hosted(freeAccess(5000));
-    const first = await quotaFor(runtime, "unclaimed");
+    const first = await meteredFor(runtime, "unclaimed");
     expect(first.limit).toBe(5000);
     // The first renewal has already passed, but the account still spends its
     // first allowance: nobody draws a second one without a human owner.
@@ -278,7 +293,7 @@ describe("unclaimed accounts", () => {
     // Past the window the period is still the same one — never a renewed one —
     // and its count stays readable. Serving nothing more is the account gate's job.
     vi.setSystemTime(new Date("2026-03-20T12:34:56.789Z"));
-    const expired = await quotaFor(runtime, "unclaimed");
+    const expired = await meteredFor(runtime, "unclaimed");
     expect(expired.period).toEqual(first.period);
     expect(await quota.admit({ ...expired.period, limit: 1 })).toMatchObject({ allowed: false, used: 1 });
     expect(await quota.usage(expired.period.periodId)).toBe(1);
@@ -291,16 +306,16 @@ describe("unclaimed accounts", () => {
     await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
     const runtime = hosted(freeAccess(5000));
     const quota = env.ORG_QUOTA.getByName(id);
-    const before = await quotaFor(runtime, id);
-    expect(await quota.admit({ ...before.period, limit: before.limit! })).toMatchObject({ allowed: true, used: 1 });
+    const before = await meteredFor(runtime, id);
+    expect(await quota.admit({ ...before.period, limit: before.limit })).toMatchObject({ allowed: true, used: 1 });
     await claimOrganization(id);
-    const after = await quotaFor(runtime, id);
+    const after = await meteredFor(runtime, id);
     // The same key, so what the free window spent is still spent.
     expect(after.period.periodId).toBe(before.period.periodId);
     expect(after.period.periodEnd).toBe("2026-03-01T00:00:00.000Z");
-    expect(await quota.admit({ ...after.period, limit: after.limit! })).toMatchObject({ allowed: true, used: 2 });
+    expect(await quota.admit({ ...after.period, limit: after.limit })).toMatchObject({ allowed: true, used: 2 });
     vi.setSystemTime(new Date("2026-03-01T00:00:00Z"));
-    expect((await quotaFor(runtime, id)).period.periodStart).toBe("2026-03-01T00:00:00.000Z");
+    expect((await meteredFor(runtime, id)).period.periodStart).toBe("2026-03-01T00:00:00.000Z");
   });
 
   it("move onto the renewed period when claimed after the first renewal, inside the free window", async () => {
@@ -310,10 +325,10 @@ describe("unclaimed accounts", () => {
     const id = "claimed-after-renewal";
     await seedCliAccount(id, origin);
     const runtime = hosted(freeAccess(5000));
-    const before = await quotaFor(runtime, id);
+    const before = await meteredFor(runtime, id);
     expect(before.period.periodStart).toBe(origin);
     await claimOrganization(id);
-    const after = await quotaFor(runtime, id);
+    const after = await meteredFor(runtime, id);
     expect(after.period).toMatchObject({
       periodStart: "2026-02-28T12:34:56.789Z",
       periodEnd: "2026-03-31T12:34:56.789Z",
@@ -327,8 +342,9 @@ describe("unclaimed accounts", () => {
     const id = `configured-free-${limit}`;
     await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
     const runtime = hosted(freeAccess(limit));
-    expect((await quotaFor(runtime, id)).limit).toBe(limit ?? undefined);
+    const limitOf = (quota: BillingQuota) => (quota.kind === "metered" ? quota.limit : undefined);
+    expect(limitOf(await quotaFor(runtime, id))).toBe(limit ?? undefined);
     await claimOrganization(id);
-    expect((await quotaFor(runtime, id)).limit).toBe(limit ?? undefined);
+    expect(limitOf(await quotaFor(runtime, id))).toBe(limit ?? undefined);
   });
 });

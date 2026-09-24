@@ -69,11 +69,15 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 again on the lazily mounted management app, and puts three things on the
 context: the request's `Deployment`, its billing cache and its cf-auth
 instances. `resolveDeployment` in `src/policy/deployment.ts` is the only place
-a deployment's mode, its billing service and its public identity are derived
-from `env`; inside a request, read `c.get("deployment")`, and give a function
-that has no context a `Deployment` rather than an `Env` to re-derive one from.
-`deployment.billing === null` is what "self-hosted" means, and
-`getBillingAccess` is the only producer of the `self_hosted` state.
+a deployment's mode, its rules, its billing service and its public identity are
+derived from `env`; inside a request, read `c.get("deployment")`, and give a
+function that has no context a `Deployment` rather than an `Env` to re-derive
+one from. `deployment.billing === null` is what "self-hosted" means, and
+`getBillingAccess` is the only producer of the `self_hosted` state. Everything
+else a hosted deployment does differently is a field of `deployment.rules`, read
+from the one `DEPLOYMENT_RULES` table beside `resolveDeployment`; nothing
+outside `src/policy` compares `deployment.mode`, which is only that table's key
+and the value the CLI is told.
 
 ## Deferred modules
 

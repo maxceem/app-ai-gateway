@@ -159,7 +159,7 @@ export async function updateProviderGateway(
   });
   if (!existing) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   if (body.revision !== existing.revision) throw new GatewayError(409, "conflict", "The provider gateway changed; reload it before saving your changes");
-  const gateway = storedGatewayConnection(existing.type, existing.config);
+  const gateway = storedGatewayConnection(requireGatewayAdapter(existing.type), existing.config);
   const row: ProviderGatewayRow = {
     ...existing,
     name: body.name,

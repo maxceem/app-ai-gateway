@@ -3,16 +3,21 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import { resolveBillingQuota } from "../src/billing/quota";
-import { BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../src/billing/gateway";
+import { billingQuota, type BillingQuota } from "../src/billing/quota";
+import { BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS, requireActiveBilling } from "../src/billing/gateway";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
 import { resolveDeployment } from "../src/policy/deployment";
 
-/** Resolves a quota the way a request does: with the deployment its environment describes. */
-const quotaFor = (
+/** Resolves a metered quota the way admission does: with the deployment its environment describes. */
+async function meteredFor(
   quotaEnv: Env,
-  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
-) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+  ...rest: Parameters<typeof billingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
+): Promise<Extract<BillingQuota, { kind: "metered" }>> {
+  const quota = await billingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+  requireActiveBilling(quota.access);
+  if (quota.kind !== "metered") throw new Error("Expected a metered quota");
+  return quota;
+}
 
 const ORIGIN = "https://example.test";
 
@@ -383,7 +388,7 @@ describe("organization monthly request quota", () => {
     await seedOrganization(organizationId);
     const quota = env.ORG_QUOTA.getByName(organizationId);
     const now = Date.now();
-    const resolved = await quotaFor(
+    const resolved = await meteredFor(
       hosted({ maxRequestsPerMonth: 10 }),
       organizationId,
       undefined,
@@ -477,6 +482,50 @@ describe("organization monthly request quota", () => {
       userId: "allowed-user",
     });
     expect(unavailable.status).toBe(502);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: { code: "billing_unavailable" },
+    });
+    expect(upstream).not.toHaveBeenCalled();
+    expect(await used(organizationId)).toBe(0);
+  });
+
+  /**
+   * The same pair when billing cannot be reached at all. The allowance then
+   * resolves as `unmetered`, and it is admission's own `requireActiveBilling`
+   * that refuses — still only after the block has been answered.
+   */
+  it("answers a blocked user as blocked even when billing is unreachable", async () => {
+    const organizationId = "quota-blocked-outage-org";
+    await seedOrganization(organizationId);
+    const key = await seedServerApp("quota-blocked-outage", { organizationId });
+    const binding = billingStub(() => {
+      throw new Error("billing service unreachable");
+    });
+    const billing = new Proxy(env, {
+      get: (target, property, receiver) =>
+        property === "BILLING" ? binding : Reflect.get(target, property, receiver),
+    }) as Env;
+    const upstream = vi.fn(async () => ok());
+    vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await env.USER_LIMITER.getByName("quota-blocked-outage:blocked-user").setBlocked(true);
+
+    const refused = await proxyRequest({
+      appId: "quota-blocked-outage",
+      key,
+      env: billing,
+      userId: "blocked-user",
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "auth_required" } });
+
+    const unavailable = await proxyRequest({
+      appId: "quota-blocked-outage",
+      key,
+      env: billing,
+      userId: "allowed-user",
+    });
+    expect(unavailable.status).toBe(503);
     await expect(unavailable.json()).resolves.toMatchObject({
       error: { code: "billing_unavailable" },
     });
