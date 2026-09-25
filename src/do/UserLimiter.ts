@@ -2,8 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { monthlySpendMicrousd, type SpendKey } from "../usage/app-usage-accounting";
 
 /**
- * State that has to be instantly consistent: the block flag an operator sets,
- * and the request windows the app's own limits are counted against.
+ * Request windows for the app's own limits, counted consistently per scope.
  *
  * One instance per `app:user` pair and one more per app id, which is why
  * nothing here is named for a user. The month's spend is D1's — one row the
@@ -39,10 +38,9 @@ export interface LimiterCheckInput {
 
 export type LimiterCheckResult =
   | { allowed: true }
-  | { allowed: false; reason: "blocked" | "rate" | "budget"; retryAfterSeconds?: number };
+  | { allowed: false; reason: "rate" | "budget"; retryAfterSeconds?: number };
 
 export interface LimiterStatus {
-  blocked: boolean;
   requestsToday: number;
 }
 
@@ -56,10 +54,6 @@ export class UserLimiter extends DurableObject<Env> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS state (
-          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-          blocked INTEGER NOT NULL DEFAULT 0
-        );
         -- Both counters in one row, so an admitted request writes once instead
         -- of once per window. A window that has rolled is overwritten in place
         -- rather than appended to, so there is nothing here to prune. Fixed
@@ -72,7 +66,6 @@ export class UserLimiter extends DurableObject<Env> {
           day_key TEXT NOT NULL,
           day_count INTEGER NOT NULL
         );
-        INSERT OR IGNORE INTO state(singleton, blocked) VALUES (1, 0);
       `);
     });
   }
@@ -142,12 +135,8 @@ export class UserLimiter extends DurableObject<Env> {
     // A caller-supplied clock decides which window a request lands in; a
     // nonsensical one falls back to real time rather than to window "NaN".
     const now = Number.isFinite(input.now) ? input.now : Date.now();
-    if (this.isBlocked()) return { allowed: false, reason: "blocked" };
-
     if (input.monthlyBudgetMicrousd !== null) {
       const spent = await this.monthlySpend(input.spend, now);
-      // Read again after the await: an operator may have blocked meanwhile.
-      if (this.isBlocked()) return { allowed: false, reason: "blocked" };
       if (spent >= input.monthlyBudgetMicrousd) return { allowed: false, reason: "budget" };
     }
 
@@ -220,22 +209,10 @@ export class UserLimiter extends DurableObject<Env> {
     );
   }
 
-  /** The moderation switch, read on the request path before any dispatch. */
-  isBlocked(): boolean {
-    return this.ctx.storage.sql
-      .exec<{ blocked: number }>("SELECT blocked FROM state WHERE singleton = 1")
-      .one().blocked === 1;
-  }
-
   getStatus(now: number): LimiterStatus {
     const at = Number.isFinite(now) ? now : Date.now();
     return {
-      blocked: this.isBlocked(),
       requestsToday: this.windowCounts(at).day,
     };
-  }
-
-  setBlocked(blocked: boolean): void {
-    this.ctx.storage.sql.exec("UPDATE state SET blocked = ? WHERE singleton = 1", blocked ? 1 : 0);
   }
 }

@@ -395,7 +395,7 @@ endpoint:
 | --- | --- | --- |
 | `GET /v1/admin/apps/{app}/users` | `month=YYYY-MM`, `status=active|blocked`, `query=`, `limit=`, `offset=` | Each user with requests, tokens and cost for the month |
 | `GET /v1/admin/apps/{app}/users/{user}` | | |
-| `POST /v1/admin/apps/{app}/users/{user}/block` | | Immediate. Users named by a backend header cannot be blocked |
+| `POST /v1/admin/apps/{app}/users/{user}/block` | | New token exchanges are refused immediately; existing gateway tokens stop working within ten seconds. Users named by a backend header cannot be blocked |
 | `POST /v1/admin/apps/{app}/users/{user}/unblock` | | |
 
 ## Usage and events

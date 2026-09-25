@@ -2,7 +2,7 @@ import { requireActiveBilling, type BillingRequestCache } from "../billing/gatew
 import { billingQuota } from "../billing/quota";
 import { monthlyBudgetMicrousd, hasAppLevelLimits, hasUserLevelLimits } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
-import { ttlCache } from "../core/ttl-cache";
+import { cachedAppUserBlocked } from "../client-auth/user-status";
 import { recordBlockedUsageEvent } from "../usage/usage-record";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
@@ -51,47 +51,6 @@ import type { Deployment } from "../policy/deployment";
  * held would be lost. None of that is worth the latency to an organization
  * whose allowance is monthly.
  */
-
-const BLOCK_CACHE_TTL_MS = 10_000;
-
-/**
- * The cached block flag, and the answer only for applications that set no
- * per-user limits. Where per-user limits exist the gate calls the very same
- * Durable Object a moment later, and that call checks the flag itself, before
- * anything is counted — so reading it separately would be a second round trip
- * to one object for an answer the first one already carries. The cached read is
- * kept for the apps that make no such call, where it is the whole of what the
- * gate would otherwise pay: it is almost always `false`, and changes only when
- * an operator acts, so it is worth far less than a round trip per request.
- *
- * Keys are `app:user` pairs the gateway has already authenticated, but an app
- * with many users still produces many of them, so the map is bounded and evicts
- * insertion-oldest first.
- *
- * The isolate that serves a block clears its own entry
- * ({@link invalidateBlockedCache}); every other isolate converges within the
- * TTL. Token exchange reads `app_user` in D1 and is not affected by this cache.
- *
- * Exported for the tests that clear it on its own; nothing in the Worker reads
- * it but this file.
- */
-export const blockedUserCache = ttlCache<string, boolean>({
-  name: "blocked-user",
-  ttlMs: BLOCK_CACHE_TTL_MS,
-  maxEntries: 50_000,
-});
-
-export function invalidateBlockedCache(appId: string, userId: string): void {
-  blockedUserCache.delete(`${appId}:${userId}`);
-}
-
-async function isUserBlocked(env: Env, name: string): Promise<boolean> {
-  const cached = blockedUserCache.get(name);
-  if (cached !== undefined) return cached;
-  const blocked = await env.USER_LIMITER.getByName(name).isBlocked();
-  blockedUserCache.set(name, blocked);
-  return blocked;
-}
 
 /** What admitting one prepared request needs to know, and where to leave its diagnostics. */
 export interface AdmissionInput {
@@ -148,16 +107,6 @@ export async function admitRequest(
     now: number,
   ): never => {
     const durationMs = finish();
-    if (result.reason === "blocked") {
-      // Where an app sets per-user limits this is how a blocked user is
-      // answered at all: the gate skipped the cached read precisely because
-      // this check reports the block itself, and it reports it before counting
-      // anything, so nothing has been spent. The answer is the same as the
-      // cached path's and never an app_* code: being blocked is not a limit
-      // the organization set.
-      blockedEvent("blocked_user", durationMs);
-      throw new GatewayError(403, "auth_required", "User is blocked");
-    }
     if (result.reason === "budget") {
       // A budget settles from completed requests, so it has no instant of its
       // own to retry after; the month it is measured over is the honest one.
@@ -182,7 +131,7 @@ export async function admitRequest(
   };
 
   /*
-   * The block flag and the allowance are independent reads, so they are started
+   * The D1 block status and the allowance are independent reads, so they are started
    * together rather than one after the other. `allSettled` is what makes that
    * safe: both settle before anything is decided, so the loser of the race is
    * never an unhandled rejection, and the decision order below is fixed
@@ -197,29 +146,16 @@ export async function admitRequest(
    * this is not an RPC per request either.
    */
   const [blockedResult, allowanceResult] = await Promise.allSettled([
-    /*
-     * Two reasons to skip the read. Blocking names a user, so an application
-     * that identifies none has nobody to block and the flag is skipped rather
-     * than aimed at a stand-in identity. And an application with per-user
-     * limits reaches the very same Durable Object below, whose own check is
-     * atomic and reports a block before it counts anything — asking here as
-     * well would be a second round trip for an answer that call already
-     * carries. What that ordering protected is protected either way: the
-     * per-user check runs before the app-wide one, so a blocked user still
-     * drains nothing of the window their app shares.
-     */
-    identity.userId === null || hasUserLevelLimits(app.config)
+    // A userless request has no identified person whose status to read.
+    identity.userId === null
       ? Promise.resolve(false)
-      : isUserBlocked(env, `${identity.appId}:${identity.userId}`),
+      : cachedAppUserBlocked(env.DB, identity.appId, identity.userId),
     billingQuota(input.deployment, env, app.organizationId, input.billingCache),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
   if (blockedResult.value) {
-    // First, and before any limit is consulted: for the apps that get here the
-    // cached flag costs nothing, and answering from it is what stops a blocked
-    // user from spending an app rate token on every attempt. An app with
-    // per-user limits never reaches this branch; it is answered below instead.
+    // Before any limit is consulted, so a blocked user spends no app token.
     const durationMs = finish();
     blockedEvent("blocked_user", durationMs);
     throw new GatewayError(403, "auth_required", "User is blocked");
@@ -227,8 +163,8 @@ export async function admitRequest(
 
   /*
    * The app's own limits. Each scope is consulted only when it is configured,
-   * so an app that sets none makes exactly the Durable Object calls it made
-   * before the feature existed: the cached block flag, and nothing else.
+   * so an app that sets none makes no limiter Durable Object calls. Its user
+   * status is still read from the bounded D1 cache above.
    *
    * Per-user before per-app, so that one caller over their own limit cannot
    * drain the window every other user shares. The reverse leak is the harmless

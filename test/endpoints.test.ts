@@ -454,7 +454,8 @@ describe("named endpoints", () => {
         },
       },
     });
-    await env.USER_LIMITER.getByName(`${appId}:user-1`).setBlocked(true);
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, 'blocked')")
+      .bind(appId, "user-1").run();
     const token = await gatewayToken(appId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 

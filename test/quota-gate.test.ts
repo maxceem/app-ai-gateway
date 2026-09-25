@@ -7,6 +7,7 @@ import { billingQuota, type BillingQuota } from "../src/billing/quota";
 import { BILLING_UNAVAILABLE_RETRY_AFTER_SECONDS, requireActiveBilling } from "../src/billing/gateway";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
 import { resolveDeployment } from "../src/policy/deployment";
+import { appUserBlocked, blockedUserCache, cachedAppUserBlocked, invalidateBlockedCache } from "../src/client-auth/user-status";
 
 /** Resolves a metered quota the way admission does: with the deployment its environment describes. */
 async function meteredFor(
@@ -20,6 +21,13 @@ async function meteredFor(
 }
 
 const ORIGIN = "https://example.test";
+
+async function blockUser(appId: string, userId: string): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO app_user(app_id, id, status) VALUES (?, ?, 'blocked') " +
+    "ON CONFLICT(app_id, id) DO UPDATE SET status = 'blocked'",
+  ).bind(appId, userId).run();
+}
 
 /**
  * The organization-wide allowance is keyed by organization, so every case needs
@@ -426,7 +434,7 @@ describe("organization monthly request quota", () => {
     const key = await seedServerApp("quota-blocked", { organizationId });
     const billing = hosted({ maxRequestsPerMonth: 10 });
     mockUpstream(ok);
-    await env.USER_LIMITER.getByName("quota-blocked:blocked-user").setBlocked(true);
+    await blockUser("quota-blocked", "blocked-user");
 
     const refused = await proxyRequest({
       appId: "quota-blocked",
@@ -463,7 +471,7 @@ describe("organization monthly request quota", () => {
     const billing = hosted({ maxRequestsPerMonth: "unlimited" });
     const upstream = vi.fn(async () => ok());
     vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
-    await env.USER_LIMITER.getByName("quota-blocked-billing:blocked-user").setBlocked(true);
+    await blockUser("quota-blocked-billing", "blocked-user");
 
     const refused = await proxyRequest({
       appId: "quota-blocked-billing",
@@ -508,7 +516,7 @@ describe("organization monthly request quota", () => {
     const upstream = vi.fn(async () => ok());
     vi.spyOn(globalThis, "fetch").mockImplementation(upstream);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    await env.USER_LIMITER.getByName("quota-blocked-outage:blocked-user").setBlocked(true);
+    await blockUser("quota-blocked-outage", "blocked-user");
 
     const refused = await proxyRequest({
       appId: "quota-blocked-outage",
@@ -613,38 +621,113 @@ describe("organization monthly request quota", () => {
   });
 });
 
+/** Controlled D1 reads expose races that a fast local database would conceal. */
+function pendingStatusDb() {
+  type Row = { status: "active" | "blocked" } | null;
+  const reads: { resolve: (row: Row) => void; reject: (reason: Error) => void }[] = [];
+  const db = {
+    prepare: () => ({
+      bind: () => ({
+        first: () => new Promise<Row>((resolve, reject) => reads.push({ resolve, reject })),
+      }),
+    }),
+  } as unknown as D1Database;
+  return { db, reads };
+}
+
+describe("D1 user status cache", () => {
+  it("treats a missing row as unblocked and shares concurrent reads", async () => {
+    const { db, reads } = pendingStatusDb();
+    const first = cachedAppUserBlocked(db, "cache-missing", "user");
+    const second = cachedAppUserBlocked(db, "cache-missing", "user");
+    expect(second).toBe(first);
+    expect(reads).toHaveLength(1);
+    reads[0]!.resolve(null);
+    await expect(first).resolves.toBe(false);
+    await expect(cachedAppUserBlocked(db, "cache-missing", "user")).resolves.toBe(false);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("does not put an invalidated in-flight read back in the cache", async () => {
+    const { db, reads } = pendingStatusDb();
+    const old = cachedAppUserBlocked(db, "cache-invalidate", "user");
+    invalidateBlockedCache("cache-invalidate", "user");
+    const current = cachedAppUserBlocked(db, "cache-invalidate", "user");
+    expect(reads).toHaveLength(2);
+    reads[0]!.resolve({ status: "active" });
+    await expect(old).resolves.toBe(false);
+    reads[1]!.resolve({ status: "blocked" });
+    await expect(current).resolves.toBe(true);
+    expect(cachedAppUserBlocked(db, "cache-invalidate", "user")).toBe(current);
+  });
+
+  it("lets a failed read retry without deleting a replacement", async () => {
+    const { db, reads } = pendingStatusDb();
+    const old = cachedAppUserBlocked(db, "cache-failure", "user");
+    invalidateBlockedCache("cache-failure", "user");
+    const current = cachedAppUserBlocked(db, "cache-failure", "user");
+    reads[0]!.reject(new Error("old read failed"));
+    await expect(old).rejects.toThrow("old read failed");
+    expect(cachedAppUserBlocked(db, "cache-failure", "user")).toBe(current);
+    reads[1]!.reject(new Error("current read failed"));
+    await expect(current).rejects.toThrow("current read failed");
+    const retry = cachedAppUserBlocked(db, "cache-failure", "user");
+    expect(reads).toHaveLength(3);
+    reads[2]!.resolve({ status: "active" });
+    await expect(retry).resolves.toBe(false);
+  });
+
+  it("expires ten seconds after the read starts, even while it remains pending", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    const { db, reads } = pendingStatusDb();
+    const old = cachedAppUserBlocked(db, "cache-ttl", "user");
+    clock.mockReturnValue(start + 10_000);
+    const current = cachedAppUserBlocked(db, "cache-ttl", "user");
+    expect(reads).toHaveLength(2);
+    reads[0]!.resolve({ status: "active" });
+    await old;
+    expect(cachedAppUserBlocked(db, "cache-ttl", "user")).toBe(current);
+    reads[1]!.resolve({ status: "blocked" });
+    await expect(current).resolves.toBe(true);
+  });
+
+  it("reads D1 directly without using admission's stale cache", async () => {
+    const { db, reads } = pendingStatusDb();
+    const cached = cachedAppUserBlocked(db, "cache-direct", "user");
+    reads[0]!.resolve({ status: "active" });
+    await cached;
+    const direct = appUserBlocked(db, "cache-direct", "user");
+    expect(reads).toHaveLength(2);
+    reads[1]!.resolve({ status: "blocked" });
+    await expect(direct).resolves.toBe(true);
+    expect(cachedAppUserBlocked(db, "cache-direct", "user")).toBe(cached);
+    expect(blockedUserCache.size).toBe(1);
+  });
+});
+
 /**
  * The block flag is read before every dispatch but changes only when an
- * operator acts, so the gate keeps it in a short per-isolate cache instead of
- * paying a Durable Object round trip for an answer that is nearly always the
- * same.
+ * operator acts, so the gate keeps a D1 read in a short per-isolate cache.
  */
 describe("the per-user block flag", () => {
-  /** A hosted environment that counts the reads reaching the Durable Object. */
+  /** A hosted environment that counts D1 status reads. */
   function withBlockReadCount(limits: unknown): { env: Env; reads: () => number } {
     let reads = 0;
     const billing = billingStub(() => onPlan(limits));
-    const limiter = new Proxy(env.USER_LIMITER, {
-      get: (target, property) => {
-        if (property !== "getByName") return Reflect.get(target, property);
-        return (name: string) => {
-          const stub = target.getByName(name);
-          return new Proxy(stub, {
-            get: (stubTarget, stubProperty) =>
-              stubProperty === "isBlocked"
-                ? () => {
-                    reads += 1;
-                    return stubTarget.isBlocked();
-                  }
-                : Reflect.get(stubTarget, stubProperty),
-          });
-        };
-      },
+    const db = new Proxy(env.DB, {
+      get: (target, property, receiver) => property === "prepare"
+        ? (query: string) => {
+            if (query.startsWith("SELECT status FROM app_user")) reads += 1;
+            return target.prepare(query);
+          }
+        : Reflect.get(target, property, receiver),
     });
     const proxied = new Proxy(env, {
       get: (target, property, receiver) => {
         if (property === "BILLING") return billing;
-        if (property === "USER_LIMITER") return limiter;
+        if (property === "DB") return db;
         return Reflect.get(target, property, receiver);
       },
     }) as Env;
@@ -654,8 +737,7 @@ describe("the per-user block flag", () => {
   it("reads the flag once for two requests inside the cache window", async () => {
     const organizationId = "block-cache-org";
     await seedOrganization(organizationId);
-    // No per-user limits, so the cached flag is the only thing asking this
-    // user's limiter anything at all.
+    // No per-user limits, so admission only reads this status from D1.
     const key = await seedServerApp("block-cache", { organizationId });
     const counted = withBlockReadCount({ maxRequestsPerMonth: 10 });
     mockUpstream(ok);
@@ -673,12 +755,10 @@ describe("the per-user block flag", () => {
   });
 
   /**
-   * An app that sets per-user limits calls the very same Durable Object a
-   * moment later, and that call answers "blocked" itself, atomically, before it
-   * counts anything. Reading the flag separately would be a second round trip
-   * to one object for an answer the first one already carries.
+   * Per-user limits also need the D1 status, but requests inside the same
+   * cache window share that single read.
    */
-  it("never reads the flag for an app whose per-user limits already ask the same object", async () => {
+  it("reads status once for an app with per-user limits", async () => {
     const organizationId = "block-skip-org";
     await seedOrganization(organizationId);
     const key = await seedServerApp("block-skip", { organizationId, limits: { rpm: 10 } });
@@ -694,7 +774,7 @@ describe("the per-user block flag", () => {
       });
       expect(response.status).toBe(200);
     }
-    expect(counted.reads()).toBe(0);
+    expect(counted.reads()).toBe(1);
   });
 
   it("still refuses a blocked user on such an app, and records it as blocked_user", async () => {
@@ -707,7 +787,7 @@ describe("the per-user block flag", () => {
     await env.DB.prepare("INSERT INTO app_user(app_id, id) VALUES (?, ?)")
       .bind("block-skip-blocked", "banned-user")
       .run();
-    await env.USER_LIMITER.getByName("block-skip-blocked:banned-user").setBlocked(true);
+    await blockUser("block-skip-blocked", "banned-user");
     const counted = withBlockReadCount({ maxRequestsPerMonth: 10 });
     mockUpstream(ok);
 
@@ -719,10 +799,11 @@ describe("the per-user block flag", () => {
     });
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "auth_required" } });
-    // The limiter's own check reported the block, so the flag was never read
-    // separately and the allowance was never reached.
-    expect(counted.reads()).toBe(0);
+    // The status check refuses before either quota is consumed.
+    expect(counted.reads()).toBe(1);
     expect(await used(organizationId)).toBe(0);
+    expect((await env.USER_LIMITER.getByName("block-skip-blocked:banned-user").getStatus(Date.now())).requestsToday)
+      .toBe(0);
 
     await settle();
     const row = await env.DB.prepare(
@@ -771,9 +852,36 @@ describe("the per-user block flag", () => {
     });
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toMatchObject({ error: { code: "auth_required" } });
+
+    const meContext = createExecutionContext();
+    contexts.push(meContext);
+    const me = await worker.fetch(
+      new Request(`${ORIGIN}/v1/apps/block-admin/me`, {
+        headers: { authorization: `Bearer ${key}`, "x-end-user-id": "admin-blocked-user" },
+      }),
+      env,
+      meContext,
+    );
+    expect(me.status).toBe(200);
+    await expect(me.json()).resolves.toMatchObject({ limits: { blocked: true } });
+
+    const unblockContext = createExecutionContext();
+    contexts.push(unblockContext);
+    const unblocked = await worker.fetch(
+      new Request(`${ORIGIN}/v1/admin/apps/block-admin/users/admin-blocked-user/unblock`, {
+        method: "POST",
+        headers: { authorization: "Bearer agw_mgmt_test-admin-secret" },
+      }),
+      env,
+      unblockContext,
+    );
+    expect(unblocked.status).toBe(200);
+    expect((await proxyRequest({
+      appId: "block-admin", key, env: billing, userId: "admin-blocked-user",
+    })).status).toBe(200);
   });
 
-  it("honours a block written straight to the Durable Object once the cache expires", async () => {
+  it("honours a block written straight to D1 once the cache expires", async () => {
     const organizationId = "block-ttl-org";
     await seedOrganization(organizationId);
     const key = await seedServerApp("block-ttl", { organizationId });
@@ -785,13 +893,24 @@ describe("the per-user block flag", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(start);
 
     expect((await request()).status).toBe(200);
-    await env.USER_LIMITER.getByName("block-ttl:ttl-user").setBlocked(true);
+    await blockUser("block-ttl", "ttl-user");
     // A write nobody told this isolate about is served from the cache until the
     // entry expires; that ten-second tail is the documented behaviour.
     expect((await request()).status).toBe(200);
+
+    const meContext = createExecutionContext();
+    contexts.push(meContext);
+    const me = await worker.fetch(
+      new Request(`${ORIGIN}/v1/apps/block-ttl/me`, {
+        headers: { authorization: `Bearer ${key}`, "x-end-user-id": "ttl-user" },
+      }),
+      env,
+      meContext,
+    );
+    expect(me.status).toBe(200);
+    await expect(me.json()).resolves.toMatchObject({ limits: { blocked: true } });
 
     clock.mockReturnValue(start + 10_001);
     expect((await request()).status).toBe(403);
   });
 });
-

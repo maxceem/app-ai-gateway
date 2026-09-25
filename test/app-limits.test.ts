@@ -235,10 +235,9 @@ describe("an application's own limits", () => {
    */
   it("spends no app-wide rate token on a blocked user's attempt", async () => {
     const key = await seedServerApp("limits-blocked-first", { limits: { app_rpm: 1 } });
-    await env.DB.prepare("INSERT INTO app_user(app_id, id) VALUES (?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, 'blocked')")
       .bind("limits-blocked-first", "banned")
       .run();
-    await env.USER_LIMITER.getByName("limits-blocked-first:banned").setBlocked(true);
     mockUpstream();
 
     const blocked = await proxyRequest({ appId: "limits-blocked-first", key, userId: "banned" });
@@ -302,9 +301,8 @@ describe("an application's own limits", () => {
   });
 
   /**
-   * The fast path. An app that configures no limits must make exactly the
-   * Durable Object calls it made before this feature existed: the cached block
-   * flag, and nothing else.
+   * The fast path. An app that configures no limits makes no limiter Durable
+   * Object calls; admission still checks the cached D1 user status.
    */
   it("calls no limiter at all for an app that configures no limits", async () => {
     let checks = 0;

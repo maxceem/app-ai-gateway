@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { hasUserLevelLimits } from "../shared/app-config";
+import { appUserBlocked } from "../client-auth/user-status";
 import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
@@ -26,9 +27,10 @@ meRoutes.get("/", async (c) => {
   }
   const perUser = app.config.limits.per_user;
   const now = Date.now();
-  const [status, spentMicrousd] = await Promise.all([
+  const [status, spentMicrousd, blocked] = await Promise.all([
     c.env.USER_LIMITER.getByName(`${app.id}:${userId}`).getStatus(now),
     monthlySpendMicrousd(c.env.DB, { appId: app.id, userKey: userId }, new Date(now).toISOString().slice(0, 7)),
+    appUserBlocked(c.env.DB, app.id, userId),
   ]);
   /*
    * Requests are only counted while a per-user limit is set: an app with none
@@ -57,7 +59,7 @@ meRoutes.get("/", async (c) => {
       requests_per_day: perUser.requests.per_day,
       monthly_cost_usd: spentMicrousd / 1_000_000,
       monthly_budget_usd: perUser.spending.monthly_usd,
-      blocked: status.blocked,
+      blocked,
     },
   } satisfies CurrentUserResponse);
 });

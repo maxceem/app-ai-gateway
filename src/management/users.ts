@@ -10,7 +10,7 @@ import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { prepared } from "../db/sql";
 import { appUsageEvent, appUser, type app } from "../db/schema";
-import { invalidateBlockedCache } from "../execution/admission";
+import { invalidateBlockedCache } from "../client-auth/user-status";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { currentMonth, EMPTY_USAGE_TOTALS, eventDay, monthBounds, usageTotals } from "./usage-queries";
@@ -193,13 +193,9 @@ export async function getAppUser(
 /**
  * Blocks or unblocks one end user.
  *
- * The flag is written twice, to the two places that read it: `app_user.status`,
- * which the token exchange reads, so no new gateway token is minted for a
- * blocked user from the moment this returns; and the per-user Durable Object,
- * which the request path reads. The data plane caches that flag for ten seconds
- * per isolate, so a token already in a client's hands stops working within ten
- * seconds — immediately in the isolate that served this request, which is why
- * its cache entry is dropped here.
+ * D1 owns the status read by token exchange, /me, and admission. Admission
+ * caches it for ten seconds per isolate; this isolate drops its entry after
+ * the write, while other isolates converge when their entries expire.
  */
 export async function setAppUserBlocked(
   scope: ManagementScope,
@@ -215,7 +211,6 @@ export async function setAppUserBlocked(
     .where(and(eq(appUser.appId, appId), eq(appUser.id, userId)))
     .returning({ id: appUser.id });
   if (updated.length !== 1) throw new GatewayError(404, "not_found", "User was not found");
-  await scope.env.USER_LIMITER.getByName(`${appId}:${userId}`).setBlocked(blocked);
   invalidateBlockedCache(appId, userId);
   return { app_id: appId, user_id: userId, blocked };
 }

@@ -13,20 +13,10 @@ async function spent(appId: string, userKey: string | null, month: string, micro
 }
 
 /**
- * An application's own limits: a moderation switch, the month's spend read from
- * D1, and fixed request windows.
+ * An application's own limits: the month's spend read from D1 and fixed windows.
  */
 describe("UserLimiter", () => {
-  it("tracks the block flag on its own", async () => {
-    const limiter = env.USER_LIMITER.getByName("user-limiter:status");
-    const now = Date.UTC(2026, 6, 23, 12);
-    expect(await limiter.getStatus(now)).toEqual({ blocked: false, requestsToday: 0 });
-    await limiter.setBlocked(true);
-    expect(await limiter.isBlocked()).toBe(true);
-    expect(await limiter.getStatus(now)).toEqual({ blocked: true, requestsToday: 0 });
-  });
-
-  it("keeps nothing but the block flag and the windows in its own storage", async () => {
+  it("keeps only request windows in its own storage", async () => {
     const limiter = env.USER_LIMITER.getByName("user-limiter:tables");
     await limiter.getStatus(Date.now());
     await runInDurableObject(limiter, async (_instance, state) => {
@@ -36,7 +26,7 @@ describe("UserLimiter", () => {
         )
         .toArray()
         .map((row) => row.name);
-      expect(tables).toEqual(["request_windows", "state"]);
+      expect(tables).toEqual(["request_windows"]);
       expect(await state.storage.getAlarm()).toBeNull();
     });
   });
@@ -221,14 +211,6 @@ describe("UserLimiter request windows", () => {
     })).toMatchObject({ allowed: false, reason: "budget" });
     // Nothing was counted: the budget is decided before the windows are touched.
     expect((await limiter.getStatus(now)).requestsToday).toBe(0);
-  });
-
-  it("refuses a blocked user before any limit is consulted", async () => {
-    const limiter = env.USER_LIMITER.getByName("windows:blocked");
-    await limiter.setBlocked(true);
-
-    expect(await limiter.checkAndIncrement({ ...unlimited, now: Date.now() }))
-      .toMatchObject({ allowed: false, reason: "blocked" });
   });
 
   it("keeps exactly one row however much traffic passes through", async () => {
