@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
 import { createIdentityAuth, relaySocialSignIn } from "../src/auth/identity";
+import { CATALOG } from "../src/contracts/catalog";
 import { resolveDeployment } from "../src/policy/deployment";
 
 // A local instance answers on whatever host the worktree or port gives it,
@@ -18,19 +19,27 @@ function operatorEnv(overrides: Partial<Record<keyof Env, unknown>>): Env {
   }) as Env;
 }
 
-async function signInUrl(relayUrl: string | undefined): Promise<URL> {
-  const response = await worker.request(`${ORIGIN}/v1/auth/sign-in/social`, {
-    method: "POST",
+async function signInUrl(relayUrl: string | undefined, disableRedirect = false): Promise<URL> {
+  const operation = CATALOG.signInWithGoogle;
+  const response = await worker.request(`${ORIGIN}${operation.path}`, {
+    method: operation.method,
     headers: { "content-type": "application/json", origin: ORIGIN },
-    body: JSON.stringify({ provider: "google", callbackURL: ORIGIN }),
+    body: JSON.stringify(operation.request.parse({
+      provider: "google",
+      callbackURL: "/apps",
+      errorCallbackURL: "/login",
+      disableRedirect,
+    })),
   }, operatorEnv({
     GOOGLE_CLIENT_ID: "test-google-client",
     GOOGLE_CLIENT_SECRET: "test-google-secret",
     OAUTH_RELAY_URL: relayUrl,
   }));
 
-  expect(response.status, await response.clone().text()).toBe(200);
-  const body = await response.json<{ url: string; redirect?: boolean }>();
+  expect(response.status, await response.clone().text()).toBe(operation.status);
+  const body = operation.response.parse(await response.json());
+  expect(body.redirect).toBe(!disableRedirect);
+  if (disableRedirect) expect(response.headers.get("location")).toBeNull();
   return new URL(body.url);
 }
 
@@ -65,6 +74,12 @@ describe("operator OAuth relay", () => {
 
     expect(url.hostname).toBe("accounts.google.com");
     expect(url.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/v1/auth/callback/google`);
+  });
+
+  it("returns the provider URL without a Location header when automatic redirect is disabled", async () => {
+    const url = await signInUrl(undefined, true);
+
+    expect(url.hostname).toBe("accounts.google.com");
   });
 
   it("configures the redirect URI only when a relay is set", async () => {

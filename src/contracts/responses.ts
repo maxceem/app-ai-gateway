@@ -77,6 +77,14 @@ export const ConsoleCapabilitiesResponseSchema = z.object({
   apiBaseUrl: z.string().url().optional(),
 });
 
+/** The provider URL returned when a Google OAuth sign-in is initiated. */
+export const GoogleSignInResponseSchema = z.object({
+  url: z.url().meta({ description: "Provider authorization URL for the browser to navigate to." }),
+  redirect: z.boolean().meta({
+    description: "Whether Better Auth also sets a Location header. The console navigates to url itself.",
+  }),
+});
+
 export const AppAttestChallengeResponseSchema = z.object({
   challenge: z.string(),
   expires_in: z.number(),

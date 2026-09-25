@@ -3065,29 +3065,71 @@
       }
     },
     "/v1/auth/sign-in/social": {
-      "get": {
+      "post": {
         "tags": [
           "Console authentication"
         ],
         "operationId": "signInWithGoogle",
         "summary": "Start optional Google sign-in",
-        "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "google"
-              ]
-            },
-            "required": true,
-            "name": "provider",
-            "in": "query"
+        "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured. Send provider=google in the JSON body, with optional success and error callback URLs. The console uses callbackURL to restore its destination and errorCallbackURL to return to sign-in with the error. Navigate the browser to the URL in the JSON response to continue the Google flow.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "google"
+                    ]
+                  },
+                  "callbackURL": {
+                    "type": "string",
+                    "description": "Where to send the browser after successful sign-in; may be a relative console path."
+                  },
+                  "errorCallbackURL": {
+                    "type": "string",
+                    "description": "Where to send the browser if sign-in fails; may be a relative console path."
+                  },
+                  "disableRedirect": {
+                    "type": "boolean",
+                    "description": "Set true to suppress Better Auth's Location header; the JSON response still contains the provider URL."
+                  }
+                },
+                "required": [
+                  "provider"
+                ]
+              }
+            }
           }
-        ],
+        },
         "responses": {
-          "302": {
-            "description": "Redirect to Google."
+          "200": {
+            "description": "Google authorization URL and redirect indicator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "Provider authorization URL for the browser to navigate to."
+                    },
+                    "redirect": {
+                      "type": "boolean",
+                      "description": "Whether Better Auth also sets a Location header. The console navigates to url itself."
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "redirect"
+                  ]
+                }
+              }
+            }
           },
           "400": {
             "description": "The request is invalid.",

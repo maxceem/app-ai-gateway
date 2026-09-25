@@ -48,6 +48,7 @@ import {
   AppAttestTokenRequestSchema,
   AppUpdateSchema,
   AppWriteSchema,
+  GoogleSignInRequestSchema,
   ManagementKeyCreateRequestSchema,
   MonthSchema,
   OrganizationSelectRequestSchema,
@@ -81,6 +82,7 @@ import {
   CreatedManagementKeyResponseSchema,
   CurrentUserResponseSchema,
   GatewayTokenResponseSchema,
+  GoogleSignInResponseSchema,
   HealthResponseSchema,
   IdentitySessionSchema,
   ManagementKeyListResponseSchema,
@@ -351,16 +353,16 @@ export const CATALOG = {
   },
 
   signInWithGoogle: {
-    method: "GET",
+    method: "POST",
     path: "/v1/auth/sign-in/social",
     tags: ["Console authentication"],
     summary: "Start optional Google sign-in",
-    description: "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
+    description: "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured. Send provider=google in the JSON body, with optional success and error callback URLs. The console uses callbackURL to restore its destination and errorCallbackURL to return to sign-in with the error. Navigate the browser to the URL in the JSON response to continue the Google flow.",
     security: "public",
-    query: z.object({ provider: z.literal("google") }),
-    status: 302,
-    response: NO_RESPONSE_BODY,
-    responseDescription: "Redirect to Google.",
+    request: GoogleSignInRequestSchema,
+    status: 200,
+    response: GoogleSignInResponseSchema,
+    responseDescription: "Google authorization URL and redirect indicator.",
   },
 
   createAppAttestChallenge: {

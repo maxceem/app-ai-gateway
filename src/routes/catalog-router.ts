@@ -191,9 +191,8 @@ export function catalogRouter<E extends HonoEnv>(
         before?: (c: OperationContext<E, K>) => void | Promise<void>;
       } = {},
     ): void {
-      // The catalog's status is `200 | 201` for everything mounted here; the one
-      // 302 in the table is the Google redirect, which answers with no body and
-      // is served by better-auth rather than from this router.
+      // Catalog-mounted handlers answer with a body and a 200 or 201 status.
+      // Better Auth serves the social sign-in flow outside this router.
       const spec: OperationSpec = CATALOG[name];
       const status = (spec.status ?? 200) as 200 | 201;
       const request = spec.request;

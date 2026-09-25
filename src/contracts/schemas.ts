@@ -38,6 +38,20 @@ export const MONTH_FORMAT_MESSAGE = "month must use YYYY-MM format";
 /** Every `month` a request names: a query parameter or a body field alike. */
 export const MonthSchema = z.string().regex(MONTH_PATTERN, { error: MONTH_FORMAT_MESSAGE });
 
+/** The documented Google OAuth redirect-initiation body. */
+export const GoogleSignInRequestSchema = z.object({
+  provider: z.literal("google"),
+  callbackURL: z.string().optional().meta({
+    description: "Where to send the browser after successful sign-in; may be a relative console path.",
+  }),
+  errorCallbackURL: z.string().optional().meta({
+    description: "Where to send the browser if sign-in fails; may be a relative console path.",
+  }),
+  disableRedirect: z.boolean().optional().meta({
+    description: "Set true to suppress Better Auth's Location header; the JSON response still contains the provider URL.",
+  }),
+});
+
 /** Apple's ten-character team identifier, as the developer portal prints it. */
 const APPLE_TEAM_ID = /^[A-Z0-9]{10}$/;
 /** A reverse-DNS bundle identifier: at least two dot-separated labels. */
