@@ -149,6 +149,36 @@ describe("application auth event summary", () => {
     expect(body.pending_users).toBe(0);
   });
 
+  it("counts usage failures in both timestamp formats through the inclusive final day", async () => {
+    const appId = "auth-summary-usage-day";
+    await seedApp(appId);
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000)
+      .toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000)
+      .toISOString().slice(0, 10);
+    const insert = env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         event_id, organization_id, app_id, user_id, provider_type, model, route, status, created_at
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1',
+                 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'provider_error', ?)`,
+    );
+    for (const createdAt of [
+      `${yesterday}T23:59:59.999Z`,
+      `${today} 00:00:00`,
+      `${today}T23:59:59.999Z`,
+      `${tomorrow} 00:00:00`,
+    ]) {
+      await insert.bind(appId, createdAt).run();
+    }
+
+    const { status, body } = await get(`/v1/admin/apps/${appId}/auth-events/summary?days=1`);
+    expect(status).toBe(200);
+    expect(body.usage_failures).toEqual([
+      { date: today, status: "provider_error", count: 2 },
+    ]);
+  });
+
   it("refuses a window it cannot bucket", async () => {
     await seedApp("auth-summary-bad-window");
     const { status, body } = await get(

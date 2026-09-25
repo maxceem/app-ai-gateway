@@ -178,6 +178,46 @@ describe("admin API", () => {
     expect(await appTotal()).toBe(37);
   });
 
+  it("selects both timestamp formats through the last day of a leap-month reprice", async () => {
+    const appId = "admin-reprice-leap-month";
+    await seedApp(appId);
+    const insert = env.DB.prepare(
+      `INSERT INTO app_usage_event(
+         event_id, organization_id, app_id, user_id, provider_type, model, route, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at
+       ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, 'user-1',
+                 'openai', 'gpt-5.6-luna', 'openai/v1/responses', 50, 40, 10, 20,
+                 0.000184, 'ok', ?)`,
+    );
+    for (const createdAt of [
+      "2024-01-31T23:59:59.999Z",
+      "2024-02-01 00:00:00",
+      "2024-02-29 23:59:59",
+      "2024-02-29T23:59:59.999Z",
+      "2024-03-01 00:00:00",
+    ]) {
+      await insert.bind(appId, createdAt).run();
+    }
+
+    const response = await exports.default.fetch(
+      `https://example.test/v1/admin/apps/${appId}/usage/reprice`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agw_mgmt_test-admin-secret",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: "openai", model: "gpt-5.6-luna", month: "2024-02", apply: false,
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ matched_events: number; previous_cost_usd: number }>();
+    expect(body.matched_events).toBe(3);
+    expect(body.previous_cost_usd).toBeCloseTo(3 * 0.000184, 10);
+  });
+
   it("names the field at fault in a reprice request", async () => {
     const appId = "admin-reprice-bad-month";
     await seedApp(appId);

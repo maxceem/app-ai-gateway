@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, lt, sql } from "drizzle-orm";
 import type { UsageRepriceResponse } from "../contracts/responses";
 import type { UsageRepriceRequest } from "../contracts/schemas";
 import { GatewayError } from "../core/errors";
@@ -7,6 +7,7 @@ import { appUsageEvent, provider as providerTable, type app } from "../db/schema
 import { computeCost, hasTokenModelPrice } from "../usage/pricing";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
+import { monthBounds } from "./usage-queries";
 
 const REPRICE_UPDATE_CHUNK = 500;
 
@@ -45,6 +46,7 @@ export async function repriceAppUsage(
   const { env } = scope;
   const appId = appRow.id;
   const { provider, model, month, apply } = body;
+  const bounds = monthBounds(month);
   const rows = await database(env.DB)
     .select({
       id: appUsageEvent.id,
@@ -64,7 +66,8 @@ export async function repriceAppUsage(
       eq(appUsageEvent.appId, appId),
       eq(appUsageEvent.providerType, provider),
       eq(appUsageEvent.model, model),
-      eq(sql`substr(${appUsageEvent.createdAt}, 1, 7)`, month),
+      gte(appUsageEvent.createdAt, bounds.from),
+      lt(appUsageEvent.createdAt, bounds.toExclusive),
       // An event billed on what the upstream charged is already the authoritative
       // figure; recomputing it from a local price would replace a fact with an
       // estimate. Written out rather than `!=` because SQL's inequality is false

@@ -5,7 +5,7 @@ import { database } from "../db";
 import { appAuthEvent, appRejectionEvent, appUsageEvent, appUser, type app } from "../db/schema";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
-import { eventDay, parseRange } from "./usage-queries";
+import { eventDay, exclusiveDayEnd, parseRange } from "./usage-queries";
 
 type AppRow = typeof app.$inferSelect;
 
@@ -42,6 +42,7 @@ export async function getAppAuthEventSummary(
 ): Promise<AuthEventSummary> {
   const appId = appRow.id;
   const range = parseRange(undefined, undefined, query.days);
+  const usageToExclusive = exclusiveDayEnd(range.to);
   const db = database(scope.env.DB);
   const inWindow = and(
     eq(appAuthEvent.appId, appId),
@@ -71,8 +72,8 @@ export async function getAppAuthEventSummary(
     .from(appUsageEvent)
     .where(and(
       eq(appUsageEvent.appId, appId),
-      gte(eventDay, range.from),
-      lte(eventDay, range.to),
+      gte(appUsageEvent.createdAt, range.from),
+      lt(appUsageEvent.createdAt, usageToExclusive),
       sql`${appUsageEvent.status} != 'ok'`,
     ))
     .groupBy(eventDay, appUsageEvent.status)

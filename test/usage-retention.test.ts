@@ -53,6 +53,7 @@ interface EventInput {
   inputTokens?: number;
   outputTokens?: number;
   time?: string;
+  createdAt?: string;
 }
 
 /** The account that owns every app but {@link APP}, created on first use. */
@@ -82,7 +83,7 @@ async function insertEvent(input: EventInput): Promise<void> {
       input.outputTokens ?? 5,
       input.costUsd ?? 0.25,
       input.status ?? "ok",
-      `${input.day} ${input.time ?? "12:00:00"}`,
+      input.createdAt ?? `${input.day} ${input.time ?? "12:00:00"}`,
     )
     .run();
 }
@@ -532,6 +533,52 @@ describe("reading across both tables", () => {
 
     const totals = await usageMonthTotals(env.DB, APP, "2026-05");
     expect(totals).toMatchObject({ requests: 2, cost_usd: 3 });
+  });
+
+  it("includes both formats on the inclusive leap-day range across raw and day buckets", async () => {
+    for (const day of ["2024-02-28", "2024-02-29", "2024-03-01"]) {
+      await insertEvent({ day });
+    }
+    await compactUsageEvents(env.DB, NOW);
+    await insertEvent({ day: "2024-02-28", createdAt: "2024-02-28 00:00:00" });
+    await insertEvent({ day: "2024-02-29", createdAt: "2024-02-29T23:59:59.999Z" });
+    await insertEvent({ day: "2024-03-01", createdAt: "2024-03-01T00:00:00.000Z" });
+
+    const range = { from: "2024-02-28", to: "2024-02-29" };
+    const series = await usageTimeseries(env.DB, APP, range);
+    expect(series.results.map((row) => ({ date: row.date, requests: row.requests }))).toEqual([
+      { date: "2024-02-28", requests: 2 },
+      { date: "2024-02-29", requests: 2 },
+    ]);
+    const breakdown = await usageBreakdown(env.DB, APP, range, "model", 50);
+    expect(breakdown.results).toEqual([
+      expect.objectContaining({ key: "gpt-4o-mini", requests: 4 }),
+    ]);
+    expect(await usageMonthTotals(env.DB, APP, "2024-02")).toMatchObject({ requests: 4 });
+    expect(await usageMonthTotals(env.DB, APP, "2024-03")).toMatchObject({ requests: 2 });
+    expect((await organizationMonthUsage(env.DB, TEST_ORGANIZATION_ID, "2024-02")).results)
+      .toEqual([expect.objectContaining({ app_id: APP, requests: 4 })]);
+  });
+
+  it("includes folded month buckets and late raw events across a year boundary", async () => {
+    await insertEvent({ day: "2024-12-31", costUsd: 1 });
+    await compactUsageEvents(env.DB, NOW);
+    await foldUsageRollupMonths(env.DB, NOW);
+    await insertEvent({
+      day: "2024-12-31",
+      createdAt: "2024-12-31T23:59:59.999Z",
+      costUsd: 2,
+    });
+    await insertEvent({ day: "2025-01-01", time: "00:00:00", costUsd: 3 });
+
+    expect((await rollupRows()).map((row) => ({ grain: row.grain, bucket: row.bucket })))
+      .toEqual([{ grain: "month", bucket: "2024-12" }]);
+    expect(await usageMonthTotals(env.DB, APP, "2024-12"))
+      .toMatchObject({ requests: 2, cost_usd: 3 });
+    expect(await usageMonthTotals(env.DB, APP, "2025-01"))
+      .toMatchObject({ requests: 1, cost_usd: 3 });
+    expect((await organizationMonthUsage(env.DB, TEST_ORGANIZATION_ID, "2024-12")).results)
+      .toEqual([expect.objectContaining({ app_id: APP, requests: 2, cost_usd: 3 })]);
   });
 
   it("rejoins a single day that is split across both tables", async () => {

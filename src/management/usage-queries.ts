@@ -7,7 +7,7 @@
  * helpers, and the CLI's account usage sums the same counters, so each is
  * written once.
  */
-import { and, eq, gte, lte, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, lt, sql, type SQL } from "drizzle-orm";
 import { GatewayError } from "../core/errors";
 import type { UsageTotals } from "../contracts/responses";
 import { MONTH_FORMAT_MESSAGE, MONTH_PATTERN } from "../contracts/schemas";
@@ -35,12 +35,18 @@ export function assertMonth(month: string): void {
   }
 }
 
-export function monthBounds(month: string): { from: string; to: string } {
+/** A half-open text range that includes both day and month rollup buckets. */
+export function monthBounds(month: string): { from: string; toExclusive: string } {
   assertMonth(month);
-  const [year, index] = month.split("-").map((part) => Number.parseInt(part, 10));
-  const start = new Date(Date.UTC(year!, index! - 1, 1));
-  const end = new Date(Date.UTC(year!, index!, 0));
-  return { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) };
+  const year = Number(month.slice(0, 4));
+  const index = Number(month.slice(5, 7));
+  if (year === 9999 && index === 12) return { from: month, toExclusive: `${month}~` };
+  const nextYear = year + (index === 12 ? 1 : 0);
+  const nextMonth = index === 12 ? 1 : index + 1;
+  return {
+    from: month,
+    toExclusive: `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}`,
+  };
 }
 
 export interface DateRange {
@@ -63,11 +69,30 @@ export function parseRange(from: string | undefined, to: string | undefined, day
   return { from: start, to: end };
 }
 
-/** `created_at` is `YYYY-MM-DD HH:MM:SS`, so the day prefix compares lexically. */
+/**
+ * Exclusive end of an inclusive UTC day, usable against either SQLite or ISO
+ * text timestamps. The query schema checks shape, not calendar validity; for
+ * an impossible date, a high suffix preserves the old prefix comparison rather
+ * than normalizing the requested day or throwing. It also covers year 9999.
+ */
+export function exclusiveDayEnd(day: string): string {
+  const midnight = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(midnight.getTime()) || midnight.toISOString().slice(0, 10) !== day) {
+    return `${day}~`;
+  }
+  const next = new Date(midnight.getTime() + 86_400_000).toISOString().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(next) ? next : `${day}~`;
+}
+
+/** Day label for projection and grouping only; never filter an indexed column through it. */
 export const eventDay = sql<string>`substr(${appUsageEvent.createdAt}, 1, 10)`;
 
 export function inRange(appId: string, range: DateRange): SQL | undefined {
-  return and(eq(appUsageEvent.appId, appId), gte(eventDay, range.from), lte(eventDay, range.to));
+  return and(
+    eq(appUsageEvent.appId, appId),
+    gte(appUsageEvent.createdAt, range.from),
+    lt(appUsageEvent.createdAt, exclusiveDayEnd(range.to)),
+  );
 }
 
 export const usageTotals = {
@@ -176,6 +201,7 @@ export function usageTimeseries(
   appId: string,
   range: DateRange,
 ): Promise<{ results: (UsageTotals & { date: string; provider: string })[] }> {
+  const toExclusive = exclusiveDayEnd(range.to);
   return db
     .prepare(`
 SELECT date, provider,${UNION_TOTALS}
@@ -185,8 +211,8 @@ FROM (
       events.provider_type AS provider,${rawTotals("events")}
   FROM app_usage_event AS events
   WHERE events.app_id = ?1
-    AND substr(events.created_at, 1, 10) >= ?2
-    AND substr(events.created_at, 1, 10) <= ?3
+    AND events.created_at >= ?2
+    AND events.created_at < ?3
   GROUP BY date, provider
   UNION ALL
   SELECT
@@ -196,12 +222,12 @@ FROM (
   WHERE rollup.app_id = ?1
     AND rollup.grain = 'day'
     AND rollup.bucket >= ?2
-    AND rollup.bucket <= ?3
+    AND rollup.bucket < ?3
   GROUP BY date, provider
 )
 GROUP BY date, provider
 ORDER BY date`)
-    .bind(appId, range.from, range.to)
+    .bind(appId, range.from, toExclusive)
     .all();
 }
 
@@ -225,6 +251,7 @@ export function usageBreakdown(
   // Interpolated because a column name cannot be a bound parameter. The value is
   // a lookup on ROLLUP_DIMENSIONS, never caller text.
   const column = ROLLUP_DIMENSIONS[by];
+  const toExclusive = exclusiveDayEnd(range.to);
   return db
     .prepare(`
 SELECT key,${UNION_TOTALS}
@@ -232,8 +259,8 @@ FROM (
   SELECT events.${column} AS key,${rawTotals("events")}
   FROM app_usage_event AS events
   WHERE events.app_id = ?1
-    AND substr(events.created_at, 1, 10) >= ?2
-    AND substr(events.created_at, 1, 10) <= ?3
+    AND events.created_at >= ?2
+    AND events.created_at < ?3
   GROUP BY key
   UNION ALL
   SELECT rollup.${column} AS key,${rollupTotals("rollup")}
@@ -241,23 +268,25 @@ FROM (
   WHERE rollup.app_id = ?1
     AND rollup.grain = 'day'
     AND rollup.bucket >= ?2
-    AND rollup.bucket <= ?3
+    AND rollup.bucket < ?3
   GROUP BY key
 )
 GROUP BY key
 ORDER BY requests DESC
 LIMIT ?4`)
-    .bind(appId, range.from, range.to, limit)
+    .bind(appId, range.from, toExclusive, limit)
     .all();
 }
 
 /**
  * One calendar month's totals for one app, across both tables and both grains.
  *
- * Matched on the month prefix of `bucket` with no grain filter, because a month
- * is held as day buckets until it is folded and as one month bucket afterwards,
- * never as both. `errors` is summed by the halves and then dropped: this endpoint has never reported them, and widening a documented
- * response is not this change's business.
+ * Matched on the month range of `bucket` across both grains: a month is held as
+ * day buckets until it is folded and as one month bucket afterwards, never as
+ * both. The grain constraint lets the existing (app_id, grain, bucket) index
+ * seek the range. `errors` is summed by the halves and then dropped: this
+ * endpoint has never reported them, and widening its response is not this
+ * change's business.
  *
  * An aggregate with no GROUP BY always answers with one row, though `.first()`
  * is typed nullable; the empty month is filled in rather than spread away, so
@@ -268,6 +297,7 @@ export async function usageMonthTotals(
   appId: string,
   month: string,
 ): Promise<MonthTotals> {
+  const bounds = monthBounds(month);
   const row = await db
     .prepare(`
 SELECT
@@ -280,13 +310,14 @@ SELECT
 FROM (
   SELECT${rawTotals("events")}
   FROM app_usage_event AS events
-  WHERE events.app_id = ?1 AND substr(events.created_at, 1, 7) = ?2
+  WHERE events.app_id = ?1 AND events.created_at >= ?2 AND events.created_at < ?3
   UNION ALL
   SELECT${rollupTotals("rollup")}
   FROM app_usage_rollup AS rollup
-  WHERE rollup.app_id = ?1 AND substr(rollup.bucket, 1, 7) = ?2
+  WHERE rollup.app_id = ?1 AND rollup.grain IN ('day', 'month')
+    AND rollup.bucket >= ?2 AND rollup.bucket < ?3
 )`)
-    .bind(appId, month)
+    .bind(appId, bounds.from, bounds.toExclusive)
     .first<MonthTotals>();
   if (row) return row;
   const { errors: _errors, ...empty } = EMPTY_USAGE_TOTALS;
@@ -296,15 +327,15 @@ FROM (
 /**
  * One calendar month's totals for every app an organization owns.
  *
- * Matched on the month prefix rather than on {@link monthBounds}, so it reads day
- * and month grains alike: a `YYYY-MM` bucket does not fall inside a `YYYY-MM-DD`
- * range, and comparing the two would drop every folded month.
+ * The lower bound is the month prefix itself, so the range reads day and month
+ * grains alike: a `YYYY-MM` bucket would fall below a `YYYY-MM-01` lower bound.
  */
 export function organizationMonthUsage(
   db: D1Database,
   organizationId: string,
   month: string,
 ): Promise<{ results: (UsageTotals & { app_id: string })[] }> {
+  const bounds = monthBounds(month);
   return db
     .prepare(`
 SELECT app_id,${UNION_TOTALS}
@@ -312,16 +343,17 @@ FROM (
   SELECT events.app_id AS app_id,${rawTotals("events")}
   FROM app_usage_event AS events
   JOIN app AS owner ON owner.id = events.app_id
-  WHERE owner.organization_id = ?1 AND substr(events.created_at, 1, 7) = ?2
+  WHERE owner.organization_id = ?1 AND events.created_at >= ?2 AND events.created_at < ?3
   GROUP BY app_id
   UNION ALL
   SELECT rollup.app_id AS app_id,${rollupTotals("rollup")}
   FROM app_usage_rollup AS rollup
   JOIN app AS owner ON owner.id = rollup.app_id
-  WHERE owner.organization_id = ?1 AND substr(rollup.bucket, 1, 7) = ?2
+  WHERE owner.organization_id = ?1 AND rollup.grain IN ('day', 'month')
+    AND rollup.bucket >= ?2 AND rollup.bucket < ?3
   GROUP BY app_id
 )
 GROUP BY app_id`)
-    .bind(organizationId, month)
+    .bind(organizationId, bounds.from, bounds.toExclusive)
     .all();
 }

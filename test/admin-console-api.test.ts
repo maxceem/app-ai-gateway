@@ -565,6 +565,41 @@ describe("admin console API", () => {
     expect(filtered.body.users[0].id).toBe("alpha-user");
   });
 
+  it("bounds per-user and raw breakdown totals across both timestamp formats and a new year", async () => {
+    const appId = "usage-month-boundaries";
+    await seedApp(appId);
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, 'user-1', 'active')")
+      .bind(appId).run();
+    for (const createdAt of [
+      "2025-11-30T23:59:59.999Z",
+      "2025-12-31 00:00:00",
+      "2025-12-31T23:59:59.999Z",
+      "2026-01-01 00:00:00",
+    ]) {
+      await recordUsage(appId, { createdAt });
+    }
+
+    const users = await get(`/v1/admin/apps/${appId}/users?month=2025-12`);
+    expect(users.body.users.find((user: any) => user.id === "user-1").usage.requests).toBe(2);
+    const single = await get(`/v1/admin/apps/${appId}/users/user-1?month=2025-12`);
+    expect(single.body.user.usage.requests).toBe(2);
+    const breakdown = await get(
+      `/v1/admin/apps/${appId}/usage/breakdown?by=user&from=2025-12-31&to=2025-12-31`,
+    );
+    expect(breakdown.body.rows).toEqual([
+      expect.objectContaining({ key: "user-1", requests: 2 }),
+    ]);
+    // The query schema has always accepted a shape-valid impossible date;
+    // keep its lexical cutoff rather than normalizing it into January.
+    const impossibleEnd = await get(
+      `/v1/admin/apps/${appId}/usage/breakdown?by=user&from=2025-12-31&to=2025-12-32`,
+    );
+    expect(impossibleEnd.status).toBe(200);
+    expect(impossibleEnd.body.rows).toEqual([
+      expect.objectContaining({ key: "user-1", requests: 2 }),
+    ]);
+  });
+
   it("discovers rejection-only users and orders mixed timestamp formats chronologically", async () => {
     await seedApp("rejection-users");
     await recordUsage("rejection-users", {

@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 import type { ParsedOperationQuery } from "../contracts/catalog";
 import type {
   UserBlockResponse,
@@ -13,7 +13,7 @@ import { appUsageEvent, appUser, type app } from "../db/schema";
 import { invalidateBlockedCache } from "../client-auth/user-status";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
-import { currentMonth, EMPTY_USAGE_TOTALS, eventDay, monthBounds, usageTotals } from "./usage-queries";
+import { currentMonth, EMPTY_USAGE_TOTALS, monthBounds, usageTotals } from "./usage-queries";
 
 type AppRow = typeof app.$inferSelect;
 
@@ -136,8 +136,8 @@ export async function listAppUsers(
         and(
           eq(appUsageEvent.appId, appId),
           inArray(appUsageEvent.userId, rows.results.map((row) => row.id)),
-          gte(eventDay, bounds.from),
-          lte(eventDay, bounds.to),
+          gte(appUsageEvent.createdAt, bounds.from),
+          lt(appUsageEvent.createdAt, bounds.toExclusive),
         ),
       )
       .groupBy(appUsageEvent.userId);
@@ -186,8 +186,8 @@ export async function getAppUser(
       and(
         eq(appUsageEvent.appId, appId),
         eq(appUsageEvent.userId, userId),
-        gte(eventDay, bounds.from),
-        lte(eventDay, bounds.to),
+        gte(appUsageEvent.createdAt, bounds.from),
+        lt(appUsageEvent.createdAt, bounds.toExclusive),
       ),
     )
     .get();
