@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import type { AppWrite } from "../../src/contracts/schemas.ts";
 import { operationPath } from "../../src/contracts/catalog.ts";
 import { parseAppConfig, selectedProviderPolicies } from "../../src/shared/app-config.ts";
-import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
+import { CliErrorDetailsSchema } from "../src/errors.ts";
 import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
 import { deploymentCommand } from "../src/deployment.ts";

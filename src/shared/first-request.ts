@@ -2,9 +2,9 @@
  * The first request an application can send, as data and as code.
  *
  * One source for the console's example card and the CLI's `app snippet`, so the
- * two cannot show different examples. It imports
- * only from `src/shared`, for the reason `./capabilities.ts` gives: the console
- * bundles it, so nothing from the Worker modules may reach it.
+ * two cannot show different examples. It imports only from `src/shared`, and
+ * types from `src/contracts`, for the reason `./capabilities.ts` gives: the
+ * console bundles it, so nothing from the Worker modules may reach it.
  *
  * The example is always produced. An application created a minute ago has no
  * provider, no catalogued model, and sometimes a policy that allows no path
@@ -24,7 +24,8 @@ import {
 } from "./app-config.ts";
 import { API_STYLE_PATHS, type ApiStyle } from "./capabilities.ts";
 import { classifyPath } from "./protocols.ts";
-import { isProviderType, providerDescriptor } from "./providers.ts";
+import { providerDescriptor, type ProviderType } from "./providers.ts";
+import type { ProviderSummary } from "../contracts/responses.ts";
 
 export const PROVIDER_PLACEHOLDER = "PROVIDER_SLUG";
 export const MODEL_PLACEHOLDER = "MODEL";
@@ -50,13 +51,10 @@ export type ExamplePolicy = ProviderPolicy;
 export type ExampleRouting = RoutingConfig;
 
 /** As much of a provider as an example needs: where it sits and what it prices. */
-export interface ExampleProvider {
-  slug: string;
-  type: string;
-  status: string;
-  providerGatewayId?: string | null;
-  pricing?: Record<string, unknown> | null;
-}
+export type ExampleProvider = Pick<
+  ProviderSummary,
+  "slug" | "type" | "status" | "providerGatewayId" | "pricing"
+>;
 
 /** The price catalog, by provider type and model. Only the presence of an output price is read. */
 export type ExamplePrices = Record<string, Record<string, { output?: number }>>;
@@ -90,11 +88,10 @@ export interface RequestExample {
  * those too.
  */
 export function examplePath(
-  type: string,
+  type: ProviderType,
   { gatewayRouted = false, model }: { gatewayRouted?: boolean; model?: string } = {},
 ): string | undefined {
-  const descriptor = isProviderType(type) ? providerDescriptor(type) : undefined;
-  const own = descriptor?.examplePath ?? API_STYLE_PATHS.chat_completions;
+  const own = providerDescriptor(type).examplePath ?? API_STYLE_PATHS.chat_completions;
   if (own.includes("{model}")) return model ? own.replace("{model}", model) : undefined;
   return gatewayRouted && own.endsWith("chat/completions")
     ? API_STYLE_PATHS.chat_completions

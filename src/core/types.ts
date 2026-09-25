@@ -3,6 +3,7 @@ import type {
   EndpointConfig,
   ProviderPolicy,
 } from "../shared/app-config.ts";
+import type { AppStatus } from "../shared/app-status.ts";
 
 /** How a client first proved itself to an application: an API key, or an App Attest key. */
 export type AuthMethod = "attest" | "api_key";
@@ -22,7 +23,7 @@ export interface AppRecord {
   id: string;
   organizationId: string;
   name: string;
-  status: "active" | "disabled";
+  status: AppStatus;
   revision: number;
   config: AppConfig;
 }

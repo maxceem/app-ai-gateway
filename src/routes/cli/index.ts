@@ -85,13 +85,9 @@ routes.handle("getCliAccount", async (c, { actor }) => {
     account.id,
     c.get("billingRequestCache"),
   );
-  const billing = quota.kind === "metered"
-    ? { access: quota.access, limit: quota.limit, period: quota.period }
-    : { access: quota.access };
+  const billing = { access: quota.access };
   // A plan with no monthly limit counts nothing, so there is no figure to report.
-  const status = await quotaUsage(c.env, account.id, quota);
-  if (status === null) return { deployment: deploymentMeta(c), account, billing, usage: null };
-  const { limit: _limit, ...usage } = status;
+  const usage = await quotaUsage(c.env, account.id, quota);
   return { deployment: deploymentMeta(c), account, billing, usage };
 });
 routes.handle("getCliUsage", async (c, { actor, query }) => {

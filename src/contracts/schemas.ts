@@ -11,6 +11,7 @@ import {
   type GatewayType,
 } from "../shared/gateways.ts";
 import { PROVIDER_CREDENTIAL_HEADERS, PROVIDER_TYPES } from "../shared/providers.ts";
+import { APP_STATUSES } from "../shared/app-status.ts";
 
 /**
  * The vocabulary an application configuration is written in.
@@ -461,7 +462,7 @@ export const AppWriteSchema = z.object({
   /** Trimmed, so a name of nothing but spaces is the empty name it looks like. */
   name: z.string().trim().min(1).max(100),
   config: AppConfigSchema,
-  status: z.enum(["active", "disabled"]).optional(),
+  status: z.enum(APP_STATUSES).optional(),
 }, {
   error: (issue) =>
     issue.code === "unrecognized_keys" && issue.keys.includes("id") ? APP_ID_IS_SERVER_ASSIGNED : undefined,

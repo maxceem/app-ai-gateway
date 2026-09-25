@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
-  CliAccount,
   CliAccountResponse,
   CliCredential,
   CliDeployment,
@@ -12,6 +11,7 @@ import type {
   CliOperationRequestInput,
   CliRequestedOperationKind,
 } from "../../src/contracts/cli.ts";
+import type { CreatedApiKey, OrganizationSummary } from "../../src/contracts/responses.ts";
 import type { z } from "zod";
 import {
   CATALOG,
@@ -87,7 +87,7 @@ export interface KeyedOperation {
 }
 
 export interface Onboarding {
-  account: CliAccount;
+  account: OrganizationSummary;
   unclaimedAccess: { endsAt: string; limit?: number } | null;
   deployment: CliDeployment;
 }
@@ -163,7 +163,7 @@ export function bootstrapCredential(operation: CliOperation): SelectedCredential
 /** The credential exchange both `bootstrap` and `login` end with. */
 interface SelectedCredential {
   credential: CliCredential;
-  account: CliAccount;
+  account: OrganizationSummary;
   deployment: CliDeployment;
 }
 
@@ -451,7 +451,8 @@ export class Context {
       const appId = operation.result?.app?.id ?? (payload as { app?: string }).app ?? "";
       if (operation.state !== "completed" || !minted)
         fail("invalid_response", "The server did not return the generated application key.", "Inspect the app key list before retrying.", 3);
-      if (!minted.key) {
+      const { key: plaintext, ...redacted } = minted;
+      if (!plaintext) {
         // Nothing is left to recover: the deployment no longer holds the key.
         await this.forget(id);
         fail(
@@ -462,8 +463,7 @@ export class Context {
           { appId, keyId: minted.id },
         );
       }
-      const key = await storeKey(minted.key, minted, output, appId);
-      const { key: _plaintext, ...redacted } = minted;
+      const key = await storeKey({ ...redacted, key: plaintext }, output, appId);
       record.keyMetadata = key;
       record.result = { ...operation, result: { ...operation.result, api_key: redacted } };
       record.completedAt = new Date().toISOString();
@@ -644,13 +644,12 @@ function expired(operation: CliOperation): never {
  * command finishes the same file rather than minting a second key.
  */
 async function storeKey(
-  plaintext: string,
-  minted: { id: string; name: string; key_prefix: string; created_at: string },
+  minted: CreatedApiKey,
   output: ReservedOutput,
   appId: string,
 ): Promise<StoredKeyMetadata> {
   try {
-    await output.write(plaintext + "\n");
+    await output.write(minted.key + "\n");
   } catch {
     fail(
       "key_output_pending",
@@ -666,7 +665,7 @@ async function storeKey(
     key_prefix: minted.key_prefix,
     created_at: minted.created_at,
     storagePath: output.path,
-    contentHash: createHash("sha256").update(plaintext + "\n").digest("hex"),
+    contentHash: createHash("sha256").update(minted.key + "\n").digest("hex"),
   };
 }
 

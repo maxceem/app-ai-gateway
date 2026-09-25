@@ -117,7 +117,7 @@ const account: CliAccountResponse = {
     claimed: false,
     expiresAt: null,
   },
-  billing: { access: { state: "active" } },
+  billing: { access: { state: "self_hosted" } },
   usage: null,
 };
 

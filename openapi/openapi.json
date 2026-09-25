@@ -11595,151 +11595,76 @@
                       "type": "object",
                       "properties": {
                         "access": {
-                          "type": "object",
-                          "properties": {
-                            "state": {
-                              "type": "string"
-                            },
-                            "plan": {
-                              "type": [
-                                "object",
-                                "null"
-                              ],
+                          "oneOf": [
+                            {
+                              "type": "object",
                               "properties": {
-                                "planKey": {
-                                  "type": "string"
-                                },
-                                "planName": {
-                                  "type": "string"
-                                },
-                                "isDefault": {
-                                  "type": "boolean"
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "self_hosted"
+                                  ]
                                 }
                               },
                               "required": [
-                                "planKey",
-                                "planName",
-                                "isDefault"
+                                "state"
                               ]
                             },
-                            "subscription": {
-                              "type": [
-                                "object",
-                                "null"
-                              ],
+                            {
+                              "type": "object",
                               "properties": {
-                                "subscriptionId": {
-                                  "type": [
-                                    "string",
-                                    "null"
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "state"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "billed"
                                   ]
                                 },
-                                "status": {
-                                  "type": "string"
+                                "subscription": {
+                                  "$ref": "#/components/schemas/Subscription"
                                 },
-                                "planKey": {
-                                  "type": "string"
-                                },
-                                "planName": {
-                                  "type": "string"
-                                },
-                                "billingPeriod": {
+                                "plan": {
                                   "type": [
-                                    "string",
+                                    "object",
                                     "null"
                                   ],
-                                  "enum": [
-                                    "month",
-                                    "year",
-                                    null
+                                  "properties": {
+                                    "planKey": {
+                                      "type": "string"
+                                    },
+                                    "planName": {
+                                      "type": "string"
+                                    },
+                                    "isDefault": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "planKey",
+                                    "planName",
+                                    "isDefault"
                                   ]
-                                },
-                                "renewsAt": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "endsAt": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "trialEndsAt": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "source": {
-                                  "type": "string"
-                                },
-                                "createdAt": {
-                                  "type": "string"
-                                },
-                                "updatedAt": {
-                                  "type": "string"
-                                },
-                                "billingAnchorDay": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                },
-                                "billingAnchorAt": {
-                                  "type": "string"
-                                },
-                                "billingScheduleUpdatedAt": {
-                                  "type": "string"
                                 }
                               },
                               "required": [
-                                "subscriptionId",
-                                "status",
-                                "planKey",
-                                "planName",
-                                "billingPeriod",
-                                "renewsAt",
-                                "endsAt",
-                                "trialEndsAt",
-                                "source",
-                                "createdAt",
-                                "updatedAt",
-                                "billingAnchorDay",
-                                "billingAnchorAt",
-                                "billingScheduleUpdatedAt"
+                                "state",
+                                "subscription",
+                                "plan"
                               ]
                             }
-                          },
-                          "required": [
-                            "state"
-                          ]
-                        },
-                        "limit": {
-                          "type": "number"
-                        },
-                        "period": {
-                          "type": "object",
-                          "properties": {
-                            "periodId": {
-                              "type": "string"
-                            },
-                            "periodStart": {
-                              "type": "string"
-                            },
-                            "periodEnd": {
-                              "type": "string"
-                            },
-                            "resetAt": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "periodId",
-                            "periodStart",
-                            "periodEnd",
-                            "resetAt"
                           ]
                         }
                       },
@@ -11767,6 +11692,9 @@
                         },
                         "used": {
                           "type": "number"
+                        },
+                        "limit": {
+                          "type": "number"
                         }
                       },
                       "required": [
@@ -11774,7 +11702,8 @@
                         "periodStart",
                         "periodEnd",
                         "resetAt",
-                        "used"
+                        "used",
+                        "limit"
                       ]
                     }
                   },

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOG,
   operationPath,
-  type OperationName,
   type OperationSpec,
+  type SecurityKind,
 } from "../src/contracts/catalog";
 // Imported for its side effect: mounting every management route module is what
 // fills `MOUNTED_OPERATIONS`, and this is the module that pulls them all in.
@@ -11,11 +11,25 @@ import "../src/routes/management";
 import { Hono } from "hono";
 import { MOUNTED_OPERATIONS, catalogRouter } from "../src/routes/catalog-router";
 
-/** The half of the catalog the management app is supposed to serve. */
-const SERVED = Object.keys(CATALOG).filter((name) => {
-  const path = CATALOG[name as OperationName].path;
-  return path.startsWith("/v1/admin") || path.startsWith("/v1/cli");
-});
+/** The credentials only an operation mounted through a catalog router is reached with. */
+const CATALOG_MOUNTED_SECURITY: ReadonlySet<SecurityKind> = new Set(["management", "session", "cliPoll"]);
+/** Documented, but served by Better Auth's own handler rather than a catalog router. */
+const BETTER_AUTH_TAG = "Console authentication";
+
+/**
+ * The half of the catalog the management app is supposed to serve, picked by
+ * the credential that reaches it rather than by where its path lives, so a new
+ * surface cannot fall out of this check by choosing a new prefix: everything a
+ * management key, a browser session or a CLI poll reaches, and the public
+ * steps of a CLI handoff.
+ * Those public handoff steps are selected by their `CLI` tag.
+ */
+const SERVED = Object.entries<OperationSpec>(CATALOG)
+  .filter(([, spec]) =>
+    !spec.tags.includes(BETTER_AUTH_TAG)
+    && (CATALOG_MOUNTED_SECURITY.has(spec.security)
+      || (spec.security === "public" && spec.tags.includes("CLI"))))
+  .map(([name]) => name);
 
 describe("operation catalog", () => {
   /*
@@ -26,6 +40,13 @@ describe("operation catalog", () => {
    */
   it("serves every admin and CLI operation it documents, and nothing else", () => {
     expect([...MOUNTED_OPERATIONS].sort()).toEqual([...SERVED].sort());
+    // Whatever a credential says, nothing under the two management prefixes is
+    // left out of the set above.
+    for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
+      if (spec.path.startsWith("/v1/admin") || spec.path.startsWith("/v1/cli")) {
+        expect(SERVED, name).toContain(name);
+      }
+    }
   });
 
   it("refuses to mount a management operation where its policy would not run", () => {

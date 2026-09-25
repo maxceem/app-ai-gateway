@@ -14,7 +14,8 @@ import { join, resolve } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { CliAccount, CliDeployment } from "../../src/contracts/cli.ts";
+import type { CliDeployment } from "../../src/contracts/cli.ts";
+import type { OrganizationSummary } from "../../src/contracts/responses.ts";
 import { CliError, fail, randomToken, origin, validate } from "./common.ts";
 
 /**
@@ -31,7 +32,7 @@ export interface ActiveConnection {
   url: string;
   authenticated: boolean;
   credential?: string;
-  account?: CliAccount;
+  account?: OrganizationSummary;
   deployment?: CliDeployment & { mode: CliDeployment["mode"] };
 }
 
@@ -125,7 +126,7 @@ const StoredOrigin = z.string().refine(
  * One connection as it is written to disk.
  *
  * Deliberately open about `account` and `deployment`: those are copies of what
- * the deployment answered, already parsed by `CliAccountSchema` and
+ * the deployment answered, already parsed by `OrganizationSummarySchema` and
  * `CliDeploymentSchema` on the way in. Re-checking their fields here would
  * refuse a state file written by a release whose contract carried fewer of
  * them, and the price of that refusal is somebody's connection — over fields

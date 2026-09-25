@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import type { z } from "zod";
 import { checkOperatorBaseUrl } from "../../src/core/origin-guard.ts";
 import {
   HandoffProviderAddPayloadSchema,
@@ -97,17 +98,12 @@ export async function resolveGateway(
   return value;
 }
 
-/** A provider create body, before the contract has judged it. */
-interface ProviderDraft {
-  type: string;
-  name: string;
-  slug: string;
-  providerGatewayId?: string;
-  baseUrl?: string;
-  pricing?: unknown;
-  gatewayRoute?: unknown;
-  secret?: string;
-}
+/**
+ * A provider create body before the contract has judged it: the contract's own
+ * fields, holding whatever the flags and files supplied. `validate` is what
+ * turns it into a body.
+ */
+type ProviderDraft = { [Field in keyof z.input<typeof ProviderCreateRequestSchema>]?: unknown };
 
 /**
  * The flag each gateway connection field is read from, by the field's key in
@@ -251,7 +247,7 @@ export async function resourceCommand(
     const value = !draft.providerGatewayId
       ? await secret(flags, `${type} API key`)
       : undefined;
-    await assertSupportedType(ctx, false, draft.type);
+    await assertSupportedType(ctx, false, type);
     if (value) draft.secret = value;
     let body: ProviderCreateRequest | undefined;
     if (!flags.browser) body = validate(ProviderCreateRequestSchema, draft);

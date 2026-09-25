@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { identityAuthFor, relaySocialSignIn } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
 import { derive, digest, proofMatches } from "./security";
@@ -6,6 +7,9 @@ import { relayedSubmission } from "./browser";
 import { CliBrowserProofSchema } from "../../contracts/cli";
 import type { CliContext } from "./types";
 export const CLAIM_OAUTH_COOKIE = "cli_claim_oauth";
+
+/** What the claim's OAuth cookie signs: the pending claim, and when the cookie stops counting. */
+const ClaimOAuthCookieSchema = z.object({ id: z.string().min(1), expires: z.number().int() });
 
 export async function claimOAuthAuthorized(env: Env, request: Request): Promise<boolean> {
   const raw = request.headers
@@ -17,14 +21,11 @@ export async function claimOAuthAuthorized(env: Env, request: Request): Promise<
   if (!raw) return false;
   try {
     const [encoded, signature] = raw.split(".");
-    const data = JSON.parse(atob(encoded!)) as { id: string; expires: number };
-    if (
-      !data.id ||
-      !Number.isSafeInteger(data.expires) ||
-      data.expires <= Date.now() ||
-      data.expires > Date.now() + 15 * 60000
-    )
-      return false;
+    if (encoded === undefined) return false;
+    const parsed = ClaimOAuthCookieSchema.safeParse(JSON.parse(atob(encoded)));
+    if (!parsed.success) return false;
+    const data = parsed.data;
+    if (data.expires <= Date.now() || data.expires > Date.now() + 15 * 60000) return false;
     const expected = await derive(env.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
     if (!(await proofMatches(signature, await digest(expected)))) return false;
     const row = await env.DB.prepare(

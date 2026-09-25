@@ -10,7 +10,12 @@ import type {
   CreatedAppResponse,
 } from "../contracts/responses";
 import { generateApiKey } from "../client-auth/api-keys";
-import { appRecordFromRow, invalidateAppConfig } from "../core/app-records";
+import {
+  appRecordFromRow,
+  invalidateAppConfig,
+  storedAppFromRow,
+  type StoredApp,
+} from "../core/app-records";
 import { referencedProviderSlugs, validateConfigurationReferences } from "./config-references";
 import { GatewayError } from "../core/errors";
 import {
@@ -167,18 +172,15 @@ function summary(config: AppConfig, providerIndex: OrganizationProviders) {
   };
 }
 
-function serializeRow(row: AppRow) {
+function serializeApp(stored: StoredApp) {
   return {
-    id: row.id,
-    name: row.name,
-    // Parsed rather than passed through: every write validates before it
-    // stores, so a row that does not parse is an internal error here exactly as
-    // it is on the request path.
-    config: appRecordFromRow(row).config,
-    status: row.status,
-    created_at: row.createdAt,
-    updated_at: row.updatedAt,
-    revision: row.revision,
+    id: stored.id,
+    name: stored.name,
+    config: stored.config,
+    status: stored.status,
+    created_at: stored.createdAt,
+    updated_at: stored.updatedAt,
+    revision: stored.revision,
   };
 }
 
@@ -339,7 +341,10 @@ export async function createApp(
 }
 
 export function getApp(_scope: ManagementScope, _actor: Actor, row: AppRow): AppResponse {
-  return { app: serializeRow(row) };
+  // Parsed rather than passed through: every write validates before it stores,
+  // so a row that does not parse is an internal error here exactly as it is on
+  // the request path.
+  return { app: serializeApp(storedAppFromRow(row)) };
 }
 
 /** Whether an edit of an existing application would be accepted, judged as its update would be. */
@@ -408,7 +413,7 @@ export async function updateApp(
   });
   if (!written) throw new GatewayError(409, "app_revision_conflict", "The application changed or was removed; reload it before saving your changes");
   invalidateAppConfig(appId);
-  return { app: serializeRow(written) };
+  return { app: serializeApp(written) };
 }
 
 export async function deleteApp(

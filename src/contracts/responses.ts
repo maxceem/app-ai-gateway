@@ -14,6 +14,7 @@
  */
 import { z } from "zod";
 import { PROVIDER_TYPES } from "../shared/providers.ts";
+import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
 import {
   GATEWAY_DESCRIPTORS,
@@ -264,7 +265,7 @@ export const AppResponseSchema = z.object({
      * of it to publish.
      */
     config: AppConfigSchema,
-    status: z.enum(["active", "disabled"]),
+    status: z.enum(APP_STATUSES),
     created_at: z.string(),
     updated_at: z.string(),
   }),
@@ -573,7 +574,7 @@ export const UsageTotalsSchema = z.object({
 export const AppSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
-  status: z.enum(["active", "disabled"]),
+  status: z.enum(APP_STATUSES),
   authentication_type: z.enum(["apple_app_attest", "api_key"]),
   apple_bundle_id: z.string().nullable(),
   created_at: z.string(),

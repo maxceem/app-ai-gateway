@@ -4,6 +4,7 @@ import { app } from "../db/schema";
 import { GatewayError } from "./errors";
 import { ttlCache } from "./ttl-cache";
 import { ConfigError, parseAppConfig } from "../shared/app-config";
+import { isAppStatus } from "../shared/app-status";
 import type { AppRecord } from "./types";
 
 const CONFIG_CACHE_TTL_MS = 60_000;
@@ -26,6 +27,12 @@ export const appConfigCache = ttlCache<string, AppRecord>({
   maxEntries: 10_000,
 });
 
+/** The columns an {@link AppRecord} is read from, with `config` and `status` as stored. */
+type AppColumns = Pick<typeof app.$inferSelect, "id" | "organizationId" | "name" | "revision"> & {
+  config: unknown;
+  status: string;
+};
+
 /**
  * One authoritative stored row as the Worker reads it.
  *
@@ -33,13 +40,17 @@ export const appConfigCache = ttlCache<string, AppRecord>({
  * every write validates before it stores, so a request-path row that fails the
  * grammar means the deployment has moved under its own data.
  */
-export function appRecordFromRow(row: typeof app.$inferSelect): AppRecord {
+export function appRecordFromRow(row: AppColumns): AppRecord {
+  const status = row.status;
+  if (!isAppStatus(status)) {
+    throw new GatewayError(500, "internal_error", `Stored application status "${status}" is not recognised`);
+  }
   try {
     return {
       id: row.id,
       organizationId: row.organizationId,
       name: row.name,
-      status: row.status,
+      status,
       revision: row.revision,
       config: parseAppConfig(row.config),
     };
@@ -49,6 +60,18 @@ export function appRecordFromRow(row: typeof app.$inferSelect): AppRecord {
     }
     throw error;
   }
+}
+
+/** An {@link AppRecord} with its row's timestamps, as the management surface answers with it. */
+export interface StoredApp extends AppRecord {
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function storedAppFromRow(
+  row: AppColumns & { createdAt: string; updatedAt: string },
+): StoredApp {
+  return { ...appRecordFromRow(row), createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
 export async function loadApp(env: Env, appId: string): Promise<AppRecord> {

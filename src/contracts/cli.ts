@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   AppResponseSchema,
   CreatedApiKeySchema,
+  OrganizationSummarySchema,
   ProviderGatewaySummarySchema,
   ProviderSummarySchema,
   UsageTotalsSchema,
@@ -16,6 +17,7 @@ import {
   ProviderCreateRequestSchema,
   ProviderGatewayCreateRequestSchema,
 } from "./schemas.ts";
+import { EntitledPlanSchema, GatewayBillingAccessSchema } from "./billing.ts";
 /** The one random secret a CLI operation is proven with; its digest is the operation's id. */
 export const CliProofSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/);
 export const CliBootstrapRequestSchema = z.object({ token: CliProofSchema }).strict();
@@ -104,13 +106,6 @@ export const CliDeploymentSchema = z.object({
   apiUrl: z.url(),
   consoleOrigin: z.url(),
 });
-export const CliAccountSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  createdAt: z.string(),
-  claimed: z.boolean(),
-  expiresAt: z.string().nullable(),
-});
 /**
  * What has to happen before this handoff can be approved.
  *
@@ -147,7 +142,7 @@ export const CliViewerSchema = z.object({
 export const CliBrowserDetailsResponseSchema = z.object({
   kind: CliOperationKindSchema,
   payload: z.record(z.string(), z.unknown()),
-  account: CliAccountSchema,
+  account: OrganizationSummarySchema,
   viewer: CliViewerSchema.nullable(),
   /**
    * What stands between this browser and the Approve button, or null when
@@ -252,7 +247,7 @@ export const CliOperationSchema = z.object({
   url: z.url().optional(),
   deployment: CliDeploymentSchema,
   result: CliOperationResultSchema.optional(),
-  account: CliAccountSchema.nullable().optional(),
+  account: OrganizationSummarySchema.nullable().optional(),
 });
 export const CliUsageResponseSchema = z.object({
   accountId: z.string(),
@@ -288,49 +283,21 @@ export const CliCapabilitiesResponseSchema = z.object({
   providerGateways: z.array(z.object({ type: z.string(), name: z.string() })),
 });
 
+const [SelfHostedAccessSchema, UnavailableAccessSchema, BilledAccessSchema] =
+  GatewayBillingAccessSchema.options;
+
 /**
- * What `GET /v1/cli/account` answers with.
- *
- * `billing` and `usage` are declared field by field rather than passed through,
- * because the CLI prints this verbatim on stdout: parsing against this schema
- * is what keeps anything the resolution carries beyond them off it.
+ * The access `GET /v1/cli/account` reports: the gateway's own answer, less what
+ * a terminal has no use for — a plan's opaque `limits`, a stale reading's
+ * marker and the billing service's error code.
  */
-export const CliEntitledPlanSchema = z.object({
-  planKey: z.string(),
-  planName: z.string(),
-  isDefault: z.boolean(),
-});
-export const CliSubscriptionSchema = z.object({
-  subscriptionId: z.string().nullable(),
-  status: z.string(),
-  planKey: z.string(),
-  planName: z.string(),
-  billingPeriod: z.enum(["month", "year"]).nullable(),
-  renewsAt: z.string().nullable(),
-  endsAt: z.string().nullable(),
-  trialEndsAt: z.string().nullable(),
-  source: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  billingAnchorDay: z.number().nullable(),
-  billingAnchorAt: z.string(),
-  billingScheduleUpdatedAt: z.string(),
-});
-export const CliBillingAccessSchema = z.object({
-  state: z.string(),
-  plan: CliEntitledPlanSchema.nullable().optional(),
-  subscription: CliSubscriptionSchema.nullable().optional(),
-});
-export const CliBillingSchema = z.object({
-  access: CliBillingAccessSchema,
-  limit: z.number().optional(),
-  period: z.object({
-    periodId: z.string(),
-    periodStart: z.string(),
-    periodEnd: z.string(),
-    resetAt: z.string(),
-  }).optional(),
-});
+export const CliBillingAccessSchema = z.discriminatedUnion("state", [
+  SelfHostedAccessSchema,
+  UnavailableAccessSchema.pick({ state: true }),
+  BilledAccessSchema.pick({ state: true, subscription: true }).extend({
+    plan: EntitledPlanSchema.omit({ limits: true }).nullable(),
+  }),
+]);
 /** Null outside a billed plan, and for a plan with no monthly limit, which counts nothing. */
 export const CliQuotaUsageSchema = z.object({
   periodId: z.string(),
@@ -338,16 +305,23 @@ export const CliQuotaUsageSchema = z.object({
   periodEnd: z.string(),
   resetAt: z.string(),
   used: z.number(),
+  limit: z.number(),
 }).nullable();
+/**
+ * What `GET /v1/cli/account` answers with.
+ *
+ * `billing` and `usage` are declared field by field rather than passed through,
+ * because the CLI prints this verbatim on stdout: parsing against this schema
+ * is what keeps anything the resolution carries beyond them off it.
+ */
 export const CliAccountResponseSchema = z.object({
   deployment: CliDeploymentSchema,
-  account: CliAccountSchema,
-  billing: CliBillingSchema,
+  account: OrganizationSummarySchema,
+  billing: z.object({ access: CliBillingAccessSchema }),
   usage: CliQuotaUsageSchema,
 });
 
 export type CliDeployment = z.infer<typeof CliDeploymentSchema>;
-export type CliAccount = z.infer<typeof CliAccountSchema>;
 export type CliCredential = z.infer<typeof CliCredentialSchema>;
 export type CliOperation = z.infer<typeof CliOperationSchema>;
 export type CliOperationResult = z.infer<typeof CliOperationResultSchema>;
@@ -371,37 +345,3 @@ export type CliOperationRequestInput = z.input<typeof CliOperationRequestSchema>
 export type CliOperationPayload<Kind extends CliRequestedOperationKind> = NonNullable<
   Extract<CliOperationRequestInput, { kind: Kind }>["payload"]
 >;
-
-/** The envelope the CLI prints for a failure; see `cli/src/common.ts`. */
-export const CliErrorDetailsSchema = z.object({
-  status: z.number().optional(),
-  appId: z.string().optional(),
-  keyId: z.string().optional(),
-  providerId: z.string().optional(),
-  providerGatewayId: z.string().optional(),
-  revoked: z.boolean().optional(),
-  storagePath: z.string().optional(),
-  /** Which ceiling refused the request, for the codes that name one. */
-  scope: z.string().optional(),
-  limit: z.number().optional(),
-  used: z.number().optional(),
-  windowSeconds: z.number().optional(),
-  retryAfterSeconds: z.number().optional(),
-  resetAt: z.string().optional(),
-  id: z.string().optional(),
-  state: z.string().optional(),
-  expiresAt: z.string().optional(),
-  url: z.string().optional(),
-  /** The tail of a failed subprocess's own output, for failures it explains. */
-  output: z.string().optional(),
-  /**
-   * What Cloudflare itself said about a refused API call: each error's message
-   * and its code. Carried because the things that refuse a deployment — an
-   * account ceiling, a permission a token lacks — are named only there, and
-   * wrangler reports an API refusal it aggregates as the bare sentence that a
-   * request failed.
-   */
-  apiErrors: z.string().optional(),
-});
-export type CliErrorDetails = z.infer<typeof CliErrorDetailsSchema>;
-

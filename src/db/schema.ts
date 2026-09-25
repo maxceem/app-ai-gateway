@@ -15,9 +15,9 @@ import type { AuthMethod } from "../core/types";
 import type { CredentialSource } from "../shared/capabilities";
 import type { GatewayConnectionConfig, GatewayType } from "../shared/gateways";
 import type { AppConfig } from "../shared/app-config";
+import type { AppStatus } from "../shared/app-status";
 import type { ProviderType } from "../shared/providers";
 
-export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
 export type AttestEnvironment = "production" | "development";
 export type ApiKeyStatus = "active" | "revoked";

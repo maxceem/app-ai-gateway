@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { OperationQuery } from "@contracts/catalog";
+import type { BillingPlanSelection } from "@contracts/billing";
+import type { OperationParams, OperationQuery, OperationRequest } from "@contracts/catalog";
 import type { UsageBreakdownDimension } from "@contracts/responses";
 import { call } from "./api";
 import { toAppWrite } from "./config-conversion";
@@ -276,16 +277,20 @@ export function useCreateProviderGateway() {
   );
 }
 
+/** An edit of one gateway: its id and the operation's own body. */
+type GatewayEdit<K extends "updateProviderGateway" | "rotateProviderGateway"> =
+  OperationParams<K> & OperationRequest<K>;
+
 export function useRenameProviderGateway() {
-  return useGatewayMutation(({ id, name, revision }: { id: string; name: string; revision: number }) =>
-    call("updateProviderGateway", { params: { id }, body: { name, revision } }),
+  return useGatewayMutation(({ id, ...body }: GatewayEdit<"updateProviderGateway">) =>
+    call("updateProviderGateway", { params: { id }, body }),
   );
 }
 
 /** A single re-encryption, shared by every provider behind the gateway. */
 export function useRotateProviderGateway() {
-  return useGatewayMutation(({ id, token, revision }: { id: string; token: string; revision: number }) =>
-    call("rotateProviderGateway", { params: { id }, body: { token, revision } }),
+  return useGatewayMutation(({ id, ...body }: GatewayEdit<"rotateProviderGateway">) =>
+    call("rotateProviderGateway", { params: { id }, body }),
   );
 }
 
@@ -352,7 +357,7 @@ export function useBillingPlans(enabled: boolean) {
 
 export function useStartCheckout() {
   return useMutation({
-    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+    mutationFn: (input: BillingPlanSelection) =>
       call("startCheckout", { body: {
         ...input,
         // The landing announces the purchase; an abandoned checkout comes back
@@ -375,7 +380,7 @@ export function useStartCheckout() {
 export function useChangePlan() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+    mutationFn: (input: BillingPlanSelection) =>
       call("changePlan", { body: input }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
@@ -392,7 +397,7 @@ export function useCancelSubscription() {
 export function useResumeSubscription() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+    mutationFn: (input: BillingPlanSelection) =>
       call("resumeSubscription", { body: input }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
@@ -478,13 +483,7 @@ export function useRevokeApiKey(appId: string) {
   });
 }
 
-export interface UserQuery {
-  month: string;
-  query?: string;
-  status?: "active" | "blocked";
-  limit?: number;
-  offset?: number;
-}
+export type UserQuery = OperationQuery<"listAppUsers">;
 
 export function useUsers(appId: string, params: UserQuery) {
   return useQuery({

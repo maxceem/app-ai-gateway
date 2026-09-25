@@ -1,9 +1,9 @@
 import { Writable } from "node:stream";
-import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
 import { appCommand } from "./apps.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
 import { Context } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
+import { CliErrorDetailsSchema } from "./errors.ts";
 import { humanResult, type OutputContext } from "./human.ts";
 import { helpText, parse, type ParseResult } from "./parser.ts";
 import { required, resourceCommand } from "./resources.ts";

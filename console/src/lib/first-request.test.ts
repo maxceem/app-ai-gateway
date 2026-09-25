@@ -20,7 +20,13 @@ const routing = (policy: Partial<ExamplePolicy> = {}): ExampleRouting => ({
   },
   model_rewrites: {},
 });
-const provider = (type = "openai"): ExampleProvider => ({ slug: "custom", type, status: "active" });
+const provider = (type: ExampleProvider["type"] = "openai"): ExampleProvider => ({
+  slug: "custom",
+  type,
+  status: "active",
+  providerGatewayId: null,
+  pricing: null,
+});
 const prices = { openai: { "text-model": { input: 1, output: 2 } } };
 
 describe("first request examples", () => {

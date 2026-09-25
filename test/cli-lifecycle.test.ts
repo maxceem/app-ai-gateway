@@ -4,6 +4,7 @@ import {
 } from "../src/usage/usage-retention";
 import { recordBlockedUsageEvent } from "../src/usage/usage-record";
 import { claimOAuthAuthorized } from "../src/routes/cli/oauth";
+import { derive } from "../src/routes/cli/security";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -748,6 +749,23 @@ describe("CLI account lifecycle", () => {
       { headers: { cookie: grant!.split(";")[0]! } },
     );
     expect(await claimOAuthAuthorized(testEnv, callback)).toBe(true);
+    // The claim is still pending, so each refusal below is the cookie's own.
+    const withCookie = (cookie: string) => new Request(
+      "https://example.test/v1/auth/callback/google",
+      { headers: { cookie: `cli_claim_oauth=${cookie}` } },
+    );
+    const signed = async (payload: unknown) => {
+      const encoded = btoa(JSON.stringify(payload));
+      return `${encoded}.${await derive(testEnv.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`)}`;
+    };
+    expect(await claimOAuthAuthorized(testEnv, withCookie("not-a-grant"))).toBe(false);
+    expect(await claimOAuthAuthorized(testEnv, withCookie(await signed({ id: op.id })))).toBe(false);
+    expect(await claimOAuthAuthorized(
+      testEnv,
+      withCookie(await signed({ id: op.id, expires: Date.now() - 1000 })),
+    )).toBe(false);
+    const encodedGrant = grant?.split(";")[0]?.slice("cli_claim_oauth=".length).split(".")[0];
+    expect(await claimOAuthAuthorized(testEnv, withCookie(`${encodedGrant}.${"0".repeat(64)}`))).toBe(false);
     const relay = new URL(((await response.json()) as { url: string }).url);
     expect(relay.origin).toBe("https://relay.example.test");
     expect(relay.searchParams.get("return")).toBe(
@@ -1110,10 +1128,11 @@ it("keeps the completed trial counter readable during recovery without renewing 
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
     account: { createdAt: origin, claimed: false },
-    billing: { access: { subscription: null }, limit: 1000 },
+    billing: { access: { subscription: null } },
     // Still the first period, past its renewal: an unclaimed window never renews.
     usage: {
       used: 0,
+      limit: 1000,
       periodId: `free:${origin}:${origin}`,
       periodStart: origin,
       periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString(),
