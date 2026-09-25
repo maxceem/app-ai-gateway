@@ -846,8 +846,7 @@ test("retained account usage preserves deleted app attribution and actual backen
     output_tokens: 4,
     cost_usd: 0.01,
     errors: 0,
-    blocked: 0,
-  };
+    };
   const response = {
     accountId: "account",
     month: "2026-09",

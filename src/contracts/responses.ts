@@ -13,6 +13,7 @@
  * description — the generated document is byte-identical either way.
  */
 import { z } from "zod";
+import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons.ts";
 import { PROVIDER_TYPES } from "../shared/providers.ts";
 import { APP_STATUSES } from "../shared/app-status.ts";
 import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
@@ -30,26 +31,8 @@ import {
   SlugSchema,
 } from "./schemas.ts";
 
-/**
- * What happened to one served request: answered (`ok`), failed upstream, or
- * refused before any provider was called — by the organization's own app
- * limits (`blocked_app_*`), by the plan allowance (`blocked_billing`), or by an
- * operator (`blocked_user`). The one list: the stored column, the recorder, the
- * event filter and this document all read it.
- */
-export const USAGE_STATUSES = [
-  "ok",
-  "provider_error",
-  "blocked_app_rate",
-  "blocked_app_budget",
-  "blocked_billing",
-  "blocked_user",
-] as const;
-/**
- * One of {@link USAGE_STATUSES}. A `blocked_*` prefix matches the refusing
- * error code's, and keeping `blocked_app_*` apart from `blocked_billing` is the
- * point: one is the customer's decision, the other is ours.
- */
+/** Outcomes of requests dispatched to a provider. */
+export const USAGE_STATUSES = ["ok", "provider_error"] as const;
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
 
 /** The dimensions a usage breakdown can group by. */
@@ -167,7 +150,7 @@ export const UsageEventSchema = z.object({
     description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
   }),
   cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().meta({
-    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed.",
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
@@ -214,6 +197,29 @@ export const AuthEventListSchema = z.object({
   events: z.array(AuthEventSchema),
 });
 
+export const RejectionEventSchema = z.object({
+  id: z.number().int(),
+  user_id: z.string().nullable(),
+  api_key_id: z.string().nullable(),
+  reason: z.enum(REJECTION_REASONS),
+  scope: z.enum(REJECTION_SCOPES).nullable().meta({ description: "Null on historical samples whose limit scope cannot be recovered." }),
+  provider_slug: z.string().nullable().meta({ description: "Attempted provider; this request did not contact an upstream." }),
+  model: z.string().nullable(),
+  route: z.string().nullable(),
+  endpoint_slug: z.string().nullable(),
+  app_version: z.string().nullable(),
+  auth_method: z.enum(["attest", "api_key"]).nullable(),
+  latency_ms: z.number().int().nullable(),
+  created_at: z.string(),
+}).meta({ id: "RejectionEvent" });
+
+export const RejectionEventListSchema = z.object({
+  app_id: z.string(),
+  limit: z.number().int(),
+  next_before_id: z.number().int().nullable(),
+  events: z.array(RejectionEventSchema),
+});
+
 export const AuthEventSummarySchema = z.object({
   app_id: z.string(),
   days: z.number().int(),
@@ -230,7 +236,13 @@ export const AuthEventSummarySchema = z.object({
     date: z.string(),
     status: z.string(),
     count: z.number().int(),
-  })).meta({ description: "Non-ok proxied requests per day, so proxy-path failures appear in the same view." }),
+  })).meta({ description: "Provider errors per day from requests that reached an upstream." }),
+  rejection_samples: z.array(z.object({
+    date: z.string(),
+    reason: z.enum(REJECTION_REASONS),
+    scope: z.enum(REJECTION_SCOPES).nullable(),
+    count: z.number().int(),
+  })).meta({ description: "Sampled pre-provider refusals per day. These are diagnostic samples, not exact request totals." }),
   token_exchange: z.object({
     total: z.number().int(),
     ok: z.number().int(),
@@ -531,6 +543,8 @@ export type UsageEvent = z.infer<typeof UsageEventSchema>;
 export type UsageEventList = z.infer<typeof UsageEventListSchema>;
 export type AuthEvent = z.infer<typeof AuthEventSchema>;
 export type AuthEventList = z.infer<typeof AuthEventListSchema>;
+export type RejectionEvent = z.infer<typeof RejectionEventSchema>;
+export type RejectionEventList = z.infer<typeof RejectionEventListSchema>;
 export type AuthEventSummary = z.infer<typeof AuthEventSummarySchema>;
 export type AppResponse = z.infer<typeof AppResponseSchema>;
 export type AppDeleteResponse = z.infer<typeof AppDeleteResponseSchema>;
@@ -568,7 +582,6 @@ export const UsageTotalsSchema = z.object({
   output_tokens: z.number(),
   cost_usd: z.number(),
   errors: z.number(),
-  blocked: z.number(),
 });
 
 export const AppSummarySchema = z.object({
@@ -596,7 +609,7 @@ export const AppListResponseSchema = z.object({
   month: z.string(),
   has_proxied_requests: z.boolean().meta({
     description:
-      "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
+      "Whether this account has ever recorded a provider attempt, at any time. Refusals before a provider call do not set this flag. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
   }),
   apps: z.array(AppSummarySchema),
 });
@@ -679,7 +692,7 @@ export const UserBlockResponseSchema = z.object({
 export const MonthlyUsageResponseSchema = z.object({
   app_id: z.string(),
   month: z.string(),
-  ...UsageTotalsSchema.omit({ errors: true, blocked: true }).shape,
+  ...UsageTotalsSchema.omit({ errors: true }).shape,
 });
 
 export const TimeseriesBucketSchema = UsageTotalsSchema.extend({

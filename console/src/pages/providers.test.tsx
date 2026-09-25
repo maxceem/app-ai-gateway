@@ -139,8 +139,7 @@ function appSummary(name: string, referenced: string[]): AppSummary {
       output_tokens: 0,
       cost_usd: 0,
       errors: 0,
-      blocked: 0,
-    },
+      },
   };
 }
 

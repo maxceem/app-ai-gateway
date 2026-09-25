@@ -11,7 +11,6 @@ import { type ResolvedRoute, routeCanonicalModel } from "../providers/route-adap
 import { log } from "../core/log";
 import { timeOrderedId } from "../core/ids";
 import { storedAppVersion } from "../core/app-version";
-import { claimDiagnosticSample } from "../core/endpoint-rate-limit";
 import { type ObservedBody } from "./body-observer";
 import { computeCost, EMPTY_USAGE, resolveModelAuthor, type UsageObservation } from "./pricing";
 import { observeResponse } from "./usage-readers";
@@ -20,7 +19,6 @@ import type { ApiStyle } from "../shared/capabilities";
 import type { GatewayIdentity } from "../core/types";
 import { database } from "../db/index";
 import { appUsageEvent, type CostSource, type ProviderPricing } from "../db/schema";
-import type { UsageStatus } from "../contracts/responses";
 
 /** Everything a usage row records about which provider served an attempt. */
 export interface AttemptAttribution {
@@ -70,22 +68,6 @@ interface UsageEventInput {
   endpointSlug?: string | null;
   appVersion: string | null;
   status: "ok" | "provider_error";
-  latencyMs: number;
-}
-
-interface BlockedUsageEventInput {
-  env: Env;
-  organizationId: string;
-  identity: GatewayIdentity;
-  /** The attempt the request would have made, had it not been refused. */
-  attribution: AttemptAttribution;
-  endpointSlug?: string | null;
-  appVersion: string | null;
-  /**
-   * Which system refused the request: `blocked_app_*` the organization's own app
-   * limits, `blocked_billing` the plan allowance, `blocked_user` an operator.
-   */
-  status: Extract<UsageStatus, `blocked_${string}`>;
   latencyMs: number;
 }
 
@@ -386,59 +368,5 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       createdAt,
     },
     audioSeconds: usage.audioSeconds,
-  });
-}
-
-export async function recordBlockedUsageEvent(input: BlockedUsageEventInput): Promise<void> {
-  const { attribution, identity } = input;
-  const createdAt = new Date().toISOString();
-  // Blocked requests are diagnostics rather than accounting facts. Keep one
-  // representative row per authenticated identity per minute: a caller may
-  // vary model, route, status or version, but none of those opens another
-  // sample. API-key apps without end users use the credential id as the stable
-  // identity; the final fallback still groups by app rather than caller input.
-  const subject = JSON.stringify([
-    identity.appId,
-    identity.userId === null ? "api_key" : "user",
-    identity.userId ?? identity.apiKeyId ?? "app",
-  ]);
-  try {
-    if (!await claimDiagnosticSample(input.env, "blocked-usage", subject, 60_000)) return;
-  } catch {
-    // Sampling is a cost-control boundary. If its coordinator is unavailable,
-    // suppress the optional diagnostic instead of failing open into D1 writes.
-    return;
-  }
-  const eventId = timeOrderedId();
-  // A blocked request spent nothing, so there is no ledger settlement: only the
-  // row and the key timestamp, both idempotent under the same identity.
-  await persistUsageEvent(input.env, {
-    eventId,
-    row: {
-      eventId,
-      appId: identity.appId,
-      organizationId: input.organizationId,
-      userId: identity.userId,
-      apiKeyId: identity.apiKeyId ?? null,
-      providerType: attribution.provider,
-      providerId: attribution.providerId,
-      providerSlug: attribution.providerSlug,
-      model: attribution.model,
-      route: attribution.route,
-      endpointSlug: input.endpointSlug ?? null,
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      cacheWriteTokens: 0,
-      outputTokens: 0,
-      costUsd: 0,
-      // A blocked request never reached a provider, so its zero cost has no
-      // source to record: nothing was metered and nothing is missing.
-      costSource: null,
-      appVersion: input.appVersion,
-      authMethod: identity.authMethod,
-      status: input.status,
-      latencyMs: input.latencyMs,
-      createdAt,
-    },
   });
 }

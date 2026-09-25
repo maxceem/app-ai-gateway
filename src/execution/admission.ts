@@ -3,11 +3,11 @@ import { billingQuota } from "../billing/quota";
 import { monthlyBudgetMicrousd, hasAppLevelLimits, hasUserLevelLimits } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
 import { cachedAppUserBlocked } from "../client-auth/user-status";
-import { recordBlockedUsageEvent } from "../usage/usage-record";
+import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { AppRecord, GatewayIdentity } from "../core/types";
-import type { UsageStatus } from "../contracts/responses";
+import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { attemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
 
@@ -78,18 +78,19 @@ export async function admitRequest(
   const firstAttempt = plan.attempts[0];
 
   const blockedEvent = (
-    status: Extract<UsageStatus, `blocked_${string}`>,
+    reason: RejectionReason,
+    scope: RejectionScope,
     latencyMs: number,
   ) =>
     input.waitUntil(
-      recordBlockedUsageEvent({
-        organizationId: app.organizationId,
+      recordRejectionEvent({
         env,
         identity,
         attribution: attemptAttribution(firstAttempt),
         endpointSlug: plan.endpointSlug,
         appVersion: input.appVersion,
-        status,
+        reason,
+        scope,
         latencyMs: Math.round(latencyMs),
       }),
     );
@@ -111,7 +112,7 @@ export async function admitRequest(
       // A budget settles from completed requests, so it has no instant of its
       // own to retry after; the month it is measured over is the honest one.
       const retryAfter = Math.max(1, Math.ceil((nextUtcMonthStart(now) - now) / 1000));
-      blockedEvent("blocked_app_budget", durationMs);
+      blockedEvent("blocked_app_budget", scope, durationMs);
       throw new GatewayError(
         429,
         "app_budget_exhausted",
@@ -120,7 +121,7 @@ export async function admitRequest(
         { data: { scope } },
       );
     }
-    blockedEvent("blocked_app_rate", durationMs);
+    blockedEvent("blocked_app_rate", scope, durationMs);
     throw new GatewayError(
       429,
       "app_rate_limited",
@@ -157,7 +158,7 @@ export async function admitRequest(
   if (blockedResult.value) {
     // Before any limit is consulted, so a blocked user spends no app token.
     const durationMs = finish();
-    blockedEvent("blocked_user", durationMs);
+    blockedEvent("blocked_user", "user", durationMs);
     throw new GatewayError(403, "auth_required", "User is blocked");
   }
 
@@ -219,7 +220,7 @@ export async function admitRequest(
   });
   const durationMs = finish();
   if (!admission.allowed) {
-    blockedEvent("blocked_billing", durationMs);
+    blockedEvent("blocked_billing", "account", durationMs);
     throw new GatewayError(
       429,
       "billing_request_quota_exceeded",

@@ -22,7 +22,6 @@ export const EMPTY_USAGE_TOTALS: Readonly<UsageTotals> = Object.freeze({
   output_tokens: 0,
   cost_usd: 0,
   errors: 0,
-  blocked: 0,
 });
 
 export function currentMonth(): string {
@@ -78,8 +77,7 @@ export const usageTotals = {
   cache_write_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.cacheWriteTokens}), 0)`,
   output_tokens: sql<number>`COALESCE(SUM(${appUsageEvent.outputTokens}), 0)`,
   cost_usd: sql<number>`COALESCE(SUM(${appUsageEvent.costUsd}), 0)`,
-  errors: sql<number>`SUM(CASE WHEN ${appUsageEvent.status} = 'provider_error' THEN 1 ELSE 0 END)`,
-  blocked: sql<number>`SUM(CASE WHEN ${appUsageEvent.status} LIKE 'blocked_%' THEN 1 ELSE 0 END)`,
+  errors: sql<number>`COALESCE(SUM(CASE WHEN ${appUsageEvent.status} = 'provider_error' THEN 1 ELSE 0 END), 0)`,
 };
 
 /*
@@ -111,8 +109,7 @@ export function rawTotals(t: string): string {
       COALESCE(SUM(${t}.cache_write_tokens), 0) AS cache_write_tokens,
       COALESCE(SUM(${t}.output_tokens), 0) AS output_tokens,
       COALESCE(SUM(${t}.cost_usd), 0) AS cost_usd,
-      SUM(CASE WHEN ${t}.status = 'provider_error' THEN 1 ELSE 0 END) AS errors,
-      SUM(CASE WHEN ${t}.status LIKE 'blocked_%' THEN 1 ELSE 0 END) AS blocked`;
+      COALESCE(SUM(CASE WHEN ${t}.status = 'provider_error' THEN 1 ELSE 0 END), 0) AS errors`;
 }
 
 /**
@@ -128,8 +125,7 @@ export function rollupTotals(t: string): string {
       COALESCE(SUM(${t}.cache_write_tokens), 0) AS cache_write_tokens,
       COALESCE(SUM(${t}.output_tokens), 0) AS output_tokens,
       COALESCE(SUM(${t}.cost_usd), 0) AS cost_usd,
-      SUM(CASE WHEN ${t}.status = 'provider_error' THEN ${t}.requests ELSE 0 END) AS errors,
-      SUM(CASE WHEN ${t}.status LIKE 'blocked_%' THEN ${t}.requests ELSE 0 END) AS blocked`;
+      COALESCE(SUM(CASE WHEN ${t}.status = 'provider_error' THEN ${t}.requests ELSE 0 END), 0) AS errors`;
 }
 
 /** Re-sums the union's two already-grouped halves into one row per key. */
@@ -140,11 +136,10 @@ export const UNION_TOTALS = `
     SUM(cache_write_tokens) AS cache_write_tokens,
     SUM(output_tokens) AS output_tokens,
     SUM(cost_usd) AS cost_usd,
-    SUM(errors) AS errors,
-    SUM(blocked) AS blocked`;
+    COALESCE(SUM(errors), 0) AS errors`;
 
 /** The six figures the month summary endpoint has always reported. */
-export type MonthTotals = Omit<UsageTotals, "errors" | "blocked">;
+export type MonthTotals = Omit<UsageTotals, "errors">;
 
 /**
  * Which `by` values survive compaction.
@@ -261,8 +256,7 @@ LIMIT ?4`)
  *
  * Matched on the month prefix of `bucket` with no grain filter, because a month
  * is held as day buckets until it is folded and as one month bucket afterwards,
- * never as both. `errors` and `blocked` are summed by the halves and then
- * dropped: this endpoint has never reported them, and widening a documented
+ * never as both. `errors` is summed by the halves and then dropped: this endpoint has never reported them, and widening a documented
  * response is not this change's business.
  *
  * An aggregate with no GROUP BY always answers with one row, though `.first()`
@@ -295,7 +289,7 @@ FROM (
     .bind(appId, month)
     .first<MonthTotals>();
   if (row) return row;
-  const { errors: _errors, blocked: _blocked, ...empty } = EMPTY_USAGE_TOTALS;
+  const { errors: _errors, ...empty } = EMPTY_USAGE_TOTALS;
   return empty;
 }
 

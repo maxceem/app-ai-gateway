@@ -14,6 +14,7 @@
  * produces the same document `.openapi({ description })` does.
  */
 import { z } from "zod";
+import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons.ts";
 import {
   BillingCancelResponseSchema,
   BillingChangeResponseSchema,
@@ -72,6 +73,7 @@ import {
   AppValidateResponseSchema,
   AuthEventListSchema,
   AuthEventSummarySchema,
+  RejectionEventListSchema,
   BreakdownResponseSchema,
   ConsoleCapabilitiesResponseSchema,
   CreatedApiKeySchema,
@@ -925,6 +927,27 @@ export const CATALOG = {
     }),
     response: AuthEventListSchema,
     responseDescription: "Paginated authentication attempts, newest first.",
+  },
+
+  listAppRejectionEvents: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/rejection-events",
+    tags: ["Admin operations"],
+    summary: "List sampled application refusals",
+    description: "Sampled requests refused before contacting a provider. One sample per authenticated identity per minute; counts are not exact request totals.",
+    security: "management",
+    params: APP_PARAM,
+    query: z.object({
+      limit: PageLimitSchema,
+      reason: z.enum(REJECTION_REASONS).optional(),
+      scope: z.enum(REJECTION_SCOPES).optional(),
+      user: z.string().optional(),
+      from: DaySchema("from").optional(),
+      to: DaySchema("to").optional(),
+      before_id: BeforeIdSchema,
+    }),
+    response: RejectionEventListSchema,
+    responseDescription: "Paginated refusal samples, newest first.",
   },
 
   listAppKeys: {

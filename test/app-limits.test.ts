@@ -222,10 +222,10 @@ describe("an application's own limits", () => {
     await settle();
 
     const row = await env.DB.prepare(
-      `SELECT status, model, cost_usd FROM app_usage_event
-        WHERE app_id = ? AND status LIKE 'blocked_%'`,
-    ).bind("limits-event").first<{ status: string; model: string; cost_usd: number }>();
-    expect(row).toEqual({ status: "blocked_app_rate", model: "gpt-5.6-sol", cost_usd: 0 });
+      `SELECT reason, scope, model FROM app_rejection_event
+        WHERE app_id = ?`,
+    ).bind("limits-event").first<{ reason: string; scope: string; model: string }>();
+    expect(row).toEqual({ reason: "blocked_app_rate", scope: "user", model: "gpt-5.6-sol" });
   });
 
   /**

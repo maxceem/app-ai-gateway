@@ -2,7 +2,6 @@ import {
   compactUsageEvents,
   foldUsageRollupMonths,
 } from "../src/usage/usage-retention";
-import { recordBlockedUsageEvent } from "../src/usage/usage-record";
 import { claimOAuthAuthorized } from "../src/routes/cli/oauth";
 import { derive } from "../src/routes/cli/security";
 import { env } from "cloudflare:workers";
@@ -13,8 +12,6 @@ import {
   clearIsolateCaches,
   seedHuman,
   seedUnaffiliatedHuman,
-  testAttribution,
-  testIdentity,
 } from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
@@ -109,6 +106,7 @@ beforeEach(async () => {
     [
       "app_auth_challenge",
       "app_auth_event",
+      "app_rejection_event",
       "app_usage_event",
       "app_usage_rollup",
       "app_usage_spend",
@@ -671,15 +669,10 @@ describe("CLI account lifecycle", () => {
     )
       .bind(appId, data.account.id)
       .run();
-    await recordBlockedUsageEvent({
-      env: testEnv,
-      organizationId: data.account.id,
-      identity: testIdentity({ appId, userId: null }),
-      attribution: testAttribution({ model: "test", route: "test" }),
-      appVersion: null,
-      status: "blocked_billing",
-      latencyMs: 0,
-    });
+    await env.DB.prepare(
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, provider_type, model, route, status)
+       VALUES (?, ?, ?, 'openai', 'test', 'test', 'ok')`,
+    ).bind("retained-app-event", data.account.id, appId).run();
     await env.DB.prepare(
       "UPDATE app_usage_event SET created_at='2024-03-01T12:00:00.000Z' WHERE app_id=?",
     )
@@ -983,6 +976,12 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
      ) VALUES (?, 'expired-spend-app', 'app', '', '2026-07', 10)`,
   ).bind(data.account.id).run();
   await env.DB.prepare(
+    "INSERT INTO app(id,organization_id,name,config_json,auth_type) VALUES ('expired-rejection-app',?,'Expired','{}','api_key')",
+  ).bind(data.account.id).run();
+  await env.DB.prepare(
+    "INSERT INTO app_rejection_event(event_id,app_id,reason) VALUES ('expired-rejection','expired-rejection-app','blocked_user')",
+  ).run();
+  await env.DB.prepare(
     "UPDATE mgmt_organization SET expires_at=? WHERE id=?",
   )
     .bind(new Date(Date.now() - 1000).toISOString(), data.account.id)
@@ -997,6 +996,7 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   expect(
     await env.DB.prepare("SELECT COUNT(*) n FROM app_usage_spend").first("n"),
   ).toBe(0);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM app_rejection_event").first("n")).toBe(0);
   expect(
     await env.DB.prepare(
       "SELECT COUNT(*) n FROM mgmt_user WHERE kind='service'",

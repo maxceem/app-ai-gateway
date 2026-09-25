@@ -3,14 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeUpstreamBody, type ObservedBody } from "../src/usage/body-observer";
 import {
   persistUsageEvent,
-  recordBlockedUsageEvent,
   recordUsageEvent,
-  type AttemptAttribution,
   type UsageEvent,
 } from "../src/usage/usage-record";
-import { testAttribution, testIdentity } from "./helpers";
+import { seedApp, testAttribution, testIdentity } from "./helpers";
+import { recordRejectionEvent } from "../src/diagnostics/rejection-events";
 import { TEST_ORGANIZATION_ID } from "./apply-migrations";
-import type { GatewayIdentity } from "../src/core/types";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 
 afterEach(() => {
@@ -392,132 +390,78 @@ describe("usage recording idempotency", () => {
     expect(errorCodes(errors)).not.toContain("usage_unresolved_cost");
   });
 
-  it("leaves a blocked event without a cost source, having metered nothing", async () => {
+  it("records refusal samples separately from usage, without accounting fields", async () => {
     const appId = "usage-record-blocked-source";
-    await recordBlockedUsageEvent({
-      organizationId: "operator-test-organization",
+    await seedApp(appId);
+    await recordRejectionEvent({
       env,
       identity: testIdentity({ appId, userId: "user-1" }),
       attribution: testAttribution(),
       appVersion: null,
-      status: "blocked_app_rate",
+      reason: "blocked_app_rate",
+      scope: "app",
       latencyMs: 2,
     });
-
-    const row = await env.DB.prepare("SELECT cost_source FROM app_usage_event WHERE app_id = ?")
-      .bind(appId)
-      .first<{ cost_source: string | null }>();
-    expect(row?.cost_source).toBeNull();
+    expect(await rowCount(appId)).toBe(0);
+    const row = await env.DB.prepare("SELECT event_id, reason, scope, model FROM app_rejection_event WHERE app_id = ?")
+      .bind(appId).first<{ event_id: string; reason: string; scope: string; model: string }>();
+    expect(row).toMatchObject({ event_id: expect.any(String), reason: "blocked_app_rate", scope: "app", model: "gpt-5.6-sol" });
+    await env.DB.prepare(
+      `INSERT INTO app_rejection_event(event_id,app_id,reason)
+       VALUES (?, ?, 'blocked_user') ON CONFLICT(event_id) DO NOTHING`,
+    ).bind(row!.event_id, appId).run();
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_rejection_event WHERE app_id=?")
+      .bind(appId).first<{ n: number }>())?.n).toBe(1);
   });
 
-  it("gives blocked events an identity that makes a replay a no-op", async () => {
-    const appId = "usage-record-blocked";
-    await recordBlockedUsageEvent({
-      organizationId: "operator-test-organization",
-      env,
-      identity: testIdentity({ appId, userId: "user-1" }),
-      attribution: testAttribution(),
-      appVersion: null,
-      status: "blocked_user",
-      latencyMs: 3,
-    });
-
-    const stored = await env.DB.prepare(
-      "SELECT event_id, model, status FROM app_usage_event WHERE app_id = ?",
-    )
-      .bind(appId)
-      .first<{ event_id: string | null; model: string; status: string }>();
-    expect(stored?.event_id).toEqual(expect.any(String));
-    expect(stored).toMatchObject({ model: "gpt-5.6-sol", status: "blocked_user" });
-
-    // Replaying the stored identity must not add a second row or rewrite the first.
-    await persistUsageEvent(
-      env,
-      usageEvent({ appId, costUsd: 0, eventId: stored!.event_id!, model: "replayed-model" }),
-    );
-
-    expect(await rowCount(appId)).toBe(1);
-    const after = await env.DB.prepare("SELECT model FROM app_usage_event WHERE app_id = ?")
-      .bind(appId)
-      .first<{ model: string }>();
-    expect(after?.model).toBe("gpt-5.6-sol");
-  });
-
-  it("stores one blocked sample per identity and minute regardless of caller-controlled dimensions", async () => {
+  it("samples by authenticated identity per minute, independent of route and reason", async () => {
     const anchor = Math.floor((Date.now() + 86_400_000) / 60_000) * 60_000 + 10_000;
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(anchor);
     const appId = "usage-record-blocked-sampled";
-    const blocked = (overrides: {
-      identity?: Partial<GatewayIdentity>;
-      attribution?: Partial<AttemptAttribution>;
-      appVersion?: string;
-      status?: Parameters<typeof recordBlockedUsageEvent>[0]["status"];
-    } = {}) =>
-      recordBlockedUsageEvent({
-        organizationId: "operator-test-organization",
+    const otherApp = "usage-record-blocked-sampled-other";
+    await seedApp(appId);
+    await seedApp(otherApp);
+    const blocked = (
+      userId: string | null,
+      reason: "blocked_user" | "blocked_app_rate" = "blocked_user",
+      overrides: { appId?: string; apiKeyId?: string; model?: string; version?: string } = {},
+    ) =>
+      recordRejectionEvent({
         env,
-        identity: testIdentity({ appId, userId: "sampled-user", ...overrides.identity }),
-        attribution: testAttribution(overrides.attribution),
-        appVersion: overrides.appVersion ?? `release-${"x".repeat(100)}`,
-        status: overrides.status ?? "blocked_user",
+        identity: testIdentity({ appId: overrides.appId ?? appId, userId, apiKeyId: overrides.apiKeyId }),
+        attribution: testAttribution({ route: `${userId}/${reason}`, model: overrides.model ?? "gpt-5.6-sol" }),
+        appVersion: overrides.version ?? `release-${"x".repeat(100)}`,
+        reason,
+        scope: "user",
         latencyMs: 2,
       });
-
-    await blocked();
-    await Promise.all([
-      blocked({
-        attribution: { model: "caller-varied-model", route: "caller-varied/route" },
-        appVersion: "caller-varied-version",
-        status: "blocked_app_rate",
-      }),
-      blocked({ attribution: { route: "another/varied-route" }, status: "blocked_app_budget" }),
-    ]);
-    await Promise.all([
-      blocked({ identity: { userId: "concurrent-user" } }),
-      blocked({
-        identity: { userId: "concurrent-user" },
-        attribution: { model: "concurrent-varied-model" },
-      }),
-    ]);
-    await blocked({ identity: { userId: null, apiKeyId: "key-a" } });
-    await blocked({
-      identity: { userId: null, apiKeyId: "key-a" },
-      attribution: { route: "key-varied/route" },
-    });
-    await blocked({ identity: { userId: null, apiKeyId: "key-b" } });
-    await blocked({ identity: { appId: `${appId}-other` } });
+    await blocked("sampled-user");
+    await blocked("sampled-user", "blocked_app_rate", { model: "varied-model", version: "varied-version" });
+    await Promise.all([blocked("concurrent-user"), blocked("concurrent-user", "blocked_app_rate")]);
+    await blocked(null, "blocked_user", { apiKeyId: "key-a" });
+    await blocked(null, "blocked_app_rate", { apiKeyId: "key-a", model: "varied-key-model" });
+    await blocked(null, "blocked_user", { apiKeyId: "key-b" });
+    await blocked("sampled-user", "blocked_user", { appId: otherApp });
     vi.setSystemTime(anchor + 60_000);
-    await blocked();
-
-    const rows = await env.DB.prepare(
-      "SELECT user_id, model, status, app_version FROM app_usage_event WHERE app_id = ? ORDER BY id",
-    )
-      .bind(appId)
-      .all<{ user_id: string | null; model: string; status: string; app_version: string }>();
+    await blocked("sampled-user");
+    const rows = await env.DB.prepare("SELECT user_id, reason, app_version FROM app_rejection_event WHERE app_id = ? ORDER BY id")
+      .bind(appId).all<{ user_id: string | null; reason: string; app_version: string }>();
     expect(rows.results).toHaveLength(5);
-    expect(rows.results[0]).toMatchObject({
-      user_id: "sampled-user",
-      model: "gpt-5.6-sol",
-      status: "blocked_user",
-      app_version: `release-${"x".repeat(56)}`,
-    });
     expect(rows.results.filter((row) => row.user_id === "sampled-user")).toHaveLength(2);
     expect(rows.results.filter((row) => row.user_id === "concurrent-user")).toHaveLength(1);
     expect(rows.results.filter((row) => row.user_id === null)).toHaveLength(2);
-    expect(await rowCount(`${appId}-other`)).toBe(1);
+    expect(rows.results[0]?.app_version).toBe(`release-${"x".repeat(56)}`);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM app_rejection_event WHERE app_id=?")
+      .bind(otherApp).first<{ n: number }>())?.n).toBe(1);
   });
 
-  it("suppresses blocked diagnostics when their sampler is unavailable", async () => {
+  it("drops diagnostics when the sampler is unavailable", async () => {
     const appId = "usage-record-blocked-sampler-down";
+    await seedApp(appId);
     let prepares = 0;
     const countedDatabase = {
-      prepare(query: string) {
-        prepares += 1;
-        return env.DB.prepare(query);
-      },
-      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
-      exec: (query: string) => env.DB.exec(query),
+      prepare(query: string) { prepares++; return env.DB.prepare(query); },
     } as unknown as D1Database;
     const testEnv = {
       ...env,
@@ -526,53 +470,55 @@ describe("usage recording idempotency", () => {
         getByName: () => ({ check: () => Promise.reject(new Error("sampler unavailable")) }),
       },
     } as unknown as Env;
-
-    await recordBlockedUsageEvent({
-      organizationId: "operator-test-organization",
+    await recordRejectionEvent({
       env: testEnv,
-      identity: testIdentity({ appId, userId: "user-1", apiKeyId: "suppressed-key" }),
+      identity: testIdentity({ appId, userId: "user-1", apiKeyId: "unavailable-key" }),
       attribution: testAttribution(),
       appVersion: null,
-      status: "blocked_app_rate",
+      reason: "blocked_app_rate",
+      scope: "user",
       latencyMs: 2,
     });
-
     expect(prepares).toBe(0);
-    expect(await rowCount(appId)).toBe(0);
+    expect(await env.DB.prepare("SELECT id FROM app_rejection_event WHERE app_id = ?").bind(appId).first()).toBeNull();
   });
 
-  it("does no D1 work after the identity's blocked sample is spent", async () => {
+  it("does no D1 work when the identity's minute is already sampled", async () => {
     const appId = "usage-record-blocked-sample-spent";
+    await seedApp(appId);
     let prepares = 0;
-    const countedDatabase = {
-      prepare(query: string) {
-        prepares += 1;
-        return env.DB.prepare(query);
-      },
-      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
-      exec: (query: string) => env.DB.exec(query),
-    } as unknown as D1Database;
     const testEnv = {
       ...env,
-      DB: countedDatabase,
+      DB: { prepare(query: string) { prepares++; return env.DB.prepare(query); } },
       ENDPOINT_RATE_LIMITER: {
-        getByName: () => ({
-          check: () => Promise.resolve({ allowed: false, retryAfterSeconds: 30 } as const),
-        }),
+        getByName: () => ({ check: () => Promise.resolve({ allowed: false, retryAfterSeconds: 30 }) }),
       },
     } as unknown as Env;
-
-    await recordBlockedUsageEvent({
-      organizationId: "operator-test-organization",
+    await recordRejectionEvent({
       env: testEnv,
-      identity: testIdentity({ appId, userId: null, apiKeyId: "spent-sample-key" }),
+      identity: testIdentity({ appId, userId: null, apiKeyId: "spent-key" }),
       attribution: testAttribution(),
       appVersion: null,
-      status: "blocked_app_rate",
+      reason: "blocked_app_rate",
+      scope: "app",
       latencyMs: 2,
     });
-
     expect(prepares).toBe(0);
-    expect(await rowCount(appId)).toBe(0);
+  });
+
+  it("cannot restore a deleted app's diagnostics from a late waitUntil task", async () => {
+    const appId = "usage-record-blocked-deleted";
+    await seedApp(appId);
+    await env.DB.prepare("DELETE FROM app WHERE id = ?").bind(appId).run();
+    await recordRejectionEvent({
+      env,
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution(),
+      appVersion: null,
+      reason: "blocked_user",
+      scope: "user",
+      latencyMs: 2,
+    });
+    expect(await env.DB.prepare("SELECT id FROM app_rejection_event WHERE app_id = ?").bind(appId).first()).toBeNull();
   });
 });

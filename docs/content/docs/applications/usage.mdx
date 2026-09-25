@@ -1,6 +1,6 @@
 ---
 title: Usage and events
-description: Spend, tokens and requests over time, broken down any way you need, and every request with its outcome.
+description: Spend, tokens and provider attempts over time, with detailed usage events.
 ---
 
 The **Usage** page shows what the app has done. The **Overview** page and the
@@ -23,7 +23,7 @@ A table over the same range, grouped by one dimension:
 | **By gateway** | Traffic through Cloudflare or Vercel AI Gateway versus direct |
 | **By credential source** | Your own key versus a gateway's key |
 | **By user** | Who spent what |
-| **By status** | Served, provider errors, and each kind of refusal |
+| **By status** | Served requests and provider errors |
 | **By cost source** | Whether cost was computed locally, reported by the provider, or unresolved |
 | **By route** | Provider slug and path |
 | **By endpoint** | Each named endpoint |
@@ -37,7 +37,7 @@ period; totals are never lost.
 
 ## Recent events
 
-Every proxied request, newest first, with **When**, **User · key**, **Model**,
+Every provider attempt, newest first, with **When**, **User · key**, **Model**,
 **Route**, **Tokens**, **Cost**, **Latency** and **Status**. The route shows
 the endpoint slug where one was used, the gateway it went through, and for
 OpenRouter the provider that actually served it.
@@ -48,15 +48,11 @@ Filter by status:
 | --- | --- |
 | `ok` | Served by the provider |
 | `provider_error` | The provider refused or failed the request |
-| `blocked_app_rate` | Refused by this app's own rate limit |
-| `blocked_app_budget` | Refused by this app's own monthly budget |
-| `blocked_user` | Refused because the user is blocked |
-| `blocked_billing` | Refused because your account's request allowance was spent |
 
-Blocked traffic is sampled once per app identity per minute. Repeated refusals
-from the same user or API key in that minute do not add events or increase the
-request totals; served requests and provider errors are still recorded one by
-one.
+Requests stopped before contacting a provider appear as samples in
+[Auth & Errors](/applications/auth-events). They do not add usage requests,
+tokens or cost. Provider errors still appear here because the provider was
+contacted; a fallback request can have more than one provider attempt.
 
 ## Where a cost comes from
 

@@ -2149,7 +2149,7 @@
               "unresolved",
               null
             ],
-            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed."
+            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed."
           },
           "app_version": {
             "type": [
@@ -2172,11 +2172,7 @@
             "type": "string",
             "enum": [
               "ok",
-              "provider_error",
-              "blocked_app_rate",
-              "blocked_app_budget",
-              "blocked_billing",
-              "blocked_user"
+              "provider_error"
             ]
           },
           "client_aborted": {
@@ -2300,7 +2296,49 @@
                 "count"
               ]
             },
-            "description": "Non-ok proxied requests per day, so proxy-path failures appear in the same view."
+            "description": "Provider errors per day from requests that reached an upstream."
+          },
+          "rejection_samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "blocked_app_rate",
+                    "blocked_app_budget",
+                    "blocked_billing",
+                    "blocked_user"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "user",
+                    "app",
+                    "account",
+                    null
+                  ]
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "reason",
+                "scope",
+                "count"
+              ]
+            },
+            "description": "Sampled pre-provider refusals per day. These are diagnostic samples, not exact request totals."
           },
           "token_exchange": {
             "type": "object",
@@ -2370,6 +2408,7 @@
           "to",
           "daily",
           "usage_failures",
+          "rejection_samples",
           "token_exchange",
           "claim_delay",
           "pending_users"
@@ -2450,6 +2489,114 @@
           "app_version",
           "latency_ms",
           "claim_delay_ms",
+          "created_at"
+        ]
+      },
+      "RejectionEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "api_key_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "blocked_app_rate",
+              "blocked_app_budget",
+              "blocked_billing",
+              "blocked_user"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "user",
+              "app",
+              "account",
+              null
+            ],
+            "description": "Null on historical samples whose limit scope cannot be recovered."
+          },
+          "provider_slug": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Attempted provider; this request did not contact an upstream."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endpoint_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "attest",
+              "api_key",
+              null
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "api_key_id",
+          "reason",
+          "scope",
+          "provider_slug",
+          "model",
+          "route",
+          "endpoint_slug",
+          "app_version",
+          "auth_method",
+          "latency_ms",
           "created_at"
         ]
       },
@@ -3891,7 +4038,7 @@
                     },
                     "has_proxied_requests": {
                       "type": "boolean",
-                      "description": "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started."
+                      "description": "Whether this account has ever recorded a provider attempt, at any time. Refusals before a provider call do not set this flag. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started."
                     },
                     "apps": {
                       "type": "array",
@@ -3986,9 +4133,6 @@
                               },
                               "errors": {
                                 "type": "number"
-                              },
-                              "blocked": {
-                                "type": "number"
                               }
                             },
                             "required": [
@@ -3998,8 +4142,7 @@
                               "cache_write_tokens",
                               "output_tokens",
                               "cost_usd",
-                              "errors",
-                              "blocked"
+                              "errors"
                             ]
                           }
                         },
@@ -7719,11 +7862,7 @@
               "type": "string",
               "enum": [
                 "ok",
-                "provider_error",
-                "blocked_app_rate",
-                "blocked_app_budget",
-                "blocked_billing",
-                "blocked_user"
+                "provider_error"
               ]
             },
             "required": false,
@@ -8040,6 +8179,188 @@
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/AuthEvent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "app_id",
+                    "limit",
+                    "next_before_id",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/rejection-events": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "listAppRejectionEvents",
+        "summary": "List sampled application refusals",
+        "description": "Sampled requests refused before contacting a provider. One sample per authenticated identity per minute; counts are not exact request totals.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "blocked_app_rate",
+                "blocked_app_budget",
+                "blocked_billing",
+                "blocked_user"
+              ]
+            },
+            "required": false,
+            "name": "reason",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "app",
+                "account"
+              ]
+            },
+            "required": false,
+            "name": "scope",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "user",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "description": "Page backwards: only events older than this id."
+            },
+            "required": false,
+            "description": "Page backwards: only events older than this id.",
+            "name": "before_id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated refusal samples, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "next_before_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/RejectionEvent"
                       }
                     }
                   },
@@ -8642,9 +8963,6 @@
                               },
                               "errors": {
                                 "type": "number"
-                              },
-                              "blocked": {
-                                "type": "number"
                               }
                             },
                             "required": [
@@ -8654,8 +8972,7 @@
                               "cache_write_tokens",
                               "output_tokens",
                               "cost_usd",
-                              "errors",
-                              "blocked"
+                              "errors"
                             ]
                           }
                         },
@@ -8848,9 +9165,6 @@
                             },
                             "errors": {
                               "type": "number"
-                            },
-                            "blocked": {
-                              "type": "number"
                             }
                           },
                           "required": [
@@ -8860,8 +9174,7 @@
                             "cache_write_tokens",
                             "output_tokens",
                             "cost_usd",
-                            "errors",
-                            "blocked"
+                            "errors"
                           ]
                         }
                       },
@@ -9502,9 +9815,6 @@
                           "errors": {
                             "type": "number"
                           },
-                          "blocked": {
-                            "type": "number"
-                          },
                           "date": {
                             "type": "string"
                           },
@@ -9520,7 +9830,6 @@
                           "output_tokens",
                           "cost_usd",
                           "errors",
-                          "blocked",
                           "date",
                           "provider"
                         ]
@@ -9724,9 +10033,6 @@
                           "errors": {
                             "type": "number"
                           },
-                          "blocked": {
-                            "type": "number"
-                          },
                           "key": {
                             "type": [
                               "string",
@@ -9742,7 +10048,6 @@
                           "output_tokens",
                           "cost_usd",
                           "errors",
-                          "blocked",
                           "key"
                         ]
                       }
@@ -11856,9 +12161,6 @@
                         },
                         "errors": {
                           "type": "number"
-                        },
-                        "blocked": {
-                          "type": "number"
                         }
                       },
                       "required": [
@@ -11868,8 +12170,7 @@
                         "cache_write_tokens",
                         "output_tokens",
                         "cost_usd",
-                        "errors",
-                        "blocked"
+                        "errors"
                       ]
                     },
                     "apps": {
@@ -11898,9 +12199,6 @@
                           "errors": {
                             "type": "number"
                           },
-                          "blocked": {
-                            "type": "number"
-                          },
                           "appId": {
                             "type": "string"
                           },
@@ -11919,7 +12217,6 @@
                           "output_tokens",
                           "cost_usd",
                           "errors",
-                          "blocked",
                           "appId",
                           "deleted",
                           "firstRecord"

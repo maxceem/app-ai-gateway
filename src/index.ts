@@ -12,6 +12,7 @@ import {
 } from "./client-auth/auth-events";
 import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
 import { runUsageRetention } from "./usage/usage-retention";
+import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
@@ -219,6 +220,12 @@ async function prune(env: Env): Promise<void> {
     log("info", "auth_events_pruned", { deleted, retentionDays: AUTH_EVENT_RETENTION_DAYS });
   } catch (error) {
     sweepFailed("auth_events", "auth_events_prune_failed", error);
+  }
+  try {
+    const deleted = await pruneRejectionEvents(db);
+    log("info", "rejection_events_pruned", { deleted, retentionDays: REJECTION_RETENTION_DAYS });
+  } catch (error) {
+    sweepFailed("rejection_events", "rejection_events_prune_failed", error);
   }
   try {
     const deleted = await pruneAuthChallenges(db);

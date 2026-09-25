@@ -132,6 +132,7 @@ const APP_SCOPED_TABLES = [
   "app_usage_rollup",
   "app_usage_spend",
   "app_auth_event",
+  "app_rejection_event",
   "app_auth_challenge",
 ] as const;
 

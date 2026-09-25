@@ -29,6 +29,7 @@ import {
   appApiKey,
   appAuthChallenge,
   appAuthEvent,
+  appRejectionEvent,
   appUser,
 } from "../db/schema";
 import {
@@ -229,7 +230,7 @@ export async function listApps(
   const countsByApp = new Map(counts.results.map((row) => [row.app_id, row]));
 
   /*
-   * Whether this organization has ever had a request recorded, at any time.
+   * Whether this account has ever recorded a provider attempt, at any time.
    *
    * Deliberately not derived from the usage totals above: those are scoped to
    * the selected month, so an organization that proxied in March and nothing in
@@ -435,6 +436,7 @@ export async function deleteApp(
     // `/apps/:app`, so it dies with the app it describes. Usage is the
     // exception: it is billing history, and it is deliberately kept.
     db.delete(appAuthEvent).where(eq(appAuthEvent.appId, appId)),
+    db.delete(appRejectionEvent).where(eq(appRejectionEvent.appId, appId)),
     db.delete(appApiKey).where(eq(appApiKey.appId, appId)),
     db.delete(app).where(and(
       eq(app.id, appId),

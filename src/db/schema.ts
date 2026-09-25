@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { UsageStatus } from "../contracts/responses";
+import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { createCfAuthTables } from "@maxceem/cf-auth/schema";
 import {
   check,
@@ -353,7 +354,7 @@ export const appUsageEvent = sqliteTable(
     /**
      * The provider row that served the traffic. Deliberately not a foreign key:
      * deleting a provider is a hard delete, and usage history must survive it
-     * with its attribution intact. Null for traffic blocked before resolution.
+     * with its attribution intact. Null if the provider row was removed before this event.
      */
     providerId: text("provider_id"),
     /** Provider instance slug at request time; survives row deletion or reuse. */
@@ -375,9 +376,7 @@ export const appUsageEvent = sqliteTable(
     outputTokens: integer("output_tokens").notNull().default(0),
     costUsd: real("cost_usd").notNull().default(0),
     /**
-     * How `cost_usd` was arrived at, for events that reached a provider. Null on
-     * blocked traffic, which never had a cost to source. Deliberately
-     * unconstrained text: the value set grows as new cost sources land, and a
+     * How `cost_usd` was arrived at, for events that reached a provider. Deliberately unconstrained text: the value set grows as new cost sources land, and a
      * CHECK on this table would make each addition a full rebuild.
      */
     costSource: text("cost_source").$type<CostSource>(),
@@ -424,7 +423,7 @@ export const appUsageEvent = sqliteTable(
     uniqueIndex("usage_events_event_id_unique").on(table.eventId),
     check(
       "usage_events_status_check",
-      sql`${table.status} IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')`,
+      sql`${table.status} IN ('ok', 'provider_error')`,
     ),
   ],
 );
@@ -535,6 +534,36 @@ export const appUsageRollup = sqliteTable(
     /** Serves the admin reads, which are always scoped to one app and a range. */
     index("idx_usage_rollup_account_bucket").on(table.organizationId, table.grain, table.bucket),
     index("idx_usage_rollup_app_bucket").on(table.appId, table.grain, table.bucket),
+  ],
+);
+
+/** One sampled refusal before any provider attempt; diagnostics expire without rollups. */
+export const appRejectionEvent = sqliteTable(
+  "app_rejection_event",
+  {
+    id: integer("id").primaryKey(),
+    eventId: text("event_id").notNull(),
+    appId: text("app_id").notNull(),
+    userId: text("user_id"),
+    apiKeyId: text("api_key_id"),
+    reason: text("reason").$type<RejectionReason>().notNull(),
+    scope: text("scope").$type<RejectionScope>(),
+    providerSlug: text("provider_slug"),
+    model: text("model"),
+    route: text("route"),
+    endpointSlug: text("endpoint_slug"),
+    appVersion: text("app_version"),
+    authMethod: text("auth_method").$type<AuthMethod>(),
+    latencyMs: integer("latency_ms"),
+    createdAt: text("created_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+  },
+  (table) => [
+    uniqueIndex("rejection_events_event_id_unique").on(table.eventId),
+    index("idx_rejection_events_app_created").on(table.appId, table.createdAt),
+    index("idx_rejection_events_app_user_created").on(table.appId, table.userId, table.createdAt),
+    index("idx_rejection_events_created").on(table.createdAt),
+    check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')`),
+    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'app', 'account')`),
   ],
 );
 

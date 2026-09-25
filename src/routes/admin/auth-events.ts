@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AdminVariables } from "../../middleware/admin";
 import { getAppAuthEventSummary, listAppAuthEvents } from "../../management/auth-events";
+import { listAppRejectionEvents } from "../../management/rejection-events";
 import { adminRouter } from "../catalog-router";
 
 export const authEventRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
@@ -11,3 +12,6 @@ routes.handle("getAppAuthEventSummary", (_c, { scope, actor, app, query }) =>
 
 routes.handle("listAppAuthEvents", (_c, { scope, actor, app, query }) =>
   listAppAuthEvents(scope, actor, app, query));
+
+routes.handle("listAppRejectionEvents", (_c, { scope, actor, app, query }) =>
+  listAppRejectionEvents(scope, actor, app, query));

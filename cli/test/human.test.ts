@@ -37,7 +37,6 @@ const totals: UsageTotals = {
   output_tokens: 50,
   cost_usd: 1.5,
   errors: 1,
-  blocked: 0,
 };
 
 const provider: ProviderSummary = {

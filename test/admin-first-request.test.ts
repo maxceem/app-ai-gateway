@@ -68,15 +68,13 @@ describe("whether an organization has ever proxied a request", () => {
     expect(body.has_proxied_requests).toBe(false);
   });
 
-  /**
-   * A refused request still reached the gateway and was recorded against the
-   * organization, so it answers the question this field is asked: whether
-   * anything has ever called in. Whether the provider then served it is what
-   * `usage.blocked` is for.
-   */
-  it("turns true on the first recorded request, refused or not", async () => {
-    await recordRequest("first-request-app", "blocked_billing");
-
+  it("turns true on the first recorded provider attempt", async () => {
+    await env.DB.prepare(
+      `INSERT INTO app_rejection_event(event_id, app_id, reason, scope)
+       VALUES ('first-request-refusal', 'first-request-app', 'blocked_user', 'user')`,
+    ).run();
+    await expect(listApps()).resolves.toMatchObject({ has_proxied_requests: false });
+    await recordRequest("first-request-app", "ok");
     await expect(listApps()).resolves.toMatchObject({ has_proxied_requests: true });
   });
 

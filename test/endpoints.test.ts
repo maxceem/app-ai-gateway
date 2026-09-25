@@ -469,13 +469,15 @@ describe("named endpoints", () => {
 
     expect(response.status).toBe(403);
     expect(fetchSpy).not.toHaveBeenCalled();
-    const [row] = await latestUsage(appId);
+    await settleUsage();
+    const row = await env.DB.prepare("SELECT provider_slug, model, route, endpoint_slug, reason FROM app_rejection_event WHERE app_id = ? ORDER BY id DESC LIMIT 1")
+      .bind(appId).first();
     expect(row).toMatchObject({
       provider_slug: "openai-standby-blocked",
       model: "gpt-5.6-luna",
       route: "openai-standby-blocked/v1/responses",
       endpoint_slug: "chat",
-      status: "blocked_user",
+      reason: "blocked_user",
     });
 
     await env.DB.prepare(

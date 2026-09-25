@@ -15,6 +15,13 @@
       "when": 1790259153598,
       "tag": "0001_end_user_none",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790300733230,
+      "tag": "0002_rejection_events",
+      "breakpoints": true
     }
   ]
 }

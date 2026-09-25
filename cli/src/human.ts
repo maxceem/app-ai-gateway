@@ -420,7 +420,7 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
     );
     const rows = result.rows.length
       ? table(
-          ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS", "BLOCKED"],
+          ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
           result.rows.map((row) => [
             row.key ?? "(none)",
             String(row.requests),
@@ -428,7 +428,6 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
             String(row.output_tokens),
             row.cost_usd.toFixed(4),
             String(row.errors),
-            String(row.blocked),
           ]),
           style,
         )
@@ -445,7 +444,6 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
           ["Output tokens", result.totals.output_tokens],
           ["Cost USD", result.totals.cost_usd.toFixed(4)],
           ["Errors", result.totals.errors],
-          ["Blocked", result.totals.blocked],
         ],
         style,
       ),
@@ -454,7 +452,7 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
       // printed rather than counted: a month is read to find which app spent it.
       ...(result.apps.length
         ? table(
-            ["APP", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS", "BLOCKED"],
+            ["APP", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
             result.apps.map((entry) => [
               entry.deleted ? `${entry.appId} (deleted)` : entry.appId,
               String(entry.requests),
@@ -462,7 +460,6 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
               String(entry.output_tokens),
               entry.cost_usd.toFixed(4),
               String(entry.errors),
-              String(entry.blocked),
             ]),
             style,
           )

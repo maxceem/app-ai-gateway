@@ -23,10 +23,6 @@ export function AppStatusBadge({ status }: { status: "active" | "disabled" }) {
 const EVENT_TONES: Record<UsageStatus, string> = {
   ok: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
   provider_error: "border-destructive/40 text-destructive",
-  blocked_app_rate: "border-amber-500/40 text-amber-600 dark:text-amber-400",
-  blocked_app_budget: "border-amber-500/40 text-amber-600 dark:text-amber-400",
-  blocked_billing: "border-amber-500/40 text-amber-600 dark:text-amber-400",
-  blocked_user: "border-amber-500/40 text-amber-600 dark:text-amber-400",
 };
 
 /**
@@ -40,10 +36,6 @@ const EVENT_TONES: Record<UsageStatus, string> = {
 export const USAGE_STATUS_LABELS: Record<UsageStatus, string> = {
   ok: "Served by the provider",
   provider_error: "The provider refused or failed the request",
-  blocked_app_rate: "Refused by this app's own rate limit, which you set",
-  blocked_app_budget: "Refused by this app's own monthly budget, which you set",
-  blocked_billing: "Refused: your plan's monthly request allowance was exhausted",
-  blocked_user: "Refused: this user is blocked",
 };
 
 export function EventStatusBadge({ status }: { status: UsageStatus }) {

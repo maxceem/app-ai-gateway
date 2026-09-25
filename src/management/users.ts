@@ -71,9 +71,14 @@ export function endUserIdentities(where: {
     UNION ALL
     SELECT events.app_id, events.user_id AS id, 'active' AS status, NULL AS attest_key_id,
            NULL AS attest_public_key, 0 AS attest_counter,
-           MIN(events.created_at) AS created_at, MAX(events.created_at) AS last_seen_at,
+           MIN(strftime('%Y-%m-%dT%H:%M:%fZ', events.created_at)) AS created_at,
+           MAX(strftime('%Y-%m-%dT%H:%M:%fZ', events.created_at)) AS last_seen_at,
            1 AS is_virtual
-      FROM app_usage_event AS events
+      FROM (
+        SELECT app_id, user_id, created_at FROM app_usage_event
+        UNION ALL
+        SELECT app_id, user_id, created_at FROM app_rejection_event
+      ) AS events
       JOIN app AS owner ON owner.id = events.app_id
      WHERE ${sql.join(events, sql` AND `)}
        AND events.user_id IS NOT NULL

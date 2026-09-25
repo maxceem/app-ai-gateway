@@ -43,6 +43,21 @@ async function recordAuth(
     .run();
 }
 
+async function recordRejection(
+  appId: string,
+  eventId: string,
+  userId: string,
+  reason: string,
+  scope: string | null,
+  createdAt = new Date().toISOString(),
+) {
+  await env.DB.prepare(
+    `INSERT INTO app_rejection_event(event_id,app_id,user_id,reason,scope,
+       provider_slug,model,route,endpoint_slug,auth_method,created_at)
+     VALUES (?,?,?,?,?,'openai','gpt-test','openai/v1/responses','chat','api_key',?)`,
+  ).bind(eventId, appId, userId, reason, scope, createdAt).run();
+}
+
 describe("application auth event summary", () => {
   it("reports outcomes, proxy failures, success rate, delays, and who is still waiting", async () => {
     await seedApp("auth-summary");
@@ -78,6 +93,7 @@ describe("application auth event summary", () => {
          event_id, organization_id, app_id, user_id, provider_type, model, route, status, created_at
        ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'auth-summary', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok', ?)`,
     ).bind(daysAgo(0)).run();
+    await recordRejection("auth-summary", "auth-summary-reject", "user-1", "blocked_user", "user");
 
     await env.DB.prepare(
       "INSERT INTO app_user(app_id, id, status, claim_pending_since) VALUES (?, ?, 'active', ?)",
@@ -104,6 +120,9 @@ describe("application auth event summary", () => {
     // Only the failing proxied request appears, so the view is about what broke.
     expect(body.usage_failures).toEqual([
       { date: daysAgo(0).slice(0, 10), status: "provider_error", count: 1 },
+    ]);
+    expect(body.rejection_samples).toEqual([
+      { date: daysAgo(0).slice(0, 10), reason: "blocked_user", scope: "user", count: 1 },
     ]);
 
     // Seven exchanges in the window, five of them fine. The registration and
@@ -168,6 +187,30 @@ describe("application auth event summary", () => {
     expect(rejected.status).toBe(400);
   });
 
+  it("pages and filters refusal samples, with independent date bounds", async () => {
+    const appId = "rejection-list";
+    await seedApp(appId);
+    const old = new Date(Date.now() - 45 * 86_400_000).toISOString();
+    await recordRejection(appId, "rejection-a", "user-a", "blocked_app_rate", "user", old);
+    await recordRejection(appId, "rejection-b", "user-b", "blocked_app_budget", "app");
+    await recordRejection(appId, "rejection-c", "user-a", "blocked_user", "user");
+    const base = `/v1/admin/apps/${appId}/rejection-events`;
+    const first = await get(`${base}?limit=2`);
+    expect(first.status).toBe(200);
+    expect(first.body.events.map((row: any) => row.user_id)).toEqual(["user-a", "user-b"]);
+    expect(first.body.events[0]).toMatchObject({
+      reason: "blocked_user", scope: "user", provider_slug: "openai", endpoint_slug: "chat",
+    });
+    const second = await get(`${base}?limit=2&before_id=${first.body.next_before_id}`);
+    expect(second.body.events.map((row: any) => row.user_id)).toEqual(["user-a"]);
+    expect((await get(`${base}?reason=blocked_app_budget&scope=app`)).body.events).toHaveLength(1);
+    expect((await get(`${base}?user=user-a`)).body.events).toHaveLength(2);
+    expect((await get(`${base}?to=${old.slice(0, 10)}`)).body.events).toHaveLength(1);
+    expect((await get(`${base}?from=2099-01-01`)).body.events).toHaveLength(0);
+    expect((await get(`${base}?from=2026-09-25&to=2026-09-24`)).status).toBe(400);
+    expect((await get(`${base}?reason=unknown`)).status).toBe(400);
+  });
+
   it("answers only for apps the caller's organization owns", async () => {
     await env.DB.prepare(
       `INSERT OR IGNORE INTO mgmt_organization(id, name, created_by_user_id, created_at, updated_at)
@@ -178,5 +221,6 @@ describe("application auth event summary", () => {
 
     expect((await get("/v1/admin/apps/auth-events-foreign/auth-events/summary")).status).toBe(404);
     expect((await get("/v1/admin/apps/auth-events-foreign/auth-events")).status).toBe(404);
+    expect((await get("/v1/admin/apps/auth-events-foreign/rejection-events")).status).toBe(404);
   });
 });

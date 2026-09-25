@@ -69,7 +69,6 @@ describe("pivot", () => {
     output_tokens: 0,
     cost_usd: cost,
     errors: 0,
-    blocked: 0,
   });
 
   it("folds every provider past the palette's hues into one Other band", () => {
@@ -207,54 +206,14 @@ describe("UsageTab event costs", () => {
 });
 
 describe("UsageTab event statuses", () => {
-  /**
-   * The stored value is the API's filter argument and what a log line says, so
-   * the badge keeps showing it. What it means is the hover, and what the hover
-   * has to say is *which* system refused the request: the two blocked statuses
-   * that both mean "over a quota" answer to different owners, and reading one
-   * as the other is the mistake the prefixes exist to prevent.
-   */
-  it("names the app's own limit as the refuser, not the plan", async () => {
-    renderUsage([event({ status: "blocked_app_rate" })]);
-
-    const badge = await screen.findByText("blocked_app_rate");
-    expect(badge.getAttribute("title"))
-      .toBe("Refused by this app's own rate limit, which you set");
-  });
-
-  it("names the plan allowance as the refuser, not the app", async () => {
-    renderUsage([event({ status: "blocked_billing" })]);
-
-    const badge = await screen.findByText("blocked_billing");
-    expect(badge.getAttribute("title"))
-      .toBe("Refused: your plan's monthly request allowance was exhausted");
-  });
-
-  it("explains an app budget rejection behind its stored status value", async () => {
-    renderUsage([event({ status: "blocked_app_budget" })]);
-
-    const badge = await screen.findByText("blocked_app_budget");
-    expect(badge.getAttribute("title"))
-      .toBe("Refused by this app's own monthly budget, which you set");
-  });
-
-  it("offers every blocked status as a filter, each labelled by its owner", async () => {
-    renderUsage([event({})]);
-    await screen.findByText("gpt-5.6-sol");
-
-    // Several pickers share the toolbar; this is the one showing the status.
+  it("lists only provider attempts as usage statuses", async () => {
+    renderUsage([event({ status: "provider_error" })]);
+    const badge = await screen.findByText("provider_error");
+    expect(badge.getAttribute("title")).toBe("The provider refused or failed the request");
     const trigger = screen.getAllByRole("combobox")
       .find((option) => option.textContent === "All statuses")!;
     await userEvent.click(trigger);
-    const options = (await screen.findAllByRole("option")).map((option) => option.textContent);
-    expect(options).toEqual([
-      "All statuses",
-      "ok",
-      "provider_error",
-      "blocked_app_rate — this app's rate limit",
-      "blocked_app_budget — this app's budget",
-      "blocked_billing — plan allowance",
-      "blocked_user",
-    ]);
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent))
+      .toEqual(["All statuses", "ok", "provider_error"]);
   });
 });

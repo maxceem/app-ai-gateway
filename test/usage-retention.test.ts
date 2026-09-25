@@ -554,24 +554,14 @@ describe("reading across both tables", () => {
     });
   });
 
-  it("weighs the rollup's status counters by requests, not by rows", async () => {
+  it("weighs provider-error rollups by requests", async () => {
     await insertEvent({ day: EXPIRED_DAY, status: "provider_error" });
     await insertEvent({ day: EXPIRED_DAY, status: "provider_error" });
-    await insertEvent({ day: EXPIRED_DAY, status: "blocked_app_rate" });
-    await insertEvent({ day: EXPIRED_DAY, status: "blocked_app_rate" });
-    await insertEvent({ day: EXPIRED_DAY, status: "blocked_app_rate" });
     await compactUsageEvents(env.DB, NOW);
-
     const { results } = await usageTimeseries(env.DB, APP, {
-      from: "2026-01-01",
-      to: "2026-01-31",
+      from: "2026-01-01", to: "2026-01-31",
     });
-    /*
-     * Five events compacted into two rows. Both counters have to weigh by
-     * `requests`: counting rows instead would report one error and one blocked,
-     * so each needs more than one event behind it to tell the two apart.
-     */
-    expect(results[0]).toMatchObject({ requests: 5, errors: 2, blocked: 3 });
+    expect(results[0]).toMatchObject({ requests: 2, errors: 2 });
   });
 
   it("honours both ends of the range on both halves of the union", async () => {
@@ -735,7 +725,7 @@ function countingDatabase(collected: number) {
 }
 
 /** Statements one account cleanup pass issues, pinned by the test below. */
-const ACCOUNT_CLEANUP_STATEMENTS = 16;
+const ACCOUNT_CLEANUP_STATEMENTS = 17;
 
 it("charges the nightly allowance for exactly what a sweep issues", async () => {
   const { db, counts } = countingDatabase(0);

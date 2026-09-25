@@ -19,6 +19,7 @@ export type {
   AppSummary,
   AuthEvent,
   AuthEventSummary,
+  RejectionEvent,
   BreakdownResponse,
   BreakdownRow,
   CreatedApiKey,

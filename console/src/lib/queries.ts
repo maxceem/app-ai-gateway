@@ -49,6 +49,7 @@ export const keys = {
   events: (appId: string, params: unknown) => ["events", appId, params] as const,
   authEventSummary: (appId: string, days: number) => ["auth-event-summary", appId, days] as const,
   authEvents: (appId: string, params: unknown) => ["auth-events", appId, params] as const,
+  rejectionEvents: (appId: string, params: unknown) => ["rejection-events", appId, params] as const,
   prices: ["prices"] as const,
 };
 
@@ -558,6 +559,16 @@ export function useAuthEvents(appId: string, params: AuthEventQuery) {
   return useQuery({
     queryKey: keys.authEvents(appId, params),
     queryFn: () => call("listAppAuthEvents", { params: { app: appId }, query: { ...params } }),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export type RejectionEventQuery = OperationQuery<"listAppRejectionEvents">;
+
+export function useRejectionEvents(appId: string, params: RejectionEventQuery) {
+  return useQuery({
+    queryKey: keys.rejectionEvents(appId, params),
+    queryFn: () => call("listAppRejectionEvents", { params: { app: appId }, query: { ...params } }),
     placeholderData: (previous) => previous,
   });
 }

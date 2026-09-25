@@ -12,6 +12,7 @@ import type { AuthEventSummary } from "@/lib/types";
 export interface OutcomeRow {
   outcome: string;
   reason: string | null;
+  sampled: boolean;
   total: number;
   /** One entry per distinct day the failure occurred on, ascending. */
   days: { date: string; count: number }[];
@@ -33,7 +34,7 @@ export interface OutcomeRow {
 export function foldOutcomes(summary: AuthEventSummary | undefined): OutcomeRow[] {
   const rows = new Map<
     string,
-    { outcome: string; reason: string | null; days: Map<string, number> }
+    { outcome: string; reason: string | null; sampled: boolean; days: Map<string, number> }
   >();
   const add = (
     key: string,
@@ -41,8 +42,9 @@ export function foldOutcomes(summary: AuthEventSummary | undefined): OutcomeRow[
     reason: string | null,
     date: string,
     count: number,
+    sampled = false,
   ): void => {
-    const row = rows.get(key) ?? { outcome, reason, days: new Map<string, number>() };
+    const row = rows.get(key) ?? { outcome, reason, sampled, days: new Map<string, number>() };
     row.days.set(date, (row.days.get(date) ?? 0) + count);
     rows.set(key, row);
   };
@@ -60,11 +62,16 @@ export function foldOutcomes(summary: AuthEventSummary | undefined): OutcomeRow[
   for (const bucket of summary?.usage_failures ?? []) {
     add(`proxy:${bucket.status}`, bucket.status, "proxied request", bucket.date, bucket.count);
   }
+  for (const bucket of summary?.rejection_samples ?? []) {
+    add(`rejection:${bucket.reason}:${bucket.scope ?? "unknown"}`, bucket.reason,
+      bucket.scope ?? "scope unknown", bucket.date, bucket.count, true);
+  }
 
   return [...rows.values()]
     .map((row): OutcomeRow => ({
       outcome: row.outcome,
       reason: row.reason,
+      sampled: row.sampled,
       total: [...row.days.values()].reduce((sum, count) => sum + count, 0),
       days: [...row.days.entries()]
         .map(([date, count]) => ({ date, count }))

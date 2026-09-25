@@ -118,6 +118,7 @@ describe("initial database migration", () => {
       "app_api_key",
       "app_auth_challenge",
       "app_auth_event",
+      "app_rejection_event",
       "app_usage_event",
       "app_usage_rollup",
       "app_usage_spend",

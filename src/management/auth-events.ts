@@ -2,7 +2,7 @@ import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { ParsedOperationQuery } from "../contracts/catalog";
 import type { AuthEventList, AuthEventSummary } from "../contracts/responses";
 import { database } from "../db";
-import { appAuthEvent, appUsageEvent, appUser, type app } from "../db/schema";
+import { appAuthEvent, appRejectionEvent, appUsageEvent, appUser, type app } from "../db/schema";
 import type { Actor } from "./actor";
 import type { ManagementScope } from "./scope";
 import { eventDay, parseRange } from "./usage-queries";
@@ -11,6 +11,7 @@ type AppRow = typeof app.$inferSelect;
 
 /** `created_at` is `YYYY-MM-DD HH:MM:SS`, so the day prefix compares lexically. */
 const authEventDay = sql<string>`substr(${appAuthEvent.createdAt}, 1, 10)`;
+const rejectionDay = sql<string>`substr(${appRejectionEvent.createdAt}, 1, 10)`;
 
 /**
  * The value at a percentile of an ascending list, by nearest rank.
@@ -77,6 +78,22 @@ export async function getAppAuthEventSummary(
     .groupBy(eventDay, appUsageEvent.status)
     .orderBy(eventDay);
 
+  const rejectionSamples = await db
+    .select({
+      date: rejectionDay,
+      reason: appRejectionEvent.reason,
+      scope: appRejectionEvent.scope,
+      count: sql<number>`COUNT(*)`,
+    })
+    .from(appRejectionEvent)
+    .where(and(
+      eq(appRejectionEvent.appId, appId),
+      gte(rejectionDay, range.from),
+      lte(rejectionDay, range.to),
+    ))
+    .groupBy(rejectionDay, appRejectionEvent.reason, appRejectionEvent.scope)
+    .orderBy(rejectionDay);
+
   const exchanges = await db
     .select({
       total: sql<number>`COUNT(*)`,
@@ -115,6 +132,7 @@ export async function getAppAuthEventSummary(
     ...range,
     daily,
     usage_failures: usageFailures,
+    rejection_samples: rejectionSamples,
     token_exchange: {
       total,
       ok,

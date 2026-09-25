@@ -61,7 +61,6 @@ const app: AppSummary = {
     output_tokens: 40,
     cost_usd: 0.02,
     errors: 0,
-    blocked: 0,
   },
 };
 

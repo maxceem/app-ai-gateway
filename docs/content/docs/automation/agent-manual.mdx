@@ -405,12 +405,15 @@ endpoint:
 | `GET /v1/admin/apps/{app}/usage` | `month=YYYY-MM` | Totals: requests, tokens, cost |
 | `GET /v1/admin/apps/{app}/usage/timeseries` | `from=`, `to=` (ISO dates) | Daily buckets by provider |
 | `GET /v1/admin/apps/{app}/usage/breakdown` | `by=`, `from=`, `to=`, `limit=` | Grouped totals. `by` is one of `model`, `model_author`, `provider`, `provider_slug`, `provider_gateway`, `credential_source`, `user`, `status`, `cost_source`, `route`, `endpoint`, `app_version` |
-| `GET /v1/admin/apps/{app}/events` | `limit=`, `status=`, `user=`, `model=`, `before_id=` | Individual requests, newest first. Page with `next_before_id` |
+| `GET /v1/admin/apps/{app}/events` | `limit=`, `status=`, `user=`, `model=`, `before_id=` | Individual provider attempts, newest first. Page with `next_before_id` |
 | `GET /v1/admin/apps/{app}/auth-events/summary` | `days=` | Token exchange success rate, failures by cause, claim delay percentiles |
 | `GET /v1/admin/apps/{app}/auth-events` | `limit=`, `outcome=`, `before_id=` | Individual token exchanges and registrations |
+| `GET /v1/admin/apps/{app}/rejection-events` | `limit=`, `reason=`, `scope=`, `user=`, `from=`, `to=`, `before_id=` | Sampled requests stopped before a provider call; page with `next_before_id` |
 
-Event `status` values: `ok`, `provider_error`, `blocked_app_rate`,
-`blocked_app_budget`, `blocked_user`, `blocked_billing`. Event
+Usage event `status` values: `ok`, `provider_error`. Refusal sample `reason`
+values: `blocked_app_rate`, `blocked_app_budget`, `blocked_user`,
+`blocked_billing`. Samples are limited to one per identity per minute, so
+sample counts are not exact request totals. Event
 `cost_source` values: `computed`, `reported`, `unresolved`.
 
 ## What clients send

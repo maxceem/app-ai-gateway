@@ -3,6 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pruneAuthEvents, recordAuthEvent } from "../src/client-auth/auth-events";
+import { pruneRejectionEvents } from "../src/diagnostics/rejection-events";
 import app from "../src/index";
 import { TEST_AUDIENCE, TEST_ISSUER, clearIsolateCaches, seedServerApp } from "./helpers";
 
@@ -477,6 +478,21 @@ describe("claim propagation delay", () => {
 });
 
 describe("auth event retention", () => {
+  it("prunes refusal samples exactly at the 90-day instant", async () => {
+    const now = Date.parse("2026-09-25T12:00:00.000Z");
+    const cutoff = now - 90 * 86_400_000;
+    for (const [eventId, offset] of [["before", -1], ["at", 0], ["after", 1]] as const) {
+      await env.DB.prepare(
+        "INSERT INTO app_rejection_event(event_id,app_id,reason,created_at) VALUES (?, 'boundary-app', 'blocked_user', ?)",
+      ).bind(`boundary-${eventId}`, new Date(cutoff + offset).toISOString()).run();
+    }
+    expect(await pruneRejectionEvents(env.DB, now)).toBeGreaterThanOrEqual(1);
+    expect((await env.DB.prepare("SELECT event_id FROM app_rejection_event WHERE app_id='boundary-app' ORDER BY created_at")
+      .all<{ event_id: string }>()).results).toEqual([
+        { event_id: "boundary-at" }, { event_id: "boundary-after" },
+      ]);
+  });
+
   it("drops attempts past the window and leaves billing history alone", async () => {
     await env.DB.batch([
       env.DB.prepare(
@@ -493,6 +509,14 @@ describe("auth event retention", () => {
          ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'prune-app', 'user-1', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 'ok',
                    datetime('now', '-400 days'))`,
       ),
+      env.DB.prepare(
+        `INSERT INTO app_rejection_event(event_id, app_id, reason, created_at)
+         VALUES ('prune-rejection-old', 'prune-app', 'blocked_user', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-91 days'))`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO app_rejection_event(event_id, app_id, reason, created_at)
+         VALUES ('prune-rejection-recent', 'prune-app', 'blocked_user', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-89 days'))`,
+      ),
     ]);
 
     const ctx = createExecutionContext();
@@ -501,6 +525,8 @@ describe("auth event retention", () => {
 
     const kept = await eventsFor("prune-app");
     expect(kept.length).toBe(1);
+    expect((await env.DB.prepare("SELECT event_id FROM app_rejection_event WHERE app_id='prune-app'")
+      .all<{ event_id: string }>()).results).toEqual([{ event_id: "prune-rejection-recent" }]);
 
     /*
      * Usage rows are accounting history, so the same sweep summarises them

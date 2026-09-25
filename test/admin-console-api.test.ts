@@ -475,6 +475,9 @@ describe("admin console API", () => {
     )
       .bind("delete-me")
       .run();
+    await env.DB.prepare(
+      "INSERT INTO app_rejection_event(event_id, app_id, reason) VALUES ('delete-me-rejection', ?, 'blocked_user')",
+    ).bind("delete-me").run();
     await recordUsage("delete-me");
 
     const unconfirmed = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/delete-me`, {
@@ -505,6 +508,7 @@ describe("admin console API", () => {
         .first<{ count: number }>())?.count;
     expect(await counted("app_usage_event")).toBe(1);
     expect(await counted("app_auth_event")).toBe(0);
+    expect(await counted("app_rejection_event")).toBe(0);
   });
 
   it("deletes an app atomically, leaving everything in place when any step fails", async () => {
@@ -559,6 +563,52 @@ describe("admin console API", () => {
     const filtered = await get("/v1/admin/apps/user-list/users?query=alpha");
     expect(filtered.body.total).toBe(1);
     expect(filtered.body.users[0].id).toBe("alpha-user");
+  });
+
+  it("discovers rejection-only users and orders mixed timestamp formats chronologically", async () => {
+    await seedApp("rejection-users");
+    await recordUsage("rejection-users", {
+      user: "mixed-user",
+      createdAt: "2026-09-20 20:00:00",
+    });
+    for (const [eventId, userId, createdAt] of [
+      ["reject-only", "rejection-only", "2026-09-21T12:00:00.000Z"],
+      ["reject-mixed", "mixed-user", "2026-09-20T10:00:00.000Z"],
+      ["reject-real", "real-user", "2026-09-22T10:00:00.000Z"],
+    ]) {
+      await env.DB.prepare(
+        `INSERT INTO app_rejection_event(event_id,app_id,user_id,reason,scope,created_at)
+         VALUES (?, 'rejection-users', ?, 'blocked_user', 'user', ?)`,
+      ).bind(eventId, userId, createdAt).run();
+    }
+    await env.DB.prepare("INSERT INTO app_user(app_id,id,status,created_at) VALUES ('rejection-users','real-user','blocked','2026-09-19 01:00:00')").run();
+    const { body } = await get("/v1/admin/apps/rejection-users/users?month=2026-09");
+    expect(body.total).toBe(3);
+    expect(body.users.find((user: any) => user.id === "rejection-only")).toMatchObject({
+      is_virtual: true,
+      usage: { requests: 0 },
+    });
+    const single = await get("/v1/admin/apps/rejection-users/users/rejection-only?month=2026-09");
+    expect(single.status).toBe(200);
+    expect(single.body.user.usage).toEqual({
+      requests: 0,
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+      errors: 0,
+    });
+    expect(body.users.find((user: any) => user.id === "mixed-user")).toMatchObject({
+      is_virtual: true,
+      created_at: "2026-09-20T10:00:00.000Z",
+      last_seen_at: "2026-09-20T20:00:00.000Z",
+      usage: { requests: 1 },
+    });
+    expect(body.users.find((user: any) => user.id === "real-user")).toMatchObject({
+      is_virtual: false,
+      status: "blocked",
+    });
   });
 
   it("groups usage by day and by dimension, and pages the event feed", async () => {

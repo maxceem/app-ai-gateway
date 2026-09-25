@@ -592,7 +592,7 @@ describe("organization monthly request quota", () => {
     expect(await used(organizationId)).toBe(1);
   });
 
-  it("records the refusal as a blocked usage event", async () => {
+  it("records the refusal as a rejection sample", async () => {
     const organizationId = "quota-event-org";
     await seedOrganization(organizationId);
     const key = await seedServerApp("quota-event", { organizationId });
@@ -604,19 +604,19 @@ describe("organization monthly request quota", () => {
     await settle();
 
     const row = await env.DB.prepare(
-      `SELECT model, route, cost_usd, input_tokens FROM app_usage_event
-        WHERE app_id = ? AND status = 'blocked_billing'`,
+      `SELECT model, route, reason, scope FROM app_rejection_event
+        WHERE app_id = ? AND reason = 'blocked_billing'`,
     ).bind("quota-event").first<{
       model: string;
       route: string;
-      cost_usd: number;
-      input_tokens: number;
+      reason: string;
+      scope: string;
     }>();
     expect(row).toEqual({
       model: "gpt-5.6-sol",
       route: "openai/v1/responses",
-      cost_usd: 0,
-      input_tokens: 0,
+      reason: "blocked_billing",
+      scope: "account",
     });
   });
 });
@@ -807,9 +807,9 @@ describe("the per-user block flag", () => {
 
     await settle();
     const row = await env.DB.prepare(
-      `SELECT status, cost_usd FROM app_usage_event WHERE app_id = ? AND status LIKE 'blocked_%'`,
-    ).bind("block-skip-blocked").first<{ status: string; cost_usd: number }>();
-    expect(row).toEqual({ status: "blocked_user", cost_usd: 0 });
+      `SELECT reason, scope FROM app_rejection_event WHERE app_id = ?`,
+    ).bind("block-skip-blocked").first<{ reason: string; scope: string }>();
+    expect(row).toEqual({ reason: "blocked_user", scope: "user" });
   });
 
   it("refuses at once after a block through the admin route in the same isolate", async () => {

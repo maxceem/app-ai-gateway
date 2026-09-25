@@ -278,6 +278,7 @@ beforeEach(async () => {
     [
       "app_auth_challenge",
       "app_auth_event",
+      "app_rejection_event",
       "app_usage_event",
       "app_usage_rollup",
       "app_api_key",
