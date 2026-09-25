@@ -54,6 +54,30 @@ CREATE TABLE `app_auth_event` (
 CREATE INDEX `idx_auth_events_app_created` ON `app_auth_event` (`app_id`,`created_at`);--> statement-breakpoint
 CREATE INDEX `idx_auth_events_app_user_created` ON `app_auth_event` (`app_id`,`user_id`,`created_at`);--> statement-breakpoint
 CREATE UNIQUE INDEX `auth_events_event_id_unique` ON `app_auth_event` (`event_id`);--> statement-breakpoint
+CREATE TABLE `app_rejection_event` (
+	`id` integer PRIMARY KEY NOT NULL,
+	`event_id` text NOT NULL,
+	`app_id` text NOT NULL,
+	`user_id` text,
+	`api_key_id` text,
+	`reason` text NOT NULL,
+	`scope` text,
+	`provider_slug` text,
+	`model` text,
+	`route` text,
+	`endpoint_slug` text,
+	`app_version` text,
+	`auth_method` text,
+	`latency_ms` integer,
+	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) NOT NULL,
+	CONSTRAINT "rejection_events_reason_check" CHECK("app_rejection_event"."reason" IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')),
+	CONSTRAINT "rejection_events_scope_check" CHECK("app_rejection_event"."scope" IS NULL OR "app_rejection_event"."scope" IN ('user', 'app', 'account'))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `rejection_events_event_id_unique` ON `app_rejection_event` (`event_id`);--> statement-breakpoint
+CREATE INDEX `idx_rejection_events_app_created` ON `app_rejection_event` (`app_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_rejection_events_app_user_created` ON `app_rejection_event` (`app_id`,`user_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_rejection_events_created` ON `app_rejection_event` (`created_at`);--> statement-breakpoint
 CREATE TABLE `app_usage_event` (
 	`id` integer PRIMARY KEY NOT NULL,
 	`event_id` text NOT NULL,
@@ -86,7 +110,7 @@ CREATE TABLE `app_usage_event` (
 	`client_aborted` integer,
 	`latency_ms` integer,
 	`created_at` text DEFAULT (datetime('now')) NOT NULL,
-	CONSTRAINT "usage_events_status_check" CHECK("app_usage_event"."status" IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user'))
+	CONSTRAINT "usage_events_status_check" CHECK("app_usage_event"."status" IN ('ok', 'provider_error'))
 );
 --> statement-breakpoint
 CREATE INDEX `idx_usage_event_account_created` ON `app_usage_event` (`organization_id`,`created_at`);--> statement-breakpoint
@@ -308,7 +332,8 @@ CREATE TABLE `provider_gateway` (
 	CONSTRAINT "provider_gateways_status_check" CHECK("provider_gateway"."status" IN ('active', 'revoked'))
 );
 --> statement-breakpoint
-CREATE INDEX `idx_provider_gateways_organization` ON `provider_gateway` (`organization_id`);--> statement-breakpoint
+CREATE INDEX `idx_provider_gateways_organization` ON `provider_gateway` (`organization_id`);
+--> statement-breakpoint
 -- Hand-written below: drizzle-kit does not generate triggers, and a regenerated
 -- file must keep these.
 --
@@ -349,9 +374,12 @@ BEGIN
 	ON CONFLICT(scope, app_id, user_key, month) DO UPDATE SET
 		microusd = app_usage_spend.microusd + excluded.microusd;
 END;--> statement-breakpoint
--- Repricing changes only cost_usd. Applying the rounded per-event delta keeps
--- the aggregate equal to SUM(ROUND(event cost)) across increases and reductions
--- to zero; raw event deletion intentionally has no inverse trigger.
+-- Accounting assumes ownership, app, user, and timestamp never change after
+-- insertion. Repricing changes only cost_usd: the rounded old/new delta updates
+-- an existing total, while the insert creates a scope absent because its
+-- initial cost was zero. Raw event deletion intentionally does not subtract
+-- spend: retention is not a refund. Retention must not delete aggregates while
+-- their raw events can be repriced.
 CREATE TRIGGER app_usage_event_spend_after_cost_update
 AFTER UPDATE OF cost_usd ON app_usage_event
 WHEN CAST(ROUND(NEW.cost_usd * 1000000) AS INTEGER)

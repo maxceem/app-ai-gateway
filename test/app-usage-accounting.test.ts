@@ -98,6 +98,23 @@ describe("app usage accounting", () => {
     ]);
   });
 
+  it("creates spend scopes when a zero-cost event is first repriced", async () => {
+    const appId = `${PREFIX}late-cost`;
+    const eventId = await insertEvent({ appId, userId: "u1", costUsd: 0.0000004 });
+    expect(await spend(appId)).toEqual([]);
+
+    const reprice = (costUsd: number) => env.DB.prepare(
+      "UPDATE app_usage_event SET cost_usd = ? WHERE event_id = ?",
+    ).bind(costUsd, eventId).run();
+    await reprice(0.0000006);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([1, 1]);
+    await reprice(0.0000006);
+    await reprice(0.0000014);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([1, 1]);
+    await reprice(0.0000016);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([2, 2]);
+  });
+
   it("reads a scope's month as the one row the triggers keep", async () => {
     const appId = `${PREFIX}read`;
     await insertEvent({ appId, userId: "u1", costUsd: 0.000030, createdAt: "2026-07-10T00:00:00.000Z" });

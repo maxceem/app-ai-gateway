@@ -37,7 +37,7 @@
     "typecheck:tsc": "tsc --noEmit && pnpm --filter @maxceem/agw typecheck:tsc && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
     "test:worker": "vitest run --config vitest.suites.config.ts",
     "test:swift-publish": "node --test test/swift-publish.node.mjs",
-    "test:deploy-script": "node --test test/deploy-script.node.mjs test/bootstrap-account.node.mjs test/rejection-upgrade.node.mjs",
+    "test:deploy-script": "node --test test/deploy-script.node.mjs test/bootstrap-account.node.mjs",
     "test:release-script": "node --test test/release-script.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",

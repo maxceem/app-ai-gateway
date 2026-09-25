@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b7ece1f4-efc1-4086-bfcb-4af2f01ad138",
+  "id": "dbaefdf0-7bfd-45f5-89be-2925503b71c1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "app": {
@@ -383,6 +383,163 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "app_rejection_event": {
+      "name": "app_rejection_event",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "app_id": {
+          "name": "app_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "api_key_id": {
+          "name": "api_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "provider_slug": {
+          "name": "provider_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "route": {
+          "name": "route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "endpoint_slug": {
+          "name": "endpoint_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "app_version": {
+          "name": "app_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "auth_method": {
+          "name": "auth_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "latency_ms": {
+          "name": "latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+        }
+      },
+      "indexes": {
+        "rejection_events_event_id_unique": {
+          "name": "rejection_events_event_id_unique",
+          "columns": [
+            "event_id"
+          ],
+          "isUnique": true
+        },
+        "idx_rejection_events_app_created": {
+          "name": "idx_rejection_events_app_created",
+          "columns": [
+            "app_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "idx_rejection_events_app_user_created": {
+          "name": "idx_rejection_events_app_user_created",
+          "columns": [
+            "app_id",
+            "user_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "idx_rejection_events_created": {
+          "name": "idx_rejection_events_created",
+          "columns": [
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "rejection_events_reason_check": {
+          "name": "rejection_events_reason_check",
+          "value": "\"app_rejection_event\".\"reason\" IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')"
+        },
+        "rejection_events_scope_check": {
+          "name": "rejection_events_scope_check",
+          "value": "\"app_rejection_event\".\"scope\" IS NULL OR \"app_rejection_event\".\"scope\" IN ('user', 'app', 'account')"
+        }
+      }
+    },
     "app_usage_event": {
       "name": "app_usage_event",
       "columns": {
@@ -650,7 +807,7 @@
       "checkConstraints": {
         "usage_events_status_check": {
           "name": "usage_events_status_check",
-          "value": "\"app_usage_event\".\"status\" IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')"
+          "value": "\"app_usage_event\".\"status\" IN ('ok', 'provider_error')"
         }
       }
     },

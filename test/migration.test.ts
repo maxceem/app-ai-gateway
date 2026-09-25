@@ -1,7 +1,5 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { parseAppConfig } from "../src/shared/app-config";
-import { TEST_ORGANIZATION_ID } from "./apply-migrations";
 
 /** Idempotent, so each test that needs an owning organization can ask for it. */
 async function seedProviderOrganization(): Promise<void> {
@@ -25,6 +23,8 @@ describe("initial database migration", () => {
       notnull: number;
       dflt_value: string | null;
     }>();
+    const rejectionColumns = await env.DB.prepare("PRAGMA table_info(app_rejection_event)")
+      .all<{ name: string; notnull: number; dflt_value: string | null }>();
     const appColumns = await env.DB.prepare("PRAGMA table_info(app)").all<{
       name: string;
       notnull: number;
@@ -45,9 +45,14 @@ describe("initial database migration", () => {
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_id");
     expect(usageColumns.results.map((column) => column.name)).toContain("provider_slug");
     expect(usageColumns.results.map((column) => column.name)).toContain("event_id");
-    // Everything the gateway records opportunistically is nullable and
-    // undefaulted: a proxied request that never reached a provider still has to
-    // produce a usage row, so only the accounting columns below are mandatory.
+    expect(rejectionColumns.results.map((column) => column.name)).toEqual([
+      "id", "event_id", "app_id", "user_id", "api_key_id", "reason", "scope",
+      "provider_slug", "model", "route", "endpoint_slug", "app_version",
+      "auth_method", "latency_ms", "created_at",
+    ]);
+    expect(rejectionColumns.results.find((column) => column.name === "created_at"))
+      .toMatchObject({ notnull: 1, dflt_value: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" });
+    // Provider attempts can lack optional attribution or pricing details.
     expect(usageColumns.results.find((column) => column.name === "cost_source")).toMatchObject({
       notnull: 0,
       dflt_value: null,
@@ -156,10 +161,7 @@ describe("initial database migration", () => {
       notnull: number;
       dflt_value: string | null;
     }>();
-    // `revision` sits where the schema declares it rather than at the end: the
-    // rebuild that dropped the type CHECKs recreated both tables from the
-    // declaration, so the column a later `ALTER TABLE ADD` had appended moved
-    // back into place. Nothing reads a provider row positionally.
+    // Provider rows include the revision used for optimistic updates.
     expect(providerColumns.results.map((column) => column.name)).toEqual([
       "id",
       "organization_id",
@@ -302,6 +304,26 @@ describe("initial database migration", () => {
     await expect(insert("migration-event-1")).rejects.toThrow(/UNIQUE constraint failed/u);
   });
 
+  it("keeps refusal diagnostics separate from provider accounting", async () => {
+    await expect(env.DB.prepare(
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, provider_type, model, route, status)
+       VALUES (?, 'operator-test-organization', 'migration-invalid-status', 'openai', 'test', 'test', 'blocked_user')`,
+    ).bind(crypto.randomUUID()).run()).rejects.toThrow(/CHECK constraint failed/u);
+
+    const insert = (eventId: string, reason: string, scope: string | null) =>
+      env.DB.prepare(
+        `INSERT INTO app_rejection_event(event_id, app_id, reason, scope)
+         VALUES (?, 'migration-rejection', ?, ?)`,
+      ).bind(eventId, reason, scope).run();
+    await insert("migration-rejection-1", "blocked_user", "user");
+    await expect(insert("migration-rejection-1", "blocked_user", "user"))
+      .rejects.toThrow(/UNIQUE constraint failed/u);
+    await expect(insert("migration-rejection-2", "provider_error", null))
+      .rejects.toThrow(/CHECK constraint failed/u);
+    await expect(insert("migration-rejection-3", "blocked_user", "other"))
+      .rejects.toThrow(/CHECK constraint failed/u);
+  });
+
   it("allows one provider row per organization and slug, whatever its status", async () => {
     await seedProviderOrganization();
     const insert = (id: string, slug: string, status: string) =>
@@ -331,8 +353,7 @@ describe("initial database migration", () => {
    * the contracts refuse a type no descriptor backs on the way in, and
    * `isGatewayType` treats a gateway with no adapter as unroutable on the way
    * out. What the database still owes is the rest of the row — the slug index,
-   * the status CHECK, the credential-source pairing — which the rebuild that
-   * dropped the type CHECKs had to carry over intact.
+   * the status CHECK, and the credential-source pairing.
    */
   it("admits any provider type, leaving the decision to the registry", async () => {
     await seedProviderOrganization();
@@ -351,7 +372,7 @@ describe("initial database migration", () => {
     ]) {
       await expect(insert(`planned-${type}`, type)).resolves.toBeDefined();
     }
-    // The constraints the rebuild kept still bind.
+    // The other constraints still bind.
     await expect(insert("planned-dup", "cohere")).rejects.toThrow(/UNIQUE constraint failed/u);
     await expect(
       env.DB.prepare(
@@ -374,56 +395,8 @@ describe("initial database migration", () => {
     // No adapter for this one; `requireGatewayAdapter` is what refuses it, and
     // a row carrying it reads as unroutable rather than as another gateway.
     await expect(insert("planned-litellm", "litellm")).resolves.toBeDefined();
-    // The foreign key the rebuild carried over.
+    // The foreign key still binds.
     await expect(insert("planned-orphan", "cf_aig", "org-missing"))
       .rejects.toThrow(/FOREIGN KEY constraint failed/u);
-  });
-});
-
-describe("the end_user none migration", () => {
-  const ROUTING = { providers: { mode: "all" }, model_rewrites: {} };
-  const rows = {
-    "migrated-no-users": { authentication: { type: "api_key" }, routing: ROUTING },
-    "migrated-header": {
-      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
-      routing: ROUTING,
-    },
-  };
-
-  /*
-   * The suite has already applied every migration, so the row this one exists
-   * for is written afterwards, as the configuration stored before it, and the
-   * migration's own statements are run over it again.
-   */
-  async function migrate(): Promise<void> {
-    const migration = env.TEST_MIGRATIONS.find((entry) => entry.name === "0001_end_user_none.sql");
-    expect(migration).toBeDefined();
-    for (const query of migration?.queries ?? []) await env.DB.prepare(query).run();
-  }
-
-  const stored = async (id: string): Promise<unknown> => {
-    const row = await env.DB.prepare("SELECT config_json FROM app WHERE id = ?").bind(id)
-      .first<{ config_json: string }>();
-    return JSON.parse(row?.config_json ?? "null");
-  };
-
-  it("states none on an api_key application that omitted end_user, and nothing else", async () => {
-    await env.DB.batch(Object.entries(rows).map(([id, config]) =>
-      env.DB.prepare(
-        `INSERT INTO app(id, organization_id, name, config_json, auth_type, status)
-         VALUES (?, ?, ?, ?, 'api_key', 'active')`,
-      ).bind(id, TEST_ORGANIZATION_ID, id, JSON.stringify(config))));
-    expect(() => parseAppConfig(rows["migrated-no-users"]))
-      .toThrowError("authentication.end_user");
-
-    await migrate();
-
-    const migrated = await stored("migrated-no-users");
-    expect(migrated).toEqual({
-      authentication: { type: "api_key", end_user: { source: "none" } },
-      routing: ROUTING,
-    });
-    expect(parseAppConfig(migrated).authentication.end_user).toEqual({ source: "none" });
-    expect(await stored("migrated-header")).toEqual(rows["migrated-header"]);
   });
 });
