@@ -208,7 +208,8 @@ const RECOVER_STATE = "Recover the state file; it will not be treated as a new a
 /**
  * The state file, parsed by the one schema that describes it.
  *
- * Refused rather than replaced, and always as `invalid_state`: the file holds
+ * Refused rather than replaced, as `invalid_state` unless an earlier CLI
+ * wrote it (`outdated_state`): the file holds
  * a management credential, the owner of a vault key and unfinished creations,
  * so a shape this release cannot read is something to repair by hand, never
  * something to overwrite with a fresh state. The path and the first issue are
@@ -221,6 +222,18 @@ function parseState(path: string, text: string): CliState {
   } catch {
     fail("invalid_state", `Connection state at ${path} is not valid JSON.`, RECOVER_STATE, 4);
   }
+  // An earlier CLI's file is not damaged, just from a protocol this one no
+  // longer speaks, so it is named as that rather than as a malformed file.
+  const version = typeof value === "object" && value !== null
+    ? (value as { schemaVersion?: unknown }).schemaVersion
+    : undefined;
+  if (typeof version === "number" && version < CliStateSchema.shape.schemaVersion.value)
+    fail(
+      "outdated_state",
+      `Connection state at ${path} was written by an older version of the CLI.`,
+      `Delete ${path} and run agw account login.`,
+      4,
+    );
   try {
     // Through `validate`, which is the one place a zod issue is worded the way
     // this CLI words one; only its code and the length differ here, because a

@@ -125,7 +125,7 @@ test("protected state rejects corrupt prior state and output does not overwrite"
   assert.deepEqual(await store.read(), fresh());
   await writeFile(
     store.path,
-    JSON.stringify({ schemaVersion: 1, operations: {} }),
+    JSON.stringify({ schemaVersion: 2, operations: {} }),
   );
   await assert.rejects(() => store.read(), hasCode("invalid_state"));
   const out = await reserveOutput(join(dir, "key"));
@@ -151,17 +151,16 @@ test("a state file this release cannot read is refused, never replaced", async (
   const store = new StateStore(directory);
   for (const junk of [
     "{not json at all",
-    // Parses, but is not a state: the `mutations` map holds a receipt that has
-    // lost the proof it would have to be honoured with.
+    // Parses, but is not a state: an operation that has lost the proof it
+    // would have to be honoured with.
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       active: null,
-      operations: {},
-      mutations: { "m-1": { id: "m-1", url: "https://example.com" } },
+      operations: { "op-1": { url: "https://example.com", kind: "claim" } },
     }),
     // A connection that claims to be authenticated without a credential.
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       active: { url: "https://example.com", authenticated: true },
       operations: {},
     }),
@@ -174,6 +173,29 @@ test("a state file this release cannot read is refused, never replaced", async (
     await assert.rejects(() => store.write(fresh()), hasCode("invalid_state"));
     assert.equal(await readFile(store.path, "utf8"), junk);
   }
+});
+
+test("a state file an earlier CLI wrote is refused as outdated, never replaced", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new StateStore(dir);
+  await store.write(fresh());
+  const earlier = JSON.stringify({
+    schemaVersion: 1,
+    active: null,
+    operations: {},
+    mutations: { "m-1": { id: "m-1", url: "https://example.com" } },
+  });
+  await writeFile(store.path, earlier, { mode: 0o600 });
+  for (const attempt of [() => store.read(), () => store.write(fresh())]) {
+    await assert.rejects(attempt, (error: Error & { code?: string; nextAction?: string }) => {
+      assert.equal(error.code, "outdated_state");
+      assert.match(error.message, /older version of the CLI/u);
+      assert.equal(error.nextAction, `Delete ${store.path} and run agw account login.`);
+      return true;
+    });
+  }
+  assert.equal(await readFile(store.path, "utf8"), earlier);
 });
 
 test("lost bootstrap response reuses its token, and logout never bootstraps again", async () => {
