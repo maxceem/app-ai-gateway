@@ -116,9 +116,9 @@ A safe routine for a release that includes migrations:
 
 v0.4.0 changed the database layout and cannot update an existing v0.3.0 or
 earlier gateway in place. `agw deployment update` refuses such an update and
-changes nothing; a button or Wrangler deployment is not stopped the same way,
-so do not merge or pull v0.4.0 into one. Deploy v0.4.0 as a fresh gateway
-instead, and recreate your apps, keys and provider credentials there. If you
+changes nothing. A button or Wrangler deployment has no such guard, so do not
+point one at v0.4.0. Deploy v0.4.0 as a fresh gateway instead, and recreate
+your apps, keys and provider credentials there. If you
 need help moving data from an existing installation,
 [open an issue on GitHub](https://github.com/maxceem/app-ai-gateway/issues).
 
