@@ -8,6 +8,7 @@ import "../config.test";
 import "../authoritative-reads.test";
 import "../migration.test";
 import "../index.test";
+import "../entry-exports.test";
 import "../lazy-routes.test";
 import "../routing.test";
 import "../performance.test";
