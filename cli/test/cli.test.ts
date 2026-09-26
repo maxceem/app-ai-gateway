@@ -191,7 +191,10 @@ test("a state file an earlier CLI wrote is refused as outdated, never replaced",
     await assert.rejects(attempt, (error: Error & { code?: string; nextAction?: string }) => {
       assert.equal(error.code, "outdated_state");
       assert.match(error.message, /older version of the CLI/u);
-      assert.equal(error.nextAction, `Delete ${store.path} and run agw account login.`);
+      assert.match(error.nextAction ?? "", /^Move .+ aside .+ and run agw account login;/u);
+      assert.ok(error.nextAction?.includes(`${store.path}.v1`));
+      assert.match(error.nextAction ?? "", /--key-stdin/u);
+      assert.doesNotMatch(error.nextAction ?? "", /delete/iu);
       return true;
     });
   }

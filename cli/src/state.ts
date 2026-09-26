@@ -223,7 +223,9 @@ function parseState(path: string, text: string): CliState {
     fail("invalid_state", `Connection state at ${path} is not valid JSON.`, RECOVER_STATE, 4);
   }
   // An earlier CLI's file is not damaged, just from a protocol this one no
-  // longer speaks, so it is named as that rather than as a malformed file.
+  // longer speaks, so it is named as that rather than as a malformed file. It
+  // may hold the only copy of a management key, so it is moved aside, never
+  // deleted.
   const version = typeof value === "object" && value !== null
     ? (value as { schemaVersion?: unknown }).schemaVersion
     : undefined;
@@ -231,7 +233,7 @@ function parseState(path: string, text: string): CliState {
     fail(
       "outdated_state",
       `Connection state at ${path} was written by an older version of the CLI.`,
-      `Delete ${path} and run agw account login.`,
+      `Move ${path} aside (for example to ${path}.v1) and run agw account login; the old file keeps your previous management key under active.credential, which login accepts at its prompt or with --key-stdin.`,
       4,
     );
   try {
