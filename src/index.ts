@@ -11,6 +11,7 @@ import {
   pruneAuthEvents,
 } from "./client-auth/auth-events";
 import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
+import { MAINTENANCE_CRON } from "./core/maintenance-cron";
 import { runUsageRetention } from "./usage/usage-retention";
 import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
@@ -259,9 +260,6 @@ async function prune(env: Env): Promise<void> {
   // reason the sweeps above do.
   await runUsageRetention(db, Date.now(), budget);
 }
-
-/** The one trigger this Worker declares, in `wrangler.jsonc`. */
-export const MAINTENANCE_CRON = "17 3 * * *";
 
 /**
  * The Hono app itself is the handler — `fetch` is one of its own properties, so

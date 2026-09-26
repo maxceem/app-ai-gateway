@@ -10,7 +10,8 @@ import {
 } from "../src/usage/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
 import { TEST_ORGANIZATION_ID } from "./apply-migrations";
-import app, { MAINTENANCE_CRON } from "../src/index";
+import app from "../src/index";
+import { MAINTENANCE_CRON } from "../src/core/maintenance-cron";
 
 const PREFIX = "accounting-";
 
