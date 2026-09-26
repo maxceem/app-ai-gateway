@@ -98,15 +98,16 @@ export function readUpgradeFrom(text) {
  * The list of earlier releases the next one may upgrade a deployment from.
  *
  * The previous release goes in front by default, because the usual release
- * keeps the schema compatible. Dropping it is the deliberate, human call
- * described in `cli/scripts/manifest.mjs`: a release that cannot migrate an
- * older database must not claim it can.
+ * keeps the schema compatible. Breaking upgrades is the deliberate, human call
+ * described in `cli/scripts/manifest.mjs`, and it empties the list: a release
+ * that cannot migrate the previous release's database cannot migrate an older
+ * one either, and must not claim it can.
  */
 export function nextUpgradeFrom(existing, previousVersion, { includePrevious = true } = {}) {
   const declared = existing ?? [];
   if (!Array.isArray(declared)) throw new Error("upgradeFrom must be an array");
   for (const version of declared) parseVersion(version);
-  if (!includePrevious) return [...declared];
+  if (!includePrevious) return [];
   parseVersion(previousVersion);
   if (declared.includes(previousVersion)) return [...declared];
   return [previousVersion, ...declared];

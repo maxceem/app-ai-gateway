@@ -63,9 +63,11 @@ test("refuses a manifest without exactly one version field", () => {
   );
 });
 
-test("carries the previous release forward by default and skips it on request", () => {
+test("carries the previous release forward by default and declares none on request", () => {
   assert.deepEqual(nextUpgradeFrom(["0.1.6"], "0.1.7"), ["0.1.7", "0.1.6"]);
-  assert.deepEqual(nextUpgradeFrom(["0.1.6"], "0.1.7", { includePrevious: false }), ["0.1.6"]);
+  // A release that cannot migrate its predecessor cannot migrate an older one.
+  assert.deepEqual(nextUpgradeFrom(["0.1.6"], "0.1.7", { includePrevious: false }), []);
+  assert.deepEqual(nextUpgradeFrom(null, "0.1.7", { includePrevious: false }), []);
   // Idempotent: a list that already names the previous release is left alone.
   assert.deepEqual(nextUpgradeFrom(["0.1.7", "0.1.6"], "0.1.7"), ["0.1.7", "0.1.6"]);
   assert.deepEqual(nextUpgradeFrom(null, "0.1.7"), ["0.1.7"]);
@@ -106,14 +108,16 @@ test("applies a release to both manifests together", () => {
   assert.equal(readUpgradeFrom(plan.cliText).includes("9.9.9"), false);
 });
 
-test("a release that breaks upgrades drops the previous version", () => {
+test("a release that breaks upgrades declares no earlier version", () => {
+  assert.ok(readUpgradeFrom(cliManifest).length > 0);
   const plan = applyRelease({
     rootText: rootManifest,
     cliText: cliManifest,
     version: "9.9.9",
     includePrevious: false,
   });
-  assert.deepEqual(readUpgradeFrom(plan.cliText), readUpgradeFrom(cliManifest));
+  assert.deepEqual(plan.upgradeFrom, []);
+  assert.deepEqual(readUpgradeFrom(plan.cliText), []);
 });
 
 test("refuses to release manifests that disagree", () => {
