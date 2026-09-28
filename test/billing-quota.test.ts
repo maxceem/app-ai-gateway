@@ -1,6 +1,7 @@
 import type { BillingAccess, BillingRuntime, SubscriptionState } from "../src/billing/contract";
 import { invalidateBillingAccess, requireActiveBilling } from "../src/billing/gateway";
-import { allowancePeriod, billingQuota, type BillingQuota } from "../src/billing/quota";
+import { allowancePeriod } from "../src/billing/allowance-period";
+import { billingQuota, type BillingQuota } from "../src/billing/quota";
 import { invalidateAccountLifecycle } from "../src/core/account-lifecycle";
 import { clearIsolateCaches } from "./helpers";
 import { env } from "cloudflare:workers";
