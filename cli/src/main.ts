@@ -92,7 +92,7 @@ export async function main(
       return 0;
     }
     const run = async (): Promise<number> => {
-      const state = await store.read();
+      const state = await store.read((line) => stderr.write(line + "\n"));
       const ctx = new Context(store, state, transport, parsed.flags);
       const result = await execute(parsed, ctx);
       const context: OutputContext = {

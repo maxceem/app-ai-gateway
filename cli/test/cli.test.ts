@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
@@ -175,30 +175,152 @@ test("a state file this release cannot read is refused, never replaced", async (
   }
 });
 
-test("a state file an earlier CLI wrote is refused as outdated, never replaced", async (t) => {
+/** A state file as v0.3.0 wrote one: schema 1, with everything it could hold. */
+function earlierState(active: Record<string, unknown> | null = {
+  url: "https://api.example.com",
+  authenticated: true,
+  credential: "SENTINEL-EARLIER-KEY",
+  account: { ...credential.account, claimed: true },
+  deployment: credential.deployment,
+}): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    active,
+    previous: { url: "https://old.example.com", authenticated: false },
+    operations: {
+      "op-1": {
+        url: "https://api.example.com",
+        pollToken: "SENTINEL-POLL",
+        kind: "claim",
+        phase: "pending",
+        generation: 3,
+      },
+    },
+    generation: 3,
+    bootstrap: {
+      createdAt: "2026-09-01T00:00:00.000Z",
+      idempotencyKey: "SENTINEL-IDEMPOTENCY",
+      pollToken: "SENTINEL-BOOTSTRAP-POLL",
+    },
+    mutations: {
+      "m-1": {
+        id: "m-1",
+        proof: "SENTINEL-PROOF",
+        requestHash: "hash",
+        url: "https://api.example.com",
+        accountId: "account-1",
+        path: "/v1/apps",
+        createdAt: "2026-09-01T00:00:00.000Z",
+      },
+    },
+    installations: {
+      ready: {
+        id: "ready",
+        name: "gateway",
+        accountId: "cf-account",
+        databaseId: "db-1",
+        databaseName: "gateway-db",
+        version: "0.3.0",
+        phase: "ready",
+        url: "https://gateway.example.workers.dev",
+        domains: [],
+        bootstrap: { idempotencyKey: "SENTINEL-INSTALL-KEY", pollToken: "SENTINEL-INSTALL-POLL" },
+      },
+      prepared: {
+        id: "prepared",
+        name: "half",
+        accountId: "cf-account",
+        version: "0.3.0",
+        phase: "prepared",
+        bootstrap: { idempotencyKey: "SENTINEL-HALF-KEY", pollToken: "SENTINEL-HALF-POLL" },
+        secrets: { BETTER_AUTH_SECRET: "SENTINEL-SECRET" },
+      },
+    },
+  };
+}
+
+test("a state file an earlier CLI wrote is upgraded in place, keeping the login and a copy", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new StateStore(dir);
   await store.write(fresh());
-  const earlier = JSON.stringify({
-    schemaVersion: 1,
-    active: null,
-    operations: {},
-    mutations: { "m-1": { id: "m-1", url: "https://example.com" } },
+  const old = earlierState();
+  const original = JSON.stringify(old, null, 2);
+  await writeFile(store.path, original, { mode: 0o600 });
+  const notices: string[] = [];
+  const notice = (line: string) => notices.push(line);
+
+  const state = await store.read(notice);
+  assert.deepEqual(state.active, old["active"]);
+  assert.deepEqual(state.operations, {});
+  const { bootstrap: _spent, ...ready } = (old["installations"] as Record<string, Record<string, unknown>>)["ready"]!;
+  assert.deepEqual(state.installations, { ready });
+  assert.equal(JSON.stringify(state).includes("SENTINEL-EARLIER-KEY"), true);
+  for (const dropped of ["POLL", "IDEMPOTENCY", "PROOF", "INSTALL-KEY", "HALF", "SENTINEL-SECRET"])
+    assert.equal(JSON.stringify(state).includes(dropped), false, dropped);
+
+  const copy = `${store.path}.v1`;
+  assert.equal(await readFile(copy, "utf8"), original);
+  if (process.platform !== "win32") assert.equal((await stat(copy)).mode & 0o777, 0o600);
+  assert.deepEqual(notices, [
+    `Upgraded the saved connection an older CLI wrote; the old file is kept at ${copy}.`,
+  ]);
+
+  // The rewritten file is the current schema: read again, nothing more happens.
+  const rewritten = JSON.parse(await readFile(store.path, "utf8")) as { schemaVersion: number };
+  assert.equal(rewritten.schemaVersion, 2);
+  assert.deepEqual(await new StateStore(dir).read(notice), state);
+  assert.equal(notices.length, 1);
+  assert.deepEqual((await readdir(dir)).filter((name) => name.includes(".v1")), ["connection.json.v1"]);
+
+  // A second earlier file never overwrites the first copy, and one with no
+  // connection is upgraded all the same.
+  const second = JSON.stringify(earlierState(null));
+  await writeFile(store.path, second, { mode: 0o600 });
+  const empty = await store.read(notice);
+  assert.equal(empty.active, null);
+  assert.deepEqual(empty.operations, {});
+  assert.equal(await readFile(copy, "utf8"), original);
+  const stamped = (await readdir(dir)).filter((name) => name.startsWith("connection.json.v1."));
+  assert.equal(stamped.length, 1);
+  assert.match(stamped[0]!, /^connection\.json\.v1\.\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z$/u);
+  assert.equal(await readFile(join(dir, stamped[0]!), "utf8"), second);
+  assert.equal(notices.length, 2);
+  assert.ok(notices[1]!.endsWith(`${join(dir, stamped[0]!)}.`));
+
+  // A later schema is still refused, and left exactly as it was.
+  const later = JSON.stringify({ schemaVersion: 3, active: null, operations: {} });
+  await writeFile(store.path, later, { mode: 0o600 });
+  await assert.rejects(() => store.read(notice), hasCode("invalid_state"));
+  assert.equal(await readFile(store.path, "utf8"), later);
+  assert.equal(notices.length, 2);
+});
+
+test("an upgrade's notice goes to stderr and leaves a --json document alone", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new StateStore(dir);
+  await store.write(fresh());
+  await writeFile(store.path, JSON.stringify(earlierState()), { mode: 0o600 });
+  let out = "";
+  let err = "";
+  const code = await main(["account", "logout", "--json"], {
+    store,
+    stdout: { write: (text: string) => { out += text; } },
+    stderr: { write: (text: string) => { err += text; } },
+    transport: {
+      request: async () => {
+        throw new Error("logout makes no request");
+      },
+    },
   });
-  await writeFile(store.path, earlier, { mode: 0o600 });
-  for (const attempt of [() => store.read(), () => store.write(fresh())]) {
-    await assert.rejects(attempt, (error: Error & { code?: string; nextAction?: string }) => {
-      assert.equal(error.code, "outdated_state");
-      assert.match(error.message, /older version of the CLI/u);
-      assert.match(error.nextAction ?? "", /^Move .+ aside .+ and run agw account login;/u);
-      assert.ok(error.nextAction?.includes(`${store.path}.v1`));
-      assert.match(error.nextAction ?? "", /--key-stdin/u);
-      assert.doesNotMatch(error.nextAction ?? "", /delete/iu);
-      return true;
-    });
-  }
-  assert.equal(await readFile(store.path, "utf8"), earlier);
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(out).ok, true);
+  assert.equal(err, `Upgraded the saved connection an older CLI wrote; the old file is kept at ${store.path}.v1.\n`);
+  // The write that followed merged into the upgraded file, not the earlier one.
+  const after = await new StateStore(dir).read();
+  assert.equal(after.active?.authenticated, false);
+  assert.equal(after.active?.url, "https://api.example.com");
 });
 
 test("lost bootstrap response reuses its token, and logout never bootstraps again", async () => {

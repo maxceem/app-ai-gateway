@@ -208,12 +208,12 @@ const RECOVER_STATE = "Recover the state file; it will not be treated as a new a
 /**
  * The state file, parsed by the one schema that describes it.
  *
- * Refused rather than replaced, as `invalid_state` unless an earlier CLI
- * wrote it (`outdated_state`): the file holds
- * a management credential, the owner of a vault key and unfinished creations,
- * so a shape this release cannot read is something to repair by hand, never
+ * Refused rather than replaced, as `invalid_state`: the file holds a
+ * management credential, the owner of a vault key and unfinished creations, so
+ * a shape this release cannot read is something to repair by hand, never
  * something to overwrite with a fresh state. The path and the first issue are
- * named because that is what repairing it by hand needs.
+ * named because that is what repairing it by hand needs. A file an earlier CLI
+ * wrote never gets here: `StateStore.read` upgrades it first (`upgradeState`).
  */
 function parseState(path: string, text: string): CliState {
   let value: unknown;
@@ -222,20 +222,6 @@ function parseState(path: string, text: string): CliState {
   } catch {
     fail("invalid_state", `Connection state at ${path} is not valid JSON.`, RECOVER_STATE, 4);
   }
-  // An earlier CLI's file is not damaged, just from a protocol this one no
-  // longer speaks, so it is named as that rather than as a malformed file. It
-  // may hold the only copy of a management key, so it is moved aside, never
-  // deleted.
-  const version = typeof value === "object" && value !== null
-    ? (value as { schemaVersion?: unknown }).schemaVersion
-    : undefined;
-  if (typeof version === "number" && version < CliStateSchema.shape.schemaVersion.value)
-    fail(
-      "outdated_state",
-      `Connection state at ${path} was written by an older version of the CLI.`,
-      `Move ${path} aside (for example to ${path}.v1) and run agw account login; the old file keeps your previous management key under active.credential, which login accepts at its prompt or with --key-stdin.`,
-      4,
-    );
   try {
     // Through `validate`, which is the one place a zod issue is worded the way
     // this CLI words one; only its code and the length differ here, because a
@@ -250,6 +236,59 @@ function parseState(path: string, text: string): CliState {
       4,
     );
   }
+}
+
+/**
+ * The state file's contents as an object an earlier CLI wrote, or null.
+ *
+ * Earlier means a numeric `schemaVersion` below this one's; anything else —
+ * a later version, no number, text that is not JSON — is left to `parseState`
+ * to refuse.
+ */
+function earlierState(text: string): Record<string, unknown> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const version = (value as { schemaVersion?: unknown }).schemaVersion;
+  return typeof version === "number" && version < CliStateSchema.shape.schemaVersion.value
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * The current state an earlier CLI's file becomes.
+ *
+ * The connection is carried as it was, because its shape has not changed and
+ * it is what keeps the person logged in. Operations, receipts and the old
+ * bootstrap are dropped: they were proofs for server records that no longer
+ * exist, so nothing could finish them. A ready installation is kept without
+ * its spent bootstrap; one that never got that far is dropped, because its
+ * bootstrap cannot be resumed by this CLI. Each carried installation is held
+ * to the current schema and dropped if it fails, while a connection that fails
+ * refuses the whole file, since it may hold the only copy of a key.
+ */
+function upgradeState(path: string, earlier: Record<string, unknown>): CliState {
+  const installations: Record<string, InstallationJournal> = {};
+  const journals = earlier["installations"];
+  if (typeof journals === "object" && journals !== null)
+    for (const [id, journal] of Object.entries(journals)) {
+      if (typeof journal !== "object" || journal === null) continue;
+      const { bootstrap: _spent, ...rest } = journal as Record<string, unknown>;
+      if (rest["phase"] !== "ready") continue;
+      const carried = StoredInstallationSchema.safeParse(rest);
+      if (carried.success) installations[id] = carried.data as InstallationJournal;
+    }
+  const upgraded = {
+    schemaVersion: 2,
+    active: earlier["active"] ?? null,
+    operations: {},
+    ...(Object.keys(installations).length ? { installations } : {}),
+  };
+  return parseState(path, JSON.stringify(upgraded));
 }
 
 export function stateDirectory(): string {
@@ -585,8 +624,14 @@ export class StateStore {
    * read — wrong owner, wrong mode, unparseable, or a shape this release does
    * not know — is refused, because every one of those would otherwise start a
    * command as though this machine had never held an account.
+   *
+   * A file an earlier CLI wrote is the one exception: it is upgraded in place,
+   * so installing a new CLI keeps the login. `notice` is told, once, where the
+   * old file was kept.
    */
-  async read(): Promise<CliState> {
+  async read(
+    notice: (line: string) => void = (line) => process.stderr.write(line + "\n"),
+  ): Promise<CliState> {
     const held = await lstat(this.path).catch((error: unknown) => {
       if (errorCode(error) === "ENOENT") return null;
       fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
@@ -603,7 +648,13 @@ export class StateStore {
         "unsafe_storage",
         "Connection state must be owned by you with mode 0600.",
       );
-    const state: CliState = (held && (await this.stored())) || {
+    const text = held ? await this.contents() : null;
+    const stored = text === null
+      ? null
+      : earlierState(text)
+        ? await this.upgrade(notice)
+        : parseState(this.path, text);
+    const state: CliState = stored ?? {
       schemaVersion: 2,
       active: null,
       operations: {},
@@ -675,14 +726,80 @@ export class StateStore {
    * could not be understood with this command's own state.
    */
   private async stored(): Promise<CliState | null> {
-    let text: string;
+    const text = await this.contents();
+    return text === null ? null : parseState(this.path, text);
+  }
+
+  /** The state file's text, or null when there is no file at all. */
+  private async contents(): Promise<string | null> {
     try {
-      text = await readFile(this.path, "utf8");
+      return await readFile(this.path, "utf8");
     } catch (error) {
       if (errorCode(error) === "ENOENT") return null;
       fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
     }
-    return parseState(this.path, text);
+  }
+
+  /**
+   * Rewrites a file an earlier CLI wrote as the current state, and answers
+   * with what is on disk afterwards.
+   *
+   * Under the lock and judged again there, so two commands started together
+   * upgrade it once: the second finds the current state and reads it. The old
+   * file is copied byte for byte beside it before anything is replaced, because
+   * it may hold the only copy of a management key, and no earlier copy is ever
+   * overwritten.
+   */
+  private async upgrade(notice: (line: string) => void): Promise<CliState | null> {
+    const { state, copy } = await this.locked(async () => {
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(this.path);
+      } catch (error) {
+        if (errorCode(error) === "ENOENT") return { state: null, copy: null };
+        fail("invalid_state", "Cannot read connection state.", RECOVER_STATE, 4);
+      }
+      const earlier = earlierState(bytes.toString("utf8"));
+      if (!earlier) return { state: await this.stored(), copy: null };
+      const upgraded = upgradeState(this.path, earlier);
+      const copy = await this.keepCopy(bytes);
+      await this.replace(upgraded);
+      return { state: await this.stored(), copy };
+    });
+    if (copy)
+      notice(`Upgraded the saved connection an older CLI wrote; the old file is kept at ${copy}.`);
+    return state;
+  }
+
+  /** Writes `bytes` to the first free `.v1` name beside the state file. */
+  private async keepCopy(bytes: Buffer): Promise<string> {
+    const stamp = new Date().toISOString().replaceAll(":", "");
+    for (const path of [`${this.path}.v1`, `${this.path}.v1.${stamp}`]) {
+      let handle: FileHandle;
+      try {
+        handle = await open(path, "wx", 0o600);
+      } catch (error) {
+        if (errorCode(error) === "EEXIST") continue;
+        throw error;
+      }
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+        await handle.close();
+      } catch (error) {
+        // Only the copy this call just created, never an earlier one.
+        await handle.close().catch(() => {});
+        await unlink(path).catch(() => {});
+        throw error;
+      }
+      return path;
+    }
+    fail(
+      "invalid_state",
+      `Cannot keep a copy of the older connection state beside ${this.path}.`,
+      `Move the ${this.path}.v1 copies elsewhere and retry.`,
+      4,
+    );
   }
 
   private async replace(state: CliState): Promise<void> {

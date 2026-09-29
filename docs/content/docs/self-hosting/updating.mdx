@@ -122,6 +122,10 @@ your apps, keys and provider credentials there. If you
 need help moving data from an existing installation,
 [open an issue on GitHub](https://github.com/maxceem/app-ai-gateway/issues).
 
+Installing the new `agw` keeps your account login. Operations the older CLI
+had not finished are dropped, and a copy of its old connection file is kept
+beside it with a `.v1` suffix.
+
 ## For contributors
 
 Change the schema definition, run `pnpm run db:generate` to produce the
