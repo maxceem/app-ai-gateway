@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
-import { PROVIDER_LABELS, reportsCost, type Provider } from "@/lib/config-types";
+import { providerLabel, reportsCost } from "@/lib/config-types";
 import { draftsToPricing, toDrafts, type PricingDraft } from "@/lib/pricing-draft";
 import { useUpdateProvider } from "@/lib/queries";
 import type { ProviderCredential } from "@/lib/types";
@@ -85,7 +85,7 @@ export function PricingDialog({
           <DialogDescription>
             For models the built-in catalog does not cover, or prices it in a way you disagree with.
             {provider && reportsCost(provider.type)
-              ? ` ${PROVIDER_LABELS[provider.type as Provider] ?? provider.type} reports the cost of
+              ? ` ${providerLabel(provider.type)} reports the cost of
                   every request, so its models proxy with no price here; a price entered here is
                   only used if a response ever comes back without one.`
               : " Requests for unpriced models are rejected until a price is set here."}{" "}

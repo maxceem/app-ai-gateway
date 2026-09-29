@@ -13,15 +13,14 @@
  * and one parser that ships everywhere cannot.
  */
 
-import type { z } from "zod";
 import {
   AppConfigSchema,
-  AppleAppIdentitySchema,
   AppWriteSchema,
   type AppConfig,
   type AppWrite,
   type LimitScopeConfig,
 } from "../contracts/schemas.ts";
+import { schemaIssueMessage } from "./schema-issues.ts";
 
 export {
   APP_ATTEST_ENVIRONMENTS,
@@ -46,6 +45,7 @@ export type {
   AuthenticationConfig,
   AuthenticationConfigInput,
   ClaimRequirement,
+  EndUserSource,
   EndpointConfig,
   EndpointsConfig,
   EntitlementCheck,
@@ -59,10 +59,7 @@ export type {
 } from "../contracts/schemas.ts";
 
 import {
-  APP_ID_IS_SERVER_ASSIGNED,
   scopeHasLimits,
-  type AuthenticationConfig,
-  type IssuerAuthentication,
   type ProviderPolicy,
   type RoutingConfig,
 } from "../contracts/schemas.ts";
@@ -76,24 +73,6 @@ export class ConfigError extends Error {
 }
 
 /**
- * The one way a schema rejection is worded, wherever one is reported.
- *
- * The first issue only: a configuration is repaired one field at a time, and a
- * list of every consequence of a single missing key is noise in an error
- * message. The path comes first because it is what the reader has to find.
- */
-export function configErrorFor(error: z.ZodError<unknown>): ConfigError {
-  const issue = error.issues[0];
-  if (issue === undefined) return new ConfigError("Invalid application configuration");
-  // The one rejection a client is likely to hit while catching up with the
-  // contract, and "unrecognized key" would not tell it what to do instead.
-  if (issue.code === "unrecognized_keys" && issue.keys.includes("id")) {
-    return new ConfigError(APP_ID_IS_SERVER_ASSIGNED);
-  }
-  return new ConfigError(`${issue.path.join(".") || "body"}: ${issue.message}`);
-}
-
-/**
  * Raw JSON as a configuration, or a {@link ConfigError} naming the first field
  * at fault. Stored rows, request bodies and console drafts all come through
  * here, which is what makes "what is stored" and "what is accepted" one answer.
@@ -101,17 +80,7 @@ export function configErrorFor(error: z.ZodError<unknown>): ConfigError {
 export function parseAppConfig(raw: unknown): AppConfig {
   const parsed = AppConfigSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
-  throw configErrorFor(parsed.error);
-}
-
-/**
- * Why an Apple team and bundle id would be refused, or null when they would
- * not. The stored configuration's own rules, so a form that is not yet a whole
- * configuration can still be told exactly what the save would say.
- */
-export function appleIdentityProblem(identity: { team_id: string; bundle_id: string }): string | null {
-  const parsed = AppleAppIdentitySchema.safeParse(identity);
-  return parsed.success ? null : (parsed.error.issues[0]?.message ?? "Invalid Apple app identity");
+  throw new ConfigError(schemaIssueMessage(parsed.error));
 }
 
 /**
@@ -122,7 +91,7 @@ export function appleIdentityProblem(identity: { team_id: string; bundle_id: str
 export function parseAppWrite(raw: unknown): AppWrite {
   const parsed = AppWriteSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
-  throw configErrorFor(parsed.error);
+  throw new ConfigError(schemaIssueMessage(parsed.error));
 }
 
 /** One reason a configuration would be refused, and the field it is about. */
@@ -148,20 +117,6 @@ export function appConfigIssues(raw: unknown): ConfigIssue[] {
 /** Whether `path` is `prefix` or lies under it. */
 export function issueUnder(issue: ConfigIssue, prefix: readonly PropertyKey[]): boolean {
   return prefix.every((segment, index) => issue.path[index] === segment);
-}
-
-/** The issuer that identifies this application's end users, if one does. */
-export function endUserIssuer(
-  authentication: AuthenticationConfig,
-): IssuerAuthentication | undefined {
-  return authentication.end_user?.source === "issuer" ? authentication.end_user.issuer : undefined;
-}
-
-/** The header this application reads its end-user id from, if it reads one. */
-export function endUserHeader(authentication: AuthenticationConfig): string | undefined {
-  return authentication.type === "api_key" && authentication.end_user?.source === "header"
-    ? authentication.end_user.header
-    : undefined;
 }
 
 /**

@@ -1,5 +1,6 @@
 // A barrel: see vitest.suites.config.ts. Nothing here but imports.
 import "../registry.test";
+import "../sql.test";
 import "../ttl-cache.test";
 import "../providers.test";
 import "../provider-store.test";
@@ -7,6 +8,7 @@ import "../config.test";
 import "../authoritative-reads.test";
 import "../migration.test";
 import "../index.test";
+import "../entry-exports.test";
 import "../lazy-routes.test";
 import "../routing.test";
 import "../performance.test";

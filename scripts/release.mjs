@@ -3,7 +3,7 @@
 //
 //   pnpm run release <version>                     # e.g. pnpm run release 0.1.8
 //   pnpm run release <version> --dry-run           # print the plan, write nothing
-//   pnpm run release <version> --breaks-upgrades   # do not carry the previous release forward
+//   pnpm run release <version> --breaks-upgrades   # declare no release it can upgrade from
 //   pnpm run release <version> --message "..."     # extra paragraph in the commit body
 //
 // This is the only thing the project owner runs. It bumps both manifests, type
@@ -20,8 +20,10 @@
 // version being replaced is prepended to `cli/package.json` `upgradeFrom`, which
 // is this release's claim that it can migrate a deployment of that version's
 // database (see `cli/scripts/manifest.mjs`). Pass the flag when this release
-// cannot: existing deployments then have to step through an earlier version, and
-// failing that way round is the safe one.
+// cannot: `upgradeFrom` is then emptied, because a release that cannot migrate
+// the previous release's database cannot migrate an older one either. Existing
+// deployments are then refused rather than updated, and failing that way round
+// is the safe one.
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -126,7 +128,7 @@ try {
   console.log(`  package.json and cli/package.json version: ${version}`);
   console.log(`  cli/package.json upgradeFrom: ${JSON.stringify(plan.upgradeFrom)}`);
   if (!includePrevious) {
-    console.log(`  (${plan.previousVersion} is NOT carried forward: this release breaks upgrades)`);
+    console.log("  (no earlier release is carried forward: this release breaks upgrades)");
   }
   console.log(`  commit: ${commitMessage(version, message).split("\n")[0]}`);
   console.log(`  tag:    ${tag}`);

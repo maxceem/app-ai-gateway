@@ -13,30 +13,26 @@
  * description — the generated document is byte-identical either way.
  */
 import { z } from "zod";
-import { PROVIDER_TYPES } from "../core/providers.ts";
+import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons.ts";
+import { PROVIDER_TYPES } from "../shared/providers.ts";
+import { APP_STATUSES } from "../shared/app-status.ts";
+import { API_STYLES, ENDPOINT_API_STYLES } from "../shared/capabilities.ts";
+import {
+  GATEWAY_DESCRIPTORS,
+  GATEWAY_TYPES,
+  type GatewayConnectionShape,
+  type GatewayType,
+} from "../shared/gateways.ts";
 import {
   AppConfigSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   ProviderPricingSchema,
-  StoredSlugSchema,
+  SlugSchema,
 } from "./schemas.ts";
 
-/**
- * What happened to one served request: answered (`ok`), failed upstream, or
- * refused before any provider was called — by the organization's own app
- * limits (`blocked_app_*`), by the plan allowance (`blocked_billing`), or by an
- * operator (`blocked_user`). The one list: the stored column, the recorder, the
- * event filter and this document all read it.
- */
-export const USAGE_STATUSES = [
-  "ok",
-  "provider_error",
-  "blocked_app_rate",
-  "blocked_app_budget",
-  "blocked_billing",
-  "blocked_user",
-] as const;
+/** Outcomes of requests dispatched to a provider. */
+export const USAGE_STATUSES = ["ok", "provider_error"] as const;
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
 
 /** The dimensions a usage breakdown can group by. */
@@ -79,6 +75,14 @@ export const ConsoleCapabilitiesResponseSchema = z.object({
   termsOfServiceUrl: z.string().url().optional(),
   privacyPolicyUrl: z.string().url().optional(),
   apiBaseUrl: z.string().url().optional(),
+});
+
+/** The provider URL returned when a Google OAuth sign-in is initiated. */
+export const GoogleSignInResponseSchema = z.object({
+  url: z.url().meta({ description: "Provider authorization URL for the browser to navigate to." }),
+  redirect: z.boolean().meta({
+    description: "Whether Better Auth also sets a Location header. The console navigates to url itself.",
+  }),
 });
 
 export const AppAttestChallengeResponseSchema = z.object({
@@ -154,7 +158,7 @@ export const UsageEventSchema = z.object({
     description: "What the upstream said the request cost, on routes that report one. Null everywhere else; cost_usd stays the billed figure either way.",
   }),
   cost_source: z.enum(["computed", "reported", "unresolved"]).nullable().meta({
-    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed.",
+    description: "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed.",
   }),
   app_version: z.string().nullable(),
   auth_method: z.enum(["attest", "api_key"]).nullable(),
@@ -201,6 +205,29 @@ export const AuthEventListSchema = z.object({
   events: z.array(AuthEventSchema),
 });
 
+export const RejectionEventSchema = z.object({
+  id: z.number().int(),
+  user_id: z.string().nullable(),
+  api_key_id: z.string().nullable(),
+  reason: z.enum(REJECTION_REASONS),
+  scope: z.enum(REJECTION_SCOPES).nullable().meta({ description: "Null on historical samples whose limit scope cannot be recovered." }),
+  provider_slug: z.string().nullable().meta({ description: "Attempted provider; this request did not contact an upstream." }),
+  model: z.string().nullable(),
+  route: z.string().nullable(),
+  endpoint_slug: z.string().nullable(),
+  app_version: z.string().nullable(),
+  auth_method: z.enum(["attest", "api_key"]).nullable(),
+  latency_ms: z.number().int().nullable(),
+  created_at: z.string(),
+}).meta({ id: "RejectionEvent" });
+
+export const RejectionEventListSchema = z.object({
+  app_id: z.string(),
+  limit: z.number().int(),
+  next_before_id: z.number().int().nullable(),
+  events: z.array(RejectionEventSchema),
+});
+
 export const AuthEventSummarySchema = z.object({
   app_id: z.string(),
   days: z.number().int(),
@@ -217,7 +244,13 @@ export const AuthEventSummarySchema = z.object({
     date: z.string(),
     status: z.string(),
     count: z.number().int(),
-  })).meta({ description: "Non-ok proxied requests per day, so proxy-path failures appear in the same view." }),
+  })).meta({ description: "Provider errors per day from requests that reached an upstream." }),
+  rejection_samples: z.array(z.object({
+    date: z.string(),
+    reason: z.enum(REJECTION_REASONS),
+    scope: z.enum(REJECTION_SCOPES).nullable(),
+    count: z.number().int(),
+  })).meta({ description: "Sampled pre-provider refusals per day. These are diagnostic samples, not exact request totals." }),
   token_exchange: z.object({
     total: z.number().int(),
     ok: z.number().int(),
@@ -249,17 +282,13 @@ export const AppResponseSchema = z.object({
     /**
      * An `AppConfig` — the parsed one, which is also the stored one: what the
      * gateway accepts is what it keeps, so there is no second "resolved" view
-     * of it to publish. The one exception is the row this shape's own
-     * `config_error` describes: a configuration written before a schema change
-     * is returned as it is stored, so an operator can read and repair it, and
-     * that is why this is declared as the union rather than as `AppConfig`.
+     * of it to publish.
      */
-    config: z.union([AppConfigSchema, z.record(z.string(), z.unknown())]),
-    status: z.enum(["active", "disabled"]),
+    config: AppConfigSchema,
+    status: z.enum(APP_STATUSES),
     created_at: z.string(),
     updated_at: z.string(),
   }),
-  config_error: z.string().nullable().meta({ description: "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write." }),
 }).meta({ id: "AppResponse" });
 
 export const AppDeleteResponseSchema = z.object({
@@ -300,7 +329,7 @@ export const ManagementKeyResponseSchema = z.object({ key: ManagementKeySummaryS
 export const ProviderSummarySchema = z.object({
   id: z.string(),
   type: z.enum(PROVIDER_TYPES),
-  slug: StoredSlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
+  slug: SlugSchema.meta({ description: "The URL segment used under /proxy/{slug}/, unique across your providers." }),
   name: z.string(),
   secretHint: z.string().nullable().meta({
     description: "Last characters of a direct provider key; null when a shared provider gateway owns the token.",
@@ -314,6 +343,23 @@ export const ProviderSummarySchema = z.object({
     example: "https://my-resource.openai.azure.com/openai/v1/",
   }),
   pricing: ProviderPricingSchema.nullable(),
+  route: z.enum(["direct", ...GATEWAY_TYPES]).nullable().meta({
+    description: "Where this instance's traffic goes: direct to the provider's own API, or the type of the provider gateway it is routed through. Null when that gateway's type has no adapter in this deployment, so the instance can serve nothing until it is fixed or deleted.",
+  }),
+  capability: z.object({
+    apiStyles: z.array(z.enum(API_STYLES)).meta({
+      description: "The client APIs this instance can be called with on its route. A direct instance lists every style its provider type does not narrow; the provider itself answers for paths it lacks.",
+    }),
+    endpointStyles: z.array(z.enum(ENDPOINT_API_STYLES)).meta({
+      description: "The named-endpoint styles this instance can back on its route.",
+    }),
+    modelPrefix: z.string().nullable().meta({
+      description: "The namespace the route adds to model IDs on the way out. Clients always send the provider's own ID; null means the route sends it unchanged.",
+    }),
+    paths: z.enum(["provider", "gateway"]).meta({
+      description: "Whose URL layout clients call under /proxy/{slug}/: the provider's own paths, or the one path per API style a gateway publishes for every provider it serves.",
+    }),
+  }).meta({ description: "What this instance can do on its route, decided by the gateway rather than re-derived by clients." }),
   revision: z.number().int().positive(),
   status: z.enum(["active", "disabled"]).meta({
     description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",
@@ -372,25 +418,48 @@ const providerGatewayFields = {
   createdBy: z.string(),
 };
 
+type GatewaySummaryMember<T extends GatewayType, Fields extends z.ZodRawShape> = z.ZodObject<
+  Fields & { type: z.ZodLiteral<T>; config: z.ZodObject<GatewayConnectionShape<T>> }
+>;
+type GatewaySummaryMembers<Fields extends z.ZodRawShape> = {
+  [T in GatewayType]: GatewaySummaryMember<T, Fields>;
+}[GatewayType];
+
 /**
- * Discriminated by `type`, because each gateway's `config` is its own shape:
- * Cloudflare's account and gateway pair, and nothing at all for Vercel, whose
- * origin is fixed in adapter code and whose team is named by the token.
+ * The response-side sibling of `gatewayUnion` in `./schemas.ts`: the common
+ * `fields` beside the type and its connection nested under `config`, published
+ * as the stored strings without the request's own limits.
  */
-export const ProviderGatewaySummarySchema = z.discriminatedUnion("type", [
-  z.object({
-    ...providerGatewayFields,
-    type: z.literal("cf_aig"),
-    config: z.object({ accountId: z.string(), gatewayId: z.string() }),
-  }),
-  z.object({
-    ...providerGatewayFields,
-    type: z.literal("vercel"),
-    config: z.object({}).meta({
-      description: "Vercel's origin is fixed in adapter code, so it has no configuration of its own.",
-    }),
-  }),
-]).meta({ id: "ProviderGateway" });
+function gatewaySummaryUnion<Fields extends z.ZodRawShape>(fields: Fields) {
+  const members = GATEWAY_TYPES.map((type) => {
+    const { connection } = GATEWAY_DESCRIPTORS[type];
+    const config = z.object(
+      Object.fromEntries(Object.keys(connection.shape).map((key) => [key, z.string()])),
+    );
+    return z.object({
+      ...fields,
+      type: z.literal(type),
+      config: connection.description === undefined
+        ? config
+        : config.meta({ description: connection.description }),
+    });
+  });
+  // As in `gatewayUnion`: each member is its own type's, which the mapped
+  // array cannot say, and zod wants a non-empty tuple.
+  return z.discriminatedUnion(
+    "type",
+    members as [GatewaySummaryMembers<Fields>, ...GatewaySummaryMembers<Fields>[]],
+  );
+}
+
+/**
+ * Discriminated by `type`, because each gateway's `config` is its own
+ * connection: Cloudflare's account and gateway pair, and nothing at all for
+ * Vercel, whose origin is fixed in adapter code and whose team is named by the
+ * token.
+ */
+export const ProviderGatewaySummarySchema = gatewaySummaryUnion(providerGatewayFields)
+  .meta({ id: "ProviderGateway" });
 
 export const GatewayValidatedSchema = z.boolean().meta({
   description: "Whether the live probe confirmed the connection. Unlike the providers API, a refused token is not an error here: a Cloudflare AI Gateway answers 401 both for a wrong token and for a gateway that is not finished being set up, so the verdict is reported as reason: rejected and the caller decides what it means.",
@@ -482,6 +551,8 @@ export type UsageEvent = z.infer<typeof UsageEventSchema>;
 export type UsageEventList = z.infer<typeof UsageEventListSchema>;
 export type AuthEvent = z.infer<typeof AuthEventSchema>;
 export type AuthEventList = z.infer<typeof AuthEventListSchema>;
+export type RejectionEvent = z.infer<typeof RejectionEventSchema>;
+export type RejectionEventList = z.infer<typeof RejectionEventListSchema>;
 export type AuthEventSummary = z.infer<typeof AuthEventSummarySchema>;
 export type AppResponse = z.infer<typeof AppResponseSchema>;
 export type AppDeleteResponse = z.infer<typeof AppDeleteResponseSchema>;
@@ -519,14 +590,13 @@ export const UsageTotalsSchema = z.object({
   output_tokens: z.number(),
   cost_usd: z.number(),
   errors: z.number(),
-  blocked: z.number(),
 });
 
 export const AppSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
-  status: z.enum(["active", "disabled"]),
-  authentication_type: z.enum(["apple_app_attest", "api_key", "invalid"]),
+  status: z.enum(APP_STATUSES),
+  authentication_type: z.enum(["apple_app_attest", "api_key"]),
   apple_bundle_id: z.string().nullable(),
   created_at: z.string(),
   providers: z.array(z.string()),
@@ -547,7 +617,7 @@ export const AppListResponseSchema = z.object({
   month: z.string(),
   has_proxied_requests: z.boolean().meta({
     description:
-      "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
+      "Whether this account has ever recorded a provider attempt, at any time. Refusals before a provider call do not set this flag. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started.",
   }),
   apps: z.array(AppSummarySchema),
 });
@@ -630,12 +700,7 @@ export const UserBlockResponseSchema = z.object({
 export const MonthlyUsageResponseSchema = z.object({
   app_id: z.string(),
   month: z.string(),
-  requests: z.number(),
-  input_tokens: z.number(),
-  cached_input_tokens: z.number(),
-  cache_write_tokens: z.number(),
-  output_tokens: z.number(),
-  cost_usd: z.number(),
+  ...UsageTotalsSchema.omit({ errors: true }).shape,
 });
 
 export const TimeseriesBucketSchema = UsageTotalsSchema.extend({
@@ -686,9 +751,6 @@ export const UsageRepriceResponseSchema = z.object({
   previous_cost_usd: z.number(),
   recalculated_cost_usd: z.number(),
   delta_usd: z.number(),
-  reconciled_users: z.number().int().meta({
-    description: "End-user spend ledgers reprojected inside this request; the rest are left to scheduled recovery.",
-  }),
 });
 
 export const ModelPriceSchema = z.object({

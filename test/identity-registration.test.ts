@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createClaimRegistrationAuth, createIdentityAuth } from "../src/auth/identity";
+import { createIdentityAuth } from "../src/auth/identity";
 import worker from "../src/index";
 import { registrationDisabledRedirect } from "../src/routes/identity-auth";
 import { derive, digest } from "../src/routes/cli/security";
@@ -278,6 +278,7 @@ beforeEach(async () => {
     [
       "app_auth_challenge",
       "app_auth_event",
+      "app_rejection_event",
       "app_usage_event",
       "app_usage_rollup",
       "app_api_key",
@@ -285,9 +286,7 @@ beforeEach(async () => {
       "app",
       "provider",
       "provider_gateway",
-      "mgmt_handoff",
-      "mgmt_resource_receipt",
-      "mgmt_bootstrap",
+      "mgmt_operation",
       "mgmt_verification",
       "mgmt_user_account",
       "mgmt_user_session",
@@ -325,10 +324,7 @@ describe("self-hosted registration policy", () => {
       worker.request(`${ORIGIN}/v1/cli/bootstrap`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          idempotencyKey: crypto.randomUUID(),
-          pollToken: crypto.randomUUID(),
-        }),
+        body: JSON.stringify({ token: crypto.randomUUID() }),
       }, testEnv),
     ]);
     expect(signup.status, await signup.clone().text()).toBe(200);
@@ -338,7 +334,7 @@ describe("self-hosted registration policy", () => {
       .toBe(1);
     expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user_account").first("n"))
       .toBe(signup.status === 200 ? 1 : 0);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_bootstrap").first("n"))
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_operation WHERE kind='bootstrap'").first("n"))
       .toBe(bootstrap.status === 200 ? 1 : 0);
     expect(barrier.guardedInsertCount()).toBe(1);
     expect(barrier.bootstrapPreflightCount()).toBe(1);
@@ -474,10 +470,11 @@ describe("self-hosted registration policy", () => {
   it("applies the fresh human gate to trusted claim registration after a human exists", async () => {
     await seedHuman("owner@example.test");
     const claimEnv = runtime();
-    const response = await (await createClaimRegistrationAuth(
+    const response = await (await createIdentityAuth(
       resolveDeployment(claimEnv),
       claimEnv,
       ORIGIN,
+      { claimRegistration: true },
     )).auth.api.signUpEmail({
       body: {
         name: "Second claimant",
@@ -612,12 +609,14 @@ describe("Google registration policy", () => {
       ).bind(iso, iso),
     ]);
     await env.DB.prepare(
-      `INSERT INTO mgmt_handoff(
-        id,kind,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
-        submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
-       VALUES (?, 'claim', '{}', 'hash', 'claim-account', 'claim-service', 'claim-key', 'proof', 'poll', ?, ?, ?)`,
+      `INSERT INTO mgmt_operation(
+        id,kind,state,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
+        browser_proof_hash,expires_at,created_at,updated_at)
+       VALUES (?, 'claim', 'pending', '{}', 'hash', 'claim-account', 'claim-service', 'claim-key', 'proof', ?, ?, ?)`,
     ).bind(operationId, expires, now, now).run();
-    const claimAuth = await createClaimRegistrationAuth(resolveDeployment(testEnv), testEnv, ORIGIN);
+    const claimAuth = await createIdentityAuth(resolveDeployment(testEnv), testEnv, ORIGIN, {
+      claimRegistration: true,
+    });
     const started = await claimAuth.auth.api.signInSocial({
       body: { provider: "google", callbackURL: `${ORIGIN}/after-claim` },
       headers: new Headers({ origin: ORIGIN }),
@@ -716,10 +715,10 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
       ).bind(iso, iso),
     ]);
     await env.DB.prepare(
-      `INSERT INTO mgmt_handoff(
-        id,kind,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
-        submission_proof_hash,poll_proof_hash,expires_at,created_at,updated_at)
-       VALUES (?, 'claim', '{}', 'hash', 'takeover-account', 'takeover-service', 'takeover-key', ?, 'poll', ?, ?, ?)`,
+      `INSERT INTO mgmt_operation(
+        id,kind,state,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
+        browser_proof_hash,expires_at,created_at,updated_at)
+       VALUES (?, 'claim', 'pending', '{}', 'hash', 'takeover-account', 'takeover-service', 'takeover-key', ?, ?, ?, ?)`,
     ).bind(operationId, await digest(submissionToken), expires, now, now).run();
     // The email already signs in with a password, so Google must not open it.
     const squatted = await seedHuman("claim-victim@example.test");

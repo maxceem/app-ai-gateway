@@ -18,14 +18,24 @@ authentication, and which requests failed and why.
 
 ## Failures by cause
 
-Refused authentication attempts and non-ok proxied requests, busiest first,
+Refused authentication attempts, provider errors, and sampled requests stopped
+before a provider call, busiest first,
 with **Outcome**, **Reason**, **Count**, **Days affected** and **Last seen**
 over the chosen range. This is the first place to look when a release starts
 failing.
 
-Repeated blocked proxy requests are sampled once per app identity per minute,
-so this view shows the refusal without turning a tight retry loop into one row
-per attempt. Authentication failures themselves remain individual events.
+Blocked requests are sampled once per authenticated identity per minute across
+the deployment, regardless of route or reason. Their counts are labeled
+**samples** and are not exact request totals. Authentication failures and
+provider errors are recorded as individual events.
+
+## Recent refusal samples
+
+The list shows the time, user or API key, reason, scope, attempted route and
+model, app version, and admission latency. The attempted route describes what
+would have been called; the gateway stopped the request before contacting it.
+Filter by reason, scope, or user, then page through older samples. An older
+sample may have an unknown scope when its original record did not preserve it.
 
 ## Recent attempts
 
@@ -53,5 +63,6 @@ do about it.
 
 - `GET /v1/admin/apps/{app}/auth-events/summary?days=30`
 - `GET /v1/admin/apps/{app}/auth-events?limit=&outcome=&before_id=`
+- `GET /v1/admin/apps/{app}/rejection-events?limit=&reason=&scope=&user=&from=&to=&before_id=`
 
-Auth events are kept for 90 days.
+Auth events and refusal samples are kept for 90 days.

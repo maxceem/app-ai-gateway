@@ -4,6 +4,43 @@ import { ACCOUNT_RECOVERY_MS } from "./accounts";
 
 export type DeploymentMode = "cloud" | "self_hosted";
 
+/** Everything a hosted deployment does differently from a self-hosted one. */
+export interface DeploymentRules {
+  /**
+   * Accounts carry deadlines: a cloud bootstrap writes a recovery deadline,
+   * an unclaimed account's free access runs out, and the nightly sweep collects
+   * what expired. A self-host's accounts carry none, so nothing checks one.
+   */
+  readonly accountDeadlines: boolean;
+  /** `open` lets anyone register; `restricted` asks `ALLOW_ADDITIONAL_REGISTRATIONS` and the claim flow. */
+  readonly registration: "open" | "restricted";
+  /** Whether a new registration gets an account of its own always, or only when its flow asks for one. */
+  readonly provisionDefaultOrganization: "always" | "when_requested";
+  readonly bootstrap: {
+    /** `hashed`: one account per CLI token; `deployment`: the one account the deployment has. */
+    readonly accountId: "hashed" | "deployment";
+    /** Only an empty deployment may be bootstrapped: whoever initializes it first owns it. */
+    readonly requiresEmptyDeployment: boolean;
+    readonly rateLimited: boolean;
+  };
+}
+
+/** The one page that says what the hosted deployment does differently. */
+const DEPLOYMENT_RULES: Record<DeploymentMode, DeploymentRules> = {
+  cloud: {
+    accountDeadlines: true,
+    registration: "open",
+    provisionDefaultOrganization: "always",
+    bootstrap: { accountId: "hashed", requiresEmptyDeployment: false, rateLimited: true },
+  },
+  self_hosted: {
+    accountDeadlines: false,
+    registration: "restricted",
+    provisionDefaultOrganization: "when_requested",
+    bootstrap: { accountId: "deployment", requiresEmptyDeployment: true, rateLimited: false },
+  },
+};
+
 export interface RegistrationRule {
   allowWhenHumanExists: boolean;
   allowWhenNoHumanWithAccount: boolean;
@@ -27,7 +64,9 @@ export interface DeploymentIdentity {
  * argument rather than reaching for `env` again.
  */
 export interface Deployment {
+  /** The table key, and the value the CLI is told; decisions read `rules`. */
   readonly mode: DeploymentMode;
+  readonly rules: DeploymentRules;
   /** The billing service, or null on a self-hosted deployment. The only source of "is billing present". */
   readonly billing: BillingRuntime | null;
   readonly additionalRegistrations: boolean;
@@ -43,7 +82,7 @@ export interface Deployment {
 }
 
 /** The subset the pure policy helpers below decide on. */
-export type DeploymentPolicy = Pick<Deployment, "mode" | "additionalRegistrations">;
+export type DeploymentPolicy = Pick<Deployment, "rules" | "additionalRegistrations">;
 
 function resolveIdentity(env: Env, requestUrl: string | undefined): DeploymentIdentity {
   const id = env.DEPLOYMENT_ID;
@@ -79,9 +118,11 @@ function resolveIdentity(env: Env, requestUrl: string | undefined): DeploymentId
  */
 export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
   const billing = env.BILLING ?? null;
+  const mode: DeploymentMode = billing ? "cloud" : "self_hosted";
   let identity: DeploymentIdentity | undefined;
   return {
-    mode: billing ? "cloud" : "self_hosted",
+    mode,
+    rules: DEPLOYMENT_RULES[mode],
     billing,
     additionalRegistrations:
       env.ALLOW_ADDITIONAL_REGISTRATIONS?.trim().toLowerCase() === "true",
@@ -97,7 +138,7 @@ export function registrationRule(
   policy: DeploymentPolicy,
   claimRegistration: boolean,
 ): RegistrationRule {
-  if (policy.mode === "cloud") {
+  if (policy.rules.registration === "open") {
     return {
       allowWhenHumanExists: true,
       allowWhenNoHumanWithAccount: true,
@@ -133,7 +174,7 @@ export function shouldProvisionDefaultOrganization(
   return (
     !options.claimRegistration &&
     !options.suppressDefaultOrganization &&
-    (policy.mode === "cloud" || options.provisionRegistration)
+    (policy.rules.provisionDefaultOrganization === "always" || options.provisionRegistration)
   );
 }
 
@@ -146,16 +187,16 @@ export interface BootstrapDecision {
   rateLimited: boolean;
 }
 
-/** All mode-sensitive bootstrap values are chosen together from one policy snapshot. */
+/** All deployment-sensitive bootstrap values are chosen together from one policy snapshot. */
 export function bootstrapDecision(
   policy: DeploymentPolicy,
   input: { deploymentId: string; requestHash: string; nowMs: number },
 ): BootstrapDecision {
-  const cloud = policy.mode === "cloud";
-  const recoveryEndsAt = !cloud
-    ? null
-    : new Date(input.nowMs + ACCOUNT_RECOVERY_MS).toISOString();
-  const accountId = cloud
+  const { accountDeadlines, bootstrap } = policy.rules;
+  const recoveryEndsAt = accountDeadlines
+    ? new Date(input.nowMs + ACCOUNT_RECOVERY_MS).toISOString()
+    : null;
+  const accountId = bootstrap.accountId === "hashed"
     ? `account-${input.requestHash}`
     : `private-${input.deploymentId}`;
   return {
@@ -163,7 +204,7 @@ export function bootstrapDecision(
     userId: `service-${accountId}`,
     createdAt: new Date(input.nowMs).toISOString(),
     recoveryEndsAt,
-    requiresEmptyDeployment: !cloud,
-    rateLimited: cloud,
+    requiresEmptyDeployment: bootstrap.requiresEmptyDeployment,
+    rateLimited: bootstrap.rateLimited,
   };
 }

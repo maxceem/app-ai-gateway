@@ -1,31 +1,29 @@
 import { env } from "cloudflare:workers";
 import { createTestSessions } from "@maxceem/cf-auth/testing";
-import { issueGatewayToken } from "../src/core/jwt";
-import { hashApiKey } from "../src/core/apikeys";
-import { providerRowsCache, providerSecretCache } from "../src/core/provider-store";
+import { issueGatewayToken } from "../src/client-auth/gateway-token";
+import { hashApiKey } from "../src/client-auth/api-keys";
+import { type OrganizationProviders, providerRowsCache, providerSecretCache } from "../src/providers/provider-store";
 import { sealSecret } from "../src/vault/secrets";
 import { clearAllCaches } from "../src/core/ttl-cache";
-import { PROVIDER_TYPES } from "../src/core/providers";
+import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
 import { database } from "../src/db";
 import {
   app,
   appApiKey,
+  type GatewayRouteConfig,
+  mgmtAuthTables,
   provider,
   providerGateway,
-  type CfAigConfig,
-  type GatewayRouteConfig,
-  type GatewayType,
   type ProviderPricing,
 } from "../src/db/schema";
-import type { GatewayIdentity, ProviderType } from "../src/core/types";
-import { DIRECT_ROUTE } from "../src/core/routes";
-import type { AttemptAttribution } from "../src/core/usage-record";
+import type { GatewayIdentity } from "../src/core/types";
+import { DIRECT_ROUTE } from "../src/providers/route-adapters";
+import type { AttemptAttribution } from "../src/usage/usage-record";
 import { parseAppConfig } from "../src/shared/app-config";
-import { validateConfigurationReferences } from "../src/core/config-references";
-import type { OrganizationProviders } from "../src/core/provider-store";
+import { validateConfigurationReferences } from "../src/management/config-references";
 import { recordFromEntries } from "../src/shared/records";
 import { createCfAuth } from "@maxceem/cf-auth";
-import { mgmtAuthTables } from "../src/db/schema";
+import type { GatewayConnectionConfig, GatewayType } from "../src/shared/gateways";
 
 /**
  * Every cache the Worker keeps in its isolate, emptied in one call.
@@ -62,8 +60,6 @@ export function testIdentity(overrides: Partial<GatewayIdentity> = {}): GatewayI
   return {
     appId: "test-app",
     userId: "user-1",
-    jti: "test-jti",
-    expiresAt: 0,
     authMethod: "api_key",
     credentialType: "api_key",
     ...overrides,
@@ -114,7 +110,7 @@ export async function seedProvider(input: {
   secret?: string;
   name?: string;
   gateway?: GatewayType;
-  gatewayConfig?: CfAigConfig;
+  gatewayConfig?: GatewayConnectionConfig<"cf_aig">;
   /** The row's gateway-type-specific routing configuration. */
   gatewayRoute?: GatewayRouteConfig;
   providerGatewayId?: string;
@@ -236,7 +232,7 @@ export function serverConfig(input: {
     endpoints: input.endpoints ?? {},
     // No end users unless a test says otherwise: it is the smallest valid
     // server application, and the shape most configuration tests care about.
-    authentication: input.authentication ?? { type: "api_key" },
+    authentication: input.authentication ?? { type: "api_key", end_user: { source: "none" } },
     routing: routingConfig(input.proxy ?? {}),
     limits: input.limits ?? limitsConfig({}).limits,
   };
@@ -397,12 +393,13 @@ export async function seedServerApp(
         type: "api_key",
         /*
          * An issuer when the test asks for one, a header source otherwise, and
-         * nothing at all when the test is about an application with no end
-         * users. The header default is what keeps per-user limits, blocks and
-         * usage exercisable from a plain seeded app.
+         * `none` when the test is about an application with no end users. The
+         * header default is what keeps per-user limits, blocks and usage
+         * exercisable from a plain seeded app.
          */
-        ...(options.endUser === "none" ? {} : {
-          end_user: options.issuer === undefined
+        end_user: options.endUser === "none"
+          ? { source: "none" }
+          : options.issuer === undefined
             ? { source: "header", header: options.endUserHeader ?? "x-end-user-id" }
             : {
               source: "issuer",
@@ -416,7 +413,6 @@ export async function seedServerApp(
                 max_token_lifetime_seconds: options.issuer.max_token_lifetime_seconds ?? 3600,
               },
             },
-        }),
       },
       routing: routingConfig(options.proxy ?? defaultProxyConfig()),
       ...limitsConfig(options),
@@ -436,7 +432,7 @@ export async function seedServerApp(
 }
 
 export async function gatewayToken(appId: string, userId = "user-1"): Promise<string> {
-  const issued = await issueGatewayToken(env.JWT_SECRET, appId, userId, "attest", 3600);
+  const issued = await issueGatewayToken(env.JWT_SECRET, { appId, userId, authMethod: "attest" });
   return issued.token;
 }
 

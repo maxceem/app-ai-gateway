@@ -1,12 +1,12 @@
 import { env, exports } from "cloudflare:workers";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { supportsEndpointStyle } from "../src/core/capabilities";
+import { supportsEndpointStyle } from "../src/providers/capability-matrix";
 import {
   organizationProviders,
   resolveProvider,
-} from "../src/core/provider-store";
-import { PROVIDER_TYPES } from "../src/core/providers";
+} from "../src/providers/provider-store";
+import { PROVIDER_TYPES } from "../src/shared/providers";
 import { database } from "../src/db";
 import { provider, providerGateway } from "../src/db/schema";
 import { updateProvider } from "../src/management/providers";
@@ -417,12 +417,12 @@ describe("admin provider instances", () => {
     let release!: () => void;
     const ready = new Promise<void>((resolve) => { release = resolve; });
     const boundary = (): ResourceWriteBoundary => ({
-      condition: { sql: "1", params: [] },
-      async commit(statement) {
+      condition: sql`1`,
+      async commit(statements) {
         entered++;
         if (entered === 2) release();
         await ready;
-        const result = await (Array.isArray(statement) ? statement[0]! : statement).run();
+        const result = await statements[0]!.run();
         if (result.meta.changes !== 1) throw new GatewayError(409, "conflict", "lost CAS");
       },
     });
@@ -571,8 +571,8 @@ describe("admin provider instances", () => {
     });
     const summary = created.body.provider as ProviderSummary;
     await env.DB.prepare(
-      `INSERT INTO app_usage_event(app_id, user_id, provider_type, provider_id, provider_slug, model, route, cost_usd, status)
-       VALUES ('deleted-provider-app', 'user-1', 'openai', ?, ?, 'gpt-5.6-sol', 'openai/v1/responses', 0.5, 'ok')`,
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, user_id, provider_type, provider_id, provider_slug, model, route, cost_usd, status)
+       VALUES (lower(hex(randomblob(16))), 'operator-test-organization', 'deleted-provider-app', 'user-1', 'openai', ?, ?, 'gpt-5.6-sol', 'openai/v1/responses', 0.5, 'ok')`,
     ).bind(summary.id, summary.slug).run();
 
     expect((await call("DELETE", `/v1/admin/providers/${summary.id}`)).status).toBe(200);
@@ -830,12 +830,46 @@ describe("admin provider gateway API", () => {
     // Still narrowed by Vercel's capabilities, so an endpoint style Vercel does
     // not serve is refused while the gateway is down as well as while it is up.
     expect(revoked).toMatchObject({ route: "vercel" });
-    expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "transcription")).toBe(false);
+    expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "audio_transcription")).toBe(false);
     expect(supportsEndpointStyle(revoked!.route!, revoked!.type, "responses")).toBe(true);
 
     // And it still cannot serve traffic: a revoked gateway is not a credential.
     await expect(resolveProvider(env, TEST_ORGANIZATION_ID, "openai-vercel"))
       .rejects.toThrow(/missing or revoked/u);
+  });
+
+  it.each([
+    // A type with no adapter is refused like every other write to one; a row
+    // of a known type that does not parse is this deployment's own fault.
+    ["a type this deployment has no adapter for", "type = 'litellm'", 400, "invalid_request"],
+    ["a Cloudflare configuration that does not parse", `config_json = '{"accountId":""}'`, 500, "internal_error"],
+  ])("lists the healthy gateways around one with %s", async (_case, corruption, renameStatus, renameCode) => {
+    stubProbe();
+    const broken = await createGateway();
+    const healthy = (await call("POST", "/v1/admin/provider-gateways", {
+      type: "vercel",
+      name: "Healthy gateway",
+      token: "vck-healthy-token",
+    })).body.gateway as GatewaySummary;
+    await env.DB.prepare(`UPDATE provider_gateway SET ${corruption} WHERE id = ?`).bind(broken.id).run();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const listed = await call("GET", "/v1/admin/provider-gateways");
+    expect(listed.status, listed.text).toBe(200);
+    expect((listed.body.gateways as GatewaySummary[]).map((gateway) => gateway.id))
+      .toEqual([healthy.id]);
+    // Left out loudly: one log line naming the row, and nothing about the rest.
+    const lines = logged.mock.calls.map(([line]) => String(line));
+    expect(lines.filter((line) => line.includes(broken.id))).toHaveLength(1);
+    expect(lines.some((line) => line.includes(healthy.id))).toBe(false);
+
+    // A read of that one row has nothing to fall back to, and says so.
+    const renamed = await call("PATCH", `/v1/admin/provider-gateways/${broken.id}`, {
+      name: "Renamed",
+      revision: broken.revision,
+    });
+    expect(renamed.status, renamed.text).toBe(renameStatus);
+    expect(renamed.body.error.code).toBe(renameCode);
   });
 
   it("blocks gateway deletion while any provider row references it", async () => {
@@ -928,6 +962,29 @@ describe("gateway routing configuration", () => {
       token: "cf-token",
     });
     expect(withoutCfFields.status, withoutCfFields.text).toBe(400);
+  });
+
+  it("stores exactly each type's own connection as its configuration", async () => {
+    stubProbe();
+    const bodies = {
+      cf_aig: { type: "cf_aig", name: "CF", accountId: " acct-1 ", gatewayId: "gw-1", token: "cf-token" },
+      vercel: { type: "vercel", name: "Vercel", token: "vck-token" },
+    } as const;
+    const stored = {
+      cf_aig: { accountId: "acct-1", gatewayId: "gw-1" },
+      vercel: {},
+    } as const;
+    for (const type of ["cf_aig", "vercel"] as const) {
+      const created = await call("POST", "/v1/admin/provider-gateways", bodies[type]);
+      expect(created.status, created.text).toBe(201);
+      expect(created.body.gateway).toMatchObject({ type, config: stored[type] });
+      // Neither the name nor the token is configuration: only the connection
+      // fields the type's descriptor declares reach `config_json`.
+      const row = await database(env.DB).query.providerGateway.findFirst({
+        where: eq(providerGateway.id, created.body.gateway.id),
+      });
+      expect([type, row?.config]).toEqual([type, stored[type]]);
+    }
   });
 
   it("creates a Vercel gateway from a name and a token alone", async () => {
@@ -1026,6 +1083,22 @@ describe("gateway routing configuration", () => {
     });
     expect(routed.status, routed.text).toBe(201);
     expect(routed.body.provider.gatewayRoute).toEqual({ providerOnly: ["google"] });
+    // What the instance can do on its route, reported with the row so no
+    // client has to join it to its gateway and the route tables: Vercel's three
+    // APIs under its own paths, no endpoint Gemini composes, and Google's
+    // namespace on the wire.
+    expect(routed.body.provider).toMatchObject({
+      route: "vercel",
+      capability: {
+        apiStyles: ["responses", "chat_completions", "anthropic_messages"],
+        endpointStyles: [],
+        modelPrefix: "google/",
+        paths: "gateway",
+      },
+    });
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.body.providers.find((row: { slug: string }) => row.slug === "gemini-vercel"))
+      .toMatchObject({ route: "vercel", capability: routed.body.provider.capability });
 
     const badPrefix = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
       gatewayRoute: { modelPrefix: "google" },
@@ -1041,6 +1114,48 @@ describe("gateway routing configuration", () => {
     expect(unknownKey.status, unknownKey.text).toBe(400);
   });
 
+  it("lists an instance whose gateway type has no adapter without hiding the rest", async () => {
+    stubProbe();
+    const gateway = await createGateway();
+    const routed = await call("POST", "/v1/admin/providers", {
+      type: "openai",
+      slug: "openai-orphan",
+      name: "OpenAI through a gone gateway",
+      providerGatewayId: gateway.id,
+    });
+    expect(routed.status, routed.text).toBe(201);
+    const direct = await call("POST", "/v1/admin/providers", {
+      type: "anthropic",
+      name: "Anthropic",
+      secret: "sk-ant-direct",
+    });
+    expect(direct.status, direct.text).toBe(201);
+    // The column is permissive on purpose; a type this build cannot route is
+    // one a newer deployment wrote, or one whose adapter was removed.
+    await env.DB.prepare("UPDATE provider_gateway SET type = 'litellm' WHERE id = ?")
+      .bind(gateway.id)
+      .run();
+
+    const listed = await call("GET", "/v1/admin/providers");
+    expect(listed.status, listed.text).toBe(200);
+    const bySlug = new Map(
+      (listed.body.providers as { slug: string }[]).map((row) => [row.slug, row]),
+    );
+    expect(bySlug.get("openai-orphan")).toMatchObject({
+      route: null,
+      capability: { apiStyles: [], endpointStyles: [] },
+    });
+    expect(bySlug.get("anthropic")).toMatchObject({ route: "direct" });
+
+    // And it can still be paused rather than being stuck until someone deletes it.
+    const paused = await call("PUT", `/v1/admin/providers/${routed.body.provider.id}`, {
+      status: "disabled",
+      revision: routed.body.provider.revision,
+    });
+    expect(paused.status, paused.text).toBe(200);
+    expect(paused.body.provider).toMatchObject({ route: null, status: "disabled" });
+  });
+
   it("stores no routing configuration for a Cloudflare-routed instance", async () => {
     stubProbe();
     const gateway = await createGateway();
@@ -1054,6 +1169,16 @@ describe("gateway routing configuration", () => {
 
     const listed = await call("GET", "/v1/admin/providers");
     expect(listed.body.providers[0].gatewayRoute).toBeNull();
+    // Cloudflare forwards to the provider's own API: nothing narrowed, both
+    // endpoint styles, and OpenAI's own model IDs on the wire.
+    expect(listed.body.providers[0]).toMatchObject({
+      route: "cf_aig",
+      capability: {
+        endpointStyles: ["responses", "audio_transcription"],
+        modelPrefix: null,
+        paths: "provider",
+      },
+    });
   });
 
   it("refuses a routing configuration Cloudflare AI Gateway cannot honour", async () => {

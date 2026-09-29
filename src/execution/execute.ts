@@ -1,9 +1,9 @@
 import { GatewayError } from "../core/errors";
 import { log } from "../core/log";
-import { clientResponseHeaders, providerUpstream } from "../core/proxyrules";
+import { clientResponseHeaders, providerUpstream } from "./proxy-rules";
 import type { AppRecord, GatewayIdentity } from "../core/types";
-import { observeUpstreamBody, type ObservedBody } from "../core/body-observer";
-import { recordUsageEvent } from "../core/usage-record";
+import { observeUpstreamBody, type ObservedBody } from "../usage/body-observer";
+import { recordUsageEvent } from "../usage/usage-record";
 import { attemptAttribution, type ExecutionAttempt, type ExecutionPlan } from "./plan";
 import { serverTiming, type ServedTimings } from "./timing";
 import {

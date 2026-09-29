@@ -51,8 +51,9 @@ permission to buy all fall back to the ordinary landing page.
 
 ## Plan limits
 
-`limits` is opaque to the billing service and interpreted only by the gateway,
-which reads the keys defined by `PlanLimits` in `contract.ts`. Every key is
+`limits` is opaque to the billing service and interpreted only by the gateway.
+It reads them with `PlanLimitsInputSchema`, which accepts exactly the keys
+`PlanLimitsSchema` publishes, both in `src/contracts/billing.ts`. Every key is
 optional: an omitted key means that resource is unlimited, and a plan with no
 `limits` at all is unlimited in every respect. A value may be a number or a
 numeric string; anything else — a fraction, a negative, `null` — is a plan
@@ -66,23 +67,46 @@ point.
 
 `maxRequestsPerMonth` counts requests dispatched during the current allowance
 period, shared by every application, credential and end user the account owns,
-and spent on the data plane only. The period follows the tenant, not the
-calendar:
+and spent on the data plane only. The period is a month measured from the
+plan's own anchor, so an account's allowance resets on the date its plan does:
 
-- The default Free plan anchors on the exact UTC instant the account was
-  created and repeats monthly from that anniversary.
-- A subscription uses its normalized billing schedule. Annual subscriptions
-  still receive a fresh monthly allowance.
-- An anniversary on day 29, 30 or 31 clamps to the last day of a shorter month
-  and returns to the original day when a later month has it. The time of day is
-  preserved.
+- A paid plan renews on its subscription's billing anchor, as the billing
+  service reports it (`billingAnchorAt`, and `billingAnchorDay` where a short
+  month clamps it). Annual subscriptions still receive a fresh allowance each
+  month, on that day.
+- The default free plan renews on the day the account was created.
 
-Changing plans within the same schedule retains the current period's count, and
-so does cancelling and resuming. A new paid subscription, or a
-provider-confirmed change of cadence or anchor, starts a new schedule. Returning
-to Free resumes the original account-anniversary schedule and the count already
-recorded in that Free period — claim time, plan changes and cancellations never
-become anchors.
+A schedule that starts on the 31st renews on the last day of shorter months and
+returns to the 31st, counted from the original anchor each time rather than
+from the previous renewal.
+
+The counter is keyed by `periodId`: the schedule (`free:` and the account's
+creation instant, or `paid:` and the subscription generation's) and the
+period's start. A change of limit within the same schedule is a new limit over
+the same counter, so a downgrade below what the period has spent refuses
+further requests until it renews. A change of schedule is a new counter:
+subscribing starts the subscription's own period from zero, and returning to
+the free plan resumes the free period the account was in, with what it had
+already spent, so cancelling never hands out a second free allowance.
+
+No schedule revision or superseded marker reconciles a stale cached plan with
+a new one. What a stale cache can do instead is count against the previous
+schedule, or apply the previous plan's limit, for as long as it lives: up to 30
+seconds normally, and up to an hour while the billing service is unreachable
+and the last known answer is served instead. That includes a stale unlimited
+plan, which counts nothing while it is served. It is an availability trade
+taken on purpose — the alternative is refusing every request during a billing
+outage — and a change is enforced everywhere once each isolate's cache has
+turned over.
+
+A plan with no monthly limit counts nothing and touches no quota object, so
+the billing status and the CLI report no usage figure for it rather than a
+zero nobody measured.
+
+A request is counted toward the period it was admitted in, even if it crosses
+the renewal instant on its way through the gate. An anchor slightly in the
+future is clock skew between this Worker and billing and is answered with a
+retry; one further off is refused as invalid billing data.
 
 ### Unclaimed accounts
 
@@ -95,13 +119,13 @@ clock stay entirely in gateway D1.
 Nothing records the free window. The account's `created_at` dates it, and
 `mgmt_organization.expires_at` — written only by a cloud bootstrap, cleared only
 by a claim — is the whole test for "never had a human owner". While unclaimed
-the account holds exactly one period that never renews, so nobody can draw a
-second allowance without attaching a human identity; past its end the period
-stays readable but admits nothing. That window is the free schedule's own first
-period cut short, not a schedule of its own, so claiming only lifts the early
-end: the schedule identity and revision are unchanged, the count already
-recorded carries over, and the ordinary anniversary renewals resume without
-inventing a subscription.
+the account holds its first period until its free window closes, however far
+past the first renewal that runs, so nobody can draw a second allowance without
+attaching a human identity; past its end the period stays readable but admits
+nothing. Claiming before the first renewal keeps the same key and so the same
+count; claiming after it, while the free window is still open, moves the
+account onto the renewed period. From then on it renews on the day it was
+created.
 
 Ownership changes must invalidate both the request-scoped and the last-known
 billing caches. The console reads the free window from the account summary it
@@ -121,7 +145,7 @@ becomes readable again.
 
 Configuration ceilings count stored rows rather than traffic, so nothing resets
 them on a schedule. Each is enforced inside the statement that inserts the row,
-as an extra condition on its `WHERE`, alongside whatever receipt or handoff
+as an extra condition on its `WHERE`, alongside whatever CLI operation
 already guards that write — count and write are one statement, so two concurrent
 creates cannot both read a count below the ceiling and then both succeed. A
 refused write answers `409 billing_plan_limit_reached` and never succeeds on

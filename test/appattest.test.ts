@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { createSign, generateKeyPairSync } from "node:crypto";
 import { encode } from "cbor-x";
 import { describe, expect, it } from "vitest";
-import { assertionClientData, verifyAppAssertion } from "../src/core/appattest";
+import { assertionClientData, verifyAppAssertion } from "../src/client-auth/app-attest";
 
 async function digest(value: Uint8Array): Promise<Buffer> {
   return Buffer.from(await crypto.subtle.digest("SHA-256", Uint8Array.from(value).buffer));

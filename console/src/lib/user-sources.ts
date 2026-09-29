@@ -1,11 +1,9 @@
 import type { Choice } from "@/components/choice-list";
 import { DEFAULT_END_USER_HEADER } from "@/lib/config-types";
+import type { EndUserSource } from "@shared/app-config";
 
-/**
- * How the application's end users are identified: the value the config stores,
- * with `none` standing for the absent block an api_key app may have.
- */
-export type UserSource = "none" | "header" | "issuer" | "app_install";
+/** How the application's end users are identified: the value the config stores. */
+export type UserSource = EndUserSource;
 
 /*
  * The answers to "who may call?", worded for the person deciding rather than

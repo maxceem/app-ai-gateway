@@ -2,21 +2,34 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOG,
   operationPath,
-  type OperationName,
   type OperationSpec,
+  type SecurityKind,
 } from "../src/contracts/catalog";
 // Imported for its side effect: mounting every management route module is what
 // fills `MOUNTED_OPERATIONS`, and this is the module that pulls them all in.
 import "../src/routes/management";
 import { Hono } from "hono";
 import { MOUNTED_OPERATIONS, catalogRouter } from "../src/routes/catalog-router";
-import { RECEIPT_KINDS } from "../src/routes/admin/receipted";
 
-/** The half of the catalog the management app is supposed to serve. */
-const SERVED = Object.keys(CATALOG).filter((name) => {
-  const path = CATALOG[name as OperationName].path;
-  return path.startsWith("/v1/admin") || path.startsWith("/v1/cli");
-});
+/** The credentials only an operation mounted through a catalog router is reached with. */
+const CATALOG_MOUNTED_SECURITY: ReadonlySet<SecurityKind> = new Set(["management", "session", "cliPoll"]);
+/** Documented, but served by Better Auth's own handler rather than a catalog router. */
+const BETTER_AUTH_TAG = "Console authentication";
+
+/**
+ * The half of the catalog the management app is supposed to serve, picked by
+ * the credential that reaches it rather than by where its path lives, so a new
+ * surface cannot fall out of this check by choosing a new prefix: everything a
+ * management key, a browser session or a CLI poll reaches, and the public
+ * steps of a CLI handoff.
+ * Those public handoff steps are selected by their `CLI` tag.
+ */
+const SERVED = Object.entries<OperationSpec>(CATALOG)
+  .filter(([, spec]) =>
+    !spec.tags.includes(BETTER_AUTH_TAG)
+    && (CATALOG_MOUNTED_SECURITY.has(spec.security)
+      || (spec.security === "public" && spec.tags.includes("CLI"))))
+  .map(([name]) => name);
 
 describe("operation catalog", () => {
   /*
@@ -27,6 +40,13 @@ describe("operation catalog", () => {
    */
   it("serves every admin and CLI operation it documents, and nothing else", () => {
     expect([...MOUNTED_OPERATIONS].sort()).toEqual([...SERVED].sort());
+    // Whatever a credential says, nothing under the two management prefixes is
+    // left out of the set above.
+    for (const [name, spec] of Object.entries<OperationSpec>(CATALOG)) {
+      if (spec.path.startsWith("/v1/admin") || spec.path.startsWith("/v1/cli")) {
+        expect(SERVED, name).toContain(name);
+      }
+    }
   });
 
   it("refuses to mount a management operation where its policy would not run", () => {
@@ -40,23 +60,6 @@ describe("operation catalog", () => {
     expect(() => catalogRouter(new Hono(), "/v1/cli").handle("getCliCapabilities", () => {
       throw new Error("unreachable");
     })).not.toThrow();
-  });
-
-  it("mounts every receipted creation, and only those, under its receipt", () => {
-    // A `receipt: true` entry documents that retries are safe, so mounting one
-    // without the receipt would publish a promise the server does not keep.
-    expect(() => catalogRouter(new Hono(), "/v1/admin", { authorized: true })
-      .handle("createApp" as never, () => {
-        throw new Error("unreachable");
-      })).toThrow(/must be mounted with handleReceipted/u);
-    expect(() => catalogRouter(new Hono(), "/v1/admin", { authorized: true })
-      .handleReceipted("listApps" as never, () => {
-        throw new Error("unreachable");
-      })).toThrow(/does not honour receipts/u);
-    const receipted = Object.keys(CATALOG)
-      .filter((name) => (CATALOG[name as OperationName] as OperationSpec).receipt)
-      .sort();
-    expect(Object.keys(RECEIPT_KINDS).sort()).toEqual(receipted);
   });
 
   it("documents every path parameter it names", () => {

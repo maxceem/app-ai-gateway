@@ -6,7 +6,7 @@
  * what a first example request looks like, which named endpoints it composes,
  * how it reports cost — is one entry in {@link PROVIDER_DESCRIPTORS}. Adding a
  * type is that entry plus its prices, and nothing else: the tables below are
- * derived, and the behaviour that reads them lives in `src/core`.
+ * derived, and the behaviour that reads them lives in `src/providers`.
  *
  * Shared with the console, which bundles this module directly: it imports only
  * `./capabilities.ts`, `./cost-report.ts` and `./records.ts`, all of which are
@@ -34,6 +34,8 @@ export interface ProviderAuth {
 }
 
 export interface ProviderDescriptor {
+  /** The display name the console and the CLI show for this type. */
+  label: string;
   /** The provider's own origin, which a row's operator-supplied one replaces. */
   directBaseUrl: string;
   auth: ProviderAuth;
@@ -52,21 +54,15 @@ export interface ProviderDescriptor {
   probePath?: string;
   /**
    * The path a first example request goes to, for the console's example card,
-   * the CLI's `app snippet` and the published capabilities. Absent where the
-   * provider's own surface needs the model in the path, which is no path a
-   * client could call as it stands — see {@link modelInPath}.
+   * the CLI's `app snippet` and the published capabilities. A `{model}`
+   * segment marks a surface that carries the model in the URL, which has no
+   * example until a model is chosen.
    *
-   * Absent also means the OpenAI-compatible default (`v1/chat/completions`),
-   * which is what most of these types serve; only a type whose prefix or whose
+   * Absent means the OpenAI-compatible default (`v1/chat/completions`), which
+   * is what most of these types serve; only a type whose prefix or whose
    * current surface differs says so.
    */
   examplePath?: string;
-  /**
-   * This type's native generation paths carry the model in the URL rather than
-   * in the request body, so a request on one has its model captured from — and
-   * rewritten into — the path.
-   */
-  modelInPath?: true;
   /**
    * The chat-completions output cap this type reads, where it is not the
    * `max_tokens` every other OpenAI-compatible service takes.
@@ -107,7 +103,7 @@ export interface ProviderDescriptor {
   /**
    * Whether this type's model IDs namespace the model's author, so authorship
    * can be read off the slug itself (`MODEL_AUTHOR_NAMESPACES` in
-   * `src/core/providers.ts`). Set for aggregators, whose catalogs span every lab
+   * `src/providers/provider-type.ts`). Set for aggregators, whose catalogs span every lab
    * and bypass the price catalog that carries authorship for everyone else.
    */
   authorNamespacedModels?: boolean;
@@ -130,11 +126,12 @@ export interface ProviderDescriptor {
 
 /**
  * Gateway routing is deliberately absent: which gateway reaches which provider
- * type is the gateway adapter's business (`src/core/gateways.ts`), so adding a
- * provider type never means editing an adapter.
+ * type is the gateway's own route table (`routes` in `./gateways.ts`), so
+ * adding a provider type never means editing an adapter.
  */
 export const PROVIDER_DESCRIPTORS = {
   openai: {
+    label: "OpenAI",
     directBaseUrl: "https://api.openai.com/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
@@ -146,10 +143,11 @@ export const PROVIDER_DESCRIPTORS = {
     chatCompletionsCapField: "max_completion_tokens",
     // The two types whose Responses and transcription request shapes the
     // gateway composes itself for named endpoints.
-    endpointPaths: { responses: "v1/responses", transcription: "v1/audio/transcriptions" },
+    endpointPaths: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions" },
     modelAuthor: "OpenAI",
   },
   anthropic: {
+    label: "Anthropic",
     directBaseUrl: "https://api.anthropic.com/",
     auth: { header: "x-api-key" },
     nativeClampStyle: "anthropic",
@@ -164,27 +162,29 @@ export const PROVIDER_DESCRIPTORS = {
     probeHeaders: { "anthropic-version": "2023-06-01" },
   },
   xai: {
+    label: "xAI",
     directBaseUrl: "https://api.x.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
     probePath: "v1/models",
     // Native provider paths: xAI transcribes at `v1/stt`, where OpenAI serves
     // `v1/audio/transcriptions`.
-    endpointPaths: { responses: "v1/responses", transcription: "v1/stt" },
+    endpointPaths: { responses: "v1/responses", audio_transcription: "v1/stt" },
     modelAuthor: "xAI",
   },
   gemini: {
+    label: "Gemini",
     directBaseUrl: "https://generativelanguage.googleapis.com/",
     auth: { header: "x-goog-api-key" },
     nativeClampStyle: "gemini_native",
     probePath: "v1beta/models",
     // Native Gemini generation requests carry the model in the URL rather than
-    // in the JSON body, so there is no example path without a model and a
-    // request on one has its model captured from the path.
-    modelInPath: true,
+    // in the JSON body, so there is no example path without a model.
+    examplePath: "v1beta/models/{model}:generateContent",
     modelAuthor: "Google",
   },
   perplexity: {
+    label: "Perplexity",
     directBaseUrl: "https://api.perplexity.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "responses",
@@ -199,6 +199,7 @@ export const PROVIDER_DESCRIPTORS = {
   // comes from the catalog entry per model instead.
 
   deepseek: {
+    label: "DeepSeek",
     // No `v1` segment: DeepSeek documents the bare origin as its OpenAI base
     // URL, and `https://api.deepseek.com/anthropic` for the Anthropic format.
     directBaseUrl: "https://api.deepseek.com/",
@@ -210,6 +211,7 @@ export const PROVIDER_DESCRIPTORS = {
     modelAuthor: "DeepSeek",
   },
   groq: {
+    label: "Groq",
     // Groq's OpenAI-compatible surface lives under `openai/v1/`, so the client
     // path is `openai/v1/chat/completions` rather than `v1/chat/completions`.
     directBaseUrl: "https://api.groq.com/",
@@ -220,6 +222,7 @@ export const PROVIDER_DESCRIPTORS = {
     examplePath: "openai/v1/chat/completions",
   },
   mistral: {
+    label: "Mistral",
     directBaseUrl: "https://api.mistral.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
@@ -227,6 +230,7 @@ export const PROVIDER_DESCRIPTORS = {
     modelAuthor: "Mistral",
   },
   together: {
+    label: "Together AI",
     // `api.together.ai`, not the `.xyz` host older SDKs default to: the current
     // OpenAI-compatibility guide names this one and warns against the other.
     directBaseUrl: "https://api.together.ai/",
@@ -235,6 +239,7 @@ export const PROVIDER_DESCRIPTORS = {
     probePath: "v1/models",
   },
   fireworks: {
+    label: "Fireworks AI",
     // The inference plane is `/inference/v1`; `/v1` on the same host is the
     // control plane, so the client path is `inference/v1/chat/completions`.
     directBaseUrl: "https://api.fireworks.ai/",
@@ -246,12 +251,14 @@ export const PROVIDER_DESCRIPTORS = {
     examplePath: "inference/v1/chat/completions",
   },
   cerebras: {
+    label: "Cerebras",
     directBaseUrl: "https://api.cerebras.ai/",
     auth: { header: "authorization", scheme: "Bearer " },
     nativeClampStyle: "chat_completions",
     probePath: "v1/models",
   },
   moonshot: {
+    label: "Moonshot AI",
     // The international host. `api.moonshot.cn` is the separate China platform
     // and is not reachable with a key issued for this one.
     directBaseUrl: "https://api.moonshot.ai/",
@@ -261,6 +268,7 @@ export const PROVIDER_DESCRIPTORS = {
     modelAuthor: "Moonshot AI",
   },
   huggingface: {
+    label: "Hugging Face",
     // The Inference Providers router: one OpenAI-compatible surface in front of
     // many upstreams, so it has no author of its own and no stable per-model
     // price — the router picks the upstream, and the same model ID costs an
@@ -275,6 +283,7 @@ export const PROVIDER_DESCRIPTORS = {
     // (`huggingface.co`), which a path under this base URL cannot express.
   },
   baseten: {
+    label: "Baseten",
     // The Model APIs inference host. `api.baseten.co` is the management plane
     // for dedicated deployments and answers to different paths entirely.
     directBaseUrl: "https://inference.baseten.co/",
@@ -283,6 +292,7 @@ export const PROVIDER_DESCRIPTORS = {
     probePath: "v1/models",
   },
   bytedance: {
+    label: "ByteDance Ark",
     // BytePlus ModelArk, the international edition: `/api/v3` is its version
     // segment, so client paths carry no `v1`. `ark.cn-beijing.volces.com` is
     // the separate China platform, and `ark.eu-west.bytepluses.com` is a second
@@ -298,6 +308,7 @@ export const PROVIDER_DESCRIPTORS = {
   },
 
   openrouter: {
+    label: "OpenRouter",
     // An aggregator treated as a provider type: it is the counterparty that
     // bills the organization, and its slugs (`google/gemini-3.6-flash`) are the
     // canonical model IDs here — there is no underlying ID to translate to.

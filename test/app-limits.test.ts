@@ -4,6 +4,8 @@ import { createExecutionContext, runInDurableObject, waitOnExecutionContext } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { clearIsolateCaches, seedProvider, seedServerApp } from "./helpers";
+import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
+import { SPEND_REFRESH_MS } from "../src/do/UserLimiter";
 
 /**
  * The limits an organization sets on its own application, applied to that
@@ -109,7 +111,7 @@ async function settle(): Promise<void> {
 const used = (organizationId: string): Promise<number> => {
   const quota = env.ORG_QUOTA.getByName(organizationId);
   return runInDurableObject(quota, (_instance, state) => state.storage.sql
-    .exec<{ used: number }>("SELECT COALESCE(SUM(used), 0) AS used FROM quota_periods")
+    .exec<{ used: number }>("SELECT COALESCE(SUM(used), 0) AS used FROM allowance")
     .one().used);
 };
 
@@ -220,10 +222,10 @@ describe("an application's own limits", () => {
     await settle();
 
     const row = await env.DB.prepare(
-      `SELECT status, model, cost_usd FROM app_usage_event
-        WHERE app_id = ? AND status LIKE 'blocked_%'`,
-    ).bind("limits-event").first<{ status: string; model: string; cost_usd: number }>();
-    expect(row).toEqual({ status: "blocked_app_rate", model: "gpt-5.6-sol", cost_usd: 0 });
+      `SELECT reason, scope, model FROM app_rejection_event
+        WHERE app_id = ?`,
+    ).bind("limits-event").first<{ reason: string; scope: string; model: string }>();
+    expect(row).toEqual({ reason: "blocked_app_rate", scope: "user", model: "gpt-5.6-sol" });
   });
 
   /**
@@ -233,10 +235,9 @@ describe("an application's own limits", () => {
    */
   it("spends no app-wide rate token on a blocked user's attempt", async () => {
     const key = await seedServerApp("limits-blocked-first", { limits: { app_rpm: 1 } });
-    await env.DB.prepare("INSERT INTO app_user(app_id, id) VALUES (?, ?)")
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, ?, 'blocked')")
       .bind("limits-blocked-first", "banned")
       .run();
-    await env.USER_LIMITER.getByName("limits-blocked-first:banned").setBlocked(true);
     mockUpstream();
 
     const blocked = await proxyRequest({ appId: "limits-blocked-first", key, userId: "banned" });
@@ -300,9 +301,8 @@ describe("an application's own limits", () => {
   });
 
   /**
-   * The fast path. An app that configures no limits must make exactly the
-   * Durable Object calls it made before this feature existed: the cached block
-   * flag, and nothing else.
+   * The fast path. An app that configures no limits makes no limiter Durable
+   * Object calls; admission still checks the cached D1 user status.
    */
   it("calls no limiter at all for an app that configures no limits", async () => {
     let checks = 0;
@@ -377,6 +377,10 @@ describe("an application's own limits", () => {
     expect((await proxyRequest({ appId: "limits-budget", key, userId: "spender" })).status).toBe(200);
     await settle();
 
+    // The limiter holds the spend it read for its refresh window, so the next
+    // request is judged against the settled figure once that window has passed.
+    const later = Date.now() + SPEND_REFRESH_MS;
+    vi.spyOn(Date, "now").mockReturnValue(later);
     const refused = await proxyRequest({ appId: "limits-budget", key, userId: "spender" });
     expect(refused.status).toBe(429);
     const body = await refused.json<{ error: { code: string; data?: { scope: string } } }>();
@@ -435,18 +439,17 @@ describe("an application's own limits", () => {
     ]);
   });
 
-  it("settles one event against both ledgers when the app keeps an app-wide one", async () => {
+  it("settles one event against both totals when the app keeps an app-wide budget", async () => {
     const key = await seedServerApp("limits-both-ledgers", { appBudgetUsd: 100 });
     mockUpstream();
 
     expect((await proxyRequest({ appId: "limits-both-ledgers", key, userId: "u" })).status).toBe(200);
     await settle();
 
-    const perUser = await env.USER_LIMITER
-      .getByName("limits-both-ledgers:u")
-      .getStatus(Date.now());
-    const perApp = await env.USER_LIMITER.getByName("limits-both-ledgers").getStatus(Date.now());
-    expect(perUser.monthlyCostMicrousd).toBeGreaterThan(0);
-    expect(perApp.monthlyCostMicrousd).toBe(perUser.monthlyCostMicrousd);
+    const month = new Date().toISOString().slice(0, 7);
+    const perUser = await monthlySpendMicrousd(env.DB, { appId: "limits-both-ledgers", userKey: "u" }, month);
+    const perApp = await monthlySpendMicrousd(env.DB, { appId: "limits-both-ledgers", userKey: null }, month);
+    expect(perUser).toBeGreaterThan(0);
+    expect(perApp).toBe(perUser);
   });
 });

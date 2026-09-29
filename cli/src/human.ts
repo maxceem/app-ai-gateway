@@ -107,11 +107,11 @@ function render(
   context: OutputContext,
   style: Style,
 ): string[] {
-  // A browser handoff answers whichever command opened it, so it is recognized
+  // A browser step answers whichever command opened it, so it is recognized
   // before that command's own renderer ever sees the result.
-  if ("state" in result && result.state === "pending" && "url" in result)
+  if ("state" in result && result.state === "pending" && "url" in result && result.url)
     return [
-      style.headline(`Waiting for browser handoff (${result.id}).`),
+      style.headline(`Waiting for browser approval (${result.id}).`),
       result.url,
       `Resume: agw operation wait ${result.id}`,
     ];
@@ -315,10 +315,7 @@ function list(command: CommandName, result: RenderedResult, style: Style): strin
  */
 function show(command: CommandName, result: RenderedResult, style: Style): string[] {
   if (command === "app show" && "app" in result && !("guidance" in result)) {
-    const lines = [style.headline(`${result.app.name} (${result.app.id})`)];
-    if (result.config_error)
-      lines.push(style.alert(`Configuration error: ${result.config_error}`));
-    return [...lines, "", style.json(result)];
+    return [style.headline(`${result.app.name} (${result.app.id})`), "", style.json(result)];
   }
   if ("slug" in result)
     return [
@@ -423,7 +420,7 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
     );
     const rows = result.rows.length
       ? table(
-          ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS", "BLOCKED"],
+          ["KEY", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
           result.rows.map((row) => [
             row.key ?? "(none)",
             String(row.requests),
@@ -431,7 +428,6 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
             String(row.output_tokens),
             row.cost_usd.toFixed(4),
             String(row.errors),
-            String(row.blocked),
           ]),
           style,
         )
@@ -448,7 +444,6 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
           ["Output tokens", result.totals.output_tokens],
           ["Cost USD", result.totals.cost_usd.toFixed(4)],
           ["Errors", result.totals.errors],
-          ["Blocked", result.totals.blocked],
         ],
         style,
       ),
@@ -457,7 +452,7 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
       // printed rather than counted: a month is read to find which app spent it.
       ...(result.apps.length
         ? table(
-            ["APP", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS", "BLOCKED"],
+            ["APP", "REQUESTS", "INPUT", "OUTPUT", "COST USD", "ERRORS"],
             result.apps.map((entry) => [
               entry.deleted ? `${entry.appId} (deleted)` : entry.appId,
               String(entry.requests),
@@ -465,13 +460,10 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
               String(entry.output_tokens),
               entry.cost_usd.toFixed(4),
               String(entry.errors),
-              String(entry.blocked),
             ]),
             style,
           )
         : ["No app usage recorded."]),
-      "",
-      result.coverage.historicalAttribution,
     ];
   if ("requests" in result)
     return kv(
@@ -490,7 +482,7 @@ function usage(command: CommandName, result: RenderedResult, style: Style): stri
   return [style.json(result)];
 }
 
-/** A handoff that is no longer pending: `operation status`, `operation wait`. */
+/** An operation that is no longer pending: `operation status`, `operation wait`. */
 function operation(result: RenderedResult, style: Style): string[] {
   if (!("state" in result)) return [style.json(result)];
   const stored = "result" in result ? result.result : undefined;

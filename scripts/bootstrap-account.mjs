@@ -159,7 +159,7 @@ export async function bootstrapAccount({
           "Initialization state is malformed; restore it from a private backup before retrying.",
         );
       }
-      if (!state || typeof state.idempotencyKey !== "string" || typeof state.pollToken !== "string" || !proof.test(state.idempotencyKey) || !proof.test(state.pollToken))
+      if (!state || typeof state.token !== "string" || !proof.test(state.token))
         fail(
           "Initialization state is malformed; restore it from a private backup before retrying.",
         );
@@ -171,8 +171,7 @@ export async function bootstrapAccount({
       state = {
         origin: target.origin,
         deploymentId: capabilities.deployment.id,
-        idempotencyKey: randomBytes(32).toString("base64url"),
-        pollToken: randomBytes(32).toString("base64url"),
+        token: randomBytes(32).toString("base64url"),
       };
       publishPrivate(directory, stateFile, JSON.stringify(state));
     }
@@ -187,13 +186,14 @@ export async function bootstrapAccount({
     const result = await request("/v1/cli/bootstrap", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idempotencyKey: state.idempotencyKey, pollToken: state.pollToken }),
+      body: JSON.stringify({ token: state.token }),
     });
-    if (result.deployment?.id !== state.deploymentId || !validCredential(result.credential?.token))
+    const token = result.result?.credential?.token;
+    if (result.deployment?.id !== state.deploymentId || !validCredential(token))
       fail(
         "The initialization response did not match the deployment or contained no usable credential.",
       );
-    publishPrivate(directory, keyFile, `${result.credential.token.trim()}\n`);
+    publishPrivate(directory, keyFile, `${token.trim()}\n`);
     return { keyFile, recovered: false };
   } catch (error) {
     if (error instanceof InitializationError) throw error;

@@ -5,20 +5,12 @@ import {
   billingPlanLimits,
   billingRpcError,
   invalidateBillingAccess,
-  invalidateBillingRequestAccess,
   subscriptionActions,
 } from "../../billing/gateway";
 import { accountLifecycle } from "../../core/account-lifecycle";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../../policy/accounts";
-import { getBillingQuotaResolution } from "../../billing/quota";
-import {
-  BillingCheckoutRequestSchema,
-  BillingPlanSelectionSchema,
-  BillingTrialRequestSchema,
-  type BillingStatusResponse,
-} from "../../contracts/billing";
-import { schemaBody } from "../../management/validation";
-import { jsonBody } from "./body";
+import { billingQuota, quotaUsage } from "../../billing/quota";
+import type { BillingStatusResponse } from "../../contracts/billing";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
@@ -31,11 +23,22 @@ type BillingRouteEnv = {
 export const billingRoutes = new Hono<BillingRouteEnv>();
 const routes = adminRouter(billingRoutes, "/v1/admin/billing");
 
+/**
+ * The billing service, or the one refusal a deployment without one gives every
+ * operation here.
+ */
 function binding(c: Context<BillingRouteEnv>): BillingRuntime {
   const value = c.get("deployment").billing;
   if (!value) throw new GatewayError(404, "not_found", "Billing is not configured");
   return value;
 }
+
+/**
+ * The only way an operation is mounted here: each runs `binding` as its
+ * `before`, so a deployment without billing is refused before a body is read.
+ */
+const handle: typeof routes.handle = (name, handler) =>
+  routes.handle(name, handler, { before: (c) => void binding(c) });
 
 async function rpc<T>(operation: () => Promise<T>): Promise<T> {
   try {
@@ -45,7 +48,7 @@ async function rpc<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-routes.handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
+handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
   serviceId: BILLING_SERVICE_ID,
 })));
 
@@ -59,7 +62,7 @@ routes.handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
  * subscription is what turns a runaway client into something noticed on day
  * three instead of on the first `429`.
  *
- * A self-hosted deployment never gets here — the whole `/billing` subtree is
+ * A self-hosted deployment never gets here — every `/billing` operation is
  * refused without a billing binding — so there is no allowance-less case to
  * report. A malformed plan limit is deliberately left to throw: the data plane
  * is already refusing every request for that reason, and the operator reading
@@ -67,7 +70,7 @@ routes.handle("listBillingPlans", (c) => rpc(() => binding(c).listPlans({
  */
 async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusResponse> {
   const organizationId = c.get("actor").organizationId;
-  let resolved = await getBillingQuotaResolution(
+  const quota = await billingQuota(
     c.get("deployment"),
     c.env,
     organizationId,
@@ -83,43 +86,25 @@ async function status(c: Context<BillingRouteEnv>): Promise<BillingStatusRespons
    * Absent keys mean unlimited, so an empty object is the honest answer for a
    * plan with no ceilings and for a self-hosted deployment alike.
    */
-  const limits = billingPlanLimits(resolved.access);
+  const limits = billingPlanLimits(quota.access);
   // The account's own deadline, beside its billing: the one window a person
   // can end by claiming the account, which no plan changes.
   const account = await accountLifecycle(c.env, organizationId);
   const deadline = accountUnclaimed(account) ? unclaimedAccessDeadline(account.createdAt) : null;
   const unclaimedAccessEndsAt = deadline === null ? null : new Date(deadline).toISOString();
-  const answer = (quotaStatus: BillingStatusResponse["quota"]): BillingStatusResponse => ({
-    access: resolved.access,
+  return {
+    access: quota.access,
     limits,
-    quota: quotaStatus,
-    actions: subscriptionActions(resolved.access),
+    // A plan with no monthly limit counts nothing, so there is no figure to report.
+    quota: await quotaUsage(c.env, organizationId, quota),
+    actions: subscriptionActions(quota.access),
     unclaimedAccessEndsAt,
-  });
-  if (!resolved.period) return answer(null);
-  const quota = c.env.ORG_QUOTA.getByName(organizationId);
-  let usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
-  if ("superseded" in usage && usage.superseded) {
-    invalidateBillingRequestAccess(organizationId, c.get("billingRequestCache"));
-    resolved = await getBillingQuotaResolution(
-      c.get("deployment"),
-      c.env,
-      organizationId,
-      c.get("billingRequestCache"),
-    );
-    if (!resolved.period) return answer(null);
-    usage = await (Date.parse(resolved.period.periodEnd) <= Date.now() ? quota.pastUsage(resolved.period) : quota.usage(resolved.period));
-  }
-  if ("superseded" in usage && usage.superseded) {
-    throw new GatewayError(503, "billing_unavailable", "Billing changed while status was being read");
-  }
-  return answer({ ...usage, ...(resolved.limit === undefined ? {} : { limit: resolved.limit }) });
+  };
 }
 
-routes.handle("getBillingStatus", status);
+handle("getBillingStatus", status);
 
-routes.handle("startCheckout", async (c) => {
-  const input = schemaBody(BillingCheckoutRequestSchema, await jsonBody(c));
+handle("startCheckout", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).createCheckout({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -132,8 +117,7 @@ routes.handle("startCheckout", async (c) => {
   return result;
 });
 
-routes.handle("changePlan", async (c) => {
-  const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
+handle("changePlan", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).changePlan({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -144,7 +128,7 @@ routes.handle("changePlan", async (c) => {
   return result;
 });
 
-routes.handle("cancelSubscription", async (c) => {
+handle("cancelSubscription", async (c) => {
   const result = await rpc(() => binding(c).cancelSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -153,8 +137,7 @@ routes.handle("cancelSubscription", async (c) => {
   return result;
 });
 
-routes.handle("resumeSubscription", async (c) => {
-  const input = schemaBody(BillingPlanSelectionSchema, await jsonBody(c));
+handle("resumeSubscription", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).resumeSubscription({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,
@@ -165,8 +148,7 @@ routes.handle("resumeSubscription", async (c) => {
   return result;
 });
 
-routes.handle("startTrial", async (c) => {
-  const input = schemaBody(BillingTrialRequestSchema, await jsonBody(c));
+handle("startTrial", async (c, { body: input }) => {
   const result = await rpc(() => binding(c).startTrial({
     serviceId: BILLING_SERVICE_ID,
     tenantId: c.get("actor").organizationId,

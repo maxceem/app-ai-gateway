@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { OperationQuery } from "@contracts/catalog";
+import type { BillingPlanSelection } from "@contracts/billing";
+import type { OperationParams, OperationQuery, OperationRequest } from "@contracts/catalog";
 import type { UsageBreakdownDimension } from "@contracts/responses";
 import { call } from "./api";
-import { fromWireApp, toAppWrite } from "./config-conversion";
+import { toAppWrite } from "./config-conversion";
 import {
   changePassword,
   signInWithPassword,
@@ -33,9 +34,13 @@ export const keys = {
   providerGateways: ["provider-gateways"] as const,
   billingStatus: ["billing", "status"] as const,
   billingPlans: ["billing", "plans"] as const,
+  /** Every month's apps list, for an invalidation that is about all of them. */
+  appsPrefix: ["apps"] as const,
   apps: (month: string) => ["apps", month] as const,
   app: (appId: string) => ["app", appId] as const,
   apiKeys: (appId: string) => ["api-keys", appId] as const,
+  /** Every page of one app's users, for an invalidation that is about all of them. */
+  usersPrefix: (appId: string) => ["users", appId] as const,
   users: (appId: string, params: unknown) => ["users", appId, params] as const,
   usage: (appId: string, month: string) => ["usage", appId, month] as const,
   timeseries: (appId: string, from: string, to: string) => ["timeseries", appId, from, to] as const,
@@ -44,6 +49,7 @@ export const keys = {
   events: (appId: string, params: unknown) => ["events", appId, params] as const,
   authEventSummary: (appId: string, days: number) => ["auth-event-summary", appId, days] as const,
   authEvents: (appId: string, params: unknown) => ["auth-events", appId, params] as const,
+  rejectionEvents: (appId: string, params: unknown) => ["rejection-events", appId, params] as const,
   prices: ["prices"] as const,
 };
 
@@ -272,16 +278,20 @@ export function useCreateProviderGateway() {
   );
 }
 
+/** An edit of one gateway: its id and the operation's own body. */
+type GatewayEdit<K extends "updateProviderGateway" | "rotateProviderGateway"> =
+  OperationParams<K> & OperationRequest<K>;
+
 export function useRenameProviderGateway() {
-  return useGatewayMutation(({ id, name, revision }: { id: string; name: string; revision: number }) =>
-    call("updateProviderGateway", { params: { id }, body: { name, revision } }),
+  return useGatewayMutation(({ id, ...body }: GatewayEdit<"updateProviderGateway">) =>
+    call("updateProviderGateway", { params: { id }, body }),
   );
 }
 
 /** A single re-encryption, shared by every provider behind the gateway. */
 export function useRotateProviderGateway() {
-  return useGatewayMutation(({ id, token, revision }: { id: string; token: string; revision: number }) =>
-    call("rotateProviderGateway", { params: { id }, body: { token, revision } }),
+  return useGatewayMutation(({ id, ...body }: GatewayEdit<"rotateProviderGateway">) =>
+    call("rotateProviderGateway", { params: { id }, body }),
   );
 }
 
@@ -304,7 +314,7 @@ export function useUpdateProvider() {
     onSuccess: (_result, variables) => {
       void client.invalidateQueries({ queryKey: keys.providers });
       if (variables.body.status !== undefined) {
-        void client.invalidateQueries({ queryKey: ["apps"] });
+        void client.invalidateQueries({ queryKey: keys.appsPrefix });
       }
     },
   });
@@ -348,7 +358,7 @@ export function useBillingPlans(enabled: boolean) {
 
 export function useStartCheckout() {
   return useMutation({
-    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+    mutationFn: (input: BillingPlanSelection) =>
       call("startCheckout", { body: {
         ...input,
         // The landing announces the purchase; an abandoned checkout comes back
@@ -371,7 +381,7 @@ export function useStartCheckout() {
 export function useChangePlan() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+    mutationFn: (input: BillingPlanSelection) =>
       call("changePlan", { body: input }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
@@ -388,7 +398,7 @@ export function useCancelSubscription() {
 export function useResumeSubscription() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: { planKey: string; billingPeriod: "month" | "year" }) =>
+    mutationFn: (input: BillingPlanSelection) =>
       call("resumeSubscription", { body: input }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.billingStatus }),
   });
@@ -411,23 +421,18 @@ export function useApps(month: string, refetchInterval?: number) {
 export function useApp(appId: string) {
   return useQuery({
     queryKey: keys.app(appId),
-    queryFn: async () => fromWireApp(await call("getApp", { params: { app: appId } })),
+    queryFn: () => call("getApp", { params: { app: appId } }),
   });
 }
 
 export function useSaveApp(appId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async ({ body, revision }: { body: AppUpsertBody; revision: number }) => {
-      const result = fromWireApp(
-        await call("updateApp", { params: { app: appId }, body: { ...toAppWrite(body), revision } }),
-      );
-      if (result.kind !== "valid") throw new Error(result.config_error);
-      return result;
-    },
+    mutationFn: ({ body, revision }: { body: AppUpsertBody; revision: number }) =>
+      call("updateApp", { params: { app: appId }, body: { ...toAppWrite(body), revision } }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: keys.app(appId) });
-      void client.invalidateQueries({ queryKey: ["apps"] });
+      void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },
   });
 }
@@ -435,20 +440,14 @@ export function useSaveApp(appId: string) {
 export function useCreateApp() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (body: AppCreateBody): Promise<CreatedApp> => {
-      const created = await call("createApp", { body: toAppWrite(body) });
-      const converted = fromWireApp(created);
-      if (converted.kind !== "valid") throw new Error(converted.config_error);
-      // The one-time initial key an API-key application is born with, which is
-      // the one field a create carries beyond an ordinary application read.
-      return { ...converted, api_key: created.api_key };
-    },
+    mutationFn: (body: AppCreateBody): Promise<CreatedApp> =>
+      call("createApp", { body: toAppWrite(body) }),
     onSuccess: (created, body) => {
       // Which of the two ways in the application was born with, since App
       // Attest rather than an API key is what this product is built for.
       captureAppCreated(body.config.authentication.type);
       void client.invalidateQueries({ queryKey: keys.app(created.app.id) });
-      void client.invalidateQueries({ queryKey: ["apps"] });
+      void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },
   });
 }
@@ -457,7 +456,7 @@ export function useDeleteApp() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (appId: string) => call("deleteApp", { params: { app: appId }, query: { confirm: appId } }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["apps"] }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.appsPrefix }),
   });
 }
 
@@ -485,13 +484,7 @@ export function useRevokeApiKey(appId: string) {
   });
 }
 
-export interface UserQuery {
-  month: string;
-  query?: string;
-  status?: "active" | "blocked";
-  limit?: number;
-  offset?: number;
-}
+export type UserQuery = OperationQuery<"listAppUsers">;
 
 export function useUsers(appId: string, params: UserQuery) {
   return useQuery({
@@ -509,8 +502,8 @@ export function useUserAction(appId: string) {
         params: { app: appId, user: userId },
       }),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ["users", appId] });
-      void client.invalidateQueries({ queryKey: ["apps"] });
+      void client.invalidateQueries({ queryKey: keys.usersPrefix(appId) });
+      void client.invalidateQueries({ queryKey: keys.appsPrefix });
     },
   });
 }
@@ -566,6 +559,16 @@ export function useAuthEvents(appId: string, params: AuthEventQuery) {
   return useQuery({
     queryKey: keys.authEvents(appId, params),
     queryFn: () => call("listAppAuthEvents", { params: { app: appId }, query: { ...params } }),
+    placeholderData: (previous) => previous,
+  });
+}
+
+export type RejectionEventQuery = OperationQuery<"listAppRejectionEvents">;
+
+export function useRejectionEvents(appId: string, params: RejectionEventQuery) {
+  return useQuery({
+    queryKey: keys.rejectionEvents(appId, params),
+    queryFn: () => call("listAppRejectionEvents", { params: { app: appId }, query: { ...params } }),
     placeholderData: (previous) => previous,
   });
 }

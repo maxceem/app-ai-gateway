@@ -85,7 +85,7 @@ curl --fail-with-body "$GATEWAY_URL/v1/admin/apps" \
 {
   "name": "Search service",
   "config": {
-    "authentication": { "type": "api_key" },
+    "authentication": { "type": "api_key", "end_user": { "source": "none" } },
     "routing": {
       "providers": {
         "mode": "selected",
@@ -116,8 +116,9 @@ revision travels only in the body — no `ETag` is published, because anything
 that compresses a response rewrites that header and a browser cannot read it
 cross-origin.
 
-Creation of apps, app keys, providers and provider gateways accepts paired
-`Idempotency-Key` and `X-Idempotency-Proof` headers. Persist both random proofs
-before sending. Retry with the same body and proofs to recover the existing
-resource. Protected key replay expires after 15 minutes; an expired response
-identifies the resource and never creates another key automatically.
+To make the creation of an app, app key, provider or provider gateway safe to
+retry, send it to `POST /v1/cli/operations` with a random `token` you persist
+before sending. Retrying with the same token and payload recovers the existing
+resource instead of creating another. A new key is returned for 15 minutes;
+after that the result identifies the resource and never creates another key
+automatically.

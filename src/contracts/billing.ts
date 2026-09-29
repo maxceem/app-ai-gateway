@@ -67,9 +67,9 @@ export const SubscriptionStateSchema = z.object({
   updatedAt: z.string(),
   /** Original provider day, retained when short months clamp the exact anchor. */
   billingAnchorDay: z.number().nullable(),
-  /** Exact normalized UTC origin of the monthly allowance schedule. */
+  /** Exact UTC origin of the subscription's monthly allowance schedule. */
   billingAnchorAt: z.string(),
-  /** When the current allowance schedule took effect. */
+  /** When the current billing schedule took effect. */
   billingScheduleUpdatedAt: z.string(),
 }).meta({ id: "Subscription" });
 
@@ -134,16 +134,37 @@ export const PlanLimitsSchema = z.object({
 });
 
 /**
+ * One plan limit as the billing service's plan data may carry it. JSON has no
+ * integer type, so a count may arrive as `10000`, `10000.0` or `"10000"`, and
+ * all three mean the same number; a fraction, a negative, a boolean, `null`,
+ * an object or an empty string is not a count.
+ */
+const PlanLimitInputSchema = z.union([z.number(), z.string().trim().min(1)])
+  .transform(Number)
+  .pipe(z.number().int().nonnegative())
+  .optional();
+
+/**
+ * The lenient grammar {@link PlanLimitsSchema} is read out of a plan's opaque
+ * `limits` with: the published schema's keys, each through
+ * `PlanLimitInputSchema`. Keys it does not know are dropped.
+ */
+export const PlanLimitsInputSchema = z.object(
+  Object.fromEntries(PlanLimitsSchema.keyof().options.map((key) => [key, PlanLimitInputSchema])) as
+    Record<keyof z.infer<typeof PlanLimitsSchema>, typeof PlanLimitInputSchema>,
+);
+
+/**
  * The organization's current monthly allowance period against the one allowance
  * a plan grants. Only the dispatch path writes this count, so a status read is
  * the only place an operator can see it before the allowance runs out.
  */
 export const OrganizationQuotaStatusSchema = z.object({
-  periodId: z.string().meta({ description: "Opaque identifier for the allowance period being reported." }),
+  periodId: z.string().meta({ description: "Opaque identifier for the allowance period: the plan's schedule and the period's start. A paid plan's months run from its subscription's billing anchor, the free plan's from the account's creation." }),
   periodStart: z.string().meta({ description: "Inclusive UTC instant at which this allowance period began." }),
   periodEnd: z.string().meta({ description: "Exclusive UTC instant at which this allowance period ends." }),
   used: z.number().int().meta({ description: "Requests dispatched to a provider in this period, across all apps." }),
-  limit: z.number().int().optional().meta({ description: "The plan's maxRequestsPerMonth. Absent means unlimited." }),
+  limit: z.number().int().meta({ description: "The plan's maxRequestsPerMonth." }),
   resetAt: z.string().meta({ description: "UTC instant at which the allowance resets; currently equal to periodEnd." }),
 });
 
@@ -161,7 +182,7 @@ export const BillingStatusResponseSchema = z.object({
   access: GatewayBillingAccessSchema,
   limits: PlanLimitsSchema,
   quota: OrganizationQuotaStatusSchema.nullable().meta({
-    description: "Null when billing is unavailable or no plan entitlement resolves.",
+    description: "Null when billing is unavailable, no plan entitlement resolves, or the plan sets no monthly request limit, which counts nothing.",
   }),
   actions: SubscriptionActionsSchema,
   unclaimedAccessEndsAt: z.string().nullable().meta({

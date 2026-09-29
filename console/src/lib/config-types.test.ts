@@ -4,15 +4,11 @@ import {
   enabledProviders,
   emptyEndpoint,
   emptyIssuer,
-  emptyProvider,
   endpointInstances,
-  endpointProviderTypes,
   endpointSlugError,
   instanceModels,
   nextEndpointSlug,
   providerMode,
-  PROVIDERS,
-  PROVIDER_LABELS,
   renameEndpoint,
   reportsCost,
   selectedSlugs,
@@ -21,6 +17,9 @@ import {
   type EndpointsConfig,
   type ProviderInstance,
 } from "./config-types";
+import { emptyPolicy as emptyProvider } from "@shared/app-defaults";
+import { PROVIDER_TYPES as PROVIDERS, providersForEndpointStyle as endpointProviderTypes } from "@shared/providers";
+import { served } from "@/test/providers";
 
 /** The organization's rows, which is what a slug-keyed policy is read against. */
 const INSTANCES: ProviderInstance[] = [
@@ -30,13 +29,7 @@ const INSTANCES: ProviderInstance[] = [
 ];
 
 describe("the provider list the console offers", () => {
-  it("labels every provider type it can create", () => {
-    // A type in the list with no label would render as `undefined` in the
-    // picker, the policy cards and the missing-credential alert.
-    for (const provider of PROVIDERS) {
-      expect([provider, typeof PROVIDER_LABELS[provider]]).toEqual([provider, "string"]);
-      expect(PROVIDER_LABELS[provider].length).toBeGreaterThan(0);
-    }
+  it("lists every provider type it can create once", () => {
     expect(new Set(PROVIDERS).size).toBe(PROVIDERS.length);
   });
 
@@ -138,15 +131,6 @@ describe("provider configuration defaults", () => {
     expect(enabledProviders(proxy, [])).toEqual(["openai"]);
   });
 
-  it("treats a switched-off instance as unselected before the save drops it", () => {
-    const proxy = {
-      providers: { mode: "selected" as const, selected: { openai: undefined } },
-      model_rewrites: {},
-    };
-    expect(selectedSlugs(proxy)).toEqual([]);
-    expect(enabledProviders(proxy, INSTANCES)).toEqual([]);
-  });
-
   it("can explicitly select no providers", () => {
     const proxy = { providers: { mode: "selected" as const, selected: {} }, model_rewrites: {} };
     expect(providerMode(proxy)).toBe("selected");
@@ -183,16 +167,22 @@ describe("the models an instance can be asked for", () => {
 describe("named endpoint targets", () => {
   it("only offers instances whose type composes the endpoint request shape", () => {
     expect(endpointProviderTypes("responses")).toEqual(["openai", "xai"]);
-    expect(endpointProviderTypes("transcription")).toEqual(["openai", "xai"]);
+    expect(endpointProviderTypes("audio_transcription")).toEqual(["openai", "xai"]);
     // The Anthropic instance is not an option, whatever its slug.
-    expect(endpointInstances("responses", INSTANCES).map((entry) => entry.slug))
+    const rows = INSTANCES.map((instance) => ({ ...instance, ...served(instance.type) }));
+    expect(endpointInstances("responses", rows).map((entry) => entry.slug))
       .toEqual(["openai", "openai-dev"]);
+    // The route decides too: Vercel serves no transcription API.
+    const viaVercel = [{ ...INSTANCES[0]!, ...served("openai", "vercel") }];
+    expect(endpointInstances("responses", viaVercel)).toHaveLength(1);
+    expect(endpointInstances("audio_transcription", viaVercel)).toHaveLength(0);
   });
 });
 
 describe("the issuer as an end-user source", () => {
   const serverApp: AuthenticationDraft = {
     type: "api_key",
+    end_user: { source: "none" },
   };
 
   it("reports no issuer while the application identifies nobody", () => {
@@ -218,35 +208,24 @@ describe("the issuer as an end-user source", () => {
     });
   });
 
-  it("drops the block entirely when the issuer is cleared again", () => {
-    const enabled = withIssuer(serverApp, { jwks_url: "https://issuer.example.test/jwks.json" });
-    const disabled = withIssuer(enabled, undefined);
-
-    expect(disabled).toEqual(serverApp);
-    expect("end_user" in disabled).toBe(false);
-  });
-
-  it("keeps the issuer on an App Attest app without discarding it", () => {
+  it("reads the issuer of an App Attest app", () => {
     const appleApp: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
-      end_user: { source: "issuer", issuer: { jwks_url: "https://issuer.example.test/jwks.json" } },
+      end_user: { source: "issuer", issuer: { ...emptyIssuer(), jwks_url: "https://issuer.example.test/jwks.json" } },
     };
 
-    expect(authIssuer(appleApp)).toEqual({ jwks_url: "https://issuer.example.test/jwks.json" });
-    // An attested client always resolves to some user, so clearing keeps what
-    // is configured rather than leaving it identifying nobody.
-    expect(withIssuer(appleApp, undefined)).toEqual(appleApp);
+    expect(authIssuer(appleApp)).toEqual({ ...emptyIssuer(), jwks_url: "https://issuer.example.test/jwks.json" });
   });
 
-  it("materializes an issuer for an App Attest config that carries none", () => {
+  it("moves an install-only App Attest app onto an issuer", () => {
     const installOnly: AuthenticationDraft = {
       type: "apple_app_attest",
       app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
       end_user: { source: "app_install" },
     };
 
-    expect(withIssuer(installOnly, undefined)).toEqual({
+    expect(withIssuer(installOnly, emptyIssuer())).toEqual({
       ...installOnly,
       end_user: { source: "issuer", issuer: emptyIssuer() },
     });
@@ -256,7 +235,7 @@ describe("the issuer as an end-user source", () => {
 describe("named endpoint editing", () => {
   const endpoints: EndpointsConfig = {
     chat: { api_style: "responses", provider: "openai", model: "gpt-5.6-luna" },
-    transcribe: { api_style: "transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },
+    transcribe: { api_style: "audio_transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },
   };
 
   it("starts a new endpoint on the responses style with no model chosen", () => {

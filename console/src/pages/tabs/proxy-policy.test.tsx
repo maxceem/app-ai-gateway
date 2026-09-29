@@ -6,6 +6,7 @@ import { useAppDraft } from "@/hooks/use-app-draft";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { ProxyConfig } from "@/lib/config-types";
 import type { ProviderCredential } from "@/lib/types";
+import { served } from "@/test/providers";
 
 const APP_ID = "my-app";
 
@@ -14,6 +15,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-1",
     type: "openai",
+    ...served("openai"),
     slug: "openai",
     name: "Prod OpenAI",
     secretHint: "gain",
@@ -29,6 +31,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-2",
     type: "openai",
+    ...served("openai"),
     slug: "openai-dev",
     name: "Dev OpenAI",
     secretHint: "dev4",
@@ -44,6 +47,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-3",
     type: "anthropic",
+    ...served("anthropic"),
     slug: "claude",
     name: "Anthropic",
     secretHint: "an7c",
@@ -68,6 +72,7 @@ function appRow(routing: ProxyConfig) {
     config: {
       authentication: {
         type: "api_key",
+        end_user: { source: "none" },
       },
       routing,
     },
@@ -82,16 +87,18 @@ function Harness() {
       <ProxyPolicyTab state={state} />
       {/* What a save would send, so a row on screen can be told from a row in the draft. */}
       <pre data-testid="rewrites">{JSON.stringify(state.draft.config.routing.model_rewrites ?? {})}</pre>
+      <pre data-testid="providers">{JSON.stringify(state.draft.config.routing.providers)}</pre>
     </>
   );
 }
 
 const draftRewrites = () => JSON.parse(screen.getByTestId("rewrites").textContent ?? "null");
+const draftProviders = () => JSON.parse(screen.getByTestId("providers").textContent ?? "null");
 
 function renderTab(routing: ProxyConfig, providers = PROVIDERS) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(routing), config_error: null },
+      body: { app: appRow(routing) },
     },
     "/v1/admin/providers": { body: { providers } },
     "/v1/admin/prices": { body: { prices: { openai: { "gpt-5.6-luna": { input: 1, output: 2 } } } } },
@@ -166,6 +173,19 @@ describe("ProxyPolicyTab", () => {
     await userEvent.click(orphan);
     await waitFor(() =>
       expect(screen.getByText("0 of 3 provider instances enabled")).toBeTruthy());
+  });
+
+  it("takes a switched-off instance out of the draft, and restores its policy when switched back on", async () => {
+    const policy = { allowed_paths: ["v1/responses"], allowed_models: ["gpt-5.6-luna"] };
+    renderTab(selectedRouting({ "openai-dev": policy }));
+
+    await userEvent.click(await screen.findByRole("switch", { name: "Enable openai-dev" }));
+    // Gone, rather than kept under its slug as a value the save has to drop.
+    await waitFor(() => expect(draftProviders()).toEqual({ mode: "selected", selected: {} }));
+
+    await userEvent.click(screen.getByRole("switch", { name: "Enable openai-dev" }));
+    await waitFor(() =>
+      expect(draftProviders()).toEqual({ mode: "selected", selected: { "openai-dev": policy } }));
   });
 
   /**

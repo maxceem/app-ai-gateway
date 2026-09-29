@@ -1,4 +1,4 @@
-import { useId, type ComponentType } from "react";
+import { useId, type ComponentType, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CircleAlert, CircleCheck, CircleDashed, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -11,7 +11,7 @@ import { Field, SectionHeader } from "@/components/field";
 import { DisabledReason } from "@/components/guarded-button";
 import { IdentityProviderFields } from "@/components/identity-provider-fields";
 import { DEFAULT_PAID_CLAIM, SubscriptionFields } from "@/components/subscription-fields";
-import type { AppDraft } from "@/hooks/use-app-draft";
+import type { AppDraft, DraftTransitions } from "@/hooks/use-app-draft";
 import {
   DEFAULT_AUTH_LEVEL,
   levelStatuses,
@@ -24,15 +24,17 @@ import {
   DEFAULT_END_USER_HEADER,
   authIssuer,
   emptyIssuer,
-  type AuthConfig,
+  type IssuerDraft,
   type AuthenticationDraft,
 } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
+import { DRAFT_PATHS } from "@/lib/draft-problems";
 import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useApiKeys } from "@/lib/queries";
 import { IOS_USER_CHOICES, SERVER_USER_CHOICES, type UserSource } from "@/lib/user-sources";
 import { cn } from "@/lib/utils";
 import { ServerKeys } from "@/pages/server-keys";
+import { issueUnder, type ConfigIssue } from "@shared/app-config";
 
 const LEVELS: { slug: AuthLevel; label: string }[] = [
   { slug: "identity", label: "Application identity" },
@@ -82,7 +84,7 @@ export function AuthPolicyTab({
   const isServer = authentication.type === "api_key";
   const keys = useApiKeys(appId, isServer);
   const keysActive = keys.data ? keys.data.keys.some((key) => key.status === "active") : undefined;
-  const statuses = levelStatuses(draft, keysActive);
+  const statuses = levelStatuses(draft, state.issues, keysActive);
   const current: AuthLevel =
     LEVELS.some((entry) => entry.slug === level) && statuses[level as AuthLevel].tone !== "off"
       ? (level as AuthLevel)
@@ -175,162 +177,222 @@ function LevelRow({
   );
 }
 
-/** How an iOS app proves it is this app: the team and bundle Apple attests. */
-function AppIdentity({
+/**
+ * One level's page: a card headed by the question it answers. `compact` is the
+ * creation wizard's form of it — the fields alone, because the wizard's step
+ * already asks the question above them.
+ */
+function Level({
+  title,
+  description,
+  compact,
+  className,
+  children,
+}: {
+  title: string;
+  description: string;
+  compact: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  if (compact) return <div className={className}>{children}</div>;
+  return (
+    <Card>
+      <CardHeader>
+        <SectionHeader title={title} description={description} />
+      </CardHeader>
+      <CardContent className={className}>{children}</CardContent>
+    </Card>
+  );
+}
+
+/**
+ * How an iOS app proves it is this app: the team and bundle Apple attests.
+ *
+ * `issues`, when given, are the draft's schema issues, and the first one about
+ * this pair is said beside it once both fields hold something. The wizard asks
+ * for that because it has nowhere else to say it; the editor says it on its
+ * level list and its save button instead.
+ */
+export function AppIdentity({
   authentication,
-  readOnly,
+  readOnly = false,
   state,
+  issues,
+  compact = false,
 }: {
   authentication: Extract<AuthenticationDraft, { type: "apple_app_attest" }>;
-  readOnly: boolean;
-  state: AppDraft;
+  readOnly?: boolean;
+  state: Pick<DraftTransitions, "updateAuthentication">;
+  issues?: readonly ConfigIssue[];
+  compact?: boolean;
 }) {
   const attest = authentication.app_attest;
   const patch = (partial: Partial<typeof attest>) =>
     state.updateAuthentication({ ...authentication, app_attest: { ...attest, ...partial } });
+  const problem = attest.team_id.trim() && attest.bundle_id.trim()
+    ? issues?.find((issue) => issueUnder(issue, DRAFT_PATHS.appAttest))?.message
+    : undefined;
 
   return (
-    <Card>
-      <CardHeader>
-        <SectionHeader
-          title="Application identity"
-          description="An iOS application. Only builds signed with this team and bundle id can call AI providers through this gateway."
-        />
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <div className="grid gap-5 sm:grid-cols-2">
-          <div className="space-y-2.5">
-            <Label htmlFor="apple-team-id">Apple Team ID</Label>
-            <Input
-              id="apple-team-id"
-              value={attest.team_id}
-              placeholder="ABCDE12345"
-              className="font-mono text-xs"
-              disabled={readOnly}
-              onChange={(event) => patch({ team_id: event.target.value })}
-            />
-            <p className="text-xs text-muted-foreground">
-              In your Apple Developer account under{" "}
-              <ExternalHint href="https://developer.apple.com/account#MembershipDetailsCard">
-                Membership details
-              </ExternalHint>
-              .
-            </p>
-          </div>
-          <div className="space-y-2.5">
-            <Label htmlFor="apple-bundle-id">Bundle ID</Label>
-            <Input
-              id="apple-bundle-id"
-              value={attest.bundle_id}
-              placeholder="com.example.app"
-              className="font-mono text-xs"
-              disabled={readOnly}
-              onChange={(event) => patch({ bundle_id: event.target.value })}
-            />
-            <p className="text-xs text-muted-foreground">
-              In Xcode, on your target&apos;s{" "}
-              <ExternalHint href="https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target#Set-the-bundle-ID">
-                Signing &amp; Capabilities
-              </ExternalHint>{" "}
-              tab.
-            </p>
-          </div>
+    <Level
+      title="Application identity"
+      description="An iOS application. Only builds signed with this team and bundle id can call AI providers through this gateway."
+      compact={compact}
+      className="space-y-6"
+    >
+      <div className="grid gap-5 sm:grid-cols-2">
+        <div className="space-y-2.5">
+          <Label htmlFor="apple-team-id">Apple Team ID</Label>
+          <Input
+            id="apple-team-id"
+            value={attest.team_id}
+            placeholder="ABCDE12345"
+            className="font-mono text-xs"
+            disabled={readOnly}
+            autoFocus={compact}
+            onChange={(event) => patch({ team_id: event.target.value })}
+          />
+          <p className="text-xs text-muted-foreground">
+            In your Apple Developer account under{" "}
+            <ExternalHint href="https://developer.apple.com/account#MembershipDetailsCard">
+              Membership details
+            </ExternalHint>
+            .
+          </p>
         </div>
-        <AppAttestEnvironments
-          value={attest.environments}
-          compact
-          disabled={readOnly}
-          onChange={(environments) =>
-            state.updateAuthentication({
-              ...authentication,
-              app_attest: {
-                team_id: attest.team_id,
-                bundle_id: attest.bundle_id,
-                // Production-only is the default the Worker resolves an absent
-                // field to, so it is written as an absence. Storing it would
-                // stamp the field onto every application that never opted in,
-                // on the next unrelated edit.
-                ...(environments.length === 1 && environments[0] === "production"
-                  ? {}
-                  : { environments }),
-              },
-            })
-          }
-        />
-      </CardContent>
-    </Card>
+        <div className="space-y-2.5">
+          <Label htmlFor="apple-bundle-id">Bundle ID</Label>
+          <Input
+            id="apple-bundle-id"
+            value={attest.bundle_id}
+            placeholder="com.example.app"
+            className="font-mono text-xs"
+            disabled={readOnly}
+            onChange={(event) => patch({ bundle_id: event.target.value })}
+          />
+          <p className="text-xs text-muted-foreground">
+            In Xcode, on your target&apos;s{" "}
+            <ExternalHint href="https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target#Set-the-bundle-ID">
+              Signing &amp; Capabilities
+            </ExternalHint>{" "}
+            tab.
+          </p>
+        </div>
+      </div>
+      {problem ? (
+        <p role="alert" className="text-xs text-destructive">
+          {problem}
+        </p>
+      ) : null}
+      <AppAttestEnvironments
+        value={attest.environments}
+        compact
+        disabled={readOnly}
+        onChange={(environments) =>
+          state.updateAuthentication({
+            ...authentication,
+            app_attest: {
+              team_id: attest.team_id,
+              bundle_id: attest.bundle_id,
+              // Production-only is the default the Worker resolves an absent
+              // field to, so it is written as an absence. Storing it would
+              // stamp the field onto every application that never opted in,
+              // on the next unrelated edit.
+              ...(environments.length === 1 && environments[0] === "production"
+                ? {}
+                : { environments }),
+            },
+          })
+        }
+      />
+    </Level>
   );
 }
 
 /**
  * Whether users must be signed in, and, when they must, where they sign in.
  * The two go together: choosing sign-in is only an answer once the provider
- * that does the signing is named.
+ * that does the signing is named. The compact form asks only the first half,
+ * because the wizard names the provider on a step of its own; `unanswered`
+ * shows no answer chosen yet, for a question the wizard has not had answered.
+ * `issues`, when given, say what is wrong with the header name beside it, as
+ * {@link AppIdentity} does for its pair.
  */
-function UserAuthentication({
+export function UserAuthentication({
   authentication,
-  readOnly,
+  readOnly = false,
   state,
+  issues,
+  compact = false,
+  unanswered = false,
 }: {
   authentication: AuthenticationDraft;
-  readOnly: boolean;
-  state: AppDraft;
+  readOnly?: boolean;
+  state: Pick<DraftTransitions, "setEndUserSource" | "updateEndUserHeader" | "updateIssuer">;
+  issues?: readonly ConfigIssue[];
+  compact?: boolean;
+  unanswered?: boolean;
 }) {
   const reasonId = useId();
-  const source: UserSource = authentication.end_user?.source ?? "none";
+  const source: UserSource = authentication.end_user.source;
   const issuer = authIssuer(authentication);
   const choices = authentication.type === "api_key" ? SERVER_USER_CHOICES : IOS_USER_CHOICES;
+  const value = unanswered ? null : source;
+  const headerIssue = issues?.find((issue) => issueUnder(issue, DRAFT_PATHS.header));
 
   return (
     <>
-      <Card>
-        <CardHeader>
-          <SectionHeader
-            title="User authentication"
-            description="Choose whether only users signed in to your app can call AI through this gateway."
-          />
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {readOnly ? (
-            <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">
-              <ChoiceList
-                label="User authentication"
-                choices={choices}
-                value={source}
-                disabled
-                describedBy={reasonId}
-                onChange={() => {}}
-              />
-            </DisabledReason>
-          ) : (
+      <Level
+        title="User authentication"
+        description="Choose whether only users signed in to your app can call AI through this gateway."
+        compact={compact}
+        className="space-y-4"
+      >
+        {readOnly ? (
+          <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">
             <ChoiceList
               label="User authentication"
               choices={choices}
-              value={source}
-              onChange={(next) => state.setEndUserSource(next === "none" ? undefined : next)}
+              value={value}
+              disabled
+              describedBy={reasonId}
+              onChange={() => {}}
             />
-          )}
+          </DisabledReason>
+        ) : (
+          <ChoiceList
+            label="User authentication"
+            choices={choices}
+            value={value}
+            onChange={state.setEndUserSource}
+          />
+        )}
 
-          {authentication.type === "api_key" && authentication.end_user?.source === "header" ? (
-            <Field
-              label="Header name"
-              htmlFor="end-user-header"
-              hint={`Lowercased, and removed before the request reaches the provider. Defaults to ${DEFAULT_END_USER_HEADER}.`}
-            >
-              <Input
-                id="end-user-header"
-                value={authentication.end_user.header}
-                placeholder={DEFAULT_END_USER_HEADER}
-                className="max-w-[320px] font-mono text-xs"
-                disabled={readOnly}
-                onChange={(event) => state.updateEndUserHeader(event.target.value)}
-              />
-            </Field>
-          ) : null}
-        </CardContent>
-      </Card>
+        {authentication.type === "api_key" && authentication.end_user.source === "header" ? (
+          <Field
+            label="Header name"
+            htmlFor="end-user-header"
+            hint={`Lowercased, and removed before the request reaches the provider. Defaults to ${DEFAULT_END_USER_HEADER}.`}
+          >
+            <Input
+              id="end-user-header"
+              value={authentication.end_user.header}
+              placeholder={DEFAULT_END_USER_HEADER}
+              className="max-w-[320px] font-mono text-xs"
+              disabled={readOnly}
+              onChange={(event) => state.updateEndUserHeader(event.target.value)}
+            />
+            {headerIssue ? (
+              <p role="alert" className="text-xs text-destructive">
+                {authentication.end_user.header.trim() ? headerIssue.message : "Enter the header name."}
+              </p>
+            ) : null}
+          </Field>
+        ) : null}
+      </Level>
 
-      {source === "issuer" ? (
+      {source === "issuer" && !compact ? (
         <Card>
           <CardHeader>
             <SectionHeader
@@ -358,14 +420,16 @@ function UserAuthentication({
  * whatever claims the token must carry; choosing it opens the check that
  * writes them, right here, and choosing "any" drops them all.
  */
-function SubscriptionCheck({
+export function SubscriptionCheck({
   issuer,
-  readOnly,
+  readOnly = false,
   state,
+  compact = false,
 }: {
-  issuer: AuthConfig;
-  readOnly: boolean;
-  state: AppDraft;
+  issuer: IssuerDraft;
+  readOnly?: boolean;
+  state: Pick<DraftTransitions, "updateIssuer">;
+  compact?: boolean;
 }) {
   const reasonId = useId();
   const subscription = subscriptionOf(issuer);
@@ -380,40 +444,37 @@ function SubscriptionCheck({
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <SectionHeader
-          title="Subscription check"
-          description="Check that the user has paid for the app before they can call AI providers through this gateway."
-        />
-      </CardHeader>
-      <CardContent className="space-y-6">
-        {readOnly ? (
-          <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">
-            <ChoiceList
-              label="Subscription check"
-              choices={SUBSCRIPTION_CHOICES}
-              value={subscription}
-              disabled
-              describedBy={reasonId}
-              onChange={() => {}}
-            />
-          </DisabledReason>
-        ) : (
+    <Level
+      title="Subscription check"
+      description="Check that the user has paid for the app before they can call AI providers through this gateway."
+      compact={compact}
+      className="space-y-6"
+    >
+      {readOnly ? (
+        <DisabledReason reason={READ_ONLY_REASON} reasonId={reasonId} className="w-full">
           <ChoiceList
             label="Subscription check"
             choices={SUBSCRIPTION_CHOICES}
             value={subscription}
-            onChange={choose}
+            disabled
+            describedBy={reasonId}
+            onChange={() => {}}
           />
-        )}
+        </DisabledReason>
+      ) : (
+        <ChoiceList
+          label="Subscription check"
+          choices={SUBSCRIPTION_CHOICES}
+          value={subscription}
+          onChange={choose}
+        />
+      )}
 
-        {subscription === "paid" ? (
-          <div className="border-t pt-6">
-            <SubscriptionFields issuer={issuer} disabled={readOnly} onChange={state.updateIssuer} />
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
+      {subscription === "paid" ? (
+        <div className="border-t pt-6">
+          <SubscriptionFields issuer={issuer} disabled={readOnly} onChange={state.updateIssuer} />
+        </div>
+      ) : null}
+    </Level>
   );
 }

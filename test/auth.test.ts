@@ -4,15 +4,15 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { apiKeyCache } from "../src/core/apikeys";
-import { appAttestEnvironment } from "../src/core/appattest";
-import { pruneAuthChallenges } from "../src/core/auth-events";
-import { appConfigCache } from "../src/core/config";
+import { apiKeyCache } from "../src/client-auth/api-keys";
+import { appAttestEnvironment } from "../src/client-auth/app-attest";
+import { pruneAuthChallenges } from "../src/client-auth/auth-events";
+import { appConfigCache } from "../src/core/app-records";
 import {
   ENDPOINT_RATE_LIMITS,
   enforceEndpointRateLimit,
 } from "../src/core/endpoint-rate-limit";
-import { verifyGatewayToken } from "../src/core/jwt";
+import { verifyGatewayToken } from "../src/client-auth/gateway-token";
 import { database } from "../src/db";
 import { appApiKey, appUser } from "../src/db/schema";
 import app from "../src/index";
@@ -321,14 +321,31 @@ describe("issuer-backed API key exchange", () => {
 
   it("rejects unsupported token-exchange combinations clearly", async () => {
     await seedApp("attest-rejects-api-key");
-    const attest = await exchangeToken("attest-rejects-api-key", {
-      api_key: "agw_not-for-attest",
-      issuer_token: "unused",
-    });
+    const ctx = createExecutionContext();
+    const attest = await app.fetch(
+      new Request("https://example.test/v1/apps/attest-rejects-api-key/auth/token", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ api_key: "agw_not-for-attest", issuer_token: "unused" }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
     expect(attest.status).toBe(400);
     await expect(attest.json()).resolves.toMatchObject({
-      error: { code: "auth_method_not_supported" },
+      error: {
+        code: "auth_method_not_supported",
+        message: "API key token exchange is not supported for this app",
+      },
     });
+    // Refused before the attempt is attributed to App Attest: the body named
+    // the other exchange, and the row says neither was tried.
+    const event = await env.DB
+      .prepare("SELECT auth_method, outcome FROM app_auth_event WHERE app_id = ? ORDER BY id DESC LIMIT 1")
+      .bind("attest-rejects-api-key")
+      .first<{ auth_method: string | null; outcome: string }>();
+    expect(event).toEqual({ auth_method: null, outcome: "auth_method_not_supported" });
 
     const machineKey = await seedServerApp("machine-no-exchange");
     const machine = await exchangeToken("machine-no-exchange", {
@@ -350,7 +367,10 @@ describe("issuer-backed API key exchange", () => {
     });
     expect(attestBody.status).toBe(400);
     await expect(attestBody.json()).resolves.toMatchObject({
-      error: { code: "invalid_request", message: "api_key and issuer_token are required" },
+      error: {
+        code: "invalid_request",
+        message: "issuer_token: Invalid input: expected string, received undefined",
+      },
     });
   });
 });
@@ -366,6 +386,7 @@ describe("blocked App Attest users", () => {
       status: "blocked",
       attestKeyId: "registered-key",
       attestPublicKey: "not-used",
+      attestEnvironment: "production",
     });
     await env.DB.prepare(
       "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
@@ -442,7 +463,7 @@ describe("App Attest environments", () => {
 describe("withdrawing an App Attest environment", () => {
   async function seedRegisteredKey(
     appId: string,
-    attestEnvironment: "production" | "development" | null,
+    attestEnvironment: "production" | "development",
   ) {
     const fixture = await signingFixture(appId);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ keys: [fixture.publicJwk] }));
@@ -453,7 +474,7 @@ describe("withdrawing an App Attest environment", () => {
       id: "registered-user",
       attestKeyId: "registered-key",
       attestPublicKey: "not-used",
-      ...(attestEnvironment === null ? {} : { attestEnvironment }),
+      attestEnvironment,
     });
     await env.DB.prepare(
       "INSERT INTO app_auth_challenge(challenge, app_id, expires_at) VALUES (?, ?, datetime('now', '+5 minutes'))",
@@ -486,12 +507,12 @@ describe("withdrawing an App Attest environment", () => {
     });
   });
 
-  it("treats a key predating the recorded environment as production", async () => {
-    const response = await seedRegisteredKey("attest-env-legacy", null);
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.not.toMatchObject({
-      error: { message: "The registered App Attest environment is no longer allowed" },
-    });
+  it("never stores a key without the environment that attested it", async () => {
+    await seedApp("attest-env-missing");
+    await expect(env.DB.prepare(
+      `INSERT INTO app_user(app_id, id, attest_key_id, attest_public_key)
+       VALUES ('attest-env-missing', 'registered-user', 'registered-key', 'not-used')`,
+    ).run()).rejects.toThrow(/users_attest_key_check/u);
   });
 });
 
@@ -520,10 +541,9 @@ describe("App Attest challenge retention", () => {
   }
 
   it.each([
-    ["the minute trigger at scheduled UTC 03:17", "* * * * *", "2026-10-01T03:17:00Z"],
-    ["the legacy nightly trigger during rollout", "17 3 * * *", "2026-10-01T09:45:00Z"],
+    ["the nightly trigger", "17 3 * * *", "2026-10-01T03:17:00Z"],
   ] as const)("drops expired challenges from %s", async (_label, cron, scheduledAt) => {
-    const appId = `prune-challenges-${cron === "* * * * *" ? "minute" : "legacy"}`;
+    const appId = "prune-challenges-nightly";
     await seedChallenges(appId);
 
     const ctx = createExecutionContext();
@@ -675,7 +695,10 @@ describe("App Attest applications identified by installation", () => {
     });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
-      error: { code: "invalid_request", message: "issuer_token is required" },
+      error: {
+        code: "invalid_request",
+        message: "issuer_token: Invalid input: expected string, received undefined",
+      },
     });
   });
 });

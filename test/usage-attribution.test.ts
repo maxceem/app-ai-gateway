@@ -3,19 +3,15 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import prices from "../src/core/prices.json";
-import {
-  providerDescriptor,
-  providerModelAuthor,
-  PROVIDER_TYPES,
-  reportsCost,
-} from "../src/core/providers";
-import { wholeBody } from "../src/core/body-observer";
-import { hasModelPrice, isBillable, resolveModelAuthor } from "../src/core/pricing";
-import { observeResponse } from "../src/core/usage-readers";
+import prices from "../src/usage/prices.json";
+import { providerModelAuthor } from "../src/providers/provider-type";
+import { wholeBody } from "../src/usage/body-observer";
+import { hasModelPrice, isBillable, resolveModelAuthor } from "../src/usage/pricing";
+import { observeResponse } from "../src/usage/usage-readers";
 import { database } from "../src/db";
 import { provider } from "../src/db/schema";
 import { clearIsolateCaches, gatewayToken, seedApp, seedProvider } from "./helpers";
+import { providerDescriptor, PROVIDER_TYPES, reportsCost } from "../src/shared/providers";
 
 const APP_ID = "usage-attribution";
 const ORIGIN = "https://example.test";

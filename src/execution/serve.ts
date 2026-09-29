@@ -23,10 +23,10 @@
 
 import type { Context, Handler } from "hono";
 import { assertAccountAccess } from "../core/account-lifecycle";
-import { authenticateRequest } from "../core/app-auth";
-import { assertAppActive, loadApp } from "../core/config";
+import { authenticateRequest } from "../client-auth/client-auth";
+import { assertAppActive, loadApp } from "../core/app-records";
 import { GatewayError } from "../core/errors";
-import { organizationProviders } from "../core/provider-store";
+import { organizationProviders } from "../providers/provider-store";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RequestVariables } from "../middleware/request-scope";
 import { admitRequest } from "./admission";
@@ -65,7 +65,7 @@ async function authenticated(
   // organization set on its own users is consulted: an account that may not be
   // served has no claim on them.
   const deployment = c.get("deployment");
-  if (deployment.mode === "cloud") {
+  if (deployment.rules.accountDeadlines) {
     await assertAccountAccess(deployment, c.env, app.organizationId, "proxy");
   }
   assertAppActive(app);

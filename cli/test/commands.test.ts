@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import type { AppWrite } from "../../src/contracts/schemas.ts";
 import { operationPath } from "../../src/contracts/catalog.ts";
 import { parseAppConfig, selectedProviderPolicies } from "../../src/shared/app-config.ts";
-import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
+import { CliErrorDetailsSchema } from "../src/errors.ts";
 import { appDocument, appCommand, type AppResult } from "../src/apps.ts";
 import { resourceCommand } from "../src/resources.ts";
 import { deploymentCommand } from "../src/deployment.ts";
@@ -20,17 +20,18 @@ import {
   type CloudflareRequestOptions,
   type WranglerOptions,
 } from "../src/cloudflare.ts";
-import { StateStore, reserveOutput, type CliState, type InstallationJournal } from "../src/state.ts";
-import { Context } from "../src/context.ts";
+import { StateStore, type CliState, type InstallationJournal } from "../src/state.ts";
+import { Context, operationIdFor } from "../src/context.ts";
 import type { Flags } from "../src/parser.ts";
 import { CliError, fail } from "../src/common.ts";
-import { errorOf, hasCode, stubContext } from "./helpers.ts";
+import { errorOf, hasCode, stubContext, served } from "./helpers.ts";
+import type { ProviderType } from "../../src/shared/providers.ts";
 
 const server: AppWrite = {
   name: "Server",
   status: "active",
   config: parseAppConfig({
-    authentication: { type: "api_key" },
+    authentication: { type: "api_key", end_user: { source: "none" } },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   }),
 };
@@ -130,7 +131,7 @@ test("app remove supplies required confirmation query and full writes supply the
     call: async (name: string, options?: Record<string, unknown>) => {
       calls.push({ name, ...(options ? { options } : {}) });
       return {
-        data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null },
+        data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null },
       };
     },
   });
@@ -155,7 +156,7 @@ test("app remove supplies required confirmation query and full writes supply the
 const providerRow = (slug: string, type: string) => ({
   id: `p-${slug}`, slug, type, name: slug, secretHint: null, providerGatewayId: null,
   gatewayRoute: null, baseUrl: null, pricing: null, status: "active",
-  revision: 1, createdAt: "now", createdBy: "me",
+  revision: 1, createdAt: "now", createdBy: "me", ...served(type as ProviderType),
 });
 
 /** The example a command answered with, refused as a string by the union's other members. */
@@ -173,7 +174,7 @@ const snippetContext = (providers: ReturnType<typeof providerRow>[], app: AppWri
       if (name === "listProviders") return { data: { providers } };
       if (name === "listModelPrices")
         return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
-      return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+      return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null } };
     },
   });
 
@@ -227,17 +228,23 @@ test("creating a server app hands back the request to send, keyed from the file 
       if (name === "listProviders") return { data: { providers: [providerRow("openai", "openai")] } };
       if (name === "listModelPrices")
         return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
-      return { data: { app: created, resolved: null, config_error: null } };
+      return { data: { app: created, resolved: null } };
     },
-    keyOutput: async () => await reserveOutput(keyPath),
-    create: async () => ({
-      data: {
-        app: created,
-        resolved: null,
-        config_error: null,
-        api_key: { id: "key-1", key: "SENTINEL-KEY", name: "default", key_prefix: "agw_", created_at: "now" },
+    keyOperation: async () => ({
+      operation: {
+        result: {
+          app: created,
+          api_key: { id: "key-1", name: "default", key_prefix: "agw_", created_at: "now" },
+        },
       },
-      complete: async () => {},
+      key: {
+        id: "key-1",
+        name: "default",
+        key_prefix: "agw_",
+        created_at: "now",
+        storagePath: keyPath,
+        contentHash: "hash",
+      },
     }),
   });
   const result = await appCommand(ctx, "app add", [], { type: "server", name: "Server", "no-input": true });
@@ -287,37 +294,6 @@ test("each application type is offered only the snippet its callers can authenti
   assert.ok(swift.includes("request.httpBody = Data("));
 });
 
-test("app key failures revoke one-time credential before returning error", async () => {
-  const calls: string[] = [];
-  const ctx = stubContext({
-    call: async (name: string) => {
-      calls.push(name);
-      if (name === "getApp")
-        return { data: { app: { ...server, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
-      return { data: {} };
-    },
-    keyOutput: async () => ({
-      path: "/key",
-      write: async () => {
-        throw new Error("disk full");
-      },
-      cancel: async () => {},
-    }),
-    create: async () => ({
-      data: { id: "key-1", key: "SENTINEL", name: "CI", key_prefix: "agw_", created_at: "now" },
-      complete: async () => {},
-    }),
-    save: async () => {},
-  });
-  await assert.rejects(
-    () => appCommand(ctx, "app key add", ["app-1"], { name: "CI" }),
-    (error: unknown) =>
-      errorOf(error).code === "key_storage_failed" &&
-      errorOf(error).details?.["revoked"] === true,
-  );
-  assert.ok(calls.includes("revokeAppKey"));
-});
-
 test("provider canonical-origin reset can initiate a narrowly bound browser resubmission", async () => {
   let operation: { kind: string; payload: Record<string, unknown> } | undefined;
   const ctx = stubContext({
@@ -334,6 +310,7 @@ test("provider canonical-origin reset can initiate a narrowly bound browser resu
             gatewayRoute: null,
             baseUrl: "https://custom.example",
             pricing: null,
+            ...served("openai"),
             revision: 1,
             status: "active",
             createdAt: "now",
@@ -363,7 +340,7 @@ test("provider and gateway updates forward the revision that was listed", async 
   const provider = {
     id: "p1", slug: "openai", type: "openai", name: "OpenAI", secretHint: null,
     providerGatewayId: null, gatewayRoute: null, baseUrl: null, pricing: null,
-    revision: 7, status: "active", createdAt: "now", createdBy: "me",
+    revision: 7, status: "active", createdAt: "now", createdBy: "me", ...served("openai"),
   };
   const gateway = {
     id: "g1", type: "vercel", name: "Gateway", config: {}, secretHint: "safe",
@@ -467,7 +444,7 @@ test("setup refuses existing Worker name before any remote mutation", async () =
   assert.ok(cf.calls.every(([method]) => method === "GET"));
 });
 
-test("ready setup does not replay secrets or retired bootstrap credentials", async () => {
+test("ready setup changes nothing on Cloudflare", async () => {
   const cf = cfMock();
   cf.all = async () => [{ id: "existing" }] as never;
   cf.request = async () =>
@@ -482,25 +459,12 @@ test("ready setup does not replay secrets or retired bootstrap credentials", asy
     version: "0.1.0",
     phase: "ready",
     url: "https://existing.example",
-    // What an installation completed by an earlier release left in the journal.
-    secrets: {
-      JWT_SECRET: "SENTINEL-JWT",
-      BETTER_AUTH_SECRET: "SENTINEL-AUTH",
-      SECRET_VAULT_LOCAL_KEK_V1: "SENTINEL-KEK",
-    },
   };
   let publicCalls = 0;
-  const adopted: [string, string | undefined][] = [];
   const ctx = stubContext({
     state: { installations: { "deployment-1": journal } },
     url: "https://other.example",
     save: async () => {},
-    store: {
-      vaultKey: async (id: string, adopt?: string) => {
-        adopted.push([id, adopt]);
-        return adopt ?? "generated";
-      },
-    },
     publicCall: async (name: string, options: { url?: string }) => {
       publicCalls++;
       assert.equal(name, "getCliCapabilities");
@@ -518,10 +482,6 @@ test("ready setup does not replay secrets or retired bootstrap credentials", asy
   assert.equal("installed" in result && result.installed, true);
   assert.equal(publicCalls, 1);
   assert.equal(cf.calls.length, 0);
-  // The vault key moves to its own file; the auth secrets leave state for good.
-  assert.deepEqual(adopted, [["deployment-1", "SENTINEL-KEK"]]);
-  assert.equal(journal.secrets, undefined);
-  assert.equal(JSON.stringify(ctx.state).includes("SENTINEL"), false);
 });
 
 test("journal-backed deployment updates refuse a replaced Cloudflare Worker", async () => {
@@ -611,12 +571,12 @@ test("domain changes cannot implicitly upgrade or downgrade the gateway code", a
   assert.equal(journal.version, "0.1.0");
 });
 
-test("explicit key output resumes after durable response and disk failure without minting again", async (t) => {
+test("explicit key output resumes after a disk failure without minting again", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-recovery-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new StateStore(dir);
   const state: CliState = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     operations: {},
     active: {
       url: "https://example.com",
@@ -632,22 +592,29 @@ test("explicit key output resumes after durable response and disk failure withou
     },
   };
   let posts = 0;
+  const tokens = new Set<string>();
   const transport = {
     request: async (
       _url: string,
       path: string,
-      options: { method?: string } = {},
+      options: { method?: string; body?: unknown } = {},
     ) => {
-      if (options.method === "POST") {
+      if (path.endsWith("/operations")) {
         posts++;
+        const token = (options.body as { token: string }).token;
+        tokens.add(token);
+        // The deployment answers the same token with the key it sealed.
         return {
           data: {
-            id: "key-1",
-            key: "SENTINEL-KEY",
-            name: "CI",
-            key_prefix: "agw_",
-            created_at: "now",
-          }
+            id: operationIdFor(token),
+            kind: "app.key.add",
+            state: "completed",
+            expiresAt: "2030-01-01T00:00:00.000Z",
+            deployment: { id: "d", mode: "cloud", apiUrl: "https://example.com", consoleOrigin: "https://example.com" },
+            result: {
+              api_key: { id: "key-1", key: "SENTINEL-KEY", name: "CI", key_prefix: "agw_", created_at: "now" },
+            },
+          },
         };
       }
       if (path.endsWith("/keys"))
@@ -670,22 +637,27 @@ test("explicit key output resumes after durable response and disk failure withou
         data: {
           app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
           resolved: null,
-          config_error: null,
         }
       };
     },
   };
   const outputPath = join(dir, "explicit.key");
   await store.write(state);
-  const ctx = new Context(store, state, transport, {});
-  const originalOutput = ctx.keyOutput.bind(ctx);
-  ctx.keyOutput = async (...args: Parameters<Context["keyOutput"]>) => {
-    const output = await originalOutput(...args);
-    output.write = async () => {
-      throw new Error("disk full");
-    };
-    return output;
+  const failing = {
+    ...store,
+    write: store.write.bind(store),
+    reserve: store.reserve.bind(store),
+    vaultKey: store.vaultKey.bind(store),
+    directory: store.directory,
+    keyOutput: async (...args: Parameters<StateStore["keyOutput"]>) => {
+      const output = await store.keyOutput(...args);
+      output.write = async () => {
+        throw new Error("disk full");
+      };
+      return output;
+    },
   };
+  const ctx = new Context(failing, state, transport, {});
   await assert.rejects(
     () =>
       appCommand(ctx, "app key add", ["app-1"], {
@@ -695,31 +667,32 @@ test("explicit key output resumes after durable response and disk failure withou
     hasCode("key_output_pending"),
   );
   assert.equal(posts, 1);
+  // The key was never written locally, so the failed run left no plaintext.
+  assert.equal(JSON.stringify(await store.read()).includes("SENTINEL"), false);
   const resumed = new Context(store, await store.read(), transport, {});
   const result = await appCommand(resumed, "app key add", ["app-1"], {
     name: "CI",
     "key-output": outputPath,
   });
-  assert.equal(posts, 1);
+  // One operation throughout: the same token, answered with the same key.
+  assert.equal(tokens.size, 1);
   assert.equal(await readFile(outputPath, "utf8"), "SENTINEL-KEY\n");
   assert.equal(JSON.stringify(result).includes("SENTINEL"), false);
-  assert.equal(
-    Object.values((await store.read()).mutations ?? {})[0]?.response,
-    undefined,
-  );
+  assert.equal(JSON.stringify(await store.read()).includes("SENTINEL"), false);
+  const sent = posts;
   await appCommand(resumed, "app key add", ["app-1"], {
     name: "CI",
     "key-output": outputPath,
   });
-  assert.equal(posts, 1);
+  assert.equal(posts, sent);
 });
 
-test("a refused key creation releases both its receipt and its reserved output", async (t) => {
+test("a refused key creation releases both its record and its reserved output", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-refused-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new StateStore(dir);
   const state: CliState = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     operations: {},
     active: {
       url: "https://example.com",
@@ -735,35 +708,38 @@ test("a refused key creation releases both its receipt and its reserved output",
     },
   };
   let posts = 0;
-  const authorizations: unknown[] = [];
+  const tokens: string[] = [];
   const transport = {
     request: async (
       _url: string,
-      _path: string,
-      options: { method?: string; headers?: Record<string, string> } = {},
+      path: string,
+      options: { method?: string; body?: unknown } = {},
     ) => {
-      if (options.method === "POST") {
+      if (path.endsWith("/operations")) {
         posts++;
-        authorizations.push(options.headers?.["Idempotency-Key"]);
+        const token = (options.body as { token: string }).token;
+        tokens.push(token);
         if (posts === 1)
           fail("invalid_input", "Key name is already in use.", undefined, 3, {
             status: 400,
           });
         return {
           data: {
-            id: "key-1",
-            key: "SENTINEL-KEY",
-            name: "CI",
-            key_prefix: "agw_",
-            created_at: "now",
-          }
+            id: operationIdFor(token),
+            kind: "app.key.add",
+            state: "completed",
+            expiresAt: "2030-01-01T00:00:00.000Z",
+            deployment: { id: "d", mode: "cloud", apiUrl: "https://example.com", consoleOrigin: "https://example.com" },
+            result: {
+              api_key: { id: "key-1", key: "SENTINEL-KEY", name: "CI", key_prefix: "agw_", created_at: "now" },
+            },
+          },
         };
       }
       return {
         data: {
           app: { ...server, id: "app-1", revision: 1, created_at: "now", updated_at: "now" },
           resolved: null,
-          config_error: null,
         }
       };
     },
@@ -779,7 +755,7 @@ test("a refused key creation releases both its receipt and its reserved output",
       }),
     hasCode("invalid_input"),
   );
-  assert.equal((await store.read()).mutations, undefined);
+  assert.deepEqual((await store.read()).operations, {});
   // The reservation was made before the request and holds nothing, so leaving
   // it would make the corrected command fail on a file the CLI itself wrote.
   await assert.rejects(() => stat(outputPath));
@@ -789,7 +765,7 @@ test("a refused key creation releases both its receipt and its reserved output",
     name: "CI",
     "key-output": outputPath,
   });
-  assert.notEqual(authorizations[0], authorizations[1]);
+  assert.notEqual(tokens[0], tokens[1]);
   assert.equal(await readFile(outputPath, "utf8"), "SENTINEL-KEY\n");
   assert.equal(JSON.stringify(result).includes("SENTINEL"), false);
 });
@@ -1034,7 +1010,7 @@ test("app snippet names the deployment's API host, not the managed URL", async (
     },
     call: async (name: string) => {
       if (name === "getApp")
-        return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null, config_error: null } };
+        return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null } };
       if (name === "listModelPrices")
         return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
       return { data: { providers: [{ id: "p-1", slug: "openai", type: "openai", status: "active" }] } };
@@ -1341,7 +1317,7 @@ test("the warming retry backs off, gives up, and knows which failures to repeat"
   }
 });
 
-test("a bootstrap that only says 'not yet' is retried on the same proofs", async (t) => {
+test("a bootstrap that only says 'not yet' is retried on the same token", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "agw-warming-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const releaseDir = join(dir, "artifact");
@@ -1349,13 +1325,17 @@ test("a bootstrap that only says 'not yet' is retried on the same proofs", async
   const { run, bodies } = await freshInstall(dir, releaseDir, (attempt) => {
     if (attempt === 1)
       throw new CliError("internal_error", "Internal server error", "wait", 3, { status: 500 });
-    return { deployment: { id: "deployment-1" }, account: { id: "private-1" } };
+    return {
+      deployment: { id: "deployment-1" },
+      account: { id: "private-1" },
+      result: { credential: { token: "management" } },
+    };
   });
   const result = await run;
   assert.equal("installed" in result && result.installed, true);
   assert.equal(bodies.length, 2);
   // Retried unchanged, which is the whole reason retrying is safe: the same
-  // proofs name the same account, however many times they arrive.
+  // token names the same account, however many times it arrives.
   assert.equal(new Set(bodies.map((body) => JSON.stringify(body))).size, 1);
 });
 

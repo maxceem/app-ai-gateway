@@ -6,13 +6,12 @@
  * never describe a wire shape the gateway has moved. Type-only, so the console
  * bundle gains nothing at runtime.
  *
- * The one shape still written here is the editor's view of an application,
- * whose configuration model lives in `./config-types` because it is a form,
- * not a wire format.
+ * The one shape still written here is the body the editor saves, whose
+ * configuration model lives in `./config-types` because it is a form, not a
+ * wire format.
  */
 import type { AppConfigDraft } from "./config-types";
-import type { AppConfig } from "@shared/app-config";
-import type { AppResponse as WireAppResponse, CreatedApiKey } from "@contracts/responses";
+import type { AppResponse as WireAppResponse, CreatedAppResponse } from "@contracts/responses";
 
 export type {
   ApiKeyListResponse,
@@ -20,6 +19,7 @@ export type {
   AppSummary,
   AuthEvent,
   AuthEventSummary,
+  RejectionEvent,
   BreakdownResponse,
   BreakdownRow,
   CreatedApiKey,
@@ -82,9 +82,6 @@ export type CreatedManagementKey = CreatedManagementKeyResponse["key"];
 
 export type ProviderGateway = ProviderGatewaySummary;
 export type ProviderGatewayType = ProviderGatewaySummary["type"];
-export type CfAigConfig = Extract<ProviderGatewaySummary, { type: "cf_aig" }>["config"];
-/** Vercel's origin is fixed in adapter code, so its config is empty. */
-export type VercelGatewayConfig = Extract<ProviderGatewaySummary, { type: "vercel" }>["config"];
 
 export type ProviderCredential = ProviderSummary;
 
@@ -106,31 +103,9 @@ export type AuthEventsResponse = AuthEventList;
 export type AuthOutcomeBucket = AuthEventSummary["daily"][number];
 export type UsageFailureBucket = AuthEventSummary["usage_failures"][number];
 
-/**
- * An application as the editor holds it.
- *
- * Everything except `config` comes straight from the API's own `AppResponse`.
- * `config` is the console's model — see `./config-types` — because the editor
- * works on partially filled forms and named draft states the wire format has
- * no vocabulary for. It is the one shape here that is deliberately not the
- * contract's, and `client-api.ts` is where the two meet.
- */
-type AppMetadata = Omit<WireAppResponse["app"], "config">;
-export type AppRow = AppMetadata & { config: AppConfig };
-
-export interface ValidAppResponse {
-  kind: "valid";
-  app: AppRow;
-  config_error: null;
-}
-
-export interface InvalidAppResponse {
-  kind: "invalid";
-  app: AppMetadata & { config: Record<string, unknown> };
-  config_error: string;
-}
-
-export type AppResponse = ValidAppResponse | InvalidAppResponse;
+/** An application as a read, a create or an update answers with it. */
+export type AppResponse = WireAppResponse;
+export type AppRow = WireAppResponse["app"];
 
 export interface AppUpsertBody {
   name: string;
@@ -148,7 +123,7 @@ export type AppCreateBody = AppUpsertBody;
  * A create answers with the application itself, exactly as a read or an update
  * does, plus the one-time key an API-key application is born with.
  */
-export type CreatedApp = ValidAppResponse & { api_key: CreatedApiKey | null };
+export type CreatedApp = CreatedAppResponse;
 
 /**
  * The optional billing service's contract.

@@ -420,7 +420,7 @@ export async function resultOf<T>(
  * mismatch that no amount of waiting repairs, and that one carries no status.
  *
  * Distinct from `RETRYABLE_STATUS` in context.ts, which answers a different
- * question — whether a *receipt* survives a refusal — and deliberately includes
+ * question — whether an operation's record survives a refusal — and deliberately includes
  * 429, which must stop this loop rather than restart it.
  */
 function transient(error: unknown): boolean {
@@ -441,9 +441,9 @@ function transient(error: unknown): boolean {
  * first request that does touch storage is the one that meets the gap, and it
  * needs a wait of its own.
  *
- * Only for a request that is idempotent by its own stored proofs: a retry here
+ * Only for a request that is idempotent by its own stored token: a retry here
  * re-sends a request whose outcome is unknown, and nothing but the deployment's
- * own receipt keeps that from creating a second thing.
+ * own operation record keeps that from creating a second thing.
  *
  * Backing off rather than polling flat, and bounded at six attempts: the
  * window this is waiting out is measured in seconds, so a deployment still

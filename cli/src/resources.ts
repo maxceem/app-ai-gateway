@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import type { z } from "zod";
 import { checkOperatorBaseUrl } from "../../src/core/origin-guard.ts";
 import {
   HandoffProviderAddPayloadSchema,
@@ -14,8 +15,7 @@ import {
 } from "../../src/contracts/schemas.ts";
 import type {
   CliCapabilitiesResponse,
-  CliOperationResponse,
-  CliPollResponse,
+  CliOperation,
 } from "../../src/contracts/cli.ts";
 import type {
   ProviderDeleteResponse,
@@ -27,6 +27,13 @@ import type {
   ProviderResponse,
   ProviderSummary,
 } from "../../src/contracts/responses.ts";
+import {
+  GATEWAY_DESCRIPTORS,
+  GATEWAY_TYPES,
+  gatewayBody,
+  gatewayTypeForCliName,
+  isGatewayType,
+} from "../../src/shared/gateways.ts";
 import { fail, validate } from "./common.ts";
 import type { Context } from "./context.ts";
 import { confirm, prompt, secret } from "./input.ts";
@@ -34,7 +41,7 @@ import type { Flags } from "./parser.ts";
 
 /** A provider type as `agw provider types` reports it. */
 export type ProviderCapability = CliCapabilitiesResponse["providers"][number];
-/** A gateway type, with `cf_aig` spelled the way the `--type` flag takes it. */
+/** A gateway type, spelled the way the `--type` flag takes it. */
 export type GatewayCapability = { type: string; name: string };
 
 export type ResourceResult =
@@ -48,8 +55,7 @@ export type ResourceResult =
   | ProviderGatewayResponse
   | ProviderDeleteResponse
   | ProviderGatewayDeleteResponse
-  | CliOperationResponse
-  | CliPollResponse;
+  | CliOperation;
 
 export async function jsonFile(path: string): Promise<unknown> {
   try {
@@ -92,22 +98,25 @@ export async function resolveGateway(
   return value;
 }
 
-/** A provider create body, before the contract has judged it. */
-interface ProviderDraft {
-  type: string;
-  name: string;
-  slug: string;
-  providerGatewayId?: string;
-  baseUrl?: string;
-  pricing?: unknown;
-  gatewayRoute?: unknown;
-  secret?: string;
-}
+/**
+ * A provider create body before the contract has judged it: the contract's own
+ * fields, holding whatever the flags and files supplied. `validate` is what
+ * turns it into a body.
+ */
+type ProviderDraft = { [Field in keyof z.input<typeof ProviderCreateRequestSchema>]?: unknown };
 
-/** A gateway create body, before its token and the contract have joined it. */
-type GatewayDraft =
-  | { type: "cf_aig"; name: string; accountId: string; gatewayId: string }
-  | { type: "vercel"; name: string };
+/**
+ * The flag each gateway connection field is read from, by the field's key in
+ * its descriptor. A connection field with no flag here cannot be supplied from
+ * a terminal, which `provider-gateway add` reports rather than prompting for.
+ */
+const CONNECTION_FLAGS: Readonly<Record<string, StringFlag>> = {
+  accountId: "cloudflare-account-id",
+  gatewayId: "gateway-id",
+};
+
+/** Every `--type` name a gateway can be added with. */
+const GATEWAY_CLI_NAMES = GATEWAY_TYPES.map((type) => GATEWAY_DESCRIPTORS[type].cliName);
 
 export async function resourceCommand(
   ctx: Context,
@@ -122,7 +131,9 @@ export async function resourceCommand(
     return gateway
       ? data.providerGateways.map((entry) => ({
           ...entry,
-          type: entry.type === "cf_aig" ? "cloudflare" : entry.type,
+          type: isGatewayType(entry.type)
+            ? GATEWAY_DESCRIPTORS[entry.type].cliName
+            : entry.type,
         }))
       : data.providers;
   }
@@ -163,28 +174,31 @@ export async function resourceCommand(
     const type = await required(
       flags,
       "type",
-      gateway ? "Gateway type (cloudflare or vercel)" : "Provider type",
+      gateway ? `Gateway type (${GATEWAY_CLI_NAMES.join(" or ")})` : "Provider type",
     );
     if (gateway) {
-      if (!["cloudflare", "vercel"].includes(type))
-        fail("invalid_input", "Gateway type must be cloudflare or vercel.");
-      if (
-        type === "vercel" &&
-        (flags["cloudflare-account-id"] || flags["gateway-id"])
-      )
+      const gatewayType = gatewayTypeForCliName(type);
+      if (gatewayType === undefined)
+        fail("invalid_input", `Gateway type must be ${GATEWAY_CLI_NAMES.join(" or ")}.`);
+      const descriptor = GATEWAY_DESCRIPTORS[gatewayType];
+      const fields = descriptor.connectionFields.map((field) => {
+        const flag = CONNECTION_FLAGS[field.key];
+        if (flag === undefined)
+          fail("unsupported_type", `This CLI cannot supply ${field.label} for a ${descriptor.label}.`);
+        return { key: field.key, flag };
+      });
+      const foreign = Object.values(CONNECTION_FLAGS).filter(
+        (flag) => flags[flag] && !fields.some((field) => field.flag === flag),
+      );
+      if (foreign.length > 0)
         fail(
           "conflicting_flags",
-          "Vercel gateways do not accept Cloudflare account or gateway IDs.",
+          `${descriptor.label} connections do not accept ${foreign.map((flag) => `--${flag}`).join(" or ")}.`,
         );
-      const draft: GatewayDraft =
-        type === "cloudflare"
-          ? {
-              type: "cf_aig",
-              name: flags.name ?? "Cloudflare AI Gateway",
-              accountId: await required(flags, "cloudflare-account-id"),
-              gatewayId: await required(flags, "gateway-id"),
-            }
-          : { type: "vercel", name: flags.name ?? "Vercel AI Gateway" };
+      // One at a time: a missing value is prompted for, in the descriptor's order.
+      const connection: Record<string, string> = {};
+      for (const field of fields) connection[field.key] = await required(flags, field.flag);
+      const draft = gatewayBody(gatewayType, connection, { name: flags.name ?? descriptor.label });
       validate(ProviderGatewayCreateRequestSchema, {
         ...draft,
         token: "validation-placeholder",
@@ -196,10 +210,9 @@ export async function resourceCommand(
         body = validate(ProviderGatewayCreateRequestSchema, { ...draft, token });
       await ctx.bootstrap();
       if (flags.browser)
-        return ctx.operation("provider-gateway.add", { ...draft });
-      const created = await ctx.create("createProviderGateway", { body: body! });
-      await created.complete();
-      return created.data;
+        return ctx.operation("provider-gateway.add", { ...draft }, { browser: true });
+      const created = await ctx.operation("provider-gateway.add", body!);
+      return { gateway: created.result!.gateway! };
     }
     if (
       flags["provider-gateway"] &&
@@ -234,16 +247,15 @@ export async function resourceCommand(
     const value = !draft.providerGatewayId
       ? await secret(flags, `${type} API key`)
       : undefined;
-    await assertSupportedType(ctx, false, draft.type);
+    await assertSupportedType(ctx, false, type);
     if (value) draft.secret = value;
     let body: ProviderCreateRequest | undefined;
     if (!flags.browser) body = validate(ProviderCreateRequestSchema, draft);
     await ctx.bootstrap();
     if (flags.browser)
-      return ctx.operation("provider.add", validate(HandoffProviderAddPayloadSchema, draft));
-    const created = await ctx.create("createProvider", { body: body! });
-    await created.complete();
-    return created.data;
+      return ctx.operation("provider.add", validate(HandoffProviderAddPayloadSchema, draft), { browser: true });
+    const created = await ctx.operation("provider.add", body!);
+    return { provider: created.result!.provider! };
   }
   if (action === "rotate-key") {
     if (gateway) {

@@ -38,9 +38,9 @@ export function recordFromEntries<T>(entries: Iterable<readonly [string, T]>): R
  *
  * `null` rather than a boolean guard because almost every caller wants the
  * narrowed value; {@link recordOr} is the same test where an absent object and
- * an empty one mean the same thing. `plainObject` in `endpointrules.ts` stays a
- * type *predicate* on purpose — the deep merge narrows two values at once, which
- * a returned value cannot express.
+ * an empty one mean the same thing. `plainObject` in
+ * `src/execution/endpoint-rules.ts` stays a type *predicate* on purpose — the
+ * deep merge narrows two values at once, which a returned value cannot express.
  */
 export function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)

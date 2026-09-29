@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Select,
@@ -23,7 +24,8 @@ import { StatCard } from "@/components/stat-card";
 import { AuthOutcomeBadge } from "@/components/status-badge";
 import { foldOutcomes } from "@/lib/auth-events";
 import { formatDateTime, formatDuration, formatNumber, formatPercent } from "@/lib/format";
-import { useAuthEventSummary, useAuthEvents } from "@/lib/queries";
+import { useAuthEventSummary, useAuthEvents, useRejectionEvents } from "@/lib/queries";
+import { REJECTION_REASONS, REJECTION_SCOPES } from "@shared/rejection-reasons";
 
 const OUTCOME_FILTERS = [
   "issuer_claims_missing",
@@ -38,12 +40,23 @@ export function ErrorsTab({ appId }: { appId: string }) {
   const [days, setDays] = useState("30");
   const [outcome, setOutcome] = useState<string>("all");
   const [cursors, setCursors] = useState<number[]>([]);
+  const [rejectionReason, setRejectionReason] = useState("all");
+  const [rejectionScope, setRejectionScope] = useState("all");
+  const [rejectionUser, setRejectionUser] = useState("");
+  const [rejectionCursors, setRejectionCursors] = useState<number[]>([]);
 
   const summary = useAuthEventSummary(appId, Number(days));
   const events = useAuthEvents(appId, {
     limit: 25,
     outcome: outcome === "all" ? undefined : outcome,
     before_id: cursors.at(-1),
+  });
+  const rejections = useRejectionEvents(appId, {
+    limit: 25,
+    reason: REJECTION_REASONS.find((value) => value === rejectionReason),
+    scope: REJECTION_SCOPES.find((value) => value === rejectionScope),
+    user: rejectionUser || undefined,
+    before_id: rejectionCursors.at(-1),
   });
 
   const outcomes = useMemo(() => foldOutcomes(summary.data), [summary.data]);
@@ -81,7 +94,7 @@ export function ErrorsTab({ appId }: { appId: string }) {
         <CardHeader className="pt-6">
           <SectionHeader
             title="Failures by cause"
-            description="Refused authentication attempts and non-ok proxied requests, busiest first."
+            description="Authentication failures, provider errors, and sampled pre-provider refusals, busiest first. Sample counts are not exact request totals."
             action={<RangePicker value={days} onChange={setDays} />}
           />
         </CardHeader>
@@ -107,14 +120,21 @@ export function ErrorsTab({ appId }: { appId: string }) {
               </TableHeader>
               <TableBody>
                 {outcomes.map((row) => (
-                  <TableRow key={`${row.outcome}-${row.reason ?? ""}`}>
+                  <TableRow key={`${row.outcome}-${row.reason ?? ""}-${row.sampled}`}>
                     <TableCell>
                       <AuthOutcomeBadge outcome={row.outcome} />
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {row.reason ?? "—"}
                     </TableCell>
-                    <TableCell className="tabular text-right">{formatNumber(row.total)}</TableCell>
+                    <TableCell className="tabular text-right">
+                      {formatNumber(row.total)}
+                      {row.sampled ? (
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          {row.total === 1 ? "sample" : "samples"}
+                        </span>
+                      ) : null}
+                    </TableCell>
                     <TableCell className="tabular text-right">{formatNumber(row.days.length)}</TableCell>
                     <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
                       {/* `days` is already ascending, so the last entry is the
@@ -126,6 +146,142 @@ export function ErrorsTab({ appId }: { appId: string }) {
               </TableBody>
             </Table>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="py-0">
+        <CardHeader className="pt-6">
+          <SectionHeader
+            title="Recent refusal samples"
+            description="Requests stopped before a provider call. At most one sample per identity per minute; this is diagnostic history, not an exact count."
+          />
+          <div className="flex flex-wrap gap-2 pt-3">
+            <Select
+              value={rejectionReason}
+              onValueChange={(value) => {
+                setRejectionReason(value);
+                setRejectionCursors([]);
+              }}
+            >
+              <SelectTrigger className="w-[190px]" size="sm" aria-label="Refusal reason">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All reasons</SelectItem>
+                <SelectItem value="blocked_app_rate">App rate limit</SelectItem>
+                <SelectItem value="blocked_app_budget">App budget</SelectItem>
+                <SelectItem value="blocked_billing">Account allowance</SelectItem>
+                <SelectItem value="blocked_user">Blocked user</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={rejectionScope}
+              onValueChange={(value) => {
+                setRejectionScope(value);
+                setRejectionCursors([]);
+              }}
+            >
+              <SelectTrigger className="w-[150px]" size="sm" aria-label="Refusal scope">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All scopes</SelectItem>
+                <SelectItem value="user">User</SelectItem>
+                <SelectItem value="app">App</SelectItem>
+                <SelectItem value="account">Account</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              className="h-8 w-[190px]"
+              aria-label="Refusal user ID"
+              placeholder="User ID"
+              value={rejectionUser}
+              onChange={(event) => {
+                setRejectionUser(event.target.value);
+                setRejectionCursors([]);
+              }}
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="px-0 pb-0">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>When</TableHead>
+                <TableHead>User / API key</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead>Scope</TableHead>
+                <TableHead>Attempted route</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead className="text-right">Latency</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rejections.isPending ? (
+                <TableRow>
+                  <TableCell colSpan={8}><Skeleton className="h-8 w-full" /></TableCell>
+                </TableRow>
+              ) : rejections.isError ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                    Could not load refusal samples. {" "}
+                    <Button variant="outline" size="sm" onClick={() => void rejections.refetch()}>
+                      Retry
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ) : rejections.data?.events.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                    No refusal samples.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rejections.data?.events.map((event) => (
+                  <TableRow key={event.id}>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                      {formatDateTime(event.created_at)}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {event.user_id ?? event.api_key_id ?? "—"}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{event.reason}</TableCell>
+                    <TableCell className="text-xs">{event.scope ?? "unknown"}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {event.endpoint_slug ?? event.route ?? "—"}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{event.model ?? "—"}</TableCell>
+                    <TableCell className="font-mono text-xs">{event.app_version ?? "—"}</TableCell>
+                    <TableCell className="text-right text-xs tabular">
+                      {event.latency_ms === null ? "—" : `${formatNumber(event.latency_ms)} ms`}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+          <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rejections.isFetching || rejectionCursors.length === 0}
+              onClick={() => setRejectionCursors((current) => current.slice(0, -1))}
+            >
+              Newer
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rejections.isFetching || !rejections.data?.next_before_id}
+              onClick={() => setRejectionCursors((current) => [
+                ...current,
+                rejections.data!.next_before_id as number,
+              ])}
+            >
+              Older
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

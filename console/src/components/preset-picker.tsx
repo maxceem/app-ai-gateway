@@ -126,8 +126,6 @@ export function PresetPicker<T extends Preset>({
  * The two bring-your-own presets — a custom issuer, a custom claim — name no
  * vendor, so they lead with braces: the glyph for a token you bring yourself,
  * in the row's own colour rather than a brand's, because there is no brand.
- * Only "no entitlement check" is text alone, since it is an absence rather
- * than something to bring.
  */
 export function PresetName({ preset, className }: { preset: Preset; className?: string }) {
   return (

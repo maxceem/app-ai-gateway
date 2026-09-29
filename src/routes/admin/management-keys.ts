@@ -1,8 +1,5 @@
 import { Hono } from "hono";
 import { identityAuthFor } from "../../auth/identity";
-import { ManagementKeyCreateRequestSchema } from "../../contracts/schemas";
-import { schemaBody } from "../../management/validation";
-import { jsonBody } from "./body";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
@@ -31,11 +28,11 @@ routes.handle("listManagementKeys", async (c) => {
   return { keys };
 });
 
-routes.handle("createManagementKey", async (c) => {
+routes.handle("createManagementKey", async (c, { actor, body }) => {
   const key = await (await identityAuthFor(c)).service.createApiKey({
     actor: c.get("authState"),
-    organizationId: c.get("actor").organizationId,
-    name: schemaBody(ManagementKeyCreateRequestSchema, await jsonBody(c)).name,
+    organizationId: actor.organizationId,
+    name: body.name,
   });
   return { key };
 });

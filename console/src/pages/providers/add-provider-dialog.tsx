@@ -16,7 +16,8 @@ import { Field } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
 import { ApiError } from "@/lib/api";
-import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import { providerLabel, type Provider } from "@/lib/config-types";
+import { PROVIDER_TYPES } from "@shared/providers";
 import { testOutcome, type TestOutcome } from "@/lib/provider-probe";
 import {
   useCreateProvider,
@@ -178,7 +179,7 @@ export function AddProviderDialog({
       // The plaintext leaves component state and the mutation cache immediately;
       // the server never returns it again.
       close();
-      toast.success(`Added ${PROVIDER_LABELS[type]}`);
+      toast.success(`Added ${providerLabel(type)}`);
     } catch (error) {
       // Everything but the credential survives, so the operator only retypes
       // the one field the failure could have burned.
@@ -239,7 +240,7 @@ export function AddProviderDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {PROVIDERS.map((entry) => (
+                {PROVIDER_TYPES.map((entry) => (
                   <SelectItem key={entry} value={entry}>
                     <ProviderName type={entry} />
                   </SelectItem>

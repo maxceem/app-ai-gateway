@@ -31,12 +31,12 @@ const GROWTH_ACCESS: BillingAccess = {
 };
 
 const QUOTA: OrganizationQuota = {
-  periodId: "free:2026-09-08T03:15:00.000Z",
-  periodStart: "2026-09-08T03:15:00.000Z",
-  periodEnd: "2026-10-08T03:15:00.000Z",
+  periodId: "2026-09",
+  periodStart: "2026-09-01T00:00:00.000Z",
+  periodEnd: "2026-10-01T00:00:00.000Z",
   used: 120,
   limit: 1000,
-  resetAt: "2026-10-08T03:15:00.000Z",
+  resetAt: "2026-10-01T00:00:00.000Z",
 };
 
 /** The same allowance with a different amount of it spent. */
@@ -50,7 +50,6 @@ function renderInsideApp(route = "/apps/app-1/overview", status = "active") {
     "/v1/admin/apps/app-1": {
       body: {
         app: { id: "app-1", name: "My app", status, config: {} },
-        config_error: null,
       },
     },
   });

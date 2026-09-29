@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   ENTITLEMENT_PRESETS,
   ISSUER_PRESETS,
-  buildEntitlement,
   buildIssuer,
   REVENUECAT_CLAIM_PATH,
   matchIssuerPreset,
@@ -10,6 +9,7 @@ import {
   revenueCatClaim,
   revenueCatEntitlement,
 } from "./presets";
+import type { IssuerDraft } from "./config-types";
 
 describe("issuer presets", () => {
   // Builders run on the first render of the create dialog, before any field has
@@ -22,10 +22,6 @@ describe("issuer presets", () => {
       expect(typeof fragment.issuer, preset.id).toBe("string");
       expect(typeof fragment.audience, preset.id).toBe("string");
       expect(fragment.user_id_claim, preset.id).toBe("sub");
-    }
-    for (const preset of ENTITLEMENT_PRESETS) {
-      expect(() => buildEntitlement(preset, {}), preset.id).not.toThrow();
-      expect(buildEntitlement(preset, {}), preset.id).toEqual([]);
     }
   });
 
@@ -79,9 +75,16 @@ describe("mergeClaims", () => {
 });
 
 describe("matchIssuerPreset", () => {
+  /** A whole issuer block around the three scoping fields, naming no provider unless told to. */
+  const block = (fields: Pick<IssuerDraft, "jwks_url" | "issuer" | "audience" | "provider">): IssuerDraft => ({
+    user_id_claim: "sub",
+    required_claims: [],
+    max_token_lifetime_seconds: 86400,
+    ...fields,
+  });
   const stored = (preset: string, values: Record<string, string>) => {
     const fragment = buildIssuer(ISSUER_PRESETS.find((entry) => entry.id === preset)!, values);
-    return { jwks_url: fragment.jwks_url, issuer: fragment.issuer, audience: fragment.audience };
+    return block({ jwks_url: fragment.jwks_url, issuer: fragment.issuer, audience: fragment.audience });
   };
 
   it("recovers the preset and inputs every vendor preset wrote", () => {
@@ -101,22 +104,22 @@ describe("matchIssuerPreset", () => {
   it("trusts the provider the block names, even before its inputs are complete", () => {
     // Half-typed on the Auth policy page: the form must reopen on Auth0 with
     // the audience kept, not guess custom because the domain is still empty.
-    const found = matchIssuerPreset({
+    const found = matchIssuerPreset(block({
       provider: "auth0",
       jwks_url: "https:///.well-known/jwks.json",
       issuer: "https:///",
       audience: "https://api.my-app.com",
-    });
+    }));
     expect(found.preset.id).toBe("auth0");
     expect(found.values).toEqual({ domain: "", audience: "https://api.my-app.com" });
   });
 
   it("falls back to custom for an issuer no preset could have written", () => {
-    const found = matchIssuerPreset({
+    const found = matchIssuerPreset(block({
       jwks_url: "https://issuer.example.test/keys.json",
       issuer: "https://issuer.example.test",
       audience: "my-api",
-    });
+    }));
     expect(found.preset.id).toBe("custom");
     // The custom form opens on what is stored, so nothing is lost by the fallback.
     expect(found.values).toEqual({
@@ -128,33 +131,33 @@ describe("matchIssuerPreset", () => {
 
   it("treats a hand-edited vendor issuer as custom rather than misnaming it", () => {
     // Firebase's iss with a JWKS URL Firebase does not publish.
-    const found = matchIssuerPreset({
+    const found = matchIssuerPreset(block({
       jwks_url: "https://issuer.example.test/keys.json",
       issuer: "https://securetoken.google.com/my-app",
       audience: "my-app",
-    });
+    }));
     expect(found.preset.id).toBe("custom");
   });
 
   it("reads a stored one-value list as the single value the Worker normalized", () => {
     // The Worker stores iss and aud as lists even when one value was written.
-    const found = matchIssuerPreset({
+    const found = matchIssuerPreset(block({
       jwks_url:
         "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
       issuer: ["https://securetoken.google.com/my-app-1a2b3"],
       audience: ["my-app-1a2b3"],
-    });
+    }));
     expect(found.preset.id).toBe("firebase");
     expect(found.values).toEqual({ project_id: "my-app-1a2b3" });
   });
 
   it("treats an issuer accepting several tenants as custom", () => {
-    const found = matchIssuerPreset({
+    const found = matchIssuerPreset(block({
       jwks_url:
         "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
       issuer: ["https://securetoken.google.com/a", "https://securetoken.google.com/b"],
       audience: ["a", "b"],
-    });
+    }));
     expect(found.preset.id).toBe("custom");
   });
 });
@@ -167,16 +170,14 @@ describe("the RevenueCat entitlement check", () => {
   // claim is simply not where the gateway looked.
   it("writes the claim RevenueCat itself writes, asking only for the entitlement", () => {
     expect(revenuecat.inputs.map((input) => input.key)).toEqual(["entitlement"]);
-    expect(buildEntitlement(revenuecat, { entitlement: " pro " })).toEqual([
-      { path: "revenueCatEntitlements", contains: "pro" },
-    ]);
+    expect(revenueCatClaim("pro")).toEqual({ path: "revenueCatEntitlements", contains: "pro" });
     expect(REVENUECAT_CLAIM_PATH).toBe("revenueCatEntitlements");
   });
 
   it("takes several ids as alternatives, any one of which admits the user", () => {
-    expect(buildEntitlement(revenuecat, { entitlement: "pro, pro_test" })).toEqual([
+    expect(revenueCatClaim("pro, pro_test")).toEqual(
       { path: REVENUECAT_CLAIM_PATH, contains: ["pro", "pro_test"] },
-    ]);
+    );
   });
 
   it("reads its entitlement back, so the same one field reopens on what was saved", () => {

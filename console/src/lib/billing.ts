@@ -140,37 +140,26 @@ export const QUOTA_WARNING_RATIO = 0.8;
 /** Where the current plan period stands against its allowance, ready to render. */
 export interface QuotaMeter {
   used: number;
-  /** `null` when the plan sets no ceiling. */
-  limit: number | null;
-  /** Share of the allowance spent, capped at 1. `null` when unlimited. */
-  ratio: number | null;
+  limit: number;
+  /** Share of the allowance spent, capped at 1. */
+  ratio: number;
   tone: "normal" | "warning" | "destructive";
-  /** "8,420 of 10,000 requests", or the bare count when unlimited. */
+  /** "8,420 of 10,000 requests". */
   label: string;
-  /** "Resets Oct 8, 2026, 11:15 AM GMT+8". Only the notices state it. */
+  /** "Resets Oct 14, 2026, 5:20 PM GMT+8". Only the notices state it. */
   caption: string;
 }
 
 /**
  * Reads the current period's request count into something displayable, or
- * `null` when there is no allowance to report — a self-hosted deployment, or
- * a status response from before this field existed.
+ * `null` when there is no allowance to report — a self-hosted deployment, or a
+ * plan with no monthly limit, which the gateway does not count.
  */
 export function quotaMeter(quota: OrganizationQuota | undefined | null, account?: OrganizationSummary | null): QuotaMeter | null {
   if (!quota) return null;
   const resets = formatBillingDateTime(quota.resetAt);
   const nonrenewing = isUnclaimedAccount(account);
   const caption = resets ? `${nonrenewing ? "Ends" : "Resets"} ${resets}` : nonrenewing ? "Free access end unavailable" : "Reset time unavailable";
-  if (quota.limit === undefined || quota.limit === null) {
-    return {
-      used: quota.used,
-      limit: null,
-      ratio: null,
-      tone: "normal",
-      label: `${formatNumber(quota.used)} requests this period`,
-      caption,
-    };
-  }
   // An allowance of zero admits nothing, and dividing by it would leave the
   // meter with no reading at all, so it reads as fully spent — which it is.
   const ratio = quota.limit > 0 ? Math.min(quota.used / quota.limit, 1) : 1;
@@ -193,7 +182,7 @@ export function quotaMeter(quota: OrganizationQuota | undefined | null, account?
  */
 export function quotaNotice(quota: OrganizationQuota | undefined | null, account?: OrganizationSummary | null): BillingNotice | null {
   const meter = quotaMeter(quota, account);
-  if (!meter || meter.ratio === null || meter.tone === "normal") return null;
+  if (!meter || meter.tone === "normal") return null;
   return meter.ratio >= 1
     ? {
         tone: "destructive",

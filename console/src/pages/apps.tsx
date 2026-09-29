@@ -124,7 +124,7 @@ function FirstRequestExample({ app }: { app: AppSummary }) {
   if (details.isPending || providers.isPending || prices.isPending) return <Skeleton className="mt-4 h-32" />;
   // An app with no provider yet still gets an example, with placeholders where
   // its own configuration cannot fill one in — see `@shared/first-request`.
-  const config = details.data?.kind === "valid" ? details.data.app.config : undefined;
+  const config = details.data?.app.config;
   const example = firstRequest(
     config?.routing,
     providers.data?.providers ?? [],

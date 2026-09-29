@@ -2,10 +2,20 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
-import { API_STYLES, apiStyleFromPath, outputClampStyle } from "../src/core/api-styles";
-import { providerDescriptor, PROVIDER_TYPES } from "../src/core/providers";
-import { costReportBodyMutation } from "../src/core/proxyrules";
-import type { OutputClampStyle, ProviderType } from "../src/core/types";
+import { clampStyleFor, classifyPath, PROTOCOLS } from "../src/providers/protocols";
+
+const apiStyleFromPath = (path: string) => classifyPath(path).protocol.style;
+const outputClampStyle = (style: ApiStyle, provider: Parameters<typeof clampStyleFor>[1]) =>
+  clampStyleFor(PROTOCOLS[style], provider);
+import { PROVIDER_TYPES, providerDescriptor, type ProviderType } from "../src/shared/providers";
+import { costReportBodyMutation } from "../src/providers/request-body";
+import { examplePath } from "../src/shared/first-request";
+import {
+  API_STYLE_PATHS,
+  API_STYLES,
+  type ApiStyle,
+  type OutputClampStyle,
+} from "../src/shared/capabilities";
 import {
   clearProviderCaches,
   clearIsolateCaches,
@@ -347,6 +357,28 @@ describe("proxy API style classification", () => {
     const style = apiStyleFromPath(path);
     expect(style).toBe(expectedStyle);
     expect(outputClampStyle(style, "groq")).toBe(expectedGroqClamp);
+  });
+});
+
+/**
+ * The path tables and the classifier are separate declarations that have to
+ * agree: a canonical path or a descriptor's own path that the classifier does
+ * not know would silently read as `other`, which the default proxy policy
+ * refuses and the example card has no body for.
+ */
+describe("paths the tables declare classify as what they declare", () => {
+  it.each(Object.entries(API_STYLE_PATHS))("classifies the canonical %s path as its own style", (style, path) => {
+    expect(apiStyleFromPath(path.replace("{model}", "a-model"))).toBe(style);
+  });
+
+  it.each(PROVIDER_TYPES)("classifies every path the %s descriptor names", (type) => {
+    const descriptor = providerDescriptor(type);
+    const example = examplePath(type, { model: "a-model" });
+    expect(example).toBeDefined();
+    expect([example, apiStyleFromPath(example!)]).not.toEqual([example, "other"]);
+    for (const [style, path] of Object.entries(descriptor.endpointPaths ?? {})) {
+      expect([path, apiStyleFromPath(path)]).toEqual([path, style]);
+    }
   });
 });
 
@@ -813,6 +845,36 @@ describe("provider-native proxy", () => {
 
     expect(response.status).toBe(200);
     expect(captured[0]?.url).toBe("https://api.openai.com/v1/chat/completions");
+  });
+
+  it("refuses a native Gemini path the app does not allow before decoding its model", async () => {
+    const appId = "proxy-gemini-malformed-model";
+    await seedApp(appId, {
+      proxy: { gemini: { allowed_paths: ["v1/chat/completions"], allowed_models: [] } },
+    });
+    const token = await gatewayToken(appId);
+    const refused = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/models/%ZZ:generateContent",
+      body: { contents: [] },
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "path_not_allowed" } });
+  });
+
+  it("answers a malformed model escape on an allowed native Gemini path as the client's error", async () => {
+    const appId = "proxy-gemini-malformed-allowed";
+    await seedApp(appId, { proxy: { gemini: { allowed_paths: [], allowed_models: [] } } });
+    const token = await gatewayToken(appId);
+    const refused = await proxyRequest({
+      appId,
+      token,
+      path: "gemini/v1beta/models/%ZZ:generateContent",
+      body: { contents: [] },
+    });
+    expect(refused.status).toBe(400);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
   });
 
   it.each(["generateContent", "streamGenerateContent"])(
@@ -1947,8 +2009,8 @@ describe("cost report body mutation", () => {
 });
 
 /**
- * An application with no `end_user` source has no end users, and that is a
- * position rather than a missing value. Nothing downstream may invent one: the
+ * An application whose `end_user` source is `none` has no end users, and that
+ * is a position rather than a missing value. Nothing downstream may invent one: the
  * usage row records no user, the per-user machinery is skipped rather than
  * pointed at a stand-in, and `/me` has nothing to report.
  */

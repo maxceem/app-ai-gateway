@@ -30,7 +30,8 @@ import { GatewayIcon, ProviderIcon, ProviderName } from "@/components/brand-icon
 import { EmptyState, SectionHeader } from "@/components/field";
 import { RangePicker } from "@/components/pickers";
 import { EventStatusBadge } from "@/components/status-badge";
-import { isGatewayType, isProviderType } from "@/lib/config-types";
+import { isGatewayType } from "@/lib/config-types";
+import { isProviderType } from "@shared/providers";
 import {
   cachedInputRate,
   daysAgo,
@@ -318,10 +319,6 @@ export function UsageTab({ appId }: { appId: string }) {
                     say who refused the request, and that is the distinction an
                     operator is filtering for: the app's own limits, or the plan.
                   */}
-                  <SelectItem value="blocked_app_rate">blocked_app_rate — this app's rate limit</SelectItem>
-                  <SelectItem value="blocked_app_budget">blocked_app_budget — this app's budget</SelectItem>
-                  <SelectItem value="blocked_billing">blocked_billing — plan allowance</SelectItem>
-                  <SelectItem value="blocked_user">blocked_user</SelectItem>
                 </SelectContent>
               </Select>
             }

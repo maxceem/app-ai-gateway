@@ -138,14 +138,27 @@ export function googleRelayRedirectUri(env: Env): string | undefined {
   return relay === undefined ? undefined : `${relay}/callback/google`;
 }
 
-async function identityAuth(
+export interface IdentityAuthOptions {
+  suppressDefaultOrganization?: boolean;
+  provisionRegistration?: boolean;
+  /**
+   * Trusted claim route only: pass it after validating the handoff proofs, and
+   * never mount the resulting instance's handler.
+   */
+  claimRegistration?: boolean;
+  onRegistrationDenied?: () => void;
+}
+
+export async function createIdentityAuth(
   deployment: Deployment,
   env: Env,
   requestUrl: string,
-  claimRegistration: boolean,
-  suppressDefaultOrganization = false,
-  provisionRegistration = false,
-  onRegistrationDenied?: () => void,
+  {
+    suppressDefaultOrganization = false,
+    provisionRegistration = false,
+    claimRegistration = false,
+    onRegistrationDenied,
+  }: IdentityAuthOptions = {},
 ): Promise<CfAuth> {
   const { createCfAuth } = await cfAuth();
   const origin = new URL(requestUrl).origin;
@@ -195,44 +208,6 @@ async function identityAuth(
   });
 }
 
-export interface IdentityAuthOptions {
-  suppressDefaultOrganization?: boolean;
-  provisionRegistration?: boolean;
-  /** Trusted claim route only: pass it after validating the handoff proofs. */
-  claimRegistration?: boolean;
-  onRegistrationDenied?: () => void;
-}
-
-export function createIdentityAuth(
-  deployment: Deployment,
-  env: Env,
-  requestUrl: string,
-  options: IdentityAuthOptions = {},
-): Promise<CfAuth> {
-  return identityAuth(
-    deployment,
-    env,
-    requestUrl,
-    options.claimRegistration ?? false,
-    options.suppressDefaultOrganization,
-    options.provisionRegistration,
-    options.onRegistrationDenied,
-  );
-}
-
-/** Trusted claim route only: invoke after validating the handoff proofs. Never mount its handler. */
-export function createClaimRegistrationAuth(
-  deployment: Deployment,
-  env: Env,
-  requestUrl: string,
-  options: { onRegistrationDenied?: () => void } = {},
-): Promise<CfAuth> {
-  return createIdentityAuth(deployment, env, requestUrl, {
-    claimRegistration: true,
-    onRegistrationDenied: options.onRegistrationDenied,
-  });
-}
-
 /** The part of a request context this needs: the environment, the URL, and somewhere to memoize. */
 export interface IdentityAuthScope {
   env: Env;
@@ -247,7 +222,8 @@ export interface IdentityAuthScope {
  * Building one constructs a Better Auth instance, and a single claim submission
  * needs three: one to read the approver's session, one to register them and one
  * to claim. They are pure functions of the deployment,
- * the request origin and these three flags, so the flags are the cache key.
+ * the request origin and these three flags, so the flags, each named, are the
+ * cache key.
  * An instance carrying a `onRegistrationDenied` callback is not shared, since
  * the callback belongs to one caller's control flow.
  */
@@ -259,11 +235,11 @@ export function identityAuthFor(
   if (options.onRegistrationDenied) {
     return createIdentityAuth(deployment, c.env, c.req.url, options);
   }
-  const key = [
-    options.suppressDefaultOrganization ?? false,
-    options.provisionRegistration ?? false,
-    options.claimRegistration ?? false,
-  ].join(":");
+  const key = JSON.stringify({
+    suppressDefaultOrganization: options.suppressDefaultOrganization ?? false,
+    provisionRegistration: options.provisionRegistration ?? false,
+    claimRegistration: options.claimRegistration ?? false,
+  });
   const cache = c.get("identityAuthCache");
   const existing = cache.get(key);
   if (existing) return existing;

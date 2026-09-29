@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { providersForEndpointStyle } from "../src/core/capabilities";
+import { clientAuth } from "../src/client-auth/client-auth";
+import { providersForEndpointStyle } from "../src/shared/providers";
 import { AppConfigSchema } from "../src/contracts/schemas";
 import { parseAppConfig } from "../src/shared/app-config";
 import { serverConfig, validateConfig } from "./helpers";
@@ -78,7 +79,7 @@ describe("the application configuration grammar", () => {
 
   it("applies every default on a minimal configuration", () => {
     const parsed = parseAppConfig({
-      authentication: { type: "api_key" },
+      authentication: { type: "api_key", end_user: { source: "none" } },
       routing: { providers: { mode: "all" }, model_rewrites: {} },
     });
     expect(parsed.endpoints).toEqual({});
@@ -89,11 +90,10 @@ describe("the application configuration grammar", () => {
   });
 
   /*
-   * Stored rows predate the defaults. A configuration written before `limits`
-   * and `environments` were always materialised must still load, or a
-   * deployment's own applications go offline on the upgrade that added them.
+   * `limits`, `endpoints` and `environments` are optional on the way in and
+   * always present on the way out, so a client may omit them.
    */
-  it("still reads a stored configuration written before the defaults existed", () => {
+  it("fills in the blocks a configuration leaves out", () => {
     const parsed = parseAppConfig({
       authentication: {
         type: "apple_app_attest",
@@ -112,7 +112,7 @@ describe("the application configuration grammar", () => {
     expect(() => parseAppConfig({ ...serverConfig(), surprise: true }))
       .toThrowError("Unrecognized key");
     const withDevelopmentAccess = serverConfig({
-      authentication: { type: "api_key", development_access: true },
+      authentication: { type: "api_key", end_user: { source: "none" }, development_access: true },
     });
     expect(() => parseAppConfig(withDevelopmentAccess))
       .toThrowError('authentication: Unrecognized key: "development_access"');
@@ -121,6 +121,12 @@ describe("the application configuration grammar", () => {
   it("rejects a missing discriminator instead of inferring a legacy default", () => {
     expect(() => parseAppConfig({ authentication: {}, routing: {} }))
       .toThrowError("authentication.type");
+  });
+
+  it("refuses an api_key application that does not say whether it has end users", () => {
+    const { authentication: _omitted, ...rest } = serverConfig();
+    expect(() => parseAppConfig({ ...rest, authentication: { type: "api_key" } }))
+      .toThrowError("authentication.end_user");
   });
 
   describe("authentication.issuer", () => {
@@ -222,6 +228,30 @@ describe("the application configuration grammar", () => {
       expect(() => parseAppConfig(withIssuer({ required_claims: [{ path: "", contains: "a" }] })))
         .toThrowError("required_claims.0.path");
     });
+
+    it.each([
+      ["a blank path", { path: "  ", contains: "pro" }, "required_claims.0.path"],
+      ["a blank contains", { path: "p", contains: "" }, "required_claims.0.contains"],
+      ["a blank alternative", { path: "p", contains: ["pro", " "] }, "required_claims.0.contains"],
+      ["a blank equals", { path: "p", equals: "" }, "required_claims.0.equals"],
+    ])("refuses %s, which is a half-filled form rather than a requirement", (_case, requirement, at) => {
+      expect(() => parseAppConfig(withIssuer({ required_claims: [requirement] }))).toThrowError(at);
+    });
+
+    it("stores claim text trimmed, so a pasted space is not part of what must match", () => {
+      const issuer = parsedIssuer(withIssuer({
+        required_claims: [
+          { path: " revenueCatEntitlements ", contains: "pro " },
+          { path: "scope", contains: [" ai.invoke", "ai.read "] },
+          { path: "tier", equals: " gold" },
+        ],
+      }));
+      expect(issuer.required_claims).toEqual([
+        { path: "revenueCatEntitlements", contains: "pro" },
+        { path: "scope", contains: ["ai.invoke", "ai.read"] },
+        { path: "tier", equals: "gold" },
+      ]);
+    });
   });
 
   describe("authentication.end_user.header", () => {
@@ -301,6 +331,12 @@ describe("the application configuration grammar", () => {
           .toThrowError("team_id must contain ten uppercase letters or digits");
       },
     );
+
+    it("stores the team and bundle id trimmed, rather than refusing a pasted space", () => {
+      const attest = parsedAttest(appleConfig({ team_id: " AAAAAAAAAA ", bundle_id: "com.example.test\n" }));
+      expect(attest.team_id).toBe("AAAAAAAAAA");
+      expect(attest.bundle_id).toBe("com.example.test");
+    });
 
     it.each(["com", "", "com..example", "com example"])(
       "refuses the bundle id %s",
@@ -455,7 +491,7 @@ describe("the application configuration grammar", () => {
      */
     it("refuses per-user limits on an application with no end users", () => {
       expect(() => parseAppConfig({ ...serverConfig(), limits: { per_user: scope() } }))
-        .toThrowError("limits.per_user: needs an authentication.end_user source");
+        .toThrowError("limits.per_user: needs an authentication.end_user source other than none");
       // All-null is not a configured limit, so it is accepted on the same app.
       expect(() => parseAppConfig({
         ...serverConfig(),
@@ -478,12 +514,12 @@ describe("the application configuration grammar", () => {
 
     it("derives named-endpoint eligibility from provider registry capabilities", () => {
       expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
-      expect(providersForEndpointStyle("transcription")).toEqual(["openai", "xai"]);
+      expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
     });
 
     it("keeps a valid endpoints block verbatim", () => {
       const transcribe = {
-        api_style: "transcription",
+        api_style: "audio_transcription",
         provider: "openai",
         model: "gpt-4o-mini-transcribe",
       };
@@ -795,14 +831,14 @@ describe("organization-scoped configuration references", () => {
     const transcribe = serverConfig({
       endpoints: {
         speech: {
-          api_style: "transcription",
+          api_style: "audio_transcription",
           provider: "openai-routed",
           model: "gpt-4o-transcribe",
         },
       },
     });
     expect(() => validateConfig(transcribe, instance("vercel"))).toThrowError(
-      "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support transcription",
+      "endpoints.speech.provider openai-routed is a openai instance routed through a vercel gateway, which does not support audio_transcription",
     );
     // The same endpoint is fine on either route that reaches OpenAI's own API.
     for (const route of ["direct", "cf_aig"] as const) {
@@ -835,7 +871,7 @@ describe("organization-scoped configuration references", () => {
         status: "active" as const,
       },
     };
-    for (const style of ["responses", "transcription"] as const) {
+    for (const style of ["responses", "audio_transcription"] as const) {
       expect(() => validateConfig(
         serverConfig({
           endpoints: {
@@ -854,5 +890,51 @@ describe("organization-scoped configuration references", () => {
 describe("the published schema", () => {
   it("accepts what the parser produces", () => {
     expect(AppConfigSchema.safeParse(parseAppConfig(serverConfig())).success).toBe(true);
+  });
+});
+
+describe("how each configuration authenticates its clients", () => {
+  const issuer = {
+    jwks_url: "https://issuer.test/jwks",
+    issuer: "https://issuer.test/",
+    audience: ["my-app"],
+    user_id_claim: "sub",
+    token_header: "X-Id-Token",
+    required_claims: [],
+    max_token_lifetime_seconds: 3600,
+    provider: "custom",
+    entitlement: "custom",
+  };
+  const appAttest = { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" };
+  const auth = (authentication: Record<string, unknown>) => clientAuth({
+    id: "app",
+    organizationId: "org",
+    name: "App",
+    status: "active",
+    revision: 1,
+    config: parseAppConfig(serverConfig({ authentication })),
+  });
+  const summary = (authentication: Record<string, unknown>) => {
+    const { exchange, tokenHeader, consumedHeaders } = auth(authentication);
+    return { exchange: exchange?.type ?? null, tokenHeader, consumedHeaders };
+  };
+
+  it("settles the five configurations into three ways of authenticating", () => {
+    expect(summary({ type: "api_key", end_user: { source: "none" } }))
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: [] });
+    expect(summary({ type: "api_key", end_user: { source: "header", header: "X-User" } }))
+      .toEqual({ exchange: null, tokenHeader: undefined, consumedHeaders: ["x-user"] });
+    expect(summary({ type: "api_key", end_user: { source: "issuer", issuer } }))
+      .toEqual({ exchange: "api_key_issuer", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+    expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "issuer", issuer } }))
+      .toEqual({ exchange: "app_attest", tokenHeader: "x-id-token", consumedHeaders: ["x-id-token"] });
+    expect(summary({ type: "apple_app_attest", app_attest: appAttest, end_user: { source: "app_install" } }))
+      .toEqual({ exchange: "app_attest", tokenHeader: undefined, consumedHeaders: [] });
+  });
+
+  it("refuses a request that names no end user before verifying its credential", () => {
+    const headerAuth = auth({ type: "api_key", end_user: { source: "header", header: "X-User" } });
+    expect(() => headerAuth.verifier({} as Env, "app", new Headers(), { token: "k", headerName: "authorization" }))
+      .toThrow("x-user is required");
   });
 });

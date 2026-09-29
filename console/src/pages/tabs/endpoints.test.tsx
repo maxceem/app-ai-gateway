@@ -6,6 +6,7 @@ import { useAppDraft } from "@/hooks/use-app-draft";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { EndpointsConfig } from "@/lib/config-types";
 import type { ProviderCredential, ProviderGateway } from "@/lib/types";
+import { served } from "@/test/providers";
 
 const APP_ID = "my-app";
 
@@ -14,6 +15,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-1",
     type: "openai",
+    ...served("openai"),
     slug: "openai-dev",
     name: "Dev OpenAI",
     secretHint: "dev4",
@@ -29,6 +31,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-2",
     type: "xai",
+    ...served("xai"),
     slug: "grok",
     name: "xAI",
     secretHint: "xai9",
@@ -44,6 +47,7 @@ const PROVIDERS: ProviderCredential[] = [
   {
     id: "provider-3",
     type: "anthropic",
+    ...served("anthropic"),
     slug: "claude",
     name: "Anthropic",
     secretHint: "an7c",
@@ -73,6 +77,7 @@ function appRow(endpoints: EndpointsConfig) {
     config: {
       authentication: {
         type: "api_key",
+        end_user: { source: "none" },
       },
       routing: { providers: { mode: "all" }, model_rewrites: {} },
       endpoints,
@@ -108,6 +113,7 @@ const OPENAI_VIA_VERCEL: ProviderCredential = {
   name: "OpenAI via Vercel",
   secretHint: null,
   providerGatewayId: "gw-vercel",
+  ...served("openai", "vercel"),
 };
 
 function renderTab(
@@ -117,7 +123,7 @@ function renderTab(
 ) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(endpoints), config_error: null },
+      body: { app: appRow(endpoints) },
     },
     "/v1/admin/providers": { body: { providers } },
     "/v1/admin/provider-gateways": { body: { gateways } },
@@ -154,7 +160,7 @@ describe("EndpointsTab", () => {
    */
   it("drops an instance whose route cannot serve the style", async () => {
     renderTab(
-      { speech: { api_style: "transcription", provider: "openai-dev", model: "gpt-5.6-luna" } },
+      { speech: { api_style: "audio_transcription", provider: "openai-dev", model: "gpt-5.6-luna" } },
       [...PROVIDERS, OPENAI_VIA_VERCEL],
       [VERCEL_GATEWAY],
     );
@@ -177,45 +183,25 @@ describe("EndpointsTab", () => {
   });
 
   /**
-   * Until the gateway list has loaded, a routed row's route is unknown. Treating
-   * unknown as direct judged it against the provider's full API surface and
-   * offered it for styles its gateway does not serve — targets the Worker then
-   * refuses on save. Direct rows depend on none of this and stay available.
+   * A routed row's capability comes with the row itself, so nothing waits on
+   * the gateway list: even with that list failing, the Vercel-routed OpenAI row
+   * is offered for the style its route serves and withheld from the one it
+   * does not.
    */
-  it("withholds gateway-routed instances until their routes are known", async () => {
+  it("judges a routed instance by the capability on the row, not the gateway list", async () => {
     stubApi({
       [`/v1/admin/apps/${APP_ID}`]: {
-        body: { app: appRow(CHAT), config_error: null },
+        body: { app: appRow(CHAT) },
       },
       "/v1/admin/providers": { body: { providers: [...PROVIDERS, OPENAI_VIA_VERCEL] } },
-      // The one query that fails; everything else answers normally.
       "/v1/admin/provider-gateways": { status: 500, body: { error: { code: "internal_error" } } },
       "/v1/admin/prices": { body: { prices: PRICES } },
     });
     renderAuthenticated(<Harness />);
 
-    // Said out loud, so a missing instance is explained rather than mysterious.
-    expect(await screen.findByText(/gateway-routed instances are not offered/u)).toBeTruthy();
-
     await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
     const options = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
-    expect(options.some((label) => label?.includes("openai-vercel"))).toBe(false);
-    // The direct rows are unaffected: their capabilities need no gateway list.
-    expect(options.some((label) => label?.includes("openai-dev"))).toBe(true);
-    expect(options.some((label) => label?.includes("grok"))).toBe(true);
-  });
-
-  /**
-   * The same rule for a routed row whose gateway is simply not in the list —
-   * revoked, or of a type this deployment has no adapter for. There is no route
-   * to describe, so it is withheld rather than guessed at.
-   */
-  it("withholds a routed instance whose gateway is not in the list", async () => {
-    renderTab(CHAT, [...PROVIDERS, OPENAI_VIA_VERCEL], []);
-
-    await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
-    const options = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
-    expect(options.some((label) => label?.includes("openai-vercel"))).toBe(false);
+    expect(options.some((label) => label?.includes("openai-vercel"))).toBe(true);
     expect(options.some((label) => label?.includes("openai-dev"))).toBe(true);
   });
 
@@ -248,7 +234,7 @@ describe("EndpointsTab", () => {
 
     const add = await screen.findByRole("button", { name: /add endpoint/i });
     expect(add).toHaveProperty("disabled", true);
-    expect(screen.getByText(/add an openai or xai provider first/i)).toBeTruthy();
+    expect(screen.getByText(/add a provider of type openai or xai first/i)).toBeTruthy();
     expect(add.getAttribute("aria-describedby")).toBe("add-endpoint-disabled-reason");
 
     await userEvent.click(add);

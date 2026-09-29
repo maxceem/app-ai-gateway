@@ -1,21 +1,17 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  deliverUsageSpend,
-  pruneSettledUsageSpend,
-  projectUsageEventSpend,
-  recoverPendingUsageSpend,
-  USAGE_SPEND_RECOVERY_BATCH,
-} from "../src/core/app-usage-accounting";
-import { wholeBody, type ObservedBody } from "../src/core/body-observer";
+import { monthlySpendMicrousd, pruneSettledUsageSpend } from "../src/usage/app-usage-accounting";
+import { wholeBody, type ObservedBody } from "../src/usage/body-observer";
 import {
   persistUsageEvent,
   recordUsageEvent,
   type UsageEvent,
-} from "../src/core/usage-record";
+} from "../src/usage/usage-record";
 import { testAttribution, testIdentity } from "./helpers";
-import app, { scheduledMaintenance } from "../src/index";
+import { TEST_ORGANIZATION_ID } from "./apply-migrations";
+import app from "../src/index";
+import { MAINTENANCE_CRON } from "../src/core/maintenance-cron";
 
 const PREFIX = "accounting-";
 
@@ -37,9 +33,9 @@ async function insertEvent(input: {
   const eventId = input.eventId ?? crypto.randomUUID();
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
-       event_id, app_id, user_id, provider_type, model, route,
+       organization_id, event_id, app_id, user_id, provider_type, model, route,
        cost_usd, status, created_at
-     ) VALUES (?, ?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok', ?)`,
+     ) VALUES ('operator-test-organization', ?, ?, ?, 'openai', 'gpt-5.6-sol', 'openai/v1/responses', ?, 'ok', ?)`,
   ).bind(
     eventId,
     input.appId,
@@ -55,19 +51,15 @@ async function spend(appId: string): Promise<Array<{
   user_key: string;
   month: string;
   microusd: number;
-  revision: number;
-  pending: number;
 }>> {
   const { results } = await env.DB.prepare(
-    `SELECT scope, user_key, month, microusd, revision, pending
+    `SELECT scope, user_key, month, microusd
      FROM app_usage_spend WHERE app_id = ? ORDER BY scope, user_key`,
   ).bind(appId).all<{
     scope: string;
     user_key: string;
     month: string;
     microusd: number;
-    revision: number;
-    pending: number;
   }>();
   return results;
 }
@@ -78,28 +70,25 @@ describe("app usage accounting", () => {
     const eventId = await insertEvent({ appId, userId: "", costUsd: 0.000184 });
     await env.DB.prepare(
       `INSERT OR IGNORE INTO app_usage_event(
-         event_id, app_id, user_id, provider_type, model, route, cost_usd, status
-       ) VALUES (?, ?, '', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 9, 'ok')`,
+         event_id, organization_id, app_id, user_id, provider_type, model, route, cost_usd, status
+       ) VALUES (?, 'operator-test-organization', ?, '', 'openai', 'gpt-5.6-sol', 'openai/v1/responses', 9, 'ok')`,
     ).bind(eventId, appId).run();
 
     expect(await spend(appId)).toEqual([
-      expect.objectContaining({ scope: "app", user_key: "", microusd: 184, revision: 1 }),
-      expect.objectContaining({ scope: "user", user_key: "", microusd: 184, revision: 1 }),
+      expect.objectContaining({ scope: "app", user_key: "", microusd: 184 }),
+      expect.objectContaining({ scope: "user", user_key: "", microusd: 184 }),
     ]);
 
     await env.DB.prepare("UPDATE app_usage_event SET cost_usd = 0.000037 WHERE event_id = ?")
       .bind(eventId).run();
-    expect((await spend(appId)).map((row) => [row.microusd, row.revision]))
-      .toEqual([[37, 2], [37, 2]]);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([37, 37]);
     await env.DB.prepare("UPDATE app_usage_event SET cost_usd = 0 WHERE event_id = ?")
       .bind(eventId).run();
-    expect((await spend(appId)).map((row) => [row.microusd, row.revision]))
-      .toEqual([[0, 3], [0, 3]]);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([0, 0]);
     await env.DB.prepare("UPDATE app_usage_event SET cost_usd = 0.000009 WHERE event_id = ?")
       .bind(eventId).run();
     await env.DB.prepare("DELETE FROM app_usage_event WHERE event_id = ?").bind(eventId).run();
-    expect((await spend(appId)).map((row) => [row.microusd, row.revision]))
-      .toEqual([[9, 4], [9, 4]]);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([9, 9]);
   });
 
   it("creates no invented user scope for a null user", async () => {
@@ -110,178 +99,44 @@ describe("app usage accounting", () => {
     ]);
   });
 
-  it("keeps failed delivery pending and an ordinary minute run recovers it", async () => {
-    const appId = `${PREFIX}cron-recovery`;
-    const month = new Date().toISOString().slice(0, 7);
-    await insertEvent({ appId, userId: null, costUsd: 0.000021 });
-    const unavailable = {
-      ...env,
-      USER_LIMITER: {
-        getByName: () => ({ setMonthlyCost: () => Promise.reject(new Error("limiter unavailable")) }),
-      },
-    } as unknown as Env;
-    expect((await projectUsageEventSpend(unavailable, { appId, userId: null, month })).acknowledged)
-      .toBe(0);
-    await env.DB.prepare("UPDATE app_usage_spend SET last_attempt_at = -1 WHERE app_id = ?")
-      .bind(appId).run();
+  it("creates spend scopes when a zero-cost event is first repriced", async () => {
+    const appId = `${PREFIX}late-cost`;
+    const eventId = await insertEvent({ appId, userId: "u1", costUsd: 0.0000004 });
+    expect(await spend(appId)).toEqual([]);
 
-    const ctx = createExecutionContext();
-    app.scheduled({
-      cron: "* * * * *",
-      scheduledTime: Date.parse("2026-10-01T03:16:00Z"),
-    } as ScheduledController, env, ctx);
-    await waitOnExecutionContext(ctx);
-
-    expect(await spend(appId)).toEqual([
-      expect.objectContaining({ pending: 0, microusd: 21 }),
-    ]);
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
-      .toBe(21);
+    const reprice = (costUsd: number) => env.DB.prepare(
+      "UPDATE app_usage_event SET cost_usd = ? WHERE event_id = ?",
+    ).bind(costUsd, eventId).run();
+    await reprice(0.0000006);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([1, 1]);
+    await reprice(0.0000006);
+    await reprice(0.0000014);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([1, 1]);
+    await reprice(0.0000016);
+    expect((await spend(appId)).map((row) => row.microusd)).toEqual([2, 2]);
   });
 
-  it("uses the scheduled UTC minute for nightly work and resumes recovery after it", async () => {
-    const appId = `${PREFIX}maintenance-minute`;
-    const month = "2026-10";
-    await insertEvent({
-      appId,
-      userId: null,
-      costUsd: 0.000022,
-      createdAt: "2026-10-01T03:00:00Z",
-    });
-    const unavailable = {
-      ...env,
-      USER_LIMITER: {
-        getByName: () => ({ setMonthlyCost: () => Promise.reject(new Error("limiter unavailable")) }),
-      },
-    } as unknown as Env;
-    expect((await projectUsageEventSpend(unavailable, { appId, userId: null, month })).acknowledged)
-      .toBe(0);
-    await env.DB.prepare("UPDATE app_usage_spend SET last_attempt_at = -1 WHERE app_id = ?")
-      .bind(appId).run();
-
-    // Delivery can be delayed: dispatch follows the trigger's UTC timestamp,
-    // not the wall clock at which this isolate eventually receives it.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime("2026-10-01T09:45:00Z");
-    const nightly = createExecutionContext();
-    app.scheduled({
-      cron: "* * * * *",
-      scheduledTime: Date.parse("2026-10-01T03:17:00Z"),
-    } as ScheduledController, env, nightly);
-    await waitOnExecutionContext(nightly);
-    expect(await spend(appId)).toEqual([
-      expect.objectContaining({ pending: 1, microusd: 22 }),
-    ]);
-
-    const nextMinute = createExecutionContext();
-    app.scheduled({
-      cron: "* * * * *",
-      scheduledTime: Date.parse("2026-10-01T03:18:00Z"),
-    } as ScheduledController, env, nextMinute);
-    await waitOnExecutionContext(nextMinute);
-    expect(await spend(appId)).toEqual([
-      expect.objectContaining({ pending: 0, microusd: 22 }),
-    ]);
+  it("reads a scope's month as the one row the triggers keep", async () => {
+    const appId = `${PREFIX}read`;
+    await insertEvent({ appId, userId: "u1", costUsd: 0.000030, createdAt: "2026-07-10T00:00:00.000Z" });
+    await insertEvent({ appId, userId: "u2", costUsd: 0.000012, createdAt: "2026-07-11T00:00:00.000Z" });
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-07")).toBe(42);
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: "u1" }, "2026-07")).toBe(30);
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: "u3" }, "2026-07")).toBe(0);
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-08")).toBe(0);
   });
 
-  it.each([
-    ["the minute before maintenance", "* * * * *", "2026-10-01T03:16:00Z", "recover"],
-    ["the maintenance minute", "* * * * *", "2026-10-01T03:17:00Z", "prune"],
-    ["the minute after maintenance", "* * * * *", "2026-10-01T03:18:00Z", "recover"],
-    ["the end of a UTC day", "* * * * *", "2026-10-01T23:59:00Z", "recover"],
-    ["the start of a UTC day", "* * * * *", "2026-10-02T00:00:00Z", "recover"],
-    ["the legacy nightly trigger", "17 3 * * *", "2026-10-01T09:45:00Z", "prune"],
-    ["an unknown trigger", "0 * * * *", "2026-10-01T03:17:00Z", undefined],
-  ] as const)("routes %s", (_label, cron, scheduledAt, expected) => {
-    expect(scheduledMaintenance(cron, Date.parse(scheduledAt))).toBe(expected);
-  });
-
-  it("does no work for an unknown trigger", () => {
+  it("runs nightly maintenance on its own trigger and nothing on any other", async () => {
     const waitUntil = vi.fn();
-    app.scheduled(
-      {
-        cron: "0 * * * *",
-        scheduledTime: Date.parse("2026-10-01T03:17:00Z"),
-      } as ScheduledController,
-      env,
-      { waitUntil } as unknown as ExecutionContext,
-    );
+    const ctx = { waitUntil, passThroughOnException: () => {} } as unknown as ExecutionContext;
+    app.scheduled({ cron: "0 * * * *", scheduledTime: Date.now() } as ScheduledController, env, ctx);
     expect(waitUntil).not.toHaveBeenCalled();
+    const run = createExecutionContext();
+    app.scheduled({ cron: MAINTENANCE_CRON, scheduledTime: Date.now() } as ScheduledController, env, run);
+    await waitOnExecutionContext(run);
   });
 
-  it("replays an acknowledgement lost over a week ago without adding spend twice", async () => {
-    const appId = `${PREFIX}ack-loss`;
-    const month = new Date().toISOString().slice(0, 7);
-    await insertEvent({ appId, userId: null, costUsd: 0.000031 });
-    let failAck = true;
-    const flakyDb = {
-      prepare(query: string) {
-        if (failAck && query.includes("SET pending = 0")) {
-          failAck = false;
-          throw new Error("acknowledgement lost");
-        }
-        return env.DB.prepare(query);
-      },
-      batch: (statements: D1PreparedStatement[]) => env.DB.batch(statements),
-      exec: (query: string) => env.DB.exec(query),
-    } as unknown as D1Database;
-    const flaky = { ...env, DB: flakyDb } as Env;
-    expect((await projectUsageEventSpend(flaky, { appId, userId: null, month })).acknowledged)
-      .toBe(0);
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
-      .toBe(31);
-    await env.DB.prepare("UPDATE app_usage_spend SET last_attempt_at = ? WHERE app_id = ?")
-      .bind(Date.now() - 8 * 86_400_000, appId).run();
-
-    expect((await projectUsageEventSpend(env, { appId, userId: null, month })).acknowledged)
-      .toBe(1);
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.now())).monthlyCostMicrousd)
-      .toBe(31);
-  });
-
-  it("does not acknowledge a revision superseded during delivery", async () => {
-    const appId = `${PREFIX}interleaving`;
-    const eventId = await insertEvent({ appId, userId: null, costUsd: 0.000010 });
-    const row = await env.DB.prepare(
-      `SELECT id, app_id, scope, user_key, month, microusd, revision
-       FROM app_usage_spend WHERE app_id = ?`,
-    ).bind(appId).first<{
-      id: number;
-      app_id: string;
-      scope: "app";
-      user_key: string;
-      month: string;
-      microusd: number;
-      revision: number;
-    }>();
-    const realLimiter = env.USER_LIMITER.getByName(appId);
-    const interleaving = {
-      ...env,
-      USER_LIMITER: {
-        getByName: () => ({
-          async setMonthlyCost(month: string, revision: number, microusd: number) {
-            await realLimiter.setMonthlyCost(month, revision, microusd);
-            await env.DB.prepare("UPDATE app_usage_event SET cost_usd = 0.000020 WHERE event_id = ?")
-              .bind(eventId).run();
-          },
-        }),
-      },
-    } as unknown as Env;
-
-    expect(await deliverUsageSpend(interleaving, row!)).toBe(false);
-    expect(await spend(appId)).toEqual([
-      expect.objectContaining({ microusd: 20, revision: 2, pending: 1 }),
-    ]);
-    expect((await realLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(10);
-
-    const month = row!.month;
-    expect((await projectUsageEventSpend(env, { appId, userId: null, month })).acknowledged)
-      .toBe(1);
-    expect(await realLimiter.setMonthlyCost(month, 1, 999)).toBe(false);
-    expect((await realLimiter.getStatus(Date.now())).monthlyCostMicrousd).toBe(20);
-  });
-
-  it("uses a UsageEvent's fixed timestamp for persistence and projection", async () => {
+  it("files a UsageEvent's spend under its own fixed timestamp's month", async () => {
     const appId = `${PREFIX}month`;
     const createdAt = "2026-07-31T23:59:59.900Z";
     const eventId = crypto.randomUUID();
@@ -290,6 +145,7 @@ describe("app usage accounting", () => {
       row: {
         eventId,
         appId,
+        organizationId: TEST_ORGANIZATION_ID,
         userId: "user-1",
         providerType: "openai",
         model: "gpt-5.6-sol",
@@ -302,10 +158,8 @@ describe("app usage accounting", () => {
     await persistUsageEvent(env, event);
 
     expect((await spend(appId)).map((row) => row.month)).toEqual(["2026-07", "2026-07"]);
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.parse(createdAt))).monthlyCostMicrousd)
-      .toBe(41);
-    expect((await env.USER_LIMITER.getByName(appId).getStatus(Date.UTC(2026, 7, 1))).monthlyCostMicrousd)
-      .toBe(0);
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-07")).toBe(41);
+    expect(await monthlySpendMicrousd(env.DB, { appId, userKey: null }, "2026-08")).toBe(0);
   });
 
   it("captures recordUsageEvent time before awaiting an observer across month rollover", async () => {
@@ -340,15 +194,15 @@ describe("app usage accounting", () => {
     expect((await spend(appId)).map((row) => row.month)).toEqual(["2026-07"]);
   });
 
-  it("prunes only settled old aggregates after their raw month is gone", async () => {
+  it("prunes old aggregates only after their raw month is gone", async () => {
     const appId = `${PREFIX}prune`;
     const createdAt = "2025-01-15T12:00:00.000Z";
     await insertEvent({ appId, userId: null, costUsd: 0.000051, createdAt });
-    await env.DB.prepare("DELETE FROM app_usage_event WHERE app_id = ?").bind(appId).run();
 
+    // A raw event a reprice could still move keeps its month's total.
     expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(0);
     expect(await spend(appId)).toHaveLength(1);
-    await projectUsageEventSpend(env, { appId, userId: null, month: "2025-01" });
+    await env.DB.prepare("DELETE FROM app_usage_event WHERE app_id = ?").bind(appId).run();
     expect(await pruneSettledUsageSpend(env.DB, "2026-01")).toBe(1);
     expect(await spend(appId)).toEqual([]);
   });
@@ -362,22 +216,5 @@ describe("app usage accounting", () => {
          'openai/v1/responses', 0.001, 'ok')`,
     ).bind(crypto.randomUUID(), appId).run()).rejects.toThrow(/organization no longer exists/u);
     expect(await spend(appId)).toEqual([]);
-  });
-
-  it("bounds each recovery pass to twelve aggregate rows", async () => {
-    for (let index = 0; index < USAGE_SPEND_RECOVERY_BATCH + 1; index += 1) {
-      const appId = `${PREFIX}bounded-${index}`;
-      await insertEvent({ appId, userId: null, costUsd: 0.000001 });
-    }
-    await env.DB.prepare(
-      "UPDATE app_usage_spend SET last_attempt_at = -1 WHERE app_id LIKE ?",
-    ).bind(`${PREFIX}bounded-%`).run();
-
-    const result = await recoverPendingUsageSpend(env);
-    expect(result.attempted).toBe(USAGE_SPEND_RECOVERY_BATCH);
-    const pending = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM app_usage_spend WHERE app_id LIKE ? AND pending = 1",
-    ).bind(`${PREFIX}bounded-%`).first<{ count: number }>();
-    expect(pending?.count).toBe(1);
   });
 });

@@ -14,9 +14,11 @@ import { GatewayName } from "@/components/brand-icon";
 import { Field } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import {
-  CREATABLE_GATEWAY_TYPES,
-  type CreatableGatewayType,
-} from "@/lib/config-types";
+  GATEWAY_TYPES,
+  gatewayBody,
+  gatewayDescriptor,
+  type GatewayType,
+} from "@shared/gateways";
 import { gatewayOutcome, type TestOutcome } from "@/lib/provider-probe";
 import { useCreateProviderGateway, useTestProviderGateway } from "@/lib/queries";
 import type { ProviderGateway } from "@/lib/types";
@@ -26,6 +28,8 @@ import {
   TestResult,
   errorMessage,
 } from "./shared";
+
+const FIRST_TYPE = GATEWAY_TYPES[0];
 
 /**
  * The one place gateway details are entered, whether the operator started from
@@ -42,30 +46,31 @@ export function GatewayDialog({
 }) {
   const createGateway = useCreateProviderGateway();
   const testGateway = useTestProviderGateway();
-  // The list is what makes a second gateway type a data change: the selector
-  // below appears only once there is something to select, and each entry says
-  // which fields its own connection needs.
-  const [type, setType] = useState<CreatableGatewayType>(CREATABLE_GATEWAY_TYPES[0].value);
-  const gatewayType = CREATABLE_GATEWAY_TYPES.find((entry) => entry.value === type)
-    ?? CREATABLE_GATEWAY_TYPES[0];
-  const [name, setName] = useState<string>(gatewayType.defaultName);
-  const [accountId, setAccountId] = useState("");
-  const [gatewayId, setGatewayId] = useState("");
+  // The descriptors are what make a second gateway type a data change: the
+  // selector below appears only once there is something to select, and each
+  // type's descriptor says which connection fields it needs.
+  const [type, setType] = useState<GatewayType>(FIRST_TYPE);
+  const descriptor = gatewayDescriptor(type);
+  const [name, setName] = useState<string>(descriptor.defaultName);
+  const [connection, setConnection] = useState<Record<string, string>>({});
   const [token, setToken] = useState("");
   const [tested, setTested] = useState<TestOutcome | null>(null);
 
   // The name is the operator's label; only the rest reaches the gateway, and
   // which of those it needs is the chosen type's own answer.
   const connectionReady = Boolean(
-    token && (!gatewayType.needsCloudflareIds || (accountId.trim() && gatewayId.trim())),
+    token && descriptor.connectionFields.every((field) => connection[field.key]?.trim()),
   );
   const ready = Boolean(name.trim()) && connectionReady;
 
+  /** The connection values as sent: trimmed, and only the chosen type's own. */
+  const trimmed = () =>
+    Object.fromEntries(Object.entries(connection).map(([key, value]) => [key, value.trim()]));
+
   const clear = () => {
-    setType(CREATABLE_GATEWAY_TYPES[0].value);
-    setName(CREATABLE_GATEWAY_TYPES[0].defaultName);
-    setAccountId("");
-    setGatewayId("");
+    setType(FIRST_TYPE);
+    setName(gatewayDescriptor(FIRST_TYPE).defaultName);
+    setConnection({});
     setToken("");
     setTested(null);
     createGateway.reset();
@@ -74,23 +79,14 @@ export function GatewayDialog({
 
   /**
    * The only thing that ever calls the gateway. Saving does not: a connection
-   * can be stored while the Cloudflare side of it is still being built, and the
+   * can be stored while the gateway side of it is still being built, and the
    * probe cannot tell an unfinished gateway from a wrong token anyway.
    */
   const test = async () => {
     if (!connectionReady) return;
     setTested(null);
     try {
-      const result = await testGateway.mutateAsync(
-        gatewayType.value === "cf_aig"
-          ? {
-              type: "cf_aig",
-              accountId: accountId.trim(),
-              gatewayId: gatewayId.trim(),
-              token,
-            }
-          : { type: "vercel", token },
-      );
+      const result = await testGateway.mutateAsync(gatewayBody(type, trimmed(), { token }));
       setTested(gatewayOutcome(result));
     } catch (error) {
       setTested({
@@ -104,13 +100,10 @@ export function GatewayDialog({
   };
 
   /** A type switch carries none of the previous type's fields with it. */
-  const chooseType = (next: CreatableGatewayType) => {
-    const entry = CREATABLE_GATEWAY_TYPES.find((item) => item.value === next);
-    if (!entry) return;
+  const chooseType = (next: GatewayType) => {
     setType(next);
-    setName(entry.defaultName);
-    setAccountId("");
-    setGatewayId("");
+    setName(gatewayDescriptor(next).defaultName);
+    setConnection({});
     setToken("");
     setTested(null);
   };
@@ -124,17 +117,9 @@ export function GatewayDialog({
     if (!ready) return;
     try {
       // Each gateway's request body is exactly its own: the API rejects a field
-      // the chosen type has no use for, so the branch is on the discriminant.
+      // the chosen type has no use for, so only its own connection fields go.
       const result = await createGateway.mutateAsync(
-        gatewayType.value === "cf_aig"
-          ? {
-              type: "cf_aig",
-              name: name.trim(),
-              accountId: accountId.trim(),
-              gatewayId: gatewayId.trim(),
-              token,
-            }
-          : { type: "vercel", name: name.trim(), token },
+        gatewayBody(type, trimmed(), { name: name.trim(), token }),
       );
       clear();
       toast.success(`Added ${result.gateway.name}`);
@@ -171,22 +156,22 @@ export function GatewayDialog({
       }
     >
       <div className="space-y-4">
-        {CREATABLE_GATEWAY_TYPES.length > 1 ? (
+        {GATEWAY_TYPES.length > 1 ? (
           <Field label="Gateway type" htmlFor="gateway-type">
             {/* The same listbox the provider picker uses, for the same reason:
                 a native <select> cannot carry the gateway's mark, and the type
                 is exactly the field a brand identifies fastest. */}
             <Select
               value={type}
-              onValueChange={(next) => chooseType(next as CreatableGatewayType)}
+              onValueChange={(next) => chooseType(next as GatewayType)}
             >
               <SelectTrigger id="gateway-type" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {CREATABLE_GATEWAY_TYPES.map((entry) => (
-                  <SelectItem key={entry.value} value={entry.value}>
-                    <GatewayName type={entry.value} />
+                {GATEWAY_TYPES.map((entry) => (
+                  <SelectItem key={entry} value={entry}>
+                    <GatewayName type={entry} />
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -201,39 +186,33 @@ export function GatewayDialog({
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
-        {gatewayType.needsCloudflareIds ? (
-          <>
-            <Field label="Cloudflare Account ID" htmlFor="gateway-account">
-              <Input
-                id="gateway-account"
-                {...PLAIN_FIELD}
-                value={accountId}
-                onChange={(event) => {
-                  setAccountId(event.target.value);
-                  setTested(null);
-                }}
-              />
-            </Field>
-            <Field label="Cloudflare Gateway ID" htmlFor="gateway-gateway">
-              <Input
-                id="gateway-gateway"
-                {...PLAIN_FIELD}
-                value={gatewayId}
-                onChange={(event) => {
-                  setGatewayId(event.target.value);
-                  setTested(null);
-                }}
-              />
-            </Field>
-          </>
-        ) : null}
+        {descriptor.connectionFields.map((field) => (
+          <Field
+            key={field.key}
+            label={field.label}
+            htmlFor={`gateway-${field.key}`}
+            hint={field.hint}
+          >
+            <Input
+              id={`gateway-${field.key}`}
+              {...PLAIN_FIELD}
+              placeholder={field.placeholder}
+              value={connection[field.key] ?? ""}
+              onChange={(event) => {
+                const value = event.target.value;
+                setConnection((current) => ({ ...current, [field.key]: value }));
+                setTested(null);
+              }}
+            />
+          </Field>
+        ))}
         <Field
           label="Gateway token"
           htmlFor="gateway-token"
           hint={
             <a
               className="underline underline-offset-4"
-              href={gatewayType.tokenDocsUrl}
+              href={descriptor.tokenDocsUrl}
               target="_blank"
               rel="noreferrer"
             >
@@ -251,7 +230,7 @@ export function GatewayDialog({
             }}
           />
         </Field>
-        <p className="text-xs text-muted-foreground">{gatewayType.credentialNote}</p>
+        <p className="text-xs text-muted-foreground">{descriptor.credentialNote}</p>
         {tested ? <TestResult outcome={tested} /> : null}
       </div>
     </FormDialog>

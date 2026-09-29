@@ -17,7 +17,7 @@ import { colorEnabled, style } from "../src/style.ts";
 import { main } from "../src/main.ts";
 import type { CommandName } from "../src/parser.ts";
 import type { RenderedResult } from "../src/results.ts";
-import { fresh, makeStore } from "./helpers.ts";
+import { fresh, makeStore, served } from "./helpers.ts";
 
 const context: OutputContext = { url: "https://gw.example" };
 const owned: OutputContext = { url: "https://gw.example", accountId: "acct_1" };
@@ -37,7 +37,6 @@ const totals: UsageTotals = {
   output_tokens: 50,
   cost_usd: 1.5,
   errors: 1,
-  blocked: 0,
 };
 
 const provider: ProviderSummary = {
@@ -50,6 +49,7 @@ const provider: ProviderSummary = {
   gatewayRoute: null,
   baseUrl: null,
   pricing: null,
+  ...served("openai"),
   revision: 1,
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
@@ -91,7 +91,7 @@ const stored = {
 
 /** The smallest valid server configuration, as the schema's own parse produces it. */
 const UNLIMITED_SERVER_CONFIG = parseAppConfig({
-  authentication: { type: "api_key" },
+  authentication: { type: "api_key", end_user: { source: "none" } },
   routing: { providers: { mode: "all" }, model_rewrites: {} },
 });
 
@@ -100,15 +100,11 @@ const app: AppResponse = {
     revision: 1,
     id: "app_1",
     name: "Example",
-    config: {
-      authentication: { type: "api_key" },
-      routing: { providers: { mode: "all" }, model_rewrites: {} },
-    },
+    config: UNLIMITED_SERVER_CONFIG,
     status: "active",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
-  config_error: null,
 };
 
 const account: CliAccountResponse = {
@@ -120,7 +116,7 @@ const account: CliAccountResponse = {
     claimed: false,
     expiresAt: null,
   },
-  billing: { access: { state: "active" } },
+  billing: { access: { state: "self_hosted" } },
   usage: null,
 };
 
@@ -344,10 +340,9 @@ const cases: Case[] = [
       coverage: {
         scope: "retained_account_usage",
         firstRecord: null,
-        historicalAttribution: "Deleted apps keep their usage.",
       },
     },
-    includes: ["Requests:", "12", "No app usage recorded.", "Deleted apps keep their usage."],
+    includes: ["Requests:", "12", "No app usage recorded."],
   },
   {
     name: "account-wide usage lists the apps the totals came from",
@@ -363,7 +358,6 @@ const cases: Case[] = [
       coverage: {
         scope: "retained_account_usage",
         firstRecord: "2026-09-01",
-        historicalAttribution: "Deleted apps keep their usage.",
       },
     },
     includes: ["APP", "COST USD", "app_1", "app_2 (deleted)", "1.5000"],
@@ -409,16 +403,17 @@ const cases: Case[] = [
       deployment,
     },
     includes: [
-      "Waiting for browser handoff (op_1).",
+      "Waiting for browser approval (op_1).",
       "https://console.example/cli/op_1",
       "Resume: agw operation wait op_1",
     ],
   },
   {
-    name: "a completed handoff reports its state and what it created",
+    name: "a completed operation reports its state and what it created",
     command: "operation wait",
     result: {
       id: "op_1",
+      kind: "provider.add",
       expiresAt: "2026-09-17T00:00:00Z",
       deployment,
       state: "completed",
@@ -472,7 +467,6 @@ const cases: Case[] = [
     command: "app add",
     result: {
       app: app.app,
-      config_error: null,
       applicationKey: stored,
       guidance: "Store the generated key on your server.",
     },
@@ -730,8 +724,11 @@ test("error details are printed as indented fields under the text failure", asyn
         operations: {
           op_1: {
             url: "https://gw.example",
-            pollToken: "t".repeat(40),
+            token: "t".repeat(40),
             kind: "claim",
+            requestHash: "hash",
+            accountId: null,
+            createdAt: "now",
           },
         },
       }),

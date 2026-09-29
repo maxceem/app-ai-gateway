@@ -1,17 +1,27 @@
 import type { BillingAccess, BillingRuntime, SubscriptionState } from "../src/billing/contract";
-import { invalidateBillingAccess } from "../src/billing/gateway";
-import { anniversaryPeriod, resolveBillingQuota } from "../src/billing/quota";
+import { invalidateBillingAccess, requireActiveBilling } from "../src/billing/gateway";
+import { allowancePeriod } from "../src/billing/allowance-period";
+import { billingQuota, type BillingQuota } from "../src/billing/quota";
 import { invalidateAccountLifecycle } from "../src/core/account-lifecycle";
 import { clearIsolateCaches } from "./helpers";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveDeployment } from "../src/policy/deployment";
 
-/** Resolves a quota the way a request does: with the deployment its environment describes. */
-const quotaFor = (
-  quotaEnv: Env,
-  ...rest: Parameters<typeof resolveBillingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never
-) => resolveBillingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+type QuotaArgs = Parameters<typeof billingQuota> extends [unknown, unknown, ...infer Rest] ? Rest : never;
+
+/** Resolves a quota the way admission does: with the deployment its environment describes, refusing what it refuses. */
+async function quotaFor(quotaEnv: Env, ...rest: QuotaArgs): Promise<BillingQuota> {
+  const quota = await billingQuota(resolveDeployment(quotaEnv), quotaEnv, ...rest);
+  requireActiveBilling(quota.access);
+  return quota;
+}
+
+async function meteredFor(quotaEnv: Env, ...rest: QuotaArgs): Promise<Extract<BillingQuota, { kind: "metered" }>> {
+  const quota = await quotaFor(quotaEnv, ...rest);
+  if (quota.kind !== "metered") throw new Error("Expected a metered quota");
+  return quota;
+}
 
 function subscription(overrides: Partial<SubscriptionState> = {}): SubscriptionState {
   return {
@@ -71,208 +81,11 @@ afterEach(() => {
   clearIsolateCaches();
 });
 
-describe("billing quota anniversary periods", () => {
-  it("clamps short months from the original day without drift", () => {
-    const anchor = Date.parse("2025-01-31T12:34:56.789Z");
-    expect(anniversaryPeriod(anchor, 31, Date.parse("2025-02-15T00:00:00.000Z"))).toEqual({
-      start: anchor,
-      end: Date.parse("2025-02-28T12:34:56.789Z"),
-    });
-    expect(anniversaryPeriod(anchor, 31, Date.parse("2025-03-15T00:00:00.000Z"))).toEqual({
-      start: Date.parse("2025-02-28T12:34:56.789Z"),
-      end: Date.parse("2025-03-31T12:34:56.789Z"),
-    });
-  });
-
-  it("uses the exact first anchor before switching to the provider anchor day", () => {
-    const anchor = Date.parse("2026-08-09T08:00:00.000Z");
-    expect(anniversaryPeriod(anchor, 20, Date.parse("2026-08-10T00:00:00.000Z"))).toEqual({
-      start: anchor,
-      end: Date.parse("2026-08-20T08:00:00.000Z"),
-    });
-    expect(anniversaryPeriod(anchor, 20, Date.parse("2026-08-21T00:00:00.000Z"))).toEqual({
-      start: Date.parse("2026-08-20T08:00:00.000Z"),
-      end: Date.parse("2026-09-20T08:00:00.000Z"),
-    });
-  });
-
-  it("uses the organization creation instant for Free", async () => {
-    const organizationId = "quota-free-anchor";
-    const createdAt = "2026-01-31T05:06:07.008Z";
-    await seedOrganization(organizationId, createdAt);
-    const access: BillingAccess = {
-      plan: {
-        planKey: "free",
-        planName: "Free",
-        limits: { maxRequestsPerMonth: 1_000 },
-        isDefault: true,
-      },
-      subscription: null,
-    };
-    const resolved = await quotaFor(
-      hosted(access),
-      organizationId,
-      undefined,
-      Date.parse("2026-02-15T00:00:00.000Z"),
-    );
-    expect(resolved.period).toMatchObject({
-      periodStart: createdAt,
-      periodEnd: "2026-02-28T05:06:07.008Z",
-      resetAt: "2026-02-28T05:06:07.008Z",
-    });
-  });
-
-  it("gives annual subscriptions monthly allowance periods", async () => {
-    const organizationId = "quota-annual";
-    await seedOrganization(organizationId, "2025-01-01T00:00:00.000Z");
-    const access: BillingAccess = {
-      plan: {
-        planKey: "pro",
-        planName: "Pro",
-        limits: { maxRequestsPerMonth: 10_000 },
-        isDefault: false,
-      },
-      subscription: subscription({ billingPeriod: "year" }),
-    };
-    const resolved = await quotaFor(
-      hosted(access),
-      organizationId,
-      undefined,
-      Date.parse("2026-03-15T00:00:00.000Z"),
-    );
-    expect(resolved.period).toMatchObject({
-      periodStart: "2026-02-28T12:34:56.789Z",
-      periodEnd: "2026-03-31T12:34:56.789Z",
-    });
-  });
-
-  it("lets a resume after expiry replace Free with the paid schedule", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-03-15T00:00:00.000Z");
-    const organizationId = "quota-expired-resume";
-    await seedOrganization(organizationId, "2026-01-10T00:00:00.000Z");
-    const access: BillingAccess = {
-      plan: { planKey: "free", planName: "Free", limits: {}, isDefault: true },
-      subscription: subscription({
-        status: "cancelled",
-        endsAt: "2026-03-01T00:00:00.000Z",
-        updatedAt: "2026-02-20T00:00:00.000Z",
-      }),
-    };
-    const billingEnv = hosted(access);
-    const free = await quotaFor(billingEnv, organizationId);
-    expect(free.period.scheduleId).toMatch(/^free:/u);
-    expect(free.period.scheduleRevision).toBe(Date.parse("2026-03-01T00:00:00.000Z"));
-    expect(
-      await env.ORG_QUOTA.getByName(organizationId).admit({
-        limit: 10,
-        ...free.period,
-      }),
-    ).toMatchObject({ allowed: true, used: 1 });
-
-    access.plan = { planKey: "pro", planName: "Pro", limits: {}, isDefault: false };
-    access.subscription = subscription({
-      updatedAt: "2026-03-10T00:00:00.000Z",
-    });
-    invalidateBillingAccess(organizationId);
-    const paid = await quotaFor(billingEnv, organizationId);
-    expect(paid.period.scheduleId).toMatch(/^paid:/u);
-    expect(paid.period.scheduleRevision).toBe(Date.parse("2026-03-10T00:00:00.000Z"));
-    expect(
-      await env.ORG_QUOTA.getByName(organizationId).admit({
-        limit: 10,
-        ...paid.period,
-      }),
-    ).toMatchObject({ allowed: true, used: 1 });
-  });
+const freeAccess = (limit: number | null = 1000): BillingAccess => ({
+  plan: { planKey: "free", planName: "Free", isDefault: true, limits: limit === null ? {} : { maxRequestsPerMonth: limit } },
+  subscription: null,
 });
 
-describe("billing schedule validation", () => {
-  const paid = (value: SubscriptionState | null): BillingAccess => ({
-    plan: { planKey: "pro", planName: "Pro", limits: {}, isDefault: false },
-    subscription: value,
-  });
-
-  it.each([
-    ["billingAnchorAt", undefined],
-    ["billingAnchorAt", 123],
-    ["billingScheduleUpdatedAt", undefined],
-    ["updatedAt", {}],
-    ["createdAt", "invalid"],
-    ["billingAnchorDay", undefined],
-    ["billingAnchorDay", 32],
-  ])("rejects malformed %s with billing_unavailable", async (field, value) => {
-    const payload = subscription({ [field]: value } as Partial<SubscriptionState>);
-    await expect(
-      quotaFor(hosted(paid(payload)), `invalid-${field}`),
-    ).rejects.toMatchObject({ status: 502, code: "billing_unavailable" });
-  });
-
-  it("uses the anchor date for manual grants with a null anchor day", async () => {
-    await expect(
-      quotaFor(
-        hosted(paid(subscription({ billingAnchorDay: null }))),
-        "manual-null-day",
-        undefined,
-        Date.parse("2026-03-15T00:00:00.000Z"),
-      ),
-    ).resolves.toMatchObject({ period: { periodEnd: "2026-03-31T12:34:56.789Z" } });
-  });
-
-  it("rejects a paid plan without a subscription", async () => {
-    await expect(
-      quotaFor(hosted(paid(null)), "missing-subscription"),
-    ).rejects.toMatchObject({ status: 502, code: "billing_unavailable" });
-  });
-
-  it("requires a Free subscription revision instead of silently losing it", async () => {
-    const id = "free-missing-revision";
-    await seedOrganization(id, "2025-01-01T00:00:00.000Z");
-    const access = paid(
-      subscription({ updatedAt: undefined } as unknown as Partial<SubscriptionState>),
-    );
-    access.plan!.isDefault = true;
-    await expect(quotaFor(hosted(access), id)).rejects.toMatchObject({
-      status: 502,
-      code: "billing_unavailable",
-    });
-  });
-
-  it("uses the observation clock after billing I/O and needs no paid organization lookup", async () => {
-    vi.useFakeTimers();
-    const anchor = Date.parse("2026-08-01T00:00:00.000Z");
-    vi.setSystemTime(anchor - 10);
-    const access = paid(
-      subscription({ billingAnchorAt: new Date(anchor).toISOString(), billingAnchorDay: 1 }),
-    );
-    const billingEnv = hosted(access);
-    vi.spyOn(billingEnv.BILLING!, "getTenantAccess").mockImplementation(async () => {
-      vi.setSystemTime(anchor + 10);
-      return access;
-    });
-    await expect(quotaFor(billingEnv, "no-d1-organization")).resolves.toMatchObject({
-      period: { periodStart: new Date(anchor).toISOString() },
-    });
-  });
-
-  it.each([
-    [500, 503],
-    [60_001, 502],
-  ])("handles a future anchor %i ms away", async (ahead, status) => {
-    const now = Date.parse("2026-08-01T00:00:00.000Z");
-    const access = paid(subscription({ billingAnchorAt: new Date(now + ahead).toISOString() }));
-    await expect(
-      quotaFor(hosted(access), "future-anchor", undefined, now),
-    ).rejects.toMatchObject({
-      status,
-      code: "billing_unavailable",
-      ...(status === 503 ? { headers: { "Retry-After": "1" } } : {}),
-    });
-    expect(() => anniversaryPeriod(now + ahead, 1, now)).toThrow("future");
-  });
-});
-
-/** The claim route drops the cached lifecycle row; a direct write has to do the same. */
 async function claimOrganization(id: string, joinedAt = new Date().toISOString()) {
   await env.DB.batch([
     env.DB.prepare(
@@ -294,94 +107,114 @@ async function seedCliAccount(id: string, origin: string, claimed = false) {
   if (claimed) await claimOrganization(id, origin);
 }
 
-const freeAccess = (limit: number | null = 1000): BillingAccess => ({
-  plan: { planKey: "free", planName: "Free", isDefault: true, limits: limit === null ? {} : { maxRequestsPerMonth: limit } },
-  subscription: null,
-});
-
-describe("initial free access schedule", () => {
-  it("holds one period that never renews while nobody has claimed the account", async () => {
-    vi.useFakeTimers();
-    const origin = "2026-01-31T12:34:56.789Z";
-    const end = "2026-03-02T12:34:56.789Z";
-    vi.setSystemTime(new Date("2026-02-28T12:34:56.789Z"));
-    await seedCliAccount("unclaimed", origin);
-    const runtime = hosted(freeAccess(5000));
-    const cache = new Map();
-    const first = await quotaFor(runtime, "unclaimed", cache);
-    expect(first.limit).toBe(5000);
-    expect(first.access).toMatchObject({ subscription: null, plan: { planKey: "free" } });
-    expect(first.period).toMatchObject({ periodStart: origin, periodEnd: end });
-    expect(first.period.scheduleId).toMatch(/^free:/);
-    const quota = env.ORG_QUOTA.getByName("onboarding-unclaimed");
-    expect(await quota.admit({ ...first.period, limit: 1 })).toMatchObject({ allowed: true, used: 1 });
-    // Past the end the window stays exactly where it was: an account nobody has
-    // claimed never draws a second allowance, and its counter stays readable.
-    vi.setSystemTime(new Date("2026-03-20T12:34:56.789Z"));
-    const expired = await quotaFor(runtime, "unclaimed", cache);
-    expect(expired.period).toEqual(first.period);
-    expect(await quota.admit({ ...expired.period, limit: 1 })).toEqual({ allowed: false, superseded: true });
-    expect(await quota.pastUsage(expired.period)).toMatchObject({ used: 1 });
+describe("allowance periods", () => {
+  it("meters nothing on a self-hosted deployment, and reads nothing to decide so", async () => {
+    // No account by this id exists, so any lifecycle read would throw.
+    await expect(billingQuota(resolveDeployment(env), env, "self-hosted-no-such-account"))
+      .resolves.toEqual({ kind: "unmetered", access: { state: "self_hosted" } });
   });
 
-  it("moves a claimed account onto the ordinary renewing free schedule", async () => {
-    vi.useFakeTimers();
-    const origin = "2026-01-31T12:34:56.789Z";
-    vi.setSystemTime(new Date("2026-02-15T12:34:56.789Z"));
-    await seedCliAccount("claimed", origin);
-    const runtime = hosted(freeAccess(5000));
-    const cache = new Map();
-    const before = await quotaFor(runtime, "claimed", cache);
-    expect(before.period).toMatchObject({ periodStart: origin, periodEnd: "2026-03-02T12:34:56.789Z" });
-    await claimOrganization("claimed");
-    const after = await quotaFor(runtime, "claimed", cache);
-    expect(after.limit).toBe(5000);
-    expect(after.period.scheduleId).toMatch(/^free:/);
-    // Anchored on the account's own creation day, like any other free account.
-    expect(after.period).toMatchObject({ periodStart: origin, periodEnd: "2026-02-28T12:34:56.789Z" });
-    vi.setSystemTime(new Date("2026-02-28T12:34:56.789Z"));
-    const renewed = await quotaFor(runtime, "claimed", cache);
-    expect(renewed.period).toMatchObject({
-      scheduleId: after.period.scheduleId,
-      periodStart: "2026-02-28T12:34:56.789Z",
-      periodEnd: "2026-03-31T12:34:56.789Z",
+  it("renews a free plan on the day the account was created", async () => {
+    const organizationId = "quota-free-anniversary";
+    await seedOrganization(organizationId, "2026-01-31T05:06:07.008Z");
+    const resolved = await meteredFor(
+      hosted(freeAccess(1_000)),
+      organizationId,
+      undefined,
+      Date.parse("2026-02-15T00:00:00.000Z"),
+    );
+    expect(resolved.limit).toBe(1_000);
+    // January 31st renews on the last day of February, then on March 31st.
+    expect(resolved.period).toEqual({
+      periodId: "free:2026-01-31T05:06:07.008Z:2026-01-31T05:06:07.008Z",
+      periodStart: "2026-01-31T05:06:07.008Z",
+      periodEnd: "2026-02-28T05:06:07.008Z",
+      resetAt: "2026-02-28T05:06:07.008Z",
+    });
+    const march = await meteredFor(
+      hosted(freeAccess(1_000)),
+      organizationId,
+      undefined,
+      Date.parse("2026-03-15T00:00:00.000Z"),
+    );
+    expect(march.period).toMatchObject({
+      periodStart: "2026-02-28T05:06:07.008Z",
+      periodEnd: "2026-03-31T05:06:07.008Z",
     });
   });
 
-  it("keeps one counter across a claim, so the trial cannot be replayed as a fresh month", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-02-15T00:00:00Z"));
-    const id = "claimed-mid-period";
-    await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
-    const runtime = hosted(freeAccess(5000));
-    const quota = env.ORG_QUOTA.getByName(id);
-    const before = await quotaFor(runtime, id);
-    expect(await quota.admit({ ...before.period, limit: before.limit! }))
-      .toMatchObject({ allowed: true, used: 1 });
-    await claimOrganization(id);
-    const after = await quotaFor(runtime, id);
-    // Same schedule, same period: what the trial spent is still spent.
-    expect(after.period.scheduleId).toBe(before.period.scheduleId);
-    expect(await quota.admit({ ...after.period, limit: after.limit! }))
-      .toMatchObject({ allowed: true, used: 2 });
+  it("renews a paid plan on its subscription's billing anchor", async () => {
+    const organizationId = "quota-paid-anniversary";
+    await seedOrganization(organizationId, "2025-06-10T00:00:00.000Z");
+    const resolved = await meteredFor(
+      hosted({
+        plan: { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9_000 } },
+        subscription: subscription(),
+      }),
+      organizationId,
+      undefined,
+      Date.parse("2026-04-30T13:00:00.000Z"),
+    );
+    expect(resolved.limit).toBe(9_000);
+    // The anchor day survives February and April: the 31st clamps to the 30th
+    // here and comes back in May. Provider ids never reach the period id.
+    expect(resolved.period).toEqual({
+      periodId: "paid:2026-01-31T12:34:56.789Z:2026-04-30T12:34:56.789Z",
+      periodStart: "2026-04-30T12:34:56.789Z",
+      periodEnd: "2026-05-31T12:34:56.789Z",
+      resetAt: "2026-05-31T12:34:56.789Z",
+    });
   });
 
-  it.each([500, null])("uses the same configured free allowance %s before and after claim", async (limit) => {
+  it("starts a fresh allowance when a subscription begins, and resumes the free one when it ends", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-02-15T00:00:00Z"));
-    const id = `configured-free-${limit}`;
-    await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
-    const runtime = hosted(freeAccess(limit));
-    const before = await quotaFor(runtime, id);
-    expect(before.limit).toBe(limit ?? undefined);
-    await claimOrganization(id);
-    const after = await quotaFor(runtime, id);
-    expect(after.limit).toBe(limit ?? undefined);
+    const id = "quota-upgrade";
+    await seedOrganization(id, "2026-01-01T00:00:00.000Z");
+    const access = freeAccess(1);
+    const runtime = hosted(access);
     const quota = env.ORG_QUOTA.getByName(id);
-    if (after.limit !== undefined) {
-      expect(await quota.admit({ ...after.period, limit: after.limit })).toMatchObject({ allowed: true });
-    }
-    expect(await quota.usage(after.period)).toMatchObject({ used: after.limit === undefined ? 0 : 1 });
+    const free = await meteredFor(runtime, id);
+    expect(await quota.admit({ ...free.period, limit: free.limit })).toMatchObject({ allowed: true, used: 1 });
+    expect(await quota.admit({ ...free.period, limit: free.limit })).toMatchObject({ allowed: false, used: 1 });
+
+    access.plan = { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9_000 } };
+    access.subscription = subscription({
+      createdAt: "2026-02-14T09:00:00.000Z",
+      billingAnchorAt: "2026-02-14T09:00:00.000Z",
+      billingAnchorDay: 14,
+    });
+    invalidateBillingAccess(id);
+    const paid = await meteredFor(runtime, id);
+    // The subscription's own period, counted from its anchor, from zero.
+    expect(paid.period).toMatchObject({
+      periodStart: "2026-02-14T09:00:00.000Z",
+      periodEnd: "2026-03-14T09:00:00.000Z",
+    });
+    expect(await quota.admit({ ...paid.period, limit: paid.limit })).toMatchObject({ allowed: true, used: 1 });
+
+    // Back on the free plan within the same free period, what it spent is
+    // still spent: cancelling does not hand out a second free allowance.
+    access.plan = freeAccess(1).plan;
+    invalidateBillingAccess(id);
+    const again = await meteredFor(runtime, id);
+    expect(again.period.periodId).toBe(free.period.periodId);
+    expect(await quota.admit({ ...again.period, limit: again.limit })).toMatchObject({ allowed: false, used: 1 });
+  });
+
+  it("refuses a schedule that has not started, and asks for a retry on clock skew", async () => {
+    const id = "quota-future-anchor";
+    await seedOrganization(id, "2026-01-01T00:00:00.000Z");
+    const paid = (anchor: string) => hosted({
+      plan: { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9_000 } },
+      subscription: subscription({ billingAnchorAt: anchor, billingAnchorDay: null }),
+    });
+    const now = Date.parse("2026-03-01T00:00:00.000Z");
+    await expect(quotaFor(paid("2026-03-01T00:00:30.000Z"), id, undefined, now))
+      .rejects.toMatchObject({ status: 503, code: "billing_unavailable" });
+    invalidateBillingAccess(id);
+    await expect(quotaFor(paid("2026-04-01T00:00:00.000Z"), id, undefined, now))
+      .rejects.toMatchObject({ status: 502, code: "billing_unavailable" });
   });
 
   it("does not manufacture access when billing has no entitlement or malformed limits", async () => {
@@ -396,58 +229,123 @@ describe("initial free access schedule", () => {
   });
 });
 
-it.each([
-  ["manual", "active"], ["lemon_squeezy", "active"], ["lemon_squeezy", "on_trial"],
-] as const)("keeps %s %s subscriptions on their paid schedule despite initial free access metadata", async (source, status) => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-02-15T00:00:00Z"));
-  const id = `override-${source}-${status}`;
-  await seedCliAccount(id, "2026-01-31T00:00:00.000Z");
-  const access: BillingAccess = {
-    plan: { planKey: "pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9000 } },
-    subscription: subscription({ subscriptionId: source === "manual" ? null : "paid", source, status,
-      trialEndsAt: status === "on_trial" ? "2026-03-01T00:00:00.000Z" : null,
-      billingAnchorAt: "2026-02-01T00:00:00.000Z", createdAt: "2026-02-01T00:00:00.000Z",
-      updatedAt: "2026-02-01T00:00:00.000Z", billingAnchorDay: 1 }),
-  };
-  const result = await quotaFor(hosted(access), id);
-  expect(result.limit).toBe(9000);
-  expect(result.period.scheduleId).toMatch(/^paid:/);
-  expect(result.period.periodStart).toBe("2026-02-01T00:00:00.000Z");
-  access.subscription = { ...access.subscription!, status: "expired" };
-  access.plan = freeAccess().plan;
-  invalidateBillingAccess(id);
-  const fallback = await quotaFor(hosted(access), id);
-  expect(fallback.period.scheduleId).toMatch(/^free:/);
-  expect(fallback.period.periodStart).toBe("2026-01-31T00:00:00.000Z");
-  expect(fallback.limit).toBe(1000);
+describe("the anniversary arithmetic", () => {
+  const schedule = { kind: "free" as const, origin: "free:x", anchorAt: Date.parse("2026-01-31T00:00:00.000Z"), anchorDay: 31 };
+
+  it("renews at the anchor instant exactly, never a millisecond early", () => {
+    expect(allowancePeriod(schedule, Date.parse("2026-02-27T23:59:59.999Z")).periodStart)
+      .toBe("2026-01-31T00:00:00.000Z");
+    expect(allowancePeriod(schedule, Date.parse("2026-02-28T00:00:00.000Z")).periodStart)
+      .toBe("2026-02-28T00:00:00.000Z");
+  });
+
+  it("opens the first period on the anchor when the renewal day comes later that month", () => {
+    // A trial that started on the 9th and bills on the 20th: its first period
+    // runs to the 20th, and the paid period after it is a counter of its own.
+    const trial = { kind: "paid" as const, origin: "paid:x", anchorAt: Date.parse("2026-08-09T08:30:00.789Z"), anchorDay: 20 };
+    const first = allowancePeriod(trial, Date.parse("2026-08-10T00:00:00.000Z"));
+    expect(first).toMatchObject({
+      periodStart: "2026-08-09T08:30:00.789Z",
+      periodEnd: "2026-08-20T08:30:00.789Z",
+    });
+    const paid = allowancePeriod(trial, Date.parse("2026-08-20T08:30:00.789Z"));
+    expect(paid).toMatchObject({
+      periodStart: "2026-08-20T08:30:00.789Z",
+      periodEnd: "2026-09-20T08:30:00.789Z",
+    });
+    expect(paid.periodId).not.toBe(first.periodId);
+  });
+
+  it("opens the first period on the anchor when the renewal day came earlier that month", () => {
+    const late = { kind: "paid" as const, origin: "paid:x", anchorAt: Date.parse("2026-08-25T00:00:00.000Z"), anchorDay: 5 };
+    expect(allowancePeriod(late, Date.parse("2026-08-30T00:00:00.000Z"))).toMatchObject({
+      periodStart: "2026-08-25T00:00:00.000Z",
+      periodEnd: "2026-09-05T00:00:00.000Z",
+    });
+  });
+
+  it("clamps to a short month without drifting, and crosses a year", () => {
+    expect(allowancePeriod(schedule, Date.parse("2028-02-29T12:00:00.000Z"))).toMatchObject({
+      periodStart: "2028-02-29T00:00:00.000Z",
+      periodEnd: "2028-03-31T00:00:00.000Z",
+    });
+    expect(allowancePeriod(schedule, Date.parse("2027-01-15T00:00:00.000Z"))).toMatchObject({
+      periodStart: "2026-12-31T00:00:00.000Z",
+      periodEnd: "2027-01-31T00:00:00.000Z",
+    });
+  });
 });
 
-it("can adopt an earlier manual grant after a claim read through cached default access", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-02-15T00:00:00Z"));
-  const id = "claim-with-earlier-grant";
-  await seedCliAccount(id, "2026-01-31T00:00:00.000Z");
-  const access = freeAccess();
-  const runtime = hosted(access);
-  await quotaFor(runtime, id);
-  await claimOrganization(id);
-  const cachedDefault = await quotaFor(runtime, id);
-  const quota = env.ORG_QUOTA.getByName(id);
-  expect(await quota.admit({ ...cachedDefault.period, limit: 1000 })).toMatchObject({ allowed: true, used: 1 });
-  access.plan = { planKey: "manual-pro", planName: "Pro", isDefault: false, limits: { maxRequestsPerMonth: 9000 } };
-  access.subscription = subscription({ source: "manual", subscriptionId: null,
-    createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z",
-    billingAnchorAt: "2026-02-01T00:00:00.000Z", billingScheduleUpdatedAt: "2026-02-01T00:00:00.000Z",
-    billingAnchorDay: 1, endsAt: "2026-02-20T00:00:00.000Z" });
-  invalidateBillingAccess(id);
-  const paid = await quotaFor(runtime, id);
-  expect(await quota.admit({ ...paid.period, limit: paid.limit! })).toMatchObject({ allowed: true, used: 1 });
-  vi.setSystemTime(new Date("2026-02-20T00:00:00Z"));
-  access.plan = freeAccess().plan;
-  access.subscription.status = "expired";
-  invalidateBillingAccess(id);
-  const fallback = await quotaFor(runtime, id);
-  expect(fallback.period.scheduleRevision).toBe(Date.now());
-  expect(await quota.admit({ ...fallback.period, limit: fallback.limit! })).toMatchObject({ allowed: true, used: 2 });
+describe("unclaimed accounts", () => {
+  it("hold the month they were created in until the free window closes, and never renew", async () => {
+    vi.useFakeTimers();
+    const origin = "2026-01-31T12:34:56.789Z";
+    const end = "2026-03-02T12:34:56.789Z";
+    vi.setSystemTime(new Date("2026-02-28T12:34:56.789Z"));
+    await seedCliAccount("unclaimed", origin);
+    const runtime = hosted(freeAccess(5000));
+    const first = await meteredFor(runtime, "unclaimed");
+    expect(first.limit).toBe(5000);
+    // The first renewal has already passed, but the account still spends its
+    // first allowance: nobody draws a second one without a human owner.
+    expect(first.period).toMatchObject({ periodStart: origin, periodEnd: end, resetAt: end });
+    const quota = env.ORG_QUOTA.getByName("unclaimed");
+    expect(await quota.admit({ ...first.period, limit: 1 })).toMatchObject({ allowed: true, used: 1 });
+    // Past the window the period is still the same one — never a renewed one —
+    // and its count stays readable. Serving nothing more is the account gate's job.
+    vi.setSystemTime(new Date("2026-03-20T12:34:56.789Z"));
+    const expired = await meteredFor(runtime, "unclaimed");
+    expect(expired.period).toEqual(first.period);
+    expect(await quota.admit({ ...expired.period, limit: 1 })).toMatchObject({ allowed: false, used: 1 });
+    expect(await quota.usage(expired.period.periodId)).toBe(1);
+  });
+
+  it("keep their count across a claim in the first period, then renew on the creation day", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-15T00:00:00Z"));
+    const id = "claimed-mid-month";
+    await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
+    const runtime = hosted(freeAccess(5000));
+    const quota = env.ORG_QUOTA.getByName(id);
+    const before = await meteredFor(runtime, id);
+    expect(await quota.admit({ ...before.period, limit: before.limit })).toMatchObject({ allowed: true, used: 1 });
+    await claimOrganization(id);
+    const after = await meteredFor(runtime, id);
+    // The same key, so what the free window spent is still spent.
+    expect(after.period.periodId).toBe(before.period.periodId);
+    expect(after.period.periodEnd).toBe("2026-03-01T00:00:00.000Z");
+    expect(await quota.admit({ ...after.period, limit: after.limit })).toMatchObject({ allowed: true, used: 2 });
+    vi.setSystemTime(new Date("2026-03-01T00:00:00Z"));
+    expect((await meteredFor(runtime, id)).period.periodStart).toBe("2026-03-01T00:00:00.000Z");
+  });
+
+  it("move onto the renewed period when claimed after the first renewal, inside the free window", async () => {
+    vi.useFakeTimers();
+    const origin = "2026-01-31T12:34:56.789Z";
+    vi.setSystemTime(new Date("2026-02-28T20:00:00.000Z"));
+    const id = "claimed-after-renewal";
+    await seedCliAccount(id, origin);
+    const runtime = hosted(freeAccess(5000));
+    const before = await meteredFor(runtime, id);
+    expect(before.period.periodStart).toBe(origin);
+    await claimOrganization(id);
+    const after = await meteredFor(runtime, id);
+    expect(after.period).toMatchObject({
+      periodStart: "2026-02-28T12:34:56.789Z",
+      periodEnd: "2026-03-31T12:34:56.789Z",
+    });
+    expect(after.period.periodId).not.toBe(before.period.periodId);
+  });
+
+  it.each([500, null])("use the same configured free allowance %s before and after claim", async (limit) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-15T00:00:00Z"));
+    const id = `configured-free-${limit}`;
+    await seedCliAccount(id, "2026-02-01T00:00:00.000Z");
+    const runtime = hosted(freeAccess(limit));
+    const limitOf = (quota: BillingQuota) => (quota.kind === "metered" ? quota.limit : undefined);
+    expect(limitOf(await quotaFor(runtime, id))).toBe(limit ?? undefined);
+    await claimOrganization(id);
+    expect(limitOf(await quotaFor(runtime, id))).toBe(limit ?? undefined);
+  });
 });

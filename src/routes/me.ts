@@ -1,8 +1,10 @@
 import { Hono } from "hono";
-import { hasUserLevelLimits } from "../core/config";
+import { hasUserLevelLimits } from "../shared/app-config";
+import { appUserBlocked } from "../client-auth/user-status";
 import type { CurrentUserResponse } from "../contracts/responses";
 import { GatewayError } from "../core/errors";
 import type { GatewayVariables } from "../middleware/auth";
+import { monthlySpendMicrousd } from "../usage/app-usage-accounting";
 
 export const meRoutes = new Hono<{ Bindings: Env; Variables: GatewayVariables }>();
 
@@ -24,9 +26,12 @@ meRoutes.get("/", async (c) => {
     );
   }
   const perUser = app.config.limits.per_user;
-  const status = await c.env.USER_LIMITER
-    .getByName(`${app.id}:${userId}`)
-    .getStatus(Date.now());
+  const now = Date.now();
+  const [status, spentMicrousd, blocked] = await Promise.all([
+    c.env.USER_LIMITER.getByName(`${app.id}:${userId}`).getStatus(now),
+    monthlySpendMicrousd(c.env.DB, { appId: app.id, userKey: userId }, new Date(now).toISOString().slice(0, 7)),
+    appUserBlocked(c.env.DB, app.id, userId),
+  ]);
   /*
    * Requests are only counted while a per-user limit is set: an app with none
    * never reaches the limiter on the request path, which is what keeps the
@@ -52,9 +57,9 @@ meRoutes.get("/", async (c) => {
         : Math.max(0, perUser.requests.per_day - status.requestsToday),
       requests_per_minute: perUser.requests.per_minute,
       requests_per_day: perUser.requests.per_day,
-      monthly_cost_usd: status.monthlyCostMicrousd / 1_000_000,
+      monthly_cost_usd: spentMicrousd / 1_000_000,
       monthly_budget_usd: perUser.spending.monthly_usd,
-      blocked: status.blocked,
+      blocked,
     },
   } satisfies CurrentUserResponse);
 });

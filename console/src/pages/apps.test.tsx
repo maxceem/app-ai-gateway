@@ -33,12 +33,12 @@ const FREE_ACCESS: BillingAccess = {
 };
 
 const QUOTA: OrganizationQuota = {
-  periodId: "free:2026-09-08T03:15:00.000Z",
-  periodStart: "2026-09-08T03:15:00.000Z",
-  periodEnd: "2026-10-08T03:15:00.000Z",
+  periodId: "2026-09",
+  periodStart: "2026-09-01T00:00:00.000Z",
+  periodEnd: "2026-10-01T00:00:00.000Z",
   used: 0,
   limit: 1000,
-  resetAt: "2026-10-08T03:15:00.000Z",
+  resetAt: "2026-10-01T00:00:00.000Z",
 };
 
 const app: AppSummary = {
@@ -61,7 +61,6 @@ const app: AppSummary = {
     output_tokens: 40,
     cost_usd: 0.02,
     errors: 0,
-    blocked: 0,
   },
 };
 
@@ -92,7 +91,7 @@ function renderApps(
                 },
                 end_user: { source: "app_install" },
               }
-            : { type: "api_key" },
+            : { type: "api_key", end_user: { source: "none" } },
           routing: {
             providers: {
               mode: "selected",
@@ -104,7 +103,6 @@ function renderApps(
           },
         },
       },
-      config_error: null,
     } }])),
     "/v1/admin/prices": { body: { prices: {} } },
     [APPS_URL]: {

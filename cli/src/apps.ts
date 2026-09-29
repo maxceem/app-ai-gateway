@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
 import { AppWriteSchema, type AppWrite } from "../../src/contracts/schemas.ts";
-import { operationPath } from "../../src/contracts/catalog.ts";
 import type {
   ApiKeyListResponse,
   ApiKeyRevokeResponse,
@@ -9,16 +7,15 @@ import type {
   AppResponse,
   AppDraftValidateResponse,
   AppValidateResponse,
-  CreatedApiKey,
   ProviderSummary,
 } from "../../src/contracts/responses.ts";
 import { fail, validate } from "./common.ts";
-import type { Context, KeyOutput } from "./context.ts";
+import type { Context } from "./context.ts";
 import { confirm } from "./input.ts";
 import type { Flags } from "./parser.ts";
 import { flagList } from "./parser.ts";
 import { jsonFile, required } from "./resources.ts";
-import { reserveOutput, type ReservedOutput, type StoredKeyMetadata } from "./state.ts";
+import { reserveOutput, type StoredKeyMetadata } from "./state.ts";
 import {
   curlSnippet,
   exampleNotes,
@@ -45,7 +42,6 @@ export type ValidationResult =
 export interface AppWriteResult {
   snippet?: string;
   app: AppResponse["app"];
-  config_error: AppResponse["config_error"];
   applicationKey?: StoredKeyMetadata;
   guidance: string;
 }
@@ -73,14 +69,7 @@ export type AppResult =
   | { output: string }
   | { language: "swift" | "shell"; snippet: string; notes: string[] };
 
-/**
- * The stored application as a write body.
- *
- * Validated rather than copied: the read response admits a configuration that
- * predates a schema change (see `config_error`), and every command that reaches
- * for `config.authentication` needs one that parses. The refusal names the
- * field, which is what an operator repairing such a row needs.
- */
+/** The stored application as a write body. */
 export function documentOf(app: AppResponse["app"]): AppWrite {
   return localApp({ name: app.name, config: app.config, status: app.status });
 }
@@ -158,7 +147,7 @@ export async function appDocument(flags: Flags, current?: AppWrite): Promise<App
               flags["attest-environments"] ?? "production,development",
             ),
           })
-        : newAppConfig({ type: "api_key" }),
+        : newAppConfig({ type: "api_key", endUser: { source: "none" } }),
     });
   }
   if (flags.name) doc.name = flags.name;
@@ -227,67 +216,6 @@ async function remoteValidation(
   return { local: true, remote: true, ...data };
 }
 
-/**
- * The plaintext key a creation just minted, if this run is the one that minted
- * it. A replayed creation answers with the redacted copy protected state keeps,
- * which carries no key at all — that is the point of it — and the command
- * reports its recorded `keyMetadata` instead.
- */
-function mintedKey(
-  value: CreatedApiKey | Omit<CreatedApiKey, "key"> | null,
-): CreatedApiKey | null {
-  return value && "key" in value ? value : null;
-}
-
-export async function saveKey(
-  ctx: Context,
-  keyRecord: CreatedApiKey,
-  output: ReservedOutput | KeyOutput,
-  appId: string,
-): Promise<StoredKeyMetadata> {
-  const raw = keyRecord.key;
-  const recoverable = "recoveryAvailable" in output ? output : undefined;
-  try {
-    await output.write(raw + "\n");
-  } catch {
-    if (recoverable?.recoveryAvailable()) {
-      await output.cancel();
-      fail("key_output_pending", "The active key is saved in protected CLI recovery state, but its chosen output could not be completed.",
-        "Retry the same command to finish the reserved output, or choose a new --key-output path. No new key will be generated.", 4, { appId, keyId: keyRecord.id, storagePath: output.path });
-    }
-    let revoked = false;
-    try {
-      await ctx.call("revokeAppKey", { params: { app: appId, key: keyRecord.id } });
-      revoked = true;
-    } catch {
-      /* Left unverified on purpose; the refusal below says so. */
-    }
-    if (recoverable) {
-      recoverable.mutation.failure = { appId, keyId: keyRecord.id, revoked };
-      delete recoverable.mutation.response;
-      await ctx.save().catch(() => {});
-    }
-    await output.cancel();
-    fail(
-      "key_storage_failed",
-      revoked
-        ? "The key could not be stored and was revoked."
-        : "The key could not be stored; revocation could not be verified.",
-      `Inspect agw app key list ${appId}; revoke key ${keyRecord.id} before retrying.`,
-      4,
-      { appId, keyId: keyRecord.id, revoked },
-    );
-  }
-  return {
-    id: keyRecord.id,
-    name: keyRecord.name,
-    key_prefix: keyRecord.key_prefix,
-    created_at: keyRecord.created_at,
-    storagePath: output.path,
-    contentHash: createHash("sha256").update(raw + "\n").digest("hex"),
-  };
-}
-
 export async function appCommand(
   ctx: Context,
   command: string,
@@ -335,40 +263,25 @@ export async function appCommand(
         definition: doc,
         validation: await remoteValidation(ctx, doc, appId || undefined),
       };
-    const output =
-      action === "add" && doc.config.authentication.type === "api_key"
-        ? await ctx.keyOutput(operationPath("createApp"), doc, flags["key-output"])
-        : null;
-    try {
+    {
       let app: AppResponse["app"];
-      let configError: AppResponse["config_error"];
       let key: StoredKeyMetadata | undefined;
       if (action === "add") {
         await ctx.bootstrap();
-        const created = await ctx.create("createApp", { body: doc });
-        ({ app, config_error: configError } = created.data);
-        if (output) {
-          if (created.keyMetadata) key = created.keyMetadata;
-          else {
-            const minted = mintedKey(created.data.api_key);
-            if (!minted)
-              fail(
-                "invalid_response",
-                "The server did not return the generated application key.",
-                "Inspect the app key list before retrying.",
-                3,
-              );
-            key = await saveKey(ctx, minted, output, app.id);
-          }
-          await created.keyStored?.(key);
+        if (doc.config.authentication.type === "api_key") {
+          const created = await ctx.keyOperation("app.add", doc, flags["key-output"]);
+          app = created.operation.result!.app!;
+          key = created.key;
+        } else {
+          const created = await ctx.operation("app.add", doc);
+          app = created.result!.app!;
         }
-        await created.complete();
       } else {
         const updated = await ctx.call("updateApp", {
           params: { app: appId },
           body: { ...doc, revision },
         });
-        ({ app, config_error: configError } = updated.data);
+        ({ app } = updated.data);
       }
       // The request this application can now send, written against whatever it
       // has: a provider it can reach and a priced model where those exist, and
@@ -388,15 +301,12 @@ export async function appCommand(
       return {
         ...(snippet ? { snippet } : {}),
         app,
-        config_error: configError,
         ...(key ? { applicationKey: key } : {}),
         guidance:
           doc.config.authentication.type === "apple_app_attest"
             ? `Add https://github.com/maxceem/app-ai-gateway-swift from 1.0.0, enable App Attest, and test on a supported physical device. Run agw app snippet ${app.id} --provider <slug> for integration code. Production releases should use production-only App Attest.`
             : `Store the generated key on your server; never embed it in a mobile application. Run agw app snippet ${app.id} for this request again.`,
       };
-    } finally {
-      await output?.cancel();
     }
   }
   if (action.startsWith("key ")) {
@@ -420,31 +330,8 @@ export async function appCommand(
     const name = await required(flags, "name");
     if (!name.trim() || name.length > 100)
       fail("invalid_input", "Key name must be 1–100 characters.");
-    const output = await ctx.keyOutput(
-      operationPath("createAppKey", { app: appId }),
-      { name },
-      flags["key-output"],
-    );
-    try {
-      const created = await ctx.create("createAppKey", { params: { app: appId }, body: { name } });
-      let applicationKey = created.keyMetadata;
-      if (!applicationKey) {
-        const minted = mintedKey(created.data);
-        if (!minted)
-          fail(
-            "invalid_response",
-            "The server did not return the generated application key.",
-            "Inspect the app key list before retrying.",
-            3,
-          );
-        applicationKey = await saveKey(ctx, minted, output, appId);
-      }
-      await created.keyStored?.(applicationKey);
-      await created.complete();
-      return { appId, applicationKey };
-    } finally {
-      await output.cancel();
-    }
+    const created = await ctx.keyOperation("app.key.add", { app: appId, name }, flags["key-output"]);
+    return { appId, applicationKey: created.key };
   }
   const appId = args[0] ?? "";
   const { data } = await ctx.call("getApp", { params: { app: appId } });
@@ -477,8 +364,7 @@ export async function appCommand(
       })),
       ready:
         doc.status === "active" &&
-        reachableProviders(doc.config.routing, selected).length > 0 &&
-        !data.config_error,
+        reachableProviders(doc.config.routing, selected).length > 0,
       limitations: [
         "No inference was sent.",
         "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",

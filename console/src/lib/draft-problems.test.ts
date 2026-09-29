@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftProblem } from "./draft-problems";
+import { draftIssues, draftProblem } from "./draft-problems";
 import type { Draft } from "@/lib/app-draft";
 import type { AuthenticationDraft } from "./config-types";
 
@@ -19,45 +19,47 @@ const issuer = {
   max_token_lifetime_seconds: 86400,
 };
 
+const problem = (draft: Draft) => draftProblem(draft, draftIssues(draft));
+
 describe("draftProblem", () => {
   it("passes a complete draft", () => {
-    expect(draftProblem(draft({ type: "api_key", end_user: { source: "issuer", issuer } }))).toBeNull();
-    expect(draftProblem(draft({ type: "api_key" }))).toBeNull();
+    expect(problem(draft({ type: "api_key", end_user: { source: "issuer", issuer } }))).toBeNull();
+    expect(problem(draft({ type: "api_key", end_user: { source: "none" } }))).toBeNull();
   });
 
   it("names the first thing the Worker would refuse", () => {
-    expect(draftProblem(draft({ type: "api_key" }, "  "))).toMatch(/name/i);
-    expect(draftProblem(draft({
+    expect(problem(draft({ type: "api_key", end_user: { source: "none" } }, "  "))).toMatch(/name/i);
+    expect(problem(draft({
       type: "apple_app_attest",
       app_attest: { team_id: "", bundle_id: "com.example" },
       end_user: { source: "app_install" },
     }))).toMatch(/team id/i);
     // Present but malformed: the schema's own wording, not a console rule.
-    expect(draftProblem(draft({
+    expect(problem(draft({
       type: "apple_app_attest",
       app_attest: { team_id: "abcde12345", bundle_id: "com.example" },
       end_user: { source: "app_install" },
     }))).toMatch(/team_id must contain ten uppercase letters or digits/u);
-    expect(draftProblem(draft({
+    expect(problem(draft({
       type: "apple_app_attest",
       app_attest: { team_id: "ABCDE12345", bundle_id: "example" },
       end_user: { source: "app_install" },
     }))).toMatch(/bundle_id must be a reverse DNS identifier/u);
     // Past the form's own prompts, the schema has the last word: a draft it
     // would refuse is never offered as saveable.
-    expect(draftProblem(draft({
+    expect(problem(draft({
       type: "api_key",
       end_user: { source: "header", header: "authorization" },
     }))).toMatch(/authentication\.end_user\.header/u);
-    expect(draftProblem(draft({ type: "api_key", end_user: { source: "header", header: " " } })))
+    expect(problem(draft({ type: "api_key", end_user: { source: "header", header: " " } })))
       .toMatch(/header name/i);
     // Half-typed on the Auth policy page: the Worker stores lists, so an empty
     // list counts as missing too.
-    expect(draftProblem(draft({
+    expect(problem(draft({
       type: "api_key",
       end_user: { source: "issuer", issuer: { ...issuer, audience: [] } },
     }))).toMatch(/identity provider/i);
-    expect(draftProblem(draft({
+    expect(problem(draft({
       type: "api_key",
       end_user: {
         source: "issuer",

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import prices from "../src/core/prices.json";
-import { providerModelAuthor, PROVIDER_TYPES } from "../src/core/providers";
+import prices from "../src/usage/prices.json";
+import { providerModelAuthor } from "../src/providers/provider-type";
 import {
   bodyWindows,
   observeUpstreamBody,
@@ -8,16 +8,16 @@ import {
   OBSERVER_TAIL_BYTES,
   wholeBody,
   type ObservedBody,
-} from "../src/core/body-observer";
+} from "../src/usage/body-observer";
 import {
   computeCost,
   hasTokenModelPrice,
   isBillable,
   resolveModelAuthor,
-} from "../src/core/pricing";
-import { extractUsageText, observeResponse } from "../src/core/usage-readers";
-import { API_STYLES, type ApiStyle } from "../src/core/api-styles";
-import type { ProviderType } from "../src/core/types";
+} from "../src/usage/pricing";
+import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
+import { API_STYLES, type ApiStyle } from "../src/shared/capabilities";
+import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
 
 /**
  * Extraction that a style is expected to recognise; `null` fails the test here.

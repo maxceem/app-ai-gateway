@@ -15,6 +15,7 @@ const APP_ROW = {
   config: {
     authentication: {
       type: "api_key",
+      end_user: { source: "none" },
     },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   },
@@ -40,7 +41,7 @@ function renderTab(apiBaseUrl?: string, keys: Array<{ status: string }> = [{ sta
     [`/v1/admin/apps/${APP_ID}/users`]: { body: { app_id: APP_ID, total: 0, users: [] } },
     [`/v1/admin/apps/${APP_ID}/keys`]: { body: { app_id: APP_ID, keys } },
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: APP_ROW, config_error: null },
+      body: { app: APP_ROW },
     },
   });
   return renderAuthenticated(<Harness />, { capabilities: { apiBaseUrl } });

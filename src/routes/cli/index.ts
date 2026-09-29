@@ -1,18 +1,16 @@
-import { accountMonthUsage } from "../../core/account-usage";
+import { accountMonthUsage } from "../../usage/account-usage";
 import { examplePath } from "../../shared/first-request";
 import { browserGoogle } from "./oauth";
 import { Hono } from "hono";
-import { getBillingQuotaResolution } from "../../billing/quota";
+import { billingQuota, quotaUsage } from "../../billing/quota";
 import { accountLifecycle } from "../../core/account-lifecycle";
-import {
-  providerCapability,
-  providerDescriptor,
-  PROVIDER_TYPES,
-} from "../../core/providers";
+import { providerCapability, providerDescriptor, PROVIDER_TYPES } from "../../shared/providers";
+import { GATEWAY_TYPES, gatewayDescriptor } from "../../shared/gateways";
 import { currentMonth } from "../../management/usage-queries";
-import { bootstrap, deploymentMeta } from "./bootstrap";
-import { cliAuthenticate, createOperation, pollOperation } from "./operations";
+import { bootstrap } from "./bootstrap";
+import { cliAuthenticate, createOperation, deploymentMeta, pollOperation } from "./operations";
 import {
+  assertConsoleOrigin,
   browserDetails,
   browserSubmit,
   browserRegister,
@@ -20,6 +18,7 @@ import {
 import type { CliCapabilitiesResponse } from "../../contracts/cli";
 import { catalogRouter } from "../catalog-router";
 import { SERVER_VERSION } from "../../core/version";
+import { cliJson } from "./security";
 import type { CliEnv } from "./types";
 
 export const cliRoutes = new Hono<CliEnv>();
@@ -28,6 +27,8 @@ export const cliRoutes = new Hono<CliEnv>();
 const routes = catalogRouter(cliRoutes, "/v1/cli", {
   authorized: true,
   authenticate: cliAuthenticate,
+  // Bounded, because the bootstrap and the browser handoff are public.
+  readBody: (c) => cliJson(c.req.raw),
 });
 cliRoutes.use("*", async (c, next) => {
   c.header("Cache-Control", "no-store");
@@ -53,25 +54,22 @@ routes.handle("getCliCapabilities", (c) => {
       const defaultPath = examplePath(type);
       return {
         type,
-        name: type,
+        name: descriptor.label,
         apiStyles: [...capability.apiStyles],
         endpointStyles: [...capability.endpointStyles],
         baseUrl: descriptor.directBaseUrl,
         ...(defaultPath === undefined ? {} : { defaultPath }),
       };
     }),
-    providerGateways: [
-      { type: "cf_aig", name: "Cloudflare AI Gateway" },
-      { type: "vercel", name: "Vercel AI Gateway" },
-    ],
+    providerGateways: GATEWAY_TYPES.map((type) => ({ type, name: gatewayDescriptor(type).label })),
   };
   return capabilities;
 });
 routes.handle("bootstrapCliAccount", bootstrap);
 routes.handle("createCliOperation", createOperation);
 routes.handle("pollCliOperation", pollOperation);
-routes.handle("cliBrowserDetails", browserDetails);
-routes.handle("cliBrowserSubmit", browserSubmit);
+routes.handle("cliBrowserDetails", browserDetails, { before: assertConsoleOrigin });
+routes.handle("cliBrowserSubmit", browserSubmit, { before: assertConsoleOrigin });
 /*
  * Two of the four browser endpoints relay Better Auth's own `Response` — its
  * status and its `Set-Cookie` are the answer, not merely its body — so they are
@@ -79,30 +77,20 @@ routes.handle("cliBrowserSubmit", browserSubmit);
  */
 routes.relay("cliBrowserRegister", browserRegister);
 routes.relay("cliBrowserGoogle", browserGoogle);
-routes.handle("getCliAccount", async (c) => {
-  const account = await accountLifecycle(c.env, c.get("actor").organizationId);
-  const billing = await getBillingQuotaResolution(
+routes.handle("getCliAccount", async (c, { actor }) => {
+  const account = await accountLifecycle(c.env, actor.organizationId);
+  const quota = await billingQuota(
     c.get("deployment"),
     c.env,
     account.id,
     c.get("billingRequestCache"),
   );
-  const reading = billing.period
-    ? await (Date.parse(billing.period.periodEnd) <= Date.now()
-        ? c.env.ORG_QUOTA.getByName(account.id).pastUsage(billing.period)
-        : c.env.ORG_QUOTA.getByName(account.id).usage(billing.period))
-    : null;
-  return {
-    deployment: deploymentMeta(c),
-    account,
-    billing,
-    // A count whose period was replaced while it was being read describes
-    // nothing, and the marker saying so is internal, so it is reported as an
-    // empty object — which is what every client has always reduced it to.
-    usage: reading !== null && "superseded" in reading && reading.superseded ? {} : reading,
-  };
+  const billing = { access: quota.access };
+  // A plan with no monthly limit counts nothing, so there is no figure to report.
+  const usage = await quotaUsage(c.env, account.id, quota);
+  return { deployment: deploymentMeta(c), account, billing, usage };
 });
-routes.handle("getCliUsage", async (c, { query }) => {
+routes.handle("getCliUsage", async (c, { actor, query }) => {
   const month = query.month ?? currentMonth();
-  return accountMonthUsage(c.env.DB, c.get("actor").organizationId, month);
+  return accountMonthUsage(c.env.DB, actor.organizationId, month);
 });

@@ -14,6 +14,7 @@
  * produces the same document `.openapi({ description })` does.
  */
 import { z } from "zod";
+import { REJECTION_REASONS, REJECTION_SCOPES } from "../shared/rejection-reasons.ts";
 import {
   BillingCancelResponseSchema,
   BillingChangeResponseSchema,
@@ -27,16 +28,16 @@ import {
 } from "./billing.ts";
 import {
   CliBootstrapRequestSchema,
-  CliBootstrapResponseSchema,
   CliBrowserDetailsResponseSchema,
+  CliBrowserProofSchema,
+  CliBrowserRegisterRequestSchema,
+  CliBrowserSubmitRequestSchema,
   CliBrowserGoogleResponseSchema,
   CliBrowserRegisterResponseSchema,
   CliBrowserSubmitResponseSchema,
   CliCapabilitiesResponseSchema,
   CliOperationRequestSchema,
-  CliOperationResponseSchema,
-  CliPollResponseSchema,
-  CliSubmissionRequestSchema,
+  CliOperationSchema,
   CliUsageResponseSchema,
   CliAccountResponseSchema,
 } from "./cli.ts";
@@ -47,6 +48,7 @@ import {
   AppAttestTokenRequestSchema,
   AppUpdateSchema,
   AppWriteSchema,
+  GoogleSignInRequestSchema,
   ManagementKeyCreateRequestSchema,
   MonthSchema,
   OrganizationSelectRequestSchema,
@@ -72,6 +74,7 @@ import {
   AppValidateResponseSchema,
   AuthEventListSchema,
   AuthEventSummarySchema,
+  RejectionEventListSchema,
   BreakdownResponseSchema,
   ConsoleCapabilitiesResponseSchema,
   CreatedApiKeySchema,
@@ -79,6 +82,7 @@ import {
   CreatedManagementKeyResponseSchema,
   CurrentUserResponseSchema,
   GatewayTokenResponseSchema,
+  GoogleSignInResponseSchema,
   HealthResponseSchema,
   IdentitySessionSchema,
   ManagementKeyListResponseSchema,
@@ -165,8 +169,6 @@ export interface OperationSpec {
     readonly access?: "read" | "setup";
     readonly identity?: "human";
   };
-  /** Creations that honour Idempotency-Key / X-Idempotency-Proof. */
-  readonly receipt?: true;
   /** Registered in the full document but not the published one. */
   readonly hidden?: true;
 }
@@ -230,7 +232,7 @@ const TranscriptionStyleBodySchema = z.object({
   prompt: z.string().optional(),
   language: z.string().optional(),
   response_format: z.string().optional(),
-}).meta({ description: "Body for endpoints whose api_style is transcription." });
+}).meta({ description: "Body for endpoints whose api_style is audio_transcription." });
 
 /** The two hints an application client may send with a proxied request. */
 const GatewayClientHeadersSchema = z.object({
@@ -351,16 +353,16 @@ export const CATALOG = {
   },
 
   signInWithGoogle: {
-    method: "GET",
+    method: "POST",
     path: "/v1/auth/sign-in/social",
     tags: ["Console authentication"],
     summary: "Start optional Google sign-in",
-    description: "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
+    description: "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured. Send provider=google in the JSON body, with optional success and error callback URLs. The console uses callbackURL to restore its destination and errorCallbackURL to return to sign-in with the error. Navigate the browser to the URL in the JSON response to continue the Google flow.",
     security: "public",
-    query: z.object({ provider: z.literal("google") }),
-    status: 302,
-    response: NO_RESPONSE_BODY,
-    responseDescription: "Redirect to Google.",
+    request: GoogleSignInRequestSchema,
+    status: 200,
+    response: GoogleSignInResponseSchema,
+    responseDescription: "Google authorization URL and redirect indicator.",
   },
 
   createAppAttestChallenge: {
@@ -446,7 +448,7 @@ export const CATALOG = {
     path: "/v1/apps/{app}/endpoints/{slug}",
     tags: ["Named endpoints"],
     summary: "Call a server-configured named endpoint",
-    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+    description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
     security: "gateway",
     params: {
       app: { example: "my-app" },
@@ -494,7 +496,6 @@ export const CATALOG = {
     errors: {
       409: "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
     },
-    receipt: true,
   },
 
   listBillingPlans: {
@@ -716,7 +717,6 @@ export const CATALOG = {
     response: ProviderResponseSchema,
     responseDescription: "Stored provider.",
     errors: { 409: "The requested active provider slug is already in use." },
-    receipt: true,
   },
 
   testProviderCredential: {
@@ -780,7 +780,6 @@ export const CATALOG = {
     status: 201,
     response: ProviderGatewayResponseSchema,
     responseDescription: "Created provider gateway.",
-    receipt: true,
   },
 
   testProviderGateway: {
@@ -932,6 +931,27 @@ export const CATALOG = {
     responseDescription: "Paginated authentication attempts, newest first.",
   },
 
+  listAppRejectionEvents: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/rejection-events",
+    tags: ["Admin operations"],
+    summary: "List sampled application refusals",
+    description: "Sampled requests refused before contacting a provider. One sample per authenticated identity per minute; counts are not exact request totals.",
+    security: "management",
+    params: APP_PARAM,
+    query: z.object({
+      limit: PageLimitSchema,
+      reason: z.enum(REJECTION_REASONS).optional(),
+      scope: z.enum(REJECTION_SCOPES).optional(),
+      user: z.string().optional(),
+      from: DaySchema("from").optional(),
+      to: DaySchema("to").optional(),
+      before_id: BeforeIdSchema,
+    }),
+    response: RejectionEventListSchema,
+    responseDescription: "Paginated refusal samples, newest first.",
+  },
+
   listAppKeys: {
     method: "GET",
     path: "/v1/admin/apps/{app}/keys",
@@ -954,7 +974,6 @@ export const CATALOG = {
     status: 201,
     response: CreatedApiKeySchema,
     responseDescription: "One-time plaintext application API key.",
-    receipt: true,
   },
 
   revokeAppKey: {
@@ -1101,11 +1120,11 @@ export const CATALOG = {
     path: "/v1/cli/bootstrap",
     tags: ["CLI"],
     summary: "Initialize a recoverable CLI account",
-    description: "Persist both random proofs before sending. An identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
+    description: "Persist the random token before sending: its digest is the operation's id, and an identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
     security: "public",
     request: CliBootstrapRequestSchema,
-    response: CliBootstrapResponseSchema,
-    responseDescription: "Initial account and credential. Never print or log the credential.",
+    response: CliOperationSchema,
+    responseDescription: "The completed bootstrap: its account, and the credential in `result`. Never print or log the credential.",
     errors: CLI_ERRORS,
   },
 
@@ -1113,16 +1132,16 @@ export const CATALOG = {
     method: "POST",
     path: "/v1/cli/operations",
     tags: ["CLI"],
-    summary: "Create or recover a browser handoff",
-    description: "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+    summary: "Send or recover a CLI operation",
+    description: "Persist the random token before sending: its digest is the operation's id, and repeating the same token and payload recovers the same operation instead of repeating it. A current account key is required. An operation without a browser step runs at once and answers completed, with any one-time key in `result` for 15 minutes. One with a browser step answers pending with the approval `url`: claims require interactive human sign-in and explicit consent, and provider and gateway operations collect their secret on that page after showing the exact configuration. A browser step expires after 15 minutes.",
     security: "management",
     // Admin, like every write; read access because the claim is the one kind
     // an account past its free window may still open. Every resource kind then
     // asks for setup access of its own, in the handler, from its kind entry.
     policy: { role: "admin", access: "read" },
     request: CliOperationRequestSchema,
-    response: CliOperationResponseSchema,
-    responseDescription: "Browser URL for the pending handoff.",
+    response: CliOperationSchema,
+    responseDescription: "Where the operation stands: completed with its result, or pending with the approval URL.",
     errors: CLI_ERRORS,
   },
 
@@ -1130,12 +1149,12 @@ export const CATALOG = {
     method: "GET",
     path: "/v1/cli/operations/{id}",
     tags: ["CLI"],
-    summary: "Poll a browser handoff",
-    description: "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
+    summary: "Poll a CLI operation",
+    description: "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes.",
     security: "cliPoll",
     params: { id: {} },
-    response: CliPollResponseSchema,
-    responseDescription: "Current operation state and nonsecret result.",
+    response: CliOperationSchema,
+    responseDescription: "Where the operation stands, and its result once completed.",
     errors: CLI_ERRORS,
   },
 
@@ -1155,7 +1174,7 @@ export const CATALOG = {
     path: "/v1/cli/usage",
     tags: ["CLI"],
     summary: "Read retained account usage for a UTC month",
-    description: "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
+    description: "Includes retained usage for deleted apps, with durable account attribution.",
     security: "management",
     query: z.object({
       month: MonthSchema.optional()
@@ -1181,7 +1200,7 @@ export const CATALOG = {
     description: BROWSER_HANDOFF_DESCRIPTION,
     security: "public",
     params: { id: {} },
-    request: CliSubmissionRequestSchema,
+    request: CliBrowserProofSchema,
     response: CliBrowserDetailsResponseSchema,
     responseDescription: "The pending action, its configuration, the account it lands on, the signed-in human who would approve it, if any, and what stands between this browser and approving it.",
     errors: CLI_ERRORS,
@@ -1195,7 +1214,7 @@ export const CATALOG = {
     description: BROWSER_HANDOFF_DESCRIPTION,
     security: "public",
     params: { id: {} },
-    request: CliSubmissionRequestSchema,
+    request: CliBrowserSubmitRequestSchema,
     response: CliBrowserSubmitResponseSchema,
     responseDescription: "The handoff is approved and consumed. No submitted secret is ever echoed.",
     errors: CLI_ERRORS,
@@ -1209,7 +1228,7 @@ export const CATALOG = {
     description: BROWSER_HANDOFF_DESCRIPTION,
     security: "public",
     params: { id: {} },
-    request: CliSubmissionRequestSchema,
+    request: CliBrowserRegisterRequestSchema,
     response: CliBrowserRegisterResponseSchema,
     responseDescription: "A new human identity for a pending claim, with its session set as a cookie.",
     errors: CLI_ERRORS,
@@ -1223,7 +1242,7 @@ export const CATALOG = {
     description: BROWSER_HANDOFF_DESCRIPTION,
     security: "public",
     params: { id: {} },
-    request: CliSubmissionRequestSchema,
+    request: CliBrowserProofSchema,
     response: CliBrowserGoogleResponseSchema,
     responseDescription: "Where to send the browser to start Google consent for a pending claim.",
     errors: CLI_ERRORS,
@@ -1259,6 +1278,17 @@ export type OperationQuery<K extends OperationName> = z.input<QuerySchema[K]>;
 /** The same query once the router has parsed it, which is what a handler reads. */
 export type ParsedOperationQuery<K extends OperationName> = z.output<QuerySchema[K]>;
 /**
+ * The body once the router has parsed it, which is what a handler reads:
+ * `undefined` for an operation that takes none, or takes the multipart form no
+ * catalog-mounted handler serves.
+ */
+export type ParsedOperationRequest<K extends OperationName> = ParsedBody[K];
+type ParsedBody = {
+  [K in OperationName]: Catalog[K] extends { readonly request: infer S extends z.ZodType }
+    ? z.output<S>
+    : undefined;
+};
+/**
  * A request body as a *client composes* it, before the schema's defaults and
  * normalizations apply — `z.input` rather than `z.infer`. An application
  * configuration may name one issuer as a bare string where the stored form is
@@ -1291,10 +1321,6 @@ export type BodiedOperation = {
   [K in OperationName]: unknown extends OperationResponse<K> ? never : K;
 }[OperationName];
 
-/** The creations that honour Idempotency-Key and X-Idempotency-Proof. */
-export type ReceiptOperation = {
-  [K in OperationName]: Catalog[K] extends { readonly receipt: true } ? K : never;
-}[OperationName];
 
 /** Whether an operation takes any `{name}` segment at all. */
 type HasParams<K extends OperationName> =

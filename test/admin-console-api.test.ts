@@ -1,9 +1,9 @@
 import { env, exports } from "cloudflare:workers";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import { appConfigCache, loadApp } from "../src/core/config";
-import { organizationProviders } from "../src/core/provider-store";
-import { PROVIDER_TYPES } from "../src/core/providers";
+import { appConfigCache, loadApp } from "../src/core/app-records";
+import { organizationProviders } from "../src/providers/provider-store";
+import { PROVIDER_TYPES } from "../src/shared/providers";
 import { database } from "../src/db";
 import type { AdminVariables } from "../src/middleware/admin";
 import type { AuthState } from "@maxceem/cf-auth";
@@ -53,10 +53,10 @@ async function recordUsage(
   } = overrides;
   await env.DB.prepare(
     `INSERT INTO app_usage_event(
-       app_id, user_id, provider_type, provider_slug, model, route, input_tokens,
+       event_id, organization_id, app_id, user_id, provider_type, provider_slug, model, route, input_tokens,
        cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, status, created_at,
        api_key_id
-     ) VALUES (?, ?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
+     ) VALUES (lower(hex(randomblob(16))), 'operator-test-organization', ?, ?, ?, ?, ?, ?, 10, 2, 1, 5, ?, ?, ?, ?)`,
   )
     .bind(appId, user, provider, providerSlug, model, `${providerSlug}/v1/responses`, cost, status, createdAt, apiKeyId)
     .run();
@@ -379,10 +379,9 @@ describe("admin console API", () => {
     });
     expect(updated.status, await updated.clone().text()).toBe(200);
     // An update answers with the same object a read does, already renamed.
-    const updatedBody = await updated.json<{ app: { id: string; name: string }; config_error: null }>();
+    const updatedBody = await updated.json<{ app: { id: string; name: string } }>();
     expect(updatedBody.app.id).toBe("put-updates-me");
     expect(updatedBody.app.name).toBe("Renamed");
-    expect(updatedBody.config_error).toBeNull();
     expect((await get("/v1/admin/apps/put-updates-me")).body.app).toEqual(updatedBody.app);
   });
 
@@ -407,7 +406,6 @@ describe("admin console API", () => {
         updated_at: string;
         config: { routing: { providers: { mode: string } } };
       };
-      config_error: string | null;
       api_key: { id: string; key: string; key_prefix: string };
     }>();
     expect(body.app.id).toMatch(/^calorie-tracker-[0-9abcdefghjkmnpqrstvwxyz]{12}$/u);
@@ -417,7 +415,6 @@ describe("admin console API", () => {
     // A create answers with the application, in the shape a read answers with.
     const readBack = await get(`/v1/admin/apps/${body.app.id}`);
     expect(body.app).toEqual(readBack.body.app);
-    expect(body.config_error).toBeNull();
 
     const original = await get("/v1/admin/apps/calorie-tracker");
     expect(original.body.app.name).toBe("Test calorie-tracker");
@@ -454,19 +451,18 @@ describe("admin console API", () => {
     expect(body.api_key).toBeNull();
   });
 
-  it("returns a readable row plus the error when a stored config is invalid", async () => {
+  it("treats a stored config that no longer parses as an internal error", async () => {
     await env.DB.prepare(
-      `INSERT INTO app(id, organization_id, name, config_json, status)
-       VALUES (?, 'operator-test-organization', ?, ?, 'active')`,
+      `INSERT INTO app(id, organization_id, name, config_json, auth_type, status)
+       VALUES (?, 'operator-test-organization', ?, ?, 'api_key', 'active')`,
     )
       .bind("broken-config", "Broken", JSON.stringify({ authentication: {}, routing: {}, limits: {} }))
       .run();
+    // Every write validates before it stores, so this row means the database
+    // moved under the schema: a migration was missing, not a user mistake.
     const { status, body } = await get("/v1/admin/apps/broken-config");
-    expect(status).toBe(200);
-    // Returned as it is stored, so the repair editor has something to open.
-    expect(body.app.config).toEqual({ authentication: {}, routing: {}, limits: {} });
-    expect(body.config_error).toContain("authentication.type");
-    expect(body.app.name).toBe("Broken");
+    expect(status).toBe(500);
+    expect(body.error.code).toBe("internal_error");
   });
 
   it("deletes an app only with confirmation, keeping usage but not auth history", async () => {
@@ -475,10 +471,13 @@ describe("admin console API", () => {
       .bind("delete-me", "user-1", "active")
       .run();
     await env.DB.prepare(
-      "INSERT INTO app_auth_event(app_id, event, outcome) VALUES (?, 'token_exchange', 'ok')",
+      "INSERT INTO app_auth_event(event_id, app_id, event, outcome) VALUES (lower(hex(randomblob(16))), ?, 'token_exchange', 'ok')",
     )
       .bind("delete-me")
       .run();
+    await env.DB.prepare(
+      "INSERT INTO app_rejection_event(event_id, app_id, reason) VALUES ('delete-me-rejection', ?, 'blocked_user')",
+    ).bind("delete-me").run();
     await recordUsage("delete-me");
 
     const unconfirmed = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/delete-me`, {
@@ -509,6 +508,7 @@ describe("admin console API", () => {
         .first<{ count: number }>())?.count;
     expect(await counted("app_usage_event")).toBe(1);
     expect(await counted("app_auth_event")).toBe(0);
+    expect(await counted("app_rejection_event")).toBe(0);
   });
 
   it("deletes an app atomically, leaving everything in place when any step fails", async () => {
@@ -563,6 +563,87 @@ describe("admin console API", () => {
     const filtered = await get("/v1/admin/apps/user-list/users?query=alpha");
     expect(filtered.body.total).toBe(1);
     expect(filtered.body.users[0].id).toBe("alpha-user");
+  });
+
+  it("bounds per-user and raw breakdown totals across both timestamp formats and a new year", async () => {
+    const appId = "usage-month-boundaries";
+    await seedApp(appId);
+    await env.DB.prepare("INSERT INTO app_user(app_id, id, status) VALUES (?, 'user-1', 'active')")
+      .bind(appId).run();
+    for (const createdAt of [
+      "2025-11-30T23:59:59.999Z",
+      "2025-12-31 00:00:00",
+      "2025-12-31T23:59:59.999Z",
+      "2026-01-01 00:00:00",
+    ]) {
+      await recordUsage(appId, { createdAt });
+    }
+
+    const users = await get(`/v1/admin/apps/${appId}/users?month=2025-12`);
+    expect(users.body.users.find((user: any) => user.id === "user-1").usage.requests).toBe(2);
+    const single = await get(`/v1/admin/apps/${appId}/users/user-1?month=2025-12`);
+    expect(single.body.user.usage.requests).toBe(2);
+    const breakdown = await get(
+      `/v1/admin/apps/${appId}/usage/breakdown?by=user&from=2025-12-31&to=2025-12-31`,
+    );
+    expect(breakdown.body.rows).toEqual([
+      expect.objectContaining({ key: "user-1", requests: 2 }),
+    ]);
+    // The query schema has always accepted a shape-valid impossible date;
+    // keep its lexical cutoff rather than normalizing it into January.
+    const impossibleEnd = await get(
+      `/v1/admin/apps/${appId}/usage/breakdown?by=user&from=2025-12-31&to=2025-12-32`,
+    );
+    expect(impossibleEnd.status).toBe(200);
+    expect(impossibleEnd.body.rows).toEqual([
+      expect.objectContaining({ key: "user-1", requests: 2 }),
+    ]);
+  });
+
+  it("discovers rejection-only users and orders mixed timestamp formats chronologically", async () => {
+    await seedApp("rejection-users");
+    await recordUsage("rejection-users", {
+      user: "mixed-user",
+      createdAt: "2026-09-20 20:00:00",
+    });
+    for (const [eventId, userId, createdAt] of [
+      ["reject-only", "rejection-only", "2026-09-21T12:00:00.000Z"],
+      ["reject-mixed", "mixed-user", "2026-09-20T10:00:00.000Z"],
+      ["reject-real", "real-user", "2026-09-22T10:00:00.000Z"],
+    ]) {
+      await env.DB.prepare(
+        `INSERT INTO app_rejection_event(event_id,app_id,user_id,reason,scope,created_at)
+         VALUES (?, 'rejection-users', ?, 'blocked_user', 'user', ?)`,
+      ).bind(eventId, userId, createdAt).run();
+    }
+    await env.DB.prepare("INSERT INTO app_user(app_id,id,status,created_at) VALUES ('rejection-users','real-user','blocked','2026-09-19 01:00:00')").run();
+    const { body } = await get("/v1/admin/apps/rejection-users/users?month=2026-09");
+    expect(body.total).toBe(3);
+    expect(body.users.find((user: any) => user.id === "rejection-only")).toMatchObject({
+      is_virtual: true,
+      usage: { requests: 0 },
+    });
+    const single = await get("/v1/admin/apps/rejection-users/users/rejection-only?month=2026-09");
+    expect(single.status).toBe(200);
+    expect(single.body.user.usage).toEqual({
+      requests: 0,
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+      errors: 0,
+    });
+    expect(body.users.find((user: any) => user.id === "mixed-user")).toMatchObject({
+      is_virtual: true,
+      created_at: "2026-09-20T10:00:00.000Z",
+      last_seen_at: "2026-09-20T20:00:00.000Z",
+      usage: { requests: 1 },
+    });
+    expect(body.users.find((user: any) => user.id === "real-user")).toMatchObject({
+      is_virtual: false,
+      status: "blocked",
+    });
   });
 
   it("groups usage by day and by dimension, and pages the event feed", async () => {
@@ -729,6 +810,20 @@ describe("application conditional writes", () => {
     expect(latest.body.app.revision).toBe(2);
     expect(latest.body.app.name).toBe("Edited");
   });
+
+  it("names a malformed revision as the field at fault", async () => {
+    const appId = "conditional-edit-malformed";
+    await seedServerApp(appId);
+    const response = await exports.default.fetch(`${ORIGIN}/v1/admin/apps/${appId}`, {
+      method: "PUT",
+      headers: { ...AUTH, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Edited", config: serverConfig(), revision: 0 }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json<{ error: { code: string; message: string } }>();
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).toMatch(/^revision/u);
+  });
 });
 
 describe("authoritative admin configuration", () => {
@@ -850,7 +945,6 @@ describe("authoritative admin configuration", () => {
         revision: 2,
         config: { authentication: { type: "api_key" } },
       },
-      config_error: null,
     });
     expect(sessionCalls).toBe(0);
   });

@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import { AlertCircle, CircleCheck, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { GatewayIcon } from "@/components/brand-icon";
+import { gatewayDescriptor } from "@shared/gateways";
 import type { TestOutcome } from "@/lib/provider-probe";
 import type { ProviderCredential, ProviderGateway } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -116,19 +117,17 @@ export function Auth({ row, gateways }: { row: ProviderCredential; gateways: Pro
 
 /**
  * Everything the gateway is addressed and admitted by, labelled. What addresses
- * it is per type — Cloudflare's account and gateway pair, against a Vercel
- * gateway whose origin is fixed in adapter code and so has nothing to show —
- * and the key is only ever its last four characters.
+ * it is its type's own connection fields — Cloudflare's account and gateway
+ * pair, and nothing for a Vercel gateway, whose origin is fixed in adapter
+ * code — and the key is only ever its last four characters.
  */
 export function GatewayAuth({ gateway }: { gateway: ProviderGateway }) {
+  const connection: Readonly<Record<string, string | undefined>> = gateway.config;
   return (
     <div className="space-y-0.5">
-      {gateway.type === "cf_aig" ? (
-        <>
-          <AuthLine label="Account ID" value={gateway.config.accountId} />
-          <AuthLine label="Gateway ID" value={gateway.config.gatewayId} />
-        </>
-      ) : null}
+      {gatewayDescriptor(gateway.type).connectionFields.map((field) => (
+        <AuthLine key={field.key} label={field.label} value={connection[field.key] ?? ""} />
+      ))}
       <AuthLine label="API key" value={`…${gateway.secretHint}`} />
     </div>
   );

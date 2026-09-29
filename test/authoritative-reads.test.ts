@@ -1,9 +1,9 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { accountLifecycle } from "../src/core/account-lifecycle";
-import { verifyApiKey } from "../src/core/apikeys";
-import { loadApp } from "../src/core/config";
-import { organizationProviders } from "../src/core/provider-store";
+import { verifyApiKey } from "../src/client-auth/api-keys";
+import { loadApp } from "../src/core/app-records";
+import { organizationProviders } from "../src/providers/provider-store";
 import {
   clearIsolateCaches,
   seedProvider,

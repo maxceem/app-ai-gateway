@@ -20,7 +20,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { RowAction, RowActions } from "@/components/row-actions";
-import { GATEWAY_TYPE_LABELS } from "@/lib/config-types";
+import { gatewayLabel } from "@/lib/config-types";
 import { useDeleteProviderGateway, useProviderGateways } from "@/lib/queries";
 import type { ProviderGateway } from "@/lib/types";
 import { GatewayDialog } from "./gateway-dialog";
@@ -115,7 +115,7 @@ export function GatewaysSection() {
                   <TableCell>
                     <Badge variant="secondary">
                       <GatewayIcon type={row.type} />
-                      {GATEWAY_TYPE_LABELS[row.type]}
+                      {gatewayLabel(row.type)}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">

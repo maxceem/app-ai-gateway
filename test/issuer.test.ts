@@ -1,7 +1,7 @@
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { jwksCache, verifyIssuerToken } from "../src/core/issuer";
-import type { IssuerAuthentication } from "../src/core/types";
+import { jwksCache, verifyIssuerToken } from "../src/client-auth/issuer";
+import type { IssuerAuthentication } from "../src/shared/app-config";
 
 const ISSUER = "https://issuer.test/";
 const AUDIENCE = "test-audience";

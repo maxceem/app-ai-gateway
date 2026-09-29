@@ -3,7 +3,6 @@ import {
   reduceAppDraft,
   type AppDraftAction,
   type EditorSession,
-  type StructuredSession,
 } from "./app-draft";
 import { emptyIssuer } from "@/lib/config-types";
 import { parseAppConfig } from "@shared/app-config";
@@ -12,7 +11,7 @@ import type { AppResponse, AppRow } from "@/lib/types";
 const APP_ID = "my-app";
 
 const SERVER = {
-  authentication: { type: "api_key" },
+  authentication: { type: "api_key", end_user: { source: "none" } },
   routing: { providers: { mode: "all" }, model_rewrites: {} },
 };
 
@@ -45,33 +44,33 @@ function row(config: Record<string, unknown>, revision = 1): AppRow {
 }
 
 const valid = (config: Record<string, unknown>, revision = 1): AppResponse =>
-  ({ kind: "valid", app: row(config, revision), config_error: null });
+  ({ app: row(config, revision) });
 
 /** The session a first read of this configuration opens. */
-function opened(config: Record<string, unknown>): StructuredSession {
+function opened(config: Record<string, unknown>): EditorSession {
   const session = reduceAppDraft(null, {
     kind: "loaded",
     appId: APP_ID,
     response: valid(config),
   });
-  if (session?.kind !== "structured") throw new Error("expected a structured session");
+  if (!session) throw new Error("expected a session");
   return session;
 }
 
 /** Several actions in a row, as a screen would dispatch them. */
-function run(session: EditorSession | null, ...actions: AppDraftAction[]): StructuredSession {
+function run(session: EditorSession | null, ...actions: AppDraftAction[]): EditorSession {
   const next = actions.reduce<EditorSession | null>(
     (current, action) => reduceAppDraft(current, action),
     session,
   );
-  if (next?.kind !== "structured") throw new Error("expected a structured session");
+  if (!next) throw new Error("expected a session");
   return next;
 }
 
-const source = (value: "issuer" | "header" | "app_install" | undefined): AppDraftAction =>
+const source = (value: "issuer" | "header" | "app_install" | "none"): AppDraftAction =>
   ({ kind: "setEndUserSource", appId: APP_ID, source: value });
 
-const authOf = (session: StructuredSession) => session.draft.config.authentication;
+const authOf = (session: EditorSession) => session.draft.config.authentication;
 
 describe("setEndUserSource on an api_key application", () => {
   it("starts a header source on the default name", () => {
@@ -99,10 +98,10 @@ describe("setEndUserSource on an api_key application", () => {
     });
   });
 
-  it("drops the block on the way back to no users rather than blanking it", () => {
-    const session = run(opened(SERVER), source("issuer"), source(undefined));
+  it("states none on the way back to no users rather than blanking the issuer", () => {
+    const session = run(opened(SERVER), source("issuer"), source("none"));
 
-    expect("end_user" in authOf(session)).toBe(false);
+    expect(authOf(session)).toEqual({ type: "api_key", end_user: { source: "none" } });
   });
 
   it("ignores app_install, which only an attested application can mean", () => {
@@ -110,7 +109,7 @@ describe("setEndUserSource on an api_key application", () => {
     // source the schema refuses for this application type.
     const session = run(opened(SERVER), source("app_install"));
 
-    expect(authOf(session)).toEqual({ type: "api_key" });
+    expect(authOf(session)).toEqual({ type: "api_key", end_user: { source: "none" } });
   });
 });
 
@@ -137,7 +136,7 @@ describe("the issuer the editor remembers", () => {
         appId: APP_ID,
         partial: { jwks_url: "https://issuer.example.test/jwks.json" },
       },
-      source(undefined),
+      source("none"),
       source("issuer"),
     );
 
@@ -147,13 +146,13 @@ describe("the issuer the editor remembers", () => {
   });
 
   it("belongs to the session, so another application opens with nothing remembered", () => {
-    const edited = run(opened(withIssuerConfig), source(undefined));
+    const edited = run(opened(withIssuerConfig), source("none"));
     expect(edited.rememberedIssuer).not.toBeNull();
 
     const other = reduceAppDraft(edited, {
       kind: "loaded",
       appId: "other-app",
-      response: { kind: "invalid", app: { ...row(SERVER), config: {} }, config_error: "Invalid" },
+      response: valid(SERVER),
     });
 
     expect(other?.rememberedIssuer).toBeNull();
@@ -172,8 +171,8 @@ describe("per-user limits and the users they belong to", () => {
 
   it("clears them when the application stops having users", () => {
     // The gateway refuses `per_user` on an application that identifies nobody,
-    // and the Limits tab hides the card once there is no source.
-    const session = run(opened(limited), source(undefined));
+    // and the Limits tab hides the card once the source is `none`.
+    const session = run(opened(limited), source("none"));
 
     expect(session.draft.config.limits?.per_user).toEqual({
       requests: { per_minute: null, per_day: null },
@@ -193,11 +192,11 @@ describe("per-user limits and the users they belong to", () => {
     // The forms edit through the draft, so the cleared scope has to be a fresh
     // object: a default handed out twice would let one app's typed limit
     // reappear in another's.
-    const first = run(opened(limited), source(undefined));
+    const first = run(opened(limited), source("none"));
     const cleared = first.draft.config.limits!.per_user!;
     cleared.requests.per_minute = 99;
 
-    const second = run(opened(limited), source(undefined));
+    const second = run(opened(limited), source("none"));
 
     expect(second.draft.config.limits?.per_user).toEqual({
       requests: { per_minute: null, per_day: null },
@@ -233,10 +232,10 @@ describe("setEndUserSource on an App Attest application", () => {
   });
 
   it("cannot be left with no source at all", () => {
-    // An attested client always resolves to some user, so `undefined` keeps
+    // An attested client always resolves to some user, so `none` keeps
     // what is configured rather than blanking it.
     const start = opened(attested({ source: "issuer", issuer: STORED_ISSUER }));
-    const session = run(start, source(undefined));
+    const session = run(start, source("none"));
 
     expect(authOf(session)).toEqual(authOf(start));
   });
@@ -270,7 +269,7 @@ describe("updateIssuer on an application with no issuer", () => {
     });
 
     expect(session).toBe(start);
-    expect("end_user" in authOf(session)).toBe(false);
+    expect(authOf(session).end_user).toEqual({ source: "none" });
   });
 });
 
@@ -306,7 +305,7 @@ describe("loaded", () => {
     const session = reduceAppDraft(opened(SERVER), {
       kind: "loaded",
       appId: APP_ID,
-      response: valid({ ...SERVER, authentication: { type: "api_key" } }, 4),
+      response: valid({ ...SERVER, authentication: { type: "api_key", end_user: { source: "none" } } }, 4),
     });
 
     expect(session?.revision).toBe(4);

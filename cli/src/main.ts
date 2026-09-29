@@ -1,9 +1,9 @@
 import { Writable } from "node:stream";
-import { CliErrorDetailsSchema } from "../../src/contracts/cli.ts";
 import { appCommand } from "./apps.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
 import { Context } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
+import { CliErrorDetailsSchema } from "./errors.ts";
 import { humanResult, type OutputContext } from "./human.ts";
 import { helpText, parse, type ParseResult } from "./parser.ts";
 import { required, resourceCommand } from "./resources.ts";
@@ -47,15 +47,8 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
     if (ctx.active) {
       delete ctx.active.credential;
       ctx.active.authenticated = false;
-      ctx.state.generation = (ctx.state.generation ?? 0) + 1;
+      await ctx.save();
     }
-    // The connection this one replaced carries a credential of its own. Leaving
-    // it behind would keep management access the logout was meant to remove.
-    if (ctx.state.previous) {
-      delete ctx.state.previous.credential;
-      ctx.state.previous.authenticated = false;
-    }
-    if (ctx.active || ctx.state.previous) await ctx.save();
     return { loggedOut: true };
   }
   if (command === "deployment connect") {
@@ -99,7 +92,7 @@ export async function main(
       return 0;
     }
     const run = async (): Promise<number> => {
-      const state = await store.read();
+      const state = await store.read((line) => stderr.write(line + "\n"));
       const ctx = new Context(store, state, transport, parsed.flags);
       const result = await execute(parsed, ctx);
       const context: OutputContext = {

@@ -9,7 +9,7 @@ const options = { url: "https://gateway.test" };
 const capabilities = { deployment: { mode: "self_hosted", id: "deployment-test" } };
 const response = {
   deployment: { id: "deployment-test" },
-  credential: { token: "fixture-management-token" },
+  result: { credential: { token: "fixture-management-token" } },
 };
 async function directory(t) {
   const path = await mkdtemp(join(tmpdir(), "agw-bootstrap-test-"));
@@ -27,8 +27,8 @@ test("lost bootstrap response retries durable proofs and recovers private output
     if (url.endsWith("/capabilities")) return Response.json(capabilities);
     requests.push(JSON.parse(init.body));
     assert.deepEqual(
-      JSON.parse(await readFile(join(dir, "state.json"), "utf8")).pollToken,
-      requests[0].pollToken,
+      JSON.parse(await readFile(join(dir, "state.json"), "utf8")).token,
+      requests[0].token,
     );
     if (fail) {
       fail = false;
@@ -44,7 +44,7 @@ test("lost bootstrap response retries durable proofs and recovers private output
   );
   const result = await bootstrapAccount({ ...options, directory: dir, fetchImpl });
   assert.deepEqual(requests[0], requests[1]);
-  assert.equal(await readFile(result.keyFile, "utf8"), response.credential.token + "\n");
+  assert.equal(await readFile(result.keyFile, "utf8"), response.result.credential.token + "\n");
   assert.equal((await stat(result.keyFile)).mode & 0o077, 0);
   assert.equal((await stat(join(dir, "state.json"))).mode & 0o077, 0);
   assert.equal((await bootstrapAccount({ ...options, directory: dir, fetchImpl })).recovered, true);
@@ -109,7 +109,7 @@ test("corrupt or insecure saved state and empty credentials fail closed", async 
     return Response.json(capabilities);
   };
   const path = join(dir, "state.json");
-  await writeFile(path, '{"pollToken":"SENTINEL-PRIVATE-PROOF', { mode: 0o600 });
+  await writeFile(path, '{"token":"SENTINEL-PRIVATE-PROOF', { mode: 0o600 });
   await assert.rejects(
     bootstrapAccount({ ...options, directory: dir, fetchImpl }),
     (error) => error.message.includes("malformed") && !error.message.includes("SENTINEL"),

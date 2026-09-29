@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
 import { beforeAll } from "vitest";
-import { hashApiKey } from "../src/core/apikeys";
+import { hashApiKey } from "../src/client-auth/api-keys";
 import { seedAllProviders } from "./helpers";
 
 export const TEST_SERVICE_USER_ID = "operator-test-owner";

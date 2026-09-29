@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ErrorsTab } from "./errors";
 import { foldOutcomes } from "@/lib/auth-events";
 import { formatDuration } from "@/lib/format";
 import { renderAuthenticated, stubApi } from "@/test/render";
-import type { AuthEvent, AuthEventSummary } from "@/lib/types";
+import type { AuthEvent, AuthEventSummary, RejectionEvent } from "@/lib/types";
 
 const APP_ID = "my-app";
 
@@ -16,6 +17,7 @@ function summary(overrides: Partial<AuthEventSummary> = {}): AuthEventSummary {
     to: "2026-08-30",
     daily: [],
     usage_failures: [],
+    rejection_samples: [],
     token_exchange: { total: 0, ok: 0, success_rate: null },
     claim_delay: { count: 0, avg_ms: null, p50_ms: null, p95_ms: null },
     pending_users: 0,
@@ -39,17 +41,30 @@ function event(overrides: Partial<AuthEvent> = {}): AuthEvent {
   };
 }
 
-function renderTab(data: AuthEventSummary, events: AuthEvent[]) {
-  stubApi({
+function renderTab(
+  data: AuthEventSummary,
+  events: AuthEvent[],
+  rejections: RejectionEvent[] = [],
+  nextRejectionId: number | null = null,
+  rejectionStatus = 200,
+) {
+  const fetchMock = stubApi({
     // The more specific route first: `stubApi` matches on prefix.
     [`/v1/admin/apps/${APP_ID}/auth-events/summary`]: { body: data },
+    [`/v1/admin/apps/${APP_ID}/rejection-events`]: {
+      status: rejectionStatus,
+      body: { app_id: APP_ID, limit: 25, next_before_id: nextRejectionId, events: rejections },
+    },
     [`/v1/admin/apps/${APP_ID}/auth-events`]: {
       body: { app_id: APP_ID, limit: 25, next_before_id: null, events },
     },
   });
-  return renderAuthenticated(<ErrorsTab appId={APP_ID} />, {
-    route: `/apps/${APP_ID}/errors`,
-  });
+  return {
+    ...renderAuthenticated(<ErrorsTab appId={APP_ID} />, {
+      route: `/apps/${APP_ID}/errors`,
+    }),
+    fetchMock,
+  };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -140,6 +155,7 @@ describe("foldOutcomes", () => {
       {
         outcome: "issuer_claims_missing",
         reason: "claims_missing",
+        sampled: false,
         total: 6,
         days: [
           { date: "2026-08-01", count: 5 },
@@ -157,9 +173,23 @@ describe("foldOutcomes", () => {
       {
         outcome: "provider_error",
         reason: "proxied request",
+        sampled: false,
         total: 2,
         days: [{ date: "2026-08-01", count: 2 }],
       },
+    ]);
+  });
+
+  it("keeps refusal samples distinct from exact failures", () => {
+    const rows = foldOutcomes(summary({
+      usage_failures: [{ date: "2026-08-01", status: "provider_error", count: 2 }],
+      rejection_samples: [{ date: "2026-08-01", reason: "blocked_app_rate", scope: "user", count: 1 }],
+    }));
+    expect(rows).toEqual([
+      { outcome: "provider_error", reason: "proxied request", sampled: false, total: 2,
+        days: [{ date: "2026-08-01", count: 2 }] },
+      { outcome: "blocked_app_rate", reason: "user", sampled: true, total: 1,
+        days: [{ date: "2026-08-01", count: 1 }] },
     ]);
   });
 });
@@ -220,5 +250,85 @@ describe("ErrorsTab", () => {
 
     expect(await screen.findByText("unknown")).toBeTruthy();
     expect(screen.getByText("bad_signature")).toBeTruthy();
+  });
+
+  it("labels and filters recent refusal samples in the Errors view", async () => {
+    const rejection: RejectionEvent = {
+      id: 9,
+      user_id: "user-1",
+      api_key_id: null,
+      reason: "blocked_app_rate",
+      scope: "user",
+      provider_slug: "openai",
+      model: "gpt-test",
+      route: "openai/v1/responses",
+      endpoint_slug: "chat",
+      app_version: "2.0",
+      auth_method: "api_key",
+      latency_ms: 12,
+      created_at: "2026-08-30T10:00:00.000Z",
+    };
+    const { fetchMock } = renderTab(
+      summary({ rejection_samples: [{ date: "2026-08-30", reason: "blocked_app_rate", scope: "user", count: 1 }] }),
+      [],
+      [rejection],
+      8,
+    );
+    expect(await screen.findByText("sample")).toBeTruthy();
+    expect(screen.getByText("User / API key")).toBeTruthy();
+    expect(screen.getByText("chat")).toBeTruthy();
+    await userEvent.click(screen.getByRole("combobox", { name: "Refusal reason" }));
+    await userEvent.click(screen.getByRole("option", { name: "App rate limit" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Refusal reason" }).textContent).toBe("App rate limit"));
+    await userEvent.click(screen.getByRole("combobox", { name: "Refusal scope" }));
+    await userEvent.click(screen.getByRole("option", { name: "User" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Refusal user ID" }), "user-1");
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => {
+      const url = String(input);
+      return url.includes("rejection-events") && url.includes("reason=blocked_app_rate")
+        && url.includes("scope=user") && url.includes("user=user-1");
+    })).toBe(true));
+
+    const older = screen.getAllByRole("button", { name: "Older" })[0]!;
+    const newer = screen.getAllByRole("button", { name: "Newer" })[0]!;
+    const originalFetch = fetchMock.getMockImplementation()!;
+    let releasePage: (() => void) | undefined;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).includes("before_id=8")) {
+        return new Promise<Response>((resolve) => {
+          releasePage = () => resolve(new Response(JSON.stringify({
+            app_id: APP_ID, limit: 25, next_before_id: null, events: [],
+          })));
+        });
+      }
+      return originalFetch(input, init);
+    });
+    await userEvent.click(older);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes("before_id=8"))).toBe(true));
+    expect(older.hasAttribute("disabled")).toBe(true);
+    expect(newer.hasAttribute("disabled")).toBe(true);
+    releasePage?.();
+    await waitFor(() => expect(newer.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(newer);
+    await waitFor(() => expect(older.hasAttribute("disabled")).toBe(false));
+  });
+
+  it("shows a retry when refusal samples cannot be loaded", async () => {
+    const { fetchMock } = renderTab(summary(), [], [], null, 503);
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText(/Could not load refusal samples/u)).toBeTruthy();
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input).includes("rejection-events")) {
+        return new Response(JSON.stringify({
+          app_id: APP_ID,
+          limit: 25,
+          next_before_id: null,
+          events: [],
+        }));
+      }
+      return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
+    });
+    await userEvent.click(retry);
+    expect(await screen.findByText("No refusal samples.")).toBeTruthy();
   });
 });

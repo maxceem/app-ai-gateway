@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "560d3313-2ab2-4fd1-8136-0ff3e57b1968",
+  "id": "dbaefdf0-7bfd-45f5-89be-2925503b71c1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "app": {
@@ -30,6 +30,13 @@
         },
         "config_json": {
           "name": "config_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "auth_type": {
+          "name": "auth_type",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -270,7 +277,7 @@
           "name": "event_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "app_id": {
@@ -376,6 +383,163 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "app_rejection_event": {
+      "name": "app_rejection_event",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "app_id": {
+          "name": "app_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "api_key_id": {
+          "name": "api_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "provider_slug": {
+          "name": "provider_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "route": {
+          "name": "route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "endpoint_slug": {
+          "name": "endpoint_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "app_version": {
+          "name": "app_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "auth_method": {
+          "name": "auth_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "latency_ms": {
+          "name": "latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+        }
+      },
+      "indexes": {
+        "rejection_events_event_id_unique": {
+          "name": "rejection_events_event_id_unique",
+          "columns": [
+            "event_id"
+          ],
+          "isUnique": true
+        },
+        "idx_rejection_events_app_created": {
+          "name": "idx_rejection_events_app_created",
+          "columns": [
+            "app_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "idx_rejection_events_app_user_created": {
+          "name": "idx_rejection_events_app_user_created",
+          "columns": [
+            "app_id",
+            "user_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "idx_rejection_events_created": {
+          "name": "idx_rejection_events_created",
+          "columns": [
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "rejection_events_reason_check": {
+          "name": "rejection_events_reason_check",
+          "value": "\"app_rejection_event\".\"reason\" IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')"
+        },
+        "rejection_events_scope_check": {
+          "name": "rejection_events_scope_check",
+          "value": "\"app_rejection_event\".\"scope\" IS NULL OR \"app_rejection_event\".\"scope\" IN ('user', 'app', 'account')"
+        }
+      }
+    },
     "app_usage_event": {
       "name": "app_usage_event",
       "columns": {
@@ -390,7 +554,7 @@
           "name": "event_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "app_id": {
@@ -405,8 +569,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false,
-          "default": "''"
+          "autoincrement": false
         },
         "user_id": {
           "name": "user_id",
@@ -644,7 +807,7 @@
       "checkConstraints": {
         "usage_events_status_check": {
           "name": "usage_events_status_check",
-          "value": "\"app_usage_event\".\"status\" IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')"
+          "value": "\"app_usage_event\".\"status\" IN ('ok', 'provider_error')"
         }
       }
     },
@@ -684,8 +847,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false,
-          "default": "''"
+          "autoincrement": false
         },
         "model": {
           "name": "model",
@@ -788,6 +950,96 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "app_usage_spend": {
+      "name": "app_usage_spend",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "app_id": {
+          "name": "app_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_key": {
+          "name": "user_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "month": {
+          "name": "month",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "microusd": {
+          "name": "microusd",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "app_usage_spend_scope_month_unique": {
+          "name": "app_usage_spend_scope_month_unique",
+          "columns": [
+            "scope",
+            "app_id",
+            "user_key",
+            "month"
+          ],
+          "isUnique": true
+        },
+        "idx_app_usage_spend_organization": {
+          "name": "idx_app_usage_spend_organization",
+          "columns": [
+            "organization_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "app_usage_spend_scope_check": {
+          "name": "app_usage_spend_scope_check",
+          "value": "\"app_usage_spend\".\"scope\" IN ('app', 'user')"
+        },
+        "app_usage_spend_month_check": {
+          "name": "app_usage_spend_month_check",
+          "value": "\"app_usage_spend\".\"month\" GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(\"app_usage_spend\".\"month\", 6, 2) BETWEEN '01' AND '12'"
+        },
+        "app_usage_spend_microusd_check": {
+          "name": "app_usage_spend_microusd_check",
+          "value": "\"app_usage_spend\".\"microusd\" >= 0"
+        }
+      }
     },
     "app_user": {
       "name": "app_user",
@@ -896,139 +1148,12 @@
         "users_status_check": {
           "name": "users_status_check",
           "value": "\"app_user\".\"status\" IN ('active', 'blocked')"
+        },
+        "users_attest_key_check": {
+          "name": "users_attest_key_check",
+          "value": "(\"app_user\".\"attest_key_id\" IS NULL) = (\"app_user\".\"attest_public_key\" IS NULL) AND (\"app_user\".\"attest_key_id\" IS NULL) = (\"app_user\".\"attest_env\" IS NULL)"
         }
       }
-    },
-    "mgmt_user_account": {
-      "name": "mgmt_user_account",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "account_id": {
-          "name": "account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "provider_id": {
-          "name": "provider_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "access_token": {
-          "name": "access_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "refresh_token": {
-          "name": "refresh_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "id_token": {
-          "name": "id_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "access_token_expires_at": {
-          "name": "access_token_expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "refresh_token_expires_at": {
-          "name": "refresh_token_expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "scope": {
-          "name": "scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "password": {
-          "name": "password",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "mgmt_idx_account_user_id": {
-          "name": "mgmt_idx_account_user_id",
-          "columns": [
-            "user_id"
-          ],
-          "isUnique": false
-        },
-        "mgmt_idx_account_provider_account": {
-          "name": "mgmt_idx_account_provider_account",
-          "columns": [
-            "provider_id",
-            "account_id"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {
-        "mgmt_user_account_user_id_mgmt_user_id_fk": {
-          "name": "mgmt_user_account_user_id_mgmt_user_id_fk",
-          "tableFrom": "mgmt_user_account",
-          "tableTo": "mgmt_user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
     },
     "mgmt_api_key": {
       "name": "mgmt_api_key",
@@ -1160,8 +1285,8 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "mgmt_handoff": {
-      "name": "mgmt_handoff",
+    "mgmt_operation": {
+      "name": "mgmt_operation",
       "columns": {
         "id": {
           "name": "id",
@@ -1177,8 +1302,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "request_json": {
-          "name": "request_json",
+        "state": {
+          "name": "state",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -1188,46 +1313,67 @@
           "name": "organization_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "initiating_user_id": {
           "name": "initiating_user_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "initiating_credential_id": {
           "name": "initiating_credential_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
-        "submission_proof_hash": {
-          "name": "submission_proof_hash",
+        "request_json": {
+          "name": "request_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "request_hash": {
+          "name": "request_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
-        "poll_proof_hash": {
-          "name": "poll_proof_hash",
+        "browser_proof_hash": {
+          "name": "browser_proof_hash",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
-        "consumed_at": {
-          "name": "consumed_at",
+        "outcome_json": {
+          "name": "outcome_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sealed_outcome": {
+          "name": "sealed_outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sealed_until": {
+          "name": "sealed_until",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
         },
-        "outcome": {
-          "name": "outcome",
+        "credential_id": {
+          "name": "credential_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -1256,19 +1402,20 @@
         }
       },
       "indexes": {
-        "idx_mgmt_handoff_pending": {
-          "name": "idx_mgmt_handoff_pending",
+        "idx_mgmt_operation_organization": {
+          "name": "idx_mgmt_operation_organization",
           "columns": [
             "organization_id",
+            "state",
             "expires_at"
           ],
           "isUnique": false
         }
       },
       "foreignKeys": {
-        "mgmt_handoff_organization_id_mgmt_organization_id_fk": {
-          "name": "mgmt_handoff_organization_id_mgmt_organization_id_fk",
-          "tableFrom": "mgmt_handoff",
+        "mgmt_operation_organization_id_mgmt_organization_id_fk": {
+          "name": "mgmt_operation_organization_id_mgmt_organization_id_fk",
+          "tableFrom": "mgmt_operation",
           "tableTo": "mgmt_organization",
           "columnsFrom": [
             "organization_id"
@@ -1276,7 +1423,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -1461,8 +1608,8 @@
         }
       }
     },
-    "mgmt_resource_receipt": {
-      "name": "mgmt_resource_receipt",
+    "mgmt_user": {
+      "name": "mgmt_user",
       "columns": {
         "id": {
           "name": "id",
@@ -1471,81 +1618,41 @@
           "notNull": true,
           "autoincrement": false
         },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "kind": {
           "name": "kind",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
+          "autoincrement": false,
+          "default": "'human'"
         },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "initiating_user_id": {
-          "name": "initiating_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "initiating_credential_id": {
-          "name": "initiating_credential_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "proof_hash": {
-          "name": "proof_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "request_hash": {
-          "name": "request_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "protected_credential": {
-          "name": "protected_credential",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "protected_credential_expires_at": {
-          "name": "protected_credential_expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "consumed_at": {
-          "name": "consumed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
+        "email_verified": {
+          "name": "email_verified",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "image": {
+          "name": "image",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -1564,26 +1671,148 @@
         }
       },
       "indexes": {
-        "idx_mgmt_resource_receipt_organization": {
-          "name": "idx_mgmt_resource_receipt_organization",
+        "mgmt_idx_user_email": {
+          "name": "mgmt_idx_user_email",
           "columns": [
-            "organization_id"
+            "\"email\" COLLATE NOCASE"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "mgmt_user_kind_email_check": {
+          "name": "mgmt_user_kind_email_check",
+          "value": "(\"mgmt_user\".\"kind\" = 'human' and \"mgmt_user\".\"email\" is not null) or (\"mgmt_user\".\"kind\" = 'service' and \"mgmt_user\".\"email\" is null)"
+        }
+      }
+    },
+    "mgmt_user_account": {
+      "name": "mgmt_user_account",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "access_token": {
+          "name": "access_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "id_token": {
+          "name": "id_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "access_token_expires_at": {
+          "name": "access_token_expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "refresh_token_expires_at": {
+          "name": "refresh_token_expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "mgmt_idx_account_user_id": {
+          "name": "mgmt_idx_account_user_id",
+          "columns": [
+            "user_id"
           ],
           "isUnique": false
+        },
+        "mgmt_idx_account_provider_account": {
+          "name": "mgmt_idx_account_provider_account",
+          "columns": [
+            "provider_id",
+            "account_id"
+          ],
+          "isUnique": true
         }
       },
       "foreignKeys": {
-        "mgmt_resource_receipt_organization_id_mgmt_organization_id_fk": {
-          "name": "mgmt_resource_receipt_organization_id_mgmt_organization_id_fk",
-          "tableFrom": "mgmt_resource_receipt",
-          "tableTo": "mgmt_organization",
+        "mgmt_user_account_user_id_mgmt_user_id_fk": {
+          "name": "mgmt_user_account_user_id_mgmt_user_id_fk",
+          "tableFrom": "mgmt_user_account",
+          "tableTo": "mgmt_user",
           "columnsFrom": [
-            "organization_id"
+            "user_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -1685,87 +1914,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
-    },
-    "mgmt_user": {
-      "name": "mgmt_user",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "email": {
-          "name": "email",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'human'"
-        },
-        "email_verified": {
-          "name": "email_verified",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
-        },
-        "image": {
-          "name": "image",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "mgmt_idx_user_email": {
-          "name": "mgmt_idx_user_email",
-          "columns": [
-            "\"email\" COLLATE NOCASE"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "mgmt_user_kind_email_check": {
-          "name": "mgmt_user_kind_email_check",
-          "value": "(\"mgmt_user\".\"kind\" = 'human' and \"mgmt_user\".\"email\" is not null) or (\"mgmt_user\".\"kind\" = 'service' and \"mgmt_user\".\"email\" is null)"
-        }
-      }
     },
     "mgmt_verification": {
       "name": "mgmt_verification",
@@ -1907,6 +2055,14 @@
           "notNull": false,
           "autoincrement": false
         },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
         "status": {
           "name": "status",
           "type": "text",
@@ -1991,10 +2147,6 @@
           "name": "providers_status_check",
           "value": "\"provider\".\"status\" IN ('active', 'disabled')"
         },
-        "providers_type_check": {
-          "name": "providers_type_check",
-          "value": "\"provider\".\"type\" IN (\n        'openai', 'anthropic', 'xai', 'gemini', 'perplexity',\n        'deepseek', 'groq', 'mistral', 'together', 'fireworks', 'openrouter',\n        'cerebras', 'moonshot', 'huggingface', 'baseten', 'bytedance'\n      )"
-        },
         "providers_secret_source_check": {
           "name": "providers_secret_source_check",
           "value": "(\"provider\".\"provider_gateway_id\" IS NULL) = (\"provider\".\"secret_blob\" IS NOT NULL)"
@@ -2052,6 +2204,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
         },
         "status": {
           "name": "status",
@@ -2112,10 +2272,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
-        "provider_gateways_type_check": {
-          "name": "provider_gateways_type_check",
-          "value": "\"provider_gateway\".\"type\" IN ('cf_aig', 'vercel')"
-        },
         "provider_gateways_status_check": {
           "name": "provider_gateways_status_check",
           "value": "\"provider_gateway\".\"status\" IN ('active', 'revoked')"

@@ -1,234 +1,124 @@
 import { accountLifecycle } from "../core/account-lifecycle";
 import type { Deployment } from "../policy/deployment";
-import { accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
+import { accountInstant, accountUnclaimed, unclaimedAccessDeadline } from "../policy/accounts";
 import { GatewayError } from "../core/errors";
+import type { OrganizationQuotaStatus } from "../contracts/billing";
+import {
+  allowancePeriod,
+  freeAllowanceSchedule,
+  paidAllowanceSchedule,
+  type AllowancePeriod,
+  type AllowanceSchedule,
+} from "./allowance-period";
 import {
   billingPlanLimits,
   getBillingAccess,
-  requireActiveBilling,
   type BillingRequestCache,
   type GatewayBillingAccess,
 } from "./gateway";
 
-export interface BillingQuotaPeriod {
-  /** Internal schedule identity. Provider ids never enter the public API. */
-  scheduleId: string;
-  /** Monotonic transition instant used to reject superseded cache entries. */
-  scheduleRevision: number;
-  periodId: string;
-  periodStart: string;
-  periodEnd: string;
-  resetAt: string;
-}
-
-export interface ResolvedBillingQuota {
-  access: GatewayBillingAccess;
-  limit: number | undefined;
-  period: BillingQuotaPeriod;
-}
-
-export type BillingQuotaResolution =
-  | ResolvedBillingQuota
-  | { access: GatewayBillingAccess; limit?: never; period?: never };
+/**
+ * What the organization's plan allowance is right now.
+ *
+ * `unmetered` means nothing is counted, not that traffic is admissible: a
+ * self-hosted deployment and a plan with no monthly limit answer it, but so do
+ * billing being unavailable and no plan resolving. A caller that admits traffic
+ * must still call `requireActiveBilling(quota.access)`. `metered` is a limit
+ * and the period it is counted over.
+ */
+export type BillingQuota =
+  | { kind: "unmetered"; access: GatewayBillingAccess }
+  | { kind: "metered"; access: GatewayBillingAccess; limit: number; period: AllowancePeriod };
 
 function invalidSchedule(field: string): GatewayError {
   return new GatewayError(502, "billing_unavailable", `Invalid ${field} from billing data`);
 }
 
-function normalizedInstant(value: unknown, field: string): number {
-  if (typeof value !== "string" || value.trim() === "") throw invalidSchedule(field);
-  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
-  const at = Date.parse(normalized);
-  if (!Number.isFinite(at)) throw invalidSchedule(field);
+function instant(value: string, field: string): number {
+  const at = accountInstant(value);
+  if (at === null) throw invalidSchedule(field);
   return at;
 }
 
-function optionalInstant(value: unknown, field: string): number | null {
-  return value === null ? null : normalizedInstant(value, field);
-}
-
-function daysInUtcMonth(year: number, month: number): number {
-  return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-}
-
 /**
- * Adds months from the original anchor. This makes Jan 31 become Feb 28 and
- * then Mar 31, instead of allowing February's clamp to drift the schedule.
+ * The schedule a plan is counted on. The default plan's is the account's own,
+ * anchored where it was created; any other plan's is its subscription's, as the
+ * billing service reports it.
  */
-export function monthlyAnniversary(anchorAt: number, anchorDay: number, offset: number): number {
-  const anchor = new Date(anchorAt);
-  const absoluteMonth = anchor.getUTCFullYear() * 12 + anchor.getUTCMonth() + offset;
-  const year = Math.floor(absoluteMonth / 12);
-  const month = absoluteMonth - year * 12;
-  return Date.UTC(
-    year,
-    month,
-    Math.min(anchorDay, daysInUtcMonth(year, month)),
-    anchor.getUTCHours(),
-    anchor.getUTCMinutes(),
-    anchor.getUTCSeconds(),
-    anchor.getUTCMilliseconds(),
+function allowanceSchedule(
+  access: GatewayBillingAccess & { state: "billed" },
+  accountCreatedAt: string,
+): AllowanceSchedule {
+  if (access.plan?.isDefault !== false) {
+    return freeAllowanceSchedule(instant(accountCreatedAt, "organization creation time"));
+  }
+  const subscription = access.subscription;
+  if (!subscription) throw invalidSchedule("paid subscription schedule");
+  const anchorAt = instant(subscription.billingAnchorAt, "billing anchor");
+  const anchorDay = subscription.billingAnchorDay ?? new Date(anchorAt).getUTCDate();
+  if (!Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 31) {
+    throw invalidSchedule("billing anchor day");
+  }
+  return paidAllowanceSchedule(
+    anchorAt,
+    anchorDay,
+    instant(subscription.createdAt, "subscription creation time"),
   );
 }
 
-export function anniversaryPeriod(
-  anchorAt: number,
-  anchorDay: number,
-  now: number,
-): { start: number; end: number } {
-  if (now < anchorAt) throw new Error("Billing schedule begins in the future");
-  const anchor = new Date(anchorAt);
-  const at = new Date(now);
-  let offset = (at.getUTCFullYear() - anchor.getUTCFullYear()) * 12
-    + at.getUTCMonth() - anchor.getUTCMonth();
-  let start = monthlyAnniversary(anchorAt, anchorDay, offset);
-  while (start > now) {
-    offset -= 1;
-    start = monthlyAnniversary(anchorAt, anchorDay, offset);
-  }
-  let end = monthlyAnniversary(anchorAt, anchorDay, offset + 1);
-  while (end <= now) {
-    offset += 1;
-    start = end;
-    end = monthlyAnniversary(anchorAt, anchorDay, offset + 1);
-  }
-  return { start: Math.max(start, anchorAt), end };
-}
-
-function latest(...values: Array<number | null>): number {
-  return Math.max(...values.filter((value): value is number => value !== null));
-}
-
 /**
- * The one resolver used by both dispatch enforcement and billing status.
- * Default plans always return to the organization's original Free schedule.
+ * The one resolver used by dispatch enforcement, billing status and the CLI:
+ * the plan's monthly request limit and the period it is counted over.
+ *
+ * A self-hosted deployment is answered before anything is read, so admission
+ * there pays nothing for it.
  */
-export async function getBillingQuotaResolution(
+export async function billingQuota(
   deployment: Deployment,
   env: Env,
   organizationId: string,
   cache?: BillingRequestCache,
-  now?: number,
-): Promise<BillingQuotaResolution> {
+  now: number = Date.now(),
+): Promise<BillingQuota> {
   const access = await getBillingAccess(deployment, organizationId, cache);
-  if (access.state !== "billed" || access.plan === null) return { access };
-
-  let scheduleId: string;
-  let revision: number;
-  let anchorAt: number;
-  let anchorDay: number;
-  let kind: "free" | "paid";
-  let publicScheduleOrigin: string;
-  /**
-   * Set while nobody has claimed the account. The trial is not a schedule of its
-   * own: it is the free schedule's first period with an early end, so the same
-   * `scheduleId` and revision survive the claim and the quota object keeps its
-   * counter instead of refusing the switch as a superseded schedule.
-   */
-  let trialEnd: number | null = null;
-
-  if (access.plan.isDefault) {
-    // Billing only chooses the entitlement. Gateway D1 owns ownership and the
-    // free-access clock, and one lifecycle row answers both: the account's
-    // creation instant is the free schedule's anchor, and whether a human owns
-    // it is what decides the trial. It is the same read the account gate on the
-    // request already made, so it costs a warm isolate nothing.
-    const account = await accountLifecycle(env, organizationId);
-    now ??= Date.now();
-    kind = "free";
-    anchorAt = normalizedInstant(account.createdAt, "organization creation time");
-    // D1 may hold the instant in either shape; the schedule is identified by the
-    // normalized one, so a rewritten row cannot rename an existing schedule.
-    const createdAt = new Date(anchorAt).toISOString();
-    anchorDay = new Date(anchorAt).getUTCDate();
-    scheduleId = `free:${organizationId}:${createdAt}`;
-    publicScheduleOrigin = createdAt;
-    const subscription = access.subscription;
-    const endsAt = subscription ? optionalInstant(subscription.endsAt, "subscription end time") : null;
-    const trialEndsAt = subscription ? optionalInstant(subscription.trialEndsAt, "trial end time") : null;
-    revision = latest(
-      anchorAt,
-      subscription ? normalizedInstant(subscription.updatedAt, "subscription update time") : null,
-      endsAt !== null && endsAt <= now ? endsAt : null,
-      subscription?.status === "on_trial"
-        && trialEndsAt !== null
-        && trialEndsAt <= now
-        ? trialEndsAt
-        : null,
-    );
-    // One allowance that never renews, so an account nobody has claimed cannot
-    // draw a second month. Claiming it resumes the ordinary monthly renewals.
-    // Measured from the schedule's own anchor, so the window can never close
-    // before the period it belongs to opens.
-    if (accountUnclaimed(account)) {
-      // normalizedInstant above already validated this same stored value.
-      const deadline = unclaimedAccessDeadline(account.createdAt);
-      if (deadline === null) throw invalidSchedule("organization creation time");
-      trialEnd = deadline;
-    }
-  } else {
-    now ??= Date.now();
-    const subscription = access.subscription;
-    if (!subscription) throw invalidSchedule("paid subscription schedule");
-    kind = "paid";
-    anchorAt = normalizedInstant(subscription.billingAnchorAt, "billing anchor");
-    const day = subscription.billingAnchorDay === null
-      ? new Date(anchorAt).getUTCDate()
-      : subscription.billingAnchorDay;
-    if (typeof day !== "number" || !Number.isInteger(day) || day < 1 || day > 31) {
-      throw invalidSchedule("billing anchor day");
-    }
-    anchorDay = day;
-    scheduleId =
-      `paid:${subscription.subscriptionId ?? "manual"}:${subscription.createdAt}:${subscription.billingAnchorAt}`;
-    publicScheduleOrigin = subscription.createdAt;
-    revision = latest(
-      normalizedInstant(subscription.createdAt, "subscription creation time"),
-      normalizedInstant(subscription.updatedAt, "subscription update time"),
-      normalizedInstant(subscription.billingScheduleUpdatedAt, "billing schedule update time"),
-    );
-  }
-
-  if (anchorAt > now) {
-    // Allow a brief retry for cross-service clock skew without admitting before
-    // the actual anchor. A distant future anchor is an invalid active schedule.
-    if (anchorAt - now <= 60_000) {
+  if (access.state !== "billed" || access.plan === null) return { kind: "unmetered", access };
+  const limit = billingPlanLimits(access).maxRequestsPerMonth;
+  if (limit === undefined) return { kind: "unmetered", access };
+  // Ownership and the free-access clock are gateway D1's, not billing's. It is
+  // the same lifecycle read the account gate on the request already made, so
+  // it costs a warm isolate nothing.
+  const account = await accountLifecycle(env, organizationId);
+  const schedule = allowanceSchedule(access, account.createdAt);
+  if (schedule.anchorAt > now) {
+    // A brief lead is clock skew between this Worker and billing, and is worth
+    // a retry; a distant one is a schedule that has not started, and admitting
+    // against it would count toward a period that does not exist yet.
+    if (schedule.anchorAt - now <= 60_000) {
       throw new GatewayError(503, "billing_unavailable", "Billing schedule has not started yet", {
-        "Retry-After": String(Math.max(1, Math.ceil((anchorAt - now) / 1_000))),
+        "Retry-After": String(Math.max(1, Math.ceil((schedule.anchorAt - now) / 1_000))),
       });
     }
     throw invalidSchedule("future billing anchor");
   }
-  const { start, end } = anniversaryPeriod(anchorAt, anchorDay, now);
-  // An unclaimed account stays on the first period however long the trial runs:
-  // it opens on the anchor and closes when the trial does, never renewing.
-  const periodStart = new Date(trialEnd === null ? start : anchorAt).toISOString();
-  const periodEnd = new Date(trialEnd ?? end).toISOString();
-  return {
-    access,
-    limit: billingPlanLimits(access).maxRequestsPerMonth,
-    period: {
-      scheduleId,
-      scheduleRevision: revision,
-      periodId: `${kind}:${publicScheduleOrigin}:${periodStart}`,
-      periodStart,
-      periodEnd,
-      resetAt: periodEnd,
-    },
-  };
+  let unclaimedDeadline: number | null = null;
+  if (accountUnclaimed(account) && schedule.kind === "free") {
+    unclaimedDeadline = unclaimedAccessDeadline(account.createdAt);
+    if (unclaimedDeadline === null) throw invalidSchedule("organization creation time");
+  }
+  return { kind: "metered", access, limit, period: allowancePeriod(schedule, now, unclaimedDeadline) };
 }
 
-export async function resolveBillingQuota(
-  deployment: Deployment,
+/**
+ * The live count against a metered quota, read out of the organization's quota
+ * object — the only place it lives, because only the dispatch path writes it.
+ * Null for an unmetered quota, which counts nothing.
+ */
+export async function quotaUsage(
   env: Env,
   organizationId: string,
-  cache?: BillingRequestCache,
-  now?: number,
-): Promise<ResolvedBillingQuota> {
-  const resolved = await getBillingQuotaResolution(deployment, env, organizationId, cache, now);
-  if (!resolved.period) {
-    requireActiveBilling(resolved.access);
-    throw new Error("Billing quota periods only exist for hosted plans");
-  }
-  return resolved;
+  quota: BillingQuota,
+): Promise<OrganizationQuotaStatus | null> {
+  if (quota.kind === "unmetered") return null;
+  const used = await env.ORG_QUOTA.getByName(organizationId).usage(quota.period.periodId);
+  return { ...quota.period, used, limit: quota.limit };
 }

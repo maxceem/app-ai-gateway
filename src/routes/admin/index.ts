@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { Hono, type Context, type Next } from "hono";
-import prices from "../../core/prices.json";
+import prices from "../../usage/prices.json";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
@@ -42,12 +42,6 @@ async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
 
 adminRoutes.use("/apps/:app", scopeAdminApp);
 adminRoutes.use("/apps/:app/*", scopeAdminApp);
-adminRoutes.use("/billing/*", async (c, next) => {
-  if (c.get("deployment").mode === "self_hosted") {
-    throw new GatewayError(404, "not_found", "Billing is not configured");
-  }
-  await next();
-});
 
 /** Supplies the priced model catalog used by the proxy-policy editor. */
 adminRouter(adminRoutes).handle("listModelPrices", () => ({ prices }));

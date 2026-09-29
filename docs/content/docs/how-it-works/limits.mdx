@@ -28,8 +28,10 @@ cannot drain the shared window before their own limit stops them.
   burst of up to twice the per-minute value is possible across a boundary.
   Days roll over at midnight UTC.
 - **Budgets settle after the response.** A request's cost is known only when
-  its response completes, so a budget stops the request after the one that
-  crossed it. A single very expensive call can overshoot.
+  its response completes, and the limit counter reads the month's spend at
+  most every ten seconds, so a budget stops requests within about ten seconds
+  of the one that crossed it. A single very expensive call, or a burst inside
+  those seconds, can overshoot.
 - **Budgets use UTC calendar months.** Turning on an application budget
   part-way through a month counts what the month has already spent.
 - **A budget of zero is a closed door.** It stops all billable traffic for

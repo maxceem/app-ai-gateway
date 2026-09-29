@@ -1,27 +1,25 @@
-import { and, desc, eq } from "drizzle-orm";
-import { ApiKeyCreateRequestSchema } from "../contracts/schemas";
+import { and, desc, eq, sql } from "drizzle-orm";
+import type { ApiKeyCreateRequest } from "../contracts/schemas";
 import type {
   ApiKey,
   ApiKeyListResponse,
   ApiKeyRevokeResponse,
   CreatedApiKey,
 } from "../contracts/responses";
-import { generateApiKey } from "../core/apikeys";
+import { generateApiKey } from "../client-auth/api-keys";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { appApiKey, type app } from "../db/schema";
 import type { Actor } from "./actor";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { schemaBody } from "./validation";
 import { commitResourceWrite, type ResourceWriteBoundary } from "./write-boundary";
 
 type AppRow = typeof app.$inferSelect;
 
 /**
  * Read off the column rather than the configuration: what kind of application
- * this is does not need the whole grammar run over it, and a row whose stored
- * configuration no longer parses is still unambiguously one kind or the other.
+ * this is does not need the whole grammar run over it.
  */
 function apiKeyApp(row: AppRow): AppRow {
   if (row.authType !== "api_key") {
@@ -45,11 +43,10 @@ export async function createAppKey(
   scope: ManagementScope,
   actor: Actor,
   appRow: AppRow,
-  input: unknown,
+  { name }: ApiKeyCreateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<CreatedApiKey> {
   const appId = apiKeyApp(appRow).id;
-  const { name } = schemaBody(ApiKeyCreateRequestSchema, input);
   const generated = await generateApiKey();
   const now = new Date().toISOString();
   const outcome: CreatedApiKey = {
@@ -64,22 +61,20 @@ export async function createAppKey(
   // land between the check and the write.
   await commitResourceWrite(
     scope,
-    `INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
-     SELECT ?,?,?,?,?,'active',?
-     WHERE EXISTS (SELECT 1 FROM app WHERE id = ? AND organization_id = ?
+    (guard) => sql`INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
+     SELECT ${generated.id},${appId},${name},${generated.keyHash},${generated.keyPrefix},'active',${now}
+     WHERE EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId}
        AND auth_type = 'api_key')
-     AND /* authorization */`,
-    [generated.id, appId, name, generated.keyHash, generated.keyPrefix, now,
-      appId, organizationId],
+     AND ${guard}`,
     outcome,
-    boundary,
-    cap,
+    { boundary, cap },
   );
   return outcome;
 }
 
 export async function listAppKeys(
   scope: ManagementScope,
+  _actor: Actor,
   appRow: AppRow,
 ): Promise<ApiKeyListResponse> {
   const appId = apiKeyApp(appRow).id;
@@ -93,6 +88,7 @@ export async function listAppKeys(
 
 export async function revokeAppKey(
   scope: ManagementScope,
+  _actor: Actor,
   appRow: AppRow,
   keyId: string,
 ): Promise<ApiKeyRevokeResponse> {

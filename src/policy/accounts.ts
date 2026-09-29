@@ -1,4 +1,4 @@
-import type { DeploymentMode } from "./deployment";
+import type { DeploymentRules } from "./deployment";
 
 /**
  * How long an account nobody has claimed may serve traffic and change
@@ -38,15 +38,16 @@ export function unclaimedAccessDeadline(createdAt: string): number | null {
   return created === null ? null : created + UNCLAIMED_ACCESS_MS;
 }
 
+/** Whether this access runs out with an unclaimed account's free window. */
 export function requiresUnclaimedAccess(
-  deploymentMode: DeploymentMode,
+  rules: DeploymentRules,
   accessMode: AccountAccessMode,
 ): boolean {
-  return deploymentMode === "cloud" && (accessMode === "setup" || accessMode === "proxy");
+  return rules.accountDeadlines && (accessMode === "setup" || accessMode === "proxy");
 }
 
 export function accountAccessDenial(
-  deploymentMode: DeploymentMode,
+  rules: DeploymentRules,
   account: AccountLifecycle,
   accessMode: AccountAccessMode,
   nowMs: number,
@@ -54,7 +55,7 @@ export function accountAccessDenial(
   if (!accountUnclaimed(account)) return null;
   const recoveryDeadline = accountInstant(account.expiresAt);
   if (recoveryDeadline === null || recoveryDeadline <= nowMs) return "account_expired";
-  if (requiresUnclaimedAccess(deploymentMode, accessMode)) {
+  if (requiresUnclaimedAccess(rules, accessMode)) {
     const trialDeadline = unclaimedAccessDeadline(account.createdAt);
     if (trialDeadline === null || trialDeadline <= nowMs) return "unclaimed_access_expired";
   }

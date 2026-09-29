@@ -3,14 +3,15 @@
  *
  * What a *provider type* is lives next door in `./providers.ts`; this module is
  * about the vocabulary both sides are described in — API styles, clamp styles,
- * gateway types — and about what a gateway does to a provider it carries.
+ * routes — and about what a gateway does to a provider it carries. A gateway
+ * type itself is an entry in `./gateways.ts`, which names its route table here.
  *
  * This module imports nothing at runtime, on purpose. The console bundles it
  * directly, so a single import of `drizzle-orm`, the Worker's environment
- * types, or anything else from `src/core` would pull the server into a browser
+ * types, or anything else from the Worker would pull the server into a browser
  * build. Everything here is a plain table or a pure function over one; the
  * behaviour that reads these tables — adapters, validation, request
- * construction — stays in `src/core`, and the console has its own presentation
+ * construction — stays in the Worker, and the console has its own presentation
  * layer over them.
  *
  * A console that offers a combination the server refuses is a bug report, so
@@ -18,8 +19,10 @@
  * module, and the two cannot drift.
  */
 
-// Type-only, and it has to stay that way: `./providers.ts` imports API_STYLES
-// from here at runtime, so a value import back would be a cycle.
+// Type-only, and they have to stay that way: `./providers.ts` imports
+// API_STYLES from here at runtime, and `./gateways.ts` the route tables below,
+// so a value import back from either would be a cycle.
+import type { GatewayType } from "./gateways.ts";
 import type { ProviderType } from "./providers.ts";
 
 /**
@@ -80,7 +83,7 @@ export function isDefaultProxyApiStyle(style: ApiStyle): boolean {
  * (`chat/completions` on DeepSeek, `openai/v1/chat/completions` on Groq).
  *
  * `other` is absent because it names no contract and so has no canonical path.
- * A test pins every entry against `apiStyleFromPath`, so the table cannot come
+ * A test pins every entry against `classifyPath`, so the table cannot come
  * to disagree with the classifier that judges real requests.
  */
 export const API_STYLE_PATHS = {
@@ -91,19 +94,13 @@ export const API_STYLE_PATHS = {
   audio_transcription: "v1/audio/transcriptions",
 } as const satisfies Partial<Record<ApiStyle, string>>;
 
-export const ENDPOINT_API_STYLES = ["responses", "transcription"] as const;
+/**
+ * The API styles a named endpoint can compose: the gateway writes those request
+ * bodies itself, so each is a style this deployment has verified end to end.
+ */
+export const ENDPOINT_API_STYLES = ["responses", "audio_transcription"] as const satisfies readonly ApiStyle[];
 
 export type EndpointApiStyle = (typeof ENDPOINT_API_STYLES)[number];
-
-/**
- * The client API a named endpoint of each style composes, so endpoint
- * eligibility comes off the same matrix the proxy paths do rather than a second
- * list of its own.
- */
-export const ENDPOINT_STYLE_API = {
-  responses: "responses",
-  transcription: "audio_transcription",
-} as const satisfies Record<EndpointApiStyle, ApiStyle>;
 
 /** The body field a request's output cap is clamped in. */
 export const OUTPUT_CLAMP_STYLES = [
@@ -115,11 +112,6 @@ export const OUTPUT_CLAMP_STYLES = [
 ] as const;
 
 export type OutputClampStyle = (typeof OUTPUT_CLAMP_STYLES)[number];
-
-/** Gateway types with an adapter, and so the only ones that can carry traffic. */
-export const GATEWAY_TYPES = ["cf_aig", "vercel"] as const;
-
-export type GatewayType = (typeof GATEWAY_TYPES)[number];
 
 /** Where a provider instance's traffic goes: the provider's own API, or a gateway. */
 export type ProviderRoute = "direct" | GatewayType;
@@ -208,8 +200,9 @@ export const VERCEL_API_STYLES: readonly ApiStyle[] = [
 ];
 
 /**
- * Named endpoints this gateway can compose. `responses` only: `transcription`
- * would post to `v1/audio/transcriptions`, which Vercel does not serve.
+ * Named endpoints this gateway can compose. `responses` only: an
+ * `audio_transcription` endpoint would post to `v1/audio/transcriptions`, which
+ * Vercel does not serve.
  */
 export const VERCEL_ENDPOINT_STYLES: readonly EndpointApiStyle[] = ["responses"];
 
@@ -259,15 +252,6 @@ export const VERCEL_ROUTES: Partial<Record<ProviderType, GatewayProviderRoute>> 
   // Moonshot's own IDs are the Kimi ones, and Vercel publishes them verbatim
   // under the lab's name rather than the product's: `moonshotai/kimi-k3`.
   moonshot: vercelRoute("moonshotai/"),
-};
-
-/** Which provider types each gateway serves, and how. */
-export const GATEWAY_ROUTES: Record<
-  GatewayType,
-  Partial<Record<ProviderType, GatewayProviderRoute>>
-> = {
-  cf_aig: CF_AIG_ROUTES,
-  vercel: VERCEL_ROUTES,
 };
 
 /**

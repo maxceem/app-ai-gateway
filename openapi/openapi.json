@@ -90,7 +90,7 @@
       "CliPollProof": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The initiating CLI's private pollToken, distinct from the browser submission proof."
+        "description": "The initiating CLI's private operation token, distinct from the browser's approval proof."
       },
       "GatewayBearer": {
         "type": "http",
@@ -293,17 +293,19 @@
                                   "properties": {
                                     "path": {
                                       "type": "string",
-                                      "minLength": 1
+                                      "pattern": "\\S"
                                     },
                                     "contains": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "array",
                                           "items": {
-                                            "type": "string"
+                                            "type": "string",
+                                            "pattern": "\\S"
                                           },
                                           "minItems": 1
                                         }
@@ -312,7 +314,8 @@
                                     "equals": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "number"
@@ -442,6 +445,21 @@
                           "source": {
                             "type": "string",
                             "enum": [
+                              "none"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "source"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "enum": [
                               "header"
                             ]
                           },
@@ -522,17 +540,19 @@
                                   "properties": {
                                     "path": {
                                       "type": "string",
-                                      "minLength": 1
+                                      "pattern": "\\S"
                                     },
                                     "contains": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "array",
                                           "items": {
-                                            "type": "string"
+                                            "type": "string",
+                                            "pattern": "\\S"
                                           },
                                           "minItems": 1
                                         }
@@ -541,7 +561,8 @@
                                     "equals": {
                                       "anyOf": [
                                         {
-                                          "type": "string"
+                                          "type": "string",
+                                          "pattern": "\\S"
                                         },
                                         {
                                           "type": "number"
@@ -601,7 +622,8 @@
                   }
                 },
                 "required": [
-                  "type"
+                  "type",
+                  "end_user"
                 ],
                 "additionalProperties": false
               }
@@ -864,7 +886,7 @@
                   "type": "string",
                   "enum": [
                     "responses",
-                    "transcription"
+                    "audio_transcription"
                   ]
                 },
                 "params": {
@@ -1205,15 +1227,7 @@
                 "type": "string"
               },
               "config": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/AppConfig"
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": {}
-                  }
-                ]
+                "$ref": "#/components/schemas/AppConfig"
               },
               "status": {
                 "type": "string",
@@ -1238,18 +1252,10 @@
               "created_at",
               "updated_at"
             ]
-          },
-          "config_error": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write."
           }
         },
         "required": [
-          "app",
-          "config_error"
+          "app"
         ]
       },
       "AppUpdate": {
@@ -1272,13 +1278,13 @@
           },
           "revision": {
             "type": "integer",
-            "exclusiveMinimum": 0
+            "exclusiveMinimum": 0,
+            "description": "Required: the revision the application was read at. An absent one answers 400 app_revision_required, a stale one 409 app_revision_conflict."
           }
         },
         "required": [
           "name",
-          "config",
-          "revision"
+          "config"
         ],
         "additionalProperties": false
       },
@@ -1379,6 +1385,72 @@
           "pricing": {
             "$ref": "#/components/schemas/ProviderPricing"
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "direct",
+              "cf_aig",
+              "vercel",
+              null
+            ],
+            "description": "Where this instance's traffic goes: direct to the provider's own API, or the type of the provider gateway it is routed through. Null when that gateway's type has no adapter in this deployment, so the instance can serve nothing until it is fixed or deleted."
+          },
+          "capability": {
+            "type": "object",
+            "properties": {
+              "apiStyles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "chat_completions",
+                    "anthropic_messages",
+                    "gemini_native",
+                    "audio_transcription",
+                    "other"
+                  ]
+                },
+                "description": "The client APIs this instance can be called with on its route. A direct instance lists every style its provider type does not narrow; the provider itself answers for paths it lacks."
+              },
+              "endpointStyles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "responses",
+                    "audio_transcription"
+                  ]
+                },
+                "description": "The named-endpoint styles this instance can back on its route."
+              },
+              "modelPrefix": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The namespace the route adds to model IDs on the way out. Clients always send the provider's own ID; null means the route sends it unchanged."
+              },
+              "paths": {
+                "type": "string",
+                "enum": [
+                  "provider",
+                  "gateway"
+                ],
+                "description": "Whose URL layout clients call under /proxy/{slug}/: the provider's own paths, or the one path per API style a gateway publishes for every provider it serves."
+              }
+            },
+            "required": [
+              "apiStyles",
+              "endpointStyles",
+              "modelPrefix",
+              "paths"
+            ],
+            "description": "What this instance can do on its route, decided by the gateway rather than re-derived by clients."
+          },
           "revision": {
             "type": "integer",
             "exclusiveMinimum": 0
@@ -1408,6 +1480,8 @@
           "gatewayRoute",
           "baseUrl",
           "pricing",
+          "route",
+          "capability",
           "revision",
           "status",
           "createdAt",
@@ -1789,6 +1863,11 @@
                 "minLength": 1,
                 "maxLength": 100
               },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "accountId": {
                 "type": "string",
                 "minLength": 1,
@@ -1798,19 +1877,14 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
-              },
-              "token": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4096
               }
             },
             "required": [
               "type",
               "name",
+              "token",
               "accountId",
-              "gatewayId",
-              "token"
+              "gatewayId"
             ],
             "additionalProperties": false
           },
@@ -1854,6 +1928,11 @@
                   "cf_aig"
                 ]
               },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
               "accountId": {
                 "type": "string",
                 "minLength": 1,
@@ -1863,18 +1942,13 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
-              },
-              "token": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4096
               }
             },
             "required": [
               "type",
+              "token",
               "accountId",
-              "gatewayId",
-              "token"
+              "gatewayId"
             ],
             "additionalProperties": false
           },
@@ -2075,7 +2149,7 @@
               "unresolved",
               null
             ],
-            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on blocked traffic and on events recorded before this field existed."
+            "description": "How cost_usd was determined. `reported` is the upstream's own figure for this request, which is what was billed; `computed` is this deployment's price catalog; `unresolved` means the provider answered successfully but neither source could establish a cost, so the zero is unknown rather than measured. Null on events recorded before this field existed."
           },
           "app_version": {
             "type": [
@@ -2098,11 +2172,7 @@
             "type": "string",
             "enum": [
               "ok",
-              "provider_error",
-              "blocked_app_rate",
-              "blocked_app_budget",
-              "blocked_billing",
-              "blocked_user"
+              "provider_error"
             ]
           },
           "client_aborted": {
@@ -2226,7 +2296,49 @@
                 "count"
               ]
             },
-            "description": "Non-ok proxied requests per day, so proxy-path failures appear in the same view."
+            "description": "Provider errors per day from requests that reached an upstream."
+          },
+          "rejection_samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "blocked_app_rate",
+                    "blocked_app_budget",
+                    "blocked_billing",
+                    "blocked_user"
+                  ]
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "user",
+                    "app",
+                    "account",
+                    null
+                  ]
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "date",
+                "reason",
+                "scope",
+                "count"
+              ]
+            },
+            "description": "Sampled pre-provider refusals per day. These are diagnostic samples, not exact request totals."
           },
           "token_exchange": {
             "type": "object",
@@ -2296,6 +2408,7 @@
           "to",
           "daily",
           "usage_failures",
+          "rejection_samples",
           "token_exchange",
           "claim_delay",
           "pending_users"
@@ -2376,6 +2489,114 @@
           "app_version",
           "latency_ms",
           "claim_delay_ms",
+          "created_at"
+        ]
+      },
+      "RejectionEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "api_key_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "blocked_app_rate",
+              "blocked_app_budget",
+              "blocked_billing",
+              "blocked_user"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "user",
+              "app",
+              "account",
+              null
+            ],
+            "description": "Null on historical samples whose limit scope cannot be recovered."
+          },
+          "provider_slug": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Attempted provider; this request did not contact an upstream."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endpoint_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "attest",
+              "api_key",
+              null
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "api_key_id",
+          "reason",
+          "scope",
+          "provider_slug",
+          "model",
+          "route",
+          "endpoint_slug",
+          "app_version",
+          "auth_method",
+          "latency_ms",
           "created_at"
         ]
       },
@@ -2844,29 +3065,71 @@
       }
     },
     "/v1/auth/sign-in/social": {
-      "get": {
+      "post": {
         "tags": [
           "Console authentication"
         ],
         "operationId": "signInWithGoogle",
         "summary": "Start optional Google sign-in",
-        "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "google"
-              ]
-            },
-            "required": true,
-            "name": "provider",
-            "in": "query"
+        "description": "Available only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured. Send provider=google in the JSON body, with optional success and error callback URLs. The console uses callbackURL to restore its destination and errorCallbackURL to return to sign-in with the error. Navigate the browser to the URL in the JSON response to continue the Google flow.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "google"
+                    ]
+                  },
+                  "callbackURL": {
+                    "type": "string",
+                    "description": "Where to send the browser after successful sign-in; may be a relative console path."
+                  },
+                  "errorCallbackURL": {
+                    "type": "string",
+                    "description": "Where to send the browser if sign-in fails; may be a relative console path."
+                  },
+                  "disableRedirect": {
+                    "type": "boolean",
+                    "description": "Set true to suppress Better Auth's Location header; the JSON response still contains the provider URL."
+                  }
+                },
+                "required": [
+                  "provider"
+                ]
+              }
+            }
           }
-        ],
+        },
         "responses": {
-          "302": {
-            "description": "Redirect to Google."
+          "200": {
+            "description": "Google authorization URL and redirect indicator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "Provider authorization URL for the browser to navigate to."
+                    },
+                    "redirect": {
+                      "type": "boolean",
+                      "description": "Whether Better Auth also sets a Location header. The console navigates to url itself."
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "redirect"
+                  ]
+                }
+              }
+            }
           },
           "400": {
             "description": "The request is invalid.",
@@ -3597,7 +3860,7 @@
         ],
         "operationId": "callNamedEndpoint",
         "summary": "Call a server-configured named endpoint",
-        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; transcription-style endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
+        "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
         "security": [
           {
             "GatewayBearer": []
@@ -3679,7 +3942,7 @@
                 "required": [
                   "file"
                 ],
-                "description": "Body for endpoints whose api_style is transcription."
+                "description": "Body for endpoints whose api_style is audio_transcription."
               }
             }
           }
@@ -3817,7 +4080,7 @@
                     },
                     "has_proxied_requests": {
                       "type": "boolean",
-                      "description": "Whether this account has ever had a request recorded, at any time. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started."
+                      "description": "Whether this account has ever recorded a provider attempt, at any time. Refusals before a provider call do not set this flag. Unlike the per-application `usage` totals beside it, which cover `month` only, this does not reset when a new month begins, and it never goes from true back to false. Intended for first-run interfaces that stop offering setup guidance once traffic has started."
                     },
                     "apps": {
                       "type": "array",
@@ -3841,8 +4104,7 @@
                             "type": "string",
                             "enum": [
                               "apple_app_attest",
-                              "api_key",
-                              "invalid"
+                              "api_key"
                             ]
                           },
                           "apple_bundle_id": {
@@ -3913,9 +4175,6 @@
                               },
                               "errors": {
                                 "type": "number"
-                              },
-                              "blocked": {
-                                "type": "number"
                               }
                             },
                             "required": [
@@ -3925,8 +4184,7 @@
                               "cache_write_tokens",
                               "output_tokens",
                               "cost_usd",
-                              "errors",
-                              "blocked"
+                              "errors"
                             ]
                           }
                         },
@@ -4004,33 +4262,13 @@
         ],
         "operationId": "createApp",
         "summary": "Create an application",
-        "description": "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response. Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
+        "description": "Send only `name`, `config` and an optional `status`. The gateway assigns the id — the name slugified plus a six-character random suffix — and returns it as `app.id`; it cannot be chosen, and it cannot change once the application exists. A body that still carries `id` is refused with `400`. API-key applications receive a one-time plaintext initial key in the response.",
         "security": [
           {
             "ConsoleSession": []
           },
           {
             "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "Idempotency-Key",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "X-Idempotency-Proof",
-            "in": "header"
           }
         ],
         "requestBody": {
@@ -4066,15 +4304,7 @@
                           "type": "string"
                         },
                         "config": {
-                          "anyOf": [
-                            {
-                              "$ref": "#/components/schemas/AppConfig"
-                            },
-                            {
-                              "type": "object",
-                              "additionalProperties": {}
-                            }
-                          ]
+                          "$ref": "#/components/schemas/AppConfig"
                         },
                         "status": {
                           "type": "string",
@@ -4099,13 +4329,6 @@
                         "created_at",
                         "updated_at"
                       ]
-                    },
-                    "config_error": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "description": "Why the stored configuration does not parse, for a row written before a schema change. Always null on create and update, which validate before they write."
                     },
                     "api_key": {
                       "type": [
@@ -4140,7 +4363,6 @@
                   },
                   "required": [
                     "app",
-                    "config_error",
                     "api_key"
                   ]
                 }
@@ -4188,17 +4410,7 @@
             }
           },
           "409": {
-            "description": "A request proof was reused with different content or resource creation conflicted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
+            "description": "`invalid_request` — no unique generated id could be allocated after repeated attempts. Retrying is safe.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4350,7 +4562,7 @@
                       "properties": {
                         "periodId": {
                           "type": "string",
-                          "description": "Opaque identifier for the allowance period being reported."
+                          "description": "Opaque identifier for the allowance period: the plan's schedule and the period's start. A paid plan's months run from its subscription's billing anchor, the free plan's from the account's creation."
                         },
                         "periodStart": {
                           "type": "string",
@@ -4366,7 +4578,7 @@
                         },
                         "limit": {
                           "type": "integer",
-                          "description": "The plan's maxRequestsPerMonth. Absent means unlimited."
+                          "description": "The plan's maxRequestsPerMonth."
                         },
                         "resetAt": {
                           "type": "string",
@@ -4378,9 +4590,10 @@
                         "periodStart",
                         "periodEnd",
                         "used",
+                        "limit",
                         "resetAt"
                       ],
-                      "description": "Null when billing is unavailable or no plan entitlement resolves."
+                      "description": "Null when billing is unavailable, no plan entitlement resolves, or the plan sets no monthly request limit, which counts nothing."
                     },
                     "actions": {
                       "type": "object",
@@ -5949,33 +6162,13 @@
         ],
         "operationId": "createProvider",
         "summary": "Store a provider credential",
-        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug. Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
+        "description": "Creates one named provider instance. Supply exactly one direct provider secret or reusable providerGatewayId. The credential is stored as given and never probed: check one first with POST /v1/admin/providers/test. The slug defaults to the provider type and is unique among your provider instances, disabled ones included; only deleting an instance frees its slug.",
         "security": [
           {
             "ConsoleSession": []
           },
           {
             "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "Idempotency-Key",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "X-Idempotency-Proof",
-            "in": "header"
           }
         ],
         "requestBody": {
@@ -6048,17 +6241,7 @@
             }
           },
           "409": {
-            "description": "A request proof was reused with different content or resource creation conflicted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
+            "description": "The requested active provider slug is already in use.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6450,33 +6633,13 @@
         ],
         "operationId": "createProviderGateway",
         "summary": "Create a reusable provider gateway connection",
-        "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. The token is encrypted and stored as given, never probed: check a connection first with POST /v1/admin/provider-gateways/test. Provider instances are attached separately through the providers API. Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
+        "description": "Cloudflare AI Gateway takes an account and gateway id; Vercel AI Gateway takes only a name and a token. The token is encrypted and stored as given, never probed: check a connection first with POST /v1/admin/provider-gateways/test. Provider instances are attached separately through the providers API.",
         "security": [
           {
             "ConsoleSession": []
           },
           {
             "ManagementBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "Idempotency-Key",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "X-Idempotency-Proof",
-            "in": "header"
           }
         ],
         "requestBody": {
@@ -6540,26 +6703,6 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A request proof was reused with different content or resource creation conflicted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7761,11 +7904,7 @@
               "type": "string",
               "enum": [
                 "ok",
-                "provider_error",
-                "blocked_app_rate",
-                "blocked_app_budget",
-                "blocked_billing",
-                "blocked_user"
+                "provider_error"
               ]
             },
             "required": false,
@@ -8138,6 +8277,188 @@
         }
       }
     },
+    "/v1/admin/apps/{app}/rejection-events": {
+      "get": {
+        "tags": [
+          "Admin operations"
+        ],
+        "operationId": "listAppRejectionEvents",
+        "summary": "List sampled application refusals",
+        "description": "Sampled requests refused before contacting a provider. One sample per authenticated identity per minute; counts are not exact request totals.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "blocked_app_rate",
+                "blocked_app_budget",
+                "blocked_billing",
+                "blocked_user"
+              ]
+            },
+            "required": false,
+            "name": "reason",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "app",
+                "account"
+              ]
+            },
+            "required": false,
+            "name": "scope",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "user",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "description": "Page backwards: only events older than this id."
+            },
+            "required": false,
+            "description": "Page backwards: only events older than this id.",
+            "name": "before_id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated refusal samples, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app_id": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "next_before_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/RejectionEvent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "app_id",
+                    "limit",
+                    "next_before_id",
+                    "events"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/apps/{app}/keys": {
       "get": {
         "tags": [
@@ -8273,7 +8594,6 @@
         ],
         "operationId": "createAppKey",
         "summary": "Create an application API key",
-        "description": " Optional Idempotency-Key and X-Idempotency-Proof must be supplied together as independently generated 32–256 character URL-safe proofs. Save them before sending; an identical retry returns the original result. Wrong proof is 403, changed body is 409. Protected key recovery lasts 15 minutes; expired recovery never creates another resource.",
         "security": [
           {
             "ConsoleSession": []
@@ -8291,24 +8611,6 @@
             "required": true,
             "name": "app",
             "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "Idempotency-Key",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{32,256}$"
-            },
-            "required": false,
-            "name": "X-Idempotency-Proof",
-            "in": "header"
           }
         ],
         "requestBody": {
@@ -8388,26 +8690,6 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A request proof was reused with different content or resource creation conflicted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "resource_receipt_expired: protected key recovery expired; error.data contains existing appId/keyId when available. resource_key_unavailable: the original key was revoked. Inspect that resource and replace its key intentionally.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8723,9 +9005,6 @@
                               },
                               "errors": {
                                 "type": "number"
-                              },
-                              "blocked": {
-                                "type": "number"
                               }
                             },
                             "required": [
@@ -8735,8 +9014,7 @@
                               "cache_write_tokens",
                               "output_tokens",
                               "cost_usd",
-                              "errors",
-                              "blocked"
+                              "errors"
                             ]
                           }
                         },
@@ -8929,9 +9207,6 @@
                             },
                             "errors": {
                               "type": "number"
-                            },
-                            "blocked": {
-                              "type": "number"
                             }
                           },
                           "required": [
@@ -8941,8 +9216,7 @@
                             "cache_write_tokens",
                             "output_tokens",
                             "cost_usd",
-                            "errors",
-                            "blocked"
+                            "errors"
                           ]
                         }
                       },
@@ -9429,10 +9703,6 @@
                     },
                     "delta_usd": {
                       "type": "number"
-                    },
-                    "reconciled_users": {
-                      "type": "integer",
-                      "description": "End-user spend ledgers reprojected inside this request; the rest are left to scheduled recovery."
                     }
                   },
                   "required": [
@@ -9447,8 +9717,7 @@
                     "unpriced_cost_usd",
                     "previous_cost_usd",
                     "recalculated_cost_usd",
-                    "delta_usd",
-                    "reconciled_users"
+                    "delta_usd"
                   ]
                 }
               }
@@ -9588,9 +9857,6 @@
                           "errors": {
                             "type": "number"
                           },
-                          "blocked": {
-                            "type": "number"
-                          },
                           "date": {
                             "type": "string"
                           },
@@ -9606,7 +9872,6 @@
                           "output_tokens",
                           "cost_usd",
                           "errors",
-                          "blocked",
                           "date",
                           "provider"
                         ]
@@ -9810,9 +10075,6 @@
                           "errors": {
                             "type": "number"
                           },
-                          "blocked": {
-                            "type": "number"
-                          },
                           "key": {
                             "type": [
                               "string",
@@ -9828,7 +10090,6 @@
                           "output_tokens",
                           "cost_usd",
                           "errors",
-                          "blocked",
                           "key"
                         ]
                       }
@@ -10143,7 +10404,7 @@
         ],
         "operationId": "bootstrapCliAccount",
         "summary": "Initialize a recoverable CLI account",
-        "description": "Persist both random proofs before sending. An identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
+        "description": "Persist the random token before sending: its digest is the operation's id, and an identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
         "requestBody": {
           "required": true,
           "content": {
@@ -10151,18 +10412,13 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "idempotencyKey": {
-                    "type": "string",
-                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "pollToken": {
+                  "token": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
                   }
                 },
                 "required": [
-                  "idempotencyKey",
-                  "pollToken"
+                  "token"
                 ],
                 "additionalProperties": false
               }
@@ -10171,12 +10427,44 @@
         },
         "responses": {
           "200": {
-            "description": "Initial account and credential. Never print or log the credential.",
+            "description": "The completed bootstrap: its account, and the credential in `result`. Never print or log the credential.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "bootstrap",
+                        "claim",
+                        "app.add",
+                        "app.key.add",
+                        "provider.add",
+                        "provider.update",
+                        "provider.rotate-key",
+                        "provider-gateway.add",
+                        "provider-gateway.rotate-key"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "completed",
+                        "expired"
+                      ]
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
                     "deployment": {
                       "type": "object",
                       "properties": {
@@ -10206,8 +10494,123 @@
                         "consoleOrigin"
                       ]
                     },
-                    "account": {
+                    "result": {
                       "type": "object",
+                      "properties": {
+                        "credential": {
+                          "type": "object",
+                          "properties": {
+                            "token": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "token"
+                          ]
+                        },
+                        "unclaimedAccess": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "endsAt": {
+                              "type": "string"
+                            },
+                            "limit": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "endsAt"
+                          ]
+                        },
+                        "accountId": {
+                          "type": "string"
+                        },
+                        "app": {
+                          "type": "object",
+                          "properties": {
+                            "revision": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "config": {
+                              "$ref": "#/components/schemas/AppConfig"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "active",
+                                "disabled"
+                              ]
+                            },
+                            "created_at": {
+                              "type": "string"
+                            },
+                            "updated_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "revision",
+                            "id",
+                            "name",
+                            "config",
+                            "status",
+                            "created_at",
+                            "updated_at"
+                          ]
+                        },
+                        "api_key": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "key_prefix": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "key_prefix",
+                            "created_at"
+                          ]
+                        },
+                        "provider": {
+                          "$ref": "#/components/schemas/Provider"
+                        },
+                        "gateway": {
+                          "$ref": "#/components/schemas/ProviderGateway"
+                        }
+                      }
+                    },
+                    "account": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
                       "properties": {
                         "id": {
                           "type": "string"
@@ -10235,41 +10638,14 @@
                         "claimed",
                         "expiresAt"
                       ]
-                    },
-                    "credential": {
-                      "type": "object",
-                      "properties": {
-                        "token": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "token"
-                      ]
-                    },
-                    "unclaimedAccess": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "properties": {
-                        "endsAt": {
-                          "type": "string"
-                        },
-                        "limit": {
-                          "type": "integer"
-                        }
-                      },
-                      "required": [
-                        "endsAt"
-                      ]
                     }
                   },
                   "required": [
-                    "deployment",
-                    "account",
-                    "credential",
-                    "unclaimedAccess"
+                    "id",
+                    "kind",
+                    "state",
+                    "expiresAt",
+                    "deployment"
                   ]
                 }
               }
@@ -10354,8 +10730,8 @@
           "CLI"
         ],
         "operationId": "createCliOperation",
-        "summary": "Create or recover a browser handoff",
-        "description": "Persist pollToken before initiation. Repeating the same proof and payload recovers the same operation. A current account key is required. Claims require interactive human sign-in and explicit consent. Provider handoffs require the browser URL proof and show the exact resource configuration before secret submission. Handoffs expire after 15 minutes.",
+        "summary": "Send or recover a CLI operation",
+        "description": "Persist the random token before sending: its digest is the operation's id, and repeating the same token and payload recovers the same operation instead of repeating it. A current account key is required. An operation without a browser step runs at once and answers completed, with any one-time key in `result` for 15 minutes. One with a browser step answers pending with the approval `url`: claims require interactive human sign-in and explicit consent, and provider and gateway operations collect their secret on that page after showing the exact configuration. A browser step expires after 15 minutes.",
         "security": [
           {
             "ConsoleSession": []
@@ -10385,14 +10761,78 @@
                         "default": {},
                         "additionalProperties": false
                       },
-                      "pollToken": {
+                      "token": {
                         "type": "string",
                         "pattern": "^[A-Za-z0-9_-]{32,256}$"
                       }
                     },
                     "required": [
                       "kind",
-                      "pollToken"
+                      "token"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "app.add"
+                        ]
+                      },
+                      "payload": {
+                        "$ref": "#/components/schemas/AppWrite"
+                      },
+                      "token": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "token"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "app.key.add"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100
+                          },
+                          "app": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "app"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "token": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "token"
                     ],
                     "additionalProperties": false
                   },
@@ -10406,108 +10846,83 @@
                         ]
                       },
                       "payload": {
-                        "type": "object",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "enum": [
-                              "openai",
-                              "anthropic",
-                              "xai",
-                              "gemini",
-                              "perplexity",
-                              "deepseek",
-                              "groq",
-                              "mistral",
-                              "together",
-                              "fireworks",
-                              "cerebras",
-                              "moonshot",
-                              "huggingface",
-                              "baseten",
-                              "bytedance",
-                              "openrouter"
-                            ]
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/ProviderCreateRequest"
                           },
-                          "name": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 100
-                          },
-                          "slug": {
-                            "type": "string",
-                            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-                            "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
-                          },
-                          "providerGatewayId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "gatewayRoute": {
-                            "$ref": "#/components/schemas/GatewayRouteConfig"
-                          },
-                          "baseUrl": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 200
-                          },
-                          "pricing": {
-                            "$ref": "#/components/schemas/ProviderPricing"
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "openai",
+                                  "anthropic",
+                                  "xai",
+                                  "gemini",
+                                  "perplexity",
+                                  "deepseek",
+                                  "groq",
+                                  "mistral",
+                                  "together",
+                                  "fireworks",
+                                  "cerebras",
+                                  "moonshot",
+                                  "huggingface",
+                                  "baseten",
+                                  "bytedance",
+                                  "openrouter"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              "slug": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                                "description": "Lowercase letters, digits and hyphens, starting with a letter or digit. `constructor` and `prototype` are reserved."
+                              },
+                              "providerGatewayId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "gatewayRoute": {
+                                "$ref": "#/components/schemas/GatewayRouteConfig"
+                              },
+                              "baseUrl": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "pricing": {
+                                "$ref": "#/components/schemas/ProviderPricing"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name"
+                            ],
+                            "additionalProperties": false
                           }
-                        },
-                        "required": [
-                          "type",
-                          "name"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "pollToken": {
-                        "type": "string",
-                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "payload",
-                      "pollToken"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "enum": [
-                          "provider.rotate-key"
                         ]
                       },
-                      "payload": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "revision": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0
-                          }
-                        },
-                        "required": [
-                          "id"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "pollToken": {
+                      "token": {
                         "type": "string",
                         "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      },
+                      "browser": {
+                        "type": "boolean",
+                        "enum": [
+                          true
+                        ]
                       }
                     },
                     "required": [
                       "kind",
                       "payload",
-                      "pollToken"
+                      "token"
                     ],
                     "additionalProperties": false
                   },
@@ -10569,11 +10984,12 @@
                           }
                         },
                         "required": [
-                          "id"
+                          "id",
+                          "revision"
                         ],
                         "additionalProperties": false
                       },
-                      "pollToken": {
+                      "token": {
                         "type": "string",
                         "pattern": "^[A-Za-z0-9_-]{32,256}$"
                       }
@@ -10581,7 +10997,46 @@
                     "required": [
                       "kind",
                       "payload",
-                      "pollToken"
+                      "token"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "provider.rotate-key"
+                        ]
+                      },
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "revision"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "token": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "payload",
+                      "token"
                     ],
                     "additionalProperties": false
                   },
@@ -10595,7 +11050,73 @@
                         ]
                       },
                       "payload": {
-                        "oneOf": [
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "cf_aig"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              "token": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              },
+                              "accountId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              "gatewayId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name",
+                              "token",
+                              "accountId",
+                              "gatewayId"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "vercel"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              "token": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name",
+                              "token"
+                            ],
+                            "additionalProperties": false
+                          },
                           {
                             "type": "object",
                             "properties": {
@@ -10652,15 +11173,21 @@
                           }
                         ]
                       },
-                      "pollToken": {
+                      "token": {
                         "type": "string",
                         "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                      },
+                      "browser": {
+                        "type": "boolean",
+                        "enum": [
+                          true
+                        ]
                       }
                     },
                     "required": [
                       "kind",
                       "payload",
-                      "pollToken"
+                      "token"
                     ],
                     "additionalProperties": false
                   },
@@ -10686,11 +11213,12 @@
                           }
                         },
                         "required": [
-                          "id"
+                          "id",
+                          "revision"
                         ],
                         "additionalProperties": false
                       },
-                      "pollToken": {
+                      "token": {
                         "type": "string",
                         "pattern": "^[A-Za-z0-9_-]{32,256}$"
                       }
@@ -10698,7 +11226,7 @@
                     "required": [
                       "kind",
                       "payload",
-                      "pollToken"
+                      "token"
                     ],
                     "additionalProperties": false
                   }
@@ -10709,7 +11237,7 @@
         },
         "responses": {
           "200": {
-            "description": "Browser URL for the pending handoff.",
+            "description": "Where the operation stands: completed with its result, or pending with the approval URL.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10718,21 +11246,34 @@
                     "id": {
                       "type": "string"
                     },
-                    "url": {
+                    "kind": {
                       "type": "string",
-                      "format": "uri"
-                    },
-                    "expiresAt": {
-                      "type": "string"
+                      "enum": [
+                        "bootstrap",
+                        "claim",
+                        "app.add",
+                        "app.key.add",
+                        "provider.add",
+                        "provider.update",
+                        "provider.rotate-key",
+                        "provider-gateway.add",
+                        "provider-gateway.rotate-key"
+                      ]
                     },
                     "state": {
                       "type": "string",
                       "enum": [
                         "pending",
                         "completed",
-                        "failed",
                         "expired"
                       ]
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
                     },
                     "deployment": {
                       "type": "object",
@@ -10762,13 +11303,158 @@
                         "apiUrl",
                         "consoleOrigin"
                       ]
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "credential": {
+                          "type": "object",
+                          "properties": {
+                            "token": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "token"
+                          ]
+                        },
+                        "unclaimedAccess": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "endsAt": {
+                              "type": "string"
+                            },
+                            "limit": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "endsAt"
+                          ]
+                        },
+                        "accountId": {
+                          "type": "string"
+                        },
+                        "app": {
+                          "type": "object",
+                          "properties": {
+                            "revision": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "config": {
+                              "$ref": "#/components/schemas/AppConfig"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "active",
+                                "disabled"
+                              ]
+                            },
+                            "created_at": {
+                              "type": "string"
+                            },
+                            "updated_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "revision",
+                            "id",
+                            "name",
+                            "config",
+                            "status",
+                            "created_at",
+                            "updated_at"
+                          ]
+                        },
+                        "api_key": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "key_prefix": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "key_prefix",
+                            "created_at"
+                          ]
+                        },
+                        "provider": {
+                          "$ref": "#/components/schemas/Provider"
+                        },
+                        "gateway": {
+                          "$ref": "#/components/schemas/ProviderGateway"
+                        }
+                      }
+                    },
+                    "account": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
                     }
                   },
                   "required": [
                     "id",
-                    "url",
-                    "expiresAt",
+                    "kind",
                     "state",
+                    "expiresAt",
                     "deployment"
                   ]
                 }
@@ -10854,8 +11540,8 @@
           "CLI"
         ],
         "operationId": "pollCliOperation",
-        "summary": "Poll a browser handoff",
-        "description": "Only the original polling proof can recover the result. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned.",
+        "summary": "Poll a CLI operation",
+        "description": "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes.",
         "security": [
           {
             "CliPollProof": []
@@ -10873,7 +11559,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Current operation state and nonsecret result.",
+            "description": "Where the operation stands, and its result once completed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10882,8 +11568,34 @@
                     "id": {
                       "type": "string"
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "bootstrap",
+                        "claim",
+                        "app.add",
+                        "app.key.add",
+                        "provider.add",
+                        "provider.update",
+                        "provider.rotate-key",
+                        "provider-gateway.add",
+                        "provider-gateway.rotate-key"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "completed",
+                        "expired"
+                      ]
+                    },
                     "expiresAt": {
                       "type": "string"
+                    },
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
                     },
                     "deployment": {
                       "type": "object",
@@ -10914,20 +11626,109 @@
                         "consoleOrigin"
                       ]
                     },
-                    "state": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "completed",
-                        "failed",
-                        "expired"
-                      ]
-                    },
                     "result": {
                       "type": "object",
                       "properties": {
+                        "credential": {
+                          "type": "object",
+                          "properties": {
+                            "token": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "token"
+                          ]
+                        },
+                        "unclaimedAccess": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "endsAt": {
+                              "type": "string"
+                            },
+                            "limit": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "endsAt"
+                          ]
+                        },
                         "accountId": {
                           "type": "string"
+                        },
+                        "app": {
+                          "type": "object",
+                          "properties": {
+                            "revision": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "config": {
+                              "$ref": "#/components/schemas/AppConfig"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "active",
+                                "disabled"
+                              ]
+                            },
+                            "created_at": {
+                              "type": "string"
+                            },
+                            "updated_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "revision",
+                            "id",
+                            "name",
+                            "config",
+                            "status",
+                            "created_at",
+                            "updated_at"
+                          ]
+                        },
+                        "api_key": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "key_prefix": {
+                              "type": "string"
+                            },
+                            "created_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "key_prefix",
+                            "created_at"
+                          ]
                         },
                         "provider": {
                           "$ref": "#/components/schemas/Provider"
@@ -10973,9 +11774,10 @@
                   },
                   "required": [
                     "id",
+                    "kind",
+                    "state",
                     "expiresAt",
-                    "deployment",
-                    "state"
+                    "deployment"
                   ]
                 }
               }
@@ -11140,151 +11942,76 @@
                       "type": "object",
                       "properties": {
                         "access": {
-                          "type": "object",
-                          "properties": {
-                            "state": {
-                              "type": "string"
-                            },
-                            "plan": {
-                              "type": [
-                                "object",
-                                "null"
-                              ],
+                          "oneOf": [
+                            {
+                              "type": "object",
                               "properties": {
-                                "planKey": {
-                                  "type": "string"
-                                },
-                                "planName": {
-                                  "type": "string"
-                                },
-                                "isDefault": {
-                                  "type": "boolean"
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "self_hosted"
+                                  ]
                                 }
                               },
                               "required": [
-                                "planKey",
-                                "planName",
-                                "isDefault"
+                                "state"
                               ]
                             },
-                            "subscription": {
-                              "type": [
-                                "object",
-                                "null"
-                              ],
+                            {
+                              "type": "object",
                               "properties": {
-                                "subscriptionId": {
-                                  "type": [
-                                    "string",
-                                    "null"
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "state"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "billed"
                                   ]
                                 },
-                                "status": {
-                                  "type": "string"
+                                "subscription": {
+                                  "$ref": "#/components/schemas/Subscription"
                                 },
-                                "planKey": {
-                                  "type": "string"
-                                },
-                                "planName": {
-                                  "type": "string"
-                                },
-                                "billingPeriod": {
+                                "plan": {
                                   "type": [
-                                    "string",
+                                    "object",
                                     "null"
                                   ],
-                                  "enum": [
-                                    "month",
-                                    "year",
-                                    null
+                                  "properties": {
+                                    "planKey": {
+                                      "type": "string"
+                                    },
+                                    "planName": {
+                                      "type": "string"
+                                    },
+                                    "isDefault": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "planKey",
+                                    "planName",
+                                    "isDefault"
                                   ]
-                                },
-                                "renewsAt": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "endsAt": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "trialEndsAt": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "source": {
-                                  "type": "string"
-                                },
-                                "createdAt": {
-                                  "type": "string"
-                                },
-                                "updatedAt": {
-                                  "type": "string"
-                                },
-                                "billingAnchorDay": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                },
-                                "billingAnchorAt": {
-                                  "type": "string"
-                                },
-                                "billingScheduleUpdatedAt": {
-                                  "type": "string"
                                 }
                               },
                               "required": [
-                                "subscriptionId",
-                                "status",
-                                "planKey",
-                                "planName",
-                                "billingPeriod",
-                                "renewsAt",
-                                "endsAt",
-                                "trialEndsAt",
-                                "source",
-                                "createdAt",
-                                "updatedAt",
-                                "billingAnchorDay",
-                                "billingAnchorAt",
-                                "billingScheduleUpdatedAt"
+                                "state",
+                                "subscription",
+                                "plan"
                               ]
                             }
-                          },
-                          "required": [
-                            "state"
-                          ]
-                        },
-                        "limit": {
-                          "type": "number"
-                        },
-                        "period": {
-                          "type": "object",
-                          "properties": {
-                            "periodId": {
-                              "type": "string"
-                            },
-                            "periodStart": {
-                              "type": "string"
-                            },
-                            "periodEnd": {
-                              "type": "string"
-                            },
-                            "resetAt": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "periodId",
-                            "periodStart",
-                            "periodEnd",
-                            "resetAt"
                           ]
                         }
                       },
@@ -11312,8 +12039,19 @@
                         },
                         "used": {
                           "type": "number"
+                        },
+                        "limit": {
+                          "type": "number"
                         }
-                      }
+                      },
+                      "required": [
+                        "periodId",
+                        "periodStart",
+                        "periodEnd",
+                        "resetAt",
+                        "used",
+                        "limit"
+                      ]
                     }
                   },
                   "required": [
@@ -11406,7 +12144,7 @@
         ],
         "operationId": "getCliUsage",
         "summary": "Read retained account usage for a UTC month",
-        "description": "Includes retained usage for deleted apps, with durable account attribution. Historical rows whose owner was already unknown when attribution was introduced cannot be counted. Coverage describes this limitation without disclosing other accounts' data.",
+        "description": "Includes retained usage for deleted apps, with durable account attribution.",
         "security": [
           {
             "ConsoleSession": []
@@ -11465,9 +12203,6 @@
                         },
                         "errors": {
                           "type": "number"
-                        },
-                        "blocked": {
-                          "type": "number"
                         }
                       },
                       "required": [
@@ -11477,8 +12212,7 @@
                         "cache_write_tokens",
                         "output_tokens",
                         "cost_usd",
-                        "errors",
-                        "blocked"
+                        "errors"
                       ]
                     },
                     "apps": {
@@ -11507,9 +12241,6 @@
                           "errors": {
                             "type": "number"
                           },
-                          "blocked": {
-                            "type": "number"
-                          },
                           "appId": {
                             "type": "string"
                           },
@@ -11528,7 +12259,6 @@
                           "output_tokens",
                           "cost_usd",
                           "errors",
-                          "blocked",
                           "appId",
                           "deleted",
                           "firstRecord"
@@ -11549,15 +12279,11 @@
                             "string",
                             "null"
                           ]
-                        },
-                        "historicalAttribution": {
-                          "type": "string"
                         }
                       },
                       "required": [
                         "scope",
-                        "firstRecord",
-                        "historicalAttribution"
+                        "firstRecord"
                       ]
                     }
                   },
@@ -11673,30 +12399,6 @@
                   "submissionToken": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "approve": {
-                    "type": "boolean",
-                    "enum": [
-                      true
-                    ]
-                  },
-                  "email": {
-                    "type": "string",
-                    "format": "email"
-                  },
-                  "password": {
-                    "type": "string",
-                    "minLength": 8,
-                    "maxLength": 256
-                  },
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
-                  },
-                  "secret": {
-                    "type": "string",
-                    "maxLength": 16384
                   }
                 },
                 "required": [
@@ -11718,10 +12420,13 @@
                     "kind": {
                       "type": "string",
                       "enum": [
+                        "bootstrap",
                         "claim",
+                        "app.add",
+                        "app.key.add",
                         "provider.add",
-                        "provider.rotate-key",
                         "provider.update",
+                        "provider.rotate-key",
                         "provider-gateway.add",
                         "provider-gateway.rotate-key"
                       ]
@@ -11923,27 +12628,15 @@
                       true
                     ]
                   },
-                  "email": {
-                    "type": "string",
-                    "format": "email"
-                  },
-                  "password": {
-                    "type": "string",
-                    "minLength": 8,
-                    "maxLength": 256
-                  },
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
-                  },
                   "secret": {
                     "type": "string",
-                    "maxLength": 16384
+                    "maxLength": 16384,
+                    "pattern": "\\S"
                   }
                 },
                 "required": [
-                  "submissionToken"
+                  "submissionToken",
+                  "approve"
                 ],
                 "additionalProperties": false
               }
@@ -12086,12 +12779,6 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
                   },
-                  "approve": {
-                    "type": "boolean",
-                    "enum": [
-                      true
-                    ]
-                  },
                   "email": {
                     "type": "string",
                     "format": "email"
@@ -12105,14 +12792,13 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100
-                  },
-                  "secret": {
-                    "type": "string",
-                    "maxLength": 16384
                   }
                 },
                 "required": [
-                  "submissionToken"
+                  "submissionToken",
+                  "email",
+                  "password",
+                  "name"
                 ],
                 "additionalProperties": false
               }
@@ -12242,30 +12928,6 @@
                   "submissionToken": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{32,256}$"
-                  },
-                  "approve": {
-                    "type": "boolean",
-                    "enum": [
-                      true
-                    ]
-                  },
-                  "email": {
-                    "type": "string",
-                    "format": "email"
-                  },
-                  "password": {
-                    "type": "string",
-                    "minLength": 8,
-                    "maxLength": 256
-                  },
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
-                  },
-                  "secret": {
-                    "type": "string",
-                    "maxLength": 16384
                   }
                 },
                 "required": [

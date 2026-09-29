@@ -9,10 +9,11 @@ import {
   AUTH_EVENT_RETENTION_DAYS,
   pruneAuthChallenges,
   pruneAuthEvents,
-} from "./core/auth-events";
+} from "./client-auth/auth-events";
 import { QueryBudgetExhausted, maintenanceQueryBudget } from "./core/query-budget";
-import { runUsageRetention } from "./core/usage-retention";
-import { recoverPendingUsageSpend } from "./core/app-usage-accounting";
+import { MAINTENANCE_CRON } from "./core/maintenance-cron";
+import { runUsageRetention } from "./usage/usage-retention";
+import { pruneRejectionEvents, REJECTION_RETENTION_DAYS } from "./diagnostics/rejection-events";
 import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
@@ -222,6 +223,12 @@ async function prune(env: Env): Promise<void> {
     sweepFailed("auth_events", "auth_events_prune_failed", error);
   }
   try {
+    const deleted = await pruneRejectionEvents(db);
+    log("info", "rejection_events_pruned", { deleted, retentionDays: REJECTION_RETENTION_DAYS });
+  } catch (error) {
+    sweepFailed("rejection_events", "rejection_events_prune_failed", error);
+  }
+  try {
     const deleted = await pruneAuthChallenges(db);
     log("info", "auth_challenges_pruned", { deleted });
   } catch (error) {
@@ -236,7 +243,7 @@ async function prune(env: Env): Promise<void> {
   // deployment can have one to collect: a self-host's single account has no
   // `expires_at` at all, so running this there would spend a sixth of a Free
   // plan's nightly queries on a sweep that cannot match a row.
-  if (resolveDeployment(env).mode === "cloud") {
+  if (resolveDeployment(env).rules.accountDeadlines) {
     // At most half of what the fixed sweeps left, so a large expired backlog
     // cannot starve compaction. The share issues through its own view of the
     // database, so it spends the run's allowance without being able to overrun
@@ -254,33 +261,6 @@ async function prune(env: Env): Promise<void> {
   await runUsageRetention(db, Date.now(), budget);
 }
 
-async function recoverUsageSpend(env: Env): Promise<void> {
-  try {
-    const result = await recoverPendingUsageSpend(env);
-    if (result.attempted > 0) log("info", "usage_spend_recovered", { ...result });
-  } catch (error) {
-    log("error", "usage_spend_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-export function scheduledMaintenance(
-  cron: string,
-  scheduledTime: number,
-): "prune" | "recover" | undefined {
-  // Keep accepting the former nightly trigger while Cloudflare propagates the
-  // one-trigger configuration. An unrelated trigger must not spend either
-  // maintenance budget.
-  if (cron === "17 3 * * *") return "prune";
-  if (cron !== "* * * * *") return undefined;
-
-  const scheduled = new Date(scheduledTime);
-  return scheduled.getUTCHours() === 3 && scheduled.getUTCMinutes() === 17
-    ? "prune"
-    : "recover";
-}
-
 /**
  * The Hono app itself is the handler — `fetch` is one of its own properties, so
  * the cron entry point is attached beside it rather than wrapped around it. That
@@ -289,8 +269,7 @@ export function scheduledMaintenance(
  */
 export default Object.assign(app, {
   scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    const maintenance = scheduledMaintenance(controller.cron, controller.scheduledTime);
-    if (maintenance === "prune") ctx.waitUntil(prune(env));
-    if (maintenance === "recover") ctx.waitUntil(recoverUsageSpend(env));
+    // An unrelated trigger must not spend the maintenance budget.
+    if (controller.cron === MAINTENANCE_CRON) ctx.waitUntil(prune(env));
   },
 });

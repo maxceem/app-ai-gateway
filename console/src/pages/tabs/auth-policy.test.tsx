@@ -3,9 +3,10 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuthPolicyTab } from "./auth-policy";
 import { levelStatuses } from "@/lib/auth-levels";
+import { draftIssues } from "@/lib/draft-problems";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { AppDraft, Draft } from "@/hooks/use-app-draft";
-import type { AuthConfig, AuthenticationDraft } from "@/lib/config-types";
+import type { IssuerDraft, AuthenticationDraft } from "@/lib/config-types";
 
 const APP_ID = "my-app";
 
@@ -14,8 +15,14 @@ const APP_ID = "my-app";
  * rather than reproducing the whole `useAppDraft` surface.
  */
 function draftFor(authentication: AuthenticationDraft): AppDraft {
+  const draft: Draft = {
+    name: "My app",
+    status: "active",
+    config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },
+  };
   return {
-    draft: { name: "My app", status: "active", config: { authentication } },
+    draft,
+    issues: draftIssues(draft),
     dirty: false,
     save: vi.fn(),
     updateIssuer: vi.fn(),
@@ -25,7 +32,7 @@ function draftFor(authentication: AuthenticationDraft): AppDraft {
   } as unknown as AppDraft;
 }
 
-const FIREBASE: AuthConfig = {
+const FIREBASE: IssuerDraft = {
   provider: "firebase",
   jwks_url:
     "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
@@ -33,11 +40,12 @@ const FIREBASE: AuthConfig = {
   audience: "my-app-1a2b3",
   user_id_claim: "sub",
   required_claims: [],
+  max_token_lifetime_seconds: 86400,
 };
 
-const serverApp = (issuer?: AuthConfig): AuthenticationDraft => ({
+const serverApp = (issuer?: IssuerDraft): AuthenticationDraft => ({
   type: "api_key",
-  ...(issuer ? { end_user: { source: "issuer" as const, issuer } } : {}),
+  end_user: issuer ? { source: "issuer", issuer } : { source: "none" },
 });
 
 const headerApp = (header = "x-end-user-id"): AuthenticationDraft => ({
@@ -45,7 +53,7 @@ const headerApp = (header = "x-end-user-id"): AuthenticationDraft => ({
   end_user: { source: "header", header },
 });
 
-const appleApp = (issuer: AuthConfig = FIREBASE): AuthenticationDraft => ({
+const appleApp = (issuer: IssuerDraft = FIREBASE): AuthenticationDraft => ({
   type: "apple_app_attest",
   app_attest: { team_id: "AAAAAAAAAA", bundle_id: "com.example.test" },
   end_user: { source: "issuer", issuer },
@@ -80,27 +88,29 @@ describe("levelStatuses", () => {
     status: "active",
     config: { authentication, routing: { providers: { mode: "all" }, model_rewrites: {} } },
   });
+  const statusesOf = (draft: Draft, keysActive: boolean | undefined) =>
+    levelStatuses(draft, draftIssues(draft), keysActive);
 
   it("reads the strictest answer as secure and a looser one as weak", () => {
-    const strict = levelStatuses(draft(appleApp()), undefined);
+    const strict = statusesOf(draft(appleApp()), undefined);
     expect(strict.identity.tone).toBe("secure");
     expect(strict.users.tone).toBe("secure");
     expect(strict.subscription.tone).toBe("weak");
 
-    const loose = levelStatuses(draft(appInstallApp()), undefined);
+    const loose = statusesOf(draft(appInstallApp()), undefined);
     expect(loose.users).toEqual({ tone: "weak", text: "Unauthenticated users allowed" });
     // Nothing to check when nobody signs in.
     expect(loose.subscription.tone).toBe("off");
   });
 
   it("flags an answer the gateway could not act on yet", () => {
-    const halfDone = levelStatuses(
+    const halfDone = statusesOf(
       draft(appleApp({ ...FIREBASE, issuer: "https://securetoken.google.com/", audience: "" })),
       undefined,
     );
     expect(halfDone.users.tone).toBe("incomplete");
 
-    const paidWithoutClaim = levelStatuses(
+    const paidWithoutClaim = statusesOf(
       draft(appleApp({
         ...FIREBASE,
         entitlement: "revenuecat",
@@ -111,12 +121,19 @@ describe("levelStatuses", () => {
     expect(paidWithoutClaim.subscription.tone).toBe("incomplete");
   });
 
+  it("judges a backend-sent header by the schema, not by whether it is empty", () => {
+    expect(statusesOf(draft(headerApp()), true).users.tone).toBe("weak");
+    // A name the gateway already uses is refused on save, so it is not an
+    // answer the level can call done.
+    expect(statusesOf(draft(headerApp("authorization")), true).users.tone).toBe("incomplete");
+  });
+
   it("reads a server app's identity off its keys", () => {
-    expect(levelStatuses(draft(serverApp()), false).identity)
+    expect(statusesOf(draft(serverApp()), false).identity)
       .toEqual({ tone: "incomplete", text: "No active API key" });
-    expect(levelStatuses(draft(serverApp()), true).identity.tone).toBe("secure");
+    expect(statusesOf(draft(serverApp()), true).identity.tone).toBe("secure");
     // Unknown is not a problem; it is a list still loading.
-    expect(levelStatuses(draft(serverApp()), undefined).identity.tone).toBe("secure");
+    expect(statusesOf(draft(serverApp()), undefined).identity.tone).toBe("secure");
   });
 });
 
@@ -213,7 +230,7 @@ describe("AuthPolicyTab user authentication", () => {
     expect(state.setEndUserSource).toHaveBeenCalledWith("issuer");
 
     await userEvent.click(await option(/no user identity/i));
-    expect(state.setEndUserSource).toHaveBeenCalledWith(undefined);
+    expect(state.setEndUserSource).toHaveBeenCalledWith("none");
   });
 
   it("reveals the header name only for a backend-sent id", async () => {
@@ -258,11 +275,13 @@ describe("AuthPolicyTab user authentication", () => {
 
   it("opens the custom form on the stored URLs when no vendor wrote them", async () => {
     stubKeys();
-    const custom: AuthConfig = {
+    const custom: IssuerDraft = {
       jwks_url: "https://issuer.example.test/jwks.json",
       issuer: "https://issuer.example.test",
       audience: "my-api",
+      user_id_claim: "sub",
       required_claims: [],
+      max_token_lifetime_seconds: 86400,
     };
     renderTab(draftFor(serverApp(custom)), "users");
 

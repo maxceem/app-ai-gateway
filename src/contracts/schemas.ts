@@ -4,7 +4,14 @@ import {
   ENDPOINT_API_STYLES,
   OUTPUT_CLAMP_STYLES,
 } from "../shared/capabilities.ts";
+import {
+  GATEWAY_DESCRIPTORS,
+  GATEWAY_TYPES,
+  type GatewayConnectionShape,
+  type GatewayType,
+} from "../shared/gateways.ts";
 import { PROVIDER_CREDENTIAL_HEADERS, PROVIDER_TYPES } from "../shared/providers.ts";
+import { APP_STATUSES } from "../shared/app-status.ts";
 
 /**
  * The vocabulary an application configuration is written in.
@@ -30,6 +37,20 @@ export const MONTH_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])$/;
 export const MONTH_FORMAT_MESSAGE = "month must use YYYY-MM format";
 /** Every `month` a request names: a query parameter or a body field alike. */
 export const MonthSchema = z.string().regex(MONTH_PATTERN, { error: MONTH_FORMAT_MESSAGE });
+
+/** The documented Google OAuth redirect-initiation body. */
+export const GoogleSignInRequestSchema = z.object({
+  provider: z.literal("google"),
+  callbackURL: z.string().optional().meta({
+    description: "Where to send the browser after successful sign-in; may be a relative console path.",
+  }),
+  errorCallbackURL: z.string().optional().meta({
+    description: "Where to send the browser if sign-in fails; may be a relative console path.",
+  }),
+  disableRedirect: z.boolean().optional().meta({
+    description: "Set true to suppress Better Auth's Location header; the JSON response still contains the provider URL.",
+  }),
+});
 
 /** Apple's ten-character team identifier, as the developer portal prints it. */
 const APPLE_TEAM_ID = /^[A-Z0-9]{10}$/;
@@ -104,20 +125,19 @@ export const SlugSchema = safeKey(
 );
 
 /**
- * The same slug on the way out, without the reserved-name refusal.
- *
- * A row created before that rule existed still has to be readable: a client
- * that parses responses — the CLI does — would otherwise fail to list an
- * organization's providers because one of them holds a name it may no longer
- * choose. Refusing on the way in is what makes the rule; refusing on the way
- * out would only hide the row that needs renaming.
+ * A claim path or value an operator typed, stored trimmed: a space pasted
+ * around an entitlement id would otherwise never match the claim it names.
+ * Blank is refused rather than stored: it is a half-filled form, not a
+ * requirement, and it would match only a claim that is itself blank — a
+ * paid-user check that never admits a paying user.
  */
-export const StoredSlugSchema = z.string().regex(PROVIDER_SLUG_PATTERN);
+// Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
+const ClaimTextSchema = z.string().trim().regex(/\S/, { error: "must not be blank" });
 
 const ClaimRequirementSchema = z.object({
-  path: z.string().min(1),
-  contains: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
-  equals: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  path: ClaimTextSchema,
+  contains: z.union([ClaimTextSchema, z.array(ClaimTextSchema).min(1)]).optional(),
+  equals: z.union([ClaimTextSchema, z.number(), z.boolean()]).optional(),
 }).strict().superRefine((value, context) => {
   // Exactly one: a requirement with both says two different things about the
   // same claim, and one with neither says nothing and would admit everybody.
@@ -231,16 +251,22 @@ const AppInstallEndUserSchema = z.object({
   source: z.literal("app_install"),
 }).strict();
 
+const NoEndUserSchema = z.object({
+  source: z.literal("none"),
+}).strict();
+
 /**
  * Each application type admits only the sources that can mean anything for it,
  * so an impossible pairing is a schema error rather than a rule someone has to
- * remember: an `api_key` app has no attested key, and an App Attest client is
- * the end user's own device and so cannot be trusted to name itself.
+ * remember: an `api_key` app has no attested key and may have no end users at
+ * all, and an App Attest client is the end user's own device and so cannot be
+ * trusted to name itself, but always is somebody.
  */
 const ApiKeyEndUserSchema = z.discriminatedUnion("source", [
+  NoEndUserSchema,
   HeaderEndUserSchema,
   IssuerEndUserSchema,
-], { error: "authentication.end_user.source must be one of header, issuer" });
+], { error: "authentication.end_user.source must be one of none, header, issuer" });
 
 const AppAttestEndUserSchema = z.discriminatedUnion("source", [
   IssuerEndUserSchema,
@@ -248,15 +274,14 @@ const AppAttestEndUserSchema = z.discriminatedUnion("source", [
 ], { error: "authentication.end_user.source must be one of issuer, app_install" });
 
 /**
- * The two values that name one iOS application to Apple. Its own schema so a
- * form can ask whether they are acceptable before the rest of a configuration
- * exists, against the same rules the stored configuration is held to.
+ * The two values that name one iOS application to Apple, stored trimmed so a
+ * space pasted with either is not what every attestation is compared against.
  */
-export const AppleAppIdentitySchema = z.object({
-  team_id: z.string().regex(APPLE_TEAM_ID, {
+const AppleAppIdentitySchema = z.object({
+  team_id: z.string().trim().regex(APPLE_TEAM_ID, {
     error: "team_id must contain ten uppercase letters or digits",
   }),
-  bundle_id: z.string().regex(APPLE_BUNDLE_ID, {
+  bundle_id: z.string().trim().regex(APPLE_BUNDLE_ID, {
     error: "bundle_id must be a reverse DNS identifier",
   }),
 });
@@ -285,12 +310,12 @@ const AppleAppAttestAuthenticationSchema = z.object({
 const ApiKeyAuthenticationSchema = z.object({
   type: z.literal("api_key"),
   /**
-   * Omitted means the application has no end users, which is a position rather
-   * than a default: nothing is metered or blocked per user, and `limits.per_user`
-   * is refused as meaningless. Naming a source is how an application opts into
-   * having users at all.
+   * Required, because having no end users is a position rather than a default:
+   * `none` states it, and then nothing is metered or blocked per user and
+   * `limits.per_user` is refused as meaningless. Naming any other source is how
+   * an application opts into having users at all.
    */
-  end_user: ApiKeyEndUserSchema.optional(),
+  end_user: ApiKeyEndUserSchema,
 }).strict();
 
 const AllowedPathSchema = z.union([
@@ -341,12 +366,12 @@ const UNLIMITED_SCOPE = {
 
 /**
  * Whether an application identifies its end users at all. An App Attest app
- * always does; an `api_key` app does only once it names a source.
+ * always does; an `api_key` app does unless its source is `none`. Typed on the
+ * source alone, so a form's draft, whose issuer is still being filled in, asks
+ * the same question as a parsed configuration.
  */
-export function identifiesEndUsers(
-  authentication: { type: string; end_user?: unknown },
-): boolean {
-  return authentication.type !== "api_key" || authentication.end_user !== undefined;
+export function identifiesEndUsers(authentication: { end_user: { source: EndUserSource } }): boolean {
+  return authentication.end_user.source !== "none";
 }
 
 /** Whether a scope sets any limit at all, as opposed to being written out in full as unlimited. */
@@ -414,8 +439,8 @@ export const AppConfigSchema = z.object({
    * that never applies — and an operator who believes they have capped their
    * users. `per_app` is what such an application caps instead.
    */
-  // Defensive reads: zod still runs a whole-object check when a member has
-  // already been rejected, and then neither of these has been parsed.
+  // Casts rather than guards: zod runs this check only once every member has
+  // parsed, so both of these are the parsed values here.
   const authentication = config.authentication as AuthenticationConfig | undefined;
   const perUser = config.limits?.per_user as LimitScopeConfig | undefined;
   if (
@@ -428,7 +453,7 @@ export const AppConfigSchema = z.object({
       code: "custom",
       path: ["limits", "per_user"],
       message:
-        "needs an authentication.end_user source: this application identifies no end users, so use limits.per_app",
+        "needs an authentication.end_user source other than none: this application identifies no end users, so use limits.per_app",
     });
   }
 }).meta({ id: "AppConfig" });
@@ -436,6 +461,10 @@ export const AppConfigSchema = z.object({
 /** What a client may send, and what a parse of it produces. They differ: see the defaults above. */
 export type AppConfig = z.output<typeof AppConfigSchema>;
 export type AppConfigInput = z.input<typeof AppConfigSchema>;
+
+/** The answer to a body that still names an id, wherever one is rejected. */
+export const APP_ID_IS_SERVER_ASSIGNED =
+  "id is assigned by the server: omit it and read app.id from the response";
 
 /**
  * The body of every application write. It carries no `id`: the gateway derives
@@ -447,7 +476,10 @@ export const AppWriteSchema = z.object({
   /** Trimmed, so a name of nothing but spaces is the empty name it looks like. */
   name: z.string().trim().min(1).max(100),
   config: AppConfigSchema,
-  status: z.enum(["active", "disabled"]).optional(),
+  status: z.enum(APP_STATUSES).optional(),
+}, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.includes("id") ? APP_ID_IS_SERVER_ASSIGNED : undefined,
 }).strict().meta({ id: "AppWrite" });
 
 /**
@@ -457,18 +489,19 @@ export const AppWriteSchema = z.object({
  * resource — every read already answers with it — and a body is the one channel
  * neither a CDN nor a browser's CORS rules interfere with: an `ETag` is
  * rewritten to its weak form by anything that compresses the response, and is
- * unreadable to a cross-origin client unless the server exposes it. Requiring
- * it here rather than accepting its absence means a client that has not read
- * the application cannot overwrite it blind.
+ * unreadable to a cross-origin client unless the server exposes it. It is
+ * required all the same, so a client that has not read the application cannot
+ * overwrite it blind; the shape leaves it optional only so that its absence is
+ * answered with a code of its own, `app_revision_required`, once the
+ * application has been found.
  */
 export const AppUpdateSchema = AppWriteSchema.extend({
-  revision: z.number().int().positive(),
+  revision: z.number().int().positive().optional().meta({
+    description:
+      "Required: the revision the application was read at. An absent one answers 400 app_revision_required, a stale one 409 app_revision_conflict.",
+  }),
 }).meta({ id: "AppUpdate" });
 export type AppUpdate = z.infer<typeof AppUpdateSchema>;
-
-/** The answer to a body that still names an id, wherever one is rejected. */
-export const APP_ID_IS_SERVER_ASSIGNED =
-  "id is assigned by the server: omit it and read app.id from the response";
 
 /**
  * Apple's key id is the base64 SHA-256 of the public key — 44 characters — and
@@ -480,11 +513,11 @@ const AppAttestKeyIdSchema = z.string().min(1).max(200);
 const ChallengeSchema = z.string().min(1).max(200);
 
 /**
- * `issuer_token` is optional here and required by the route instead, because
- * whether one is needed is a property of the application: an `app_install`
- * application identifies its user by the attested key alone and has no issuer to
- * present a token from. The route answers for the mismatch, which is the only
- * place that knows what the application asked for.
+ * `issuer_token` is optional here because one document serves every
+ * application, and whether one is needed is a property of the application: an
+ * `app_install` application identifies its user by the attested key alone and
+ * has no issuer to present a token from. The App Attest exchange narrows it to
+ * required or refused by the application's `end_user.source` before parsing.
  */
 export const AppAttestRegisterRequestSchema = z.object({
   issuer_token: z.string().min(1).optional(),
@@ -610,53 +643,63 @@ export const ProviderTestRequestSchema = z.object({
   assertBaseUrlIsDirect(value, context);
 }).meta({ id: "ProviderTestRequest" });
 
-/**
- * One member per gateway type that has an adapter, discriminated by `type`
- * because each gateway needs a different set of non-secret fields to be
- * reachable at all. The stored `type` column already admits every planned name,
- * so adding a gateway is an adapter plus a member here — never a table rebuild.
- *
- * Vercel asks for nothing but a name and a token: its origin is fixed in
- * adapter code, and the token alone identifies the Vercel team.
- */
-const CfAigGatewayFieldsSchema = z.object({
-  type: z.literal("cf_aig"),
-  name: ProviderNameSchema,
-  accountId: z.string().trim().min(1).max(100),
-  gatewayId: z.string().trim().min(1).max(100),
-});
-const VercelGatewayFieldsSchema = z.object({
-  type: z.literal("vercel"),
-  name: ProviderNameSchema,
-});
-const GATEWAY_TYPE_ERROR = "Provider gateway type must be one of cf_aig, vercel";
+/** One gateway type's member of {@link gatewayUnion}: its type, `Fields`, and its own connection. */
+type GatewayMember<T extends GatewayType, Fields extends z.ZodRawShape> = z.ZodObject<
+  { type: z.ZodLiteral<T> } & Fields & GatewayConnectionShape<T>,
+  z.core.$strict
+>;
+type GatewayMembers<Fields extends z.ZodRawShape> = {
+  [T in GatewayType]: GatewayMember<T, Fields>;
+}[GatewayType];
 
-export const ProviderGatewayCreateRequestSchema = z.discriminatedUnion("type", [
-  CfAigGatewayFieldsSchema.extend({ token: ProviderSecretSchema }).strict(),
-  VercelGatewayFieldsSchema.extend({ token: ProviderSecretSchema }).strict(),
-], {
-  error: GATEWAY_TYPE_ERROR,
-}).meta({ id: "ProviderGatewayCreateRequest" });
+/**
+ * A body discriminated by gateway `type`, one member per gateway descriptor:
+ * the common `fields` beside the type's own connection fields, because each
+ * gateway needs a different set of non-secret fields to be reachable at all.
+ * Every gateway request union in the contracts is built here from
+ * `GATEWAY_TYPES`, so adding a gateway is a descriptor and an adapter — never
+ * a member written out by hand.
+ */
+export function gatewayUnion<Fields extends z.ZodRawShape>(
+  fields: Fields,
+  params?: { error: string },
+) {
+  const members = GATEWAY_TYPES.map((type) => z.object({
+    type: z.literal(type),
+    ...fields,
+    ...GATEWAY_DESCRIPTORS[type].connection.shape,
+  }).strict());
+  // One member per type, built from that type's own descriptor; the mapped
+  // array cannot say which member is whose, and zod wants a non-empty tuple.
+  return z.discriminatedUnion(
+    "type",
+    members as [GatewayMembers<Fields>, ...GatewayMembers<Fields>[]],
+    params,
+  );
+}
+
+const GATEWAY_TYPE_ERROR = `Provider gateway type must be one of ${GATEWAY_TYPES.join(", ")}`;
+
+/**
+ * A gateway connection as a create request carries it: the type's own
+ * connection fields beside a name and the token. Vercel asks for nothing but a
+ * name and a token: its origin is fixed in adapter code, and the token alone
+ * identifies the Vercel team.
+ */
+export const ProviderGatewayCreateRequestSchema = gatewayUnion(
+  { name: ProviderNameSchema, token: ProviderSecretSchema },
+  { error: GATEWAY_TYPE_ERROR },
+).meta({ id: "ProviderGatewayCreateRequest" });
 
 /**
  * A dry run of {@link ProviderGatewayCreateRequestSchema}: the same members
  * minus the name, so the connection is probed exactly as a create would probe
  * it, without a row having to exist.
  */
-export const ProviderGatewayTestRequestSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("cf_aig"),
-    accountId: z.string().trim().min(1).max(100),
-    gatewayId: z.string().trim().min(1).max(100),
-    token: ProviderSecretSchema,
-  }).strict(),
-  z.object({
-    type: z.literal("vercel"),
-    token: ProviderSecretSchema,
-  }).strict(),
-], {
-  error: "Provider gateway type must be one of cf_aig, vercel",
-}).meta({ id: "ProviderGatewayTestRequest" });
+export const ProviderGatewayTestRequestSchema = gatewayUnion(
+  { token: ProviderSecretSchema },
+  { error: GATEWAY_TYPE_ERROR },
+).meta({ id: "ProviderGatewayTestRequest" });
 
 export const ProviderGatewayUpdateRequestSchema = z.object({
   name: ProviderNameSchema,
@@ -730,8 +773,8 @@ export const ProviderUpdateRequestSchema = ProviderUpdateFieldsSchema.extend({
 const HandoffTargetFields = {
   /** The existing row the handoff edits. */
   id: z.string().trim().min(1),
-  /** The revision the CLI read, when it read one; the server pins the current one either way. */
-  revision: z.number().int().positive().optional(),
+  /** The revision the CLI read; the write lands only while the row is still at it. */
+  revision: z.number().int().positive(),
 };
 
 export const HandoffProviderAddPayloadSchema = ProviderCreateFieldsSchema.strict()
@@ -756,10 +799,11 @@ export const HandoffProviderUpdatePayloadSchema = ProviderUpdateFieldsSchema.ext
 
 export const HandoffRotatePayloadSchema = z.object(HandoffTargetFields).strict();
 
-export const HandoffProviderGatewayAddPayloadSchema = z.discriminatedUnion("type", [
-  CfAigGatewayFieldsSchema.strict(),
-  VercelGatewayFieldsSchema.strict(),
-], { error: GATEWAY_TYPE_ERROR });
+/** A gateway create request without its token, which the browser collects. */
+export const HandoffProviderGatewayAddPayloadSchema = gatewayUnion(
+  { name: ProviderNameSchema },
+  { error: GATEWAY_TYPE_ERROR },
+);
 
 export const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 
@@ -791,6 +835,8 @@ export type IssuerProvider = (typeof ISSUER_PROVIDERS)[number];
 export type EntitlementCheck = (typeof ENTITLEMENT_CHECKS)[number];
 export type ApiKeyEndUser = z.output<typeof ApiKeyEndUserSchema>;
 export type AppAttestEndUser = z.output<typeof AppAttestEndUserSchema>;
+/** Every way an application of either type can identify its end users, `none` included. */
+export type EndUserSource = (ApiKeyEndUser | AppAttestEndUser)["source"];
 export type AppAttestEnvironment = (typeof APP_ATTEST_ENVIRONMENTS)[number];
 export type AuthenticationConfig = AppConfig["authentication"];
 /** The same block as a client may send it, which is what a half-filled form is. */

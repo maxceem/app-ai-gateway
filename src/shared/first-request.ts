@@ -2,9 +2,9 @@
  * The first request an application can send, as data and as code.
  *
  * One source for the console's example card and the CLI's `app snippet`, so the
- * two cannot show different examples. It imports
- * only from `src/shared`, for the reason `./capabilities.ts` gives: the console
- * bundles it, so nothing from `src/core` may reach it.
+ * two cannot show different examples. It imports only from `src/shared`, and
+ * types from `src/contracts`, for the reason `./capabilities.ts` gives: the
+ * console bundles it, so nothing from the Worker modules may reach it.
  *
  * The example is always produced. An application created a minute ago has no
  * provider, no catalogued model, and sometimes a policy that allows no path
@@ -22,8 +22,10 @@ import {
   type ProviderPolicy,
   type RoutingConfig,
 } from "./app-config.ts";
-import { API_STYLE_PATHS } from "./capabilities.ts";
-import { isProviderType, providerDescriptor } from "./providers.ts";
+import { API_STYLE_PATHS, type ApiStyle } from "./capabilities.ts";
+import { classifyPath } from "./protocols.ts";
+import { providerDescriptor, type ProviderType } from "./providers.ts";
+import type { ProviderSummary } from "../contracts/responses.ts";
 
 export const PROVIDER_PLACEHOLDER = "PROVIDER_SLUG";
 export const MODEL_PLACEHOLDER = "MODEL";
@@ -49,13 +51,10 @@ export type ExamplePolicy = ProviderPolicy;
 export type ExampleRouting = RoutingConfig;
 
 /** As much of a provider as an example needs: where it sits and what it prices. */
-export interface ExampleProvider {
-  slug: string;
-  type: string;
-  status: string;
-  providerGatewayId?: string | null;
-  pricing?: Record<string, unknown> | null;
-}
+export type ExampleProvider = Pick<
+  ProviderSummary,
+  "slug" | "type" | "status" | "providerGatewayId" | "pricing"
+>;
 
 /** The price catalog, by provider type and model. Only the presence of an output price is read. */
 export type ExamplePrices = Record<string, Record<string, { output?: number }>>;
@@ -89,28 +88,42 @@ export interface RequestExample {
  * those too.
  */
 export function examplePath(
-  type: string,
+  type: ProviderType,
   { gatewayRouted = false, model }: { gatewayRouted?: boolean; model?: string } = {},
 ): string | undefined {
-  const descriptor = isProviderType(type) ? providerDescriptor(type) : undefined;
-  if (descriptor?.modelInPath) {
-    return model ? API_STYLE_PATHS.gemini_native.replace("{model}", model) : undefined;
-  }
-  const own = descriptor?.examplePath ?? API_STYLE_PATHS.chat_completions;
+  const own = providerDescriptor(type).examplePath ?? API_STYLE_PATHS.chat_completions;
+  if (own.includes("{model}")) return model ? own.replace("{model}", model) : undefined;
   return gatewayRouted && own.endsWith("chat/completions")
     ? API_STYLE_PATHS.chat_completions
     : own;
 }
 
-/** The request body a path takes, or null where this module knows of none. */
-function bodyFor(path: string, model: string): Record<string, unknown> | null {
-  const messages = [{ role: "user", content: "Say hello." }];
-  if (path.endsWith("responses")) return { model, input: "Say hello." };
-  if (path.endsWith("chat/completions")) return { model, messages };
-  if (path.endsWith("messages")) return { model, max_tokens: 128, messages };
-  if (path.endsWith(":generateContent"))
-    return { contents: [{ parts: [{ text: "Say hello." }] }] };
-  return null;
+const hello = () => [{ role: "user", content: "Say hello." }];
+
+/** The example body each API style takes. A style with no entry has no example. */
+const EXAMPLE_BODIES: Partial<Record<ApiStyle, (model: string) => Record<string, unknown>>> = {
+  responses: (model) => ({ model, input: "Say hello." }),
+  chat_completions: (model) => ({ model, messages: hello() }),
+  anthropic_messages: (model) => ({ model, max_tokens: 128, messages: hello() }),
+  // The model is in the URL, not the body.
+  gemini_native: () => ({ contents: [{ parts: [{ text: "Say hello." }] }] }),
+};
+
+/**
+ * The request body a path takes, or null where this module knows of none, and
+ * whether it is Anthropic's API. The path is classified once, by the same
+ * classifier the proxy judges it with, so an example never has a shape for a
+ * path the gateway would call something else.
+ */
+function requestFor(
+  path: string,
+  model: string,
+): { body: Record<string, unknown> | null; anthropic: boolean } {
+  const { style } = classifyPath(path).protocol;
+  return {
+    body: EXAMPLE_BODIES[style]?.(model) ?? null,
+    anthropic: style === "anthropic_messages",
+  };
 }
 
 /** The models an app may name on a provider, best first. */
@@ -168,11 +181,11 @@ export function firstRequest(
       const path = typeof entry === "string" ? entry : entry.path;
       if (path.includes("*")) continue;
       const fixed = typeof entry !== "string" ? entry.fixed_model : undefined;
-      const body = bodyFor(path, fixed ?? model);
+      const { body, anthropic } = requestFor(path, fixed ?? model);
       const example: RequestExample = {
         target: { provider: provider.slug, path },
         body,
-        anthropic: path.endsWith("messages"),
+        anthropic,
         // A fixed model is the app's own, so a catalog that has none of its
         // own to offer is not a gap on a path that never carries one.
         gaps: body && fixed ? [] : gaps,
@@ -184,7 +197,7 @@ export function firstRequest(
   return (
     fallback ?? {
       target: { provider: PROVIDER_PLACEHOLDER, path: "v1/chat/completions" },
-      body: bodyFor("v1/chat/completions", MODEL_PLACEHOLDER),
+      body: requestFor("v1/chat/completions", MODEL_PLACEHOLDER).body,
       anthropic: false,
       gaps: ["provider", "model"],
     }

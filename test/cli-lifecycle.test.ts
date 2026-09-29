@@ -1,9 +1,9 @@
 import {
   compactUsageEvents,
   foldUsageRollupMonths,
-} from "../src/core/usage-retention";
-import { recordBlockedUsageEvent } from "../src/core/usage-record";
+} from "../src/usage/usage-retention";
 import { claimOAuthAuthorized } from "../src/routes/cli/oauth";
+import { derive } from "../src/routes/cli/security";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,8 +12,6 @@ import {
   clearIsolateCaches,
   seedHuman,
   seedUnaffiliatedHuman,
-  testAttribution,
-  testIdentity,
 } from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
@@ -82,20 +80,23 @@ async function request(
     testEnv,
   );
 }
+/** A bootstrap's answer, with its credential lifted out of `result` where the tests read it. */
+async function bootstrapped(response: Response) {
+  const body = (await response.json()) as {
+    id: string;
+    account: { id: string; expiresAt: string | null };
+    result: { credential: { token: string }; unclaimedAccess: { endsAt: string; limit?: number } | null };
+  };
+  return { ...body, credential: body.result.credential, unclaimedAccess: body.result.unclaimedAccess };
+}
 async function start(testEnv: Env, headers: Record<string, string> = {}) {
-  const input = { idempotencyKey: random(), pollToken: random() };
+  const input = { token: random() };
   const response = await request(testEnv, "/bootstrap", input, {
     "cf-connecting-ip": random(),
     ...headers,
   });
   expect(response.status).toBe(200);
-  return {
-    input,
-    data: (await response.json()) as {
-      account: { id: string };
-      credential: { token: string };
-    },
-  };
+  return { input, data: await bootstrapped(response) };
 }
 beforeEach(async () => {
   rateLimitIp = random();
@@ -105,6 +106,7 @@ beforeEach(async () => {
     [
       "app_auth_challenge",
       "app_auth_event",
+      "app_rejection_event",
       "app_usage_event",
       "app_usage_rollup",
       "app_usage_spend",
@@ -113,9 +115,7 @@ beforeEach(async () => {
       "app",
       "provider",
       "provider_gateway",
-      "mgmt_handoff",
-      "mgmt_resource_receipt",
-      "mgmt_bootstrap",
+      "mgmt_operation",
       "mgmt_verification",
       "mgmt_api_key",
       "mgmt_organization_user",
@@ -132,26 +132,24 @@ describe("CLI account lifecycle", () => {
       plan: { planKey: "free", planName: "Free", isDefault: true, limits: limit === null ? {} : { maxRequestsPerMonth: limit } },
       subscription: null,
     });
-    const response = await request(testEnv, "/bootstrap", { idempotencyKey: random(), pollToken: random() });
+    const response = await request(testEnv, "/bootstrap", { token: random() });
     expect(response.status).toBe(200);
-    const data = await response.json() as { unclaimedAccess: { limit?: number } };
+    const data = await bootstrapped(response);
     if (limit === null) expect(data.unclaimedAccess).not.toHaveProperty("limit");
-    else expect(data.unclaimedAccess.limit).toBe(limit);
+    else expect(data.unclaimedAccess!.limit).toBe(limit);
   });
   it("replays concurrent bootstrap without another account or plaintext verification credential", async () => {
     const testEnv = runtime();
-    const input = { idempotencyKey: random(), pollToken: random() };
+    const input = { token: random() };
     const responses = await Promise.all([
       request(testEnv, "/bootstrap", input),
       request(testEnv, "/bootstrap", input),
     ]);
     expect(responses.map((r) => r.status)).toEqual([200, 200]);
-    const values = (await Promise.all(
-      responses.map((r) => r.json()),
-    )) as Array<{ credential: { token: string } }>;
+    const values = await Promise.all(responses.map((r) => bootstrapped(r)));
     expect(values[0]!.credential.token).toBe(values[1]!.credential.token);
     const rows = await env.DB.prepare(
-      "SELECT credential_id,protected_credential FROM mgmt_bootstrap",
+      "SELECT credential_id,sealed_outcome FROM mgmt_operation WHERE kind='bootstrap'",
     ).all();
     expect(JSON.stringify(rows)).not.toContain(values[0]!.credential.token);
     expect(
@@ -159,35 +157,38 @@ describe("CLI account lifecycle", () => {
         "SELECT COUNT(*) AS n FROM mgmt_organization",
       ).first("n"),
     ).toBe(1);
-    expect(
-      (await request(testEnv, "/bootstrap", { ...input, pollToken: random() }))
-        .status,
-    ).toBe(403);
+  });
+
+  it("recovers a bootstrap only by sending it again, never through a poll", async () => {
+    const testEnv = runtime();
+    const { input, data } = await start(testEnv);
+    const poll = await request(testEnv, `/operations/${data.id}`, undefined, {
+      authorization: `Bearer ${input.token}`,
+    });
+    expect(poll.status).toBe(400);
+    expect(await poll.text()).not.toContain(data.credential.token);
   });
   it("bootstraps and renews an unclaimed account beside an unrelated claimed account", async () => {
     const testEnv = runtime();
     const existing = await seedHuman();
-    const input = { idempotencyKey: random(), pollToken: random() };
+    const input = { token: random() };
     const first = await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
     });
     expect(first.status, await first.clone().text()).toBe(200);
-    const created = await first.json() as {
-      account: { id: string };
-      credential: { token: string };
-    };
+    const created = await bootstrapped(first);
     expect(created.account.id).not.toBe(existing.organizationId);
     expect((await request(testEnv, "/account", undefined, {
       authorization: `Bearer ${created.credential.token}`,
     })).status).toBe(200);
     await env.DB.prepare(
-      "UPDATE mgmt_bootstrap SET protected_credential_expires_at=0 WHERE organization_id=?",
+      "UPDATE mgmt_operation SET sealed_until=0 WHERE kind='bootstrap' AND organization_id=?",
     ).bind(created.account.id).run();
     const renewed = await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
     });
     expect(renewed.status, await renewed.clone().text()).toBe(200);
-    const renewedBody = await renewed.json() as { credential: { token: string } };
+    const renewedBody = await bootstrapped(renewed);
     expect(renewedBody.credential.token).not.toBe(created.credential.token);
     expect((await request(testEnv, "/account", undefined, {
       authorization: `Bearer ${renewedBody.credential.token}`,
@@ -234,7 +235,7 @@ describe("CLI account lifecycle", () => {
       "cf-connecting-ip": random(),
     });
     expect(repeated.status, await repeated.clone().text()).toBe(200);
-    const repeatedBody = (await repeated.json()) as { credential: { token: string } };
+    const repeatedBody = await bootstrapped(repeated);
     // Same receipt, so the same credential — and it works again.
     expect(repeatedBody.credential.token).toBe(data.credential.token);
     expect(
@@ -247,7 +248,7 @@ describe("CLI account lifecycle", () => {
   });
   it("does not count a selfhost's attempts, so an installer may retry past the cloud allowance", async () => {
     const testEnv = runtime(false);
-    const input = { idempotencyKey: random(), pollToken: random() };
+    const input = { token: random() };
     // A deployment whose database is not callable yet: the writes throw, the
     // request is answered 500, and nothing is created. The CLI answers this by
     // sending the identical request again, which is what a counted endpoint
@@ -263,8 +264,7 @@ describe("CLI account lifecycle", () => {
       expect((await request(testEnv, "/bootstrap", input)).status).toBe(500);
     const installed = await request(testEnv, "/bootstrap", input);
     expect(installed.status).toBe(200);
-    expect(((await installed.json()) as { credential: { token: string } }).credential.token)
-      .toMatch(/^agw_mgmt_/u);
+    expect((await bootstrapped(installed)).credential.token).toMatch(/^agw_mgmt_/u);
   });
   it("counts a cloud account's attempts, which is the deployment nobody owns", async () => {
     // Cloud is where initializing is open to anyone and each attempt is another
@@ -272,25 +272,19 @@ describe("CLI account lifecycle", () => {
     const testEnv = runtime();
     for (let spent = 0; spent < ENDPOINT_RATE_LIMITS.bootstrap.limit; spent++)
       expect(
-        (await request(testEnv, "/bootstrap", { idempotencyKey: random(), pollToken: random() }))
+        (await request(testEnv, "/bootstrap", { token: random() }))
           .status,
       ).toBe(200);
-    const refused = await request(testEnv, "/bootstrap", {
-      idempotencyKey: random(),
-      pollToken: random(),
-    });
+    const refused = await request(testEnv, "/bootstrap", { token: random() });
     expect(refused.status).toBe(429);
     expect(await refused.json()).toMatchObject({ error: { code: "rate_limited" } });
   });
   it("gives a selfhost to its first caller and permanently closes second bootstrap", async () => {
     const testEnv = runtime(false);
-    const input = { idempotencyKey: random(), pollToken: random() };
+    const input = { token: random() };
     const response = await request(testEnv, "/bootstrap", input);
     expect(response.status).toBe(200);
-    const data = (await response.json()) as {
-      account: { expiresAt: null };
-      credential: { token: string };
-    };
+    const data = await bootstrapped(response);
     expect(data.account.expiresAt).toBeNull();
     expect(data.credential.token).toMatch(/^agw_mgmt_/u);
     expect(
@@ -298,7 +292,7 @@ describe("CLI account lifecycle", () => {
         await request(
           testEnv,
           "/bootstrap",
-          { idempotencyKey: random(), pollToken: random() },
+          { token: random() },
         )
       ).status,
     ).toBe(409);
@@ -328,7 +322,7 @@ describe("CLI account lifecycle", () => {
     const operationResponse = await request(
       testEnv,
       "/operations",
-      { kind: "claim", payload: {}, pollToken },
+      { kind: "claim", payload: {}, token: pollToken },
       { authorization: `Bearer ${data.credential.token}` },
     );
     expect(operationResponse.status).toBe(200);
@@ -404,7 +398,7 @@ describe("CLI account lifecycle", () => {
     const operationResponse = await request(
       testEnv,
       "/operations",
-      { kind: "claim", payload: {}, pollToken: random() },
+      { kind: "claim", payload: {}, token: random() },
       { authorization: `Bearer ${data.credential.token}` },
     );
     const op = (await operationResponse.json()) as { id: string; url: string };
@@ -439,7 +433,7 @@ describe("CLI account lifecycle", () => {
     const operationResponse = await request(
       testEnv,
       "/operations",
-      { kind: "claim", payload: {}, pollToken: random() },
+      { kind: "claim", payload: {}, token: random() },
       { authorization: `Bearer ${data.credential.token}` },
     );
     const op = (await operationResponse.json()) as { id: string; url: string };
@@ -459,7 +453,7 @@ describe("CLI account lifecycle", () => {
   });
   it("retires an undisclosed credential after vault failure and retries the same account", async () => {
     const testEnv = runtime();
-    const input = { idempotencyKey: random(), pollToken: random() };
+    const input = { token: random() };
     const vault = secretVault(testEnv);
     const spy = vi
       .spyOn(vault, "encryptSecret")
@@ -491,7 +485,7 @@ describe("CLI account lifecycle", () => {
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken },
+        { kind: "claim", payload: {}, token: pollToken },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -571,7 +565,7 @@ describe("CLI account lifecycle", () => {
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken: random() },
+        { kind: "claim", payload: {}, token: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -613,7 +607,7 @@ describe("CLI account lifecycle", () => {
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken: random() },
+        { kind: "claim", payload: {}, token: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -639,7 +633,7 @@ describe("CLI account lifecycle", () => {
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken: random() },
+        { kind: "claim", payload: {}, token: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -671,19 +665,14 @@ describe("CLI account lifecycle", () => {
     const other = await start(testEnv);
     const appId = "retained-app";
     await env.DB.prepare(
-      "INSERT INTO app(id,organization_id,name,config_json) VALUES (?,?,'Retained','{}')",
+      "INSERT INTO app(id,organization_id,name,config_json,auth_type) VALUES (?,?,'Retained','{}','api_key')",
     )
       .bind(appId, data.account.id)
       .run();
-    await recordBlockedUsageEvent({
-      env: testEnv,
-      organizationId: data.account.id,
-      identity: testIdentity({ appId, userId: null }),
-      attribution: testAttribution({ model: "test", route: "test" }),
-      appVersion: null,
-      status: "blocked_billing",
-      latencyMs: 0,
-    });
+    await env.DB.prepare(
+      `INSERT INTO app_usage_event(event_id, organization_id, app_id, provider_type, model, route, status)
+       VALUES (?, ?, ?, 'openai', 'test', 'test', 'ok')`,
+    ).bind("retained-app-event", data.account.id, appId).run();
     await env.DB.prepare(
       "UPDATE app_usage_event SET created_at='2024-03-01T12:00:00.000Z' WHERE app_id=?",
     )
@@ -706,7 +695,7 @@ describe("CLI account lifecycle", () => {
     await foldUsageRollupMonths(testEnv.DB, Date.parse("2026-09-01T00:00:00Z"));
     expect((await read(data.credential.token)).totals.requests).toBe(1);
     await env.DB.prepare(
-      "INSERT INTO app(id,organization_id,name,config_json) VALUES (?,?,'Restored','{}')",
+      "INSERT INTO app(id,organization_id,name,config_json,auth_type) VALUES (?,?,'Restored','{}','api_key')",
     )
       .bind(appId, data.account.id)
       .run();
@@ -731,7 +720,7 @@ describe("CLI account lifecycle", () => {
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken: random() },
+        { kind: "claim", payload: {}, token: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -753,6 +742,23 @@ describe("CLI account lifecycle", () => {
       { headers: { cookie: grant!.split(";")[0]! } },
     );
     expect(await claimOAuthAuthorized(testEnv, callback)).toBe(true);
+    // The claim is still pending, so each refusal below is the cookie's own.
+    const withCookie = (cookie: string) => new Request(
+      "https://example.test/v1/auth/callback/google",
+      { headers: { cookie: `cli_claim_oauth=${cookie}` } },
+    );
+    const signed = async (payload: unknown) => {
+      const encoded = btoa(JSON.stringify(payload));
+      return `${encoded}.${await derive(testEnv.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`)}`;
+    };
+    expect(await claimOAuthAuthorized(testEnv, withCookie("not-a-grant"))).toBe(false);
+    expect(await claimOAuthAuthorized(testEnv, withCookie(await signed({ id: op.id })))).toBe(false);
+    expect(await claimOAuthAuthorized(
+      testEnv,
+      withCookie(await signed({ id: op.id, expires: Date.now() - 1000 })),
+    )).toBe(false);
+    const encodedGrant = grant?.split(";")[0]?.slice("cli_claim_oauth=".length).split(".")[0];
+    expect(await claimOAuthAuthorized(testEnv, withCookie(`${encodedGrant}.${"0".repeat(64)}`))).toBe(false);
     const relay = new URL(((await response.json()) as { url: string }).url);
     expect(relay.origin).toBe("https://relay.example.test");
     expect(relay.searchParams.get("return")).toBe(
@@ -862,9 +868,9 @@ describe("CLI account lifecycle", () => {
     );
 
     await env.DB.prepare(
-      "UPDATE mgmt_handoff SET consumed_at=? WHERE id=?",
+      "UPDATE mgmt_operation SET state='completed' WHERE id=?",
     )
-      .bind(Date.now(), op.id)
+      .bind(op.id)
       .run();
     expect(await claimOAuthAuthorized(testEnv, callback)).toBe(false);
   });
@@ -877,7 +883,7 @@ describe("CLI account lifecycle", () => {
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken },
+        { kind: "claim", payload: {}, token: pollToken },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -895,10 +901,10 @@ describe("CLI account lifecycle", () => {
       await request(testEnv, `/operations/${op.id}`, undefined, {
         authorization: `Bearer ${pollToken}`,
       })
-    ).json()) as { credential?: unknown };
+    ).json()) as { result?: { credential?: unknown } };
     // No second credential is handed out, and the one the CLI already holds is
     // exactly the one that still works afterwards.
-    expect(result.credential).toBeUndefined();
+    expect(result.result?.credential).toBeUndefined();
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM mgmt_api_key WHERE enabled=1 AND organization_id=?",
@@ -966,9 +972,15 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   const { data, input } = await start(testEnv);
   await env.DB.prepare(
     `INSERT INTO app_usage_spend(
-       organization_id, app_id, scope, user_key, month, microusd, revision, pending
-     ) VALUES (?, 'expired-spend-app', 'app', '', '2026-07', 10, 1, 1)`,
+       organization_id, app_id, scope, user_key, month, microusd
+     ) VALUES (?, 'expired-spend-app', 'app', '', '2026-07', 10)`,
   ).bind(data.account.id).run();
+  await env.DB.prepare(
+    "INSERT INTO app(id,organization_id,name,config_json,auth_type) VALUES ('expired-rejection-app',?,'Expired','{}','api_key')",
+  ).bind(data.account.id).run();
+  await env.DB.prepare(
+    "INSERT INTO app_rejection_event(event_id,app_id,reason) VALUES ('expired-rejection','expired-rejection-app','blocked_user')",
+  ).run();
   await env.DB.prepare(
     "UPDATE mgmt_organization SET expires_at=? WHERE id=?",
   )
@@ -984,20 +996,21 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   expect(
     await env.DB.prepare("SELECT COUNT(*) n FROM app_usage_spend").first("n"),
   ).toBe(0);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM app_rejection_event").first("n")).toBe(0);
   expect(
     await env.DB.prepare(
       "SELECT COUNT(*) n FROM mgmt_user WHERE kind='service'",
     ).first("n"),
   ).toBe(0);
   const row = await env.DB.prepare(
-    "SELECT * FROM mgmt_bootstrap",
+    "SELECT * FROM mgmt_operation WHERE kind='bootstrap'",
   ).first<Record<string, unknown>>();
   expect(row?.state).toBe("expired");
   for (const field of [
     "organization_id",
-    "service_user_id",
+    "initiating_user_id",
     "credential_id",
-    "protected_credential",
+    "sealed_outcome",
   ])
     expect(row?.[field]).toBeNull();
   const replay = await request(testEnv, "/bootstrap", input);
@@ -1010,10 +1023,6 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
       "n",
     ),
   ).toBe(0);
-  expect(
-    (await request(testEnv, "/bootstrap", { ...input, pollToken: random() }))
-      .status,
-  ).toBe(403);
 });
 
 it("collects expired accounts on the nightly run only where account deadlines exist", async () => {
@@ -1024,7 +1033,7 @@ it("collects expired accounts on the nightly run only where account deadlines ex
   const nightly = async (cloud: boolean) => {
     const ctx = createExecutionContext();
     worker.scheduled(
-      { cron: "17 3 * * *", scheduledTime: Date.now() } as ScheduledController,
+      { cron: "17 3 * * *", scheduledTime: Date.parse("2026-10-01T03:17:00Z") } as ScheduledController,
       runtime(cloud),
       ctx,
     );
@@ -1061,7 +1070,7 @@ it("rejects browser submissions on the API host with explicit and fallback conso
       await request(
         testEnv,
         "/operations",
-        { kind: "claim", payload: {}, pollToken: random() },
+        { kind: "claim", payload: {}, token: random() },
         { authorization: `Bearer ${data.credential.token}` },
       )
     ).json()) as { id: string; url: string };
@@ -1096,7 +1105,7 @@ it("rejects browser submissions on the API host with explicit and fallback conso
     ).toBe(0);
     expect(
       (
-        await request(testEnv, `/browser/${op.id}/details`, input, {
+        await request(testEnv, `/browser/${op.id}/details`, { submissionToken: input.submissionToken }, {
           origin: "https://example.test",
         })
       ).status,
@@ -1119,8 +1128,15 @@ it("keeps the completed trial counter readable during recovery without renewing 
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
     account: { createdAt: origin, claimed: false },
-    billing: { access: { subscription: null }, limit: 1000 },
-    usage: { used: 0, periodStart: origin, periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString() },
+    billing: { access: { subscription: null } },
+    // Still the first period, past its renewal: an unclaimed window never renews.
+    usage: {
+      used: 0,
+      limit: 1000,
+      periodId: `free:${origin}:${origin}`,
+      periodStart: origin,
+      periodEnd: new Date(Date.parse(origin) + 30 * 86400000).toISOString(),
+    },
   });
   await expect(assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "setup"))
     .rejects.toMatchObject({ code: "unclaimed_access_expired" });

@@ -10,7 +10,7 @@ const APP = {
   name: "My app",
   status: "active",
   config: {
-    authentication: { type: "api_key" },
+    authentication: { type: "api_key", end_user: { source: "none" } },
     routing: { providers: { mode: "all" }, model_rewrites: {} },
   },
 };
@@ -19,7 +19,7 @@ const APP = {
 function renderSettings(role: "owner" | "member", tab = "settings") {
   stubApi({
     "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
-    "/v1/admin/apps/my-app": { body: { app: APP, config_error: null } },
+    "/v1/admin/apps/my-app": { body: { app: APP } },
   });
   return renderAuthenticated(
     <Routes>

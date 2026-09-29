@@ -3,32 +3,10 @@ import type {
   EndpointConfig,
   ProviderPolicy,
 } from "../shared/app-config.ts";
+import type { AppStatus } from "../shared/app-status.ts";
 
-export type { EndpointApiStyle } from "../shared/capabilities.ts";
-export type { ProviderType } from "../shared/providers.ts";
-export { ENTITLEMENT_CHECKS, ISSUER_PROVIDERS } from "../shared/app-config.ts";
-export type {
-  AppAttestEnvironment,
-  AppAttestEndUser,
-  AppleAppAttestAuthentication,
-  ApiKeyEndUser,
-  ApiKeyAuthentication,
-  AppConfig,
-  AuthenticationConfig,
-  ClaimRequirement,
-  EndpointConfig,
-  EndpointsConfig,
-  EntitlementCheck,
-  IssuerAuthentication,
-  IssuerProvider,
-  LimitScopeConfig,
-  LimitsConfig,
-  ProviderPolicy,
-  RoutingConfig,
-} from "../shared/app-config.ts";
-export type { OutputClampStyle } from "../shared/capabilities.ts";
-
-export type GatewayAuthMethod = "attest" | "api_key";
+/** How a client first proved itself to an application: an API key, or an App Attest key. */
+export type AuthMethod = "attest" | "api_key";
 
 export type AllowedPath = ProviderPolicy["allowed_paths"][number];
 export type AllowedPathConfig = Exclude<AllowedPath, string>;
@@ -45,7 +23,7 @@ export interface AppRecord {
   id: string;
   organizationId: string;
   name: string;
-  status: "active" | "disabled";
+  status: AppStatus;
   revision: number;
   config: AppConfig;
 }
@@ -53,9 +31,15 @@ export interface AppRecord {
 export interface GatewayIdentity {
   appId: string;
   userId: string | null;
-  jti: string;
-  expiresAt: number;
-  authMethod: GatewayAuthMethod;
+  /**
+   * How the client proved itself, which a gateway token carries over from its
+   * exchange: one minted from an API key is `api_key` here.
+   */
+  authMethod: AuthMethod;
+  /**
+   * What this request presented, which is a different fact: that same token
+   * is a `gateway_token`, and only a key sent on every request is `api_key`.
+   */
   credentialType: "api_key" | "gateway_token";
   apiKeyId?: string;
 }

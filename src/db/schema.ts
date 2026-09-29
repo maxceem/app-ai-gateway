@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { UsageStatus } from "../contracts/responses";
+import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { createCfAuthTables } from "@maxceem/cf-auth/schema";
 import {
   check,
@@ -11,14 +12,14 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-/** Re-exported for the tables below; defined in `src/shared/capabilities.ts`. */
-export type { GatewayType } from "../shared/capabilities";
-import type { GatewayType } from "../shared/capabilities";
-import type { AppConfig, ProviderType } from "../core/types";
+import type { AuthMethod } from "../core/types";
+import type { CredentialSource } from "../shared/capabilities";
+import type { GatewayConnectionConfig, GatewayType } from "../shared/gateways";
+import type { AppConfig } from "../shared/app-config";
+import type { AppStatus } from "../shared/app-status";
+import type { ProviderType } from "../shared/providers";
 
-export type AppStatus = "active" | "disabled";
 export type UserStatus = "active" | "blocked";
-export type AuthMethod = "attest" | "api_key";
 export type AttestEnvironment = "production" | "development";
 export type ApiKeyStatus = "active" | "revoked";
 /**
@@ -38,28 +39,18 @@ export type ProviderGatewayStatus = "active" | "revoked";
  * refused by the contracts on the way in and treated as unroutable on the way
  * out — `isGatewayType` and `isProviderType` are that check, in code.
  */
-/** Non-secret configuration for the org's own Cloudflare AI Gateway. */
-export interface CfAigConfig {
-  accountId: string;
-  gatewayId: string;
-}
 /**
- * Vercel's AI Gateway is one fixed origin serving every team, and the team is
- * identified by the token alone: there is nothing per-connection to store. The
- * empty shape exists so the union has a place to grow without another rebuild.
+ * What `provider_gateway.config_json` holds: one gateway type's non-secret
+ * connection, discriminated at runtime by the row's `type`. Each shape is its
+ * descriptor's `connection` schema in `src/shared/gateways.ts`, and a stored
+ * value is read as its type's own shape only through `readStoredGateway` in
+ * `src/providers/gateway-adapters.ts`, which validates it on the way.
  */
-export type VercelConfig = Record<string, never>;
-/**
- * What `provider_gateway.config_json` holds, discriminated at runtime by the
- * row's `type`. The adapter registry resolves the pair — see `gatewayConfig` in
- * `src/core/gateways.ts`, the one place a stored config is read as an adapter's
- * own shape.
- */
-export type ProviderGatewayConfig = CfAigConfig | VercelConfig;
+export type ProviderGatewayConfig = GatewayConnectionConfig;
 /**
  * What `provider.gateway_route_json` holds: how one provider row is routed
  * inside its gateway. The referenced `provider_gateway.type` selects the schema,
- * and the owning adapter validates it — `cf_aig` accepts nothing at all.
+ * and the owning adapter validates it — Cloudflare's accepts nothing at all.
  */
 export interface GatewayRouteConfig {
   /** Namespace the gateway expects in front of the canonical model ID. */
@@ -70,16 +61,6 @@ export interface GatewayRouteConfig {
 /** Per-1M-token overrides for models the shipped catalog does not cover. */
 export type ProviderPricing = Record<string, { input: number; output: number }>;
 /**
- * How one proxied request ended.
- *
- * The `blocked_*` values name the system that refused it, and the prefix after
- * `blocked_` matches the error code's: `blocked_app_*` is the organization's own
- * app configuration refusing its end user, `blocked_billing` is the plan
- * allowance the organization itself is metered by. Keeping them distinct is the
- * whole point — one is the customer's decision, the other is ours.
- */
-export type { UsageStatus };
-/**
  * Where a proxied request's `cost_usd` came from. `reported` is the upstream's
  * own figure for that request, which outranks a local estimate because it is
  * definitionally what the operator was charged; `computed` is this deployment's
@@ -88,9 +69,6 @@ export type { UsageStatus };
  * measurement.
  */
 export type CostSource = "computed" | "reported" | "unresolved";
-/** Re-exported for the tables below; defined in `src/shared/capabilities.ts`. */
-export type { CredentialSource } from "../shared/capabilities.ts";
-import type { CredentialSource } from "../shared/capabilities.ts";
 
 // Table naming rule: `mgmt_` is who administers the gateway, their credentials
 // and their unfinished administrative acts; a bare noun (`app`, `provider`,
@@ -109,95 +87,50 @@ export const {
   apiKey: mgmtApiKey,
 } = mgmtAuthTables;
 
-/** Durable, proof-bound recovery for create operations and bootstrap. */
-export const mgmtResourceReceipt = sqliteTable(
-  "mgmt_resource_receipt",
+/**
+ * One CLI operation: a bootstrap, an account claim, or a resource write, sent
+ * immediately or after a browser step. The id is `op:` and the digest of the
+ * one token the CLI holds, so holding the token is the whole proof, and a
+ * retry with it finds this row rather than repeating the work.
+ *
+ * `state` is `pending` until the work lands, then `completed`. A bootstrap is
+ * `retired` once its account is claimed and `expired` once account cleanup
+ * collected it; that last row is kept on purpose, identities and secrets
+ * cleared, so the same token cannot recreate an account the deadline removed.
+ *
+ * `outcome_json` is what the operation achieved with any one-time secret taken
+ * out; the whole of it is sealed in `sealed_outcome` until `sealed_until`, so a
+ * CLI whose response was lost can still collect a key it has not stored yet.
+ */
+export const mgmtOperation = sqliteTable(
+  "mgmt_operation",
   {
     id: text("id").primaryKey(),
     kind: text("kind").notNull(),
+    state: text("state", { enum: ["pending", "completed", "retired", "expired"] }).notNull(),
     organizationId: text("organization_id").references(() => mgmtOrganization.id, {
       onDelete: "set null",
     }),
     initiatingUserId: text("initiating_user_id"),
     initiatingCredentialId: text("initiating_credential_id"),
-    proofHash: text("proof_hash").notNull(),
+    /** The reviewable payload of a browser step, exactly as its schema accepted it. */
+    request: text("request_json"),
+    /** Digest of the whole request, which a retry with the same token must match. */
     requestHash: text("request_hash").notNull(),
-    outcome: text("outcome"),
-    protectedCredential: text("protected_credential"),
-    protectedCredentialExpiresAt: integer("protected_credential_expires_at"),
-    consumedAt: integer("consumed_at"),
-    expiresAt: integer("expires_at").notNull(),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [index("idx_mgmt_resource_receipt_organization").on(table.organizationId)],
-);
-
-/**
- * One CLI bootstrap: the proof that created an account, and the management key
- * it may still collect.
- *
- * `active` until the account is claimed (`retired`, the key's authority ends
- * with the claim) or collected as expired (`expired`, every identity and secret
- * cleared). The expired row is kept on purpose: it is what stops the same
- * proof from recreating an account the deadline has already removed.
- */
-export const mgmtBootstrap = sqliteTable(
-  "mgmt_bootstrap",
-  {
-    id: text("id").primaryKey(),
-    state: text("state", { enum: ["active", "retired", "expired"] }).notNull(),
-    organizationId: text("organization_id").references(() => mgmtOrganization.id, {
-      onDelete: "set null",
-    }),
-    /** The service identity the bootstrap created the account for. */
-    serviceUserId: text("service_user_id"),
-    proofHash: text("proof_hash").notNull(),
-    /** The management key the protected credential below is, once one is committed. */
+    /** Digest of the browser's own proof, present only while a browser step is owed. */
+    browserProofHash: text("browser_proof_hash"),
+    outcome: text("outcome_json"),
+    sealedOutcome: text("sealed_outcome"),
+    sealedUntil: integer("sealed_until"),
+    /** A bootstrap's management key, the one it stands behind. */
     credentialId: text("credential_id"),
-    protectedCredential: text("protected_credential"),
-    protectedCredentialExpiresAt: integer("protected_credential_expires_at"),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [index("idx_mgmt_bootstrap_organization").on(table.organizationId)],
-);
-
-/** An unfinished administrative act: human claim approval, or a provider-secret browser handoff. */
-export const mgmtHandoff = sqliteTable(
-  "mgmt_handoff",
-  {
-    id: text("id").primaryKey(),
-    kind: text("kind").notNull(),
-    /** The kind's payload exactly as its schema accepted it, and nothing the server added. */
-    request: text("request_json").notNull(),
-    /** Digest of the payload, which is what a replay of the same proof must match. */
-    requestHash: text("request_hash").notNull(),
-    /** The existing row a targeted kind edits, and the revision it was pinned to on opening. */
-    targetId: text("target_id"),
-    targetRevision: integer("target_revision"),
-    /** The provider gateway a provider handoff routes through, pinned the same way. */
-    gatewayId: text("gateway_id"),
-    gatewayRevision: integer("gateway_revision"),
-    /**
-     * What the approval page is shown of the pinned rows: `{ target?, gateway? }`,
-     * the reviewable configuration and never a sealed secret.
-     */
-    snapshot: text("snapshot_json"),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => mgmtOrganization.id, { onDelete: "cascade" }),
-    initiatingUserId: text("initiating_user_id").notNull(),
-    initiatingCredentialId: text("initiating_credential_id").notNull(),
-    submissionProofHash: text("submission_proof_hash").notNull(),
-    pollProofHash: text("poll_proof_hash").notNull(),
-    consumedAt: integer("consumed_at"),
-    outcome: text("outcome"),
     expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
-  (table) => [index("idx_mgmt_handoff_pending").on(table.organizationId, table.expiresAt)],
+  (table) => [
+    index("idx_mgmt_operation_organization").on(table.organizationId, table.state, table.expiresAt),
+  ],
 );
 
 export const app = sqliteTable(
@@ -221,7 +154,7 @@ export const app = sqliteTable(
      * No CHECK: the database is permissive and the runtime is authoritative,
      * which is this schema's standing position.
      */
-    authType: text("auth_type").notNull().default(""),
+    authType: text("auth_type").notNull(),
     revision: integer("revision").notNull().default(1),
     status: text("status").$type<AppStatus>().notNull().default("active"),
     createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
@@ -233,7 +166,7 @@ export const app = sqliteTable(
   ],
 );
 
-/** A reusable connection to an organization's Cloudflare AI Gateway. */
+/** A reusable connection to one of an organization's AI gateways. */
 export const providerGateway = sqliteTable(
   "provider_gateway",
   {
@@ -353,8 +286,7 @@ export const appUser = sqliteTable(
     /**
      * Which App Attest environment registered the stored key, so that removing
      * an application's development opt-in also stops the keys that opt-in
-     * admitted. Null for a row written before the column existed, which can
-     * only have been production: nothing else was acceptable then.
+     * admitted. Set exactly when a key is, which the check below holds.
      */
     attestEnvironment: text("attest_env").$type<AttestEnvironment>(),
     status: text("status").$type<UserStatus>().notNull().default("active"),
@@ -372,6 +304,12 @@ export const appUser = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.appId, table.id] }),
     check("users_status_check", sql`${table.status} IN ('active', 'blocked')`),
+    // A registered key is its id, its public key and the environment that
+    // attested it, all three; a user identified by an issuer has none of them.
+    check(
+      "users_attest_key_check",
+      sql`(${table.attestKeyId} IS NULL) = (${table.attestPublicKey} IS NULL) AND (${table.attestKeyId} IS NULL) = (${table.attestEnvironment} IS NULL)`,
+    ),
   ],
 );
 
@@ -398,14 +336,12 @@ export const appUsageEvent = sqliteTable(
     id: integer("id").primaryKey(),
     /**
      * Recording identity, generated once per event and reused by every retry so
-     * the insert can be replayed without duplicating the row. Null on rows
-     * written before recording became idempotent; SQLite's unique index treats
-     * each NULL as distinct, so those rows coexist.
+     * the insert can be replayed without duplicating the row.
      */
-    eventId: text("event_id"),
+    eventId: text("event_id").notNull(),
     appId: text("app_id").notNull(),
-    /** Durable ownership; empty only for historical rows that cannot be attributed. */
-    organizationId: text("organization_id").notNull().default(""),
+    /** Durable ownership: the account the request was served for, which outlives the app. */
+    organizationId: text("organization_id").notNull(),
     /**
      * Null for an application that identifies no end users, where the request
      * was made by the API key itself and there is nobody else to name. The
@@ -418,7 +354,7 @@ export const appUsageEvent = sqliteTable(
     /**
      * The provider row that served the traffic. Deliberately not a foreign key:
      * deleting a provider is a hard delete, and usage history must survive it
-     * with its attribution intact. Null for traffic blocked before resolution.
+     * with its attribution intact. Null if the provider row was removed before this event.
      */
     providerId: text("provider_id"),
     /** Provider instance slug at request time; survives row deletion or reuse. */
@@ -440,11 +376,8 @@ export const appUsageEvent = sqliteTable(
     outputTokens: integer("output_tokens").notNull().default(0),
     costUsd: real("cost_usd").notNull().default(0),
     /**
-     * How `cost_usd` was arrived at, for events that reached a provider. Null on
-     * blocked traffic, which never had a cost to source, and on rows written
-     * before the column existed. Deliberately unconstrained text: the value set
-     * grows as new cost sources land, and a CHECK on this table would make each
-     * addition a full rebuild.
+     * How `cost_usd` was arrived at, for events that reached a provider. Deliberately unconstrained text: the value set grows as new cost sources land, and a
+     * CHECK on this table would make each addition a full rebuild.
      */
     costSource: text("cost_source").$type<CostSource>(),
     /**
@@ -490,7 +423,7 @@ export const appUsageEvent = sqliteTable(
     uniqueIndex("usage_events_event_id_unique").on(table.eventId),
     check(
       "usage_events_status_check",
-      sql`${table.status} IN ('ok', 'provider_error', 'blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')`,
+      sql`${table.status} IN ('ok', 'provider_error')`,
     ),
   ],
 );
@@ -499,9 +432,10 @@ export type AppUsageSpendScope = "app" | "user";
 
 /**
  * Canonical monthly spend derived atomically from `app_usage_event` by the D1
- * triggers installed with this table. `UserLimiter` is only a versioned
- * projection of these rows: `pending` is the coalescing outbox bit, so any
- * failed or superseded delivery is retried without retaining event ids.
+ * triggers installed with this table: an insert adds the event's cost, a
+ * reprice applies its delta, both in the same write as the event. The request
+ * gate reads one row by its unique key and caches it briefly — see
+ * `src/usage/app-usage-accounting.ts`.
  *
  * `user_key` is deliberately non-null. App rows use the empty string, while a
  * user row may also name a real empty user id; `scope` keeps those identities
@@ -511,19 +445,13 @@ export const appUsageSpend = sqliteTable(
   "app_usage_spend",
   {
     id: integer("id").primaryKey(),
-    /** Null only when historical usage cannot be attributed to an account. */
-    organizationId: text("organization_id"),
+    organizationId: text("organization_id").notNull(),
     appId: text("app_id").notNull(),
     scope: text("scope").$type<AppUsageSpendScope>().notNull(),
     userKey: text("user_key").notNull(),
     /** UTC calendar month as `YYYY-MM`, fixed from the event timestamp. */
     month: text("month").notNull(),
     microusd: integer("microusd").notNull(),
-    /** Monotonic version delivered to the limiter; starts at one. */
-    revision: integer("revision").notNull(),
-    pending: integer("pending").notNull().default(1),
-    /** Milliseconds since epoch; rotates failed rows through bounded recovery. */
-    lastAttemptAt: integer("last_attempt_at").notNull().default(0),
   },
   (table) => [
     uniqueIndex("app_usage_spend_scope_month_unique").on(
@@ -532,13 +460,6 @@ export const appUsageSpend = sqliteTable(
       table.userKey,
       table.month,
     ),
-    index("idx_app_usage_spend_pending").on(table.pending, table.lastAttemptAt, table.id),
-    index("idx_app_usage_spend_app_month").on(
-      table.appId,
-      table.month,
-      table.pending,
-      table.lastAttemptAt,
-    ),
     index("idx_app_usage_spend_organization").on(table.organizationId),
     check("app_usage_spend_scope_check", sql`${table.scope} IN ('app', 'user')`),
     check(
@@ -546,8 +467,6 @@ export const appUsageSpend = sqliteTable(
       sql`${table.month} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND substr(${table.month}, 6, 2) BETWEEN '01' AND '12'`,
     ),
     check("app_usage_spend_microusd_check", sql`${table.microusd} >= 0`),
-    check("app_usage_spend_revision_check", sql`${table.revision} > 0`),
-    check("app_usage_spend_pending_check", sql`${table.pending} IN (0, 1)`),
   ],
 );
 
@@ -584,8 +503,8 @@ export const appUsageRollup = sqliteTable(
     /** `YYYY-MM-DD` at day grain, `YYYY-MM` at month grain. Compares lexically. */
     bucket: text("bucket").notNull(),
     appId: text("app_id").notNull(),
-    /** Durable ownership; empty only for historical rows that cannot be attributed. */
-    organizationId: text("organization_id").notNull().default(""),
+    /** Durable ownership, carried over from the events the bucket folds. */
+    organizationId: text("organization_id").notNull(),
     model: text("model").notNull(),
     providerType: text("provider_type").notNull(),
     status: text("status").$type<UsageStatus>().notNull(),
@@ -618,6 +537,36 @@ export const appUsageRollup = sqliteTable(
   ],
 );
 
+/** One sampled refusal before any provider attempt; diagnostics expire without rollups. */
+export const appRejectionEvent = sqliteTable(
+  "app_rejection_event",
+  {
+    id: integer("id").primaryKey(),
+    eventId: text("event_id").notNull(),
+    appId: text("app_id").notNull(),
+    userId: text("user_id"),
+    apiKeyId: text("api_key_id"),
+    reason: text("reason").$type<RejectionReason>().notNull(),
+    scope: text("scope").$type<RejectionScope>(),
+    providerSlug: text("provider_slug"),
+    model: text("model"),
+    route: text("route"),
+    endpointSlug: text("endpoint_slug"),
+    appVersion: text("app_version"),
+    authMethod: text("auth_method").$type<AuthMethod>(),
+    latencyMs: integer("latency_ms"),
+    createdAt: text("created_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+  },
+  (table) => [
+    uniqueIndex("rejection_events_event_id_unique").on(table.eventId),
+    index("idx_rejection_events_app_created").on(table.appId, table.createdAt),
+    index("idx_rejection_events_app_user_created").on(table.appId, table.userId, table.createdAt),
+    index("idx_rejection_events_created").on(table.createdAt),
+    check("rejection_events_reason_check", sql`${table.reason} IN ('blocked_app_rate', 'blocked_app_budget', 'blocked_billing', 'blocked_user')`),
+    check("rejection_events_scope_check", sql`${table.scope} IS NULL OR ${table.scope} IN ('user', 'app', 'account')`),
+  ],
+);
+
 /** What a `/auth/token` or `/auth/register` attempt was, and how it ended. */
 export type AuthEventName = "token_exchange" | "register";
 
@@ -637,7 +586,7 @@ export const appAuthEvent = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     /** Recording identity, so a retried insert converges instead of duplicating. */
-    eventId: text("event_id"),
+    eventId: text("event_id").notNull(),
     /**
      * No foreign key, but for a different reason than usage's. Usage outlives
      * the app it belongs to because it is billing history; this table is

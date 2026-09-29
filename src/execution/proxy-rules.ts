@@ -1,0 +1,527 @@
+import { assertApiStyleSupported } from "../providers/capability-matrix";
+import { clientAuth } from "../client-auth/client-auth";
+import { GatewayError } from "../core/errors";
+import type { ResolvedProvider } from "../providers/provider-store";
+import { clampStyleFor, classifyPath } from "../providers/protocols";
+import {
+  finishJsonBody,
+  isMultipart,
+  jsonObjectFromText,
+  parseForm,
+  readBodyLimited,
+} from "../providers/request-body";
+import { ROUTE_ADAPTERS, routeWireModel } from "../providers/route-adapters";
+import { lookup } from "../shared/records";
+import { isBillable } from "../usage/pricing";
+import { isDefaultProxyApiStyle, type ProviderRoute, type ApiStyle } from "../shared/capabilities";
+import { providerPolicyFor, DEFAULT_END_USER_HEADER, type ProviderPolicy } from "../shared/app-config";
+import type { AllowedPath, AllowedPathConfig, AppRecord } from "../core/types";
+import type { ProviderType } from "../shared/providers";
+
+export interface PreparedProxyRequest {
+  provider: ProviderType;
+  providerPath: string;
+  /**
+   * The canonical model: what was priced, what the allowlist judged, and what
+   * the usage event records. The route may put a different string on the wire.
+   */
+  model: string;
+  /**
+   * The API this request speaks, classified from the path here and carried
+   * through to the attempt: the response reader is chosen by it, so the answer
+   * is never sniffed for a shape the request already named.
+   */
+  apiStyle: ApiStyle;
+  body: BodyInit | null;
+  headers: Headers;
+  query: string;
+}
+
+/**
+ * Entering a price *is* the explicit allowance for a model, so the message has
+ * to say exactly where to enter it.
+ */
+export function unpricedMessage(provider: ProviderType, model: string): string {
+  return `Model ${model} has no pricing for ${provider} — add it under custom model pricing in the provider settings`;
+}
+
+export function sanitizedQuery(request: Request): string {
+  const url = new URL(request.url);
+  // Provider SDKs sometimes put their API key in the query string. The gateway
+  // authenticates the client separately and must never forward a client key.
+  url.searchParams.delete("key");
+  url.searchParams.delete("api_key");
+  return url.search;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function pathPattern(pattern: string): RegExp {
+  return new RegExp(`^${pattern.split("{model}").map(escapeRegex).join("([^/]+)")}$`, "u");
+}
+
+interface MatchedPath {
+  entry: AllowedPathConfig;
+  modelFromPath?: string;
+}
+
+function normalizedPath(entry: AllowedPath): AllowedPathConfig {
+  return typeof entry === "string" ? { path: entry } : entry;
+}
+
+function modelIsAllowed(allowedModels: string[], requestedModel: string): boolean {
+  return allowedModels.length === 0 || allowedModels.includes(requestedModel);
+}
+
+/**
+ * The allowlist entry a path matches, and the model it captured if it names
+ * one. An app that names no paths allows every default inference style, which
+ * the caller has already checked; the classifier's own capture is the model
+ * then, so a native Gemini path is judged by the model in its URL.
+ */
+function matchedPath(path: string, allowed: AllowedPath[], model: { value: string; template: string } | undefined): MatchedPath | null {
+  if (allowed.length === 0) {
+    return model
+      ? { entry: { path: model.template }, modelFromPath: decodedModel(model.value) }
+      : { entry: { path } };
+  }
+  for (const rawEntry of allowed) {
+    const entry = normalizedPath(rawEntry);
+    const match = path.match(pathPattern(entry.path));
+    if (match) return { entry, ...(match[1] ? { modelFromPath: decodedModel(match[1]) } : {}) };
+  }
+  return null;
+}
+
+/** A model segment of an allowed path, decoded; malformed escapes are the client's error. */
+function decodedModel(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new GatewayError(400, "invalid_request", "The model in the request path is not validly encoded");
+  }
+}
+
+/**
+ * Every header the gateway itself owns, derived from the route adapters so it
+ * can never drift from them: each one declares the headers it sets, and the
+ * direct adapter derives its own from the provider descriptors. A client value
+ * in any of them is dropped before the upstream request is built.
+ */
+export const RESERVED_UPSTREAM_HEADERS: readonly string[] = [
+  ...new Set(
+    Object.values(ROUTE_ADAPTERS).flatMap((adapter) => adapter.reservedHeaders),
+  ),
+];
+
+/**
+ * Headers stripped from every request on every route, whatever it turns out to
+ * be. Everything here is either a credential, a routing directive, or a hop
+ * header the runtime recomputes — the request-scoped names (the app's issuer
+ * token header, the gateway's own) are added per call because they are
+ * configuration rather than registry.
+ *
+ * A `Set` built once at module scope: the membership test runs per header of
+ * every proxied request, and rebuilding the list per request spread three
+ * registries into a fresh array on the hot path.
+ */
+const ALWAYS_STRIPPED: ReadonlySet<string> = new Set([
+  ...RESERVED_UPSTREAM_HEADERS,
+  // The conventional end-user header, dropped whatever this application calls
+  // its own: it is the name clients send out of habit, and a gateway-facing
+  // header is never any provider's business. The configured name is added per
+  // request alongside it, since that one is configuration rather than registry.
+  DEFAULT_END_USER_HEADER,
+  "host",
+  "content-length",
+  "connection",
+]);
+
+/**
+ * Namespaces the route adapters own, and the only names a client may set
+ * inside one. A route with no namespace of its own — the direct one — has no
+ * entry, which is exactly what makes every gateway control header noise on it. Precomputed with the same reasoning as {@link ALWAYS_STRIPPED};
+ * `null` for an adapter that reserves its whole namespace, which skips the
+ * per-name allowlist lookup entirely.
+ */
+const GATEWAY_NAMESPACES: readonly {
+  kind: ProviderRoute;
+  prefix: string;
+  clientHeaders: ReadonlySet<string> | null;
+}[] = Object.values(ROUTE_ADAPTERS).flatMap((adapter) =>
+  adapter.headerPrefix === null
+    ? []
+    : [{
+      kind: adapter.kind,
+      prefix: adapter.headerPrefix,
+      clientHeaders: adapter.clientHeaders.length === 0
+        ? null
+        : new Set<string>(adapter.clientHeaders),
+    }],
+);
+
+/**
+ * The only client request headers a provider ever sees, outside the gateway
+ * namespaces {@link GATEWAY_NAMESPACES} judges separately. An allowlist rather
+ * than a denylist because the interesting names are the ones nobody thought of:
+ * `cookie`, `cf-connecting-ip`, `x-forwarded-for`, `origin`, `referer` would
+ * disclose the end user to the provider, and a provider control header such as
+ * `openai-organization` would let a client redirect the operator's spend.
+ *
+ * One entry per line with the SDK that sends it, so allowing another header is
+ * a one-line change. Two deliberate absences:
+ *
+ * - `accept-encoding`: the runtime negotiates transfer encoding itself, and the
+ *   usage observer needs a decoded body.
+ * - `x-goog-user-project`: it selects the Google billing project, which is the
+ *   operator's decision and not the client's.
+ */
+export const FORWARDED_CLIENT_HEADERS: {
+  readonly exact: readonly string[];
+  readonly prefixes: readonly string[];
+} = {
+  exact: [
+    "content-type", // every SDK: the request payload format
+    "accept", // every SDK: JSON versus text/event-stream
+    "accept-language", // OpenAI and Google SDKs: localized provider messages
+    "user-agent", // every SDK: its own client identification
+    "anthropic-version", // Anthropic SDK: the required API version pin
+    "anthropic-beta", // Anthropic SDK: opt-in beta features
+    "anthropic-dangerous-direct-browser-access", // Anthropic browser SDK
+    "openai-beta", // OpenAI SDK: opt-in beta features such as Assistants v2
+    "x-goog-api-client", // Google GenAI SDK: client version telemetry
+    "idempotency-key", // OpenAI and Anthropic SDKs: safe retries
+  ],
+  prefixes: [
+    "x-stainless-", // OpenAI and Anthropic SDK telemetry (both are Stainless-generated)
+  ],
+};
+
+/** Precomputed for the same reason as {@link ALWAYS_STRIPPED}: hot path. */
+const FORWARDED_EXACT: ReadonlySet<string> = new Set(FORWARDED_CLIENT_HEADERS.exact);
+
+function isForwardedClientHeader(name: string): boolean {
+  return FORWARDED_EXACT.has(name)
+    || FORWARDED_CLIENT_HEADERS.prefixes.some((prefix) => name.startsWith(prefix));
+}
+
+/**
+ * Which gateway a request goes through, as the header rules see it: one of the
+ * adapters, `direct` for a provider's own API, or `pending` before the provider
+ * row has been resolved and the answer is not knowable yet.
+ */
+type HeaderRoute = ProviderRoute | "pending";
+
+/**
+ * The one header-stripping rule, applied wherever a request's headers are
+ * touched.
+ *
+ * The rule, in one sentence: inside a gateway's namespace only the names
+ * that adapter declares client-usable, and only while the request could still be
+ * routed through that adapter; everywhere else only {@link
+ * FORWARDED_CLIENT_HEADERS}. `pending` keeps every adapter's client-usable
+ * headers because the routing decision is still ahead; `direct` and a named
+ * gateway keep at most one adapter's, which is where the narrowing actually
+ * happens.
+ *
+ * {@link ALWAYS_STRIPPED} runs first and wins over the allowlist, which keeps
+ * the registry-derived credential list authoritative: a provider that starts
+ * authenticating with a name someone allowlisted here still drops the client's.
+ */
+function stripClientHeaders(
+  headers: Headers,
+  route: HeaderRoute,
+  requestScoped: readonly (string | undefined)[] = [],
+): void {
+  const names: string[] = [];
+  headers.forEach((_value, name) => names.push(name));
+  for (const name of names) {
+    if (ALWAYS_STRIPPED.has(name)) {
+      headers.delete(name);
+      continue;
+    }
+    // Every matching namespace has to allow the name, not just the first one:
+    // adapter prefixes are disjoint today, but a future one nested inside
+    // another would otherwise let a header through on the strength of the
+    // namespace that permits it.
+    let namespaced = false;
+    for (const namespace of GATEWAY_NAMESPACES) {
+      if (!name.startsWith(namespace.prefix)) continue;
+      namespaced = true;
+      // A gateway's control headers mean something only to that gateway, so on
+      // any other route — a direct call included — they are noise the upstream
+      // might act on.
+      const usable = (route === "pending" || route === namespace.kind)
+        && namespace.clientHeaders?.has(name) === true;
+      if (!usable) {
+        headers.delete(name);
+        break;
+      }
+    }
+    // A gateway namespace answers for its own names; everything else has to be
+    // on the allowlist to reach a provider at all.
+    if (!namespaced && !isForwardedClientHeader(name)) headers.delete(name);
+  }
+  for (const name of requestScoped) {
+    if (name) headers.delete(name);
+  }
+}
+
+/**
+ * Strips everything the client must not influence, before the routing decision
+ * is known. Provider authentication is injected later by
+ * {@link providerUpstream}, once the organization's provider row is resolved;
+ * a gateway's client-usable control headers are kept here and re-judged there
+ * against the route the request really took.
+ */
+export function sanitizedHeaders(
+  request: Request,
+  app: AppRecord,
+  tokenHeader: string,
+): Headers {
+  const headers = new Headers(request.headers);
+  stripClientHeaders(
+    headers,
+    "pending",
+    [...clientAuth(app).consumedHeaders, tokenHeader],
+  );
+  return headers;
+}
+
+/**
+ * Response headers dropped before the upstream's answer reaches the client:
+ * the hop headers the runtime recomputes for a teed, re-streamed body, and the
+ * provider's account-scoped ones. `x-request-id` deliberately survives — it is
+ * what a provider support ticket asks for.
+ */
+const STRIPPED_RESPONSE_HEADERS: readonly string[] = [
+  // Recomputed by the runtime: the body is teed and streamed on unencoded.
+  "content-length",
+  "content-encoding",
+  "transfer-encoding",
+  // A provider session cookie is never the gateway client's to hold, and a
+  // client that stored one would replay it to the gateway, not to the provider.
+  "set-cookie",
+  // Which OpenAI organization and project the operator's key resolved to.
+  "openai-organization",
+  "openai-project",
+];
+
+/** The header set a proxied upstream response is returned to the client with. */
+export function clientResponseHeaders(upstream: Response): Headers {
+  const headers = new Headers(upstream.headers);
+  for (const name of STRIPPED_RESPONSE_HEADERS) headers.delete(name);
+  return headers;
+}
+
+/**
+ * The one model decision, for both shapes of proxied request.
+ *
+ * Which model a request is for, whether the app may ask for it, what the
+ * organization rewrote it to, whether that can be billed, and what the route
+ * puts on the wire — in that order, because each step judges the answer the one
+ * before it settled. One function for both shapes, so the multipart path and
+ * the JSON path cannot drift into two policies.
+ */
+function resolveModel(input: {
+  match: MatchedPath;
+  /** The model the body named, where the body is where this shape carries it. */
+  bodyModel: string | undefined;
+  policy: ProviderPolicy;
+  rewrites: Record<string, string> | undefined;
+  resolved: ResolvedProvider;
+}): { requestedModel: string; actualModel: string; wireModel: string } {
+  const provider = input.resolved.type;
+  const requestedModel = input.match.modelFromPath
+    ?? input.bodyModel
+    ?? input.match.entry.fixed_model;
+  if (!requestedModel) {
+    throw new GatewayError(400, "invalid_request", "Request model could not be resolved");
+  }
+  if (!modelIsAllowed(input.policy.allowed_models, requestedModel)) {
+    throw new GatewayError(403, "model_not_allowed", "Model is not allowed");
+  }
+  const actualModel = lookup(input.rewrites, requestedModel) ?? requestedModel;
+  if (!isBillable(provider, actualModel, input.resolved.pricing)) {
+    throw new GatewayError(400, "pricing_not_configured", unpricedMessage(provider, actualModel));
+  }
+  // Everything above judged the canonical model; only the outbound request
+  // speaks the route's own namespace, and only where the adapter declares one.
+  return {
+    requestedModel,
+    actualModel,
+    wireModel: routeWireModel(input.resolved.route, provider, actualModel),
+  };
+}
+
+/**
+ * Where the wire model has to be written, when it differs from the one the
+ * client named: back into the path it was captured from, or into the body
+ * field it came in. A fixed model is policy metadata and is never injected,
+ * and a model that needs no translation leaves the request untouched — which
+ * on a multipart upload is what keeps its original bytes and boundary.
+ */
+function modelPlacement(
+  match: MatchedPath,
+  model: { requestedModel: string; wireModel: string },
+): { path: string } | { bodyModel: string } | null {
+  if (model.wireModel === model.requestedModel) return null;
+  if (match.modelFromPath) {
+    return { path: match.entry.path.replace("{model}", encodeURIComponent(model.wireModel)) };
+  }
+  return match.entry.fixed_model ? null : { bodyModel: model.wireModel };
+}
+
+export async function prepareProxyRequest(input: {
+  request: Request;
+  app: AppRecord;
+  userId: string | null;
+  /**
+   * The organization's resolved provider row: its type, its slug, its route and
+   * its per-model prices, all of which this function judges the request
+   * against. Passed whole rather than field by field, so nothing here can be
+   * handed a route that belongs to another row.
+   */
+  resolved: ResolvedProvider;
+  providerPath: string;
+  tokenHeader: string;
+}): Promise<PreparedProxyRequest> {
+  const { resolved } = input;
+  const provider = resolved.type;
+  const route = resolved.route;
+  const config = providerPolicyFor(input.app.config.routing, resolved.slug);
+  if (!config) throw new GatewayError(403, "path_not_allowed", "Provider is disabled for this app");
+  const classified = classifyPath(input.providerPath);
+  const apiStyle = classified.protocol.style;
+  if (config.allowed_paths.length === 0 && !isDefaultProxyApiStyle(apiStyle)) {
+    throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+  }
+  const match = matchedPath(input.providerPath, config.allowed_paths, classified.model);
+  if (!match) throw new GatewayError(403, "path_not_allowed", "Provider path is not allowed");
+  assertApiStyleSupported(route.kind, provider, apiStyle);
+
+  const bytes = await readBodyLimited(input.request);
+  const contentType = input.request.headers.get("content-type") ?? "";
+  const headers = sanitizedHeaders(input.request, input.app, input.tokenHeader);
+  const prepared = (body: BodyInit, providerPath: string, model: string): PreparedProxyRequest => ({
+    provider,
+    providerPath,
+    model,
+    apiStyle,
+    body,
+    headers,
+    query: sanitizedQuery(input.request),
+  });
+
+  // The body's format is the client's, whatever the path: a classified
+  // transcription is multipart, but so are provider-native uploads under
+  // `other`, which only their content type announces.
+  if (isMultipart(contentType)) {
+    // Parsed only where the form is where the model could be: a path capture
+    // already names it, and parsing the upload to confirm that would copy every
+    // byte of it for nothing.
+    const parsed = match.modelFromPath ? null : await parseForm(bytes, contentType);
+    const modelField = parsed?.get("model");
+    const model = resolveModel({
+      match,
+      bodyModel: typeof modelField === "string" && modelField.length > 0 ? modelField : undefined,
+      policy: config,
+      rewrites: input.app.config.routing.model_rewrites,
+      resolved,
+    });
+    const placement = modelPlacement(match, model);
+    if (placement && "bodyModel" in placement && parsed) {
+      // Re-encoded only here, so fetch writes a fresh boundary for it; an
+      // untouched upload keeps its original bytes and boundary.
+      parsed.set("model", placement.bodyModel);
+      headers.delete("content-type");
+      return prepared(parsed, input.providerPath, model.actualModel);
+    }
+    const path = placement && "path" in placement ? placement.path : input.providerPath;
+    return prepared(bytes, path, model.actualModel);
+  }
+
+  // Decoded once and read twice: the parse below and, where nothing rewrote
+  // the body, the outbound request itself.
+  const text = new TextDecoder().decode(bytes);
+  const parsed = jsonObjectFromText(text);
+  const model = resolveModel({
+    match,
+    bodyModel: typeof parsed.model === "string" && parsed.model.length > 0
+      ? parsed.model
+      : undefined,
+    policy: config,
+    rewrites: input.app.config.routing.model_rewrites,
+    resolved,
+  });
+  const placement = modelPlacement(match, model);
+  let bodyChanged = false;
+  if (placement && "bodyModel" in placement) {
+    parsed.model = placement.bodyModel;
+    bodyChanged = true;
+  }
+  bodyChanged = finishJsonBody(parsed, {
+    provider,
+    route,
+    style: apiStyle,
+    clamp: match.entry.clamp ?? clampStyleFor(classified.protocol, provider),
+    cap: config.max_output_tokens,
+  }) || bodyChanged;
+  headers.set("content-type", "application/json");
+  return prepared(
+    bodyChanged ? JSON.stringify(parsed) : text,
+    placement && "path" in placement ? placement.path : input.providerPath,
+    model.actualModel,
+  );
+}
+
+/**
+ * Builds the upstream URL and the final header set from the organization's
+ * resolved provider row.
+ *
+ * There is one path, whatever the route: the client's headers are narrowed to
+ * what this route allows, the adapter builds the URL and its own headers, and
+ * those headers are set last so a client can never have supplied one. What the
+ * two kinds of route differ in is entirely inside the adapter — a direct call
+ * authenticates with the provider's own header under the descriptor's origin
+ * (or the row's own `baseUrl`), a gateway authenticates with its own token and
+ * the provider key never travels because the gateway holds it.
+ *
+ * **Clients still never supply a URL.** `resolved.baseUrl` is an operator-only
+ * column: it is written through the console or a management key, validated and
+ * canonicalized by `src/core/origin-guard.ts` (https, public registrable host,
+ * no port, no credentials), and read here from D1. Nothing a gateway client
+ * sends can reach it. That guard's doc comment states what it does and does not
+ * defend against; requests on such a row also refuse to follow upstream
+ * redirects, so a 3xx cannot move the destination after the fact.
+ */
+export function providerUpstream(input: {
+  resolved: ResolvedProvider;
+  providerPath: string;
+  query: string;
+  headers: Headers;
+  appId: string;
+  userId: string | null;
+}): { url: string; headers: Headers } {
+  const { resolved } = input;
+  const { route } = resolved;
+  const headers = new Headers(input.headers);
+  stripClientHeaders(headers, route.kind);
+  const upstream = route.adapter.upstream({
+    provider: resolved.type,
+    providerPath: input.providerPath,
+    query: input.query,
+    secret: resolved.secret,
+    baseUrl: resolved.baseUrl,
+    gateway: route.gateway,
+    routeConfig: route.config,
+    appId: input.appId,
+    userId: input.userId,
+  });
+  // Set after sanitization, like the credential itself: these are the route's
+  // own asks of the upstream, never a client's.
+  for (const [name, value] of Object.entries(upstream.headers)) headers.set(name, value);
+  return { url: upstream.url, headers };
+}

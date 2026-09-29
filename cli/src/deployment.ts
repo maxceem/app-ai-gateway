@@ -23,11 +23,11 @@ import {
   configFile,
   matchExisting,
   prepare,
-  retireInstallationSecrets,
   selectedInstallation,
   verifyDeployment,
   type DomainPlan,
 } from "./installation.ts";
+import { bootstrapCredential } from "./context.ts";
 
 function hostname(value: string): string {
   const u = origin("https://" + value);
@@ -158,7 +158,7 @@ function newInstallation(
     version,
     url,
     vars: { CLI_CONSOLE_ORIGIN: url },
-    bootstrap: { idempotencyKey: randomToken(), pollToken: randomToken() },
+    bootstrap: { token: randomToken() },
     // Held only until the Worker has them and the install is ready; the vault
     // key is the one that outlives setup, and it lives in its own file.
     secrets: {
@@ -180,7 +180,6 @@ async function completeInstallation(
   artifact: ReleaseArtifact,
   installations: Record<string, InstallationJournal>,
 ): Promise<DeploymentSetupPlan> {
-  await retireInstallationSecrets(ctx, ready, flags);
   let journal = ready;
   if (journal.pendingDomain) {
     // Matched against the installation being finished rather than the selected
@@ -265,17 +264,13 @@ async function install(
   }
   await advance(ctx, journal, "deployed");
   await verifyDeployment(ctx, url, journal.id);
-  // Sent on the same proofs however many attempts it takes, which is what
-  // makes retrying safe: the deployment keys the account it creates by them
-  // and answers an identical request with the identical account.
-  const proofs = {
-    idempotencyKey: journal.bootstrap!.idempotencyKey,
-    pollToken: journal.bootstrap!.pollToken,
-  };
+  // Sent on the same token however many attempts it takes, which is what makes
+  // retrying safe: the deployment keys the account it creates by it and
+  // answers an identical request with the identical account.
   const { data } = await whileWarming(() =>
-    ctx.publicCall("bootstrapCliAccount", { body: proofs, url }),
+    ctx.publicCall("bootstrapCliAccount", { body: { token: journal.bootstrap!.token }, url }),
   );
-  await ctx.select(url, data);
+  await ctx.select(url, bootstrapCredential(data));
   // The Worker holds the auth secrets now; only the vault key is worth
   // keeping, and it is already in its own file. The domain becomes this
   // journal's debt until it is attached, so a run that stops in between

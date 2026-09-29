@@ -1,7 +1,7 @@
-import type { ApiStyle } from "../core/api-styles";
-import type { ResolvedProvider } from "../core/provider-store";
-import type { PreparedProxyRequest } from "../core/proxyrules";
-import type { AttemptAttribution } from "../core/usage-record";
+import type { ApiStyle } from "../shared/capabilities";
+import type { ResolvedProvider } from "../providers/provider-store";
+import type { PreparedProxyRequest } from "./proxy-rules";
+import type { AttemptAttribution } from "../usage/usage-record";
 
 export interface ExecutionRequest {
   body: BodyInit | null;
@@ -26,8 +26,8 @@ export interface ExecutionAttempt {
 
 /**
  * Re-exported so an attempt and what it is recorded as read as one vocabulary
- * here. The shape itself belongs to `src/core/usage-record.ts`: it is the usage
- * row's own, and a core module may not reach into the execution layer for it.
+ * here. The shape itself belongs to `src/usage/usage-record.ts`: it is the usage
+ * row's own, and a usage module may not reach into the execution layer for it.
  */
 export type { AttemptAttribution };
 

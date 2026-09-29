@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useReducer, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Check, Copy, Loader2, Plus, Server, Smartphone } from "lucide-react";
 import { toast } from "sonner";
@@ -16,29 +16,24 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AppAttestEnvironments } from "@/components/app-attest-environments";
-import { ChoiceList } from "@/components/choice-list";
-import { ExternalHint } from "@/components/external-hint";
-import { PresetPicker } from "@/components/preset-picker";
+import { IdentityProviderFields } from "@/components/identity-provider-fields";
+import { useDraftTransitions } from "@/hooks/use-app-draft";
+import {
+  draftSession,
+  reduceAppDraft,
+  type AppDraftAction,
+  type EditorSession,
+} from "@/lib/app-draft";
 import { clientApiOrigin } from "@/lib/client-api";
-import { DEFAULT_END_USER_HEADER, type AppAttestEnvironment } from "@/lib/config-types";
-import { appConfigIssues, appleIdentityProblem, issueUnder } from "@shared/app-config";
-import { newAppConfig, type NewAppInput } from "@shared/app-defaults";
+import { authIssuer, type AuthenticationDraft, type EndUserIdentity } from "@/lib/config-types";
+import { clearUnder, DRAFT_PATHS, draftIssues } from "@/lib/draft-problems";
+import { matchIssuerPreset, presetInputsComplete } from "@/lib/presets";
+import { newAppConfig } from "@shared/app-defaults";
 import { useConsoleSession } from "@/lib/console-session";
 import { cn } from "@/lib/utils";
 import { useCreateApp } from "@/lib/queries";
-import type { CreatedApiKey } from "@/lib/types";
-import { IOS_USER_CHOICES, SERVER_USER_CHOICES, type UserSource } from "@/lib/user-sources";
-import {
-  ENTITLEMENT_FIELD_LABEL,
-  ENTITLEMENT_PRESETS,
-  ISSUER_PRESETS,
-  buildEntitlement,
-  buildIssuer,
-  presetInputsComplete,
-  type EntitlementPreset,
-  type IssuerPreset,
-} from "@/lib/presets";
+import type { CreatedApiKey, CreatedApp } from "@/lib/types";
+import { AppIdentity, SubscriptionCheck, UserAuthentication } from "@/pages/tabs/auth-policy";
 
 type ApplicationType = "ios" | "server";
 
@@ -101,7 +96,39 @@ const STEPS: Record<StepId, Step> = {
   },
 };
 
-const ENTITLEMENT_NONE = ENTITLEMENT_PRESETS.find((preset) => preset.id === "none")!;
+/** What the wizard's one session is keyed by. The server assigns the real id on create. */
+const NEW_APP = "new-app";
+
+/** The team, bundle and environments an iOS application is identified by. */
+type AppleIdentity = Extract<AuthenticationDraft, { type: "apple_app_attest" }>["app_attest"];
+
+/**
+ * A new application of this type, as {@link newAppConfig} builds it for the
+ * console and `agw app add` alike, before any of its questions is answered
+ * but the iOS identity, when one was already typed.
+ */
+const newConfig = (type: ApplicationType, identity?: AppleIdentity) =>
+  newAppConfig(
+    type === "ios"
+      ? {
+          type: "apple_app_attest",
+          teamId: identity?.team_id ?? "",
+          bundleId: identity?.bundle_id ?? "",
+          environments: identity?.environments,
+        }
+      : { type: "api_key", endUser: { source: "none" } },
+  );
+
+/**
+ * The draft the wizard opens on. No type has been chosen yet, so the
+ * configuration it holds is a placeholder that choosing one replaces.
+ */
+const openWizard = (appId: string): EditorSession =>
+  draftSession(appId, { name: "", config: newConfig("server"), status: "active" });
+
+/** The editor's own reducer, over the session the wizard opens before its first render. */
+const reduceWizard = (session: EditorSession, action: AppDraftAction): EditorSession =>
+  reduceAppDraft(session, action) ?? session;
 
 /**
  * `trigger` replaces the default "New app" button for callers that open the
@@ -110,196 +137,30 @@ const ENTITLEMENT_NONE = ENTITLEMENT_PRESETS.find((preset) => preset.id === "non
  * be a {@link GuardedButton}: the guard is what tells a read-only member why
  * nothing happens, and a bare element would simply fail on submit instead.
  */
-/** Where the issuer block, and its paid-user claims within it, sit in a configuration. */
-const ISSUER_PATH = ["authentication", "end_user", "issuer"] as const;
-const CLAIMS_PATH = [...ISSUER_PATH, "required_claims"] as const;
-
 export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   const { capabilities } = useConsoleSession();
   const [open, setOpen] = useState(false);
-  const [stepIndex, setStepIndex] = useState(0);
-  const [name, setName] = useState("");
-  const [applicationType, setApplicationType] = useState<ApplicationType | null>(null);
-  const [appleTeamId, setAppleTeamId] = useState("");
-  const [appleBundleId, setAppleBundleId] = useState("");
-  const [environments, setEnvironments] = useState<AppAttestEnvironment[] | undefined>(undefined);
-  const [userSource, setUserSource] = useState<UserSource | null>(null);
-  const [issuer, setIssuer] = useState<IssuerPreset>(ISSUER_PRESETS[0]!);
-  const [issuerValues, setIssuerValues] = useState<Record<string, string>>({});
-  const [entitlement, setEntitlement] = useState<EntitlementPreset>(ENTITLEMENT_NONE);
-  const [entitlementValues, setEntitlementValues] = useState<Record<string, string>>({});
   const [createdKey, setCreatedKey] = useState<CreatedApiKey | null>(null);
   const [createdAppId, setCreatedAppId] = useState("");
   const [keyOpen, setKeyOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
-  const createApp = useCreateApp();
 
-  /*
-   * The steps this application actually needs. App identity exists only for
-   * an iOS app: the gateway verifies every attestation against the team and
-   * bundle id and has nothing to verify without them, whereas a server app is
-   * identified by its key. The identity provider and the subscription check
-   * both read the sign-in token, so they appear only once sign-in is chosen.
-   */
-  const steps = useMemo<Step[]>(() => {
-    const list = [STEPS.basics];
-    if (applicationType === "ios") list.push(STEPS.app_identity);
-    list.push(STEPS.users);
-    if (userSource === "issuer") list.push(STEPS.identity_provider, STEPS.subscription);
-    return list;
-  }, [applicationType, userSource]);
-  const step = steps[Math.min(stepIndex, steps.length - 1)]!;
-  const last = stepIndex >= steps.length - 1;
-
-  const issuerFragment = useMemo(() => buildIssuer(issuer, issuerValues), [issuer, issuerValues]);
-
-  // What the save would say about the two ids, from the schema that judges it.
-  // Empty fields are simply unfinished, so they disable the step without an
-  // error beside a field nobody has typed into yet.
-  const appleIdentity = appleIdentityProblem({
-    team_id: appleTeamId.trim(),
-    bundle_id: appleBundleId.trim(),
-  });
-  const appleIdentityShown =
-    appleTeamId.trim().length > 0 && appleBundleId.trim().length > 0 ? appleIdentity : null;
-
-  // What the gateway would say about the configuration as it stands, read one
-  // section at a time: a step is judged on the fields under its own path, not
-  // held back by a step the person has not reached yet.
-  const issues = appConfigIssues(newAppConfig(newAppInput()));
-  const clearUnder = (path: readonly string[], except?: readonly string[]) =>
-    !issues.some((issue) => issueUnder(issue, path) && !(except && issueUnder(issue, except)));
-  const issuerComplete =
-    presetInputsComplete(issuer, issuerValues) && clearUnder(ISSUER_PATH, CLAIMS_PATH);
-
-  const stepComplete = (() => {
-    switch (step.id) {
-      case "basics":
-        return name.trim().length > 0 && applicationType !== null;
-      case "app_identity":
-        return appleIdentity === null;
-      case "users":
-        return userSource !== null;
-      case "identity_provider":
-        return issuerComplete;
-      case "subscription":
-        return presetInputsComplete(entitlement, entitlementValues) && clearUnder(CLAIMS_PATH);
-    }
-  })();
-
-  const resetForm = () => {
-    setStepIndex(0);
-    setName("");
-    setApplicationType(null);
-    setAppleTeamId("");
-    setAppleBundleId("");
-    setEnvironments(undefined);
-    setUserSource(null);
-    setIssuer(ISSUER_PRESETS[0]!);
-    setIssuerValues({});
-    setEntitlement(ENTITLEMENT_NONE);
-    setEntitlementValues({});
-  };
-
-  const handleOpenChange = (nextOpen: boolean) => {
-    if (nextOpen) resetForm();
-    setOpen(nextOpen);
-  };
-
-  const chooseType = (next: ApplicationType) => {
-    if (next === applicationType) return;
-    setApplicationType(next);
-    // The user choices differ per type, so a choice made for the other type
-    // could name a source this one cannot have.
-    setUserSource(null);
-  };
-
-  /**
-   * Everything the wizard asked, in the vocabulary a new configuration takes.
-   * What that becomes — the open proxy policy, the starting rate limits — is
-   * {@link newAppConfig}'s answer, and the same one `agw app add` gets.
-   */
-  function newAppInput(): NewAppInput {
-    const signIn = userSource === "issuer"
-      ? {
-          source: "issuer" as const,
-          issuer: {
-            provider: issuer.id,
-            jwks_url: issuerFragment.jwks_url,
-            issuer: issuerFragment.issuer,
-            audience: issuerFragment.audience,
-            user_id_claim: issuerFragment.user_id_claim,
-            required_claims: buildEntitlement(entitlement, entitlementValues),
-            max_token_lifetime_seconds: 86400,
-            // Named so the Auth policy page can reopen the same form, and
-            // absent rather than "none" when there is no check to reopen.
-            ...(entitlement.id === "none" ? {} : { entitlement: entitlement.id }),
-          },
-        }
-      : undefined;
-
-    if (applicationType === "ios") {
-      return {
-        type: "apple_app_attest",
-        teamId: appleTeamId.trim(),
-        bundleId: appleBundleId.trim(),
-        // Production only is the gateway's own default, so it is not written.
-        ...(environments?.includes("development") ? { environments } : {}),
-        // Without sign-in the attested install is the user.
-        ...(signIn ? { endUser: signIn } : {}),
-      };
-    }
-    if (signIn) return { type: "api_key", endUser: signIn };
-    if (userSource === "header") {
-      return { type: "api_key", endUser: { source: "header", header: DEFAULT_END_USER_HEADER } };
-    }
-    return { type: "api_key" };
-  }
-
-  const create = async () => {
-    if (!applicationType) return;
-    try {
-      const result = await createApp.mutateAsync({
-        name: name.trim(),
-        config: newAppConfig(newAppInput()),
-        status: "active",
-      });
-
-      setOpen(false);
-      if (applicationType === "server") {
-        if (!result.api_key) throw new Error("The app was created without its initial API key");
-        setCreatedAppId(result.app.id);
-        setCreatedKey(result.api_key);
-        setCopied(false);
-        setKeyOpen(true);
-        return;
-      }
-
+  const created = (result: CreatedApp, type: ApplicationType) => {
+    setOpen(false);
+    if (type === "ios") {
       toast.success(`Created ${result.app.id}`);
       navigate(`/apps/${result.app.id}/proxy`);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create the app");
-    }
-  };
-
-  /*
-   * Someone who chose sign-in and then finds they do not have the provider's
-   * details should not be stuck. This changes the answer to the one that needs
-   * nothing and returns to the question, so the new answer is seen before the
-   * app is created rather than applied silently.
-   */
-  const deferSignIn = () => {
-    setUserSource(applicationType === "ios" ? "app_install" : "none");
-    setStepIndex(steps.findIndex((entry) => entry.id === "users"));
-  };
-
-  const advance = () => {
-    if (last) {
-      void create();
       return;
     }
-    setStepIndex((current) => current + 1);
+    if (!result.api_key) {
+      toast.error("The app was created without its initial API key");
+      return;
+    }
+    setCreatedAppId(result.app.id);
+    setCreatedKey(result.api_key);
+    setCopied(false);
+    setKeyOpen(true);
   };
 
   const copyKey = async () => {
@@ -321,7 +182,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
 
   return (
     <>
-      <Dialog open={open} onOpenChange={handleOpenChange}>
+      <Dialog open={open} onOpenChange={setOpen}>
         <DialogTrigger asChild>
           {trigger ?? (
             <GuardedButton size="sm">
@@ -334,202 +195,8 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
           <DialogHeader>
             <DialogTitle>Create a new application</DialogTitle>
           </DialogHeader>
-
-          <DialogBody className="space-y-6">
-            {step.subtitle ? (
-              <div className="space-y-1.5">
-                <h3 className="text-base font-semibold">{step.subtitle}</h3>
-                {step.text ? (
-                  <p className="text-sm text-pretty text-muted-foreground">{step.text}</p>
-                ) : null}
-              </div>
-            ) : null}
-
-            {step.id === "basics" ? (
-              <>
-                <div className="space-y-2.5">
-                  <Label htmlFor="app-name">Application name</Label>
-                  <Input
-                    id="app-name"
-                    value={name}
-                    placeholder="Calorie Tracker"
-                    maxLength={100}
-                    autoFocus
-                    onChange={(event) => setName(event.target.value)}
-                  />
-                </div>
-
-                <fieldset className="space-y-3">
-                  <legend className="text-sm font-medium">Application type</legend>
-                  <div className="grid gap-4 sm:grid-cols-2" role="radiogroup">
-                    {TYPE_OPTIONS.map((option) => {
-                      const Icon = option.icon;
-                      const selected = applicationType === option.id;
-                      return (
-                        <button
-                          key={option.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={selected}
-                          className={cn(
-                            "group min-h-32 rounded-xl bg-background p-5 text-left shadow-sm ring-1 ring-border transition-[box-shadow,background-color] hover:bg-muted/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                            selected && "bg-primary/[0.04] shadow-md ring-2 ring-primary",
-                          )}
-                          onClick={() => chooseType(option.id)}
-                        >
-                          <span
-                            className={cn(
-                              "mb-3 flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-[background-color,color]",
-                              selected && "bg-primary text-primary-foreground",
-                            )}
-                          >
-                            <Icon className="size-5" />
-                          </span>
-                          <span className="block text-sm font-semibold">{option.label}</span>
-                          <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                            {option.description}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </fieldset>
-              </>
-            ) : null}
-
-            {step.id === "app_identity" ? (
-              <div className="space-y-6">
-                <div className="grid gap-5 sm:grid-cols-2">
-                  <div className="space-y-2.5">
-                    <Label htmlFor="apple-team-id">Apple Team ID</Label>
-                    <Input
-                      id="apple-team-id"
-                      value={appleTeamId}
-                      placeholder="ABCDE12345"
-                      className="font-mono text-xs"
-                      autoFocus
-                      onChange={(event) => setAppleTeamId(event.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      In your Apple Developer account under{" "}
-                      <ExternalHint href="https://developer.apple.com/account#MembershipDetailsCard">
-                        Membership details
-                      </ExternalHint>
-                      .
-                    </p>
-                  </div>
-                  <div className="space-y-2.5">
-                    <Label htmlFor="apple-bundle-id">Bundle ID</Label>
-                    <Input
-                      id="apple-bundle-id"
-                      value={appleBundleId}
-                      placeholder="com.example.calorietracker"
-                      className="font-mono text-xs"
-                      onChange={(event) => setAppleBundleId(event.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      In Xcode, on your target&apos;s{" "}
-                      <ExternalHint href="https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target#Set-the-bundle-ID">
-                        Signing &amp; Capabilities
-                      </ExternalHint>{" "}
-                      tab.
-                    </p>
-                  </div>
-                </div>
-                {appleIdentityShown ? (
-                  <p role="alert" className="text-xs text-destructive">
-                    {appleIdentityShown}
-                  </p>
-                ) : null}
-                <AppAttestEnvironments value={environments} onChange={setEnvironments} compact />
-              </div>
-            ) : null}
-
-            {step.id === "users" ? (
-              <ChoiceList
-                label="User authentication"
-                choices={applicationType === "ios" ? IOS_USER_CHOICES : SERVER_USER_CHOICES}
-                value={userSource}
-                onChange={setUserSource}
-              />
-            ) : null}
-
-            {step.id === "identity_provider" ? (
-              <>
-                <PresetPicker
-                  idPrefix="issuer"
-                  label="Identity provider"
-                  presets={ISSUER_PRESETS}
-                  selected={issuer}
-                  values={issuerValues}
-                  compact
-                  onSelect={(preset) => {
-                    setIssuer(preset);
-                    setIssuerValues({});
-                  }}
-                  onValueChange={(key, value) =>
-                    setIssuerValues((current) => ({ ...current, [key]: value }))
-                  }
-                />
-                <p className="text-sm text-muted-foreground">
-                  Don&apos;t have these details yet?{" "}
-                  <button
-                    type="button"
-                    className="font-medium text-primary-ink underline decoration-primary-ink/40 underline-offset-4 transition-colors hover:decoration-primary-ink"
-                    onClick={deferSignIn}
-                  >
-                    {applicationType === "ios"
-                      ? "Allow unauthenticated users for now"
-                      : "Continue without user identity for now"}
-                  </button>{" "}
-                  and set this up later.
-                </p>
-              </>
-            ) : null}
-
-            {step.id === "subscription" ? (
-              <PresetPicker
-                idPrefix="entitlement"
-                label={ENTITLEMENT_FIELD_LABEL}
-                presets={ENTITLEMENT_PRESETS}
-                selected={entitlement}
-                values={entitlementValues}
-                compact
-                onSelect={(preset) => {
-                  setEntitlement(preset);
-                  setEntitlementValues({});
-                }}
-                onValueChange={(key, value) =>
-                  setEntitlementValues((current) => ({ ...current, [key]: value }))
-                }
-              />
-            ) : null}
-          </DialogBody>
-
-          <DialogFooter className="items-center sm:justify-between">
-            {stepIndex > 0 ? (
-              <Button
-                variant="ghost"
-                onClick={() => setStepIndex((current) => current - 1)}
-                disabled={createApp.isPending}
-              >
-                <ArrowLeft className="size-4" />
-                Back
-              </Button>
-            ) : (
-              <Button variant="outline" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-            )}
-            <StepDots steps={steps} current={stepIndex} onSelect={setStepIndex} />
-            <Button
-              disabled={!stepComplete || createApp.isPending}
-              onClick={advance}
-            >
-              {createApp.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
-              {last ? "Create app" : "Next"}
-            </Button>
-          </DialogFooter>
+          {/* Mounted with the dialog's content, so every opening starts afresh. */}
+          <NewAppSteps onCancel={() => setOpen(false)} onCreated={created} />
         </DialogContent>
       </Dialog>
 
@@ -592,6 +259,249 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  );
+}
+
+/**
+ * The wizard's steps over one draft, held in the editor's own reducer and
+ * moved by the editor's own transitions: each step is the Auth policy page's
+ * form for the same question, and is judged by the schema's issues under its
+ * path. What the wizard adds is only which questions have been answered — a
+ * type and a user source are always present in a draft, but here they are
+ * choices the person has to make.
+ */
+function NewAppSteps({
+  onCancel,
+  onCreated,
+}: {
+  onCancel: () => void;
+  onCreated: (result: CreatedApp, type: ApplicationType) => void;
+}) {
+  const [session, dispatch] = useReducer(reduceWizard, NEW_APP, openWizard);
+  const edit = useDraftTransitions(NEW_APP, dispatch);
+  const [typeChosen, setTypeChosen] = useState(false);
+  const [sourceChosen, setSourceChosen] = useState(false);
+  // The iOS identity typed before the type was switched away, so switching
+  // back does not ask for the team and bundle id again.
+  const [appleIdentity, setAppleIdentity] = useState<AppleIdentity | undefined>(undefined);
+  const [stepIndex, setStepIndex] = useState(0);
+  const createApp = useCreateApp();
+
+  const draft = session.draft;
+  const authentication = draft.config.authentication;
+  const issuer = authIssuer(authentication);
+  const issues = useMemo(() => draftIssues(draft), [draft]);
+  const applicationType: ApplicationType | null = typeChosen
+    ? authentication.type === "apple_app_attest" ? "ios" : "server"
+    : null;
+
+  /*
+   * The steps this application actually needs. App identity exists only for
+   * an iOS app: the gateway verifies every attestation against the team and
+   * bundle id and has nothing to verify without them, whereas a server app is
+   * identified by its key. The identity provider and the subscription check
+   * both read the sign-in token, so they appear only once sign-in is chosen.
+   */
+  const steps: Step[] = [STEPS.basics];
+  if (applicationType === "ios") steps.push(STEPS.app_identity);
+  steps.push(STEPS.users);
+  if (sourceChosen && issuer) steps.push(STEPS.identity_provider, STEPS.subscription);
+  const step = steps[Math.min(stepIndex, steps.length - 1)]!;
+  const last = stepIndex >= steps.length - 1;
+
+  // A step is judged on the schema's issues under its own path, not held back
+  // by a step the person has not reached yet.
+  const stepComplete = (() => {
+    switch (step.id) {
+      case "basics":
+        return draft.name.trim().length > 0 && applicationType !== null;
+      case "app_identity":
+        return clearUnder(issues, DRAFT_PATHS.appAttest);
+      case "users":
+        return sourceChosen && clearUnder(issues, DRAFT_PATHS.header);
+      case "identity_provider": {
+        if (!issuer) return false;
+        // The preset's own inputs are asked about too: Supabase builds URLs the
+        // schema accepts even from an empty project ref.
+        const { preset, values } = matchIssuerPreset(issuer);
+        return presetInputsComplete(preset, values)
+          && clearUnder(issues, DRAFT_PATHS.issuer, DRAFT_PATHS.claims);
+      }
+      case "subscription":
+        return clearUnder(issues, DRAFT_PATHS.claims);
+    }
+  })();
+
+  const chooseType = (next: ApplicationType) => {
+    if (next === applicationType) return;
+    // A new type is a new configuration. The user choices differ per type, so
+    // a choice made for the other type could name a source this one cannot have.
+    if (authentication.type === "apple_app_attest") setAppleIdentity(authentication.app_attest);
+    edit.update({ config: newConfig(next, appleIdentity) });
+    setTypeChosen(true);
+    setSourceChosen(false);
+  };
+
+  const chooseSource = (source: EndUserIdentity["source"]) => {
+    edit.setEndUserSource(source);
+    setSourceChosen(true);
+  };
+
+  const create = async () => {
+    if (!applicationType) return;
+    try {
+      onCreated(await createApp.mutateAsync(draft), applicationType);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create the app");
+    }
+  };
+
+  /*
+   * Someone who chose sign-in and then finds they do not have the provider's
+   * details should not be stuck. This changes the answer to the one that needs
+   * nothing and returns to the question, so the new answer is seen before the
+   * app is created rather than applied silently.
+   */
+  const deferSignIn = () => {
+    chooseSource(authentication.type === "apple_app_attest" ? "app_install" : "none");
+    setStepIndex(steps.findIndex((entry) => entry.id === "users"));
+  };
+
+  const advance = () => {
+    if (last) {
+      void create();
+      return;
+    }
+    setStepIndex((current) => current + 1);
+  };
+
+  return (
+    <>
+      <DialogBody className="space-y-6">
+        {step.subtitle ? (
+          <div className="space-y-1.5">
+            <h3 className="text-base font-semibold">{step.subtitle}</h3>
+            {step.text ? (
+              <p className="text-sm text-pretty text-muted-foreground">{step.text}</p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {step.id === "basics" ? (
+          <>
+            <div className="space-y-2.5">
+              <Label htmlFor="app-name">Application name</Label>
+              <Input
+                id="app-name"
+                value={draft.name}
+                placeholder="Calorie Tracker"
+                maxLength={100}
+                autoFocus
+                onChange={(event) => edit.update({ name: event.target.value })}
+              />
+            </div>
+
+            <fieldset className="space-y-3">
+              <legend className="text-sm font-medium">Application type</legend>
+              <div className="grid gap-4 sm:grid-cols-2" role="radiogroup">
+                {TYPE_OPTIONS.map((option) => {
+                  const Icon = option.icon;
+                  const selected = applicationType === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={cn(
+                        "group min-h-32 rounded-xl bg-background p-5 text-left shadow-sm ring-1 ring-border transition-[box-shadow,background-color] hover:bg-muted/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selected && "bg-primary/[0.04] shadow-md ring-2 ring-primary",
+                      )}
+                      onClick={() => chooseType(option.id)}
+                    >
+                      <span
+                        className={cn(
+                          "mb-3 flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-[background-color,color]",
+                          selected && "bg-primary text-primary-foreground",
+                        )}
+                      >
+                        <Icon className="size-5" />
+                      </span>
+                      <span className="block text-sm font-semibold">{option.label}</span>
+                      <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                        {option.description}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+          </>
+        ) : null}
+
+        {step.id === "app_identity" && authentication.type === "apple_app_attest" ? (
+          <AppIdentity authentication={authentication} state={edit} issues={issues} compact />
+        ) : null}
+
+        {step.id === "users" ? (
+          <UserAuthentication
+            authentication={authentication}
+            state={{ ...edit, setEndUserSource: chooseSource }}
+            issues={issues}
+            compact
+            unanswered={!sourceChosen}
+          />
+        ) : null}
+
+        {step.id === "identity_provider" && issuer ? (
+          <>
+            <IdentityProviderFields issuer={issuer} onChange={edit.updateIssuer} />
+            <p className="text-sm text-muted-foreground">
+              Don&apos;t have these details yet?{" "}
+              <button
+                type="button"
+                className="font-medium text-primary-ink underline decoration-primary-ink/40 underline-offset-4 transition-colors hover:decoration-primary-ink"
+                onClick={deferSignIn}
+              >
+                {applicationType === "ios"
+                  ? "Allow unauthenticated users for now"
+                  : "Continue without user identity for now"}
+              </button>{" "}
+              and set this up later.
+            </p>
+          </>
+        ) : null}
+
+        {step.id === "subscription" && issuer ? (
+          <SubscriptionCheck issuer={issuer} state={edit} compact />
+        ) : null}
+      </DialogBody>
+
+      <DialogFooter className="items-center sm:justify-between">
+        {stepIndex > 0 ? (
+          <Button
+            variant="ghost"
+            onClick={() => setStepIndex((current) => current - 1)}
+            disabled={createApp.isPending}
+          >
+            <ArrowLeft className="size-4" />
+            Back
+          </Button>
+        ) : (
+          <Button variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+        <StepDots steps={steps} current={stepIndex} onSelect={setStepIndex} />
+        <Button
+          disabled={!stepComplete || createApp.isPending}
+          onClick={advance}
+        >
+          {createApp.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+          {last ? "Create app" : "Next"}
+        </Button>
+      </DialogFooter>
     </>
   );
 }

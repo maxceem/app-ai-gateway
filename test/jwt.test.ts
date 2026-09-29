@@ -1,26 +1,25 @@
 import { SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { issueGatewayToken, verifyGatewayToken } from "../src/core/jwt";
+import { issueGatewayToken, verifyGatewayToken } from "../src/client-auth/gateway-token";
 
 afterEach(() => vi.restoreAllMocks());
 
-const secret = "legacy-gateway-secret-with-at-least-32-bytes";
+const secret = "method-gateway-secret-with-at-least-32-bytes";
 
 describe("gateway JWT auth method", () => {
-  it("treats a legacy token without auth_method as attested", async () => {
+  it("refuses a token that does not name how it was obtained", async () => {
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ app: "legacy-app" })
+    const token = await new SignJWT({ app: "method-app" })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-      .setSubject("legacy-user")
-      .setJti("legacy-jti")
+      .setSubject("method-user")
+      .setJti("method-jti")
       .setIssuedAt(now)
       .setExpirationTime(now + 300)
       .sign(new TextEncoder().encode(secret));
 
-    await expect(verifyGatewayToken(token, secret, "legacy-app")).resolves.toMatchObject({
-      userId: "legacy-user",
-      authMethod: "attest",
-      credentialType: "gateway_token",
+    await expect(verifyGatewayToken(token, secret, "method-app")).rejects.toMatchObject({
+      status: 401,
+      code: "auth_required",
     });
   });
 });
@@ -35,7 +34,11 @@ describe("the imported HMAC key", () => {
 
   it("imports once per secret, whatever it then signs and verifies", async () => {
     const importKey = vi.spyOn(crypto.subtle, "importKey");
-    const { token } = await issueGatewayToken(secretOne, "key-cache-app", "user-1", "attest", 300);
+    const { token } = await issueGatewayToken(secretOne, {
+      appId: "key-cache-app",
+      userId: "user-1",
+      authMethod: "attest",
+    });
     expect(importKey).toHaveBeenCalledTimes(1);
 
     // A token signed with the cached key still verifies, twice over, and the
@@ -51,7 +54,11 @@ describe("the imported HMAC key", () => {
 
     // Another secret is another key, and a token signed with it is not this
     // application's: the cache never makes one secret answer for another.
-    const other = await issueGatewayToken(secretTwo, "key-cache-app", "user-2", "attest", 300);
+    const other = await issueGatewayToken(secretTwo, {
+      appId: "key-cache-app",
+      userId: "user-2",
+      authMethod: "attest",
+    });
     expect(importKey).toHaveBeenCalledTimes(2);
     await expect(verifyGatewayToken(other.token, secretOne, "key-cache-app"))
       .rejects.toMatchObject({ status: 401, code: "auth_required" });

@@ -1,18 +1,13 @@
-import { invalidateAccountLifecycle } from "../core/account-lifecycle";
-import {
-  invalidateBillingRequestAccess,
-  type BillingRequestCache,
-} from "../billing/gateway";
-import { resolveBillingQuota } from "../billing/quota";
-import { hasAppLevelLimits, hasUserLevelLimits } from "../core/config";
-import { monthlyBudgetMicrousd } from "../shared/app-config";
+import { requireActiveBilling, type BillingRequestCache } from "../billing/gateway";
+import { billingQuota } from "../billing/quota";
+import { monthlyBudgetMicrousd, hasAppLevelLimits, hasUserLevelLimits } from "../shared/app-config";
 import { GatewayError } from "../core/errors";
-import { ttlCache } from "../core/ttl-cache";
-import { recordBlockedUsageEvent } from "../core/usage-record";
+import { cachedAppUserBlocked } from "../client-auth/user-status";
+import { recordRejectionEvent } from "../diagnostics/rejection-events";
 import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { AppRecord, GatewayIdentity } from "../core/types";
-import type { UsageStatus } from "../db/schema";
+import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
 import { attemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
 
@@ -57,59 +52,6 @@ import type { Deployment } from "../policy/deployment";
  * whose allowance is monthly.
  */
 
-const BLOCK_CACHE_TTL_MS = 10_000;
-
-/**
- * The cached block flag, and the answer only for applications that set no
- * per-user limits. Where per-user limits exist the gate calls the very same
- * Durable Object a moment later, and that call checks the flag itself, before
- * anything is counted — so reading it separately would be a second round trip
- * to one object for an answer the first one already carries. The cached read is
- * kept for the apps that make no such call, where it is the whole of what the
- * gate would otherwise pay: it is almost always `false`, and changes only when
- * an operator acts, so it is worth far less than a round trip per request.
- *
- * Keys are `app:user` pairs the gateway has already authenticated, but an app
- * with many users still produces many of them, so the map is bounded and evicts
- * insertion-oldest first.
- *
- * The isolate that serves a block clears its own entry
- * ({@link invalidateBlockedCache}); every other isolate converges within the
- * TTL. Token exchange reads `app_user` in D1 and is not affected by this cache.
- *
- * Exported for the tests that clear it on its own; nothing in the Worker reads
- * it but this file.
- */
-export const blockedUserCache = ttlCache<string, boolean>({
-  name: "blocked-user",
-  ttlMs: BLOCK_CACHE_TTL_MS,
-  maxEntries: 50_000,
-});
-
-export function invalidateBlockedCache(appId: string, userId: string): void {
-  blockedUserCache.delete(`${appId}:${userId}`);
-}
-
-async function isUserBlocked(env: Env, name: string): Promise<boolean> {
-  const cached = blockedUserCache.get(name);
-  if (cached !== undefined) return cached;
-  const blocked = await env.USER_LIMITER.getByName(name).isBlocked();
-  blockedUserCache.set(name, blocked);
-  return blocked;
-}
-
-async function monthlyRequestAllowance(
-  deployment: Deployment,
-  env: Env,
-  organizationId: string,
-  cache: BillingRequestCache,
-): Promise<Awaited<ReturnType<typeof resolveBillingQuota>> | undefined> {
-  // No billing service means self-hosted, which is unlimited and must never
-  // depend on a hosted plan lookup that cannot happen.
-  if (deployment.mode === "self_hosted") return undefined;
-  return resolveBillingQuota(deployment, env, organizationId, cache);
-}
-
 /** What admitting one prepared request needs to know, and where to leave its diagnostics. */
 export interface AdmissionInput {
   env: Env;
@@ -136,18 +78,19 @@ export async function admitRequest(
   const firstAttempt = plan.attempts[0];
 
   const blockedEvent = (
-    status: Extract<UsageStatus, `blocked_${string}`>,
+    reason: RejectionReason,
+    scope: RejectionScope,
     latencyMs: number,
   ) =>
     input.waitUntil(
-      recordBlockedUsageEvent({
-        organizationId: app.organizationId,
+      recordRejectionEvent({
         env,
         identity,
         attribution: attemptAttribution(firstAttempt),
         endpointSlug: plan.endpointSlug,
         appVersion: input.appVersion,
-        status,
+        reason,
+        scope,
         latencyMs: Math.round(latencyMs),
       }),
     );
@@ -165,21 +108,11 @@ export async function admitRequest(
     now: number,
   ): never => {
     const durationMs = finish();
-    if (result.reason === "blocked") {
-      // Where an app sets per-user limits this is how a blocked user is
-      // answered at all: the gate skipped the cached read precisely because
-      // this check reports the block itself, and it reports it before counting
-      // anything, so nothing has been spent. The answer is the same as the
-      // cached path's and never an app_* code: being blocked is not a limit
-      // the organization set.
-      blockedEvent("blocked_user", durationMs);
-      throw new GatewayError(403, "auth_required", "User is blocked");
-    }
     if (result.reason === "budget") {
       // A budget settles from completed requests, so it has no instant of its
       // own to retry after; the month it is measured over is the honest one.
       const retryAfter = Math.max(1, Math.ceil((nextUtcMonthStart(now) - now) / 1000));
-      blockedEvent("blocked_app_budget", durationMs);
+      blockedEvent("blocked_app_budget", scope, durationMs);
       throw new GatewayError(
         429,
         "app_budget_exhausted",
@@ -188,7 +121,7 @@ export async function admitRequest(
         { data: { scope } },
       );
     }
-    blockedEvent("blocked_app_rate", durationMs);
+    blockedEvent("blocked_app_rate", scope, durationMs);
     throw new GatewayError(
       429,
       "app_rate_limited",
@@ -199,7 +132,7 @@ export async function admitRequest(
   };
 
   /*
-   * The block flag and the allowance are independent reads, so they are started
+   * The D1 block status and the allowance are independent reads, so they are started
    * together rather than one after the other. `allSettled` is what makes that
    * safe: both settle before anything is decided, so the loser of the race is
    * never an unhandled rejection, and the decision order below is fixed
@@ -208,44 +141,31 @@ export async function admitRequest(
    * Only the allowance *read* overlaps the block check. Claiming it cannot,
    * because it must not happen at all if an app limit refuses first.
    *
-   * A self-hosted deployment pays nothing for this: `monthlyRequestAllowance`
-   * returns without awaiting anything when there is no billing binding. In a
+   * A self-hosted deployment pays nothing for this: `billingQuota` answers
+   * `unmetered` without reading anything when there is no billing binding. In a
    * hosted one a warm isolate answers the plan out of its own TTL cache, so
    * this is not an RPC per request either.
    */
   const [blockedResult, allowanceResult] = await Promise.allSettled([
-    /*
-     * Two reasons to skip the read. Blocking names a user, so an application
-     * that identifies none has nobody to block and the flag is skipped rather
-     * than aimed at a stand-in identity. And an application with per-user
-     * limits reaches the very same Durable Object below, whose own check is
-     * atomic and reports a block before it counts anything — asking here as
-     * well would be a second round trip for an answer that call already
-     * carries. What that ordering protected is protected either way: the
-     * per-user check runs before the app-wide one, so a blocked user still
-     * drains nothing of the window their app shares.
-     */
-    identity.userId === null || hasUserLevelLimits(app.config)
+    // A userless request has no identified person whose status to read.
+    identity.userId === null
       ? Promise.resolve(false)
-      : isUserBlocked(env, `${identity.appId}:${identity.userId}`),
-    monthlyRequestAllowance(input.deployment, env, app.organizationId, input.billingCache),
+      : cachedAppUserBlocked(env.DB, identity.appId, identity.userId),
+    billingQuota(input.deployment, env, app.organizationId, input.billingCache),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
   if (blockedResult.value) {
-    // First, and before any limit is consulted: for the apps that get here the
-    // cached flag costs nothing, and answering from it is what stops a blocked
-    // user from spending an app rate token on every attempt. An app with
-    // per-user limits never reaches this branch; it is answered below instead.
+    // Before any limit is consulted, so a blocked user spends no app token.
     const durationMs = finish();
-    blockedEvent("blocked_user", durationMs);
+    blockedEvent("blocked_user", "user", durationMs);
     throw new GatewayError(403, "auth_required", "User is blocked");
   }
 
   /*
    * The app's own limits. Each scope is consulted only when it is configured,
-   * so an app that sets none makes exactly the Durable Object calls it made
-   * before the feature existed: the cached block flag, and nothing else.
+   * so an app that sets none makes no limiter Durable Object calls. Its user
+   * status is still read from the bounded D1 cache above.
    *
    * Per-user before per-app, so that one caller over their own limit cannot
    * drain the window every other user shares. The reverse leak is the harmless
@@ -264,6 +184,7 @@ export async function admitRequest(
         rpm: app.config.limits.per_user.requests.per_minute,
         rpd: app.config.limits.per_user.requests.per_day,
         monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_user),
+        spend: { appId: identity.appId, userKey: identity.userId },
       });
     if (!result.allowed) refuseByAppLimits(result, "user", now);
   }
@@ -273,6 +194,7 @@ export async function admitRequest(
       rpm: app.config.limits.per_app.requests.per_minute,
       rpd: app.config.limits.per_app.requests.per_day,
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
+      spend: { appId: identity.appId, userKey: null },
     });
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }
@@ -282,75 +204,36 @@ export async function admitRequest(
   // depend on what the organization is allowed to spend.
   if (allowanceResult.status === "rejected") throw allowanceResult.reason;
 
-  let resolvedQuota = allowanceResult.value;
-  if (resolvedQuota === undefined) {
-    // Self-hosted: no coordination object is touched at all, so this
-    // deployment pays nothing for a quota it does not have.
-    return finish();
-  }
+  const quota = allowanceResult.value;
+  // Billing that cannot be read, or an organization no plan resolves for, is
+  // refused here rather than served uncounted.
+  requireActiveBilling(quota.access);
+  // Self-hosted, or a plan with no monthly limit: no coordination object is
+  // touched at all, so neither pays for a count nothing enforces.
+  if (quota.kind === "unmetered") return finish();
 
-  const quota = env.ORG_QUOTA.getByName(app.organizationId);
-  const claim = async (
-    resolved: NonNullable<typeof resolvedQuota>,
-    retry: boolean,
-  ): Promise<
-    | { kind: "unlimited" }
-    | { kind: "admission"; value: Exclude<Awaited<ReturnType<typeof quota.admit>>, { superseded: true }> }
-  > => {
-    const periodInput = { ...resolved.period };
-    if (resolved.limit === undefined) {
-      // Hosted unlimited plans still observe revisions to reject stale downgrades.
-      const observation = await quota.usage(periodInput);
-      if (!("superseded" in observation && observation.superseded)) {
-        return { kind: "unlimited" };
-      }
-    } else {
-      const admission = await quota.admit({ ...periodInput, limit: resolved.limit });
-      if (!("superseded" in admission)) {
-        return { kind: "admission", value: admission };
-      }
-    }
-    if (retry) {
-      // Re-resolve from nothing this isolate already believed. Only billing can
-      // supersede a schedule today, but the resolver reads the lifecycle row
-      // too, and a retry that kept a cached copy of one of its two inputs would
-      // be a retry that could return the same superseded answer.
-      invalidateAccountLifecycle(app.organizationId);
-      invalidateBillingRequestAccess(app.organizationId, input.billingCache);
-      const refreshed = await resolveBillingQuota(
-        input.deployment,
-        env,
-        app.organizationId,
-        input.billingCache,
-      );
-      return claim(refreshed, false);
-    }
-    throw new GatewayError(
-      503,
-      "billing_unavailable",
-      "Billing changed while this request was being checked; retry the request",
-      { "Retry-After": "1" },
-    );
-  };
-  const claimResult = await claim(resolvedQuota, true);
+  const { period } = quota;
+  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
+    periodId: period.periodId,
+    periodEnd: period.periodEnd,
+    limit: quota.limit,
+  });
   const durationMs = finish();
-  if (claimResult.kind === "unlimited") return durationMs;
-  const admission = claimResult.value;
   if (!admission.allowed) {
-    blockedEvent("blocked_billing", durationMs);
+    blockedEvent("blocked_billing", "account", durationMs);
     throw new GatewayError(
       429,
       "billing_request_quota_exceeded",
-      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${admission.resetAt}`,
+      `The plan's monthly request allowance of ${admission.limit} is exhausted until ${period.resetAt}`,
       { "Retry-After": String(admission.retryAfterSeconds) },
       {
         data: {
           limit: admission.limit,
           used: admission.used,
-          periodId: admission.periodId,
-          periodStart: admission.periodStart,
-          periodEnd: admission.periodEnd,
-          resetAt: admission.resetAt,
+          periodId: period.periodId,
+          periodStart: period.periodStart,
+          periodEnd: period.periodEnd,
+          resetAt: period.resetAt,
         },
       },
     );

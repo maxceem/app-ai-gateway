@@ -11,27 +11,22 @@ import {
 import { currentMonth } from "../../management/usage-queries";
 import type { AdminVariables } from "../../middleware/admin";
 import { adminRouter } from "../catalog-router";
-import { jsonBody, managementScope, scopedApp } from "./body";
 
 export const appRoutes = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
 const routes = adminRouter(appRoutes);
 
-routes.handle("listApps", (c, { query }) =>
-  listApps(managementScope(c), c.get("actor"), query.month ?? currentMonth()));
+routes.handle("listApps", (_c, { scope, actor, query }) =>
+  listApps(scope, actor, query.month ?? currentMonth()));
 
-routes.handleReceipted("createApp", (c, { body, boundary }) =>
-  createApp(managementScope(c), c.get("actor"), body, boundary));
+routes.handle("createApp", (_c, { scope, actor, body }) => createApp(scope, actor, body));
 
-routes.handle("getApp", (c) => getApp(scopedApp(c)));
+routes.handle("getApp", (_c, { scope, actor, app }) => getApp(scope, actor, app));
 
-routes.handle("validateApp", async (c) =>
-  validateApp(managementScope(c), c.get("actor"), scopedApp(c), await jsonBody(c)));
+routes.handle("validateApp", (_c, { scope, actor, app, body }) => validateApp(scope, actor, app, body));
 
-routes.handle("validateAppDraft", async (c) =>
-  validateAppDraft(managementScope(c), c.get("actor"), await jsonBody(c)));
+routes.handle("validateAppDraft", (_c, { scope, actor, body }) => validateAppDraft(scope, actor, body));
 
-routes.handle("updateApp", async (c) =>
-  updateApp(managementScope(c), c.get("actor"), scopedApp(c), await jsonBody(c)));
+routes.handle("updateApp", (_c, { scope, actor, app, body }) => updateApp(scope, actor, app, body));
 
-routes.handle("deleteApp", (c, { query }) =>
-  deleteApp(managementScope(c), c.get("actor"), c.req.param("app"), query.confirm));
+routes.handle("deleteApp", (_c, { scope, actor, app, query }) =>
+  deleteApp(scope, actor, app, query.confirm));

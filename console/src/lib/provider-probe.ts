@@ -7,7 +7,7 @@
  * rather than beside any one of them.
  */
 
-import { PROVIDER_LABELS, type Provider } from "@/lib/config-types";
+import { providerLabel, type Provider } from "@/lib/config-types";
 import type { ProviderTestResult } from "@/lib/types";
 
 /**
@@ -46,7 +46,7 @@ export function testMessage(
   type: Provider,
   viaGateway: boolean,
 ): string {
-  const label = PROVIDER_LABELS[type];
+  const label = providerLabel(type);
   const responder = viaGateway ? "The gateway" : label;
   switch (result.reason) {
     case "no_probe":

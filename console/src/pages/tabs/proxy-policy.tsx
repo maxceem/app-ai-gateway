@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ArrowRight, CheckCircle2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
-import { DEFAULT_PROXY_API_STYLES } from "@shared/capabilities";
+import { DEFAULT_PROXY_API_STYLES, OUTPUT_CLAMP_STYLES } from "@shared/capabilities";
+import { emptyPolicy } from "@shared/app-defaults";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -19,8 +20,7 @@ import { EmptyState, Field, SectionHeader } from "@/components/field";
 import { StringList } from "@/components/string-list";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
-  CLAMP_STYLES,
-  emptyProvider,
+  gatewayLabel,
   instanceModels,
   normalizePath,
   pathObject,
@@ -28,9 +28,9 @@ import {
   selectedSlugs,
   type AllowedPathObject,
   type Provider,
-  type ProviderConfig,
+  type ProviderPolicy,
 } from "@/lib/config-types";
-import { API_STYLE_LABELS, gatewayApiSurface } from "@/lib/capabilities";
+import { API_STYLE_LABELS, routedSurface } from "@/lib/capabilities";
 import { usePrices, useProviderGateways, useProviderInstances } from "@/lib/queries";
 import type { ProviderCredential, ProviderGateway } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -38,49 +38,48 @@ import { cn } from "@/lib/utils";
 /**
  * What to put after the slug. The path is the provider's own, verbatim, and the
  * OpenAI-compatible batch disagrees about its prefix more than anything else
- * does — so each one says exactly where its chat completions live.
+ * does — so each one says exactly where its chat completions live. Nothing here
+ * says which gateways can carry a type: that is the route table's to answer,
+ * and a routed instance whose gateway narrows the paths gets its own hint.
  */
 const PROVIDER_HINTS: Record<Provider, string> = {
-  openai: "Forwarded with the leading v1/ stripped, matching Cloudflare's provider-native URL.",
-  anthropic: "Forwarded with the v1/ prefix retained.",
-  xai: "Routed to Cloudflare's grok slug; the tenant path stays /proxy/xai/...",
-  gemini: "Use the OpenAI-compatible path v1beta/openai/chat/completions.",
-  perplexity: "Routed to Cloudflare's perplexity-ai slug; use chat/completions for Sonar models.",
-  deepseek: "Direct only. DeepSeek's base URL has no v1/, so the path is chat/completions.",
-  groq: "Direct only. Groq namespaces its OpenAI API: use openai/v1/chat/completions.",
-  mistral: "Direct only. Use v1/chat/completions.",
-  together: "Direct only. Use v1/chat/completions; models are namespaced, e.g. openai/gpt-oss-120b.",
+  openai: "Use v1/responses or v1/chat/completions, as the OpenAI SDK does.",
+  anthropic: "Use v1/messages, as the Anthropic SDK does.",
+  xai: "Use v1/responses or v1/chat/completions.",
+  gemini: "Use the native v1beta/models/{model}:generateContent, or the OpenAI-compatible v1beta/openai/chat/completions.",
+  perplexity: "Use chat/completions for Sonar models.",
+  deepseek: "DeepSeek's base URL has no v1/, so the path is chat/completions.",
+  groq: "Groq namespaces its OpenAI API: use openai/v1/chat/completions.",
+  mistral: "Use v1/chat/completions.",
+  together: "Use v1/chat/completions; models are namespaced, e.g. openai/gpt-oss-120b.",
   fireworks:
-    "Direct only. Use inference/v1/chat/completions. Models are account-scoped (accounts/…/models/…), so price them under custom model pricing.",
-  cerebras: "Direct only. Use v1/chat/completions.",
-  moonshot: "Direct only. Use v1/chat/completions on the international api.moonshot.ai host.",
+    "Use inference/v1/chat/completions. Models are account-scoped (accounts/…/models/…), so price them under custom model pricing.",
+  cerebras: "Use v1/chat/completions.",
+  moonshot: "Use v1/chat/completions on the international api.moonshot.ai host.",
   huggingface:
-    "Direct only. Use v1/chat/completions on the Inference Providers router. Pin the upstream in the model ID (author/model:provider) — otherwise the router picks one and the price varies with it.",
-  baseten: "Direct only. Use v1/chat/completions on the Model APIs host.",
+    "Use v1/chat/completions on the Inference Providers router. Pin the upstream in the model ID (author/model:provider) — otherwise the router picks one and the price varies with it.",
+  baseten: "Use v1/chat/completions on the Model APIs host.",
   bytedance:
-    "Direct only. BytePlus ModelArk's version segment is already in the base URL: the path is chat/completions. Models must be activated in your ModelArk console first.",
+    "BytePlus ModelArk's version segment is already in the base URL: the path is chat/completions. Models must be activated in your ModelArk console first.",
   openrouter:
-    "Direct only, chat completions only. Models are OpenRouter slugs, e.g. google/gemini-3.6-flash, and need no local price: cost is reported by OpenRouter per request.",
+    "Chat completions only. Models are OpenRouter slugs, e.g. google/gemini-3.6-flash, and need no local price: cost is reported by OpenRouter per request.",
 };
 
 /**
- * What to put after the slug on a gateway-routed instance, which the gateway
- * decides rather than the provider: one URL space for every provider it serves,
- * and canonical model IDs whichever route they take. Derived from the capability
- * matrix, so it cannot drift from what the backend will actually accept.
+ * What to put after the slug on a gateway-routed instance whose gateway
+ * publishes a URL space of its own: the APIs it carries and where, and the
+ * model IDs clients send. Read off the capability the gateway reports on the
+ * instance, so it cannot drift from what the backend will actually accept.
  */
 function gatewayHint(instance: ProviderCredential, gateways: ProviderGateway[]): string | null {
-  if (instance.providerGatewayId === null) return null;
+  if (instance.route === null) {
+    return "Its gateway's type is not one this deployment can route, so it serves nothing until it is fixed or deleted.";
+  }
+  const surface = routedSurface(instance);
+  if (!surface || instance.route === "direct") return null;
   const gateway = gateways.find((entry) => entry.id === instance.providerGatewayId);
-  const surface = gateway ? gatewayApiSurface(gateway.type, instance.type) : null;
-  // A gateway that forwards to the provider's own API keeps the provider's own
-  // hint; only a gateway with a URL space of its own replaces it.
-  if (!surface?.narrowed) return null;
   const paths = surface.available.map((entry) => `${entry.label} at ${entry.path}`).join(", ");
-  const missing = surface.unavailable.length > 0
-    ? ` Not available on this route: ${surface.unavailable.map((entry) => entry.label).join(", ")}.`
-    : "";
-  return `Routed through ${gateway!.name}: ${paths}.${missing} Models: ${surface.modelIds}.`;
+  return `Routed through ${gateway?.name ?? gatewayLabel(instance.route)}. Only these APIs are available on this route: ${paths}. Models: ${surface.modelIds}.`;
 }
 
 /** One card per provider instance; an unknown slug still gets one so it can be removed. */
@@ -130,16 +129,19 @@ function ProviderCard({
   row,
   config,
   onChange,
+  onEnabledChange,
 }: {
   row: PolicyRow;
-  config: ProviderConfig | undefined;
-  onChange: (next: ProviderConfig | undefined) => void;
+  /** Absent while the instance is switched off. */
+  config: ProviderPolicy | undefined;
+  onChange: (next: ProviderPolicy) => void;
+  onEnabledChange: (enabled: boolean) => void;
 }) {
   const paths = (config?.allowed_paths ?? []).map(pathObject);
   const knownModels = row.knownModels;
 
   const setPaths = (next: AllowedPathObject[]) =>
-    onChange({ ...emptyProvider(), ...config, allowed_paths: next.map(normalizePath) });
+    onChange({ ...emptyPolicy(), ...config, allowed_paths: next.map(normalizePath) });
 
   return (
     <Card>
@@ -156,7 +158,7 @@ function ProviderCard({
             <Switch
               aria-label={`Enable ${row.slug}`}
               checked={config !== undefined}
-              onCheckedChange={(checked) => onChange(checked ? emptyProvider() : undefined)}
+              onCheckedChange={onEnabledChange}
             />
           }
         />
@@ -248,7 +250,7 @@ function ProviderCard({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="auto">auto (by body)</SelectItem>
-                          {CLAMP_STYLES.map((style) => (
+                          {OUTPUT_CLAMP_STYLES.map((style) => (
                             <SelectItem key={style} value={style}>
                               {style}
                             </SelectItem>
@@ -282,7 +284,7 @@ function ProviderCard({
             hint="Leave empty to allow every model with configured pricing. A non-empty list restricts this provider; rewrites are resolved before pricing is checked."
           >
             <StringList
-              values={config.allowed_models ?? []}
+              values={config.allowed_models}
               suggestions={knownModels}
               placeholder="gpt-5.6-terra"
               onChange={(next) => onChange({ ...config, allowed_models: next })}
@@ -465,7 +467,15 @@ function ModelRewrites({
 export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const proxy = state.draft!.config.routing;
   const mode = providerMode(proxy);
+  const policies = proxy.providers.mode === "selected" ? proxy.providers.selected : {};
   const selected = selectedSlugs(proxy);
+  /*
+   * An instance switched off leaves the draft, which only ever holds the ones
+   * that are on. Its policy is kept here instead, for as long as the tab is
+   * open, so switching it back on restores its restrictions rather than
+   * starting over — and a draft switched off and on again is not dirty.
+   */
+  const [switchedOff, setSwitchedOff] = useState<Record<string, ProviderPolicy>>({});
   const instanceList = useProviderInstances();
   const instances = instanceList.data ?? [];
   const gatewayList = useProviderGateways();
@@ -473,6 +483,19 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
   const prices = usePrices();
   const providerPrices = prices.data?.prices;
   const rows = policyRows(instances, gateways, selected, providerPrices);
+
+  const setPolicies = (next: Record<string, ProviderPolicy>) =>
+    state.updateProxy({ providers: { mode: "selected", selected: next } });
+
+  const setEnabled = (slug: string, enabled: boolean) => {
+    if (enabled) {
+      setPolicies({ ...policies, [slug]: switchedOff[slug] ?? emptyPolicy() });
+      return;
+    }
+    const { [slug]: policy, ...rest } = policies;
+    if (policy) setSwitchedOff((current) => ({ ...current, [slug]: policy }));
+    setPolicies(rest);
+  };
 
   const setIndividualConfiguration = (enabled: boolean) => {
     state.updateProxy(
@@ -485,7 +508,7 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
               // that can currently serve, rather than a paused row.
               selected: (() => {
                 const seed = instances.find((entry) => entry.status === "active") ?? instances[0];
-                return seed ? { [seed.slug]: emptyProvider() } : {};
+                return seed ? { [seed.slug]: emptyPolicy() } : {};
               })(),
             },
           }
@@ -603,19 +626,15 @@ export function ProxyPolicyTab({ state }: { state: AppDraft }) {
             <ProviderCard
               key={row.slug}
               row={row}
-              config={proxy.providers.selected?.[row.slug]}
-              onChange={(next) => state.updateProxy({
-                providers: {
-                  mode: "selected",
-                  selected: { ...proxy.providers.selected, [row.slug]: next },
-                },
-              })}
+              config={policies[row.slug]}
+              onChange={(next) => setPolicies({ ...policies, [row.slug]: next })}
+              onEnabledChange={(enabled) => setEnabled(row.slug, enabled)}
             />
           ))
         : null}
 
       <ModelRewrites
-        rewrites={proxy.model_rewrites ?? {}}
+        rewrites={proxy.model_rewrites}
         onChange={(model_rewrites) => state.updateProxy({ model_rewrites })}
       />
     </div>

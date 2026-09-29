@@ -1,9 +1,8 @@
-import { and, eq } from "drizzle-orm";
-import {
-  BASE_URL_REQUIRES_SECRET,
-  ProviderCreateRequestSchema,
-  ProviderTestRequestSchema,
-  ProviderUpdateRequestSchema,
+import { and, eq, sql } from "drizzle-orm";
+import type {
+  ProviderCreateRequest,
+  ProviderTestRequest,
+  ProviderUpdateRequest,
 } from "../contracts/schemas";
 import type {
   ProviderDeleteResponse,
@@ -12,36 +11,41 @@ import type {
   ProviderSummary,
   ProviderTestResponse,
 } from "../contracts/responses";
-import { assertRouteServesProvider } from "../core/capabilities";
+import { assertRouteServesProvider, instanceCapability } from "../providers/capability-matrix";
 import { GatewayError } from "../core/errors";
-import { isGatewayType, requireGatewayAdapter, routeAdapter } from "../core/routes";
+import { requireGatewayAdapter, routeAdapter } from "../providers/route-adapters";
+import { storedGatewayConnection } from "../providers/gateway-adapters";
 import { checkOperatorBaseUrl } from "../core/origin-guard";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
-import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../core/provider-probe";
-import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../core/provider-store";
-import { PROVIDER_TYPES } from "../core/providers";
-import type { ProviderType } from "../core/types";
+import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../providers/provider-probe";
+import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../providers/provider-store";
+import { isProviderType, type ProviderType } from "../shared/providers";
 import { database } from "../db";
 import {
   provider,
   providerGateway,
   type GatewayRouteConfig,
-  type GatewayType,
-  type ProviderGatewayConfig,
   type ProviderStatus,
 } from "../db/schema";
 import { openSecret, sealSecret } from "../vault/secrets";
-import { databaseErrorMatches, schemaBody, secretHint } from "./validation";
+import { databaseErrorMatches, secretHint } from "./validation";
 import type { Actor } from "./actor";
 import {
   commitResourceWrite,
   type ResourceWriteBoundary,
 } from "./write-boundary";
+import type { ProviderRoute } from "../shared/capabilities";
+import { isGatewayType, type GatewayType } from "../shared/gateways";
 
 type ProviderRow = typeof provider.$inferSelect;
 
-function serialize(row: ProviderRow): ProviderSummary {
+/**
+ * One row as the API publishes it. `route` is the row's gateway type, or
+ * `direct`, and the capability is read off it here so no client has to join
+ * provider rows to gateway rows and the route tables to work it out.
+ */
+function serialize(row: ProviderRow, route: ProviderRoute | null): ProviderSummary {
   return {
     id: row.id,
     type: row.type,
@@ -52,11 +56,34 @@ function serialize(row: ProviderRow): ProviderSummary {
     gatewayRoute: row.gatewayRoute,
     baseUrl: row.baseUrl,
     pricing: row.pricing,
+    route,
+    capability: instanceCapability(route, row.type, row.gatewayRoute),
     revision: row.revision,
     status: row.status,
     createdAt: row.createdAt,
     createdBy: row.createdBy,
   };
+}
+
+/**
+ * The route a stored gateway type names, or `null` for a type this deployment
+ * has no adapter for. The column is deliberately permissive, and such a row
+ * stays listable and editable — it simply serves nothing — rather than taking
+ * every healthy instance in the list down with it.
+ */
+function storedRoute(gatewayType: string | null): ProviderRoute | null {
+  if (gatewayType === null) return "direct";
+  return isGatewayType(gatewayType) ? gatewayType : null;
+}
+
+/** The route of one existing row, reading its gateway's type where it has one. */
+async function rowRoute(env: Env, row: ProviderRow): Promise<ProviderRoute | null> {
+  if (row.providerGatewayId === null) return "direct";
+  const gateway = await database(env.DB).query.providerGateway.findFirst({
+    columns: { type: true },
+    where: eq(providerGateway.id, row.providerGatewayId),
+  });
+  return storedRoute(gateway?.type ?? null);
 }
 
 function guardedBaseUrl(raw: string): string {
@@ -76,50 +103,37 @@ function slugConflict(slug: string, holder: ProviderStatus = "active"): GatewayE
 }
 
 function assertReservedSlug(type: ProviderType, slug: string): void {
-  if (PROVIDER_TYPES.includes(slug as ProviderType) && slug !== type) {
+  if (isProviderType(slug) && slug !== type) {
     throw new GatewayError(400, "invalid_request", `Reserved slug ${slug} may only be used by a ${slug} provider`);
   }
 }
 
-async function gatewayToken(env: Env, organizationId: string, gatewayId: string): Promise<{ type: GatewayType; config: ProviderGatewayConfig; token: string }> {
-  const row = await database(env.DB).query.providerGateway.findFirst({
-    where: and(
-      eq(providerGateway.id, gatewayId),
-      eq(providerGateway.organizationId, organizationId),
-      eq(providerGateway.status, "active"),
-    ),
+/** One of this organization's gateway rows, whatever its status. */
+async function findGateway(env: Env, organizationId: string, gatewayId: string) {
+  return database(env.DB).query.providerGateway.findFirst({
+    where: and(eq(providerGateway.id, gatewayId), eq(providerGateway.organizationId, organizationId)),
   });
-  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  return {
-    type: requireGatewayAdapter(row.type),
-    config: row.config,
-    token: await decryptProviderGatewaySecret(env, organizationId, row.id, row.secretBlob),
-  };
 }
 
-async function gatewayAdapterType(env: Env, organizationId: string, gatewayId: string): Promise<GatewayType> {
-  const row = await database(env.DB).query.providerGateway.findFirst({
-    columns: { type: true },
-    where: and(
-      eq(providerGateway.id, gatewayId),
-      eq(providerGateway.organizationId, organizationId),
-      eq(providerGateway.status, "active"),
-    ),
-  });
-  if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
-  return requireGatewayAdapter(row.type);
+/** One of this organization's gateways that can carry traffic now, or a 404. */
+async function activeGateway(env: Env, organizationId: string, gatewayId: string) {
+  const row = await findGateway(env, organizationId, gatewayId);
+  if (!row || row.status !== "active") throw new GatewayError(404, "not_found", "Provider gateway was not found");
+  return row;
 }
 
+/**
+ * The adapter a routing configuration update is judged by. With no routing
+ * configuration there is nothing to judge, so a missing gateway or one with no
+ * adapter is simply no adapter; a configuration needs one that exists.
+ */
 async function gatewayRouteAdapter(
   env: Env,
   organizationId: string,
   gatewayId: string,
   route: GatewayRouteConfig | null,
 ): Promise<GatewayType | null> {
-  const row = await database(env.DB).query.providerGateway.findFirst({
-    columns: { type: true },
-    where: and(eq(providerGateway.id, gatewayId), eq(providerGateway.organizationId, organizationId)),
-  });
+  const row = await findGateway(env, organizationId, gatewayId);
   if (route === null) return row && isGatewayType(row.type) ? row.type : null;
   if (!row) throw new GatewayError(404, "not_found", "Provider gateway was not found");
   return requireGatewayAdapter(row.type);
@@ -127,35 +141,34 @@ async function gatewayRouteAdapter(
 
 export async function listProviders(scope: ManagementScope, actor: Actor): Promise<ProviderListResponse> {
   const { env } = scope;
-  const rows = await database(env.DB).select().from(provider).where(eq(provider.organizationId, actor.organizationId));
-  return { providers: rows.map(serialize) };
+  const rows = await database(env.DB)
+    .select({ row: provider, gatewayType: providerGateway.type })
+    .from(provider)
+    .leftJoin(providerGateway, eq(providerGateway.id, provider.providerGatewayId))
+    .where(eq(provider.organizationId, actor.organizationId));
+  return { providers: rows.map(({ row, gatewayType }) => serialize(row, storedRoute(gatewayType))) };
 }
 
-export async function testProvider(scope: ManagementScope, actor: Actor, input: unknown): Promise<ProviderTestResponse> {
+export async function testProvider(scope: ManagementScope, actor: Actor, body: ProviderTestRequest): Promise<ProviderTestResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderTestRequestSchema, input);
   if (body.secret !== undefined) {
     const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
     return assertNotRejected(await probeProviderKey(body.type, body.secret, baseUrl));
   }
-  const gateway = await gatewayToken(env, actor.organizationId, body.providerGatewayId!);
-  assertRouteServesProvider(gateway.type, body.type);
-  return assertNotRejected(await probeProviderGateway({
-    type: body.type,
-    gatewayType: gateway.type,
-    gatewayConfig: gateway.config,
-    token: gateway.token,
-  }));
+  const gateway = await activeGateway(env, actor.organizationId, body.providerGatewayId!);
+  const stored = storedGatewayConnection(requireGatewayAdapter(gateway.type), gateway.config);
+  const token = await decryptProviderGatewaySecret(env, actor.organizationId, gateway.id, gateway.secretBlob);
+  assertRouteServesProvider(stored.type, body.type);
+  return assertNotRejected(await probeProviderGateway({ type: body.type, gateway: stored, token }));
 }
 
 export async function createProvider(
   scope: ManagementScope,
   actor: Actor,
-  input: unknown,
+  body: ProviderCreateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderCreateRequestSchema, input);
   const slug = body.slug ?? body.type;
   assertReservedSlug(body.type, slug);
   const existing = await database(env.DB).query.provider.findFirst({
@@ -168,16 +181,18 @@ export async function createProvider(
   const baseUrl = body.baseUrl === undefined ? null : guardedBaseUrl(body.baseUrl);
   let secret: string | undefined;
   let providerGatewayId: string | undefined;
+  let route: ProviderRoute = "direct";
   if (body.secret !== undefined) {
     routeAdapter("direct").validateRouteConfig(gatewayRoute);
     secret = body.secret;
   } else {
-    const gatewayId = body.providerGatewayId;
-    if (!gatewayId) throw new GatewayError(400, "invalid_request", "providerGatewayId is required");
+    // The schema admits exactly one of `secret` and `providerGatewayId`.
+    const gatewayId = body.providerGatewayId!;
     providerGatewayId = gatewayId;
-    const gatewayType = await gatewayAdapterType(env, actor.organizationId, gatewayId);
+    const gatewayType = requireGatewayAdapter((await activeGateway(env, actor.organizationId, gatewayId)).type);
     assertRouteServesProvider(gatewayType, body.type);
     routeAdapter(gatewayType).validateRouteConfig(gatewayRoute);
+    route = gatewayType;
   }
 
   const now = new Date().toISOString();
@@ -204,12 +219,13 @@ export async function createProvider(
   try {
     await commitResourceWrite(
       scope,
-      `INSERT INTO provider(id,organization_id,type,slug,name,secret_blob,secret_hint,provider_gateway_id,gateway_route_json,base_url,pricing_json,revision,status,created_at,updated_at,created_by)
-       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE /* authorization */`,
-      [row.id, row.organizationId, row.type, row.slug, row.name, row.secretBlob, row.secretHint,
-        row.providerGatewayId, row.gatewayRoute === null ? null : JSON.stringify(row.gatewayRoute), row.baseUrl,
-        row.pricing === null ? null : JSON.stringify(row.pricing), row.revision, row.status, row.createdAt, row.updatedAt, row.createdBy],
-      { provider: serialize(row) }, boundary, cap,
+      (guard) => sql`INSERT INTO provider(id,organization_id,type,slug,name,secret_blob,secret_hint,provider_gateway_id,gateway_route_json,base_url,pricing_json,revision,status,created_at,updated_at,created_by)
+       SELECT ${row.id},${row.organizationId},${row.type},${row.slug},${row.name},${row.secretBlob},${row.secretHint},
+         ${row.providerGatewayId},${row.gatewayRoute === null ? null : JSON.stringify(row.gatewayRoute)},${row.baseUrl},
+         ${row.pricing === null ? null : JSON.stringify(row.pricing)},${row.revision},${row.status},${row.createdAt},${row.updatedAt},${row.createdBy}
+       WHERE ${guard}`,
+      { provider: serialize(row, route) },
+      { boundary, cap },
     );
   } catch (error) {
     if (databaseErrorMatches(error, /UNIQUE constraint failed/u)) throw slugConflict(slug);
@@ -217,18 +233,17 @@ export async function createProvider(
     throw error;
   }
   invalidateOrganizationProviders(actor.organizationId);
-  return { provider: serialize(row) };
+  return { provider: serialize(row, route) };
 }
 
 export async function updateProvider(
   scope: ManagementScope,
   actor: Actor,
   id: string,
-  input: unknown,
+  body: ProviderUpdateRequest,
   boundary?: ResourceWriteBoundary,
 ): Promise<ProviderResponse> {
   const { env } = scope;
-  const body = schemaBody(ProviderUpdateRequestSchema, input);
   const row = await database(env.DB).query.provider.findFirst({
     where: and(eq(provider.id, id), eq(provider.organizationId, actor.organizationId)),
   });
@@ -253,9 +268,6 @@ export async function updateProvider(
     if (body.baseUrl !== null && row.providerGatewayId !== null) {
       throw new GatewayError(400, "invalid_request", "A gateway-routed instance cannot carry a base URL: the gateway owns the upstream origin");
     }
-    if (body.baseUrl !== null && body.secret === undefined && row.secretBlob !== null) {
-      throw new GatewayError(400, "invalid_request", BASE_URL_REQUIRES_SECRET);
-    }
     baseUrl = body.baseUrl === null ? null : guardedBaseUrl(body.baseUrl);
     updates.baseUrl = baseUrl;
     if (body.baseUrl === null && body.secret === undefined && row.secretBlob !== null) {
@@ -272,17 +284,20 @@ export async function updateProvider(
   }
 
   const updated = { ...row, ...updates } as ProviderRow;
+  const route = await rowRoute(env, updated);
   await commitResourceWrite(
     scope,
-    `UPDATE provider SET name=?,pricing_json=?,status=?,gateway_route_json=?,base_url=?,secret_blob=?,secret_hint=?,revision=?,updated_at=?
-     WHERE id=? AND organization_id=? AND revision=? AND /* authorization */`,
-    [updated.name, updated.pricing === null ? null : JSON.stringify(updated.pricing), updated.status,
-      updated.gatewayRoute === null ? null : JSON.stringify(updated.gatewayRoute), updated.baseUrl,
-      updated.secretBlob, updated.secretHint, updated.revision, updated.updatedAt, id, actor.organizationId, body.revision],
-    { provider: serialize(updated) }, boundary,
+    (guard) => sql`UPDATE provider SET name=${updated.name},
+       pricing_json=${updated.pricing === null ? null : JSON.stringify(updated.pricing)},status=${updated.status},
+       gateway_route_json=${updated.gatewayRoute === null ? null : JSON.stringify(updated.gatewayRoute)},
+       base_url=${updated.baseUrl},secret_blob=${updated.secretBlob},secret_hint=${updated.secretHint},
+       revision=${updated.revision},updated_at=${updated.updatedAt}
+     WHERE id=${id} AND organization_id=${actor.organizationId} AND revision=${body.revision} AND ${guard}`,
+    { provider: serialize(updated, route) },
+    { boundary },
   );
   invalidateOrganizationProviders(actor.organizationId);
-  return { provider: serialize(updated) };
+  return { provider: serialize(updated, route) };
 }
 
 export async function deleteProvider(scope: ManagementScope, actor: Actor, id: string): Promise<ProviderDeleteResponse> {

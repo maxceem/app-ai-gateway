@@ -5,13 +5,13 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useAppDraft, type SaveOutcome } from "./use-app-draft";
 import { stubApi, testQueryClient } from "@/test/render";
 import { emptyIssuer, type AuthenticationDraft } from "@/lib/config-types";
-import { fromWireApp } from "@/lib/config-conversion";
 import { parseAppConfig } from "@shared/app-config";
 
 const APP_ID = "my-app";
 
 const SERVER_AUTH: AuthenticationDraft = {
   type: "api_key",
+  end_user: { source: "none" },
 };
 
 const APPLE_ISSUER = {
@@ -41,17 +41,18 @@ function appRow(authentication: AuthenticationDraft) {
     status: "active" as const,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
-    config: {
+    // Parsed, as the gateway stores and answers with it: defaults filled in.
+    config: parseAppConfig({
       authentication,
       routing: { providers: { mode: "all" }, model_rewrites: {} },
-    },
+    }),
   };
 }
 
 async function loadedDraft(authentication: AuthenticationDraft) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(authentication), config_error: null },
+      body: { app: appRow(authentication) },
     },
   });
   const client = testQueryClient();
@@ -69,10 +70,10 @@ const auth = (view: Awaited<ReturnType<typeof loadedDraft>>) =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe("choosing an end-user source on an api_key draft", () => {
-  it("loads an application that identifies nobody with no end_user key at all", async () => {
+  it("loads an application that identifies nobody as the none source", async () => {
     const view = await loadedDraft(SERVER_AUTH);
 
-    expect("end_user" in auth(view)).toBe(false);
+    expect(auth(view).end_user).toEqual({ source: "none" });
     expect(view.result.current.dirty).toBe(false);
   });
 
@@ -81,7 +82,7 @@ describe("choosing an end-user source on an api_key draft", () => {
 
     act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
 
-    expect("end_user" in auth(view)).toBe(false);
+    expect(auth(view)).toEqual(SERVER_AUTH);
     expect(view.result.current.dirty).toBe(false);
   });
 
@@ -144,15 +145,14 @@ describe("choosing an end-user source on an api_key draft", () => {
     });
   });
 
-  it("drops the block on the way back to no users, leaving the config byte-identical", async () => {
+  it("states none on the way back to no users, leaving the config byte-identical", async () => {
     const view = await loadedDraft(SERVER_AUTH);
 
     act(() => view.result.current.setEndUserSource("issuer"));
     act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
 
     expect(auth(view)).toEqual(SERVER_AUTH);
-    expect("end_user" in auth(view)).toBe(false);
     // Nothing was left behind, so the save bar goes away too.
     expect(view.result.current.dirty).toBe(false);
   });
@@ -186,7 +186,7 @@ describe("choosing an end-user source on an api_key draft", () => {
 
     act(() => view.result.current.setEndUserSource("issuer"));
     act(() => view.result.current.updateIssuer({ jwks_url: "https://issuer.example.test/jwks.json" }));
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
     act(() => view.result.current.setEndUserSource("issuer"));
 
     expect(auth(view)).toMatchObject({
@@ -196,7 +196,7 @@ describe("choosing an end-user source on an api_key draft", () => {
 
   it("clears per-user limits when the application stops having users", async () => {
     // The gateway refuses `per_user` on an application that identifies nobody,
-    // and the Limits tab hides the card once there is no source — so leaving
+    // and the Limits tab hides the card once the source is `none` — so leaving
     // the numbers behind would be a save that fails against fields the operator
     // can no longer see.
     stubApi({
@@ -213,7 +213,6 @@ describe("choosing an end-user source on an api_key draft", () => {
               },
             },
           },
-          config_error: null,
         },
       },
     });
@@ -224,7 +223,7 @@ describe("choosing an end-user source on an api_key draft", () => {
     const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
     await waitFor(() => expect(view.result.current.draft).not.toBeNull());
 
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
 
     expect(view.result.current.draft!.config.limits!.per_user).toEqual({
       requests: { per_minute: null, per_day: null },
@@ -272,9 +271,9 @@ describe("the end-user source on an App Attest draft", () => {
   it("cannot be left with no source at all", async () => {
     const view = await loadedDraft(APPLE_AUTH);
 
-    // An attested client always resolves to some user, so `undefined` keeps
+    // An attested client always resolves to some user, so `none` keeps
     // what is configured rather than blanking it.
-    act(() => view.result.current.setEndUserSource(undefined));
+    act(() => view.result.current.setEndUserSource("none"));
 
     expect(auth(view)).toEqual(APPLE_AUTH);
     expect(view.result.current.dirty).toBe(false);
@@ -324,18 +323,17 @@ describe("application revision protection", () => {
         writtenBody = JSON.parse(String(init.body)) as Record<string, unknown>;
         return new Response(JSON.stringify({ error: { code: "app_revision_conflict", message: "Reload before saving" } }), { status: 409 });
       }
-      return new Response(JSON.stringify({ app: initial, config_error: null }));
+      return new Response(JSON.stringify({ app: initial }));
     }));
     const client = testQueryClient();
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
     const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
     await waitFor(() => expect(view.result.current.draft).not.toBeNull());
     act(() => view.result.current.update({ name: "My unsaved edit" }));
-    act(() => client.setQueryData(["app", APP_ID], fromWireApp({
+    act(() => client.setQueryData(["app", APP_ID], {
       app: { ...initial, name: "Other editor", revision: 2 },
-      config_error: null,
-    })));
-    await waitFor(() => expect(view.result.current.query.data?.kind).toBe("valid"));
+    }));
+    await waitFor(() => expect(view.result.current.query.data?.app.revision).toBe(2));
     expect(view.result.current.draft?.name).toBe("My unsaved edit");
     await act(async () => { expect(await view.result.current.save()).toEqual({
       ok: false,
@@ -352,7 +350,7 @@ describe("application revision protection", () => {
     const put = new Promise<Response>((resolve) => { finishPut = resolve; });
     vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
       if (init?.method === "PUT") return put;
-      return new Response(JSON.stringify({ app: initial, config_error: null }));
+      return new Response(JSON.stringify({ app: initial }));
     }));
     const client = testQueryClient();
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -366,181 +364,10 @@ describe("application revision protection", () => {
     act(() => view.result.current.update({ name: "Newer unsaved name" }));
     finishPut(new Response(JSON.stringify({
       app: { ...initial, name: "Submitted name", revision: 2 },
-      config_error: null,
     })));
     await act(async () => { expect(await saving).toEqual({ ok: true }); });
 
     expect(view.result.current.draft?.name).toBe("Newer unsaved name");
     expect(view.result.current.dirty).toBe(true);
-  });
-});
-
-const VALID_CONFIG = {
-  authentication: { type: "api_key" as const },
-  routing: { providers: { mode: "all" as const }, model_rewrites: {} },
-};
-
-function wireApp(id: string, revision: number, config: Record<string, unknown>) {
-  return {
-    id,
-    revision,
-    name: `App ${id}`,
-    status: "active" as const,
-    created_at: "2026-01-01T00:00:00.000Z",
-    updated_at: "2026-01-01T00:00:00.000Z",
-    config,
-  };
-}
-
-describe("malformed configuration repair", () => {
-  it("keeps raw edits and the opened revision across a valid background refresh", async () => {
-    const invalid = fromWireApp({
-      app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-      config_error: "Invalid routing configuration",
-    });
-    const client = testQueryClient();
-    client.setQueryData(["app", APP_ID], invalid);
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
-    await waitFor(() => expect(view.result.current.repair).not.toBeNull());
-    const edited = `${JSON.stringify(VALID_CONFIG, null, 2)}\n`;
-    act(() => view.result.current.updateRepair(edited));
-
-    act(() => client.setQueryData(["app", APP_ID], fromWireApp({
-      app: wireApp(APP_ID, 8, VALID_CONFIG),
-      config_error: null,
-    })));
-    await waitFor(() => expect(view.result.current.query.data?.kind).toBe("valid"));
-
-    expect(view.result.current.repair?.text).toBe(edited);
-    expect(view.result.current.repair?.revision).toBe(7);
-    expect(view.result.current.repairDirty).toBe(true);
-  });
-
-  it("keeps a dirty structured draft when a background response becomes invalid", async () => {
-    const client = testQueryClient();
-    client.setQueryData(["app", APP_ID], fromWireApp({
-      app: wireApp(APP_ID, 7, VALID_CONFIG),
-      config_error: null,
-    }));
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
-    await waitFor(() => expect(view.result.current.draft).not.toBeNull());
-    act(() => view.result.current.update({ name: "Unsaved name" }));
-
-    act(() => client.setQueryData(["app", APP_ID], fromWireApp({
-      app: wireApp(APP_ID, 8, { authentication: { type: "api_key" } }),
-      config_error: "Invalid routing configuration",
-    })));
-    await waitFor(() => expect(view.result.current.query.data?.kind).toBe("invalid"));
-
-    expect(view.result.current.draft?.name).toBe("Unsaved name");
-    expect(view.result.current.repair).toBeNull();
-    expect(view.result.current.dirty).toBe(true);
-  });
-
-  it("validates the correction locally and sends the original revision", async () => {
-    let written: Record<string, unknown> | undefined;
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
-      if (init?.method === "PUT") {
-        written = JSON.parse(String(init.body)) as Record<string, unknown>;
-        return new Response(JSON.stringify({
-          app: wireApp(APP_ID, 8, VALID_CONFIG),
-          config_error: null,
-        }));
-      }
-      return new Response(JSON.stringify({
-        app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-        config_error: "Invalid routing configuration",
-      }));
-    }));
-    const client = testQueryClient();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
-    await waitFor(() => expect(view.result.current.repair).not.toBeNull());
-    act(() => view.result.current.updateRepair(JSON.stringify(VALID_CONFIG)));
-
-    await act(async () => { expect(await view.result.current.saveRepair()).toEqual({ ok: true }); });
-
-    expect(written?.revision).toBe(7);
-    // What is held afterwards is the parse of what was typed, defaults included.
-    expect(view.result.current.draft?.config).toEqual(parseAppConfig(VALID_CONFIG));
-    expect(view.result.current.repair).toBeNull();
-  });
-
-  it("preserves edits made while a repair save is in flight", async () => {
-    let finishPut!: (response: Response) => void;
-    const put = new Promise<Response>((resolve) => { finishPut = resolve; });
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
-      if (init?.method === "PUT") return put;
-      return new Response(JSON.stringify({
-        app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-        config_error: "Invalid routing configuration",
-      }));
-    }));
-    const client = testQueryClient();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const view = renderHook(() => useAppDraft(APP_ID), { wrapper });
-    await waitFor(() => expect(view.result.current.repair).not.toBeNull());
-    const submitted = JSON.stringify(VALID_CONFIG);
-    act(() => view.result.current.updateRepair(submitted));
-    let saving!: Promise<SaveOutcome>;
-    act(() => { saving = view.result.current.saveRepair(); });
-    const newer = `${submitted}\n`;
-    act(() => view.result.current.updateRepair(newer));
-    finishPut(new Response(JSON.stringify({
-      app: wireApp(APP_ID, 8, VALID_CONFIG),
-      config_error: null,
-    })));
-    await act(async () => { expect(await saving).toEqual({ ok: true }); });
-
-    expect(view.result.current.repair?.text).toBe(newer);
-    expect(view.result.current.repair?.revision).toBe(8);
-    expect(view.result.current.repairDirty).toBe(true);
-  });
-
-  it("does not let an old app's deferred save replace the navigated session", async () => {
-    let finishPut!: (response: Response) => void;
-    const put = new Promise<Response>((resolve) => { finishPut = resolve; });
-    vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
-      if (init?.method === "PUT") return put;
-      const id = path.includes("other-app") ? "other-app" : APP_ID;
-      return new Response(JSON.stringify(id === APP_ID ? {
-        app: wireApp(APP_ID, 7, { authentication: { type: "api_key" } }),
-        config_error: "Invalid routing configuration",
-      } : {
-        app: wireApp(id, 2, VALID_CONFIG),
-        config_error: null,
-      }));
-    }));
-    const client = testQueryClient();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const view = renderHook(({ id }) => useAppDraft(id), {
-      wrapper,
-      initialProps: { id: APP_ID },
-    });
-    await waitFor(() => expect(view.result.current.repair).not.toBeNull());
-    act(() => view.result.current.updateRepair(JSON.stringify(VALID_CONFIG)));
-    let saving!: Promise<SaveOutcome>;
-    act(() => { saving = view.result.current.saveRepair(); });
-    view.rerender({ id: "other-app" });
-    await waitFor(() => expect(view.result.current.draft?.name).toBe("App other-app"));
-    finishPut(new Response(JSON.stringify({
-      app: wireApp(APP_ID, 8, VALID_CONFIG),
-      config_error: null,
-    })));
-    await act(async () => { await saving; });
-
-    expect(view.result.current.draft?.name).toBe("App other-app");
   });
 });

@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/field";
+import { gatewayBody } from "@shared/gateways";
 import { gatewayOutcome, type TestOutcome } from "@/lib/provider-probe";
 import { useRotateProviderGateway, useTestProviderGateway } from "@/lib/queries";
 import type { ProviderGateway } from "@/lib/types";
@@ -43,15 +44,9 @@ export function RotateGatewayDialog({
     if (!gateway || !token) return;
     setTested(null);
     try {
+      // The stored connection is the gateway's own, so only the token is new.
       const result = await testGateway.mutateAsync(
-        gateway.type === "cf_aig"
-          ? {
-              type: "cf_aig",
-              accountId: gateway.config.accountId,
-              gatewayId: gateway.config.gatewayId,
-              token,
-            }
-          : { type: "vercel", token },
+        gatewayBody(gateway.type, gateway.config, { token }),
       );
       setTested(gatewayOutcome(result));
     } catch (error) {

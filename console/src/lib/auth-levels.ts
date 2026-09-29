@@ -8,10 +8,10 @@
  * here and the Auth policy tab renders what it returns.
  */
 
-import { appleIdentityProblem } from "@shared/app-config";
 import type { Draft } from "@/lib/app-draft";
-import { authIssuer, type AuthConfig } from "@/lib/config-types";
-import { claimComplete, issuerComplete } from "@/lib/draft-problems";
+import { authIssuer, type IssuerDraft } from "@/lib/config-types";
+import type { ConfigIssue } from "@shared/app-config";
+import { clearUnder, DRAFT_PATHS } from "@/lib/draft-problems";
 import type { UserSource } from "@/lib/user-sources";
 
 export type AuthLevel = "identity" | "users" | "subscription";
@@ -31,15 +31,17 @@ export interface LevelStatus {
 
 export type Subscription = "paid" | "any";
 
-export const subscriptionOf = (issuer: AuthConfig): Subscription =>
-  (issuer.required_claims ?? []).length > 0 || issuer.entitlement !== undefined ? "paid" : "any";
+export const subscriptionOf = (issuer: IssuerDraft): Subscription =>
+  issuer.required_claims.length > 0 || issuer.entitlement !== undefined ? "paid" : "any";
 
 /**
- * Each level's standing, in the order the levels are asked. `keysActive` is
- * what the key list says for a server app, or undefined while unknown.
+ * Each level's standing, in the order the levels are asked, judged on the
+ * draft's own `issues`. `keysActive` is what the key list says for a server
+ * app, or undefined while unknown.
  */
 export function levelStatuses(
   draft: Draft,
+  issues: readonly ConfigIssue[],
   keysActive: boolean | undefined,
 ): Record<AuthLevel, LevelStatus> {
   const authentication = draft.config.authentication;
@@ -49,7 +51,7 @@ export function levelStatuses(
     authentication.type === "apple_app_attest"
       ? !authentication.app_attest.team_id.trim() || !authentication.app_attest.bundle_id.trim()
         ? { tone: "incomplete", text: "Team or bundle id missing" }
-        : appleIdentityProblem(authentication.app_attest)
+        : !clearUnder(issues, DRAFT_PATHS.appAttest)
           ? { tone: "incomplete", text: "Team or bundle id invalid" }
           : { tone: "secure", text: "Verified with App Attest" }
       : keysActive === false
@@ -57,20 +59,19 @@ export function levelStatuses(
         : { tone: "secure", text: "Verified with API keys" };
 
   const users: LevelStatus = (() => {
-    const source: UserSource = authentication.end_user?.source ?? "none";
+    const source: UserSource = authentication.end_user.source;
     switch (source) {
       case "issuer":
-        return issuer && issuerComplete(issuer)
+        return issuer && clearUnder(issues, DRAFT_PATHS.issuer, DRAFT_PATHS.claims)
           ? { tone: "secure", text: "Signed-in users only" }
           : { tone: "incomplete", text: "Identity provider not finished" };
       case "header":
-        return authentication.type === "api_key" && authentication.end_user?.source === "header"
-          && !authentication.end_user.header.trim()
-          ? { tone: "incomplete", text: "Header name missing" }
-          : { tone: "weak", text: "Your backend names the user" };
+        return clearUnder(issues, DRAFT_PATHS.header)
+          ? { tone: "weak", text: "Your backend names the user" }
+          : { tone: "incomplete", text: "Header name missing or not allowed" };
       case "app_install":
         return { tone: "weak", text: "Unauthenticated users allowed" };
-      default:
+      case "none":
         return { tone: "weak", text: "No user identity" };
     }
   })();
@@ -78,7 +79,7 @@ export function levelStatuses(
   const subscription: LevelStatus = !issuer
     ? { tone: "off", text: "Needs signed-in users" }
     : subscriptionOf(issuer) === "paid"
-      ? (issuer.required_claims ?? []).every(claimComplete) && (issuer.required_claims ?? []).length > 0
+      ? clearUnder(issues, DRAFT_PATHS.claims) && issuer.required_claims.length > 0
         ? { tone: "secure", text: "Paid users only" }
         : { tone: "incomplete", text: "Paid check not finished" }
       : { tone: "weak", text: "Any signed-in user" };
