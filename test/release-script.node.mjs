@@ -109,10 +109,13 @@ test("applies a release to both manifests together", () => {
 });
 
 test("a release that breaks upgrades declares no earlier version", () => {
-  assert.ok(readUpgradeFrom(cliManifest).length > 0);
+  // A fixture, not the live manifest: the live list is empty right after a
+  // release that broke upgrades, and emptying an empty list proves nothing.
+  const cliText = setUpgradeFrom(cliManifest, ["0.3.0"]);
+  assert.deepEqual(readUpgradeFrom(cliText), ["0.3.0"]);
   const plan = applyRelease({
     rootText: rootManifest,
-    cliText: cliManifest,
+    cliText,
     version: "9.9.9",
     includePrevious: false,
   });
