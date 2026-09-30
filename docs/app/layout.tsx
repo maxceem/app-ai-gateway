@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { ReactNode } from "react";
+import { GoogleAnalytics } from "@/components/google-analytics";
 import { siteUrl } from "@/lib/site";
 import "./global.css";
 
@@ -20,6 +21,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" suppressHydrationWarning>
       <body>
         <RootProvider search={{ enabled: false }}>{children}</RootProvider>
+        <GoogleAnalytics />
       </body>
     </html>
   );

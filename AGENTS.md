@@ -126,6 +126,10 @@ means a static import crept back in.
 - Deploy documentation with `pnpm run docs:deploy`. A custom domain belongs in
   a gitignored `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked
   config; deploy it with `pnpm run docs:deploy --profile <name>`.
+- Google Analytics on the documentation is `DOCS_GA_MEASUREMENT_ID`, read at
+  build time and unset by default: a gitignored `docs/.env.production` locally,
+  the repository variable of the same name in the release workflow. Without it
+  the site renders no tag, which is what every self-hosted build gets.
 
 ## Model catalog
 
