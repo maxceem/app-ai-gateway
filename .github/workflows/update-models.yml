@@ -22,7 +22,7 @@ name: Update models
 
 on:
   schedule:
-    - cron: "17 5 * * *" # daily, off the hour
+    - cron: "7 20 * * *" # daily at 20:07 UTC, off the hour
   workflow_dispatch:
 
 permissions:
