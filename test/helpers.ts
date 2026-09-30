@@ -320,7 +320,7 @@ export function defaultProxyConfig(): Record<string, unknown> {
       allowed_models: ["gemini-3.5-flash"],
       max_output_tokens: 128,
     },
-    model_rewrites: { "gpt-5.6-terra": "gpt-5.6", "gemini-3.5-flash": "gemini-3.6-flash" },
+    model_rewrites: { "gpt-5.6-terra": "gpt-5.6-sol", "gemini-3.5-flash": "gemini-3.6-flash" },
   };
 }
 

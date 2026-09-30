@@ -12,7 +12,7 @@
 // reason, and the item stops failing the run.
 
 import { fromLitellm, fromModelsDev } from "./lists.mjs";
-import { AUDIO_FIELDS, PRICE_FIELDS, effectivePrice, round6, samePrice } from "./price.mjs";
+import { AUDIO_FIELDS, PRICE_FIELDS, effectivePrice, round6 } from "./price.mjs";
 import { SOURCES, sourceId } from "./sources.mjs";
 
 /** How far one run may move a price before a person has to confirm it. */
@@ -27,19 +27,34 @@ const PROBLEMS = {
   field: { kind: "needs a new field", prefix: "" },
   threshold: { kind: "threshold differs", prefix: "" },
   kind: { kind: "cannot compare", prefix: "" },
+  disagree: { kind: "lists disagree", prefix: "" },
+  single: { kind: "only one list", prefix: "" },
 };
 const LISTS = "models.dev + litellm";
 
+const LABELS = {
+  input: "input",
+  cached_input: "cached",
+  cache_write: "cache write",
+  output: "output",
+  long_input: "long input",
+  long_cached_input: "long cached",
+  long_cache_write: "long cache write",
+  long_output: "long output",
+};
+
+/**
+ * Every price a source states, and only those: "input $3, output $15, no
+ * cached price" rather than a figure the source never gave.
+ */
 function describe(price) {
   if (price.per_minute !== undefined) return `$${price.per_minute}/min`;
   if (price.per_hour !== undefined) return `$${price.per_hour}/h`;
-  const effective = effectivePrice(price);
-  const parts = [`$${effective.input}/$${effective.output}`];
-  if (effective.cached_input !== effective.input) parts.push(`cached $${effective.cached_input}`);
-  if (effective.cache_write !== effective.input) parts.push(`cache write $${effective.cache_write}`);
-  if (price.long_context_threshold !== undefined) {
-    parts.push(`above ${price.long_context_threshold / 1000}k $${effective.long_input}/$${effective.long_output}`);
-  }
+  const parts = PRICE_FIELDS.filter((field) => price[field] !== undefined).map(
+    (field) => `${LABELS[field]} $${round6(price[field])}`,
+  );
+  if (price.cached_input === undefined) parts.push("no cached price");
+  if (price.long_context_threshold !== undefined) parts.push(`long context above ${price.long_context_threshold / 1000}k`);
   return parts.join(", ");
 }
 
@@ -129,6 +144,64 @@ function listRetirement(lists, source, model) {
     ? entry.deprecation_date
     : undefined;
   return { flagged, date };
+}
+
+/**
+ * Rule 3 for two lists, field by field. A list that leaves a price out has
+ * not said the price equals input; it has said nothing. So a field both lists
+ * state must agree, and only such a field is ever changed. A field one list
+ * states is only reported, and only when it differs from ours. A field
+ * neither states is left alone.
+ */
+export function compareLists(ours, modelsDev, litellm) {
+  if ([modelsDev, litellm].some((list) => list.input === undefined || list.output === undefined)) {
+    return { problem: "kind", text: "a list has no per-token price" };
+  }
+  const both = new Set();
+  const single = new Map();
+  for (const field of [...PRICE_FIELDS, "long_context_threshold"]) {
+    const [a, b] = [modelsDev[field], litellm[field]];
+    if (a !== undefined && b !== undefined) {
+      if (round6(a) !== round6(b)) {
+        return { problem: "disagree", text: `lists disagree on ${LABELS[field] ?? field}: Models.dev $${round6(a)}, LiteLLM $${round6(b)}, ours ${ours[field] === undefined ? "none" : `$${ours[field]}`}` };
+      }
+      both.add(field);
+    } else if (a !== undefined || b !== undefined) {
+      single.set(field, a !== undefined ? ["Models.dev", a] : ["LiteLLM", b]);
+    }
+  }
+
+  const threshold = modelsDev.long_context_threshold ?? litellm.long_context_threshold;
+  if (threshold !== undefined && threshold !== ours.long_context_threshold) {
+    return {
+      problem: "threshold",
+      text: `long-context threshold differs: ours ${ours.long_context_threshold ?? "none"}, lists ${threshold}`,
+    };
+  }
+
+  // What ours bills for a field it may not spell out, as computeCost would.
+  const billed = effectivePrice(ours);
+  const edits = [];
+  const unconfirmed = [];
+  const missing = [];
+  for (const field of PRICE_FIELDS) {
+    const listed = both.has(field) ? round6(modelsDev[field]) : single.has(field) ? round6(single.get(field)[1]) : undefined;
+    if (listed === undefined || billed[field] === undefined || listed === billed[field]) continue;
+    if (!both.has(field)) {
+      unconfirmed.push(`${single.get(field)[0]} gives ${LABELS[field]} $${listed}, ours bills $${billed[field]}`);
+    } else if (ours[field] === undefined) {
+      missing.push(`${field} $${listed} (ours bills $${billed[field]})`);
+    } else {
+      edits.push({ field, from: ours[field], to: listed });
+    }
+  }
+  if (missing.length > 0) return { problem: "field", text: `needs a new field: ${missing.join(", ")}` };
+  if (unconfirmed.length > 0) return { problem: "single", text: `only one list, unconfirmed: ${unconfirmed.join("; ")}` };
+  for (const edit of edits) {
+    const guard = suspicious(edit.from, edit.to);
+    if (guard) return { problem: "suspicious", text: `${edit.field}: ${guard}` };
+  }
+  return { edits };
 }
 
 /**
@@ -271,15 +344,23 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
           continue;
         }
         const audio = AUDIO_FIELDS.find((field) => entry[field] !== undefined);
-        const agree = audio
-          ? audioRate(modelsDev, audio) !== undefined && audioRate(modelsDev, audio) === audioRate(litellm, audio)
-          : modelsDev.input !== undefined && litellm.input !== undefined && samePrice(modelsDev, litellm);
-        if (!agree) {
-          flag(`${where}: lists disagree`, provider, model, `lists disagree: Models.dev ${describe(modelsDev)}, LiteLLM ${describe(litellm)}, ours ${describe(entry)}`);
+        if (audio) {
+          if (audioRate(modelsDev, audio) === undefined || audioRate(modelsDev, audio) !== audioRate(litellm, audio)) {
+            flag(`${where}: lists disagree`, provider, model, `lists disagree: Models.dev ${describe(modelsDev)}, LiteLLM ${describe(litellm)}, ours ${describe(entry)}`);
+            continue;
+          }
+          price = modelsDev;
+          label = LISTS;
+        } else {
+          const result = compareLists(entry, modelsDev, litellm);
+          if (result.problem) {
+            const { kind, prefix } = PROBLEMS[result.problem];
+            flag(`${where}: ${kind}`, provider, model, `${prefix}${result.text} (${LISTS})`);
+            continue;
+          }
+          for (const edit of result.edits) changes.push({ provider, model, ...edit, source: LISTS });
           continue;
         }
-        price = modelsDev;
-        label = LISTS;
       }
 
       const result = compare(entry, price);

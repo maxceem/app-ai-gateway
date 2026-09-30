@@ -173,7 +173,7 @@ const snippetContext = (providers: ReturnType<typeof providerRow>[], app: AppWri
     call: async (name: string) => {
       if (name === "listProviders") return { data: { providers } };
       if (name === "listModelPrices")
-        return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
+        return { data: { prices: { openai: { "gpt-5.6-sol": { input: 5, output: 30 } } } } };
       return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null } };
     },
   });
@@ -198,7 +198,7 @@ test("a server app gets a runnable example, with placeholders for what it does n
     ),
   );
   assert.ok(configured.includes("/proxy/openai/v1/responses"));
-  assert.ok(configured.includes('{"model":"gpt-5.6","input":"Say hello."}'));
+  assert.ok(configured.includes('{"model":"gpt-5.6-sol","input":"Say hello."}'));
   // Two reachable providers is not an ambiguity to refuse over: the first is
   // shown, and the other is named as one flag away.
   assert.match(configured, /^# This app can reach 2 providers/);
@@ -227,7 +227,7 @@ test("creating a server app hands back the request to send, keyed from the file 
     call: async (name: string) => {
       if (name === "listProviders") return { data: { providers: [providerRow("openai", "openai")] } };
       if (name === "listModelPrices")
-        return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
+        return { data: { prices: { openai: { "gpt-5.6-sol": { input: 5, output: 30 } } } } };
       return { data: { app: created, resolved: null } };
     },
     keyOperation: async () => ({
@@ -1012,7 +1012,7 @@ test("app snippet names the deployment's API host, not the managed URL", async (
       if (name === "getApp")
         return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null } };
       if (name === "listModelPrices")
-        return { data: { prices: { openai: { "gpt-5.6": { input: 5, output: 30 } } } } };
+        return { data: { prices: { openai: { "gpt-5.6-sol": { input: 5, output: 30 } } } } };
       return { data: { providers: [{ id: "p-1", slug: "openai", type: "openai", status: "active" }] } };
     },
   });

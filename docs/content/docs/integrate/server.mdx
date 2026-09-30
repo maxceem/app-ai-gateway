@@ -29,7 +29,7 @@ Send the key as the bearer credential on every request:
 curl https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/openai/v1/responses \
   -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.6","input":"Say hello."}'
+  -d '{"model":"gpt-5.6-sol","input":"Say hello."}'
 ```
 
 ### Standard SDKs
@@ -46,7 +46,7 @@ client = OpenAI(
     api_key=os.environ["APP_AI_GATEWAY_KEY"],
     base_url="https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/openai/v1",
 )
-response = client.responses.create(model="gpt-5.6", input="Say hello.")
+response = client.responses.create(model="gpt-5.6-sol", input="Say hello.")
 ```
 
 ```typescript
@@ -101,7 +101,7 @@ curl https://api.appaigateway.com/v1/apps/search-service-k3f9x1/proxy/openai/v1/
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'X-App-Version: 2.3.0' \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.6","input":"Say hello."}'
+  -d '{"model":"gpt-5.6-sol","input":"Say hello."}'
 ```
 
 The gateway token is valid for an hour and stands for one user. Cache it per

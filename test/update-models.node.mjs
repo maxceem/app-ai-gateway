@@ -532,6 +532,36 @@ for (const scenario of cases) {
   });
 }
 
+test("lists: a price one list leaves out is not a disagreement", () => {
+  const md = (models) => ({ baseten: { models: Object.fromEntries(Object.entries(models).map(([id, cost]) => [id, { cost }])) } });
+  const ll = (entries) => Object.fromEntries(Object.entries(entries).map(([id, price]) => [`baseten/${id}`, {
+    input_cost_per_token: price.input / 1e6,
+    output_cost_per_token: price.output / 1e6,
+    ...(price.cached_input !== undefined && { cache_read_input_token_cost: price.cached_input / 1e6 }),
+  }]));
+  const run = (catalog, modelsDev, litellm) => decide({ catalog: { baseten: catalog }, official: {}, lists: { modelsDev: md(modelsDev), litellm: ll(litellm) }, today: TODAY });
+
+  // Models.dev gives no cached price, LiteLLM gives ours: nothing to report.
+  const agreeing = run({ k: { input: 3.0, cached_input: 0.3, output: 15.0 } }, { k: { input: 3, output: 15 } }, { k: { input: 3, cached_input: 0.3, output: 15 } });
+  assert.deepEqual([agreeing.changes, agreeing.attention], [[], []]);
+
+  // The one list that has a cached price differs from ours: reported, never applied.
+  const single = run({ k: { input: 3.0, cached_input: 0.3, output: 15.0 } }, { k: { input: 3, output: 15 } }, { k: { input: 3, cached_input: 0.25, output: 15 } });
+  assert.deepEqual(single.changes, []);
+  assert.deepEqual(single.attention.map((item) => item.key), ["baseten/k: only one list"]);
+  assert.match(single.attention[0].text, /LiteLLM gives cached \$0\.25, ours bills \$0\.3/);
+
+  // Both state a cached price and they differ: the field is named.
+  const conflict = run({ k: { input: 3.0, cached_input: 0.3, output: 15.0 } }, { k: { input: 3, cache_read: 0.2, output: 15 } }, { k: { input: 3, cached_input: 0.25, output: 15 } });
+  assert.deepEqual(conflict.attention.map((item) => item.key), ["baseten/k: lists disagree"]);
+  assert.match(conflict.attention[0].text, /disagree on cached: Models\.dev \$0\.2, LiteLLM \$0\.25/);
+
+  // Both agree on a new input price and say nothing of cached: only input moves.
+  const moved = run({ k: { input: 3.0, cached_input: 0.3, output: 15.0 } }, { k: { input: 2.5, output: 15 } }, { k: { input: 2.5, output: 15 } });
+  assert.deepEqual(moved.changes.map((change) => [change.field, change.to]), [["input", 2.5]]);
+  assert.deepEqual(moved.attention, []);
+});
+
 test("rules: a dated price is applied on its day and announced before it", () => {
   const catalog = { gemini: { "gemini-3.6-flash": { input: 1.5, cached_input: 0.15, output: 7.5 } } };
   const run = (today) =>

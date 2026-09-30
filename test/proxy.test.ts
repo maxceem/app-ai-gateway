@@ -1033,7 +1033,7 @@ describe("provider-native proxy", () => {
       body: { model: "gpt-5.6-terra", max_output_tokens: 100 },
     });
     await openAi.text();
-    expect(JSON.parse(captured[0]!.body)).toMatchObject({ model: "gpt-5.6", max_output_tokens: 100 });
+    expect(JSON.parse(captured[0]!.body)).toMatchObject({ model: "gpt-5.6-sol", max_output_tokens: 100 });
 
     const gemini = await proxyRequest({
       appId: "proxy-rewrite",
