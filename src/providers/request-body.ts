@@ -2,7 +2,7 @@
  * Reading a client body and writing the one that goes upstream, for both kinds
  * of served request.
  *
- * A proxied request and a named endpoint differ in who chose the path and the
+ * A proxied request and a custom endpoint differ in who chose the path and the
  * model — the client or the application's configuration — and in nothing about
  * how a body is read, bounded, re-encoded with another model, capped, or handed
  * to the provider type's and the route's own same-protocol rewrites. Those

@@ -59,7 +59,7 @@ export type ExampleProvider = Pick<
 /** The price catalog, by provider type and model. Only the presence of an output price is read. */
 export type ExamplePrices = Record<string, Record<string, { output?: number }>>;
 
-/** Where a request goes: a provider path through the proxy, or a named endpoint. */
+/** Where a request goes: a provider path through the proxy, or a custom endpoint. */
 export type ExampleTarget =
   | { provider: string; path: string }
   | { endpoint: string };

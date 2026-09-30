@@ -3,7 +3,7 @@
  *
  * Everything this deployment knows about a provider type — where it lives, how
  * it authenticates, what its own request shape clamps, what a probe may call,
- * what a first example request looks like, which named endpoints it composes,
+ * what a first example request looks like, which custom endpoints it composes,
  * how it reports cost — is one entry in {@link PROVIDER_DESCRIPTORS}. Adding a
  * type is that entry plus its prices, and nothing else: the tables below are
  * derived, and the behaviour that reads them lives in `src/providers`.
@@ -69,7 +69,7 @@ export interface ProviderDescriptor {
    */
   chatCompletionsCapField?: "max_completion_tokens";
   /**
-   * Native paths the gateway composes named endpoints against, and so the
+   * Native paths the gateway composes custom endpoints against, and so the
    * endpoint styles this type supports: the gateway writes those request
    * bodies itself, and nothing has been verified against a type with no entry
    * here. The key set *is* the capability — see {@link providerCapability}.
@@ -142,7 +142,7 @@ export const PROVIDER_DESCRIPTORS = {
     // reads the older field.
     chatCompletionsCapField: "max_completion_tokens",
     // The two types whose Responses and transcription request shapes the
-    // gateway composes itself for named endpoints.
+    // gateway composes itself for custom endpoints.
     endpointPaths: { responses: "v1/responses", audio_transcription: "v1/audio/transcriptions" },
     modelAuthor: "OpenAI",
   },
@@ -381,7 +381,7 @@ export const PROVIDER_CREDENTIAL_HEADERS: readonly string[] = [
 /**
  * What a provider type can do on its own API. The raw proxy is a pass-through,
  * so every style reaches every provider unless the descriptor narrows them, and
- * the provider itself answers for the paths it does not have; named endpoints
+ * the provider itself answers for the paths it does not have; custom endpoints
  * are exactly the ones the descriptor gives a path to compose against, because
  * the gateway writes those request bodies itself.
  */
@@ -394,7 +394,7 @@ export function providerCapability(provider: ProviderType): RouteCapability {
 }
 
 /**
- * Provider types with a named-endpoint surface. Derived from the descriptors
+ * Provider types with a custom-endpoint surface. Derived from the descriptors
  * that declare paths to compose against, which is sound by construction: a type
  * that composes one has to say where it posts it.
  */
@@ -408,7 +408,7 @@ export const ENDPOINT_PROVIDER_TYPES = PROVIDER_TYPES.filter(
   (type): type is EndpointProvider => providerCapability(type).endpointStyles.length > 0,
 ) as [EndpointProvider, ...EndpointProvider[]];
 
-/** Provider types eligible for a named endpoint style on their own API. */
+/** Provider types eligible for a custom endpoint style on their own API. */
 export function providersForEndpointStyle(style: EndpointApiStyle): EndpointProvider[] {
   return ENDPOINT_PROVIDER_TYPES.filter((type) =>
     providerCapability(type).endpointStyles.includes(style),

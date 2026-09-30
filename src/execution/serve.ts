@@ -1,5 +1,5 @@
 /**
- * One served client request — a proxied provider call or a named endpoint —
+ * One served client request — a proxied provider call or a custom endpoint —
  * from its application to the provider's answer, as one function.
  *
  * The steps run in the order the gateway decides in, and each hands its result

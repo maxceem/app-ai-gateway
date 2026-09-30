@@ -392,8 +392,8 @@ export async function appCommand(
     if (flags.endpoint) {
       const endpoint = doc.config.endpoints[flags.endpoint];
       if (!endpoint)
-        fail("endpoint_not_found", "Choose an existing named endpoint.");
-      // A named endpoint holds the provider, the model and the parameters, so
+        fail("endpoint_not_found", "Choose an existing custom endpoint.");
+      // A custom endpoint holds the provider, the model and the parameters, so
       // the client sends only what its style documents.
       const responses = endpoint.api_style === "responses";
       example = {

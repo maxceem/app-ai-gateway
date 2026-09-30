@@ -1,4 +1,4 @@
 {
   "title": "Applications",
-  "pages": ["create", "auth-policy", "proxy-policy", "endpoints", "limits", "users", "usage", "auth-events", "settings"]
+  "pages": ["create", "auth-policy", "provider-access", "model-rewrites", "custom-endpoints", "limits", "users", "usage", "auth-events", "settings"]
 }

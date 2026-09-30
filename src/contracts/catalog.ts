@@ -454,8 +454,8 @@ export const CATALOG = {
   callNamedEndpoint: {
     method: "POST",
     path: "/v1/apps/{app}/endpoints/{slug}",
-    tags: ["Named endpoints"],
-    summary: "Call a server-configured named endpoint",
+    tags: ["Custom endpoints"],
+    summary: "Call a server-configured custom endpoint",
     description: "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
     security: "gateway",
     params: {

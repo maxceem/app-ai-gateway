@@ -111,7 +111,7 @@ describe("first request examples", () => {
     expect(swiftSnippet({ baseUrl: "https://gw.test", appId: "app-1", example, authentication: installs }))
       .toContain("authMode: .appAttestInstall");
   });
-  it("calls a named endpoint at its own URL", () => {
+  it("calls a custom endpoint at its own URL", () => {
     const example: RequestExample = { target: { endpoint: "chat" }, body: { input: "Say hello." }, anthropic: false, gaps: [] };
     expect(curlSnippet({ baseUrl: "https://gw.test", appId: "app-1", example })).toContain(
       "https://gw.test/v1/apps/app-1/endpoints/chat",

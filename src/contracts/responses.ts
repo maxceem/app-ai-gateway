@@ -359,7 +359,7 @@ export const ProviderSummarySchema = z.object({
       description: "The client APIs this instance can be called with on its route. A direct instance lists every style its provider type does not narrow; the provider itself answers for paths it lacks.",
     }),
     endpointStyles: z.array(z.enum(ENDPOINT_API_STYLES)).meta({
-      description: "The named-endpoint styles this instance can back on its route.",
+      description: "The custom-endpoint styles this instance can back on its route.",
     }),
     modelPrefix: z.string().nullable().meta({
       description: "The namespace the route adds to model IDs on the way out. Clients always send the provider's own ID; null means the route sends it unchanged.",

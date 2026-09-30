@@ -63,7 +63,7 @@ codes come from the account and are unrelated to those limits.
 | `max_output_tokens_exceeded` | 403 | The request asks for more output than the app allows | Lower the output limit in the request |
 | `api_style_not_supported` | 403 | This path does not exist on the route the provider uses, such as Gemini's native API through Vercel | Use a supported path or a direct provider |
 | `pricing_not_configured` | 400 | The model has no price in the catalog or the provider's custom pricing | Add a price in the console, or use a catalogued model |
-| `endpoint_not_found` | 404 | No named endpoint has this slug | Check the slug |
+| `endpoint_not_found` | 404 | No custom endpoint has this slug | Check the slug |
 | `app_not_found` | 404 | No app has this ID | Check the app ID |
 | `app_disabled` | 403 | The app is switched off in its settings | Nothing on the device fixes it |
 

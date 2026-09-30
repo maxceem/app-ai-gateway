@@ -1,5 +1,5 @@
 import {
-  BadgeCheck,
+  ArrowLeftRight,
   ChartNoAxesColumn,
   Gauge,
   Route,
@@ -13,7 +13,9 @@ import {
 export interface AppSection {
   slug: string;
   label: string;
-  icon: typeof BadgeCheck;
+  icon: typeof ShieldCheck;
+  /** The line under the page's title, where one sentence says what the list is. */
+  description?: string;
 }
 
 /**
@@ -25,10 +27,22 @@ export interface AppSection {
  * record itself.
  */
 export const APP_SECTIONS: AppSection[] = [
-  { slug: "overview", label: "Overview", icon: BadgeCheck },
   { slug: "auth", label: "Auth policy", icon: ShieldCheck },
-  { slug: "proxy", label: "Proxy policy", icon: Waypoints },
-  { slug: "endpoints", label: "Endpoints", icon: Route },
+  // One page per thing an app's proxy policy decides, so each page is one list:
+  // the providers it may call, the model names it maps, the endpoints it names.
+  { slug: "providers", label: "Provider access", icon: Waypoints },
+  {
+    slug: "rewrites",
+    label: "Model rewrites",
+    icon: ArrowLeftRight,
+    description: "When the app asks for one model, use another instead.",
+  },
+  {
+    slug: "custom-endpoints",
+    label: "Custom endpoints",
+    icon: Route,
+    description: "Your custom endpoints that call real provider endpoints underneath.",
+  },
   { slug: "limits", label: "Limits", icon: Gauge },
   { slug: "users", label: "Users", icon: Users },
   { slug: "usage", label: "Usage", icon: ChartNoAxesColumn },
@@ -46,3 +60,12 @@ export const APP_SECTIONS: AppSection[] = [
 ];
 
 export const DEFAULT_APP_SECTION = APP_SECTIONS[0]!.slug;
+
+/**
+ * Slugs a section used to have, so a bookmark from before the rename still
+ * opens the page it meant rather than the default one.
+ */
+export const RENAMED_APP_SECTIONS: Record<string, string> = {
+  proxy: "providers",
+  endpoints: "custom-endpoints",
+};

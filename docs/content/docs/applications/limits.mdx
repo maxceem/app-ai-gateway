@@ -20,10 +20,11 @@ Rate limits answer `429 app_rate_limited`. An exhausted budget answers
 stops a request within about ten seconds of the one that crosses it.
 
 This card needs an app that identifies users. For an app with **No user
-identity** it is replaced by a note pointing to the **Auth policy** page,
-because there is nobody for a per-user limit to apply to.
+identity** its fields are disabled, and a notice at its top links to the
+**Auth policy** page where user authentication is turned on, because there
+is nobody for a per-user limit to apply to until then.
 
-## Application limits
+## Per-app limits
 
 Shared across all users and keys of the app. The same three fields, with
 `data.scope: "app"` on refusals. An `app` refusal is everybody's traffic, so

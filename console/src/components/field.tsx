@@ -85,7 +85,7 @@ export function SectionHeader({
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+    <div className="py-6 text-center text-sm text-muted-foreground">
       {children}
     </div>
   );

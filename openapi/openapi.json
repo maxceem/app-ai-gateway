@@ -37,7 +37,7 @@
       "description": "Provider-native streaming proxy endpoints."
     },
     {
-      "name": "Named endpoints",
+      "name": "Custom endpoints",
       "description": "Server-configured provider and model behind a stable slug."
     },
     {
@@ -1425,7 +1425,7 @@
                     "audio_transcription"
                   ]
                 },
-                "description": "The named-endpoint styles this instance can back on its route."
+                "description": "The custom-endpoint styles this instance can back on its route."
               },
               "modelPrefix": {
                 "type": [
@@ -3856,10 +3856,10 @@
     "/v1/apps/{app}/endpoints/{slug}": {
       "post": {
         "tags": [
-          "Named endpoints"
+          "Custom endpoints"
         ],
         "operationId": "callNamedEndpoint",
-        "summary": "Call a server-configured named endpoint",
+        "summary": "Call a server-configured custom endpoint",
         "description": "The endpoint's provider, model, fixed parameters, output cap, and fallback chain come from the application configuration, so you can change models without shipping a client release. Responses-style endpoints accept an OpenAI Responses body; audio_transcription endpoints accept an OpenAI audio transcription multipart body and may omit the model field. The successful response keeps the serving provider's native format and streaming behaviour.",
         "security": [
           {

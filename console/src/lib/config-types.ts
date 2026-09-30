@@ -142,7 +142,7 @@ export function instanceModels(
 export type ProxyConfig = AppConfigInput["routing"];
 
 /**
- * The instances a named endpoint of this style may target: the ones whose own
+ * The instances a custom endpoint of this style may target: the ones whose own
  * route serves it, as the gateway reports on each instance. The provider type
  * and the route are both already in that answer — only OpenAI and xAI compose
  * these request shapes, and Vercel serves no transcription API — so nothing is

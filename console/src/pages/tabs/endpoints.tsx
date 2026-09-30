@@ -15,6 +15,7 @@ import { ProviderIcon } from "@/components/brand-icon";
 import { ENDPOINT_PROVIDER_TYPES } from "@shared/providers";
 import { EmptyState, Field, SectionHeader } from "@/components/field";
 import { DisabledReason } from "@/components/guarded-button";
+import { PageAction } from "@/components/page-action";
 import { JsonEditor, parseJson } from "@/components/json-editor";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import {
@@ -34,12 +35,12 @@ import {
 import { usePrices, useProviderInstances } from "@/lib/queries";
 import type { ProviderCredential } from "@/lib/types";
 
-/** Only these provider types compose named-endpoint request shapes; read off the shared matrix. */
+/** Only these provider types compose custom-endpoint request shapes; read off the shared matrix. */
 const NO_ELIGIBLE_INSTANCE = `Add a provider of type ${
   new Intl.ListFormat("en", { type: "disjunction" }).format(
     ENDPOINT_PROVIDER_TYPES.map((type) => providerLabel(type)),
   )
-} first — no other instance can serve a named endpoint`;
+} first — no other instance can serve a custom endpoint`;
 const NO_ELIGIBLE_INSTANCE_ID = "add-endpoint-disabled-reason";
 
 const API_STYLE_HINTS: Record<EndpointConfig["api_style"], string> = {
@@ -434,51 +435,39 @@ export function EndpointsTab({ appId, state }: { appId: string; state: AppDraft 
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <SectionHeader
-            title="Named endpoints"
-            description="A stable slug whose provider, model, parameters, and fallbacks live here instead of in the client. Endpoints ignore the proxy allowlists; this configuration is the policy."
-            action={
-              eligible.length === 0 ? (
-                <DisabledReason reason={NO_ELIGIBLE_INSTANCE} reasonId={NO_ELIGIBLE_INSTANCE_ID}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled
-                    aria-disabled="true"
-                    aria-describedby={NO_ELIGIBLE_INSTANCE_ID}
-                  >
-                    <Plus className="size-3.5" />
-                    Add endpoint
-                  </Button>
-                </DisabledReason>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    state.updateEndpoints({
-                      ...endpoints,
-                      [nextEndpointSlug(endpoints)]: newEndpoint(),
-                    })
-                  }
-                >
-                  <Plus className="size-3.5" />
-                  Add endpoint
-                </Button>
-              )
+      <PageAction>
+        {eligible.length === 0 ? (
+          <DisabledReason reason={NO_ELIGIBLE_INSTANCE} reasonId={NO_ELIGIBLE_INSTANCE_ID}>
+            <Button size="sm" disabled aria-disabled="true" aria-describedby={NO_ELIGIBLE_INSTANCE_ID}>
+              <Plus className="size-4" />
+              Add endpoint
+            </Button>
+          </DisabledReason>
+        ) : (
+          <Button
+            size="sm"
+            onClick={() =>
+              state.updateEndpoints({
+                ...endpoints,
+                [nextEndpointSlug(endpoints)]: newEndpoint(),
+              })
             }
-          />
-        </CardHeader>
-        {entries.length === 0 ? (
+          >
+            <Plus className="size-4" />
+            Add endpoint
+          </Button>
+        )}
+      </PageAction>
+
+      {entries.length === 0 ? (
+        <Card>
           <CardContent>
             <EmptyState>
-              No named endpoints. Clients of this app use the provider proxy directly.
+              No custom endpoints. Clients of this app call the provider proxy directly.
             </EmptyState>
           </CardContent>
-        ) : null}
-      </Card>
+        </Card>
+      ) : null}
 
       {entries.map(([slug, endpoint], index) => (
         // Keyed by position so renaming a slug does not remount the card.

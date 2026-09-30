@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { AppShell } from "./app-shell";
+import { UnsavedDraftProvider, useReportUnsaved } from "@/lib/unsaved-draft";
 import { membership, renderAuthenticated, stubApi } from "@/test/render";
 import type { BillingAccess, OrganizationQuota } from "@/lib/types";
 
@@ -45,7 +47,7 @@ function quotaAt(used: number): OrganizationQuota {
 }
 
 /** Opens an app so the rail is handed over to it. */
-function renderInsideApp(route = "/apps/app-1/overview", status = "active") {
+function renderInsideApp(route = "/apps/app-1/auth", status = "active", content: ReactNode = "content") {
   stubApi({
     "/v1/admin/apps/app-1": {
       body: {
@@ -53,7 +55,18 @@ function renderInsideApp(route = "/apps/app-1/overview", status = "active") {
       },
     },
   });
-  return renderAuthenticated(<AppShell>content</AppShell>, { route });
+  return renderAuthenticated(
+    <UnsavedDraftProvider>
+      <AppShell>{content}</AppShell>
+    </UnsavedDraftProvider>,
+    { route },
+  );
+}
+
+/** A page with a draft in the state it says. */
+function Page({ dirty }: { dirty: boolean }) {
+  useReportUnsaved(dirty);
+  return <>content</>;
 }
 
 /** The account block at the foot of the sidebar holds the admin destinations. */
@@ -119,10 +132,10 @@ describe("AppShell navigation", () => {
     const nav = screen.getByRole("navigation");
     const links = [...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"));
     expect(links).toEqual([
-      "/apps/app-1/overview",
       "/apps/app-1/auth",
-      "/apps/app-1/proxy",
-      "/apps/app-1/endpoints",
+      "/apps/app-1/providers",
+      "/apps/app-1/rewrites",
+      "/apps/app-1/custom-endpoints",
       "/apps/app-1/limits",
       "/apps/app-1/users",
       "/apps/app-1/usage",
@@ -139,8 +152,22 @@ describe("AppShell navigation", () => {
     expect(screen.queryByText("disabled")).toBeNull();
     working.unmount();
 
-    renderInsideApp("/apps/app-1/overview", "disabled");
+    renderInsideApp("/apps/app-1/auth", "disabled");
     expect(await screen.findByText("disabled")).toBeTruthy();
+  });
+
+  it("marks the app's name while the page being read has unsaved changes", async () => {
+    const clean = renderInsideApp("/apps/app-1/auth", "active", <Page dirty={false} />);
+    expect(await screen.findByText("My app")).toBeTruthy();
+    expect(screen.queryByText("Unsaved")).toBeNull();
+    clean.unmount();
+
+    renderInsideApp("/apps/app-1/auth", "active", <Page dirty />);
+    expect(await screen.findByText("My app")).toBeTruthy();
+    // Across from the way out, above the name: seen from every section, and
+    // apart from the record's own state under the name.
+    const mark = screen.getByText("Unsaved");
+    expect(mark.parentElement?.contains(screen.getByRole("link", { name: /^apps$/i }))).toBe(true);
   });
 
   it("keeps the way back out above the record, where a provider's would also sit", () => {
@@ -158,7 +185,7 @@ describe("AppShell navigation", () => {
     renderInsideApp("/apps/app-1/users");
 
     expect(screen.getByRole("link", { name: "Users" }).getAttribute("aria-current")).toBe("page");
-    expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
+    expect(screen.getByRole("link", { name: "Auth policy" }).getAttribute("aria-current")).toBeNull();
   });
 
   it("names the app by its id until the record loads", () => {
@@ -168,7 +195,7 @@ describe("AppShell navigation", () => {
     // the console's request to a real socket, whose failure landed in the
     // suite's output after this test had already passed.
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
-    renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps/app-1/overview" });
+    renderAuthenticated(<AppShell>content</AppShell>, { route: "/apps/app-1/auth" });
 
     expect(screen.getAllByText("app-1").length).toBeGreaterThan(0);
   });

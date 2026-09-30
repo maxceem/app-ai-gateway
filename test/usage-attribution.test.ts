@@ -213,7 +213,7 @@ describe("gateway attribution on recorded usage", () => {
     });
   });
 
-  it("attributes named endpoint traffic to the same route it was sent over", async () => {
+  it("attributes custom endpoint traffic to the same route it was sent over", async () => {
     await endpoint("routed-chat");
     expect(await lastEvent("openai-aig")).toMatchObject({
       endpoint_slug: "routed-chat",

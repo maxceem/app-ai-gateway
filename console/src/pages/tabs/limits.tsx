@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
+import { TriangleAlert } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { EmptyState, Field } from "@/components/field";
+import { Field } from "@/components/field";
 import type { AppDraft } from "@/hooks/use-app-draft";
 import { draftLimits, type LimitScopeConfig } from "@/lib/config-types";
 import { identifiesEndUsers } from "@shared/app-config";
@@ -10,15 +12,16 @@ import { formatCost } from "@/lib/format";
 /** Empty means unlimited, so an unparseable or blank field clears the limit. */
 const asLimit = (value: string): number | null => (value === "" ? null : Number(value));
 
-export function LimitsTab({ state }: { state: AppDraft }) {
+export function LimitsTab({ appId, state }: { appId: string; state: AppDraft }) {
   const draft = state.draft!;
   const limits = draftLimits(draft.config.limits);
   /*
    * An application that identifies no end users has nobody for a per-user limit
-   * to apply to, and the Worker refuses the combination outright. Hiding the
-   * card is the honest form of that: the alternative is a form that accepts
-   * numbers and then fails on save, or worse, one that looks like it is
-   * metering users while everything lands in a single bucket.
+   * to apply to, and the Worker refuses the combination outright. The card
+   * stays, so the page always has the same shape, but its fields are disabled
+   * and a notice at its top says what turns them on. A form that accepted
+   * numbers here would fail on save, or worse, look like it was metering users
+   * while everything landed in a single bucket.
    */
   const identifiesUsers = identifiesEndUsers(draft.config.authentication);
   const updateScope = (scope: "per_user" | "per_app", partial: Partial<LimitScopeConfig>) =>
@@ -29,39 +32,18 @@ export function LimitsTab({ state }: { state: AppDraft }) {
 
   return (
     <div className="space-y-4">
-      {/*
-        The distinction this page exists to make. These limits and the plan
-        allowance on the billing page are unrelated quotas over different
-        populations, and reading one as the other is the mistake that cost this
-        feature once already.
-      */}
-      <p className="text-sm leading-relaxed text-muted-foreground">
-        Limits you set on <strong className="font-medium text-foreground">your app's end users</strong>.
-        They are unrelated to your own{" "}
-        <Link to="/billing" className="text-primary-ink underline underline-offset-4">
-          plan allowance
-        </Link>
-        , which meters all your apps together: a request refused here never spends it. Edits take
-        up to a minute to apply everywhere.
-      </p>
-
-      <div className={identifiesUsers ? "grid gap-4 lg:grid-cols-2" : "grid gap-4"}>
-        {identifiesUsers ? (
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Per-user limits</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-xs text-muted-foreground">
-              Applied independently to every authenticated user. Rate limits return{" "}
-              <code className="font-mono">app_rate_limited</code>; exhausting the monthly spend
-              returns <code className="font-mono">app_budget_exhausted</code>.
-            </p>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Requests per minute" htmlFor="rpm" hint="Leave empty for unlimited.">
+              <Field label="Requests per minute" htmlFor="rpm">
                 <Input
                   id="rpm"
                   type="number"
+                  disabled={!identifiesUsers}
                   min={1}
                   value={limits.per_user.requests.per_minute ?? ""}
                   placeholder="Unlimited"
@@ -75,10 +57,11 @@ export function LimitsTab({ state }: { state: AppDraft }) {
                   }
                 />
               </Field>
-              <Field label="Requests per day" htmlFor="rpd" hint="Leave empty for unlimited.">
+              <Field label="Requests per day" htmlFor="rpd">
                 <Input
                   id="rpd"
                   type="number"
+                  disabled={!identifiesUsers}
                   min={1}
                   value={limits.per_user.requests.per_day ?? ""}
                   placeholder="Unlimited"
@@ -100,12 +83,13 @@ export function LimitsTab({ state }: { state: AppDraft }) {
                 hint={
                   limits.per_user.spending.monthly_usd !== null
                     ? `${formatCost(limits.per_user.spending.monthly_usd)} per user per month. Settled from completed requests, so it stops the request after the one that crosses it.`
-                    : "Unlimited"
+                    : undefined
                 }
               >
                 <Input
                   id="budget"
                   type="number"
+                  disabled={!identifiesUsers}
                   min={0}
                   step="0.01"
                   value={limits.per_user.spending.monthly_usd ?? ""}
@@ -118,31 +102,35 @@ export function LimitsTab({ state }: { state: AppDraft }) {
                 />
               </Field>
             </div>
+            {identifiesUsers ? null : (
+              <Alert role="status">
+                <TriangleAlert />
+                <AlertDescription>
+                  {/* One paragraph: the description is a grid, and would put
+                      the link on a line of its own otherwise. */}
+                  <p>
+                    Per-user limits cannot be set.{" "}
+                    <Link
+                      to={`/apps/${appId}/auth/users`}
+                      className="text-primary-ink underline underline-offset-4"
+                    >
+                      Turn on user authentication
+                    </Link>{" "}
+                    to use them.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            )}
           </CardContent>
         </Card>
-        ) : (
-          <Card>
-            <CardContent className="pt-6">
-              <EmptyState>
-                This application identifies no end users, so there is nobody for a per-user limit to
-                apply to. Choose a user authentication method on the Auth policy tab to set them, or
-                use the application limits below.
-              </EmptyState>
-            </CardContent>
-          </Card>
-        )}
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Application limits</CardTitle>
+            <CardTitle className="text-sm">Per-app limits</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-xs text-muted-foreground">
-              Shared across all users and credentials for this application. Leave a field empty to
-              keep that application-wide limit unrestricted.
-            </p>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Requests per minute" htmlFor="app-rpm" hint="Leave empty for unlimited.">
+              <Field label="Requests per minute" htmlFor="app-rpm">
                 <Input
                   id="app-rpm"
                   type="number"
@@ -159,7 +147,7 @@ export function LimitsTab({ state }: { state: AppDraft }) {
                   }
                 />
               </Field>
-              <Field label="Requests per day" htmlFor="app-rpd" hint="Leave empty for unlimited.">
+              <Field label="Requests per day" htmlFor="app-rpd">
                 <Input
                   id="app-rpd"
                   type="number"
@@ -184,7 +172,7 @@ export function LimitsTab({ state }: { state: AppDraft }) {
                 hint={
                   limits.per_app.spending.monthly_usd !== null
                     ? `${formatCost(limits.per_app.spending.monthly_usd)} per application per month. Settled from completed requests, so it stops the request after the one that crosses it.`
-                    : "Unlimited"
+                    : undefined
                 }
               >
                 <Input

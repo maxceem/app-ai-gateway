@@ -31,6 +31,7 @@ import { entitledPlan, QUOTA_WARNING_RATIO, quotaMeter } from "@/lib/billing";
 import { useConsoleSession } from "@/lib/console-session";
 import { READ_ONLY_REASON } from "@/lib/permissions";
 import { useApp, useSignOut } from "@/lib/queries";
+import { useUnsavedDraft } from "@/lib/unsaved-draft";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -343,16 +344,20 @@ function RootNav({ onNavigate }: { onNavigate?: () => void }) {
  * without the operator having to look for it somewhere new. `title` names the
  * record, and is the page's heading: the content beside the rail does not
  * repeat it, so it is set large enough to be read as one. `badge` sits under
- * the name for a state worth seeing from every section, such as disabled.
+ * the name for a state worth seeing from every section, such as disabled;
+ * `mark` sits across from the way out, above the name, for a state of the
+ * visit rather than of the record, such as unsaved changes.
  */
 function DrillInRail({
   back,
+  mark,
   title,
   badge,
   items,
   onNavigate,
 }: {
   back: { to: string; label: string };
+  mark?: ReactNode;
   title: string;
   badge?: ReactNode;
   items: { to: string; label: string; icon?: typeof LayoutGrid }[];
@@ -363,18 +368,21 @@ function DrillInRail({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-col gap-2 border-b border-sidebar-border px-3 pb-3">
-        <Link
-          to={back.to}
-          onClick={onNavigate}
-          className={cn(
-            "flex h-8 w-fit items-center gap-1.5 rounded-lg px-2 text-sm text-muted-foreground transition-colors",
-            "hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-            "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-          )}
-        >
-          <ArrowLeft className="size-3.5 shrink-0" />
-          {back.label}
-        </Link>
+        <div className="flex items-center justify-between gap-2 pr-2">
+          <Link
+            to={back.to}
+            onClick={onNavigate}
+            className={cn(
+              "flex h-8 w-fit items-center gap-1.5 rounded-lg px-2 text-sm text-muted-foreground transition-colors",
+              "hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+              "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+            )}
+          >
+            <ArrowLeft className="size-3.5 shrink-0" />
+            {back.label}
+          </Link>
+          {mark}
+        </div>
 
         <div className="min-w-0 space-y-1.5 px-2 pt-1 pb-1">
           <h1 className="line-clamp-2 text-lg leading-snug font-semibold tracking-tight break-words">
@@ -413,10 +421,18 @@ function DrillInRail({
  */
 function AppRail({ appId, onNavigate }: { appId: string; onNavigate?: () => void }) {
   const app = useApp(appId);
+  const unsaved = useUnsavedDraft();
 
   return (
     <DrillInRail
       back={{ to: "/apps", label: "Apps" }}
+      mark={
+        unsaved ? (
+          <Badge className="border-transparent bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200">
+            Unsaved
+          </Badge>
+        ) : undefined
+      }
       title={app.data?.app.name ?? appId}
       badge={app.data ? <AppStatusBadge status={app.data.app.status} /> : undefined}
       items={APP_SECTIONS.map((section) => ({

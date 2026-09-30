@@ -49,7 +49,7 @@ export async function prepareProxyPlan(
   };
 }
 
-/** A named endpoint as its fallback chain of attempts, primary first. */
+/** A custom endpoint as its fallback chain of attempts, primary first. */
 export async function prepareEndpointPlan(
   input: PrepareInput & { slug: string },
 ): Promise<ExecutionPlan> {

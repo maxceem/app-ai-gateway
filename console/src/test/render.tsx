@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { createMemoryRouter, Route, RouterProvider, Routes, useLocation } from "react-router-dom";
 import { render } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConsoleSessionProvider } from "@/lib/console-session";
@@ -72,6 +72,14 @@ function LocationProbe({ probe }: { probe: RouterProbe }) {
  * own `useParams`; without one the tree is rendered directly, which is what
  * every screen driven purely by its props needs.
  */
+/**
+ * The same kind of router the console runs on: a data router around a tree of
+ * plain `<Routes>`. It is what `useBlocker` needs, and a screen that blocks a
+ * navigation would throw under a plain `MemoryRouter`.
+ */
+const memoryRouter = (route: string, element: ReactNode) =>
+  createMemoryRouter([{ path: "*", element }], { initialEntries: [route] });
+
 export function renderPublic(
   ui: ReactNode,
   { route = "/", path }: { route?: string; path?: string } = {},
@@ -83,12 +91,17 @@ export function renderPublic(
     router,
     ...render(
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[route]}>
-          <TooltipProvider>
-            {path === undefined ? ui : <Routes><Route path={path} element={ui} /></Routes>}
-          </TooltipProvider>
-          <LocationProbe probe={router} />
-        </MemoryRouter>
+        <RouterProvider
+          router={memoryRouter(
+            route,
+            <>
+              <TooltipProvider>
+                {path === undefined ? ui : <Routes><Route path={path} element={ui} /></Routes>}
+              </TooltipProvider>
+              <LocationProbe probe={router} />
+            </>,
+          )}
+        />
       </QueryClientProvider>,
     ),
   };
@@ -162,20 +175,25 @@ export function renderAuthenticated(
     router,
     ...render(
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[options.route ?? "/"]}>
-          <LocationProbe probe={router} />
-          <TooltipProvider>
-            <ConsoleSessionProvider
-              session={testSession(options.session)}
-              capabilities={{ ...CAPABILITIES, ...options.capabilities }}
-              billing={options.billing}
-              quota={options.quota}
-              unclaimedAccessEndsAt={options.unclaimedAccessEndsAt}
-            >
-              {ui}
-            </ConsoleSessionProvider>
-          </TooltipProvider>
-        </MemoryRouter>
+        <RouterProvider
+          router={memoryRouter(
+            options.route ?? "/",
+            <>
+              <LocationProbe probe={router} />
+              <TooltipProvider>
+                <ConsoleSessionProvider
+                  session={testSession(options.session)}
+                  capabilities={{ ...CAPABILITIES, ...options.capabilities }}
+                  billing={options.billing}
+                  quota={options.quota}
+                  unclaimedAccessEndsAt={options.unclaimedAccessEndsAt}
+                >
+                  {ui}
+                </ConsoleSessionProvider>
+              </TooltipProvider>
+            </>,
+          )}
+        />
       </QueryClientProvider>,
     ),
   };

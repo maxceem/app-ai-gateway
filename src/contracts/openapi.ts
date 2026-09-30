@@ -156,7 +156,7 @@ export function createOpenAPIDocument({ includeHidden = true } = {}) {
       { name: "Application authentication", description: "Issuer identity plus App Attest or API-key client proof." },
       { name: "Application", description: "Authenticated application-user state." },
       { name: "Provider proxy", description: "Provider-native streaming proxy endpoints." },
-      { name: "Named endpoints", description: "Server-configured provider and model behind a stable slug." },
+      { name: "Custom endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, and usage." },
       { name: "Admin management keys", description: "agw_mgmt_ credentials for scripts, CI and agents. They never expire, and are created and revoked from the console only." },

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { AppDetailPage } from "@/pages/app-detail";
@@ -16,7 +16,7 @@ const APP = {
 };
 
 /** Rendered through the page, so the tab is reached the way the sidebar reaches it. */
-function renderSettings(role: "owner" | "member", tab = "settings") {
+function renderSettings(role: "owner" | "member", tab = "settings", apiBaseUrl?: string) {
   stubApi({
     "/v1/admin/apps/my-app/keys": { body: { app_id: APP.id, keys: [] } },
     "/v1/admin/apps/my-app": { body: { app: APP } },
@@ -25,9 +25,14 @@ function renderSettings(role: "owner" | "member", tab = "settings") {
     <Routes>
       <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
     </Routes>,
-    { session: { role }, route: `/apps/my-app/${tab}` },
+    { session: { role }, route: `/apps/my-app/${tab}`, capabilities: { apiBaseUrl } },
   );
 }
+
+/** The "Client base URL" block; the page has other `code` elements before it. */
+const baseUrl = () =>
+  [...document.querySelectorAll("code")]
+    .find((element) => element.textContent?.includes("/v1/apps/"))?.textContent ?? "";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -36,10 +41,33 @@ describe("SettingsTab", () => {
     renderSettings("owner");
 
     expect(await screen.findByLabelText(/^name$/i)).toHaveProperty("value", "My app");
-    expect(screen.getByLabelText(/application id/i)).toHaveProperty("value", "my-app");
+    // The id is read and copied, never typed: text with a copy control, not a field.
+    expect(screen.getByText("my-app", { selector: "code" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /copy application id/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^copy$/i })).toBeNull();
     expect(screen.getByRole("switch", { name: /app enabled/i }).getAttribute("aria-checked"))
       .toBe("true");
     expect(screen.getByRole("button", { name: /delete app/i })).toHaveProperty("disabled", false);
+  });
+
+  it("builds the client base URL from the console's own origin by default", async () => {
+    renderSettings("owner");
+
+    await waitFor(() =>
+      expect(baseUrl()).toBe(`${window.location.origin}/v1/apps/my-app/proxy/{provider}/{provider_path}`));
+  });
+
+  /**
+   * A deployment that publishes a separate host for application clients is the
+   * only thing that can tell the console about it, so the advertised origin
+   * replaces the window's rather than being appended to it.
+   */
+  it("advertises the deployment's API host when one is configured", async () => {
+    renderSettings("owner", "settings", "https://api.example.com");
+
+    await waitFor(() =>
+      expect(baseUrl()).toBe("https://api.example.com/v1/apps/my-app/proxy/{provider}/{provider_path}"));
+    expect(baseUrl()).not.toContain(window.location.origin);
   });
 
   it("turns the app off through the draft, to be saved with everything else", async () => {

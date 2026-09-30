@@ -64,7 +64,7 @@ interface UsageEventInput {
   identity: GatewayIdentity;
   /** Which provider row served the attempt, and how it was reached. */
   attribution: AttemptAttribution;
-  /** Set for named endpoint traffic; null for the passthrough proxy. */
+  /** Set for custom endpoint traffic; null for the passthrough proxy. */
   endpointSlug?: string | null;
   appVersion: string | null;
   status: "ok" | "provider_error";

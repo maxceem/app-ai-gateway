@@ -132,7 +132,7 @@ Anything else on a Vercel-routed provider is refused with
 particular, Gemini's native `generateContent` is not available through Vercel
 (use a direct or Cloudflare-routed Gemini provider for that), and neither is
 transcription, so an `audio_transcription`
-[named endpoint](/applications/endpoints) cannot use a Vercel-routed provider.
+[custom endpoint](/applications/custom-endpoints) cannot use a Vercel-routed provider.
 The Responses entry means `POST v1/responses` only: retrieving, cancelling or
 deleting a stored response by ID is refused on a Vercel-routed provider,
 because Vercel does not document those operations. Keep that work on a direct
@@ -162,7 +162,7 @@ on every route and moving an app between routes changes no configuration.
 | `deepseek` | `deepseek/` | `deepseek/deepseek-v4-pro` |
 | `moonshot` | `moonshotai/` | `moonshotai/kimi-k3` |
 
-The app's [proxy policy](/applications/proxy-policy) page states the rule per
+The app's [provider access](/applications/provider-access) page states the rule per
 provider, for example "Gemini model IDs with no `google/` prefix; the gateway
 adds it upstream."
 
