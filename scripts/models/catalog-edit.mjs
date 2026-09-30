@@ -1,4 +1,4 @@
-// Surgical edits to src/usage/prices.json.
+// Surgical edits to src/usage/models.json.
 //
 // The catalog is formatted by hand — an entry on one line when it fits in 100
 // columns, a field per line when it does not, `5.0` rather than `5` — and a
@@ -32,11 +32,11 @@ function readValue(text, position) {
       let keyStart;
       if (node.type === "object") {
         const keyNode = readValue(text, at);
-        if (keyNode.type !== "string") throw new Error(`prices.json: expected a key at ${at}`);
+        if (keyNode.type !== "string") throw new Error(`models.json: expected a key at ${at}`);
         key = keyNode.value;
         keyStart = keyNode.start;
         at = skip(keyNode.end);
-        if (text[at] !== ":") throw new Error(`prices.json: expected ":" at ${at}`);
+        if (text[at] !== ":") throw new Error(`models.json: expected ":" at ${at}`);
         at += 1;
       }
       const value = readValue(text, at);
@@ -46,7 +46,7 @@ function readValue(text, position) {
         at += 1;
         continue;
       }
-      if (text[at] !== close) throw new Error(`prices.json: expected "," or "${close}" at ${at}`);
+      if (text[at] !== close) throw new Error(`models.json: expected "," or "${close}" at ${at}`);
       return { ...node, end: at + 1 };
     }
   }
@@ -54,14 +54,14 @@ function readValue(text, position) {
   if (char === '"') {
     let at = start + 1;
     while (text[at] !== '"') {
-      if (at >= text.length) throw new Error("prices.json: a string never closes");
+      if (at >= text.length) throw new Error("models.json: a string never closes");
       at += text[at] === "\\" ? 2 : 1;
     }
     return { type: "string", start, end: at + 1, value: JSON.parse(text.slice(start, at + 1)) };
   }
 
   const literal = /^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/u.exec(text.slice(start));
-  if (!literal) throw new Error(`prices.json: unexpected "${char}" at ${start}`);
+  if (!literal) throw new Error(`models.json: unexpected "${char}" at ${start}`);
   const end = start + literal[0].length;
   return { type: /^[-\d]/u.test(literal[0]) ? "number" : "literal", start, end };
 }
@@ -72,7 +72,7 @@ const WIDTH = 100;
 
 function member(node, key, where) {
   const matches = node.entries.filter((entry) => entry.key === key);
-  if (matches.length > 1) throw new Error(`prices.json: ${where} is duplicated`);
+  if (matches.length > 1) throw new Error(`models.json: ${where} is duplicated`);
   return matches[0]?.value;
 }
 
@@ -107,13 +107,13 @@ function rewriteEntry(text, node, edits, where) {
   for (const edit of edits) {
     const value = member(node, edit.field, `${where} ${edit.field}`);
     if (value === undefined) {
-      if (!ADDABLE.has(edit.field)) throw new Error(`prices.json: ${where} ${edit.field} is missing`);
+      if (!ADDABLE.has(edit.field)) throw new Error(`models.json: ${where} ${edit.field} is missing`);
       added.push([edit.field, literal(edit.to)]);
       continue;
     }
     const expected = typeof edit.to === "number" ? "number" : "string";
-    if (value.type !== expected) throw new Error(`prices.json: ${where} ${edit.field} is not a ${expected}`);
-    if (replaced.has(value)) throw new Error(`prices.json: two edits to ${where} ${edit.field}`);
+    if (value.type !== expected) throw new Error(`models.json: ${where} ${edit.field} is not a ${expected}`);
+    if (replaced.has(value)) throw new Error(`models.json: two edits to ${where} ${edit.field}`);
     replaced.set(value, literal(edit.to));
   }
 
@@ -155,14 +155,14 @@ function rewriteEntry(text, node, edits, where) {
 export function applyEdits(text, edits) {
   if (edits.length === 0) return text;
   const root = readValue(text, 0);
-  if (root.type !== "object") throw new Error("prices.json: the root is not an object");
+  if (root.type !== "object") throw new Error("models.json: the root is not an object");
 
   const byEntry = new Map();
   for (const edit of edits) {
     const where = `${edit.provider}/${edit.model}`;
     const provider = member(root, edit.provider, edit.provider);
     const model = provider && member(provider, edit.model, where);
-    if (!model || model.type !== "object") throw new Error(`prices.json: ${where} is missing`);
+    if (!model || model.type !== "object") throw new Error(`models.json: ${where} is missing`);
     if (!byEntry.has(model)) byEntry.set(model, { where, edits: [] });
     byEntry.get(model).edits.push(edit);
   }
@@ -177,7 +177,7 @@ export function applyEdits(text, edits) {
     expected[edit.provider][edit.model][edit.field] = typeof edit.to === "number" ? round6(edit.to) : edit.to;
   }
   if (!isDeepStrictEqual(JSON.parse(result), expected)) {
-    throw new Error("prices.json: the edited file differs from the original in more than the intended values");
+    throw new Error("models.json: the edited file differs from the original in more than the intended values");
   }
   return result;
 }

@@ -1,5 +1,5 @@
 // Where each catalog provider's prices and retirement dates are checked, and
-// the only hand-maintained part of the price sync (scripts/update-prices.mjs).
+// the only hand-maintained part of the model sync (scripts/update-models.mjs).
 //
 //   official      the provider's own pricing page or API, and its parser
 //   deprecations  the provider's own deprecation table, and its parser

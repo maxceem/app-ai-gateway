@@ -7,7 +7,7 @@
  * UsageObservation}, and this module is what puts a number on one.
  */
 
-import prices from "./prices.json";
+import models from "./models.json";
 import { namespaceModelAuthor, providerModelAuthor } from "../providers/provider-type";
 import { lookup } from "../shared/records";
 import type { UsageCounts } from "../core/types";
@@ -34,7 +34,7 @@ interface Price {
   author?: string;
   /**
    * The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model,
-   * kept current by the daily price sync. Informational: a retired model
+   * kept current by the daily model sync. Informational: a retired model
    * stays priced, so an app that still names it keeps billing exactly.
    */
   retirement_date?: string;
@@ -64,7 +64,7 @@ function catalogPrice(provider: ProviderType, model: string): Price | undefined 
   // The model name comes from the request body, and "constructor" is a legal
   // one: an unguarded read would answer with a function off Object.prototype
   // and price a model nobody listed.
-  const catalog = prices as Partial<Record<ProviderType, Record<string, Price>>>;
+  const catalog = models as Partial<Record<ProviderType, Record<string, Price>>>;
   return lookup(catalog[provider], model);
 }
 

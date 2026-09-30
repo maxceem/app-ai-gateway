@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import prices from "../src/usage/prices.json";
+import models from "../src/usage/models.json";
 import { providerModelAuthor } from "../src/providers/provider-type";
 import {
   bodyWindows,
@@ -917,7 +917,7 @@ describe("large response bodies", () => {
  * values, so they keep holding as prices move.
  */
 describe("the shipped price catalog", () => {
-  const catalog = prices as Record<string, Record<string, Record<string, unknown>>>;
+  const catalog = models as Record<string, Record<string, Record<string, unknown>>>;
 
   it("prices every catalogued model in dollars per million tokens", () => {
     for (const [provider, models] of Object.entries(catalog)) {
@@ -930,7 +930,7 @@ describe("the shipped price catalog", () => {
             continue;
           }
           if (field === "retirement_date") {
-            // A real calendar day, as the daily price sync writes it.
+            // A real calendar day, as the daily model sync writes it.
             const day = String(value);
             expect([where, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)])
               .toEqual([where, true, true]);
@@ -1086,7 +1086,7 @@ describe("the shipped price catalog", () => {
   });
 
   it("prefers a curated catalog author over the slug namespace", () => {
-    const mutable = prices as unknown as Record<
+    const mutable = models as unknown as Record<
       string,
       Record<string, { input: number; output: number; author?: string }>
     >;

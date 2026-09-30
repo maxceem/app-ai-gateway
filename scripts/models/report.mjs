@@ -64,7 +64,7 @@ export function renderReport(decision) {
     sections.push(
       "## Needs attention\n\n" +
         list(decision.attention, (item) => `${escape(item.text)} — ${code(item.key)}`) +
-        "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/prices/acknowledged.json`.",
+        "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.",
     );
   }
 
@@ -128,6 +128,6 @@ export function renderReport(decision) {
   }
 
   const header =
-    "Checked every model in `src/usage/prices.json` against its provider's pricing and deprecation pages, by `scripts/update-prices.mjs`.";
+    "Checked every model in `src/usage/models.json` against its provider's pricing and deprecation pages, by `scripts/update-models.mjs`.";
   return `${header}\n\n${sections.join("\n\n")}\n`;
 }

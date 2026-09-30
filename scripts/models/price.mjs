@@ -1,5 +1,5 @@
 // The one price shape every source is read into, and the helpers the parsers
-// share. A `Price` uses the field names of `src/usage/prices.json`, in $ per 1M
+// share. A `Price` uses the field names of `src/usage/models.json`, in $ per 1M
 // tokens (or per minute / per hour of audio), plus two things the catalog never
 // stores:
 //

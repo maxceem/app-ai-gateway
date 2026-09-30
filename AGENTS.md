@@ -127,11 +127,15 @@ means a static import crept back in.
   a gitignored `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked
   config; deploy it with `pnpm run docs:deploy --profile <name>`.
 
-## Model prices
+## Model catalog
 
-- `src/usage/prices.json` is checked daily by `.github/workflows/update-prices.yml`
-  (`scripts/update-prices.mjs`), which opens one rolling pull request from
-  `automation/update-prices`. It changes the value of a price field an entry
+- `src/usage/models.json` is the shipped model catalog: the models the console
+  offers per provider, who made each (`author`), what it costs and when it
+  retires. The API still serves it as `GET /v1/admin/prices`
+  (`listModelPrices`).
+- It is checked daily by `.github/workflows/update-models.yml`
+  (`scripts/update-models.mjs`), which opens one rolling pull request from
+  `automation/update-models`. It changes the value of a price field an entry
   already has, and sets `retirement_date` from the provider's deprecation
   page; adding or removing models and price fields stays a human edit.
 - `retirement_date` records when the provider stops serving a model. A retired
@@ -140,10 +144,10 @@ means a static import crept back in.
 - Keep the file's hand formatting and write whole prices as `5.0`; the sync
   edits number literals in place and never re-serialises the file.
 - Which page or list prices a provider, and any model id that differs there,
-  lives in `scripts/prices/sources.mjs` and nowhere else. A report item that
-  is expected is acknowledged in `scripts/prices/acknowledged.json` with a
+  lives in `scripts/models/sources.mjs` and nowhere else. A report item that
+  is expected is acknowledged in `scripts/models/acknowledged.json` with a
   reason, not by loosening a parser or a test.
-- Preview the sync with `node scripts/update-prices.mjs --dry-run`.
+- Preview the sync with `node scripts/update-models.mjs --dry-run`.
 
 ## Security
 

@@ -39,7 +39,7 @@
     "test:swift-publish": "node --test test/swift-publish.node.mjs",
     "test:deploy-script": "node --test test/deploy-script.node.mjs test/bootstrap-account.node.mjs",
     "test:release-script": "node --test test/release-script.node.mjs",
-    "test:update-prices": "node --test test/update-prices.node.mjs",
+    "test:update-models": "node --test test/update-models.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:dev": "node cli/scripts/dev.mjs",

@@ -1,10 +1,10 @@
-// Checks every model in src/usage/prices.json against its provider's official
+// Checks every model in src/usage/models.json against its provider's official
 // pricing and deprecation pages, falling back to Models.dev and LiteLLM where
 // there is no official source or its parser failed, and updates the prices
 // and retirement dates that changed. Run daily by
-// .github/workflows/update-prices.yml, which opens the pull request.
+// .github/workflows/update-models.yml, which opens the pull request.
 //
-//   node scripts/update-prices.mjs [--dry-run] [--report <path>] [--today YYYY-MM-DD]
+//   node scripts/update-models.mjs [--dry-run] [--report <path>] [--today YYYY-MM-DD]
 //
 //   --dry-run  print the report and write nothing
 //   --report   also write the Markdown report to <path>
@@ -14,18 +14,18 @@
 // says what), 1 when the script itself failed.
 //
 // Everything fetched is untrusted. Nothing fetched is evaluated, and the only
-// files written are prices.json and the report.
+// files written are models.json and the report.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { applyEdits } from "./prices/catalog-edit.mjs";
-import { ParseError } from "./prices/price.mjs";
-import { renderReport } from "./prices/report.mjs";
-import { catalogEdits, decide, needsHuman } from "./prices/rules.mjs";
-import { LITELLM_URL, MODELS_DEV_URL, SOURCES, sourceId } from "./prices/sources.mjs";
+import { applyEdits } from "./models/catalog-edit.mjs";
+import { ParseError } from "./models/price.mjs";
+import { renderReport } from "./models/report.mjs";
+import { catalogEdits, decide, needsHuman } from "./models/rules.mjs";
+import { LITELLM_URL, MODELS_DEV_URL, SOURCES, sourceId } from "./models/sources.mjs";
 
-const CATALOG = fileURLToPath(new URL("../src/usage/prices.json", import.meta.url));
-const ACKNOWLEDGED = fileURLToPath(new URL("./prices/acknowledged.json", import.meta.url));
+const CATALOG = fileURLToPath(new URL("../src/usage/models.json", import.meta.url));
+const ACKNOWLEDGED = fileURLToPath(new URL("./models/acknowledged.json", import.meta.url));
 const USER_AGENT = "app-ai-gateway-price-sync (+https://github.com/maxceem/app-ai-gateway)";
 const TIMEOUT_MS = 20_000;
 
@@ -101,7 +101,7 @@ async function main() {
   const acknowledged = JSON.parse(await readFile(ACKNOWLEDGED, "utf8"));
   const valid = (item) => typeof item?.key === "string" && typeof item?.reason === "string" && item.reason !== "";
   if (!Array.isArray(acknowledged) || !acknowledged.every(valid)) {
-    throw new Error('scripts/prices/acknowledged.json must be a list of { "key": "…", "reason": "…" }');
+    throw new Error('scripts/models/acknowledged.json must be a list of { "key": "…", "reason": "…" }');
   }
 
   const providers = Object.keys(catalog);

@@ -1,24 +1,24 @@
-# Checks every model in src/usage/prices.json against its provider's pricing
+# Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
 # with any price or retirement date that changed. The rules — official page
 # first, the two community lists only when they agree, nothing guessed — live
-# in scripts/update-prices.mjs.
+# in scripts/update-models.mjs.
 #
-# The pull request always comes from the branch `automation/update-prices`, so
+# The pull request always comes from the branch `automation/update-models`, so
 # there is one rolling pull request rather than one a day, and no diff means no
 # pull request. The report is its body and this run's summary.
 #
 # The run ends red when something needs a person: a parser that no longer
 # reads its page, lists that disagree, a suspicious move, a model gone from its
 # official page. An item that is expected is acknowledged by adding its key and
-# a reason to scripts/prices/acknowledged.json.
+# a reason to scripts/models/acknowledged.json.
 #
 # A pull request opened with the default token does not start `pull_request`
 # workflows, so CI is dispatched on the branch by hand, and its checks attach
 # to the pull request's head commit. That needs `actions: write`, and the
 # repository setting "Allow GitHub Actions to create and approve pull requests"
 # for the pull request itself.
-name: Update prices
+name: Update models
 
 on:
   schedule:
@@ -31,7 +31,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: update-prices
+  group: update-models
   cancel-in-progress: false
 
 jobs:
@@ -50,45 +50,45 @@ jobs:
         with:
           node-version: 22
 
-      - name: Check prices
-        id: prices
+      - name: Check models
+        id: models
         run: |
           set +e
-          node scripts/update-prices.mjs --report "$RUNNER_TEMP/prices.md"
+          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          if [ -f "$RUNNER_TEMP/prices.md" ]; then
-            cat "$RUNNER_TEMP/prices.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/models.md" ]; then
+            cat "$RUNNER_TEMP/models.md" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Open or update the pull request
         id: pr
-        if: steps.prices.outputs.code == '0' || steps.prices.outputs.code == '3'
+        if: steps.models.outputs.code == '0' || steps.models.outputs.code == '3'
         uses: peter-evans/create-pull-request@v8
         with:
-          branch: automation/update-prices
+          branch: automation/update-models
           base: main
-          title: Update model prices
-          commit-message: Update model prices
-          body-path: ${{ runner.temp }}/prices.md
-          add-paths: src/usage/prices.json
+          title: Update the model catalog
+          commit-message: Update the model catalog
+          body-path: ${{ runner.temp }}/models.md
+          add-paths: src/usage/models.json
           delete-branch: true
 
       - name: Run CI on the pull request
         if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-prices
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-models
 
       - name: Fail when something needs a person
-        if: steps.prices.outputs.code != '0'
+        if: steps.models.outputs.code != '0'
         env:
-          CODE: ${{ steps.prices.outputs.code }}
+          CODE: ${{ steps.models.outputs.code }}
         run: |
           if [ "$CODE" = "3" ]; then
-            echo "::error::Some prices need a person; see the run summary or the pull request."
+            echo "::error::Some models need a person; see the run summary or the pull request."
           else
-            echo "::error::scripts/update-prices.mjs failed (exit $CODE)."
+            echo "::error::scripts/update-models.mjs failed (exit $CODE)."
           fi
           exit 1

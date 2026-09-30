@@ -1,30 +1,30 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { applyEdits, formatPrice } from "../scripts/prices/catalog-edit.mjs";
-import { fromLitellm, fromModelsDev } from "../scripts/prices/lists.mjs";
-import { parseAnthropic } from "../scripts/prices/parsers/anthropic.mjs";
-import { parseAnthropicDeprecations } from "../scripts/prices/parsers/anthropic-deprecations.mjs";
-import { parseCerebras } from "../scripts/prices/parsers/cerebras.mjs";
-import { parseDeepseek } from "../scripts/prices/parsers/deepseek.mjs";
-import { parseGemini } from "../scripts/prices/parsers/gemini.mjs";
-import { parseGeminiDeprecations } from "../scripts/prices/parsers/gemini-deprecations.mjs";
-import { parseGroq } from "../scripts/prices/parsers/groq.mjs";
-import { parseGroqDeprecations } from "../scripts/prices/parsers/groq-deprecations.mjs";
-import { parseMoonshot } from "../scripts/prices/parsers/moonshot.mjs";
-import { parseOpenai } from "../scripts/prices/parsers/openai.mjs";
-import { parseOpenaiDeprecations } from "../scripts/prices/parsers/openai-deprecations.mjs";
-import { parsePerplexity } from "../scripts/prices/parsers/perplexity.mjs";
-import { parseTogether } from "../scripts/prices/parsers/together.mjs";
-import { parseTogetherDeprecations } from "../scripts/prices/parsers/together-deprecations.mjs";
-import { parseXai } from "../scripts/prices/parsers/xai.mjs";
-import { ParseError, effectivePrice, parseDate, samePrice } from "../scripts/prices/price.mjs";
-import { renderReport } from "../scripts/prices/report.mjs";
-import { catalogEdits, compare, decide, needsHuman } from "../scripts/prices/rules.mjs";
-import { SOURCES, sourceId } from "../scripts/prices/sources.mjs";
+import { applyEdits, formatPrice } from "../scripts/models/catalog-edit.mjs";
+import { fromLitellm, fromModelsDev } from "../scripts/models/lists.mjs";
+import { parseAnthropic } from "../scripts/models/parsers/anthropic.mjs";
+import { parseAnthropicDeprecations } from "../scripts/models/parsers/anthropic-deprecations.mjs";
+import { parseCerebras } from "../scripts/models/parsers/cerebras.mjs";
+import { parseDeepseek } from "../scripts/models/parsers/deepseek.mjs";
+import { parseGemini } from "../scripts/models/parsers/gemini.mjs";
+import { parseGeminiDeprecations } from "../scripts/models/parsers/gemini-deprecations.mjs";
+import { parseGroq } from "../scripts/models/parsers/groq.mjs";
+import { parseGroqDeprecations } from "../scripts/models/parsers/groq-deprecations.mjs";
+import { parseMoonshot } from "../scripts/models/parsers/moonshot.mjs";
+import { parseOpenai } from "../scripts/models/parsers/openai.mjs";
+import { parseOpenaiDeprecations } from "../scripts/models/parsers/openai-deprecations.mjs";
+import { parsePerplexity } from "../scripts/models/parsers/perplexity.mjs";
+import { parseTogether } from "../scripts/models/parsers/together.mjs";
+import { parseTogetherDeprecations } from "../scripts/models/parsers/together-deprecations.mjs";
+import { parseXai } from "../scripts/models/parsers/xai.mjs";
+import { ParseError, effectivePrice, parseDate, samePrice } from "../scripts/models/price.mjs";
+import { renderReport } from "../scripts/models/report.mjs";
+import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rules.mjs";
+import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
 
-const fixture = (name) => readFileSync(new URL(`./fixtures/prices/${name}`, import.meta.url), "utf8");
-const catalogText = readFileSync(new URL("../src/usage/prices.json", import.meta.url), "utf8");
+const fixture = (name) => readFileSync(new URL(`./fixtures/models/${name}`, import.meta.url), "utf8");
+const catalogText = readFileSync(new URL("../src/usage/models.json", import.meta.url), "utf8");
 const TODAY = "2026-09-30";
 
 function parse(parser, text, wanted, today = TODAY) {
@@ -552,7 +552,7 @@ test("rules: a dated price is applied on its day and announced before it", () =>
 
 test("sources: every catalog provider has an entry", () => {
   for (const provider of Object.keys(JSON.parse(catalogText))) {
-    assert.ok(SOURCES[provider], `scripts/prices/sources.mjs has no entry for ${provider}`);
+    assert.ok(SOURCES[provider], `scripts/models/sources.mjs has no entry for ${provider}`);
   }
 });
 

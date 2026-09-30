@@ -1,4 +1,4 @@
-// The decision rules of the price sync, as one pure function: given the
+// The decision rules of the model sync, as one pure function: given the
 // catalog, what every source said and today's date, which prices and
 // retirement dates change and what a person has to look at. No network, no
 // filesystem.
@@ -8,7 +8,7 @@
 // still names it keeps billing exactly; nothing here removes a model.
 //
 // Every item that needs a person has a stable `key`. An owner who has seen one
-// and accepts it adds that key to scripts/prices/acknowledged.json with a
+// and accepts it adds that key to scripts/models/acknowledged.json with a
 // reason, and the item stops failing the run.
 
 import { fromLitellm, fromModelsDev } from "./lists.mjs";
@@ -159,7 +159,7 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
   for (const [provider, models] of Object.entries(catalog)) {
     const source = SOURCES[provider];
     if (!source) {
-      flag(`${provider}: no source entry`, provider, null, "scripts/prices/sources.mjs has no entry for this provider");
+      flag(`${provider}: no source entry`, provider, null, "scripts/models/sources.mjs has no entry for this provider");
       continue;
     }
 
@@ -318,7 +318,7 @@ export function needsHuman(decision) {
   return decision.attention.length > 0;
 }
 
-/** Every edit the decision makes to prices.json, prices and retirement dates alike. */
+/** Every edit the decision makes to models.json, prices and retirement dates alike. */
 export function catalogEdits(decision) {
   return [
     ...decision.changes.map(({ provider, model, field, to }) => ({ provider, model, field, to })),
