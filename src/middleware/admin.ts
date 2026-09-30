@@ -7,21 +7,19 @@ import {
   MANAGEMENT_KEY_PREFIX,
 } from "../auth/identity";
 import { GatewayError } from "../core/errors";
-import type { app } from "../db/schema";
 import type { AdminActor } from "../management/actor";
 import type { RequestVariables } from "./request-scope";
 
 export interface AdminVariables extends RequestVariables {
   authState: AuthState;
   actor: AdminActor;
-  adminApp?: typeof app.$inferSelect;
 }
 
 /**
  * Authenticates a management request, and decides nothing else.
  *
  * What the caller is then allowed to do is declared on the operation in
- * `src/contracts/catalog.ts` and applied by `catalogRouter`, so adding a route
+ * `src/contracts/catalog.ts` and applied by `runOperation`, so adding a route
  * does not mean remembering a path regex here. All this establishes is who
  * is asking: which credential, which user, which organization and with what
  * role — as one {@link AdminActor} on the context.
@@ -71,7 +69,7 @@ export const adminAuth: MiddlewareHandler<{
  * The one {@link AdminActor} an authenticated management caller is, whichever
  * surface authenticated it: the admin API here, or the CLI's management
  * operations with their own cf-auth options. What it may then do is the
- * operation's catalog policy, applied by `catalogRouter`.
+ * operation's catalog policy, applied by `runOperation`.
  */
 export async function managementActor(state: AuthState): Promise<AdminActor> {
   const { requireOrganization } = await cfAuth();

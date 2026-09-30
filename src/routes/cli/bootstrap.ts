@@ -8,6 +8,7 @@ import {
 } from "../../core/account-lifecycle";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
+import { deploymentMeta } from "../../management/deployment-meta";
 import { database } from "../../db";
 import { mgmtOperation, mgmtOrganization, mgmtOrganizationUser, mgmtUser } from "../../db/schema";
 import { guardedInsert, prepared } from "../../db/sql";
@@ -17,13 +18,12 @@ import { bootstrapDecision } from "../../policy/deployment";
 import { emptyDeploymentCondition, humanOwnerCondition } from "../../policy/sql";
 import {
   cliIdentity,
-  deploymentMeta,
   engineRefused,
   operationEngine,
 } from "./operations";
 import { bootstrapRecord, kindOf, operationId, type BootstrapRecord } from "./operation-rows";
 import { digest } from "./security";
-import type { OperationInput } from "../catalog-router";
+import type { OperationInput } from "../../management/executor";
 import type { CliContext } from "./types";
 
 async function retireKey(
@@ -52,7 +52,7 @@ export async function bootstrap(
   { body: input }: OperationInput<"bootstrapCliAccount">,
 ): Promise<CliOperation> {
   const deployment = c.get("deployment");
-  const meta = deploymentMeta(c);
+  const meta = deploymentMeta(c.get("deployment"));
   const id = await operationId(input.token);
   const now = Date.now();
   const decision = bootstrapDecision(deployment, {

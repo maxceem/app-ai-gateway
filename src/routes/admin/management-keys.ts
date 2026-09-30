@@ -40,11 +40,11 @@ routes.handle("createManagementKey", async (c, { actor, body }) => {
   return { key };
 });
 
-routes.handle("revokeManagementKey", async (c) => {
+routes.handle("revokeManagementKey", async (c, { actor, params }) => {
   const key = await (await identityAuthFor(c)).service.revokeApiKey({
     actor: c.get("authState"),
-    organizationId: c.get("actor").organizationId,
-    apiKeyId: c.req.param("id"),
+    organizationId: actor.organizationId,
+    apiKeyId: params.id,
   });
   if (!key) throw new GatewayError(404, "not_found", "Management key was not found");
   return { key };

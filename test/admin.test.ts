@@ -2,7 +2,8 @@ import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 import worker from "../src/index";
-import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
+import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
+import { appleConfig, seedApp, seedHuman, seedProvider, seedServerApp, serverConfig } from "./helpers";
 import { microusd, shippedRates } from "./shipped-rates";
 
 /** What the seeded 50/40/10/20-token gpt-5.6-luna event costs at the shipped rates. */
@@ -882,5 +883,73 @@ describe("admin API", () => {
         error: { code: "invalid_request" },
       });
     }
+  });
+});
+
+describe("admin refusal order", () => {
+  /*
+   * Which refusal a request gets when it earns more than one is part of the
+   * contract: the application an `/apps/{app}` operation names is resolved
+   * first, inside the caller's account, then the operation's policy, and only
+   * then is the body read. Each request below is short of at least two of
+   * those and must be told about the first.
+   */
+  const MALFORMED = "{ not json";
+
+  function write(path: string, method: string, headers: Record<string, string>) {
+    return exports.default.fetch(`https://example.test${path}`, {
+      method,
+      headers: { ...headers, "content-type": "application/json" },
+      body: MALFORMED,
+    });
+  }
+
+  const KEY = { authorization: `Bearer ${TEST_MANAGEMENT_KEY}` };
+
+  /** A read-only member of an account of their own, signed in to the console. */
+  async function member(email: string) {
+    const human = await seedHuman(email);
+    await env.DB.prepare("UPDATE mgmt_organization_user SET role = 'member' WHERE organization_id = ?")
+      .bind(human.organizationId)
+      .run();
+    return {
+      organizationId: human.organizationId,
+      headers: { cookie: human.cookie, "x-console-request": "1" },
+    };
+  }
+
+  it("resolves the application inside the caller's account before its policy", async () => {
+    const { organizationId, headers } = await member("refusal-order-member@example.test");
+    // In the test operator's account, not the member's.
+    await seedServerApp("refusal-order-elsewhere");
+    await seedServerApp("refusal-order-own", { organizationId });
+
+    for (const app of ["refusal-order-missing", "refusal-order-elsewhere"]) {
+      const response = await write(`/v1/admin/apps/${app}`, "PUT", headers);
+      expect(response.status, app).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "app_not_found", message: "App is not registered" },
+      });
+    }
+
+    // Found, so now the policy: a member may not write, whatever the body.
+    const own = await write("/v1/admin/apps/refusal-order-own", "PUT", headers);
+    expect(own.status).toBe(403);
+    await expect(own.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+  });
+
+  it("refuses an unparseable body only once the caller may write", async () => {
+    await seedServerApp("refusal-order-present");
+    const response = await write("/v1/admin/apps/refusal-order-present", "PUT", KEY);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "A JSON object is required" },
+    });
+  });
+
+  it("refuses a management key on a session-only operation before reading the body", async () => {
+    const response = await write("/v1/admin/keys", "POST", KEY);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "session_required" } });
   });
 });

@@ -11,7 +11,8 @@ import { accountLifecycle } from "../../core/account-lifecycle";
 import { accountUnclaimed, unclaimedAccessDeadline } from "../../policy/accounts";
 import { billingQuota, quotaUsage } from "../../billing/quota";
 import type { BillingStatusResponse } from "../../contracts/billing";
-import { adminRouter } from "../catalog-router";
+import type { BodiedOperation } from "../../contracts/catalog";
+import { adminRouter, type HttpOperationHandler } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
 
@@ -37,8 +38,9 @@ function binding(c: Context<BillingRouteEnv>): BillingRuntime {
  * The only way an operation is mounted here: each runs `binding` as its
  * `before`, so a deployment without billing is refused before a body is read.
  */
-const handle: typeof routes.handle = (name, handler) =>
+function handle<K extends BodiedOperation>(name: K, handler: HttpOperationHandler<BillingRouteEnv, K>): void {
   routes.handle(name, handler, { before: (c) => void binding(c) });
+}
 
 async function rpc<T>(operation: () => Promise<T>): Promise<T> {
   try {

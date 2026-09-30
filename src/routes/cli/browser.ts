@@ -29,7 +29,7 @@ import {
 import { authState, operationEngine, runResourceOperation } from "./operations";
 import { kindOf } from "./operation-rows";
 import { approveClaim, approveLogin, loginOrganizations, pageRefusal } from "./identity-handoff";
-import type { OperationInput } from "../catalog-router";
+import type { OperationInput } from "../../management/executor";
 import type { CliContext } from "./types";
 
 /**
@@ -87,10 +87,10 @@ export type BrowserStep =
  * and that happens before the submission allowance is spent, so a stranger
  * guessing at proofs cannot lock the page out for its owner.
  */
-export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliContext, input: Input) {
+export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliContext, id: string, input: Input) {
   const credential = browserCredential(input.submissionToken);
   const viewer = await authState(c, true);
-  const details = await (await operationEngine(c)).details({ id: c.req.param("id") ?? "", ...credential, viewer });
+  const details = await (await operationEngine(c)).details({ id, ...credential, viewer });
   if (details.state === "expired")
     throw new GatewayError(410, "invalid_request", "Operation has expired");
   await enforceEndpointRateLimit(c.env, "submission", details.id);
@@ -118,7 +118,7 @@ export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliCo
  */
 export async function relayedSubmission<Schema extends z.ZodType<CliBrowserProof>>(c: CliContext, schema: Schema) {
   assertConsoleOrigin(c);
-  return verifiedSubmission(c, parseRequest(schema, await cliJson(c.req.raw)));
+  return verifiedSubmission(c, c.req.param("id") ?? "", parseRequest(schema, await cliJson(c.req.raw)));
 }
 
 /**
@@ -148,9 +148,9 @@ async function reviewSnapshots(
 
 export async function browserDetails(
   c: CliContext,
-  { body }: OperationInput<"cliBrowserDetails">,
+  { body, params }: OperationInput<"cliBrowserDetails">,
 ): Promise<CliBrowserDetailsResponse> {
-  const { step, viewer: state } = await verifiedSubmission(c, body);
+  const { step, viewer: state } = await verifiedSubmission(c, params.id, body);
   const { details } = step;
   const login = step.entry.type === "login";
   const organizationId = details.organization?.id ?? null;
@@ -204,9 +204,9 @@ export async function browserRegister(c: CliContext): Promise<Response> {
 
 export async function browserSubmit(
   c: CliContext,
-  { body }: OperationInput<"cliBrowserSubmit">,
+  { body, params }: OperationInput<"cliBrowserSubmit">,
 ): Promise<CliBrowserSubmitResponse> {
-  const { step, credential, input: { secret, organizationId } } = await verifiedSubmission(c, body);
+  const { step, credential, input: { secret, organizationId } } = await verifiedSubmission(c, params.id, body);
   const { details } = step;
   if (step.entry.type === "claim") {
     await approveClaim(c, details, step.entry, credential);
@@ -259,9 +259,9 @@ export async function browserSubmit(
  */
 export async function browserDeny(
   c: CliContext,
-  { body }: OperationInput<"cliBrowserDeny">,
+  { body, params }: OperationInput<"cliBrowserDeny">,
 ): Promise<CliBrowserDenyResponse> {
-  const { step, credential, viewer } = await verifiedSubmission(c, body);
+  const { step, credential, viewer } = await verifiedSubmission(c, params.id, body);
   await (await operationEngine(c)).deny({ id: step.details.id, ...credential, actor: viewer });
   return { state: "denied", message: "Declined. You can close this tab; your CLI has been told." };
 }

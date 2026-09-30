@@ -163,19 +163,21 @@ export interface OperationSpec {
   readonly security: SecurityKind;
   /**
    * Management-surface authorization, for `security: "management" | "session"`
-   * entries, applied by `src/routes/catalog-router.ts` before the handler runs.
+   * entries, applied by `runOperation` in `src/management/executor.ts` before
+   * the handler runs.
    *
    * Defaults are the shape of the surface rather than a list: `GET` reads, so
    * `{ role: "member", access: "read" }`; anything else writes, so
    * `{ role: "admin", access: "setup" }`. Only an operation that departs from
    * that says so here, and it says so beside its own path instead of in a
-   * regex in another file. `identity: "human"` refuses a service credential,
-   * and a `session` entry refuses anything but a browser session.
+   * regex in another file. `session: true` requires an interactive browser
+   * session, which only a human has; a `session` security entry additionally
+   * refuses a management key.
    */
   readonly policy?: {
     readonly role?: "member" | "admin";
     readonly access?: "read" | "setup";
-    readonly identity?: "human";
+    readonly session?: true;
   };
   /** Registered in the full document but not the published one. */
   readonly hidden?: true;
@@ -515,7 +517,7 @@ export const CATALOG = {
     security: "management",
     // The whole billing subtree is a person's to act on: a service credential
     // may run an account but may not buy, change or cancel what pays for it.
-    policy: { identity: "human" },
+    policy: { session: true },
     response: BillingPlansResponseSchema,
     responseDescription: "Billing service response.",
   },
@@ -527,7 +529,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Get billing access and the current allowance period",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     response: BillingStatusResponseSchema,
     responseDescription:
       "Billing access, and the current period against the plan's request allowance when an entitlement resolves.",
@@ -540,7 +542,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Create a hosted checkout",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingCheckoutRequestSchema,
     response: BillingCheckoutResponseSchema,
     responseDescription: "Hosted checkout URL.",
@@ -553,7 +555,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Change the subscription plan",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingPlanSelectionSchema,
     response: BillingChangeResponseSchema,
     responseDescription: "Billing service response.",
@@ -566,7 +568,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Resume a canceled subscription",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingPlanSelectionSchema,
     response: BillingChangeResponseSchema,
     responseDescription: "Billing service response.",
@@ -579,7 +581,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Cancel the subscription at period end",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     response: BillingCancelResponseSchema,
     responseDescription: "Cancellation accepted.",
   },
@@ -591,7 +593,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Start a no-card trial",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingTrialRequestSchema,
     response: BillingAccessSchema,
     responseDescription: "Trial access state.",

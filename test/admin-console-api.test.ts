@@ -917,7 +917,8 @@ describe("authoritative admin configuration", () => {
         role: "owner",
         credentialType: "apiKey",
       });
-      c.set("adminApp", scopedRow);
+      // The application itself is resolved by the executor, through this
+      // request's primary-only binding like the write.
       await next();
     });
     route.route("/", appRoutes);

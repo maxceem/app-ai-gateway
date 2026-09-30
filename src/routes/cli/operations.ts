@@ -26,25 +26,17 @@ import type { CliOperation, CliOperationResult } from "../../contracts/cli";
 import { database } from "../../db";
 import { mgmtApiKey } from "../../db/schema";
 import type { Actor } from "../../management/actor";
+import { deploymentMeta } from "../../management/deployment-meta";
 import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import { managementActor } from "../../middleware/admin";
 import { accountAccessCondition } from "../../policy/sql";
 import { managementScope } from "../admin/body";
-import type { OperationInput } from "../catalog-router";
+import type { OperationInput } from "../../management/executor";
 import { operationKind, type ResourceKind, type ResourceWrite } from "./operation-kinds";
 import { kindOf, operationId, resultRecord } from "./operation-rows";
 import { digest } from "./security";
 import type { CliContext, CliEnv } from "./types";
-
-/**
- * How the CLI is told which deployment answered: its public identity, plus the
- * one thing about it a client behaves differently for.
- */
-export function deploymentMeta(c: CliContext) {
-  const deployment = c.get("deployment");
-  return { ...deployment.identity(), mode: deployment.mode };
-}
 
 export function browserPath(id: string): string {
   return `/cli/approve/${encodeURIComponent(id)}`;
@@ -133,7 +125,7 @@ async function loginKeyLive(env: Env, view: OperationView): Promise<boolean> {
 /** Where an operation stands, from the engine's view of it, as sending it and polling it both answer. */
 export async function operationStatus(c: CliContext, view: OperationView): Promise<CliOperation> {
   const { kind, entry } = kindOf(view.kind);
-  const meta = deploymentMeta(c);
+  const meta = deploymentMeta(c.get("deployment"));
   const base = { id: view.id, kind, expiresAt: view.expiresAt, deployment: meta };
   switch (view.state) {
     case "pending":
@@ -271,7 +263,7 @@ export async function createOperation(
   { body: input, actor }: OperationInput<"createCliOperation">,
 ): Promise<CliOperation> {
   const kind = operationKind(input.kind);
-  const meta = deploymentMeta(c);
+  const meta = deploymentMeta(c.get("deployment"));
   if (actor.credentialType === "session" && c.req.header("origin") !== meta.consoleOrigin) {
     throw new GatewayError(403, "forbidden", "Use the first-party console for browser operations");
   }
@@ -338,9 +330,11 @@ export async function createOperation(
  * the id in the path before anything about the operation is read, so nothing
  * reaches a caller that does not hold it.
  */
-export async function provenOperation(c: CliContext): Promise<{ view: OperationView; token: string }> {
+export async function provenOperation(
+  c: CliContext,
+  id: string,
+): Promise<{ view: OperationView; token: string }> {
   const token = c.req.header("authorization")?.replace(/^Bearer /, "") ?? "";
-  const id = c.req.param("id") ?? "";
   const view = /^[A-Za-z0-9_-]{32,256}$/.test(token) && (await operationId(token)) === id
     ? await (await operationEngine(c)).findByToken({ token })
     : null;
@@ -348,8 +342,11 @@ export async function provenOperation(c: CliContext): Promise<{ view: OperationV
   return { view, token };
 }
 
-export async function pollOperation(c: CliContext): Promise<CliOperation> {
-  const { view, token } = await provenOperation(c);
+export async function pollOperation(
+  c: CliContext,
+  { params }: OperationInput<"pollCliOperation">,
+): Promise<CliOperation> {
+  const { view, token } = await provenOperation(c, params.id);
   // A bootstrap is recovered by sending it again, which is also what activates
   // the key it delivers; a poll could hand over a key that never works.
   if (kindOf(view.kind).entry.type === "bootstrap")
