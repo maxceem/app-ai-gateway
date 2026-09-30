@@ -42,11 +42,6 @@ const SECRET_CONTEXTS = {
     organizationId,
     providerGatewayId,
   }),
-  /** Everything a CLI operation produced, one-time keys included; see `mgmt_operation`. */
-  cliOperation: (operationId: string) => ({
-    purpose: "cli-operation-outcome",
-    operationId,
-  }),
 } as const satisfies Record<string, (...args: string[]) => Record<string, string>>;
 
 export type SecretKind = keyof typeof SECRET_CONTEXTS;

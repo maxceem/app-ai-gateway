@@ -14,6 +14,8 @@ const EXISTING = {
   enabled: true,
   createdAt: "2026-02-01T00:00:00.000Z",
   revokedAt: null,
+  source: "console",
+  label: null,
 };
 
 function stubKeys(created?: unknown, keys: unknown[] = [EXISTING]) {
@@ -53,6 +55,33 @@ describe("ManagementKeysPage", () => {
     expect(await screen.findByText("CI deploy")).toBeTruthy();
     expect(screen.getByText("…6789")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
+  });
+
+  it("tells a CLI's key from a console key by its source and label", async () => {
+    stubKeys(undefined, [
+      EXISTING,
+      {
+        ...EXISTING,
+        id: "key-2",
+        name: "agw login",
+        tokenHint: "1234",
+        source: "cli",
+        label: "CLI on mac-studio",
+      },
+      { ...EXISTING, id: "key-3", name: "agw init", tokenHint: "5678", source: "bootstrap" },
+    ]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    const cliRow = (await screen.findByText("agw login")).closest("tr")!;
+    expect(within(cliRow).getByText("CLI on mac-studio")).toBeTruthy();
+    expect(within(cliRow).getByText("CLI")).toBeTruthy();
+
+    const consoleRow = screen.getByText("CI deploy").closest("tr")!;
+    expect(within(consoleRow).getByText("Console")).toBeTruthy();
+    expect(within(consoleRow).queryByText(/CLI/)).toBeNull();
+
+    const bootstrapRow = screen.getByText("agw init").closest("tr")!;
+    expect(within(bootstrapRow).getByText("CLI setup")).toBeTruthy();
   });
 
   it("does not call a key that has not been handed over active", async () => {

@@ -11,9 +11,9 @@ plain markdown at `/agents.md`; the API contract is at `/openapi.json`.
 
 1. Run `agw deployment status --json` and inspect the deployment identity.
 2. Add your first provider with `agw provider add --type openai --browser --no-open`
-   to initialize a new hosted account. Use `agw account login` for an existing
-   account or `agw deployment setup --name NAME --no-domain` for self-hosting. Existing management keys enter through
-   `agw deployment connect --url URL --key-stdin`, never an argument.
+   to initialize a new hosted account, or run
+   `agw deployment setup --name NAME --no-domain` to self-host. For an existing
+   account, sign in as described in "Signing in" below.
 3. Run `agw account claim` when human ownership is needed. Give the person the
    URL. They must use a browser outside the agent's visible surface, compare the
    account, create their sign-in on that page and approve; if that browser is
@@ -49,6 +49,35 @@ not transfer credentials or history. Build that file from
 `result.app`; other fields are rejected. Never send paid inference as a setup test
 unless the person explicitly requests it.
 
+## Signing in
+
+- `agw account login --no-open --json` opens a login and returns
+  `state: "pending"` with `url`, `userCode` and `id`. Give the person the URL and
+  the pairing code. They open the URL in their own browser, check that the page
+  shows the same code, and approve. Then run `agw operation wait <id> --json`;
+  the CLI stores its new management key and prints only non-secret fields.
+  Without `--no-open` the CLI also opens the page in the local browser when
+  one is available (not over SSH, on Linux with no display, or without a
+  terminal), and without `--json` it waits for the approval itself and prints
+  the pairing code to stderr.
+- For your own deployment, `agw deployment connect --url URL` runs the same
+  login against that URL.
+- A declined login fails with `operation_denied`; an expired one with
+  `operation_expired`. Start a new login; do not retry the old id.
+- In CI, or when the person gives you an existing management key, use the
+  `AGW_MANAGEMENT_KEY` environment variable. When it is set it is the credential
+  for every command, ahead of any saved login, and nothing is written to disk;
+  `agw account login` refuses with `environment_credential`. Alternatively pipe
+  the key once with `agw account login --key-stdin` (or
+  `agw deployment connect --url URL --key-stdin`) to save it. Never pass a key
+  as an argument.
+- `agw account logout --json` revokes the saved key and removes it locally. Its
+  result is `{loggedOut: true, revoked: true|false}`; `revoked: false` means the
+  key was already refused or the deployment could not be reached.
+- Every key a CLI login creates appears on the console's Management keys page,
+  tagged CLI and labelled with the machine it was issued to, for example
+  `CLI on mac-studio`. The person can revoke it there at any time.
+
 The API reference below is useful for integrations that do not use the CLI.
 
 ## What the gateway is
@@ -67,14 +96,16 @@ provider's own request format. You manage all of this through the admin API.
 - Use the explicitly selected gateway URL; the hosted API is
   `https://api.appaigateway.com`. `GET /v1/healthz` checks basic availability.
 - Direct integrations send a management credential as `Authorization: Bearer`
-  using their protected credential store. The CLI uses its active connection
-  and does not read legacy gateway credential environment overrides.
+  using their protected credential store. The CLI uses `AGW_MANAGEMENT_KEY` when
+  it is set, and otherwise the key its active connection saved.
 - All admin routes are under `/v1/admin/`. Request and response bodies are
   JSON with `Content-Type: application/json`.
 - A management key has the current role of its owning identity. It does not
   expire. It cannot perform human-only actions such as claiming an account,
-  changing human ownership, or creating, listing and revoking management keys,
-  which are console-only and answer `403 session_required` to a key.
+  changing human ownership, or creating, listing and revoking other management
+  keys, which are console-only and answer `403 session_required` to a key. A
+  key can revoke only itself, with `DELETE /v1/cli/credential`; that is what
+  `agw account logout` sends.
 
 
 

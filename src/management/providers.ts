@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type {
   ProviderCreateRequest,
   ProviderTestRequest,
@@ -22,6 +22,7 @@ import { assertNotRejected, probeProviderGateway, probeProviderKey } from "../pr
 import { decryptProviderGatewaySecret, invalidateOrganizationProviders } from "../providers/provider-store";
 import { isProviderType, type ProviderType } from "../shared/providers";
 import { database } from "../db";
+import { guardedInsert } from "../db/sql";
 import {
   provider,
   providerGateway,
@@ -219,11 +220,7 @@ export async function createProvider(
   try {
     await commitResourceWrite(
       scope,
-      (guard) => sql`INSERT INTO provider(id,organization_id,type,slug,name,secret_blob,secret_hint,provider_gateway_id,gateway_route_json,base_url,pricing_json,revision,status,created_at,updated_at,created_by)
-       SELECT ${row.id},${row.organizationId},${row.type},${row.slug},${row.name},${row.secretBlob},${row.secretHint},
-         ${row.providerGatewayId},${row.gatewayRoute === null ? null : JSON.stringify(row.gatewayRoute)},${row.baseUrl},
-         ${row.pricing === null ? null : JSON.stringify(row.pricing)},${row.revision},${row.status},${row.createdAt},${row.updatedAt},${row.createdBy}
-       WHERE ${guard}`,
+      (guard) => guardedInsert(database(scope.env.DB), provider, row, guard),
       { provider: serialize(row, route) },
       { boundary, cap },
     );
@@ -287,12 +284,25 @@ export async function updateProvider(
   const route = await rowRoute(env, updated);
   await commitResourceWrite(
     scope,
-    (guard) => sql`UPDATE provider SET name=${updated.name},
-       pricing_json=${updated.pricing === null ? null : JSON.stringify(updated.pricing)},status=${updated.status},
-       gateway_route_json=${updated.gatewayRoute === null ? null : JSON.stringify(updated.gatewayRoute)},
-       base_url=${updated.baseUrl},secret_blob=${updated.secretBlob},secret_hint=${updated.secretHint},
-       revision=${updated.revision},updated_at=${updated.updatedAt}
-     WHERE id=${id} AND organization_id=${actor.organizationId} AND revision=${body.revision} AND ${guard}`,
+    (guard) => database(scope.env.DB)
+      .update(provider)
+      .set({
+        name: updated.name,
+        pricing: updated.pricing,
+        status: updated.status,
+        gatewayRoute: updated.gatewayRoute,
+        baseUrl: updated.baseUrl,
+        secretBlob: updated.secretBlob,
+        secretHint: updated.secretHint,
+        revision: updated.revision,
+        updatedAt: updated.updatedAt,
+      })
+      .where(and(
+        eq(provider.id, id),
+        eq(provider.organizationId, actor.organizationId),
+        eq(provider.revision, body.revision),
+        guard,
+      )),
     { provider: serialize(updated, route) },
     { boundary },
   );

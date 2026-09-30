@@ -309,10 +309,12 @@ test("an upgrade's notice goes to stderr and leaves a --json document alone", as
     stdout: { write: (text: string) => { out += text; } },
     stderr: { write: (text: string) => { err += text; } },
     transport: {
-      request: async () => {
-        throw new Error("logout makes no request");
+      request: async (_url, path) => {
+        assert.equal(path, "/v1/cli/credential");
+        return { data: { revoked: true } };
       },
     },
+    io: { env: {} },
   });
   assert.equal(code, 0);
   assert.equal(JSON.parse(out).ok, true);
@@ -1226,23 +1228,31 @@ test("a state file keeps working on Windows, where every file reports mode 0666"
   await store.write(fresh());
 });
 
-test("logout strips the connection's credential without a request", async () => {
+test("logout revokes the connection's key, then strips it", async () => {
   const state = fresh();
   state.active = {
     url: "https://example.com",
     credential: "SENTINEL-ACTIVE",
     authenticated: true,
   };
+  const requests: { url: string; path: string; method?: string; key?: string }[] = [];
+  let out = "";
   const code = await main(["account", "logout", "--json"], {
     store: { ...makeStore(), read: async () => state },
-    stdout: { write: () => {} },
+    stdout: { write: (text: string) => { out += text; } },
     transport: {
-      request: async () => {
-        throw new Error("logout makes no request");
+      request: async (url, path, options = {}) => {
+        requests.push({ url, path, ...(options.method ? { method: options.method } : {}), ...(options.key ? { key: options.key } : {}) });
+        return { data: { revoked: true } };
       },
     },
+    io: { env: {} },
   });
   assert.equal(code, 0);
+  assert.deepEqual(requests, [
+    { url: "https://example.com", path: "/v1/cli/credential", method: "DELETE", key: "SENTINEL-ACTIVE" },
+  ]);
+  assert.deepEqual(JSON.parse(out).result, { loggedOut: true, revoked: true });
   assert.equal(JSON.stringify(state).includes("SENTINEL"), false);
   assert.equal(state.active?.authenticated, false);
 });

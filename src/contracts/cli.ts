@@ -21,14 +21,30 @@ import { EntitledPlanSchema, GatewayBillingAccessSchema } from "./billing.ts";
 /** The one random secret a CLI operation is proven with; its digest is the operation's id. */
 export const CliProofSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/);
 export const CliBootstrapRequestSchema = z.object({ token: CliProofSchema }).strict();
+/**
+ * The short code a terminal shows beside an approval link, for a person who
+ * would rather type it than follow the link: eight characters, the dash
+ * optional, case ignored.
+ */
+export const CliUserCodeSchema = z.string().regex(/^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/);
+/**
+ * What a browser step is addressed with: the proof from the approval URL's
+ * fragment, or the user code the terminal shows. The two never overlap, since a
+ * proof is at least 32 characters long. Flag-free, because the source is
+ * published verbatim as an OpenAPI `pattern`.
+ */
+export const CliSubmissionTokenSchema = z
+  .string()
+  .regex(/^(?:[A-Za-z0-9_-]{32,256}|[A-Za-z0-9]{4}-?[A-Za-z0-9]{4})$/);
 
 /**
- * Every kind of CLI operation. `bootstrap` has an endpoint of its own because
- * it is the one that needs no credential; every other kind is sent to
- * `/v1/cli/operations`. All of them are polled the same way.
+ * Every kind of CLI operation. `bootstrap` and `login` have endpoints of their
+ * own because they are the two that need no credential; every other kind is
+ * sent to `/v1/cli/operations`. All of them are polled the same way.
  */
 export const CliOperationKindSchema = z.enum([
   "bootstrap",
+  "login",
   "claim",
   "app.add",
   "app.key.add",
@@ -40,7 +56,7 @@ export const CliOperationKindSchema = z.enum([
 ]);
 
 /** The kinds a client sends to `/v1/cli/operations`. */
-export type CliRequestedOperationKind = Exclude<z.infer<typeof CliOperationKindSchema>, "bootstrap">;
+export type CliRequestedOperationKind = Exclude<z.infer<typeof CliOperationKindSchema>, "bootstrap" | "login">;
 
 /** A key for an existing application: the key's own fields, and the application it belongs to. */
 export const CliAppKeyAddPayloadSchema = ApiKeyCreateRequestSchema.extend({ app: z.string().min(1) }).strict();
@@ -76,24 +92,31 @@ export const CliOperationRequestSchema = z.discriminatedUnion("kind", [
   ),
   operationRequest("provider-gateway.rotate-key", HandoffRotatePayloadSchema, "always"),
 ]);
-/** What every browser endpoint is sent: the proof from the approval URL's fragment. */
-export const CliBrowserProofSchema = z.object({ submissionToken: CliProofSchema }).strict();
+/**
+ * What every browser endpoint is sent: the proof from the approval URL's
+ * fragment, or the user code the terminal shows. Only a login issues a user
+ * code; a claim and a provider step are reached through their link alone.
+ */
+export const CliBrowserProofSchema = z.object({ submissionToken: CliSubmissionTokenSchema }).strict();
 /**
  * The approval itself. The secret is what a provider or gateway step asks its
  * approver for; whether a kind requires one is the kind's own rule.
+ * `organizationId` is which of the approver's accounts a login lands in, and
+ * may be left out when they belong to exactly one.
  */
 export const CliBrowserSubmitRequestSchema = z
   .object({
-    submissionToken: CliProofSchema,
+    submissionToken: CliSubmissionTokenSchema,
     approve: z.literal(true),
     // Flag-free, because the source is published verbatim as an OpenAPI `pattern`.
     secret: z.string().max(16384).regex(/\S/, { error: "must not be blank" }).optional(),
+    organizationId: z.string().min(1).max(256).optional(),
   })
   .strict();
-/** The sign-in a claim's approver creates, when they have none here yet. */
+/** The sign-in a claim's or a login's approver creates, when they have none here yet. */
 export const CliBrowserRegisterRequestSchema = z
   .object({
-    submissionToken: CliProofSchema,
+    submissionToken: CliSubmissionTokenSchema,
     email: z.email(),
     password: z.string().min(8).max(256),
     name: z.string().min(1).max(100),
@@ -109,26 +132,49 @@ export const CliDeploymentSchema = z.object({
 /**
  * What has to happen before this handoff can be approved.
  *
- * Only a claim ever reports one. Every other handoff is authorised by the
- * proof in the URL and the CLI credential that opened it, so it asks nothing
- * at all of whoever is holding the browser. A claim is the exception because
- * it settles an unowned account on its first person, and these are the two
- * things such a person may have to do first.
+ * Only a claim and a login ever report one. Every other handoff is authorised
+ * by the proof in the URL and the CLI credential that opened it, so it asks
+ * nothing at all of whoever is holding the browser. A claim is an exception
+ * because it settles an unowned account on its first person, and a login
+ * because it gives a CLI a key belonging to the person who approves it.
  *
- * Neither of them is signing in, and that is the point rather than an
- * omission: arriving with a sign-in that already has an account is precisely
- * what a claim refuses, so this field never asks for one. A page that offered
- * one anyway would be offering the way in that `sign_out_required` exists to
- * close.
+ * `registration_required` is never "sign in" for a claim, and that is the
+ * point rather than an omission: arriving with a sign-in that already has an
+ * account is precisely what a claim refuses, so a page that offered one would
+ * be offering the way in that `sign_out_required` exists to close. A login has
+ * no such rule — belonging to other accounts is what a login is for, and
+ * `sign_out_required` is a claim's alone — so a login's page may offer signing
+ * in beside registering.
  */
 export const CliApprovalRefusalSchema = z.enum([
   "registration_required",
   "sign_out_required",
+  /**
+   * A login's approver belongs to no account they could log the CLI in to, and
+   * this deployment does not give a person one of their own. Nothing on the
+   * page can fix that; an owner has to add them to an account first.
+   */
+  "no_eligible_organization",
 ]);
 /** Who this browser would approve as: the interactive human holding the session. */
 export const CliViewerSchema = z.object({
   name: z.string().nullable(),
   email: z.string().nullable(),
+});
+/** What a CLI said about itself when it asked for a login. Shown, never trusted. */
+export const CliOperationClientSchema = z.object({
+  /** E.g. `CLI on mac-studio`. */
+  label: z.string().nullable(),
+  os: z.string().nullable(),
+  /** The address the request came from, as the edge saw it. */
+  ip: z.string().nullable(),
+  requestedAt: z.string(),
+});
+/** One account a login's approver may log the CLI in to. */
+export const CliLoginOrganizationSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  role: z.enum(["owner", "admin", "member"]),
 });
 /**
  * What the console's approval page reads before it shows anything.
@@ -142,18 +188,34 @@ export const CliViewerSchema = z.object({
 export const CliBrowserDetailsResponseSchema = z.object({
   kind: CliOperationKindSchema,
   payload: z.record(z.string(), z.unknown()),
-  account: OrganizationSummarySchema,
+  /** Null only for a login, which lands in whichever account its approver picks. */
+  account: OrganizationSummarySchema.nullable(),
   viewer: CliViewerSchema.nullable(),
   /**
    * What stands between this browser and the Approve button, or null when
-   * nothing does — which is every non-claim kind, since only a claim asks who
-   * is holding the browser. One field decides the whole screen: each value
+   * nothing does — which is every kind but a claim and a login, since only
+   * those two ask who is holding the browser. One field decides the whole screen: each value
    * names the single thing the page may offer, so the page never has to
    * consult the handoff kind to know what to put in front of a person.
    */
   blockedBy: CliApprovalRefusalSchema.nullable(),
   googleEnabled: z.boolean(),
   expiresAt: z.string(),
+  /**
+   * The code the terminal shows, however the page was reached, so a person
+   * can check it against their terminal before approving. Null for a kind
+   * that has none — every kind but a login.
+   */
+  userCode: z.string().nullable(),
+  /** Who asked, for a login; null for every other kind. */
+  client: CliOperationClientSchema.nullable(),
+  /** Whether approving hands the browser back to the CLI's local listener (`redirectUrl`). */
+  hasLoopbackRedirect: z.boolean(),
+  /**
+   * For a login only: the accounts the signed-in person may log the CLI in to,
+   * so the page can ask which one when there is more than one.
+   */
+  organizations: z.array(CliLoginOrganizationSchema).optional(),
 });
 /**
  * Where the person who approved a handoff goes next.
@@ -178,7 +240,29 @@ export const CliBrowserSubmitResponseSchema = z.object({
   /** The whole of what the page says once it is approved. */
   message: z.string(),
   continueTo: CliHandoffContinuationSchema,
+  /**
+   * Set when the CLI registered a local listener: the page navigates here, and
+   * the one-time code in it is what the CLI redeems for its credential.
+   */
+  redirectUrl: z.url().optional(),
 });
+/** A browser step someone holding its link declined. The CLI's next poll reports it. */
+export const CliBrowserDenyResponseSchema = z.object({
+  state: z.literal("denied"),
+  message: z.string(),
+});
+/** A code a person typed on the console's code-entry page. */
+export const CliBrowserLookupRequestSchema = z.object({ userCode: z.string().min(1).max(32) }).strict();
+/** The pending step a typed code names; carry on with the code as `submissionToken`. */
+export const CliBrowserLookupResponseSchema = z.discriminatedUnion("found", [
+  z.object({ found: z.literal(false) }),
+  z.object({
+    found: z.literal(true),
+    id: z.string(),
+    kind: CliOperationKindSchema,
+    expiresAt: z.string(),
+  }),
+]);
 /**
  * Better Auth's own sign-up answer, relayed verbatim by the claim-registration
  * endpoint. Only the fields the page could act on are named; the session it
@@ -198,6 +282,55 @@ export const CliBrowserGoogleResponseSchema = z.object({
 export const CliCredentialSchema = z.object({
   token: z.string(),
 });
+/**
+ * A CLI that holds no credential asking a person for one. `token` is the
+ * operation's random secret, saved before sending exactly as for every other
+ * operation; `loopbackRedirect` is where the approval page sends the browser
+ * when the CLI listens locally, and then the credential is released only to
+ * `redeemCliLogin`, never to a poll.
+ */
+export const CliLoginRequestSchema = z
+  .object({
+    token: CliProofSchema,
+    client: z
+      .object({
+        label: z.string().trim().min(1).max(200),
+        os: z.string().trim().min(1).max(64).optional(),
+      })
+      .strict(),
+    // Ports 1–65535, spelled out because the source is published as an
+    // OpenAPI `pattern` and has no range syntax.
+    loopbackRedirect: z
+      .string()
+      .regex(
+        /^http:\/\/127\.0\.0\.1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])\/callback$/,
+      )
+      .optional(),
+  })
+  .strict();
+/**
+ * An opened login. `url` and `userCode` are present while it is pending: the
+ * CLI opens the one and prints the other, so a person can either follow the
+ * link or type the code on the console's code-entry page.
+ */
+export const CliLoginSchema = z.object({
+  id: z.string(),
+  kind: z.literal("login"),
+  /** `completed` when a login already approved is sent again: poll it, or redeem it, for the key. */
+  state: z.enum(["pending", "completed", "denied", "expired"]),
+  url: z.url().nullable(),
+  userCode: z.string().nullable(),
+  expiresAt: z.string(),
+});
+/** The one-time code the approval page handed the CLI's local listener. */
+export const CliLoginRedeemRequestSchema = z.object({ redeemCode: CliProofSchema }).strict();
+/** A login's credential and the account it was approved into. Never print or log the credential. */
+export const CliLoginRedeemResponseSchema = z.object({
+  credential: CliCredentialSchema,
+  account: OrganizationSummarySchema,
+});
+/** The management key the caller authenticated with, revoked. */
+export const CliCredentialRevokeResponseSchema = z.object({ revoked: z.literal(true) });
 const UnclaimedAccessSchema = z
   .object({ endsAt: z.string(), limit: z.number().int().optional() })
   .nullable();
@@ -215,14 +348,14 @@ const UnclaimedAccessSchema = z
  * is here only while the operation still holds it sealed.
  */
 export const CliOperationResultSchema = z.object({
-  /** A bootstrap's management key. Never print or log it. */
+  /** A bootstrap's or a login's management key. Never print or log it. */
   credential: CliCredentialSchema.optional(),
   /**
    * On a hosted deployment, when a bootstrapped account's free access ends and
    * the request allowance it has until then; null on a self-host.
    */
   unclaimedAccess: UnclaimedAccessSchema.optional(),
-  /** The account a claim acted on. */
+  /** The account a claim acted on, or a login landed in. */
   accountId: z.string().optional(),
   app: AppResponseSchema.shape.app.optional(),
   /**
@@ -243,6 +376,8 @@ export const CliOperationSchema = z.object({
   id: z.string(),
   kind: CliOperationKindSchema,
   state: z.enum(["pending", "completed", "expired"]),
+  /** Set beside `state: "expired"` when a person declined the browser step rather than letting it lapse. */
+  denied: z.literal(true).optional(),
   expiresAt: z.string(),
   url: z.url().optional(),
   deployment: CliDeploymentSchema,
@@ -281,6 +416,13 @@ export const CliCapabilitiesResponseSchema = z.object({
     }),
   ),
   providerGateways: z.array(z.object({ type: z.string(), name: z.string() })),
+  /** What this deployment supports beyond protocol 1's baseline. Absent on older deployments. */
+  features: z
+    .object({
+      /** `POST /v1/cli/login`: a person approves a CLI in a browser and it receives a key of its own. */
+      browserLogin: z.boolean(),
+    })
+    .optional(),
 });
 
 const [SelfHostedAccessSchema, UnavailableAccessSchema, BilledAccessSchema] =
@@ -339,6 +481,13 @@ export type CliHandoffContinuation = z.infer<typeof CliHandoffContinuationSchema
 export type CliBrowserSubmitResponse = z.infer<typeof CliBrowserSubmitResponseSchema>;
 export type CliBrowserRegisterResponse = z.infer<typeof CliBrowserRegisterResponseSchema>;
 export type CliBrowserGoogleResponse = z.infer<typeof CliBrowserGoogleResponseSchema>;
+export type CliBrowserDenyResponse = z.infer<typeof CliBrowserDenyResponseSchema>;
+export type CliBrowserLookupResponse = z.infer<typeof CliBrowserLookupResponseSchema>;
+export type CliOperationClient = z.infer<typeof CliOperationClientSchema>;
+export type CliLoginOrganization = z.infer<typeof CliLoginOrganizationSchema>;
+export type CliLoginRequest = z.infer<typeof CliLoginRequestSchema>;
+export type CliLogin = z.infer<typeof CliLoginSchema>;
+export type CliLoginRedeemResponse = z.infer<typeof CliLoginRedeemResponseSchema>;
 export type CliOperationKind = z.infer<typeof CliOperationKindSchema>;
 export type CliOperationRequestInput = z.input<typeof CliOperationRequestSchema>;
 /** The payload an operation of one kind carries, as a client writes it. */

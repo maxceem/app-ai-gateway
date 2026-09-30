@@ -1,6 +1,8 @@
 import { sql, type SQL } from "drizzle-orm";
 import { storedAppFromRow, type StoredApp } from "../core/app-records";
-import { prepared } from "../db/sql";
+import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
+import { app } from "../db/schema";
+import { guardedInsert, prepared } from "../db/sql";
 import type { AppConfig } from "../shared/app-config";
 import type { AppStatus } from "../shared/app-status";
 
@@ -80,6 +82,31 @@ export function appInsert(
      WHERE ${guard}
      ${options.ignoreCollision ? sql`ON CONFLICT(id) DO NOTHING` : sql.empty()}
      RETURNING ${RETURNED_COLUMNS}`;
+}
+
+/**
+ * The same insert as a query builder, for a batch that commits it beside other
+ * statements — a CLI operation's completion among them — and so returns
+ * nothing: the caller already holds every value it wrote.
+ */
+export function appInsertStatement(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: BaseSQLiteDatabase<"async", any, any>,
+  values: AtomicAppWrite,
+  guard: SQL,
+) {
+  const now = new Date().toISOString();
+  return guardedInsert(db, app, {
+    id: values.id,
+    organizationId: values.organizationId,
+    name: values.name,
+    config: values.config,
+    authType: values.config.authentication.type,
+    status: values.status,
+    createdAt: values.createdAt ?? now,
+    updatedAt: values.updatedAt ?? now,
+    revision: 1,
+  }, guard);
 }
 
 /**

@@ -12,16 +12,20 @@ import {
   clearIsolateCaches,
   seedHuman,
   seedUnaffiliatedHuman,
+  serverConfig,
 } from "./helpers";
 import type { BillingRuntime } from "../src/billing/contract";
 import {
   assertAccountAccess,
   accountLifecycleCache,
   pruneExpiredAccounts,
+  pruneExpiredAuthorizations,
 } from "../src/core/account-lifecycle";
 import { ENDPOINT_RATE_LIMITS } from "../src/core/endpoint-rate-limit";
-import { secretVault } from "../src/vault";
 import { resolveDeployment } from "../src/policy/deployment";
+import { CfAuthError } from "@maxceem/cf-auth";
+import { asGatewayAuthError, createIdentityAuth, operationSweepStatements } from "../src/auth/identity";
+import { digest } from "../src/routes/cli/security";
 
 function fakeBilling(): BillingRuntime {
   const none = { plan: null, subscription: null };
@@ -149,7 +153,7 @@ describe("CLI account lifecycle", () => {
     const values = await Promise.all(responses.map((r) => bootstrapped(r)));
     expect(values[0]!.credential.token).toBe(values[1]!.credential.token);
     const rows = await env.DB.prepare(
-      "SELECT credential_id,sealed_outcome FROM mgmt_operation WHERE kind='bootstrap'",
+      "SELECT outcome,sealed_outcome FROM mgmt_operation WHERE kind='bootstrap'",
     ).all();
     expect(JSON.stringify(rows)).not.toContain(values[0]!.credential.token);
     expect(
@@ -182,7 +186,7 @@ describe("CLI account lifecycle", () => {
       authorization: `Bearer ${created.credential.token}`,
     })).status).toBe(200);
     await env.DB.prepare(
-      "UPDATE mgmt_operation SET sealed_until=0 WHERE kind='bootstrap' AND organization_id=?",
+      "UPDATE mgmt_operation SET sealed_until=0 WHERE kind='bootstrap' AND json_extract(outcome,'$.accountId')=?",
     ).bind(created.account.id).run();
     const renewed = await request(testEnv, "/bootstrap", input, {
       "cf-connecting-ip": random(),
@@ -454,10 +458,11 @@ describe("CLI account lifecycle", () => {
   it("retires an undisclosed credential after vault failure and retries the same account", async () => {
     const testEnv = runtime();
     const input = { token: random() };
-    const vault = secretVault(testEnv);
+    // The key is sealed by cf-auth's operation engine, with AES-GCM under a
+    // key derived from the auth secret.
     const spy = vi
-      .spyOn(vault, "encryptSecret")
-      .mockRejectedValueOnce(new Error("transient vault unavailable"));
+      .spyOn(crypto.subtle, "encrypt")
+      .mockRejectedValueOnce(new Error("transient sealing failure"));
     expect((await request(testEnv, "/bootstrap", input)).status).toBe(500);
     expect(
       await env.DB.prepare(
@@ -1008,8 +1013,8 @@ it("keeps a minimal bootstrap tombstone after account cleanup and refuses resurr
   expect(row?.state).toBe("expired");
   for (const field of [
     "organization_id",
-    "initiating_user_id",
-    "credential_id",
+    "opener_user_id",
+    "outcome",
     "sealed_outcome",
   ])
     expect(row?.[field]).toBeNull();
@@ -1140,4 +1145,273 @@ it("keeps the completed trial counter readable during recovery without renewing 
   });
   await expect(assertAccountAccess(resolveDeployment(testEnv), testEnv, data.account.id, "setup"))
     .rejects.toMatchObject({ code: "unclaimed_access_expired" });
+});
+
+/** Both nightly steps in the order the run takes them: the engine's sweep, then account cleanup. */
+async function nightlyAt(testEnv: Env, at: number) {
+  await pruneExpiredAuthorizations(
+    testEnv.DB,
+    await operationSweepStatements(resolveDeployment(testEnv), testEnv, testEnv.DB, at),
+  );
+  await pruneExpiredAccounts(testEnv.DB);
+}
+
+it("keeps a bootstrap's tombstone past its account's deadline, so a resent token stays refused", async () => {
+  const testEnv = runtime();
+  const { data, input } = await start(testEnv);
+  const day = 86_400_000;
+  // Ninety-one days on: the account's recovery deadline has passed, and a
+  // record kept only as long as that deadline would be swept first.
+  await env.DB.prepare("UPDATE mgmt_organization SET expires_at=? WHERE id=?")
+    .bind(new Date(Date.now() - 1000).toISOString(), data.account.id)
+    .run();
+  const later = Date.now() + 91 * day;
+  await nightlyAt(testEnv, later);
+  await nightlyAt(testEnv, later);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(0);
+  expect(
+    await env.DB.prepare("SELECT state FROM mgmt_operation WHERE id=?").bind(data.id).first("state"),
+  ).toBe("expired");
+  const replay = await request(testEnv, "/bootstrap", input);
+  expect(replay.status).toBe(403);
+  await expect(replay.json()).resolves.toMatchObject({ error: { code: "account_expired" } });
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(0);
+});
+
+it("finishes a bootstrap whose account batch failed when the same token is sent later", async () => {
+  const testEnv = runtime();
+  const input = { token: random() };
+  const batch = env.DB.batch.bind(env.DB);
+  vi.spyOn(env.DB, "batch").mockImplementationOnce(async () => {
+    throw new Error("D1_ERROR: Network connection lost");
+  });
+  expect((await request(testEnv, "/bootstrap", input)).status).toBe(500);
+  vi.mocked(env.DB.batch).mockImplementation(batch);
+  // Well past the engine's default fifteen-minute pending window: an
+  // unfinished bootstrap waits for its token rather than reading as an
+  // account the deadline removed.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(Date.now() + 60 * 60_000);
+    const retried = await request(testEnv, "/bootstrap", input);
+    expect(retried.status, await retried.clone().text()).toBe(200);
+    expect((await bootstrapped(retried)).credential.token).toMatch(/^agw_mgmt_/u);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(1);
+});
+
+it("tells a second person reaching a claim that already landed that someone else took it", async () => {
+  const testEnv = runtime();
+  const { data } = await start(testEnv);
+  const first = await seedUnaffiliatedHuman();
+  const second = await seedUnaffiliatedHuman();
+  const op = (await (
+    await request(
+      testEnv,
+      "/operations",
+      { kind: "claim", payload: {}, token: random() },
+      { authorization: `Bearer ${data.credential.token}` },
+    )
+  ).json()) as { id: string; url: string };
+  const submit = (cookie: string) =>
+    request(
+      testEnv,
+      `/browser/${op.id}/submit`,
+      { submissionToken: new URL(op.url).hash.slice(1), approve: true },
+      { origin: "https://example.test", cookie },
+    );
+  expect((await submit(first.cookie)).status).toBe(200);
+  const refused = await submit(second.cookie);
+  expect(refused.status).toBe(409);
+  await expect(refused.json()).resolves.toMatchObject({ error: { code: "conflict" } });
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_organization_user WHERE user_id=?")
+      .bind(second.userId)
+      .first("n"),
+  ).toBe(0);
+  // The person it landed on is still answered as approved.
+  expect((await submit(first.cookie)).status).toBe(200);
+});
+
+it("answers whether a claim's Google grant still counts from the claim alone", async () => {
+  const testEnv = runtime();
+  const { data } = await start(testEnv);
+  const op = (await (
+    await request(
+      testEnv,
+      "/operations",
+      { kind: "claim", payload: {}, token: random() },
+      { authorization: `Bearer ${data.credential.token}` },
+    )
+  ).json()) as { id: string; url: string };
+  const encoded = btoa(JSON.stringify({ id: op.id, expires: Date.now() + 60_000 }));
+  const grant = `${encoded}.${await derive(testEnv.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`)}`;
+  const callback = new Request("https://example.test/v1/auth/callback/google", {
+    headers: { cookie: `cli_claim_oauth=${grant}` },
+  });
+  expect(await claimOAuthAuthorized(testEnv, callback)).toBe(true);
+  expect(
+    (await request(testEnv, `/browser/${op.id}/deny`, { submissionToken: new URL(op.url).hash.slice(1) }, {
+      origin: "https://example.test",
+    })).status,
+  ).toBe(200);
+  expect(await claimOAuthAuthorized(testEnv, callback)).toBe(false);
+});
+
+it("completes a hosted bootstrap on the account its token already has, as a resend would", async () => {
+  const testEnv = runtime();
+  const input = { token: random() };
+  // A twin under the same token whose account landed while its bootstrap did
+  // not: nothing is left for this request to create.
+  const hash = await digest(input.token);
+  const accountId = `account-${hash}`;
+  const userId = `service-${accountId}`;
+  const now = new Date();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO mgmt_user(id,name,email,email_verified,kind,created_at,updated_at) VALUES (?,'CLI service',NULL,0,'service',?,?)",
+    ).bind(userId, now.getTime(), now.getTime()),
+    env.DB.prepare(
+      "INSERT INTO mgmt_organization(id,name,created_by_user_id,expires_at,created_at,updated_at) VALUES (?,'My account',?,?,?,?)",
+    ).bind(accountId, userId, new Date(now.getTime() + 90 * 86_400_000).toISOString(), now.toISOString(), now.toISOString()),
+    env.DB.prepare(
+      "INSERT INTO mgmt_organization_user(id,organization_id,user_id,role,status,joined_at) VALUES (?,?,?,'owner','active',?)",
+    ).bind(`member-${accountId}`, accountId, userId, now.toISOString()),
+  ]);
+  const response = await request(testEnv, "/bootstrap", input);
+  expect(response.status, await response.clone().text()).toBe(200);
+  const data = await bootstrapped(response);
+  expect(data.account.id).toBe(accountId);
+  expect((await request(testEnv, "/account", undefined, {
+    authorization: `Bearer ${data.credential.token}`,
+  })).status).toBe(200);
+  expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(1);
+});
+
+it("answers a claim refusal the engine reaches in the codes the approval page reads", async () => {
+  const testEnv = runtime();
+  const { data } = await start(testEnv);
+  const op = (await (
+    await request(
+      testEnv,
+      "/operations",
+      { kind: "claim", payload: {}, token: random() },
+      { authorization: `Bearer ${data.credential.token}` },
+    )
+  ).json()) as { id: string; url: string };
+  // Someone who already has an account, approving through the engine itself —
+  // past the route's own check, which would have stopped them first.
+  const human = await seedHuman();
+  const identity = await createIdentityAuth(resolveDeployment(testEnv), testEnv, "https://example.test", {
+    suppressDefaultOrganization: true,
+  });
+  const sessionId = await env.DB.prepare("SELECT id FROM mgmt_user_session WHERE user_id=?")
+    .bind(human.userId)
+    .first<string>("id");
+  const actor = (await identity.service.getAuthState(sessionId!, null))!;
+  const refused = await identity.operations
+    .approve({ id: op.id, proof: new URL(op.url).hash.slice(1), actor })
+    .then(() => null, (error: unknown) => error);
+  expect(refused).toMatchObject({ code: "sign_out_required", status: 403 });
+  expect(asGatewayAuthError(refused as CfAuthError)).toMatchObject({ code: "account_exists", status: 403 });
+  expect(asGatewayAuthError(new CfAuthError("registration_required", "refused", 403)))
+    .toMatchObject({ code: "session_required", status: 401 });
+});
+
+it("leaves writes that failed out of the pending cap, so a browser step still opens", async () => {
+  const testEnv = runtime();
+  const { data } = await start(testEnv);
+  const auth = { authorization: `Bearer ${data.credential.token}` };
+  await env.DB.prepare(`CREATE TRIGGER operation_test_refused_app BEFORE INSERT ON app
+    WHEN NEW.name='Refused app' BEGIN SELECT RAISE(ABORT,'operation_test_refused_app'); END`).run();
+  try {
+    // Ten in a row, each left pending for its own token to rerun: as many as
+    // the cap allows an account, were they counted.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const refused = await request(
+        testEnv,
+        "/operations",
+        { kind: "app.add", payload: { name: "Refused app", config: serverConfig() }, token: random() },
+        auth,
+      );
+      expect(refused.status, `attempt ${attempt}: ${await refused.clone().text()}`).toBe(500);
+    }
+  } finally {
+    await env.DB.prepare("DROP TRIGGER operation_test_refused_app").run();
+  }
+  expect(
+    await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_operation WHERE kind='app.add' AND state='pending'").first("n"),
+  ).toBe(10);
+  const opened = await request(
+    testEnv,
+    "/operations",
+    { kind: "claim", payload: {}, token: random() },
+    auth,
+  );
+  expect(opened.status, await opened.clone().text()).toBe(200);
+  await expect(opened.json()).resolves.toMatchObject({ kind: "claim", state: "pending" });
+});
+
+describe("a claim approved and declined at once", () => {
+  async function claimFor(testEnv: Env) {
+    const { data } = await start(testEnv);
+    const op = (await (
+      await request(
+        testEnv,
+        "/operations",
+        { kind: "claim", payload: {}, token: random() },
+        { authorization: `Bearer ${data.credential.token}` },
+      )
+    ).json()) as { id: string; url: string };
+    const proof = new URL(op.url).hash.slice(1);
+    const headers = { origin: "https://example.test" };
+    const humanOwners = () =>
+      env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
+         WHERE m.organization_id=? AND m.role='owner' AND u.kind='human'`,
+      ).bind(data.account.id).first("n");
+    return {
+      approve: (cookie: string) =>
+        request(testEnv, `/browser/${op.id}/submit`, { submissionToken: proof, approve: true }, { ...headers, cookie }),
+      deny: () => request(testEnv, `/browser/${op.id}/deny`, { submissionToken: proof }, headers),
+      humanOwners,
+      id: op.id,
+    };
+  }
+
+  it("leaves no owner when the denial commits first, even with the approval already on its way", async () => {
+    const testEnv = runtime();
+    const claim = await claimFor(testEnv);
+    const human = await seedUnaffiliatedHuman();
+    // The denial lands between the approval's checks and the batch that would
+    // make its approver owner and complete the claim.
+    const batch = env.DB.batch.bind(env.DB);
+    let denied = 0;
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      denied = (await claim.deny()).status;
+      return batch(statements);
+    });
+    const approved = await claim.approve(human.cookie);
+    expect(denied).toBe(200);
+    expect(approved.status).toBe(409);
+    await expect(approved.json()).resolves.toMatchObject({ error: { code: "operation_denied" } });
+    expect(await claim.humanOwners()).toBe(0);
+  });
+
+  it("refuses the denial that comes second, and keeps the owner the approval made", async () => {
+    const testEnv = runtime();
+    const claim = await claimFor(testEnv);
+    const human = await seedUnaffiliatedHuman();
+    expect((await claim.approve(human.cookie)).status).toBe(200);
+    const denied = await claim.deny();
+    expect(denied.status).toBe(409);
+    await expect(denied.json()).resolves.toMatchObject({ error: { code: "already_completed" } });
+    expect(await claim.humanOwners()).toBe(1);
+    // The bootstrap's authority still ended with the claim.
+    expect(
+      await env.DB.prepare("SELECT state FROM mgmt_operation WHERE kind='bootstrap'").first("state"),
+    ).toBe("retired");
+  });
 });

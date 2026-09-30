@@ -7,6 +7,8 @@ import {
   type AccountLifecycle,
 } from "../policy/accounts";
 import { sql, type SQL } from "drizzle-orm";
+import type { OperationSweepStatements } from "@maxceem/cf-auth";
+import { database } from "../db";
 import { prepared } from "../db/sql";
 import type { Deployment } from "../policy/deployment";
 import {
@@ -186,11 +188,16 @@ function accountCleanupStatements(cutoffMs: number): {
   }
   // Keep only the token-bound bootstrap tombstone: deleting it would let an
   // old bootstrap recreate the same expired account. No account identity or
-  // secret survives.
+  // secret survives. A bootstrap is opened by nobody, so its row names the
+  // account only in its record, and never in the organization column whose
+  // foreign key would delete it along with the account; that column is
+  // cleared all the same, before the account is deleted below.
   statements.push(sql`UPDATE mgmt_operation SET state='expired', organization_id=NULL,
-      initiating_user_id=NULL, initiating_credential_id=NULL, credential_id=NULL,
-      sealed_outcome=NULL, sealed_until=NULL, updated_at=${cutoffMs}
-      WHERE kind='bootstrap' AND organization_id IN (${expired})`);
+      opener_user_id=NULL, opener_credential_id=NULL, outcome=NULL,
+      sealed_outcome=NULL, sealed_until=NULL, redeem_code_hash=NULL, updated_at=${cutoffMs}
+      WHERE kind='bootstrap' AND json_extract(outcome,'$.accountId') IN (${expired})`);
+  // Every other operation of the account, deleted here rather than left to
+  // the foreign key's cascade, so what a pass removes is written in the pass.
   statements.push(
     sql`DELETE FROM mgmt_operation WHERE kind!='bootstrap' AND organization_id IN (${expired})`,
   );
@@ -243,19 +250,19 @@ export async function pruneExpiredAccounts(
 
 /**
  * Expires what CLI operations hold for a short while, wherever this gateway
- * runs: a sealed one-time outcome past its recovery window, and every
- * operation past its deadline. Bootstrap rows are kept whatever their age —
- * they are what stops an old token recreating an account — and only the
- * secret inside them is dropped.
+ * runs: cf-auth's own sweep, as one batch — pending operations past their
+ * deadline are marked expired, sealed outcomes past their window dropped, and
+ * records past their retention deleted. A bootstrap's record is retained as
+ * long as any other, which is as long as the CLI will resend the token that
+ * opened it.
+ *
+ * `sweep` is the engine's statements, built over `db` so the run's allowance
+ * counts them.
  */
-export async function pruneExpiredAuthorizations(db: D1Database): Promise<void> {
-  const now = Date.now();
-  await db.prepare(
-    "UPDATE mgmt_operation SET sealed_outcome = NULL, sealed_until = NULL WHERE sealed_until <= ?",
-  )
-    .bind(now)
-    .run();
-  await db.prepare("DELETE FROM mgmt_operation WHERE kind != 'bootstrap' AND expires_at < ?")
-    .bind(now)
-    .run();
+export async function pruneExpiredAuthorizations(
+  db: D1Database,
+  sweep: OperationSweepStatements,
+): Promise<void> {
+  if (sweep.length === 0) return;
+  await database(db).batch(sweep as [OperationSweepStatements[number], ...OperationSweepStatements]);
 }

@@ -1,7 +1,7 @@
 import { Writable } from "node:stream";
 import { appCommand } from "./apps.ts";
 import { CLOUD, CliError, origin, VERSION } from "./common.ts";
-import { Context } from "./context.ts";
+import { Context, type ContextIo } from "./context.ts";
 import { deploymentCommand } from "./deployment.ts";
 import { CliErrorDetailsSchema } from "./errors.ts";
 import { humanResult, type OutputContext } from "./human.ts";
@@ -26,6 +26,8 @@ export interface MainOptions {
   transport?: Pick<Transport, "request">;
   stdout?: OutputSink;
   stderr?: OutputSink;
+  /** The browser, the loopback listener and the environment; `stderr` is the option above. */
+  io?: Partial<Omit<ContextIo, "stderr">>;
 }
 
 type ParsedCommand = Extract<ParseResult, { command: string }>;
@@ -41,29 +43,25 @@ export async function execute(parsed: ParsedCommand, ctx: Context): Promise<Comm
       ? ctx.wait(args[0] ?? "", positive(flags.timeout ?? 300))
       : ctx.poll(args[0] ?? "");
   if (command === "account status") return (await ctx.call("getCliAccount")).data;
-  if (command === "account login") return ctx.login();
+  if (command === "account login")
+    return flags["key-stdin"] || flags["key-prompt"] ? ctx.keyLogin() : ctx.browserLogin();
   if (command === "account claim") return ctx.operation("claim", {});
-  if (command === "account logout") {
-    if (ctx.active) {
-      delete ctx.active.credential;
-      ctx.active.authenticated = false;
-      await ctx.save();
-    }
-    return { loggedOut: true };
-  }
+  if (command === "account logout") return ctx.logout();
   if (command === "deployment connect") {
     const url = flags.cloud
       ? CLOUD
       : origin(
           flags.url ?? (await required(flags, "url", "Deployment HTTPS URL")),
         );
-    return ctx.login(url);
+    if (flags["key-stdin"] || flags["key-prompt"]) return ctx.keyLogin(url);
+    if (ctx.environmentKey) return ctx.connectWithEnvironment(url);
+    return ctx.browserLogin(url);
   }
   if (command === "deployment status") {
     const { data } = await ctx.publicCall("getCliCapabilities");
     return {
       url: ctx.url,
-      authenticated: Boolean(ctx.active?.credential),
+      authenticated: Boolean(ctx.managementKey),
       ...data,
       connected: true,
     };
@@ -78,6 +76,7 @@ export async function main(
     transport = new Transport(),
     stdout = process.stdout,
     stderr = process.stderr,
+    io = {},
   }: MainOptions = {},
 ): Promise<number> {
   const json = argv.includes("--json");
@@ -93,7 +92,7 @@ export async function main(
     }
     const run = async (): Promise<number> => {
       const state = await store.read((line) => stderr.write(line + "\n"));
-      const ctx = new Context(store, state, transport, parsed.flags);
+      const ctx = new Context(store, state, transport, parsed.flags, { ...io, stderr });
       const result = await execute(parsed, ctx);
       const context: OutputContext = {
         url: ctx.url,

@@ -23,7 +23,7 @@ import {
   type OrganizationProviders,
 } from "../providers/provider-store";
 import { database } from "../db";
-import { prepared } from "../db/sql";
+import { guardedInsert, prepared, type WriteStatement } from "../db/sql";
 import {
   app,
   appApiKey,
@@ -38,7 +38,7 @@ import {
   type AppConfig,
 } from "../shared/app-config";
 import type { Actor } from "./actor";
-import { appInsert, updateApp as writeAppRow } from "./app-writes";
+import { appInsertStatement, updateApp as writeAppRow } from "./app-writes";
 import { planCap } from "./plan-caps";
 import type { ManagementScope } from "./scope";
 import { databaseErrorMatches } from "./validation";
@@ -312,12 +312,25 @@ export async function createApp(
     // counted, so sharing the guard would refuse the key of the very app that
     // just filled the plan's last slot. Keys added later are capped in `./keys.ts`.
     const keyGuard = boundary?.condition ?? sql`1`;
-    const build = (guard: SQL): SQL[] => [
-      appInsert({ id: appId, organizationId, name, config, status, createdAt: now, updatedAt: now }, guard),
-      ...(generated ? [sql`INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
-         SELECT ${generated.id},${appId},'Default key',${generated.keyHash},${generated.keyPrefix},'active',${now}
-         WHERE ${keyGuard}
-         AND EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId})`] : []),
+    const db = database(env.DB);
+    const build = (guard: SQL): WriteStatement[] => [
+      appInsertStatement(db, { id: appId, organizationId, name, config, status, createdAt: now, updatedAt: now }, guard),
+      ...(generated
+        ? [guardedInsert(
+            db,
+            appApiKey,
+            {
+              id: generated.id,
+              appId,
+              name: "Default key",
+              keyHash: generated.keyHash,
+              keyPrefix: generated.keyPrefix,
+              status: "active",
+              createdAt: now,
+            },
+            and(keyGuard, sql`EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId})`)!,
+          )]
+        : []),
     ];
     // The application, default key and operation outcome are committed together.
     // A response lost after this batch can redeliver the original ID and key.

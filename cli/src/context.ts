@@ -4,8 +4,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   CliAccountResponse,
+  CliCapabilitiesResponse,
   CliCredential,
   CliDeployment,
+  CliLogin,
   CliOperation,
   CliOperationPayload,
   CliOperationRequestInput,
@@ -22,9 +24,12 @@ import {
   type OperationRequest,
   type OperationResponse,
 } from "../../src/contracts/catalog.ts";
-import { CliError, CLOUD, fail, origin, randomToken } from "./common.ts";
+import { CliError, CLOUD, fail, MANAGEMENT_KEY_ENV, origin, randomToken } from "./common.ts";
 import { secret } from "./input.ts";
+import { browserAvailable, clientDescription, listenLoopback, type Loopback } from "./login.ts";
+import type { OutputSink } from "./main.ts";
 import type { Flags } from "./parser.ts";
+import { styleFor } from "./style.ts";
 import { releaseOutput } from "./state.ts";
 import type {
   ActiveConnection,
@@ -46,7 +51,50 @@ const CLI_OPERATIONS = new Set<OperationName>([
   "pollCliOperation",
   "getCliAccount",
   "getCliUsage",
+  "openCliLogin",
+  "redeemCliLogin",
+  "revokeCliCredential",
 ]);
+
+/** How long a browser login is waited for, as every other browser step is. */
+const LOGIN_TIMEOUT_SECONDS = 300;
+/** How long a pending login's record is worth keeping; the deployment keeps one 15 minutes. */
+const LOGIN_RECORD_MS = 3_600_000;
+/**
+ * How long an approved loopback login waits for its browser to come back. The
+ * page navigates the moment it is approved, so this only runs out when it was
+ * approved somewhere that cannot reach this machine.
+ */
+const LOOPBACK_GRACE_MS = 10_000;
+
+/** What the context reaches outside itself for; replaced in tests. */
+export interface ContextIo {
+  stderr: OutputSink;
+  /** Resolves false when no browser could be started. */
+  openBrowser(url: string): Promise<boolean>;
+  /** Whether a browser opened here would be in front of the person at this terminal. */
+  browserAvailable(): boolean;
+  listen(): Promise<Loopback>;
+  env: Record<string, string | undefined>;
+}
+
+const defaultIo = (): ContextIo => ({
+  stderr: process.stderr,
+  openBrowser,
+  browserAvailable: () => browserAvailable(),
+  listen: listenLoopback,
+  env: process.env,
+});
+
+/** What `account login` and `deployment connect` answer with once signed in. */
+export type LoginResult = CliAccountResponse & { connected: true };
+
+/** What `account logout` answers with. */
+export interface LogoutResult {
+  loggedOut: true;
+  /** Whether the deployment revoked the key this call removed. */
+  revoked: boolean;
+}
 
 export interface CallOptions<K extends OperationName> {
   /** The `{name}` segments of the operation's path, if it has any. */
@@ -172,6 +220,7 @@ export class Context {
   readonly state: CliState;
   readonly transport: Pick<Transport, "request">;
   readonly flags: Flags;
+  readonly io: ContextIo;
   /** Operations whose result this run has printed, released once stdout has taken it. */
   readonly delivered = new Set<string>();
   onboarding?: Onboarding;
@@ -181,11 +230,13 @@ export class Context {
     state: CliState,
     transport: Pick<Transport, "request">,
     flags: Flags,
+    io: Partial<ContextIo> = {},
   ) {
     this.store = store;
     this.state = state;
     this.transport = transport;
     this.flags = flags;
+    this.io = { ...defaultIo(), ...io };
   }
 
   get active(): ActiveConnection | null {
@@ -194,6 +245,31 @@ export class Context {
 
   get url(): string {
     return this.active?.url || CLOUD;
+  }
+
+  /** `AGW_MANAGEMENT_KEY`, when it is set to anything. */
+  get environmentKey(): string | undefined {
+    const value = this.io.env[MANAGEMENT_KEY_ENV]?.trim();
+    return value ? value : undefined;
+  }
+
+  /**
+   * The management credential every call is sent with: the environment's, which
+   * always wins, or the one the selected connection stored.
+   */
+  get managementKey(): string | undefined {
+    return this.environmentKey ?? this.active?.credential;
+  }
+
+  /** Refuses a command that would store a key the environment would then override. */
+  private assertNoEnvironmentKey(): void {
+    if (this.environmentKey)
+      fail(
+        "environment_credential",
+        `${MANAGEMENT_KEY_ENV} is set, so it is the credential for every command and a stored login would never be used.`,
+        `Unset ${MANAGEMENT_KEY_ENV} to log in, or keep using it as is.`,
+        4,
+      );
   }
 
   async save(): Promise<void> {
@@ -248,7 +324,27 @@ export class Context {
     name: K,
     options: CallOptions<K> = {},
   ): Promise<CallResult<OperationResponse<K>>> {
-    return this.publicCall(name, { ...options, key: options.key ?? this.credential(name) });
+    const key = options.key ?? this.credential(name);
+    try {
+      return await this.publicCall(name, { ...options, key });
+    } catch (error) {
+      // The generic answer to a refused key is to log in, which a key taken
+      // from the environment would override again.
+      if (
+        error instanceof CliError &&
+        error.details?.status === 401 &&
+        options.key === undefined &&
+        this.environmentKey
+      )
+        throw new CliError(
+          error.code,
+          error.message,
+          `Check ${MANAGEMENT_KEY_ENV}: the deployment refused the key it holds.`,
+          error.exitCode,
+          error.details,
+        );
+      throw error;
+    }
   }
 
   /**
@@ -257,14 +353,14 @@ export class Context {
    * which is why those get the wider instruction.
    */
   private credential(name: OperationName): string {
-    const token = this.active?.credential;
+    const token = this.managementKey;
     if (!token)
       fail(
         "login_required",
         "The selected connection is not authenticated.",
         CLI_OPERATIONS.has(name)
-          ? "Run agw account login."
-          : "Run agw account login or agw deployment connect.",
+          ? `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`
+          : `Run agw account login or agw deployment connect, or set ${MANAGEMENT_KEY_ENV}.`,
         4,
       );
     return token;
@@ -333,10 +429,7 @@ export class Context {
   }
 
   /** Sends a reserved operation, dropping its record if the deployment refused it for good. */
-  private async send(
-    id: string,
-    request: () => Promise<CliOperation>,
-  ): Promise<CliOperation> {
+  private async send<T>(id: string, request: () => Promise<T>): Promise<T> {
     try {
       return await request();
     } catch (error) {
@@ -358,11 +451,11 @@ export class Context {
     payload: CliOperationPayload<Kind>,
     { browser = false, url = this.url }: { browser?: boolean; url?: string } = {},
   ): Promise<CliOperation> {
-    if (!this.active?.credential)
+    if (!this.managementKey)
       fail(
         "login_required",
         "This operation requires account management access.",
-        "Run agw account login.",
+        `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`,
         4,
       );
     const target = origin(url);
@@ -373,7 +466,7 @@ export class Context {
       // which is the correlation the compiler cannot follow through a generic.
       body: { kind, payload, token: record.token, ...(browser ? { browser: true } : {}) } as CliOperationRequestInput,
       url: target,
-      key: this.active?.credential,
+      key: this.managementKey,
     })).data);
     if (data.state === "expired") {
       await this.forget(id);
@@ -384,15 +477,11 @@ export class Context {
       return data;
     }
     const { data: capabilities } = await this.publicCall("getCliCapabilities", { url: target });
-    const browserUrl = new URL(data.url);
-    const trustedOrigin = origin(
-      capabilities.consoleOrigin ?? capabilities.deployment.consoleOrigin ?? target,
-    );
-    if (browserUrl.origin !== trustedOrigin || browserUrl.username || browserUrl.password)
-      fail("invalid_response", "The approval URL is not on this deployment’s trusted console origin.");
-    if (!this.flags["no-open"]) await openBrowser(data.url);
+    assertTrustedApprovalUrl(data.url, capabilities, target);
+    if (!this.flags["no-open"] && !(await this.io.openBrowser(data.url)))
+      this.io.stderr.write("Browser could not open. Use the returned handoff URL.\n");
     if (this.flags["no-open"] || this.flags.json || this.flags["no-input"]) return data;
-    process.stderr.write(`Complete the browser step: ${data.url}\nOperation: ${data.id}\n`);
+    this.io.stderr.write(`Complete the browser step: ${data.url}\nOperation: ${data.id}\n`);
     return this.wait(data.id, 300);
   }
 
@@ -411,8 +500,13 @@ export class Context {
     payload: CliOperationPayload<Kind>,
     requestedPath: string | undefined,
   ): Promise<KeyedOperation> {
-    if (!this.active?.credential)
-      fail("login_required", "The selected connection is not authenticated.", "Run agw account login.", 4);
+    if (!this.managementKey)
+      fail(
+        "login_required",
+        "The selected connection is not authenticated.",
+        `Run agw account login, or set ${MANAGEMENT_KEY_ENV}.`,
+        4,
+      );
     const target = origin(this.url);
     const [id, record] = await this.reserveOperation(kind, payload, target);
     const chosen = requestedPath ? resolve(requestedPath) : record.output?.path;
@@ -445,7 +539,7 @@ export class Context {
       const operation = await this.send(id, async () => (await this.publicCall("createCliOperation", {
         body: { kind, payload, token: record.token } as CliOperationRequestInput,
         url: target,
-        key: this.active?.credential,
+        key: this.managementKey,
       })).data);
       const minted = operation.result?.api_key;
       const appId = operation.result?.app?.id ?? (payload as { app?: string }).app ?? "";
@@ -496,7 +590,7 @@ export class Context {
   }
 
   async bootstrap(): Promise<void> {
-    if (this.active?.credential) return;
+    if (this.managementKey) return;
     if (this.active)
       fail(
         "login_required",
@@ -547,13 +641,268 @@ export class Context {
     await this.save();
   }
 
-  async login(url: string = this.url): Promise<CliAccountResponse & { connected: true }> {
+  /** `account login --key-stdin` or `--key-prompt`: a management key a person already holds. */
+  async keyLogin(url: string = this.url): Promise<LoginResult> {
+    this.assertNoEnvironmentKey();
     const token = await secret(this.flags, "Management API key");
     if (!token)
       fail("input_required", "A management API key is required.", "Supply it with --key-stdin.");
     const { data } = await this.publicCall("getCliAccount", { key: token, url });
     await this.select(url, { ...data, credential: { token } });
     return { connected: true, ...data };
+  }
+
+  /**
+   * `deployment connect` while `AGW_MANAGEMENT_KEY` is set: selects the
+   * deployment the key is checked against, and stores no key of its own.
+   */
+  async connectWithEnvironment(url: string): Promise<LoginResult> {
+    const key = this.environmentKey!;
+    const target = origin(url);
+    const { data } = await this.publicCall("getCliAccount", { key, url: target });
+    this.state.active = {
+      url: target,
+      account: data.account,
+      deployment: data.deployment,
+      authenticated: false,
+    };
+    await this.save();
+    this.io.stderr.write(
+      `${MANAGEMENT_KEY_ENV} is set, so it stays the credential for every command; no key was stored.\n`,
+    );
+    return { connected: true, ...data };
+  }
+
+  /**
+   * `account login`: a person approves this CLI in a browser, and it receives
+   * a management key of its own, stored exactly as a pasted one is.
+   *
+   * The login is recorded like every other operation before it is opened, so
+   * one left waiting — by `--json`, `--no-input`, a timeout — is finished by
+   * `agw operation wait`. When this process is going to wait and a browser on
+   * this machine is in front of the person, it also listens on `127.0.0.1`,
+   * and the approval page hands the browser back to it with a one-time code;
+   * the key is then released only for that code and never to a poll.
+   * Otherwise — `--no-open`, SSH, no display, nobody at the terminal — the
+   * approval may happen on any device, so nothing listens and the key is
+   * polled for. A browser that turns out not to open is the same case, found
+   * late: that login is abandoned for one that is polled.
+   */
+  async browserLogin(url: string = this.url): Promise<LoginResult | CliLogin> {
+    this.assertNoEnvironmentKey();
+    const target = origin(url);
+    const { data: capabilities } = await this.publicCall("getCliCapabilities", { url: target });
+    if (!capabilities.features?.browserLogin)
+      fail(
+        "browser_login_unsupported",
+        "This deployment does not offer browser login.",
+        "Update the deployment, or pipe a management key to agw account login --key-stdin.",
+        3,
+      );
+    const opens = !this.flags["no-open"] && this.io.browserAvailable();
+    const detached = Boolean(this.flags.json || this.flags["no-input"]);
+    if (detached) {
+      const { login } = await this.openLogin(target, capabilities, null);
+      if (opens && !(await this.io.openBrowser(login.url)))
+        this.io.stderr.write("Browser could not open. Use the returned URL.\n");
+      return login;
+    }
+    let loopback = opens ? await this.io.listen() : null;
+    try {
+      let opened = await this.openLogin(target, capabilities, loopback);
+      if (loopback && !(await this.io.openBrowser(opened.login.url))) {
+        // Nothing but a browser on this machine could finish that login, so it
+        // is left to expire and one that can be approved anywhere replaces it.
+        await loopback.close();
+        loopback = null;
+        await this.forget(opened.id);
+        this.io.stderr.write(
+          "The browser could not be opened, so the approval will be collected by polling.\n",
+        );
+        opened = await this.openLogin(target, capabilities, null);
+      }
+      const { id, token, login } = opened;
+      const style = styleFor(this.io.stderr);
+      this.io.stderr.write(
+        [
+          ...(login.userCode
+            ? [
+                `Pairing code: ${style.headline(login.userCode)}`,
+                "Check that your browser shows this same code before you approve.",
+              ]
+            : []),
+          `Approve at: ${login.url}`,
+          "",
+        ].join("\n"),
+      );
+      if (loopback) {
+        try {
+          await this.collectLoopbackLogin(id, token, target, capabilities, loopback);
+        } finally {
+          // Only this process could ever finish a loopback login: nothing a
+          // later command could poll would carry its key.
+          if (this.state.operations[id]) await this.forget(id);
+        }
+      } else await this.wait(id, LOGIN_TIMEOUT_SECONDS);
+      const { data } = await this.call("getCliAccount", { url: target });
+      return { connected: true, ...data };
+    } finally {
+      await loopback?.close();
+    }
+  }
+
+  /** Records and opens one login, refusing one that is not pending on the trusted console. */
+  private async openLogin(
+    target: string,
+    capabilities: CliCapabilitiesResponse,
+    loopback: Loopback | null,
+  ): Promise<{ id: string; token: string; login: CliLogin & { url: string } }> {
+    const token = randomToken();
+    const id = operationIdFor(token);
+    await this.recordLogin(id, token, target);
+    const { data: login } = await this.send(id, () => this.publicCall("openCliLogin", {
+      body: {
+        token,
+        client: clientDescription(),
+        ...(loopback ? { loopbackRedirect: loopback.redirect } : {}),
+      },
+      url: target,
+    }));
+    if (login.state !== "pending" || !login.url) {
+      await this.forget(id);
+      expired({
+        id,
+        state: "expired",
+        expiresAt: login.expiresAt,
+        ...(login.state === "denied" ? { denied: true as const } : {}),
+      });
+    }
+    assertTrustedApprovalUrl(login.url, capabilities, target);
+    return { id, token, login: { ...login, url: login.url } };
+  }
+
+  /** Writes a login's record before it is opened, and drops logins long since expired. */
+  private async recordLogin(id: string, token: string, url: string): Promise<void> {
+    const now = Date.now();
+    for (const [key, record] of Object.entries(this.state.operations))
+      if (record.kind === "login" && now - Date.parse(record.createdAt) > LOGIN_RECORD_MS)
+        delete this.state.operations[key];
+    this.state.operations[id] = {
+      url,
+      token,
+      kind: "login",
+      // Never matched: every login is a new one, since a listener's port is.
+      requestHash: createHash("sha256").update(id).digest("hex"),
+      accountId: null,
+      createdAt: new Date(now).toISOString(),
+    };
+    await this.save();
+  }
+
+  /**
+   * Waits for the approval page to send the browser back with the redeem code,
+   * and redeems it. Polls meanwhile, since a declined or expired login never
+   * comes back to the listener.
+   */
+  private async collectLoopbackLogin(
+    id: string,
+    token: string,
+    url: string,
+    capabilities: CliCapabilitiesResponse,
+    loopback: Loopback,
+  ): Promise<void> {
+    let code: string | undefined;
+    const arrived = loopback.code.then((value) => {
+      code = value;
+    });
+    const end = Date.now() + LOGIN_TIMEOUT_SECONDS * 1000;
+    let approvedAt: number | undefined;
+    while (code === undefined) {
+      const { data: status } = await this.publicCall("pollCliOperation", {
+        params: { id },
+        key: token,
+        url,
+      });
+      if (code !== undefined) break;
+      if (status.state === "expired") {
+        await this.forget(id);
+        expired(status);
+      }
+      if (status.state === "completed") {
+        approvedAt ??= Date.now();
+        if (Date.now() - approvedAt > LOOPBACK_GRACE_MS) {
+          await this.forget(id);
+          fail(
+            "login_not_delivered",
+            "The login was approved, but the browser never came back to this terminal.",
+            "Run agw account login --no-open to approve it from another device, or run agw account login again here.",
+            3,
+            { id },
+          );
+        }
+      }
+      if (Date.now() >= end) {
+        await this.forget(id);
+        fail(
+          "wait_timeout",
+          "The login was not approved in time.",
+          "Run agw account login again.",
+          5,
+          { id, state: status.state, expiresAt: status.expiresAt },
+        );
+      }
+      await Promise.race([delay(Math.min(1500, Math.max(0, end - Date.now()))), arrived]);
+    }
+    try {
+      const { data } = await this.publicCall("redeemCliLogin", {
+        params: { id },
+        body: { redeemCode: code },
+        key: token,
+        url,
+      });
+      await this.select(url, { ...data, deployment: capabilities.deployment });
+      delete this.state.operations[id];
+      await this.save();
+      loopback.answer(true);
+    } catch (error) {
+      loopback.answer(false);
+      throw error;
+    }
+  }
+
+  /**
+   * `account logout`: the deployment revokes the stored key, then this machine
+   * forgets it. A key the deployment no longer accepts is already as good as
+   * revoked; any other failure still removes it here, and says so, because a
+   * machine must always be able to sign out.
+   */
+  async logout(): Promise<LogoutResult> {
+    const active = this.active;
+    const key = active?.credential;
+    let revoked = false;
+    if (active && key) {
+      try {
+        await this.publicCall("revokeCliCredential", { key, url: active.url });
+        revoked = true;
+      } catch (error) {
+        const status = error instanceof CliError ? error.details?.status : undefined;
+        if (status !== 401)
+          this.io.stderr.write(
+            `The key could not be revoked (${error instanceof Error ? error.message : "unknown error"}). ` +
+              "It was removed from this machine; revoke it on the console's keys page.\n",
+          );
+      }
+    }
+    if (active) {
+      delete active.credential;
+      active.authenticated = false;
+      await this.save();
+    }
+    if (this.environmentKey)
+      this.io.stderr.write(
+        `${MANAGEMENT_KEY_ENV} is still set, so it stays the credential for every command; unset it to sign out completely.\n`,
+      );
+    return { loggedOut: true, revoked };
   }
 
   async poll(id: string): Promise<CliOperation> {
@@ -565,7 +914,8 @@ export class Context {
         "Resume it from the machine that initiated the operation.",
         4,
       );
-    if (this.active && this.active.url !== record.url)
+    // A login selects the deployment it was opened on, whatever was selected before.
+    if (this.active && this.active.url !== record.url && record.kind !== "login")
       fail(
         "operation_context",
         "This operation belongs to another selected deployment.",
@@ -587,6 +937,7 @@ export class Context {
       url: record.url,
     });
     if (data.state === "expired") await this.forget(id);
+    if (data.state === "completed" && record.kind === "login") return this.polledLogin(id, record, data);
     if (data.state === "completed") {
       // A claim only ever adds a human owner: this connection keeps the
       // credential it polled with, so nothing here is invalidated by it. Only
@@ -603,6 +954,48 @@ export class Context {
       this.delivered.add(id);
     }
     return data;
+  }
+
+  /**
+   * A completed login, as a poll first sees it: its key is stored the way a
+   * pasted one is, and taken out of what the command prints. A login whose key
+   * was already handed to another poll, or is only ever redeemed, cannot be
+   * collected here.
+   */
+  private async polledLogin(
+    id: string,
+    record: OperationRecord,
+    data: CliOperation,
+  ): Promise<CliOperation> {
+    const { credential, ...result } = data.result ?? {};
+    if (credential) {
+      if (!data.account)
+        fail(
+          "invalid_response",
+          "The login did not say which account it was approved into.",
+          "Run agw account login again.",
+          3,
+        );
+      await this.select(record.url, { credential, account: data.account, deployment: data.deployment });
+    } else if (
+      !(
+        this.active?.credential &&
+        this.active.url === record.url &&
+        data.account &&
+        this.active.account?.id === data.account.id
+      )
+    ) {
+      await this.forget(id);
+      fail(
+        "login_not_delivered",
+        "This login was approved, but its key can no longer be collected here.",
+        "Run agw account login again.",
+        3,
+        { id },
+      );
+    }
+    this.delivered.add(id);
+    return { ...data, result };
   }
 
   async wait(id: string, timeout: number): Promise<CliOperation> {
@@ -626,8 +1019,16 @@ export class Context {
   }
 }
 
-/** The refusal for a browser step that ran out of time; its record is already gone. */
-function expired(operation: CliOperation): never {
+/** The refusal for a browser step that was declined or ran out of time; its record is already gone. */
+function expired(operation: Pick<CliOperation, "id" | "state" | "expiresAt" | "denied">): never {
+  if (operation.denied)
+    fail(
+      "operation_denied",
+      "The browser step was declined.",
+      "Run the same command again to start a new one.",
+      3,
+      { id: operation.id, state: "denied", expiresAt: operation.expiresAt },
+    );
   fail(
     "operation_expired",
     "The browser step expired before it was approved.",
@@ -669,7 +1070,21 @@ async function storeKey(
   };
 }
 
-export async function openBrowser(url: string): Promise<void> {
+/** Refuses an approval URL that is not on the deployment's own console. */
+function assertTrustedApprovalUrl(
+  url: string,
+  capabilities: CliCapabilitiesResponse,
+  target: string,
+): void {
+  const browserUrl = new URL(url);
+  const trustedOrigin = origin(
+    capabilities.consoleOrigin ?? capabilities.deployment.consoleOrigin ?? target,
+  );
+  if (browserUrl.origin !== trustedOrigin || browserUrl.username || browserUrl.password)
+    fail("invalid_response", "The approval URL is not on this deployment’s trusted console origin.");
+}
+
+export async function openBrowser(url: string): Promise<boolean> {
   const command =
     process.platform === "darwin"
       ? "open"
@@ -678,17 +1093,12 @@ export async function openBrowser(url: string): Promise<void> {
         : "xdg-open";
   const args =
     process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
-  await new Promise<void>((resolve) => {
+  return new Promise<boolean>((resolve) => {
     const child = spawn(command, args, { stdio: "ignore", detached: true });
-    child.once("error", () => {
-      process.stderr.write(
-        "Browser could not open. Use the returned handoff URL.\n",
-      );
-      resolve();
-    });
+    child.once("error", () => resolve(false));
     child.once("spawn", () => {
       child.unref();
-      resolve();
+      resolve(true);
     });
   });
 }

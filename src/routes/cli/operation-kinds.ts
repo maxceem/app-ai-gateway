@@ -31,17 +31,23 @@ import type { ManagementScope } from "../../management/scope";
 import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import type { AccountAccessMode } from "../../policy/accounts";
+import type { ResourceOperationKind } from "../../auth/operation-kinds";
 
 /**
  * Every kind of CLI operation, one entry each.
  *
- * Three families, told apart by `type`: the bootstrap, which creates an account
- * and needs no credential; the claim, which settles an account on the person
- * approving it in a browser and is completed by cf-auth; and the resource
- * kinds, each of which is one management write run under the operation's own
- * transaction boundary — at once, or once a browser has supplied its secret.
+ * Four families, told apart by `type`: the bootstrap, which creates an account
+ * and needs no credential; the login, cf-auth's own, which a CLI with no
+ * credential opens and a signed-in person approves into one of their accounts;
+ * the claim, which settles an account on the person approving it in a browser
+ * and is completed by cf-auth; and the resource kinds, each of which is one
+ * management write run under the operation's own transaction boundary — at
+ * once, or once a browser has supplied its secret.
+ *
+ * Each is also registered with cf-auth's operation engine, which owns the row;
+ * see `src/auth/operation-kinds.ts` for what the engine is told.
  */
-export type OperationKind = BootstrapKind | ClaimKind | ResourceKind;
+export type OperationKind = BootstrapKind | LoginKind | ClaimKind | ResourceKind;
 
 interface KindBase {
   /** Account access the sender needs to open an operation of this kind. */
@@ -54,6 +60,10 @@ interface KindBase {
 
 export interface BootstrapKind extends KindBase {
   readonly type: "bootstrap";
+}
+
+export interface LoginKind extends KindBase {
+  readonly type: "login";
 }
 
 export interface ClaimKind extends KindBase {
@@ -142,6 +152,11 @@ const updateProviderKind = (secret: "required" | "optional", handoff: z.ZodType<
 export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
   bootstrap: { type: "bootstrap", open: "read", continueTo: "cli", reportsAccount: true },
   /**
+   * Read access: logging a CLI in to an account adds a way to reach it, and
+   * whatever that account may do is still asked of it on every request.
+   */
+  login: { type: "login", open: "read", continueTo: "cli", reportsAccount: true },
+  /**
    * Read access: an unclaimed account whose free window has closed can still
    * be claimed, and claiming is what reopens it.
    */
@@ -227,6 +242,13 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
     result: (outcome) => ({ gateway: outcome.gateway }),
   },
 };
+
+/**
+ * Every kind this table runs as a management write is registered with the
+ * engine as one: a kind the engine did not know would be refused when opened.
+ */
+type Unregistered = Exclude<CliOperationKind, "bootstrap" | "login" | "claim" | ResourceOperationKind>;
+export const EVERY_KIND_REGISTERED: [Unregistered] extends [never] ? true : Unregistered = true;
 
 function isKnownKind(kind: string): kind is CliOperationKind {
   return Object.hasOwn(OPERATION_KINDS, kind);

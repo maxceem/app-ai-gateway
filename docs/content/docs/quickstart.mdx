@@ -20,7 +20,11 @@ npx @maxceem/agw app add --type ios --team-id ABCDE12345 --bundle-id com.example
 
 The first creation initializes your hosted account. The browser handoff lets a
 person provide the credential privately. Run `agw account claim` after installing
-the CLI globally to establish human ownership. See [CLI](/automation/cli) for
+the CLI globally to establish human ownership. Already have an account? Run
+`agw account login` instead: it opens the console, you check that the page
+shows the pairing code your terminal printed, and approve. On a machine without
+a browser, such as over SSH, it prints the URL for you to open on any device.
+In CI, set `AGW_MANAGEMENT_KEY` to a management key instead. See [CLI](/automation/cli) for
 installation, complete workflows and recovery. Self-hosted gateways use
 [protected initialization](/self-hosting/deploy-to-cloudflare) before sign-in.
 

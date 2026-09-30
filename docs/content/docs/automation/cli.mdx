@@ -15,13 +15,76 @@ The default destination is the hosted API. The first provider, provider-gateway
 or application creation initializes a recoverable account and saves its credential
 privately. For example, run `agw provider add --type openai --browser --no-open`.
 Help, status, lists and validation never create an account. For an
-existing account, run `agw account login` and enter a management key through
-the hidden prompt, or pipe it with `--key-stdin`.
+existing account, run `agw account login`; see [Sign in](#sign-in) below.
 For your own deployment, run `agw deployment setup --name my-gateway --no-domain`.
 It drives Wrangler itself and fetches the Worker, console and migrations it
 installs: one archive from the project's GitHub release, checked against a hash
 built into the CLI and then cached, so a source checkout is not required. See
 [Deploy to Cloudflare](/self-hosting/deploy-to-cloudflare) for the offline route.
+
+## Sign in
+
+`agw account login` signs the CLI in through your browser. It prints a pairing
+code, opens the console's approval page and waits:
+
+```text
+Pairing code: ABCD-EFGH
+Check that your browser shows this same code before you approve.
+Approve at: https://console.appaigateway.com/cli/approve/…
+```
+
+Check that the page shows the same code before you approve: that is what tells
+you the request on the page is the one your terminal made. Sign in if you are
+not signed in already, pick the account if you belong to several, and approve.
+The browser comes back to the CLI, which receives a management key of its own,
+stores it privately and prints your account status. The tab can then be closed.
+Declining on the page ends the command with an error. The CLI waits up to five
+minutes, and the approval page stays valid for 15.
+
+To sign in to your own deployment, run `agw deployment connect --url
+https://ai.example.com`, which runs the same login against that URL.
+
+- **No browser on this machine**: over SSH, on Linux with no display, or when
+  no one is at the terminal, the CLI does not try to open one. It prints the URL
+  and the pairing code, as `--no-open` does anywhere, and the same happens if a
+  browser fails to open. Open the URL on any device, or go to `/cli` on your
+  console, for example `https://console.appaigateway.com/cli`, and type the
+  code; then approve. The CLI collects its key once you have.
+- **An agent or a script**: with `--json` or `--no-input` the command returns at
+  once with `state: "pending"`, the `url` and the `userCode`. Give the URL to a
+  person, then run `agw operation wait <id>` to finish the login once they have
+  approved it.
+
+Each key a login creates is listed on the console's **Management keys** page
+with a **CLI** tag and the label the CLI sent, such as `CLI on mac-studio`, so
+you can tell which machine holds which key. Revoke one there to end that
+machine's access.
+
+`agw account logout` revokes the saved key on the deployment and removes it from
+this machine. If the deployment cannot be reached, the key is still removed
+here, the command says it could not be revoked, and `revoked` is `false` in its
+`--json` result; revoke it on the **Management keys** page instead.
+
+### Keys for agents and CI
+
+A machine that cannot approve anything in a browser uses an existing management
+key. Create one on the console's **Management keys** page, then either:
+
+- set `AGW_MANAGEMENT_KEY` in the environment. When it is set, it is the
+  credential for every command and takes precedence over any saved login, and
+  nothing is written to disk. `agw account login` refuses to run while it is
+  set, and `agw account logout` only clears the saved login and reminds you the
+  variable is still in charge. Use `agw deployment connect --url URL` to choose
+  which deployment the key is sent to; it stores the URL, not the key.
+- or pipe it once with `--key-stdin`, which saves it like a browser login:
+
+```sh
+agw account login --key-stdin < /private/path/management-key
+agw deployment connect --url https://ai.example.com --key-stdin < /private/path/management-key
+```
+
+`--key-prompt` asks for the key in a hidden prompt instead. Never pass a key as
+a command argument.
 
 ## Human handoffs
 
@@ -32,7 +95,8 @@ account must be claimed by a new person, so if the browser is already signed in
 as someone with an account, the page asks you to sign out first. The page shows
 the account being claimed and the person approving, and one button completes
 it. The CLI stays connected afterwards, so an interrupted command can
-simply continue; to end that access later, revoke its key from the console.
+simply continue; to end that access later, run `agw account logout` or revoke
+its key on the console's **Management keys** page.
 
 Provider commands offer a browser handoff for write-only secrets. Share the URL
 with the person supplying the credential. The page shows the provider, destination and proposed
@@ -66,8 +130,8 @@ so you always get something to run and can see what is still missing.
 
 Application keys are written only to a private file. Select a path with
 `--key-output`, or use the default managed private file.
-Use hidden prompts or `--key-stdin` when connecting with an existing management
-key. Never put secrets in command arguments, source control, chat or logs.
+Use the browser login, `AGW_MANAGEMENT_KEY` or `--key-stdin` to authenticate;
+see [Sign in](#sign-in). Never put secrets in command arguments, source control, chat or logs.
 The CLI does not make inference requests as a setup check. Provider inference
 must be requested explicitly.
 

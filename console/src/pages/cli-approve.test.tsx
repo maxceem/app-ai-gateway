@@ -356,3 +356,173 @@ describe("CliApprovePage provider handoffs", () => {
     expect(screen.queryByText(/submitted directly to your gateway/i)).toBeNull();
   });
 });
+
+describe("CliApprovePage login", () => {
+  const DENY_URL = `/v1/cli/browser/${ENCODED}/deny`;
+  const VIEWER = { name: "Ada Lovelace", email: "ada@example.test" };
+  const ACME = { id: "org-acme", name: "Acme", role: "owner" };
+  const GLOBEX = { id: "org-globex", name: "Globex", role: "member" };
+
+  function login(overrides: Record<string, unknown> = {}) {
+    return details({
+      kind: "login",
+      account: null,
+      viewer: VIEWER,
+      blockedBy: null,
+      userCode: "WDJB-MJHT",
+      client: {
+        label: "CLI on mac-studio",
+        os: "darwin arm64",
+        ip: "203.0.113.7",
+        requestedAt: "2026-09-29T10:00:00.000Z",
+      },
+      hasLoopbackRedirect: false,
+      organizations: [ACME],
+      ...overrides,
+    });
+  }
+
+  const LOGIN_OUTCOME = {
+    body: { state: "completed", message: "Your CLI is signed in.", continueTo: "cli" },
+  };
+
+  function submitted(fetchMock: ReturnType<typeof stubApi>) {
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/submit"));
+    return call ? (JSON.parse(String(call[1]!.body)) as unknown) : undefined;
+  }
+
+  it("shows the pairing code and the requester, and names a single account without asking", async () => {
+    const fetchMock = stubApi({ [DETAILS_URL]: login(), [SUBMIT_URL]: LOGIN_OUTCOME });
+
+    renderApprove();
+
+    expect(await screen.findByText(/connect the agw cli/i)).toBeTruthy();
+    expect(screen.getByText("WDJB-MJHT")).toBeTruthy();
+    expect(screen.getByText(/matches the code in your terminal/i)).toBeTruthy();
+    expect(screen.getByText("CLI on mac-studio")).toBeTruthy();
+    expect(screen.getByText("darwin arm64")).toBeTruthy();
+    expect(screen.getByText("203.0.113.7")).toBeTruthy();
+    expect(screen.getByText("Acme")).toBeTruthy();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    // One account is a fact, not a question.
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^sign out$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^deny$/i })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+
+    await waitFor(() =>
+      expect(submitted(fetchMock)).toEqual({
+        submissionToken: TOKEN,
+        approve: true,
+        organizationId: "org-acme",
+      }),
+    );
+    // No local listener: the terminal finishes on its own.
+    expect(await screen.findByText(/return to your terminal/i)).toBeTruthy();
+    expect(screen.getByText("Your CLI is signed in.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /console/i })).toBeNull();
+  });
+
+  it("asks which account when there are several, and approves none by default", async () => {
+    const fetchMock = stubApi({
+      [DETAILS_URL]: login({ organizations: [ACME, GLOBEX] }),
+      [SUBMIT_URL]: LOGIN_OUTCOME,
+    });
+
+    renderApprove();
+
+    const picker = await screen.findByRole("radiogroup", { name: /account for this cli/i });
+    expect(picker).toBeTruthy();
+    const approve = screen.getByRole("button", { name: /^approve$/i }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole("radio", { name: /globex/i }));
+    expect(approve.disabled).toBe(false);
+    await userEvent.click(approve);
+
+    await waitFor(() =>
+      expect(submitted(fetchMock)).toEqual({
+        submissionToken: TOKEN,
+        approve: true,
+        organizationId: "org-globex",
+      }),
+    );
+  });
+
+  it("hands the browser to the CLI's local listener by navigating, not fetching", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    const redirectUrl = "http://127.0.0.1:53682/callback?code=xyz&state=abc";
+    const fetchMock = stubApi({
+      [DETAILS_URL]: login({ hasLoopbackRedirect: true }),
+      [SUBMIT_URL]: { body: { ...LOGIN_OUTCOME.body, redirectUrl } },
+    });
+
+    renderApprove();
+
+    await userEvent.click(await screen.findByRole("button", { name: /^approve$/i }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(redirectUrl));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("http://127.0.0.1"))).toBe(
+      false,
+    );
+    expect(screen.getByRole("link", { name: /back to the cli/i }).getAttribute("href")).toBe(
+      redirectUrl,
+    );
+    expect(screen.queryByText(/return to your terminal/i)).toBeNull();
+  });
+
+  it("declines the request and says so", async () => {
+    const fetchMock = stubApi({
+      [DETAILS_URL]: login(),
+      [DENY_URL]: { body: { state: "denied", message: "Declined. Your CLI has been told." } },
+    });
+
+    renderApprove();
+
+    await userEvent.click(await screen.findByRole("button", { name: /^deny$/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes("/deny"));
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call![1]!.body))).toEqual({ submissionToken: TOKEN });
+    });
+    expect(await screen.findByText(/request declined/i)).toBeTruthy();
+    expect(screen.getByText("Declined. Your CLI has been told.")).toBeTruthy();
+    expect(submitted(fetchMock)).toBeUndefined();
+    expect(sessionStorage.getItem(`app-ai-gateway:cli-approve:${PATH}`)).toBeNull();
+  });
+
+  it("offers signing in before registering, and declining to someone signed out", async () => {
+    stubApi({
+      [DETAILS_URL]: login({ viewer: null, blockedBy: "registration_required", organizations: [] }),
+    });
+
+    renderApprove();
+
+    expect(await screen.findByRole("button", { name: /^sign in$/i })).toBeTruthy();
+    expect(screen.queryByLabelText(/^name$/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^deny$/i })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /create one/i }));
+    expect(screen.getByLabelText(/^name$/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /create account/i })).toBeTruthy();
+  });
+
+  it("explains a signed-in person with no account to connect", async () => {
+    stubApi({
+      [DETAILS_URL]: login({ blockedBy: "no_eligible_organization", organizations: [] }),
+    });
+
+    renderApprove();
+
+    const block = await screen.findByRole("alert");
+    expect(block.textContent).toMatch(/no account to connect/i);
+    expect(block.textContent).toMatch(/Ada Lovelace is not a member/);
+    expect(screen.getByRole("button", { name: /sign in as someone else/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^deny$/i })).toBeTruthy();
+  });
+});

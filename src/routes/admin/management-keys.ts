@@ -33,6 +33,9 @@ routes.handle("createManagementKey", async (c, { actor, body }) => {
     actor: c.get("authState"),
     organizationId: actor.organizationId,
     name: body.name,
+    // Said rather than left to the library's default: the list shows where
+    // each key came from, and a key minted here came from the console.
+    source: "console",
   });
   return { key };
 });

@@ -10,12 +10,19 @@ npm install -g @maxceem/agw
 
 ## Quick start
 
-Sign in with a management key. Create one in the console at
-[appaigateway.com](https://appaigateway.com/): user menu, then **Management keys**.
+Sign in through your browser:
 
 ```sh
 agw account login
 ```
+
+The CLI prints a pairing code and opens the console. Check that the page shows
+the same code, then approve. The CLI receives a management key of its own,
+listed on the console's **Management keys** page with a **CLI** tag and this
+machine's name. Over SSH, on a machine without a display, or with `--no-open`,
+the CLI opens nothing: open the printed URL on any device and approve there. For your own deployment, run
+`agw deployment connect --url https://ai.example.com` instead. `agw account
+logout` revokes the key and removes it from this machine.
 
 No account yet? Skip login. A free anonymous account is created for you
 automatically as soon as you add your first provider or app below. You can
@@ -107,6 +114,14 @@ Every error names a `code` and a `nextAction`. Follow the `nextAction`.
 | `3` | Gateway unreachable, remote error, or failed handoff |
 | `4` | Local state or authentication problem |
 | `5` | `operation wait` timed out; the operation is still pending |
+
+**Signing in.** `agw account login --no-open --json` returns a pending login
+with a `url`, a `userCode` and an `id`. Give the person the URL and the code;
+they check the page shows the same code and approve, then
+`agw operation wait <id>` stores the key. In CI, set `AGW_MANAGEMENT_KEY` to a
+management key: when set, it is the credential for every command and overrides
+any saved login. To save an existing key instead, pipe it once with
+`agw account login --key-stdin`.
 
 **Secrets.** Never put a key in a command argument. Either pipe it with
 `--key-stdin`, or hand the browser to a human:

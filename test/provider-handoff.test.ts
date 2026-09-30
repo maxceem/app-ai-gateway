@@ -175,11 +175,34 @@ describe("provider browser submissions", () => {
     expect(text).not.toContain("browser-provider-secret");
     expect(text).not.toContain("secretBlob");
     const challenge = await env.DB.prepare(
-      "SELECT request_json,outcome_json FROM mgmt_operation WHERE id=?",
+      "SELECT payload,outcome FROM mgmt_operation WHERE id=?",
     )
       .bind(op.id)
       .first();
     expect(JSON.stringify(challenge)).not.toContain("browser-provider-secret");
+  });
+
+  it("tells whoever submits a declined step that it was declined, and writes nothing", async () => {
+    const body = providerBody();
+    // An account of its own, so this handoff does not spend the shared one's allowance.
+    const op = await operation("provider.add", body, runtime, await seedAccount());
+    const denied = await worker.request(
+      `${origin}/v1/cli/browser/${encodeURIComponent(op.id)}/deny`,
+      {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ submissionToken: new URL(op.url).hash.slice(1) }),
+      },
+      runtime,
+    );
+    expect(denied.status, await denied.clone().text()).toBe(200);
+    const submitted = await op.submit("secret-after-denial");
+    expect(submitted.status).toBe(409);
+    await expect(submitted.json()).resolves.toMatchObject({ error: { code: "operation_denied" } });
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM provider WHERE slug=?").bind(body.slug).first("n"),
+    ).toBe(0);
+    await expect((await op.poll()).json()).resolves.toMatchObject({ state: "expired", denied: true });
   });
 
   it("refuses a blank credential or a missing approval before anything runs", async () => {
@@ -481,12 +504,12 @@ describe("immediate provider operations", () => {
           .bind(values[0]!.result[resultName]!.id)
           .first("n"),
       ).toBe(1);
-      // An immediate write's payload may carry its secret, so none is stored.
-      expect(
-        await env.DB.prepare("SELECT request_json FROM mgmt_operation WHERE id LIKE 'op:%' AND kind=? ORDER BY created_at DESC")
-          .bind(kind)
-          .first("request_json"),
-      ).toBeNull();
+      // An immediate write's payload may carry its secret, so all that is
+      // stored of it is the digest a retry is matched against.
+      const stored = await env.DB.prepare("SELECT payload FROM mgmt_operation WHERE id LIKE 'op:%' AND kind=? ORDER BY created_at DESC")
+        .bind(kind)
+        .first<string>("payload");
+      expect(Object.keys(JSON.parse(stored!))).toEqual(["requestHash"]);
     }
   });
 });

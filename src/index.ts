@@ -31,6 +31,7 @@ import { authRoutes } from "./routes/auth";
 import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
+import { operationSweepStatements } from "./auth/identity";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
@@ -235,7 +236,10 @@ async function prune(env: Env): Promise<void> {
     sweepFailed("auth_challenges", "auth_challenges_prune_failed", error);
   }
   try {
-    await pruneExpiredAuthorizations(db);
+    await pruneExpiredAuthorizations(
+      db,
+      await operationSweepStatements(resolveDeployment(env), env, db, Date.now()),
+    );
   } catch (error) {
     sweepFailed("authorizations", "authorizations_prune_failed", error);
   }

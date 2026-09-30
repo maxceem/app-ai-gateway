@@ -9,6 +9,7 @@ import type {
 import { generateApiKey } from "../client-auth/api-keys";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
+import { guardedInsert } from "../db/sql";
 import { appApiKey, type app } from "../db/schema";
 import type { Actor } from "./actor";
 import { planCap } from "./plan-caps";
@@ -61,11 +62,24 @@ export async function createAppKey(
   // land between the check and the write.
   await commitResourceWrite(
     scope,
-    (guard) => sql`INSERT INTO app_api_key(id,app_id,name,key_hash,key_prefix,status,created_at)
-     SELECT ${generated.id},${appId},${name},${generated.keyHash},${generated.keyPrefix},'active',${now}
-     WHERE EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId}
-       AND auth_type = 'api_key')
-     AND ${guard}`,
+    (guard) => guardedInsert(
+      database(scope.env.DB),
+      appApiKey,
+      {
+        id: generated.id,
+        appId,
+        name,
+        keyHash: generated.keyHash,
+        keyPrefix: generated.keyPrefix,
+        status: "active",
+        createdAt: now,
+      },
+      and(
+        sql`EXISTS (SELECT 1 FROM app WHERE id = ${appId} AND organization_id = ${organizationId}
+          AND auth_type = 'api_key')`,
+        guard,
+      )!,
+    ),
     outcome,
     { boundary, cap },
   );

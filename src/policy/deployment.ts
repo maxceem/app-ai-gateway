@@ -185,6 +185,11 @@ export interface BootstrapDecision {
   recoveryEndsAt: string | null;
   requiresEmptyDeployment: boolean;
   rateLimited: boolean;
+  /**
+   * Whether the account is this token's own — derived from the token, so no
+   * other caller can hold it — rather than the one account the deployment has.
+   */
+  accountPerToken: boolean;
 }
 
 /** All deployment-sensitive bootstrap values are chosen together from one policy snapshot. */
@@ -206,5 +211,6 @@ export function bootstrapDecision(
     recoveryEndsAt,
     requiresEmptyDeployment: bootstrap.requiresEmptyDeployment,
     rateLimited: bootstrap.rateLimited,
+    accountPerToken: bootstrap.accountId === "hashed",
   };
 }

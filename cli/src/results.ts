@@ -1,6 +1,7 @@
 import type {
   CliAccountResponse,
   CliCapabilitiesResponse,
+  CliLogin,
   CliOperation,
 } from "../../src/contracts/cli.ts";
 import type { AppResult } from "./apps.ts";
@@ -26,7 +27,8 @@ export type CommandResult =
   | CliAccountResponse
   | (CliAccountResponse & { connected: true })
   | CliOperation
-  | { loggedOut: true };
+  | CliLogin
+  | { loggedOut: true; revoked?: boolean };
 
 /**
  * A result as it is printed. A first-run command folds the account it just

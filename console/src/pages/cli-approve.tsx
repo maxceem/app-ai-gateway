@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import type {
+  CliBrowserDenyResponse,
   CliBrowserDetailsResponse,
   CliBrowserSubmitResponse,
 } from "@contracts/cli";
@@ -11,9 +12,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ChoiceList } from "@/components/choice-list";
 import { AuthLayout, GoogleButton } from "@/pages/auth-shell";
 import { call } from "@/lib/api";
-import { headingFor, shortId } from "@/lib/cli-approve";
+import { headingFor, shortId, userCodeFromState } from "@/lib/cli-approve";
+import { formatDateTime } from "@/lib/format";
 import { DEFAULT_LANDING, oauthErrorNotice } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
@@ -34,10 +37,18 @@ import { useSignIn, useSignOut } from "@/lib/queries";
  * whether this browser has anywhere to go afterwards or the terminal has the
  * rest.
  *
+ * A login is the other handoff that asks who is holding the browser: a CLI
+ * with no credential asks a person to approve it, and receives a key of that
+ * person's own in whichever of their accounts they pick here. It shows the
+ * pairing code and what the CLI said about itself, so the request can be
+ * matched with the terminal, and it can be declined as well as approved.
+ *
  * The submission proof arrives in the URL fragment, which never leaves the
- * browser. This page strips it from the address bar on arrival, keeps it in
+ * browser, or — when the person typed the terminal's pairing code on `/cli`
+ * instead of following the link — as that code in navigation state. This page
+ * strips a fragment from the address bar on arrival, keeps the token in
  * `sessionStorage` under the operation's own path so it survives the Google
- * consent round trip, and sends it to nothing but the four handoff endpoints.
+ * consent round trip, and sends it to nothing but the handoff endpoints.
  */
 
 /** A proof held only for this tab, only for this operation, only until it expires. */
@@ -88,7 +99,7 @@ function clearStoredProof(key: string): void {
 
 /** Provider handoffs carry the secret; a gateway-routed provider has none of its own. */
 function needsSecret(details: CliBrowserDetailsResponse): boolean {
-  if (details.kind === "claim") return false;
+  if (details.kind === "claim" || details.kind === "login") return false;
   return !(details.kind === "provider.add" && details.payload.providerGatewayId);
 }
 
@@ -100,11 +111,16 @@ export function CliApprovePage() {
 
   /*
    * Resolved once, before the effect below rewrites the address bar. The hash
-   * wins when it is there; the stored copy is what brings the page back to life
-   * after Google returns the browser to this same path without one.
+   * wins when it is there, then a pairing code the code-entry page carried
+   * here; the stored copy is what brings the page back to life after Google
+   * returns the browser to this same path without either.
    */
   const [token] = useState(
-    () => location.hash.replace(/^#/, "") || readStoredProof(storageKey)?.token || "",
+    () =>
+      location.hash.replace(/^#/, "")
+      || userCodeFromState(location.state)
+      || readStoredProof(storageKey)?.token
+      || "",
   );
 
   useEffect(() => {
@@ -138,11 +154,27 @@ export function CliApprovePage() {
      the final screen says and offers. */
   const [outcome, setOutcome] = useState<CliBrowserSubmitResponse | null>(null);
   const submit = useMutation({
-    mutationFn: (body: { approve: true; secret?: string }) =>
+    mutationFn: (body: { approve: true; secret?: string; organizationId?: string }) =>
       call("cliBrowserSubmit", { params: { id }, body: { submissionToken: token, ...body } }),
     onSuccess: (result) => {
       clearStoredProof(storageKey);
       setOutcome(result);
+      /*
+       * A CLI listening on its own loopback port receives its one-time code
+       * by this browser navigating there, not by anything this page fetches:
+       * the page could not read the answer across origins anyway, and the
+       * CLI's listener is what closes the loop on its side.
+       */
+      if (result.redirectUrl) window.location.assign(result.redirectUrl);
+    },
+  });
+
+  const [denied, setDenied] = useState<CliBrowserDenyResponse | null>(null);
+  const deny = useMutation({
+    mutationFn: () => call("cliBrowserDeny", { params: { id }, body: { submissionToken: token } }),
+    onSuccess: (result) => {
+      clearStoredProof(storageKey);
+      setDenied(result);
     },
   });
 
@@ -152,7 +184,11 @@ export function CliApprovePage() {
         <Alert variant="destructive" role="alert">
           <AlertTitle>This link is missing its proof</AlertTitle>
           <AlertDescription>
-            Open the full link your CLI printed, or rerun the command to get a new one.
+            Open the full link your CLI printed, or{" "}
+            <Link to="/cli" className="text-primary-ink underline underline-offset-4">
+              enter the code
+            </Link>{" "}
+            your terminal shows.
           </AlertDescription>
         </Alert>
       </ApproveShell>
@@ -183,14 +219,37 @@ export function CliApprovePage() {
     );
   }
 
+  if (denied) {
+    return (
+      <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
+        <Alert role="status">
+          <XCircle className="size-4" />
+          <AlertTitle>Request declined</AlertTitle>
+          <AlertDescription>{denied.message}</AlertDescription>
+        </Alert>
+      </ApproveShell>
+    );
+  }
+
   if (outcome) {
+    // A login with no local listener leaves the terminal to finish on its own.
+    const backToTerminal = data.kind === "login" && !outcome.redirectUrl;
     return (
       <ApproveShell title={headingFor(data.kind)} id={id} expiresAt={data.expiresAt}>
         <Alert role="status">
           <CheckCircle2 className="size-4" />
-          <AlertTitle>Approved</AlertTitle>
+          <AlertTitle>{backToTerminal ? "Return to your terminal" : "Approved"}</AlertTitle>
           <AlertDescription>{outcome.message}</AlertDescription>
         </Alert>
+        {/*
+          The navigation above normally leaves this page at once; the link is
+          for a browser that held it back.
+        */}
+        {outcome.redirectUrl ? (
+          <Button asChild variant="outline" className="w-full">
+            <a href={outcome.redirectUrl}>Back to the CLI</a>
+          </Button>
+        ) : null}
         {/*
           Offered only where the gateway says this browser has somewhere to go.
           A claim leaves its approver signed in on the account they just took,
@@ -215,24 +274,49 @@ export function CliApprovePage() {
         </Alert>
       ) : null}
 
-      <Summary details={data} />
-
-      {data.blockedBy === "registration_required" ? (
-        <ClaimRegister
+      {data.kind === "login" ? (
+        <LoginApproval
           id={id}
           token={token}
-          googleEnabled={data.googleEnabled}
-          onDone={() => void details.refetch()}
-        />
-      ) : data.blockedBy === "sign_out_required" ? (
-        <SignOutFirst viewer={data.viewer} onDone={() => void details.refetch()} />
-      ) : (
-        <ApprovalForm
           details={data}
-          pending={submit.isPending}
-          error={submit.isError ? authErrorMessage(submit.error, "Approval failed") : null}
-          onSubmit={(body) => submit.mutate(body)}
+          approving={submit.isPending}
+          denying={deny.isPending}
+          error={
+            submit.isError
+              ? authErrorMessage(submit.error, "Approval failed")
+              : deny.isError
+                ? authErrorMessage(deny.error, "Could not decline the request")
+                : null
+          }
+          onApprove={(organizationId) =>
+            submit.mutate({ approve: true, ...(organizationId ? { organizationId } : {}) })
+          }
+          onDeny={() => deny.mutate()}
+          onRefresh={() => void details.refetch()}
         />
+      ) : (
+        <>
+          <Summary details={data} />
+
+          {data.blockedBy === "registration_required" ? (
+            <HandoffSignIn
+              id={id}
+              token={token}
+              purpose="claim"
+              googleEnabled={data.googleEnabled}
+              onDone={() => void details.refetch()}
+            />
+          ) : data.blockedBy === "sign_out_required" ? (
+            <SignOutFirst viewer={data.viewer} onDone={() => void details.refetch()} />
+          ) : (
+            <ApprovalForm
+              details={data}
+              pending={submit.isPending}
+              error={submit.isError ? authErrorMessage(submit.error, "Approval failed") : null}
+              onSubmit={(body) => submit.mutate(body)}
+            />
+          )}
+        </>
       )}
     </ApproveShell>
   );
@@ -287,10 +371,13 @@ function Summary({ details }: { details: CliBrowserDetailsResponse }) {
       : JSON.stringify(details.payload, null, 2);
   return (
     <div className="space-y-3">
-      <Field label="Account">
-        <p className="text-sm font-medium">{details.account.name}</p>
-        <p className="font-mono text-xs text-muted-foreground">{shortId(details.account.id)}</p>
-      </Field>
+      {/* A login names no account until its approver picks one. */}
+      {details.account ? (
+        <Field label="Account">
+          <p className="text-sm font-medium">{details.account.name}</p>
+          <p className="font-mono text-xs text-muted-foreground">{shortId(details.account.id)}</p>
+        </Field>
+      ) : null}
       {details.viewer ? (
         <Field label="Approving as">
           <p className="text-sm font-medium">{details.viewer.name ?? "Signed-in user"}</p>
@@ -328,40 +415,46 @@ function Footnote({ id, expiresAt }: { id: string; expiresAt?: string }) {
 }
 
 /**
- * How a person becomes the owner a claim is waiting for.
+ * How a person becomes the human a claim or a login is waiting for.
  *
- * Registration is the only thing offered, because it is the only thing that
- * ends in an approvable claim. Someone who signs in arrives with an account
- * already, and that is exactly what the sign-out screen next door refuses, so
- * a standing "sign in instead" here would reopen the door this whole rule
- * exists to shut. It goes through the handoff's own endpoint rather than
- * public sign-up, since a deployment that refuses public registration still
- * has to let its first person in.
+ * For a claim, registration is the only thing offered, because it is the only
+ * thing that ends in an approvable claim. Someone who signs in arrives with an
+ * account already, and that is exactly what the sign-out screen next door
+ * refuses, so a standing "sign in instead" here would reopen the door this
+ * whole rule exists to shut. It goes through the handoff's own endpoint rather
+ * than public sign-up, since a deployment that refuses public registration
+ * still has to let its first person in.
  *
- * Signing in appears exactly once, as the answer to a question a person has
- * already been asked: a registration refused because that email is taken.
- * Whoever registered here for a claim that then expired owns an account
+ * For a claim, signing in appears exactly once, as the answer to a question a
+ * person has already been asked: a registration refused because that email is
+ * taken. Whoever registered here for a claim that then expired owns an account
  * attached to nothing, and this is the only screen that can tell them so. It
  * is reached by failing, never by choosing.
+ *
+ * A login has no such rule — belonging to accounts already is what a login is
+ * for — so it opens on signing in and offers registering beside it.
  */
-function ClaimRegister({
+function HandoffSignIn({
   id,
   token,
+  purpose,
   googleEnabled,
   onDone,
 }: {
   id: string;
   token: string;
+  purpose: "claim" | "login";
   googleEnabled: boolean;
   onDone: () => void;
 }) {
+  const login = purpose === "login";
   const signIn = useSignIn();
   const register = useMutation({
     mutationFn: (input: { name: string; email: string; password: string }) =>
       call("cliBrowserRegister", { params: { id }, body: { submissionToken: token, ...input } }),
   });
-  /* Entered only from the refusal below, which is why nothing sets it back. */
-  const [recovering, setRecovering] = useState(false);
+  /* For a claim, entered only from the refusal below, which is why nothing sets it back. */
+  const [recovering, setRecovering] = useState(login);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -369,6 +462,12 @@ function ClaimRegister({
 
   const active = recovering ? signIn : register;
   const taken = !recovering && register.isError && isSignInTaken(register.error);
+
+  const switchTo = (signingIn: boolean) => {
+    signIn.reset();
+    register.reset();
+    setRecovering(signingIn);
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -395,17 +494,21 @@ function ClaimRegister({
     window.location.assign(result.url);
   };
 
+  const intro = login
+    ? recovering
+      ? "Sign in to connect this CLI to your account."
+      : "Create your sign-in to connect this CLI."
+    : recovering
+      ? "Sign in to the account you already created for this claim."
+      : "Create your account to claim.";
+
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        {recovering
-          ? "Sign in to the account you already created for this claim."
-          : "Create your account to claim."}
-      </p>
+      <p className="text-sm text-muted-foreground">{intro}</p>
 
       {googleEnabled ? (
         <GoogleButton
-          label={recovering ? "Continue with Google" : "Sign up with Google"}
+          label={login || recovering ? "Continue with Google" : "Sign up with Google"}
           onStart={startGoogle}
         />
       ) : null}
@@ -413,9 +516,9 @@ function ClaimRegister({
       <form onSubmit={(event) => void submit(event)} className="space-y-4">
         {recovering ? null : (
           <div className="space-y-2">
-            <Label htmlFor="claim-name">Name</Label>
+            <Label htmlFor="handoff-name">Name</Label>
             <Input
-              id="claim-name"
+              id="handoff-name"
               value={name}
               required
               autoComplete="name"
@@ -425,9 +528,9 @@ function ClaimRegister({
           </div>
         )}
         <div className="space-y-2">
-          <Label htmlFor="claim-email">Email</Label>
+          <Label htmlFor="handoff-email">Email</Label>
           <Input
-            id="claim-email"
+            id="handoff-email"
             type="email"
             value={email}
             required
@@ -437,9 +540,9 @@ function ClaimRegister({
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="claim-password">Password</Label>
+          <Label htmlFor="handoff-password">Password</Label>
           <Input
-            id="claim-password"
+            id="handoff-password"
             type="password"
             value={password}
             required
@@ -453,14 +556,15 @@ function ClaimRegister({
             <AlertTitle>That email already has an account</AlertTitle>
             <AlertDescription className="space-y-3">
               <span>
-                If you created it here for a claim you never finished, sign in to carry on.
-                Otherwise use another email.
+                {login
+                  ? "Sign in with it to connect this CLI."
+                  : "If you created it here for a claim you never finished, sign in to carry on. Otherwise use another email."}
               </span>
               <Button
                 type="button"
                 variant="outline"
                 className="w-full"
-                onClick={() => setRecovering(true)}
+                onClick={() => switchTo(true)}
               >
                 Sign in to it instead
               </Button>
@@ -476,6 +580,19 @@ function ClaimRegister({
           {recovering ? "Sign in" : "Create account"}
         </Button>
       </form>
+
+      {login ? (
+        <p className="text-center text-sm text-muted-foreground">
+          {recovering ? "No account? " : "Already have one? "}
+          <button
+            type="button"
+            className="text-primary-ink underline underline-offset-4"
+            onClick={() => switchTo(!recovering)}
+          >
+            {recovering ? "Create one" : "Sign in"}
+          </button>
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -515,6 +632,243 @@ function SignOutFirst({
         Sign out
       </Button>
     </div>
+  );
+}
+
+/**
+ * Everything a login shows: what to match against the terminal, who is
+ * approving, and — once somebody is signed in — which account the CLI lands
+ * in.
+ *
+ * `blockedBy` still decides what is offered, but a login never asks anyone to
+ * sign out: belonging to accounts already is what a login is for. Declining is
+ * offered in every state, signed in or not, because the person most in need of
+ * it is one who never started this request.
+ */
+function LoginApproval({
+  id,
+  token,
+  details,
+  approving,
+  denying,
+  error,
+  onApprove,
+  onDeny,
+  onRefresh,
+}: {
+  id: string;
+  token: string;
+  details: CliBrowserDetailsResponse;
+  approving: boolean;
+  denying: boolean;
+  error: string | null;
+  onApprove: (organizationId: string | undefined) => void;
+  onDeny: () => void;
+  onRefresh: () => void;
+}) {
+  // The form below carries its own Deny beside Approve; every other state gets one here.
+  const blocked =
+    details.blockedBy === "registration_required" || details.blockedBy === "no_eligible_organization";
+  return (
+    <div className="space-y-4">
+      {details.userCode ? <PairingCode code={details.userCode} /> : null}
+      {details.client ? <Requester client={details.client} /> : null}
+      <Summary details={details} />
+
+      {details.blockedBy === "registration_required" ? (
+        <HandoffSignIn
+          id={id}
+          token={token}
+          purpose="login"
+          googleEnabled={details.googleEnabled}
+          onDone={onRefresh}
+        />
+      ) : details.blockedBy === "no_eligible_organization" ? (
+        <NoEligibleAccount viewer={details.viewer} onDone={onRefresh} />
+      ) : (
+        <LoginForm
+          organizations={details.organizations ?? []}
+          approving={approving}
+          denying={denying}
+          error={error}
+          onApprove={onApprove}
+          onDeny={onDeny}
+        />
+      )}
+
+      {blocked ? (
+        <div className="space-y-2 border-t pt-4">
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">Did not start this?</p>
+            <Button type="button" variant="outline" size="sm" disabled={denying} onClick={onDeny}>
+              {denying ? <Loader2 className="size-4 animate-spin" /> : null}
+              Deny
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The code the terminal prints, large enough to compare at a glance. */
+function PairingCode({ code }: { code: string }) {
+  return (
+    <div className="space-y-1 rounded-md border bg-muted/40 px-3 py-3 text-center">
+      <p className="text-[11px] tracking-wide text-muted-foreground uppercase">Pairing code</p>
+      <p className="font-mono text-3xl font-semibold tracking-[0.15em]">{code}</p>
+      <p className="text-xs text-muted-foreground">
+        Check that it matches the code in your terminal.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * What the CLI said about itself, and where the request came from. Shown so a
+ * person can recognize their own machine, never trusted for anything.
+ */
+function Requester({ client }: { client: NonNullable<CliBrowserDetailsResponse["client"]> }) {
+  const rows: Array<[string, string]> = [];
+  if (client.os) rows.push(["System", client.os]);
+  if (client.ip) rows.push(["IP address", client.ip]);
+  rows.push(["Requested", formatDateTime(client.requestedAt)]);
+  return (
+    <Field label="Requested by">
+      <p className="text-sm font-medium">{client.label ?? "An unnamed CLI"}</p>
+      <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+        {rows.map(([term, value]) => (
+          <div key={term} className="contents">
+            <dt className="text-muted-foreground">{term}</dt>
+            <dd className="font-mono break-all">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </Field>
+  );
+}
+
+const ROLE_NAMES = { owner: "Owner", admin: "Admin", member: "Member" } as const;
+
+/**
+ * Which account the CLI's key belongs to, and the approval itself.
+ *
+ * One account needs no question, so it is named rather than offered. Several
+ * are offered with none chosen: the key lands in whichever one is picked, and
+ * a default would make that choice for a person who did not look.
+ */
+function LoginForm({
+  organizations,
+  approving,
+  denying,
+  error,
+  onApprove,
+  onDeny,
+}: {
+  organizations: NonNullable<CliBrowserDetailsResponse["organizations"]>;
+  approving: boolean;
+  denying: boolean;
+  error: string | null;
+  onApprove: (organizationId: string | undefined) => void;
+  onDeny: () => void;
+}) {
+  const [chosen, setChosen] = useState<string | null>(null);
+  const only = organizations.length === 1 ? organizations[0]! : null;
+  const selected = only
+    ? only.id
+    : organizations.some((organization) => organization.id === chosen)
+      ? chosen
+      : null;
+  const needsChoice = organizations.length > 1;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (needsChoice && !selected) return;
+    onApprove(selected ?? undefined);
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      {only ? (
+        <Field label="Account">
+          <p className="text-sm font-medium">{only.name}</p>
+          <p className="text-xs text-muted-foreground">{ROLE_NAMES[only.role]}</p>
+        </Field>
+      ) : needsChoice ? (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Which account should this CLI use?</p>
+          <ChoiceList
+            label="Account for this CLI"
+            value={selected}
+            onChange={setChosen}
+            choices={organizations.map((organization) => ({
+              value: organization.id,
+              label: organization.name,
+              description: ROLE_NAMES[organization.role],
+            }))}
+          />
+        </div>
+      ) : null}
+
+      {error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2">
+        <Button type="button" variant="outline" disabled={approving || denying} onClick={onDeny}>
+          {denying ? <Loader2 className="size-4 animate-spin" /> : null}
+          Deny
+        </Button>
+        <Button type="submit" disabled={approving || denying || (needsChoice && !selected)}>
+          {approving ? <Loader2 className="size-4 animate-spin" /> : null}
+          Approve
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * A signed-in person with no account this CLI could be given a key in.
+ * Nothing here can fix that, so the page says who is signed in and offers the
+ * one thing it can: signing in as somebody else, on this same page.
+ */
+function NoEligibleAccount({
+  viewer,
+  onDone,
+}: {
+  viewer: CliBrowserDetailsResponse["viewer"];
+  onDone: () => void;
+}) {
+  const signOut = useSignOut();
+  const who = viewer?.name ?? viewer?.email;
+  return (
+    <Alert role="alert">
+      <AlertTitle>No account to connect</AlertTitle>
+      <AlertDescription className="space-y-3">
+        <span>
+          {who ? `${who} is` : "You are"} not a member of any account this CLI can use. Ask an
+          owner to add you, then reload this page.
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          disabled={signOut.isPending}
+          onClick={() => signOut.mutate(undefined, { onSettled: onDone })}
+        >
+          {signOut.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+          Sign in as someone else
+        </Button>
+      </AlertDescription>
+    </Alert>
   );
 }
 
