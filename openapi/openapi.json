@@ -10253,6 +10253,10 @@
                             },
                             "long_cache_write": {
                               "type": "number"
+                            },
+                            "retirement_date": {
+                              "type": "string",
+                              "description": "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it."
                             }
                           }
                         }

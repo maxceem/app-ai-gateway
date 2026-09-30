@@ -34,6 +34,7 @@ const steps = [
   { name: "test:deploy-script", tier: "test" },
   { name: "test:swift-publish", tier: "test" },
   { name: "test:release-script", tier: "test" },
+  { name: "test:update-models", tier: "test" },
 ];
 
 const tier = process.argv[2];

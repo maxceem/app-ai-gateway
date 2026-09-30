@@ -1,0 +1,109 @@
+{
+  "mistral/mistral-medium-latest": {
+    "cache_read_input_token_cost": 1.5e-7,
+    "input_cost_per_token": 0.0000015,
+    "litellm_provider": "mistral",
+    "mode": "chat",
+    "output_cost_per_token": 0.0000075
+  },
+  "mistral/mistral-large-latest": {
+    "cache_read_input_token_cost": 5e-8,
+    "input_cost_per_token": 5e-7,
+    "litellm_provider": "mistral",
+    "mode": "chat",
+    "output_cost_per_token": 0.0000015
+  },
+  "mistral/mistral-small-latest": {
+    "cache_read_input_token_cost": 1.5e-8,
+    "input_cost_per_token": 1.5e-7,
+    "litellm_provider": "mistral",
+    "mode": "chat",
+    "output_cost_per_token": 6e-7
+  },
+  "baseten/moonshotai/Kimi-K3": {
+    "cache_read_input_token_cost": 3e-7,
+    "input_cost_per_token": 0.000003,
+    "litellm_provider": "baseten",
+    "mode": "chat",
+    "output_cost_per_token": 0.000015
+  },
+  "baseten/zai-org/GLM-5.3": {
+    "cache_read_input_token_cost": 1.4e-7,
+    "input_cost_per_token": 0.0000014,
+    "litellm_provider": "baseten",
+    "mode": "chat",
+    "output_cost_per_token": 0.0000044
+  },
+  "baseten/openai/gpt-oss-120b": {
+    "cache_read_input_token_cost": 1e-7,
+    "input_cost_per_token": 1e-7,
+    "litellm_provider": "baseten",
+    "mode": "chat",
+    "output_cost_per_token": 5e-7
+  },
+  "gpt-5.6-sol": {
+    "cache_creation_input_token_cost": 0.000005,
+    "cache_creation_input_token_cost_above_272k_tokens": 0.00001,
+    "cache_creation_input_token_cost_above_272k_tokens_flex": 0.000005,
+    "cache_creation_input_token_cost_above_272k_tokens_priority": 0.00002,
+    "cache_creation_input_token_cost_flex": 0.0000025,
+    "cache_creation_input_token_cost_priority": 0.00001,
+    "cache_read_input_token_cost": 4e-7,
+    "cache_read_input_token_cost_above_272k_tokens": 8e-7,
+    "cache_read_input_token_cost_above_272k_tokens_flex": 4e-7,
+    "cache_read_input_token_cost_above_272k_tokens_priority": 0.0000016,
+    "cache_read_input_token_cost_batches": 2e-7,
+    "cache_read_input_token_cost_above_272k_tokens_batches": 4e-7,
+    "cache_creation_input_token_cost_batches": 0.0000025,
+    "cache_creation_input_token_cost_above_272k_tokens_batches": 0.000005,
+    "cache_read_input_token_cost_flex": 2e-7,
+    "cache_read_input_token_cost_priority": 8e-7,
+    "input_cost_per_token": 0.000004,
+    "input_cost_per_token_above_272k_tokens": 0.000008,
+    "input_cost_per_token_above_272k_tokens_flex": 0.000004,
+    "input_cost_per_token_above_272k_tokens_priority": 0.000016,
+    "input_cost_per_token_batches": 0.000002,
+    "input_cost_per_token_above_272k_tokens_batches": 0.000004,
+    "input_cost_per_token_flex": 0.000002,
+    "input_cost_per_token_priority": 0.000008,
+    "litellm_provider": "openai",
+    "mode": "chat",
+    "output_cost_per_token": 0.00002,
+    "output_cost_per_token_above_272k_tokens": 0.00003,
+    "output_cost_per_token_above_272k_tokens_flex": 0.000015,
+    "output_cost_per_token_above_272k_tokens_priority": 0.00006,
+    "output_cost_per_token_batches": 0.00001,
+    "output_cost_per_token_above_272k_tokens_batches": 0.000015,
+    "output_cost_per_token_flex": 0.00001,
+    "output_cost_per_token_priority": 0.00004
+  },
+  "gemini/gemini-2.5-pro": {
+    "cache_read_input_token_cost": 1.25e-7,
+    "cache_read_input_token_cost_above_200k_tokens": 2.5e-7,
+    "cache_read_input_token_cost_above_200k_tokens_priority": 4.5e-7,
+    "cache_read_input_token_cost_batches": 1.25e-7,
+    "cache_read_input_token_cost_flex": 1.25e-7,
+    "cache_read_input_token_cost_priority": 2.25e-7,
+    "input_cost_per_token": 0.00000125,
+    "input_cost_per_token_above_200k_tokens": 0.0000025,
+    "input_cost_per_token_priority": 0.00000225,
+    "input_cost_per_token_above_200k_tokens_priority": 0.0000045,
+    "litellm_provider": "gemini",
+    "mode": "chat",
+    "output_cost_per_token": 0.00001,
+    "output_cost_per_token_above_200k_tokens": 0.000015,
+    "output_cost_per_token_priority": 0.000018,
+    "output_cost_per_token_above_200k_tokens_priority": 0.000027,
+    "google_maps_grounding_cost_per_query": 0.025,
+    "input_cost_per_token_batches": 6.25e-7,
+    "input_cost_per_token_flex": 6.25e-7,
+    "output_cost_per_token_batches": 0.000005,
+    "output_cost_per_token_flex": 0.000005
+  },
+  "whisper-1": {
+    "input_cost_per_second": 0.0001,
+    "litellm_provider": "openai",
+    "mode": "audio_transcription",
+    "output_cost_per_second": 0.0001
+  }
+}

@@ -3,7 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
-import prices from "../src/usage/prices.json";
+import models from "../src/usage/models.json";
 import { providerModelAuthor } from "../src/providers/provider-type";
 import { wholeBody } from "../src/usage/body-observer";
 import { hasModelPrice, isBillable, resolveModelAuthor } from "../src/usage/pricing";
@@ -789,7 +789,7 @@ describe("model author resolution", () => {
    * the shipped curated authors are asserted in `usage.test.ts`.
    */
   it("prefers the catalog's own author when one is curated", () => {
-    const entry = prices.openai["gpt-5.6-sol"] as { author?: string };
+    const entry = models.openai["gpt-5.6-sol"] as { author?: string };
     expect(entry.author).toBeUndefined();
     expect(providerModelAuthor("openai")).toBe("OpenAI");
     try {
