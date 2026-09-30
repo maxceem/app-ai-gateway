@@ -58,10 +58,25 @@ const notes =
   "built into its published bundle, and caches it. Nothing else here is " +
   `needed to install a gateway.\n\n\`\`\`\nsha256  ${sha256}\n\`\`\`\n`;
 
+// What changed is the pull requests merged since the previous version, which
+// GitHub lists beneath the notes above. That version is named rather than left
+// to GitHub, which would otherwise pick its own; `--match` keeps a tag that is
+// not a release, such as a backup, from being taken for one.
+const previous = capture("git", [
+  "describe",
+  "--tags",
+  "--abbrev=0",
+  "--match",
+  "v[0-9]*",
+  `${tag}^`,
+]);
+const changes = ["--generate-notes"];
+if (previous.status === 0) changes.push("--notes-start-tag", previous.stdout.trim());
+
 const exists = capture("gh", ["release", "view", tag]).status === 0;
 const published = exists
   ? run("gh", ["release", "upload", tag, asset, "--clobber"])
-  : run("gh", ["release", "create", tag, "--title", tag, "--notes", notes, asset]);
+  : run("gh", ["release", "create", tag, "--title", tag, "--notes", notes, ...changes, asset]);
 if (published.status !== 0)
   throw new Error(`gh could not ${exists ? "upload the asset to" : "create"} ${tag}`);
 
