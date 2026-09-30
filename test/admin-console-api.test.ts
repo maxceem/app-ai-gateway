@@ -18,6 +18,7 @@ import {
   seedServerApp,
   serverConfig,
 } from "./helpers";
+import models from "../src/usage/models.json";
 
 const ORIGIN = "https://example.test";
 const AUTH = { authorization: "Bearer agw_mgmt_test-admin-secret" };
@@ -771,14 +772,8 @@ describe("admin console API", () => {
   it("serves the price table for model pickers", async () => {
     const { status, body } = await get("/v1/admin/prices");
     expect(status).toBe(200);
-    expect(body.prices.openai["gpt-5.4-mini"]).toMatchObject({
-      input: 0.75,
-      cached_input: 0.075,
-      output: 4.5,
-    });
-    expect(body.prices.anthropic["claude-opus-5"]).toMatchObject({
-      input: expect.any(Number),
-    });
+    // The shipped catalog, unchanged.
+    expect(body.prices).toEqual(models);
   });
 });
 

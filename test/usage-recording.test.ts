@@ -7,6 +7,7 @@ import {
   type UsageEvent,
 } from "../src/usage/usage-record";
 import { seedApp, testAttribution, testIdentity } from "./helpers";
+import { microusd, shippedRates } from "./shipped-rates";
 import { recordRejectionEvent } from "../src/diagnostics/rejection-events";
 import { TEST_ORGANIZATION_ID } from "./apply-migrations";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
@@ -248,13 +249,14 @@ describe("usage recording idempotency", () => {
       inputTokens: 0,
       outputTokens: 0,
     });
-    // 90 seconds at $0.006 per minute.
-    expect(recorded?.costUsd).toBeCloseTo(0.009, 8);
-    expect(await monthlyCost(`${appId}:user-1`)).toBe(9000);
+    // 90 seconds at the per-minute rate.
+    const cost = (90 / 60) * shippedRates("openai", "whisper-1").per_minute;
+    expect(recorded?.costUsd).toBeCloseTo(cost, 12);
+    expect(await monthlyCost(`${appId}:user-1`)).toBe(microusd(cost));
     const row = await env.DB.prepare("SELECT cost_usd FROM app_usage_event WHERE app_id = ?")
       .bind(appId)
       .first<{ cost_usd: number }>();
-    expect(row?.cost_usd).toBeCloseTo(0.009, 8);
+    expect(row?.cost_usd).toBeCloseTo(cost, 12);
   });
 
   it("marks a successful response with an unreadable usage shape as unresolved", async () => {

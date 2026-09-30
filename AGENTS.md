@@ -148,6 +148,10 @@ means a static import crept back in.
   is expected is acknowledged in `scripts/models/acknowledged.json` with a
   reason, not by loosening a parser or a test.
 - Preview the sync with `node scripts/update-models.mjs --dry-run`.
+- A test never writes a shipped price down. It asserts the arithmetic — which
+  rate each kind of token bills at — and reads the rates with `shippedRates`
+  from `test/shipped-rates.ts`, so the daily sync changing a price breaks no
+  test.
 
 ## Security
 
