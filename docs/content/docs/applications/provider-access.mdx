@@ -1,0 +1,108 @@
+---
+title: Provider access
+description: Choose which providers, paths and models an app may use, and cap its output tokens.
+---
+
+The **Provider access** page decides which of your providers an app may call,
+and what it may ask each of them for. A new app may use every provider you
+have, its inference endpoints and every priced model. Narrow it here or explicitly
+allow another provider path.
+
+The page opens with one field, **Providers this app can call**, then lists
+your providers, each with its name, the URL segment clients use,
+`/proxy/<slug>/…`, and what the app may ask it for in one line, such as
+"All inference endpoints · all models · no output cap":
+
+- **All providers**: every provider you have is allowed, and a provider you
+  add later is available to this app automatically. Every row is marked
+  allowed; a disabled provider carries a **disabled** mark and serves nothing
+  until it is enabled again.
+- **Selected providers**: the app may use only the providers whose switch is
+  on. A provider you add later stays off until you turn it on here.
+
+Choosing **Selected providers** starts with every provider switched on, so nothing
+changes for the app until you turn one off. An enabled row opens with the
+chevron at its end to reveal the three settings below, and its line changes
+to say what you set, such as "1 endpoint · 1 model · up to 4,096 output tokens".
+
+## Endpoints this provider serves
+
+**All inference endpoints** allows Responses, Chat Completions, Anthropic
+Messages, Gemini `generateContent` and transcription. Choose **Selected endpoints** to allow only the ones you list, which is also
+how you opt into any other provider operation. The list starts with one empty
+row; removing the last row is the same as choosing all again.
+
+An endpoint is named by its path: the provider's own API path without a leading slash, for example
+`v1/responses` or `v1/messages`. Paths are matched exactly, except that
+`{model}` in a path matches one segment, which is how Gemini's
+`v1beta/models/{model}:generateContent` names its model in the URL.
+
+Each row has two optional settings:
+
+- **Fixed model** applies to routes with no model in the body, such as
+  transcription, and is used for pricing and the model allowlist. It is never
+  injected into the request.
+- **Output cap style** tells the gateway which body field carries the output
+  limit for this path when it applies **Max output tokens**. Leave it on
+  **auto** unless the route needs an exception. The styles are `responses`,
+  `chat_completions`, `gemini_native`, `anthropic` and `none`.
+
+A request for a path not in the list answers `403 path_not_allowed`.
+
+## Models this provider serves
+
+**All models** allows every model that has a price. Choose **Selected models**
+and add model names to allow only those; removing the last one is the same as
+choosing all again. [Model rewrites](/applications/model-rewrites) are applied
+after this check, so the client name is what you list here. A request for
+another model answers `403 model_not_allowed`.
+
+Model names are the provider's own, on every route: `gemini-2.5-flash`, never
+`google/gemini-2.5-flash`. OpenRouter is the exception, where the model name
+includes its author prefix, as OpenRouter itself names it.
+
+## Max output tokens
+
+Empty means unrestricted. When set, a request that asks for more output than
+this is refused with `403 max_output_tokens_exceeded`, and a request that does
+not name an output limit gets this value injected. Transcription routes ignore
+the cap.
+
+## When a provider is missing
+
+An app may name a provider you have since deleted or never added. The app's
+pages show a banner naming the missing providers, requests to that slug
+answer `502 provider_not_configured` (or `502 provider_disabled` for a
+paused one), and every other provider keeps working. Under **Selected
+providers** the
+row for a missing slug is marked **deleted** and says no provider has it any
+more, and you can turn it off or recreate the provider.
+
+## In the configuration
+
+```json
+"routing": {
+  "providers": {
+    "mode": "selected",
+    "selected": {
+      "openai": {
+        "allowed_paths": [
+          "v1/responses",
+          { "path": "v1/audio/transcriptions", "fixed_model": "gpt-4o-mini-transcribe", "clamp": "none" }
+        ],
+        "allowed_models": ["gpt-5.6", "gpt-5.6-terra"],
+        "max_output_tokens": 4096
+      },
+      "anthropic": { "allowed_paths": [], "allowed_models": [] }
+    }
+  },
+  "model_rewrites": {}
+}
+```
+
+`mode` is `all` or `selected`. With `selected`, the keys of `selected` are
+provider slugs, and a slug not listed is not allowed. An entry with empty
+lists allows the default inference endpoints and every priced model of that
+provider. A non-empty `allowed_paths` replaces that default. When you create an
+app, every slug you name must exist; when you update one, only slugs the update
+introduces are checked, so removing a provider never blocks unrelated edits.

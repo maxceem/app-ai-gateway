@@ -86,7 +86,7 @@ App AI Gateway is a proxy between a person's applications and AI providers
 (OpenAI, Anthropic, Gemini, xAI and others). The person adds **provider keys**
 once; they are shared by all their apps. They create **applications**; each
 app has a permanent ID, an authentication policy, a proxy policy saying
-which providers, paths and models it may use, optional named endpoints,
+which providers, paths and models it may use, optional custom endpoints,
 and limits on its users. Client apps call
 `{GATEWAY_URL}/v1/apps/{app}/proxy/{provider_slug}/{provider_path}` with the
 provider's own request format. You manage all of this through the admin API.
@@ -456,7 +456,7 @@ client code.
   with the provider's own body. Credential: `Authorization: Bearer <gateway
   token>` plus `X-App-Version` for iOS and signed-in-user apps, or
   `Authorization: Bearer agw_…` for a server app without user identity.
-- Named endpoint: `POST /v1/apps/{app}/endpoints/{slug}`.
+- Custom endpoint: `POST /v1/apps/{app}/endpoints/{slug}`.
 - Token exchange for a server app with signed-in users:
   `POST /v1/apps/{app}/auth/token` with `{ "api_key", "issuer_token" }`,
   returning `{ "access_token", "expires_in": 3600 }`.

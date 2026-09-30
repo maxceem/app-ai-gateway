@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { flushSync } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
@@ -10,19 +11,22 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, SectionHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import type { AppDraft } from "@/hooks/use-app-draft";
+import { clientApiOrigin } from "@/lib/client-api";
+import { authIssuer } from "@/lib/config-types";
 import { useConsoleSession } from "@/lib/console-session";
 import { useDeleteApp } from "@/lib/queries";
 
 /**
- * The app as a record: what it is called, whether it is on, and the way to
- * remove it. Nothing here changes how requests are handled, which is why it
- * sits apart from the sections that do.
+ * The app as a record: what it is called, its id and the URL clients reach it
+ * at, whether it is on, and the way to remove it. Nothing here changes how
+ * requests are handled, which is why it sits apart from the sections that do.
  */
 export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }) {
   const draft = state.draft!;
   const navigate = useNavigate();
   const deleteApp = useDeleteApp();
-  const { readOnly } = useConsoleSession();
+  const { readOnly, capabilities } = useConsoleSession();
+  const issuer = authIssuer(draft.config.authentication);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -42,6 +46,10 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
       toast.success(`Deleted ${draft.name}`, {
         description: `${result.removed_users} users removed. Usage history was kept.`,
       });
+      // The page asks before a navigation loses unsaved changes; there is
+      // nothing left to save them to. Cleared synchronously so the guard sees
+      // it before the navigation it would otherwise stop.
+      flushSync(() => state.reset());
       navigate("/apps");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not delete the app");
@@ -62,23 +70,39 @@ export function SettingsTab({ appId, state }: { appId: string; state: AppDraft }
               onChange={(event) => state.update({ name: event.target.value })}
             />
           </Field>
-          <Field
-            label="Application id"
-            htmlFor="app-id"
-            hint="Fixed when the app was created. It is part of every URL your clients call."
-          >
-            <div className="flex max-w-md gap-2">
-              <Input id="app-id" value={appId} readOnly className="font-mono text-xs" />
+          <Field label="Application id">
+            <div className="flex items-center gap-1">
+              <code className="rounded-md bg-muted px-2 py-1 font-mono text-xs">{appId}</code>
               <Button
                 type="button"
-                variant="outline"
-                className="min-w-24"
+                variant="ghost"
+                size="icon"
+                className="size-7 text-muted-foreground"
+                aria-label="Copy application id"
                 onClick={() => void copyId()}
               >
-                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-                {copied ? "Copied" : "Copy"}
+                {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
               </Button>
             </div>
+          </Field>
+          <Field label="Client base URL">
+            <code className="block rounded-md bg-muted px-3 py-2 font-mono text-xs break-all">
+              {clientApiOrigin(capabilities)}/v1/apps/{appId}/proxy/&#123;provider&#125;/&#123;provider_path&#125;
+            </code>
+            <p className="text-xs text-muted-foreground">
+              {issuer ? (
+                <>
+                  Auth exchange lives at{" "}
+                  <span className="font-mono">/v1/apps/{appId}/auth/token</span>.
+                </>
+              ) : (
+                <>
+                  Clients send their API key as the{" "}
+                  <span className="font-mono">Authorization</span> bearer credential; this app has no
+                  token exchange.
+                </>
+              )}
+            </p>
           </Field>
         </CardContent>
       </Card>

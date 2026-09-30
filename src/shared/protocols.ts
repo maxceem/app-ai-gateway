@@ -44,7 +44,7 @@ export interface Protocol {
   readonly usage: UsageFormat;
   /**
    * The request body it takes: JSON, or a multipart form carrying a file. A
-   * named endpoint reads its client's body as this, and `other` is JSON because
+   * custom endpoint reads its client's body as this, and `other` is JSON because
    * that is what a provider-native operation is assumed to send.
    */
   readonly body: "json" | "multipart";

@@ -159,7 +159,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("named endpoints", () => {
+describe("custom endpoints", () => {
   it("overwrites the model, deep-merges configured params, and clamps output tokens", async () => {
     const appId = "endpoint-responses";
     await seedApp(appId, {
@@ -924,7 +924,7 @@ describe("named endpoints", () => {
   // rest of the chain was skipped rather than granted a budget of its own.
   it("shares one time-to-first-byte budget across the chain", async () => {
     const appId = "endpoint-fallback-ttfb-budget";
-    // Only openai and xai compose named endpoints, so the third target is a
+    // Only openai and xai compose custom endpoints, so the third target is a
     // second openai instance rather than a third provider type.
     await seedProvider({ type: "openai", id: "provider_endpoint_openai_spare", slug: "openai-spare" });
     await seedApp(appId, {
@@ -1149,7 +1149,7 @@ describe("named endpoints", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("does not serve named endpoints over GET", async () => {
+  it("does not serve custom endpoints over GET", async () => {
     await seedApp("endpoint-method", { endpoints: CHAT_ENDPOINTS });
     const token = await gatewayToken("endpoint-method");
     const response = await workerFetch(

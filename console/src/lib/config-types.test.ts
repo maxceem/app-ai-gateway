@@ -164,7 +164,7 @@ describe("the models an instance can be asked for", () => {
   });
 });
 
-describe("named endpoint targets", () => {
+describe("custom endpoint targets", () => {
   it("only offers instances whose type composes the endpoint request shape", () => {
     expect(endpointProviderTypes("responses")).toEqual(["openai", "xai"]);
     expect(endpointProviderTypes("audio_transcription")).toEqual(["openai", "xai"]);
@@ -232,7 +232,7 @@ describe("the issuer as an end-user source", () => {
   });
 });
 
-describe("named endpoint editing", () => {
+describe("custom endpoint editing", () => {
   const endpoints: EndpointsConfig = {
     chat: { api_style: "responses", provider: "openai", model: "gpt-5.6-luna" },
     transcribe: { api_style: "audio_transcription", provider: "openai", model: "gpt-4o-mini-transcribe" },

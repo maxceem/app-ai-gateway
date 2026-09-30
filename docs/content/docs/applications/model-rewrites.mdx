@@ -1,0 +1,29 @@
+---
+title: Model rewrites
+description: Point a model name an app sends at the model the provider should receive.
+---
+
+The **Model rewrites** page maps a model name the client sends to the model
+the provider receives. The rewrite is applied after the allowlist check, so
+the target does not need to be in the
+[allowed models](/applications/provider-access#allowed-models), and usage
+records the rewritten model.
+
+A rewrite is how you move an app to a newer model without a release: the app
+keeps asking for `gpt-5.6-terra` and you point that name at `gpt-5.6`. For a
+bigger change, such as a different provider or fixed parameters, use a
+[custom endpoint](/applications/custom-endpoints).
+
+Rewrite targets are checked against the price catalog, not against your
+providers, so they can be saved before the provider exists.
+
+## In the configuration
+
+```json
+"routing": {
+  "model_rewrites": { "gpt-5.6-terra": "gpt-5.6" }
+}
+```
+
+`model_rewrites` maps the model name a client sends to the one the provider
+receives. Both sides are the provider's own model names.

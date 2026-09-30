@@ -258,7 +258,7 @@ describe("capability matrix", () => {
     expect(routeCapability("cf_aig", "openrouter")).toBeNull();
   });
 
-  it("keeps named-endpoint eligibility where it was", () => {
+  it("keeps custom-endpoint eligibility where it was", () => {
     expect(ENDPOINT_PROVIDER_TYPES).toEqual(["openai", "xai"]);
     expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
     expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
@@ -366,12 +366,12 @@ describe("the capability matrix the console shares", () => {
   });
 
   /**
-   * A named endpoint's path is server-composed, so the classifier has to read it
+   * A custom endpoint's path is server-composed, so the classifier has to read it
    * back as the style that composed it: the same path is also what the
    * capability check judges when a client calls it directly, and a mismatch
    * would mean an endpoint posting to a path its own route refuses.
    */
-  it("composes every named endpoint at a path that classifies back to its style", () => {
+  it("composes every custom endpoint at a path that classifies back to its style", () => {
     for (const type of PROVIDER_TYPES) {
       const paths = providerDescriptor(type).endpointPaths ?? {};
       for (const [style, path] of Object.entries(paths)) {
@@ -760,7 +760,7 @@ describe("Vercel AI Gateway adapter", () => {
         expect([type, style, supportsApiStyle("vercel", type, style)]).toEqual([type, style, true]);
       }
     }
-    // Named endpoints narrow the same way: a Responses endpoint composes a body
+    // Custom endpoints narrow the same way: a Responses endpoint composes a body
     // Vercel serves, a transcription endpoint one it does not.
     expect(supportsEndpointStyle("vercel", "openai", "responses")).toBe(true);
     expect(supportsEndpointStyle("vercel", "openai", "audio_transcription")).toBe(false);

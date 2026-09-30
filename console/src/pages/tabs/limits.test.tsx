@@ -8,7 +8,10 @@ import type { LimitsConfig } from "@/lib/config-types";
 
 const APP_ID = "my-app";
 
-function appRow(limits?: LimitsConfig) {
+type EndUser = { source: "none" } | { source: "header"; header: string };
+const IDENTIFIED: EndUser = { source: "header", header: "x-end-user-id" };
+
+function appRow(limits?: LimitsConfig, end_user: EndUser = IDENTIFIED) {
   return {
     id: APP_ID,
     name: "My app",
@@ -18,10 +21,7 @@ function appRow(limits?: LimitsConfig) {
     config: {
       // Per-user limits only render for an application that identifies its
       // users, which is what these tests are about.
-      authentication: {
-        type: "api_key",
-        end_user: { source: "header", header: "x-end-user-id" },
-      },
+      authentication: { type: "api_key", end_user },
       routing: { providers: { mode: "all" }, model_rewrites: {} },
       ...(limits === undefined ? {} : { limits }),
     },
@@ -30,13 +30,13 @@ function appRow(limits?: LimitsConfig) {
 
 function Harness() {
   const state = useAppDraft(APP_ID);
-  return state.draft ? <LimitsTab state={state} /> : null;
+  return state.draft ? <LimitsTab appId={APP_ID} state={state} /> : null;
 }
 
-function renderTab(limits?: LimitsConfig) {
+function renderTab(limits?: LimitsConfig, end_user?: EndUser) {
   stubApi({
     [`/v1/admin/apps/${APP_ID}`]: {
-      body: { app: appRow(limits) },
+      body: { app: appRow(limits, end_user) },
     },
   });
   return renderAuthenticated(<Harness />);
@@ -51,16 +51,29 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("LimitsTab", () => {
   /**
-   * The whole reason this tab has copy above the cards. An operator reading it
-   * has a plan allowance on another page, and the two are unrelated quotas over
-   * different populations; the page has to say so before it shows a number.
+   * An app that identifies no users has nobody for a per-user limit to apply
+   * to. The card keeps its place so the page reads the same for every app, but
+   * its fields are off and the notice says where they are turned on.
    */
-  it("says whose limits these are, and points at the plan allowance as separate", async () => {
+  it("keeps the per-user card, disabled, for an app that identifies no users", async () => {
+    renderTab(undefined, { source: "none" });
+
+    const rpm = await screen.findByLabelText("Requests per minute", { selector: "#rpm" });
+    expect(rpm).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText("Requests per day", { selector: "#rpd" })).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText(/monthly spending budget/i, { selector: "#budget" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("link", { name: /turn on user authentication/i }).getAttribute("href"))
+      .toBe(`/apps/${APP_ID}/auth/users`);
+    // The application limits are unaffected.
+    expect(screen.getByLabelText("Requests per minute", { selector: "#app-rpm" })).toHaveProperty("disabled", false);
+  });
+
+  it("shows no notice and live fields for an app that identifies its users", async () => {
     renderTab(configured);
 
-    expect(await screen.findByText(/your app's end users/i)).toBeTruthy();
-    const link = screen.getByRole("link", { name: /plan allowance/i });
-    expect(link.getAttribute("href")).toBe("/billing");
+    const rpm = await screen.findByLabelText("Requests per minute", { selector: "#rpm" });
+    expect(rpm).toHaveProperty("disabled", false);
+    expect(screen.queryByRole("link", { name: /turn on user authentication/i })).toBeNull();
   });
 
   it("renders an app with no limits block as unlimited rather than empty", async () => {
@@ -71,7 +84,8 @@ describe("LimitsTab", () => {
     const rpm = await screen.findByLabelText("Requests per minute", { selector: "#rpm" });
     expect(rpm).toHaveProperty("value", "");
     expect(rpm.getAttribute("placeholder")).toBe("Unlimited");
-    expect(screen.getAllByText("Unlimited").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText(/monthly spending budget/i, { selector: "#budget" }).getAttribute("placeholder"))
+      .toBe("Unlimited");
   });
 
   it("shows the stored per-user and per-app values in their own cards", async () => {

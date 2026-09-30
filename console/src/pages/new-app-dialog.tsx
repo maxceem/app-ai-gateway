@@ -150,7 +150,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
     setOpen(false);
     if (type === "ios") {
       toast.success(`Created ${result.app.id}`);
-      navigate(`/apps/${result.app.id}/proxy`);
+      navigate(`/apps/${result.app.id}/providers`);
       return;
     }
     if (!result.api_key) {
@@ -177,7 +177,7 @@ export function NewAppDialog({ trigger }: { trigger?: ReactNode } = {}) {
   const finishKeySetup = () => {
     setKeyOpen(false);
     toast.success(`Created ${createdAppId}`);
-    navigate(`/apps/${createdAppId}/proxy`);
+    navigate(`/apps/${createdAppId}/providers`);
   };
 
   return (

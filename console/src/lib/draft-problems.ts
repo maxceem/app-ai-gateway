@@ -58,6 +58,8 @@ export function draftProblem(draft: Draft, issues: readonly ConfigIssue[]): stri
     return "Finish the identity provider details.";
   }
   if (!clearUnder(issues, DRAFT_PATHS.claims)) return "Finish the subscription check.";
+  const worded = issues.map(wordIssue).find((sentence) => sentence !== null);
+  if (worded) return worded;
   // Past the form's own prompts, the schema has the last word, and its message
   // names the field at fault.
   try {
@@ -66,5 +68,78 @@ export function draftProblem(draft: Draft, issues: readonly ConfigIssue[]): stri
     if (error instanceof ConfigError) return error.message;
     throw error;
   }
+  return null;
+}
+
+const SCOPE_LABELS: Record<string, string> = { per_user: "Per-user", per_app: "Per-app" };
+
+/**
+ * A schema issue in the words of the form that made it, or null for one the
+ * form has no better words for than the schema's own. Every sentence names
+ * the field by its label and the row by the slug the operator gave it, so a
+ * refused save says where to go rather than where the value lives.
+ */
+export function wordIssue(issue: ConfigIssue): string | null {
+  const [section, ...rest] = issue.path.map(String);
+
+  if (section === "routing" && rest[0] === "providers" && rest[1] === "selected" && rest[2]) {
+    const slug = rest[2];
+    switch (rest[3]) {
+      case "allowed_paths":
+        return rest[5] === "fixed_model"
+          ? `Enter the fixed model for ${slug}, or leave it empty.`
+          : `Enter the endpoint path for ${slug}.`;
+      case "allowed_models":
+        return `Enter the model name for ${slug}.`;
+      case "max_output_tokens":
+        return `Max output tokens for ${slug} must be a whole number above 0.`;
+      default:
+        return null;
+    }
+  }
+  if (section === "routing" && rest[0] === "model_rewrites") {
+    return "Fill in both sides of every model rewrite.";
+  }
+
+  if (section === "limits" && rest[0] && SCOPE_LABELS[rest[0]]) {
+    const scope = SCOPE_LABELS[rest[0]];
+    switch (rest[2]) {
+      case "per_minute":
+        return `${scope} requests per minute must be a whole number above 0.`;
+      case "per_day":
+        return `${scope} requests per day must be a whole number above 0.`;
+      case "monthly_usd":
+        return issue.message.includes("too large")
+          ? `${scope} monthly spending budget is too large.`
+          : `${scope} monthly spending budget must be 0 or more.`;
+      default:
+        return null;
+    }
+  }
+
+  if (section === "endpoints" && rest[0] !== undefined) {
+    const slug = rest[0];
+    const name = `the custom endpoint ${slug || "with no slug"}`;
+    if (rest.length === 1) {
+      return `The custom endpoint slug "${slug}" is not valid: use 1-64 characters from a-z, 0-9 and -.`;
+    }
+    switch (rest[1]) {
+      case "provider":
+        return `Choose a provider for ${name}.`;
+      case "model":
+        return `Choose a model for ${name}.`;
+      case "max_output_tokens":
+        return `Max output tokens for ${name} must be a whole number above 0.`;
+      case "params":
+        return `Parameters for ${name} must be a JSON object.`;
+      case "fallback":
+        return rest[3] === "model"
+          ? `Choose a model for fallback ${Number(rest[2]) + 1} of ${name}.`
+          : `Choose a provider for fallback ${Number(rest[2]) + 1} of ${name}.`;
+      default:
+        return null;
+    }
+  }
+
   return null;
 }

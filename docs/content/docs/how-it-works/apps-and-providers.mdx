@@ -15,7 +15,7 @@ https://api.appaigateway.com/v1/apps/{app}/proxy/{provider}/{provider_path}
 
 A provider key is added once and is available to every app you have. You do
 not add the same OpenAI key to each app. An app decides which of your
-providers it may use on its **Proxy policy** page, and new apps may use all of
+providers it may use on its **Provider access** page, and new apps may use all of
 them until you say otherwise.
 
 Each provider has a **slug**, the short name in the URL above. The first
@@ -28,9 +28,11 @@ An app owns everything about how it may call those providers:
 
 - **Auth policy**: how the app proves it is your app, whether requests belong
   to signed-in users, and whether those users must have paid.
-- **Proxy policy**: which providers, paths and models the app may use.
-- **Endpoints**: named endpoints whose model and parameters live on the
-  gateway.
+- **Provider access**: which providers, paths and models the app may use.
+- **Model rewrites**: model names the gateway maps to others on the way
+  through.
+- **Custom endpoints**: endpoints of your own whose model and parameters
+  live on the gateway.
 - **Limits**: requests per minute and per day, and a monthly budget, per user
   and per app.
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Route, Routes } from "react-router-dom";
+import { Link, Route, Routes } from "react-router-dom";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AppDetailPage } from "./app-detail";
 import { renderAuthenticated, stubApi } from "@/test/render";
 
@@ -53,7 +54,7 @@ function limits(monthlyUsd: number | null) {
 
 function renderSection(
   tab: string,
-  { config, users = [] }: { config?: Record<string, unknown>; users?: unknown[] } = {},
+  { config, users = [], exit }: { config?: Record<string, unknown>; users?: unknown[]; exit?: string } = {},
 ) {
   const authentication = config?.limits && config.authentication === undefined
     ? { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } }
@@ -73,9 +74,15 @@ function renderSection(
     [`/v1/admin/apps/${APP_ID}`]: { body: { app } },
   });
   return renderAuthenticated(
-    <Routes>
-      <Route path="/apps/:appId/:tab/:section?" element={<AppDetailPage />} />
-    </Routes>,
+    <>
+      {/* A way out of the app, and a way to another of its sections, as the rail offers. */}
+      {exit ? <Link to={exit}>Leave the app</Link> : null}
+      {exit ? <Link to={`/apps/${APP_ID}/limits`}>Another section</Link> : null}
+      <Routes>
+        <Route path="/apps/:appId/:tab/:section?" element={<AppDetailPage />} />
+        {exit ? <Route path={exit} element={<h1>Somewhere else</h1>} /> : null}
+      </Routes>
+    </>,
     { route: `/apps/${APP_ID}/${tab}` },
   );
 }
@@ -89,18 +96,19 @@ describe("AppDetailPage", () => {
   });
 
   it("keeps the app's own actions off the header", async () => {
-    renderSection("overview");
+    renderSection("limits");
 
     // Turning the app off and deleting it are Settings' business; a menu that
     // followed every section would say they belong to all of them.
-    await screen.findByRole("heading", { level: 1, name: "Overview" });
+    await screen.findByRole("heading", { level: 1, name: "Limits" });
     expect(screen.queryByRole("button", { name: /more actions/i })).toBeNull();
   });
 
   it("names every section by the same words the rail uses", async () => {
     for (const [tab, label] of [
-      ["overview", "Overview"],
-      ["proxy", "Proxy policy"],
+      ["auth", "Auth policy"],
+      ["providers", "Provider access"],
+      ["rewrites", "Model rewrites"],
       ["limits", "Limits"],
       ["settings", "Settings"],
     ] as const) {
@@ -110,14 +118,72 @@ describe("AppDetailPage", () => {
     }
   });
 
-  it("offers the month only where the page counts one", async () => {
-    const overview = renderSection("overview");
-    expect(await screen.findByLabelText("Month")).toBeTruthy();
-    overview.unmount();
+  it("puts a section's create action beside the title, as the list pages do", async () => {
+    renderSection("rewrites");
 
-    renderSection("settings");
-    await screen.findByRole("heading", { level: 1, name: "Settings" });
-    expect(screen.queryByLabelText("Month")).toBeNull();
+    // The title is there before the draft is; the action arrives with the section.
+    const add = await screen.findByRole("button", { name: /add rewrite/i });
+    const heading = screen.getByRole("heading", { level: 1, name: "Model rewrites" });
+    // In the header, not in the list: the same place Providers and Apps keep theirs.
+    const header = heading.closest("div")?.parentElement;
+    expect(header?.contains(add)).toBe(true);
+    expect(header?.contains(screen.getByText(/no rewrites/i))).toBe(false);
+  });
+
+});
+
+describe("leaving with unsaved changes", () => {
+  const dirty = async () => {
+    await userEvent.click(await screen.findByRole("switch", { name: /app enabled/i }));
+    expect(screen.getByText(/unsaved changes to/i)).toBeTruthy();
+  };
+
+  it("asks before a navigation out of the app, and stays when told to", async () => {
+    renderSection("settings", { exit: "/providers" });
+    await dirty();
+
+    await userEvent.click(screen.getByRole("link", { name: /leave the app/i }));
+    expect(await screen.findByRole("heading", { name: /leave without saving/i })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+    // Still here, still dirty.
+    expect(screen.queryByText("Somewhere else")).toBeNull();
+    expect(screen.getByRole("switch", { name: /app enabled/i }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("discards the draft and goes when told to", async () => {
+    renderSection("settings", { exit: "/providers" });
+    await dirty();
+
+    await userEvent.click(screen.getByRole("link", { name: /leave the app/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /discard and leave/i }));
+
+    expect(await screen.findByRole("heading", { name: "Somewhere else" })).toBeTruthy();
+  });
+
+  it("lets the operator move between the app's own sections, which share the draft", async () => {
+    renderSection("settings", { exit: "/providers" });
+    await dirty();
+
+    await userEvent.click(screen.getByRole("link", { name: /another section/i }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Limits" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /leave without saving/i })).toBeNull();
+    expect(screen.getByText(/unsaved changes to/i)).toBeTruthy();
+  });
+
+  it("has the browser ask before the tab is closed or reloaded", async () => {
+    renderSection("settings", { exit: "/providers" });
+    await screen.findByRole("switch", { name: /app enabled/i });
+
+    const leave = () => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(leave()).toBe(false);
+    await dirty();
+    expect(leave()).toBe(true);
   });
 });
 
@@ -125,10 +191,24 @@ describe("a tab the app does not have", () => {
   it("sends a stale or mistyped section to the default one", async () => {
     renderSection("not-a-section");
 
-    // The page settles on Overview rather than showing one section's content
-    // under another section's name.
-    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Overview");
-    expect(screen.queryByText(/named endpoints/i)).toBeNull();
+    // The page settles on the first section rather than showing one section's
+    // content under another section's name.
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Auth policy");
+    expect(screen.queryByText(/custom endpoints/i)).toBeNull();
+  });
+
+  it("sends the old proxy policy bookmark to the page it became", async () => {
+    // Provider access and model rewrites were one "proxy" section until they
+    // were split; a bookmark to it still opens the providers rather than the default.
+    renderSection("proxy");
+
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Provider access");
+  });
+
+  it("sends the old endpoints bookmark to custom endpoints", async () => {
+    renderSection("endpoints");
+
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Custom endpoints");
   });
 
   it("catches the section slug that was renamed out from under old bookmarks", async () => {
@@ -136,7 +216,7 @@ describe("a tab the app does not have", () => {
     // who bookmarked it is the likeliest visitor to an unknown tab.
     renderSection("auth-events");
 
-    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Overview");
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Auth policy");
   });
 });
 

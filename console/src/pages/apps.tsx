@@ -18,6 +18,7 @@ import { PageHeader } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { MonthPicker } from "@/components/pickers";
 import { StatCard } from "@/components/stat-card";
+import { DEFAULT_APP_SECTION } from "@/lib/app-sections";
 import { AppStatusBadge } from "@/components/status-badge";
 import { BudgetCell } from "@/components/budget";
 import { NewAppDialog } from "@/pages/new-app-dialog";
@@ -359,7 +360,7 @@ export function AppsPage() {
                           cells beside it so the whole row opens the app while
                           the row keeps one focus stop and a real href. */}
                       <Link
-                        to={`/apps/${app.id}/overview`}
+                        to={`/apps/${app.id}/${DEFAULT_APP_SECTION}`}
                         className="block after:absolute after:inset-0 after:content-['']"
                       >
                         <div className="flex items-center gap-2 font-medium">

@@ -95,7 +95,7 @@ export const API_STYLE_PATHS = {
 } as const satisfies Partial<Record<ApiStyle, string>>;
 
 /**
- * The API styles a named endpoint can compose: the gateway writes those request
+ * The API styles a custom endpoint can compose: the gateway writes those request
  * bodies itself, so each is a style this deployment has verified end to end.
  */
 export const ENDPOINT_API_STYLES = ["responses", "audio_transcription"] as const satisfies readonly ApiStyle[];
@@ -119,7 +119,7 @@ export type ProviderRoute = "direct" | GatewayType;
 export interface RouteCapability {
   /** Client API styles this route forwards. */
   apiStyles: readonly ApiStyle[];
-  /** Named-endpoint styles composable for this provider on this route. */
+  /** Custom-endpoint styles composable for this provider on this route. */
   endpointStyles: readonly EndpointApiStyle[];
 }
 
@@ -143,7 +143,7 @@ export interface GatewayProviderRoute {
    */
   apiStyles?: readonly ApiStyle[];
   /**
-   * When present, the only named-endpoint styles this route composes. Absent
+   * When present, the only custom-endpoint styles this route composes. Absent
    * means the gateway carries whatever the provider's own API offers, which is
    * true of a transparent gateway and false of one that reimplements a subset.
    */
@@ -200,7 +200,7 @@ export const VERCEL_API_STYLES: readonly ApiStyle[] = [
 ];
 
 /**
- * Named endpoints this gateway can compose. `responses` only: an
+ * Custom endpoints this gateway can compose. `responses` only: an
  * `audio_transcription` endpoint would post to `v1/audio/transcriptions`, which
  * Vercel does not serve.
  */

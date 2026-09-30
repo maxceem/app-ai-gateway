@@ -20,7 +20,7 @@ import type { Deployment } from "../policy/deployment";
  * provider, so this is the one place where "a request was made" is true, and the
  * only place the organization's monthly allowance is spent.
  *
- * It runs once per incoming gateway request. A named endpoint that falls back
+ * It runs once per incoming gateway request. A custom endpoint that falls back
  * across several providers, or an upstream that fails after being dispatched to,
  * has already been counted here and is never counted again.
  *

@@ -5,6 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppShell } from "@/components/app-shell";
+import { UnsavedDraftProvider } from "@/lib/unsaved-draft";
 import { AppDetailPage } from "@/pages/app-detail";
 import { AppsPage } from "@/pages/apps";
 import { BillingPage } from "@/pages/billing";
@@ -18,6 +19,7 @@ import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
 import { ConsoleSessionProvider } from "@/lib/console-session";
 import { analytics, captureSignup, useAnalyticsPageviews } from "@/lib/analytics";
+import { DEFAULT_APP_SECTION } from "@/lib/app-sections";
 import { DEFAULT_LANDING, loginUrlFor, postAuthPath } from "@/lib/auth-redirect";
 import { useBillingStatus, useCapabilities, useSession } from "@/lib/queries";
 
@@ -102,11 +104,12 @@ function AuthenticatedConsole() {
       planLimits={billing.data?.limits}
       unclaimedAccessEndsAt={billing.data?.unclaimedAccessEndsAt}
     >
+      <UnsavedDraftProvider>
       <AppShell>
         <Routes>
           <Route path="/" element={<Navigate to={DEFAULT_LANDING} replace />} />
           <Route path="/apps" element={<AppsPage />} />
-          <Route path="/apps/:appId" element={<Navigate to="overview" replace />} />
+          <Route path="/apps/:appId" element={<Navigate to={DEFAULT_APP_SECTION} replace />} />
           <Route path="/apps/:appId/:tab" element={<AppDetailPage />} />
           <Route path="/apps/:appId/:tab/:section" element={<AppDetailPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
@@ -130,6 +133,7 @@ function AuthenticatedConsole() {
           <Route path="*" element={<Navigate to={DEFAULT_LANDING} replace />} />
         </Routes>
       </AppShell>
+      </UnsavedDraftProvider>
     </ConsoleSessionProvider>
   );
 }

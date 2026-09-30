@@ -25,7 +25,7 @@ import type { EndpointApiStyle } from "../shared/capabilities";
 import type { EndpointConfig } from "../shared/app-config";
 
 /**
- * A named endpoint is fully described by server configuration, so the gateway
+ * A custom endpoint is fully described by server configuration, so the gateway
  * builds the upstream request itself instead of forwarding a client-chosen
  * provider path. Everything that does not depend on the selected target is
  * prepared once; a fallback attempt only swaps provider, model, and URL.
@@ -42,7 +42,7 @@ export interface PreparedEndpointRequest {
 }
 
 /**
- * The provider's own path a named endpoint of this style posts to, from the
+ * The provider's own path a custom endpoint of this style posts to, from the
  * descriptor that declares it. The key set of `endpointPaths` *is* the type's
  * endpoint capability, so a missing entry means the capability matrix already
  * refused this pairing: reaching here is a bug in this deployment, not a

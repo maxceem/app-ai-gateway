@@ -512,7 +512,7 @@ describe("the application configuration grammar", () => {
       fallback: [{ provider: "xai", model: "grok-4.5" }],
     };
 
-    it("derives named-endpoint eligibility from provider registry capabilities", () => {
+    it("derives custom-endpoint eligibility from provider registry capabilities", () => {
       expect(providersForEndpointStyle("responses")).toEqual(["openai", "xai"]);
       expect(providersForEndpointStyle("audio_transcription")).toEqual(["openai", "xai"]);
     });

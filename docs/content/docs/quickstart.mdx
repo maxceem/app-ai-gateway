@@ -114,7 +114,7 @@ apps.
 | `502 provider_not_configured` | No provider has the slug in the URL. Check the Providers page. |
 | `400 pricing_not_configured` | The model is not in the price catalog. Add a price under the provider's **Pricing** action, or use a catalogued model. |
 | `401 auth_required` | The key is missing or wrong, or the app was created as an iOS app. |
-| `403 path_not_allowed` or `model_not_allowed` | The app's **Proxy policy** restricts paths or models. New apps allow inference APIs and priced models. |
+| `403 path_not_allowed` or `model_not_allowed` | The app's **Provider access** restricts paths or models. New apps allow inference endpoints and priced models. |
 
 The full list is in [Errors and limits](/integrate/errors).
 
@@ -160,7 +160,7 @@ error handling.
 - [User authentication](/applications/auth-policy/user-authentication) to tie
   requests to signed-in users from Firebase, Supabase, Auth0, Clerk or your own
   issuer.
-- [Named endpoints](/applications/endpoints) to keep the model and parameters
+- [Custom endpoints](/applications/custom-endpoints) to keep the model and parameters
   on the gateway, so you can change them without an app release.
 - [Automation and agents](/automation/agents) to hand the setup to a script or
   an AI agent.

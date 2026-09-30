@@ -541,7 +541,7 @@ describe("organization monthly request quota", () => {
     expect(await used(organizationId)).toBe(0);
   });
 
-  it("spends one request for a named endpoint however many targets it tries", async () => {
+  it("spends one request for a custom endpoint however many targets it tries", async () => {
     const organizationId = "quota-fallback-org";
     await seedOrganization(organizationId);
     await seedProvider({
