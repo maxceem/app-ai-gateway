@@ -16,7 +16,8 @@ on:
     branches: [main]
   # The daily model catalog pull request (.github/workflows/update-models.yml) is
   # opened with the default token, which starts no `pull_request` run; that
-  # workflow dispatches this one on its branch instead.
+  # workflow dispatches this one on its branch instead, and `report` below puts
+  # the result on the pull request.
   workflow_dispatch:
 
 permissions:
@@ -69,3 +70,29 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
           node scripts/check-version-unchanged.mjs "origin/${BASE_REF}"
+
+  # GitHub does not show the checks of a dispatched run on a pull request, so a
+  # dispatched run reports its result as a commit status on the commit it
+  # tested, which the pull request does show. A job of its own, so that the one
+  # token allowed to write a status never runs the repository's code.
+  report:
+    if: always() && github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Report the result on the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.verify.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          case "$RESULT" in
+            success) state=success; text="Checks and tests passed" ;;
+            failure) state=failure; text="Checks or tests failed" ;;
+            *) state=error; text="CI did not finish ($RESULT)" ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$state" -f context="CI / verify" -f description="$text" -f target_url="$RUN_URL"

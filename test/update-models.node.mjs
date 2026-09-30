@@ -24,7 +24,10 @@ import { catalogEdits, compare, decide, needsHuman } from "../scripts/models/rul
 import { SOURCES, sourceId } from "../scripts/models/sources.mjs";
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/models/${name}`, import.meta.url), "utf8");
-const catalogText = readFileSync(new URL("../src/usage/models.json", import.meta.url), "utf8");
+const liveCatalogText = readFileSync(new URL("../src/usage/models.json", import.meta.url), "utf8");
+// The editor's tests pin exact lines, so they run on a frozen copy of the
+// catalog: the live one changes every time the daily sync is merged.
+const catalogText = fixture("catalog.json");
 const TODAY = "2026-09-30";
 
 function parse(parser, text, wanted, today = TODAY) {
@@ -551,7 +554,7 @@ test("rules: a dated price is applied on its day and announced before it", () =>
 });
 
 test("sources: every catalog provider has an entry", () => {
-  for (const provider of Object.keys(JSON.parse(catalogText))) {
+  for (const provider of Object.keys(JSON.parse(liveCatalogText))) {
     assert.ok(SOURCES[provider], `scripts/models/sources.mjs has no entry for ${provider}`);
   }
 });
@@ -559,6 +562,7 @@ test("sources: every catalog provider has an entry", () => {
 // Catalog editor ------------------------------------------------------------
 
 test("catalog editor: no edits leave the file byte for byte", () => {
+  assert.equal(applyEdits(liveCatalogText, []), liveCatalogText);
   assert.equal(applyEdits(catalogText, []), catalogText);
 });
 
