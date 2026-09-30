@@ -773,6 +773,10 @@ export const ModelPriceSchema = z.object({
   long_output: z.number().optional(),
   long_cached_input: z.number().optional(),
   long_cache_write: z.number().optional(),
+  retirement_date: z.string().optional().meta({
+    description:
+      "The day (YYYY-MM-DD) the provider stops, or stopped, serving this model. The model stays priced after it.",
+  }),
 });
 
 export const PricesResponseSchema = z.object({

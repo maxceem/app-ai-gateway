@@ -150,7 +150,7 @@ export interface GatewayProviderRoute {
   endpointStyles?: readonly EndpointApiStyle[];
   /**
    * The gateway's namespace for this provider's models. Canonical model IDs —
-   * the provider's own, which are what `prices.json`, `allowed_models` and the
+   * the provider's own, which are what `models.json`, `allowed_models` and the
    * recorded usage all use — get it prepended on the way out and stripped on
    * the way back. Absent means the gateway speaks the provider's IDs verbatim.
    */

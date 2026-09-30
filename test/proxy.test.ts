@@ -25,6 +25,7 @@ import {
   seedProvider,
   seedServerApp,
 } from "./helpers";
+import { shippedRates } from "./shipped-rates";
 
 interface CapturedRequest {
   url: string;
@@ -1032,7 +1033,7 @@ describe("provider-native proxy", () => {
       body: { model: "gpt-5.6-terra", max_output_tokens: 100 },
     });
     await openAi.text();
-    expect(JSON.parse(captured[0]!.body)).toMatchObject({ model: "gpt-5.6", max_output_tokens: 100 });
+    expect(JSON.parse(captured[0]!.body)).toMatchObject({ model: "gpt-5.6-sol", max_output_tokens: 100 });
 
     const gemini = await proxyRequest({
       appId: "proxy-rewrite",
@@ -1481,7 +1482,7 @@ describe("provider-native proxy", () => {
       .bind("proxy-xai-stt")
       .first<{ model: string; cost_usd: number; auth_method: string | null }>();
     expect(row?.model).toBe("grok-transcribe");
-    expect(row?.cost_usd).toBeCloseTo((1.25 / 3600) * 0.1, 8);
+    expect(row?.cost_usd).toBeCloseTo((1.25 / 3600) * shippedRates("xai", "grok-transcribe").per_hour, 12);
     expect(row?.auth_method).toBe("attest");
   });
 
@@ -1648,7 +1649,10 @@ describe("provider-native proxy", () => {
       api_key_id: "key_proxy-perplexity",
       input_tokens: 100,
       output_tokens: 20,
-      cost_usd: 0.0006,
+      cost_usd: expect.closeTo(
+        (100 * shippedRates("perplexity", "sonar-pro").input + 20 * shippedRates("perplexity", "sonar-pro").output) / 1e6,
+        12,
+      ),
       app_version: null,
       auth_method: "api_key",
     });
@@ -1809,9 +1813,9 @@ describe("OpenAI-compatible providers", () => {
       input_tokens: 0,
       cached_input_tokens: 1_000_000,
       output_tokens: 0,
-      // $0.044 cached, not the $1.32 fresh rate: a 30x difference on this
-      // request, and the reason the cache field is read at all.
-      cost_usd: 0.044,
+      // A million cache hits at the cached rate, not the fresh one: the reason
+      // the cache field is read at all.
+      cost_usd: expect.closeTo(shippedRates("deepseek", "deepseek-v4-pro").cached_input, 12),
       cost_source: "computed",
       model_author: "DeepSeek",
     });
@@ -1869,7 +1873,10 @@ describe("OpenAI-compatible providers", () => {
       model: "openai/gpt-oss-120b",
       model_author: "OpenAI",
       provider_type: "groq",
-      cost_usd: 100 * 0.15e-6 + 20 * 0.6e-6,
+      cost_usd: expect.closeTo(
+        (100 * shippedRates("groq", "openai/gpt-oss-120b").input + 20 * shippedRates("groq", "openai/gpt-oss-120b").output) / 1e6,
+        12,
+      ),
     });
   });
 

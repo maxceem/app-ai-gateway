@@ -10,7 +10,7 @@ the target does not need to be in the
 records the rewritten model.
 
 A rewrite is how you move an app to a newer model without a release: the app
-keeps asking for `gpt-5.6-terra` and you point that name at `gpt-5.6`. For a
+keeps asking for `gpt-5.6-terra` and you point that name at `gpt-5.6-sol`. For a
 bigger change, such as a different provider or fixed parameters, use a
 [custom endpoint](/applications/custom-endpoints).
 
@@ -21,7 +21,7 @@ providers, so they can be saved before the provider exists.
 
 ```json
 "routing": {
-  "model_rewrites": { "gpt-5.6-terra": "gpt-5.6" }
+  "model_rewrites": { "gpt-5.6-terra": "gpt-5.6-sol" }
 }
 ```
 

@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 import worker from "../src/index";
 import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
+import { microusd, shippedRates } from "./shipped-rates";
+
+/** What the seeded 50/40/10/20-token gpt-5.6-luna event costs at the shipped rates. */
+function lunaEventCost(): number {
+  const luna = shippedRates("openai", "gpt-5.6-luna");
+  return (50 * luna.input + 40 * luna.cached_input + 10 * luna.cache_write + 20 * luna.output) / 1e6;
+}
 
 describe("admin API", () => {
   it("requires operator authentication and returns exact monthly usage rollups", async () => {
@@ -159,7 +166,7 @@ describe("admin API", () => {
       applied: false,
       matched_events: 1,
       previous_cost_usd: 0.000184,
-      recalculated_cost_usd: 0.0000373,
+      recalculated_cost_usd: expect.closeTo(lunaEventCost(), 12),
     });
     expect(await userTotal()).toBe(184);
 
@@ -168,14 +175,14 @@ describe("admin API", () => {
     await expect(applied.json()).resolves.toMatchObject({
       applied: true,
       matched_events: 1,
-      recalculated_cost_usd: 0.0000373,
+      recalculated_cost_usd: expect.closeTo(lunaEventCost(), 12),
     });
     const row = await env.DB.prepare("SELECT cost_usd FROM app_usage_event WHERE app_id = ?")
       .bind(appId)
       .first<{ cost_usd: number }>();
-    expect(row?.cost_usd).toBeCloseTo(0.0000373, 10);
-    expect(await userTotal()).toBe(37);
-    expect(await appTotal()).toBe(37);
+    expect(row?.cost_usd).toBeCloseTo(lunaEventCost(), 12);
+    expect(await userTotal()).toBe(microusd(lunaEventCost()));
+    expect(await appTotal()).toBe(microusd(lunaEventCost()));
   });
 
   it("selects both timestamp formats through the last day of a leap-month reprice", async () => {
@@ -391,7 +398,7 @@ describe("admin API", () => {
     expect(rows.results).toHaveLength(2);
     for (const row of rows.results) {
       expect(row.cost_source).toBe("computed");
-      expect(row.cost_usd).toBeCloseTo(0.0000373, 10);
+      expect(row.cost_usd).toBeCloseTo(lunaEventCost(), 12);
     }
     // Nothing unresolved is left to alert on or to hide in the console.
     const stale = await env.DB.prepare(
@@ -552,7 +559,7 @@ describe("admin API", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       matched_events: 2,
-      recalculated_cost_usd: 0.0000373,
+      recalculated_cost_usd: expect.closeTo(lunaEventCost(), 12),
     });
     await env.DB.prepare("DELETE FROM provider WHERE id = 'admin-reprice-openai-dev'").run();
   });

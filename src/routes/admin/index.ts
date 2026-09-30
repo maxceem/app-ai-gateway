@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { Hono, type Context, type Next } from "hono";
-import prices from "../../usage/prices.json";
+import models from "../../usage/models.json";
 import { adminRouter } from "../catalog-router";
 import { GatewayError } from "../../core/errors";
 import { database } from "../../db";
@@ -44,7 +44,7 @@ adminRoutes.use("/apps/:app", scopeAdminApp);
 adminRoutes.use("/apps/:app/*", scopeAdminApp);
 
 /** Supplies the priced model catalog used by the proxy-policy editor. */
-adminRouter(adminRoutes).handle("listModelPrices", () => ({ prices }));
+adminRouter(adminRoutes).handle("listModelPrices", () => ({ prices: models }));
 
 adminRoutes.route("/", appRoutes);
 adminRoutes.route("/", keyRoutes);
