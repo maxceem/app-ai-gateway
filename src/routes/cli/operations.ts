@@ -14,7 +14,7 @@
 
 import { and, eq, type SQL } from "drizzle-orm";
 import type { CfAuthOperations, OperationBrowserCredential, OperationView } from "@maxceem/cf-auth";
-import { identityAuthFor, isCfAuthError } from "../../auth/identity";
+import { engineRefused, identityAuthFor } from "../../auth/identity";
 import { engineKindName, stageApproval } from "../../auth/operation-kinds";
 import {
   accountLifecycle,
@@ -26,7 +26,9 @@ import type { CliOperation, CliOperationResult } from "../../contracts/cli";
 import { database } from "../../db";
 import { mgmtApiKey } from "../../db/schema";
 import type { Actor } from "../../management/actor";
+import { openClaim } from "../../management/claims";
 import { deploymentMeta } from "../../management/deployment-meta";
+import { approvalUrl } from "../../management/operation-links";
 import { parseRequest } from "../../management/validation";
 import type { ResourceWriteBoundary } from "../../management/write-boundary";
 import { managementActor } from "../../middleware/admin";
@@ -38,10 +40,6 @@ import { kindOf, operationId, resultRecord } from "./operation-rows";
 import { digest } from "./security";
 import type { CliContext, CliEnv } from "./types";
 
-export function browserPath(id: string): string {
-  return `/cli/approve/${encodeURIComponent(id)}`;
-}
-
 /** The identity instance every CLI route shares: it never provisions an account as a side effect. */
 export function cliIdentity(c: CliContext) {
   return identityAuthFor(c, { suppressDefaultOrganization: true });
@@ -50,11 +48,6 @@ export function cliIdentity(c: CliContext) {
 /** cf-auth's operation engine, for this request. */
 export async function operationEngine(c: CliContext): Promise<CfAuthOperations> {
   return (await cliIdentity(c)).operations;
-}
-
-/** Whether a failure is the engine refusing with `code`. */
-export function engineRefused(error: unknown, code: string): boolean {
-  return isCfAuthError(error) && error.code === code;
 }
 
 export async function cliAuthenticate(c: CliContext): Promise<void> {
@@ -125,17 +118,14 @@ async function loginKeyLive(env: Env, view: OperationView): Promise<boolean> {
 /** Where an operation stands, from the engine's view of it, as sending it and polling it both answer. */
 export async function operationStatus(c: CliContext, view: OperationView): Promise<CliOperation> {
   const { kind, entry } = kindOf(view.kind);
-  const meta = deploymentMeta(c.get("deployment"));
+  const deployment = c.get("deployment");
+  const meta = deploymentMeta(deployment);
   const base = { id: view.id, kind, expiresAt: view.expiresAt, deployment: meta };
   switch (view.state) {
-    case "pending":
-      return {
-        ...base,
-        state: "pending",
-        ...(view.browserProof === null
-          ? {}
-          : { url: `${meta.consoleOrigin}${browserPath(view.id)}#${view.browserProof}` }),
-      };
+    case "pending": {
+      const url = approvalUrl(deployment, view);
+      return { ...base, state: "pending", ...(url === null ? {} : { url }) };
+    }
     case "denied":
       return { ...base, state: "expired", denied: true };
     case "expired":
@@ -264,30 +254,34 @@ export async function createOperation(
 ): Promise<CliOperation> {
   const kind = operationKind(input.kind);
   const meta = deploymentMeta(c.get("deployment"));
+  // A transport's check, so it stays here: a browser session may only send
+  // operations from the console it was issued on.
   if (actor.credentialType === "session" && c.req.header("origin") !== meta.consoleOrigin) {
     throw new GatewayError(403, "forbidden", "Use the first-party console for browser operations");
+  }
+  if (kind.type === "claim") {
+    const { view } = await openClaim(managementScope(c), actor, c.get("authState"), await operationEngine(c), {
+      token: input.token,
+      id: await operationId(input.token),
+    });
+    return operationStatus(c, view);
   }
   const credentialId = actor.credentialId;
   if (credentialId === null) {
     throw new GatewayError(403, "forbidden", "Account administration is required");
   }
-  const account = await assertAccountAccess(c.get("deployment"), c.env, actor.organizationId, kind.open);
-  if (kind.type === "claim" && account.claimed) {
-    throw new GatewayError(409, "conflict", "Account is already claimed");
-  }
-  if (kind.type !== "claim" && kind.type !== "resource")
+  await assertAccountAccess(c.get("deployment"), c.env, actor.organizationId, kind.open);
+  if (kind.type !== "resource")
     throw new GatewayError(400, "invalid_request", "Unsupported operation kind");
-  const browser = kind.type === "claim"
-    || (kind.browser === "always" || (kind.browser === "optional" && "browser" in input && input.browser === true));
+  const browser = kind.browser === "always"
+    || (kind.browser === "optional" && "browser" in input && input.browser === true);
   // A browser step stores what its approver will review; anything else is
   // prepared now, so a payload its write would refuse is refused before the
   // operation is recorded. The request schema admits `browser` only for a kind
   // with a handoff.
-  const handoff = kind.type === "resource" && browser ? kind.handoff : null;
+  const handoff = browser ? kind.handoff : null;
   const review = handoff ? parseRequest(handoff, input.payload) : null;
-  const write = kind.type === "resource" && !browser
-    ? kind.prepare({ payload: input.payload, secret: undefined })
-    : null;
+  const write = browser ? null : kind.prepare({ payload: input.payload, secret: undefined });
   const id = await operationId(input.token);
   const engine = await operationEngine(c);
 
@@ -297,21 +291,16 @@ export async function createOperation(
     id,
     kind: engineKindName(input.kind, browser),
     token: input.token,
-    // A claim takes nothing. A resource write stores the digest of its whole
-    // request, which is what binds a retry to it — the request itself may
-    // carry the secret — and, for a browser step, what its approver reviews
-    // and who sent it.
-    ...(kind.type === "claim"
-      ? {}
-      : {
-          payload: {
-            requestHash: await digest(JSON.stringify({ kind: input.kind, payload: input.payload, browser })),
-            ...(review === null ? {} : { review, sender: { userId: actor.userId, credentialId } }),
-          },
-        }),
+    // The digest of the whole request, which is what binds a retry to it —
+    // the request itself may carry the secret — and, for a browser step, what
+    // its approver reviews and who sent it.
+    payload: {
+      requestHash: await digest(JSON.stringify({ kind: input.kind, payload: input.payload, browser })),
+      ...(review === null ? {} : { review, sender: { userId: actor.userId, credentialId } }),
+    },
     opener: c.get("authState"),
   });
-  if (kind.type === "resource" && write && view.state === "pending") {
+  if (write && view.state === "pending") {
     await runResourceOperation(c, {
       id,
       actor: { organizationId: actor.organizationId, userId: actor.userId, credentialId },

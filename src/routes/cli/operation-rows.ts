@@ -45,29 +45,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * A completed bootstrap's record: the account it created, the service identity
- * that owns it, and the one management key it stands behind — whose plaintext
- * the engine holds sealed beside it while it can still be collected.
- */
-export interface BootstrapRecord {
-  accountId: string;
-  userId: string;
-  credentialId: string | null;
-}
-
-export function bootstrapRecord(raw: unknown): BootstrapRecord | null {
-  if (raw === null || raw === undefined) return null;
-  if (
-    !isRecord(raw)
-    || typeof raw.accountId !== "string"
-    || typeof raw.userId !== "string"
-    || (raw.credentialId !== null && typeof raw.credentialId !== "string")
-  )
-    throw malformed();
-  return { accountId: raw.accountId, userId: raw.userId, credentialId: raw.credentialId };
-}
-
-/**
  * What a completed claim or resource write reports: its result, with any
  * one-time secret removed where the engine holds the whole of it sealed.
  */

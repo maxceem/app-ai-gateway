@@ -115,6 +115,8 @@ export type ErrorCode =
   | "provider_not_configured"
   | "provider_disabled"
   | "provider_unavailable"
+  /** A management read named a provider slug the account holds no instance under. */
+  | "provider_not_found"
   | "slug_taken"
   | "provider_not_supported_by_gateway"
   | "provider_gateway_managed"
@@ -126,6 +128,11 @@ export type ErrorCode =
   | "app_revision_conflict"
   | "app_disabled"
   | "endpoint_not_found"
+  /**
+   * An application's example was asked for in a language its callers cannot
+   * authenticate with: curl for an App Attest app, Swift for a server app.
+   */
+  | "unsupported_snippet"
   | "internal_error";
 
 /**

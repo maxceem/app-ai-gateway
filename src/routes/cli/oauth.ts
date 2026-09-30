@@ -6,7 +6,7 @@ import { mgmtOperation } from "../../db/schema";
 import { GatewayError } from "../../core/errors";
 import { deploymentMeta } from "../../management/deployment-meta";
 import { derive, digest, proofMatches } from "./security";
-import { browserPath } from "./operations";
+import { browserPath } from "../../management/operation-links";
 import { relayedSubmission } from "./browser";
 import { CliBrowserProofSchema } from "../../contracts/cli";
 import type { CliContext } from "./types";

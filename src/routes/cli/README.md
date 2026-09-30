@@ -52,13 +52,15 @@ registers its kinds with the engine (`src/auth/operation-kinds.ts`, loaded by
 code is bound to), and decides everything the engine does not: what each kind
 does (`operation-kinds.ts` here), who may approve a claim or a login and what
 the page is told (`identity-handoff.ts`, `browser.ts`), and what a completed
-operation's record holds (`operation-rows.ts`). The routes read operations only
+operation's record holds (`operation-rows.ts`, and for a bootstrap
+`src/management/provisioning.ts`). The routes read operations only
 through the engine's views — `findByToken`, `poll` and `details` — and never
 the table; the exceptions are the claim's Google grant and its bootstrap
 retirement, below under Claim, and account cleanup.
 
 The engine's own `login` kind is used as it ships. A claim is an engine browser
-kind whose approval is cf-auth's `claimOrganization`. The bootstrap and a
+kind whose approval is cf-auth's `claimOrganization`; asking for one is
+`openClaim` in `src/management/claims.ts`, which any transport may call. The bootstrap and a
 resource write sent without a browser step are completed by the gateway,
 through the engine's `complete` and under its `guard`. A resource write with a
 browser step is an engine browser kind approved by its link alone
@@ -161,7 +163,10 @@ Management credentials are issued **disabled** and are enabled only when the
 bootstrap record that names them has committed, because the alternative — issue,
 then persist — can leave a live key that nobody received if the write fails.
 The account is created in the same batch that completes the bootstrap, so a
-bootstrap is either pending with no account or completed with one; its key
+bootstrap is either pending with no account or completed with one. That write,
+the deployment rule that admits it and its per-address limit live in
+`src/management/provisioning.ts`, shared with any other door to an unclaimed
+account; what stays here is the token, the key and the answer. Its key
 needs that account's membership, so it is issued next and written into the
 record, sealed, by the engine's `amend` — the same guarded write that renews it
 once its window has passed, and that lands only while no key is held sealed and

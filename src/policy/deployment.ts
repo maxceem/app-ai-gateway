@@ -79,6 +79,13 @@ export interface Deployment {
    * rather than where the deployment is resolved.
    */
   identity(): DeploymentIdentity;
+  /**
+   * The base URL application clients call: the separate API host a deployment
+   * publishes with `PUBLIC_API_URL`, or else its console origin. The same
+   * value as `identity().apiUrl`, without needing `DEPLOYMENT_ID` — an example
+   * request is worth writing on a deployment no CLI has been pointed at yet.
+   */
+  apiUrl(): string;
 }
 
 /** The subset the pure policy helpers below decide on. */
@@ -89,6 +96,14 @@ function resolveIdentity(env: Env, requestUrl: string | undefined): DeploymentId
   if (!id) {
     throw new GatewayError(503, "invalid_request", "Deployment identity is not configured");
   }
+  return { id, ...resolveOrigins(env, requestUrl) };
+}
+
+/** Where the console is served and where application clients call, validated. */
+function resolveOrigins(
+  env: Env,
+  requestUrl: string | undefined,
+): Omit<DeploymentIdentity, "id"> {
   const configured = env.CLI_CONSOLE_ORIGIN ?? requestUrl;
   if (!configured) {
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
@@ -107,7 +122,7 @@ function resolveIdentity(env: Env, requestUrl: string | undefined): DeploymentId
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const consoleOrigin = configuredOrigin.origin;
-  return { id, consoleOrigin, apiUrl: env.PUBLIC_API_URL ?? consoleOrigin };
+  return { consoleOrigin, apiUrl: env.PUBLIC_API_URL ?? consoleOrigin };
 }
 
 /**
@@ -120,6 +135,7 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
   const billing = env.BILLING ?? null;
   const mode: DeploymentMode = billing ? "cloud" : "self_hosted";
   let identity: DeploymentIdentity | undefined;
+  let origins: Omit<DeploymentIdentity, "id"> | undefined;
   return {
     mode,
     rules: DEPLOYMENT_RULES[mode],
@@ -129,6 +145,10 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
     identity(): DeploymentIdentity {
       identity ??= resolveIdentity(env, requestUrl);
       return identity;
+    },
+    apiUrl(): string {
+      origins ??= resolveOrigins(env, requestUrl);
+      return origins.apiUrl;
     },
   };
 }

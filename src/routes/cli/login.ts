@@ -16,8 +16,8 @@ import { GatewayError } from "../../core/errors";
 import { deploymentMeta } from "../../management/deployment-meta";
 import type { CliLogin, CliLoginRedeemResponse } from "../../contracts/cli";
 import type { OperationInput } from "../../management/executor";
+import { browserPath } from "../../management/operation-links";
 import {
-  browserPath,
   cliIdentity,
   operationEngine,
   provenOperation,

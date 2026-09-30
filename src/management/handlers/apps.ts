@@ -1,3 +1,5 @@
+import { checkApp } from "../app-check";
+import { appSnippet } from "../app-snippet";
 import {
   createApp,
   deleteApp,
@@ -16,6 +18,8 @@ export const appHandlers = {
   getApp: ({ scope, actor, app }) => getApp(scope, actor, app),
   validateApp: ({ scope, actor, app, body }) => validateApp(scope, actor, app, body),
   validateAppDraft: ({ scope, actor, body }) => validateAppDraft(scope, actor, body),
+  checkApp: ({ scope, actor, app }) => checkApp(scope, actor, app),
+  getAppSnippet: ({ scope, actor, app, query }) => appSnippet(scope, actor, app, query),
   updateApp: ({ scope, actor, app, body }) => updateApp(scope, actor, app, body),
   deleteApp: ({ scope, actor, app, query }) => deleteApp(scope, actor, app, query.confirm),
 } satisfies OperationHandlerTable;

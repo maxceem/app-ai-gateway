@@ -5688,6 +5688,306 @@
         }
       }
     },
+    "/v1/admin/apps/{app}/check": {
+      "get": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "checkApp",
+        "summary": "Check whether an application is ready to serve requests",
+        "description": "Validates the stored configuration as an update of it would be judged, lists every provider its routing names with that provider's status — a disabled one included — and reports `ready` when the application is active and at least one of those providers is active. It sends no inference: App Attest on a physical device, issuer sign-in, subscription entitlements and the upstream credentials themselves are not exercised, and `limitations` says so in every answer. A stored configuration that would no longer be accepted answers `400 invalid_request` with the reason.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the check established, and what it did not exercise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "appId": {
+                      "type": "string"
+                    },
+                    "validation": {
+                      "type": "object",
+                      "properties": {
+                        "valid": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "app_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "valid",
+                        "app_id"
+                      ],
+                      "description": "The stored configuration judged as an update of it would be. A configuration that would be refused answers the check itself with 400."
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "disabled"
+                      ]
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "slug": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "disabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "slug",
+                          "status"
+                        ]
+                      },
+                      "description": "Every provider instance the application's routing names, a disabled one included so that it shows as disabled rather than missing."
+                    },
+                    "ready": {
+                      "type": "boolean",
+                      "description": "Whether the application is active and at least one provider it names is active."
+                    },
+                    "limitations": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "What this check did not exercise, one sentence each."
+                    }
+                  },
+                  "required": [
+                    "appId",
+                    "validation",
+                    "status",
+                    "providers",
+                    "ready",
+                    "limitations"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/apps/{app}/snippet": {
+      "get": {
+        "tags": [
+          "Admin applications"
+        ],
+        "operationId": "getAppSnippet",
+        "summary": "Get the first request an application can send",
+        "description": "Written against what the application has today: a provider it can reach and a priced model where those exist, and named placeholders, explained in `notes`, where they do not. An App Attest application gets Swift for the App AI Gateway Swift package and a server application gets curl; asking for the other answers `400 unsupported_snippet`. The URL is the one application clients call, which is this deployment's separate API host where it publishes one. A snippet never contains a credential: a server application's example reads its key from the `APP_AI_GATEWAY_KEY` environment variable.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "my-app"
+            },
+            "required": true,
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "swift",
+                "curl"
+              ],
+              "description": "swift or curl. Defaults to swift for an App Attest application and curl for a server application; the other one is refused with 400 unsupported_snippet."
+            },
+            "required": false,
+            "description": "swift or curl. Defaults to swift for an App Attest application and curl for a server application; the other one is refused with 400 unsupported_snippet.",
+            "name": "language",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The slug of the provider to write the example for. Defaults to the first one the application can reach. Unknown answers 404 provider_not_found; held but outside the application's routing or disabled answers 400 provider_unavailable."
+            },
+            "required": false,
+            "description": "The slug of the provider to write the example for. Defaults to the first one the application can reach. Unknown answers 404 provider_not_found; held but outside the application's routing or disabled answers 400 provider_unavailable.",
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The name of one of the application's custom endpoints, to call it instead of a provider path. Unknown answers 404 endpoint_not_found."
+            },
+            "required": false,
+            "description": "The name of one of the application's custom endpoints, to call it instead of a provider path. Unknown answers 404 endpoint_not_found.",
+            "name": "endpoint",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The example, its language and the notes written into it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "language": {
+                      "type": "string",
+                      "enum": [
+                        "swift",
+                        "shell"
+                      ]
+                    },
+                    "snippet": {
+                      "type": "string",
+                      "description": "Source to paste. It never contains a credential: a server application's example reads its key from APP_AI_GATEWAY_KEY."
+                    },
+                    "notes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "What the example stands in for or leaves out, one sentence each. They are also written into the snippet as comments."
+                    }
+                  },
+                  "required": [
+                    "language",
+                    "snippet",
+                    "notes"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/keys": {
       "get": {
         "tags": [

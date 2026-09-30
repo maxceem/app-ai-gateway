@@ -385,6 +385,11 @@ export function isCfAuthError(error: unknown): error is CfAuthError {
   return typeof candidate.code === "string" && typeof candidate.status === "number";
 }
 
+/** Whether a failure is cf-auth — its operation engine, typically — refusing with `code`. */
+export function engineRefused(error: unknown, code: string): boolean {
+  return isCfAuthError(error) && error.code === code;
+}
+
 export function asGatewayAuthError(error: CfAuthError): GatewayError {
   const mappedCodes: Record<string, ErrorCode> = {
     unauthorized: "auth_required",

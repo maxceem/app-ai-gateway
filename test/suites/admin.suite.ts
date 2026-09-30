@@ -4,5 +4,6 @@ import "../catalog.test";
 import "../admin-app-writes.test";
 import "../admin-auth-events.test";
 import "../admin-providers.test";
+import "../app-check-snippet.test";
 
 import "../app-operations.test";

@@ -646,6 +646,42 @@ export const AppDraftValidateResponseSchema = z.object({
   valid: z.literal(true),
 });
 
+/**
+ * What a configuration check of a stored application established, without
+ * sending it any traffic.
+ */
+export const AppCheckResponseSchema = z.object({
+  appId: z.string(),
+  validation: AppValidateResponseSchema.meta({
+    description: "The stored configuration judged as an update of it would be. A configuration that would be refused answers the check itself with 400.",
+  }),
+  status: z.enum(APP_STATUSES),
+  providers: z.array(z.object({
+    id: z.string(),
+    slug: z.string(),
+    status: z.enum(["active", "disabled"]),
+  })).meta({
+    description: "Every provider instance the application's routing names, a disabled one included so that it shows as disabled rather than missing.",
+  }),
+  ready: z.boolean().meta({
+    description: "Whether the application is active and at least one provider it names is active.",
+  }),
+  limitations: z.array(z.string()).meta({
+    description: "What this check did not exercise, one sentence each.",
+  }),
+});
+
+/** The first request an application can send, in the language its callers authenticate with. */
+export const AppSnippetResponseSchema = z.object({
+  language: z.enum(["swift", "shell"]),
+  snippet: z.string().meta({
+    description: "Source to paste. It never contains a credential: a server application's example reads its key from APP_AI_GATEWAY_KEY.",
+  }),
+  notes: z.array(z.string()).meta({
+    description: "What the example stands in for or leaves out, one sentence each. They are also written into the snippet as comments.",
+  }),
+});
+
 export const CreatedApiKeySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -794,6 +830,8 @@ export type AppSummary = z.infer<typeof AppSummarySchema>;
 export type AppListResponse = z.infer<typeof AppListResponseSchema>;
 export type AppValidateResponse = z.infer<typeof AppValidateResponseSchema>;
 export type AppDraftValidateResponse = z.infer<typeof AppDraftValidateResponseSchema>;
+export type AppCheckResponse = z.infer<typeof AppCheckResponseSchema>;
+export type AppSnippetResponse = z.infer<typeof AppSnippetResponseSchema>;
 export type CreatedApiKey = z.infer<typeof CreatedApiKeySchema>;
 export type CreatedAppResponse = z.infer<typeof CreatedAppResponseSchema>;
 export type ApiKey = z.infer<typeof ApiKeySchema>;

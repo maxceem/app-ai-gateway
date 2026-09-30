@@ -10,5 +10,7 @@ routes.handle("createApp");
 routes.handle("getApp");
 routes.handle("validateApp");
 routes.handle("validateAppDraft");
+routes.handle("checkApp");
+routes.handle("getAppSnippet");
 routes.handle("updateApp");
 routes.handle("deleteApp");

@@ -504,6 +504,35 @@ export const AppUpdateSchema = AppWriteSchema.extend({
 export type AppUpdate = z.infer<typeof AppUpdateSchema>;
 
 /**
+ * The two languages an application's example is written in: Swift for an App
+ * Attest application, whose callers hold an attestation rather than a key, and
+ * curl for a server application, which holds a key the Swift client cannot send.
+ */
+export const SNIPPET_LANGUAGES = ["swift", "curl"] as const;
+export type SnippetLanguage = (typeof SNIPPET_LANGUAGES)[number];
+
+/**
+ * What an application's example may be narrowed to. Every field is optional
+ * and defaulted from the application itself, so asking with none gets the
+ * request it can send today.
+ */
+export const AppSnippetQuerySchema = z.object({
+  language: z.enum(SNIPPET_LANGUAGES, { error: "language must be swift or curl" }).optional().meta({
+    description:
+      "swift or curl. Defaults to swift for an App Attest application and curl for a server application; the other one is refused with 400 unsupported_snippet.",
+  }),
+  provider: z.string().min(1).optional().meta({
+    description:
+      "The slug of the provider to write the example for. Defaults to the first one the application can reach. Unknown answers 404 provider_not_found; held but outside the application's routing or disabled answers 400 provider_unavailable.",
+  }),
+  endpoint: z.string().min(1).optional().meta({
+    description:
+      "The name of one of the application's custom endpoints, to call it instead of a provider path. Unknown answers 404 endpoint_not_found.",
+  }),
+});
+export type AppSnippetQuery = z.infer<typeof AppSnippetQuerySchema>;
+
+/**
  * Apple's key id is the base64 SHA-256 of the public key — 44 characters — and
  * a challenge is this gateway's own base64url of 32 bytes. Both are bounded
  * because these routes are unauthenticated and, under the `app_install` source,
