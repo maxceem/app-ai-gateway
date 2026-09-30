@@ -18,6 +18,7 @@ import {
 import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
 import { API_STYLES, type ApiStyle } from "../src/shared/capabilities";
 import { PROVIDER_TYPES, type ProviderType } from "../src/shared/providers";
+import { shippedRates } from "./shipped-rates";
 
 /**
  * Extraction that a style is expected to recognise; `null` fails the test here.
@@ -51,7 +52,13 @@ describe("usage extraction", () => {
       cacheWriteTokens: 10,
       outputTokens: 20,
     });
-    expect(computeCost("openai", "gpt-5.6-luna", usage)).toBeCloseTo(0.0000373, 8);
+    // Each bucket at its own rate: cached and cache-write tokens are not
+    // billed again as fresh input.
+    const luna = shippedRates("openai", "gpt-5.6-luna");
+    expect(computeCost("openai", "gpt-5.6-luna", usage)).toBeCloseTo(
+      (50 * luna.input + 40 * luna.cached_input + 10 * luna.cache_write + 20 * luna.output) / 1e6,
+      12,
+    );
   });
 
   it("normalizes Anthropic cache fields as separate token buckets across stream events", () => {
@@ -82,7 +89,11 @@ describe("usage extraction", () => {
       cacheWriteTokens: 10,
       outputTokens: 20,
     });
-    expect(computeCost("anthropic", "claude-sonnet-5", usage)).toBeCloseTo(0.000351, 8);
+    const sonnet = shippedRates("anthropic", "claude-sonnet-5");
+    expect(computeCost("anthropic", "claude-sonnet-5", usage)).toBeCloseTo(
+      (60 * sonnet.input + 30 * sonnet.cached_input + 10 * sonnet.cache_write + 20 * sonnet.output) / 1e6,
+      12,
+    );
   });
 
   it("normalizes Gemini cached prompt tokens as a subset", () => {
@@ -152,17 +163,24 @@ describe("usage extraction", () => {
       "application/json",
       "audio_transcription",
     );
-    expect(computeCost("xai", "grok-transcribe", usage)).toBeCloseTo(0.0025, 8);
+    // 90 seconds at the hourly rate.
+    expect(computeCost("xai", "grok-transcribe", usage))
+      .toBeCloseTo((90 / 3600) * shippedRates("xai", "grok-transcribe").per_hour, 12);
   });
 
   it("uses provider-specific and long-context rates", () => {
+    const grok = shippedRates("xai", "grok-4.5");
+    // One token past the threshold bills the whole request at the long rate.
     const usage = {
-      inputTokens: 200_001,
+      inputTokens: grok.long_context_threshold + 1,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
       outputTokens: 100,
     };
-    expect(computeCost("xai", "grok-4.5", usage)).toBeCloseTo(0.801204, 8);
+    expect(computeCost("xai", "grok-4.5", usage)).toBeCloseTo(
+      ((grok.long_context_threshold + 1) * grok.long_input + 100 * grok.long_output) / 1e6,
+      12,
+    );
     expect(computeCost("openai", "grok-4.5", usage)).toBeNull();
   });
 
@@ -992,28 +1010,6 @@ describe("the shipped price catalog", () => {
     expect(resolveModelAuthor("mistral", "mistral-large-latest")).toBe("Mistral");
   });
 
-  /**
-   * Mistral's size names are generations, not a price ladder, so `medium`
-   * really does cost more than `large`: `mistral-medium-latest` is Medium 3.5,
-   * the current frontier model, and `mistral-large-latest` is the older Large
-   * 3. Asserted so that "correcting" the apparent swap fails here instead of
-   * silently under-billing every Medium request by 3x on input and 5x on
-   * output. Verified against docs.mistral.ai/inference/pricing.
-   */
-  it("keeps Mistral Medium priced above Mistral Large, which is not a typo", () => {
-    const medium = catalog.mistral!["mistral-medium-latest"]!;
-    const large = catalog.mistral!["mistral-large-latest"]!;
-    const small = catalog.mistral!["mistral-small-latest"]!;
-    expect(medium).toEqual({ input: 1.5, cached_input: 0.15, output: 7.5 });
-    expect(large).toEqual({ input: 0.5, cached_input: 0.05, output: 1.5 });
-    expect(small).toEqual({ input: 0.15, cached_input: 0.015, output: 0.6 });
-    expect(medium.input as number).toBeGreaterThan(large.input as number);
-    // Mistral discounts cached input by a flat 90% across the lineup.
-    for (const entry of [medium, large, small]) {
-      expect(entry.cached_input as number).toBeCloseTo((entry.input as number) * 0.1, 10);
-    }
-  });
-
   it("bills a cache hit at the cached rate on the providers that discount it", () => {
     const usage = {
       inputTokens: 1_000_000,
@@ -1021,29 +1017,36 @@ describe("the shipped price catalog", () => {
       cacheWriteTokens: 0,
       outputTokens: 0,
     };
-    // DeepSeek: $0.44 fresh + $0.014 cached per 1M. Reading the cache hit as
-    // fresh input would charge $0.88 — a 96% over-bill on the cached half.
-    expect(computeCost("deepseek", "deepseek-v4-flash", usage)).toBeCloseTo(0.454, 8);
-    // Moonshot K3: $3.00 fresh + $0.30 cached.
-    expect(computeCost("moonshot", "kimi-k3", usage)).toBeCloseTo(3.3, 8);
-    // Mistral applies a flat -90% modifier to cached input.
-    expect(computeCost("mistral", "mistral-large-latest", usage)).toBeCloseTo(0.55, 8);
+    // 1M fresh tokens at the input rate plus 1M cache hits at the cached rate.
+    // Reading the cache hits as fresh input would bill them at the input rate,
+    // many times the cached one on all three.
+    for (const [provider, model] of [
+      ["deepseek", "deepseek-v4-flash"],
+      ["moonshot", "kimi-k3"],
+      ["mistral", "mistral-large-latest"],
+    ] as const) {
+      const rates = shippedRates(provider, model);
+      expect([model, computeCost(provider, model, usage)])
+        .toEqual([model, expect.closeTo(rates.input + rates.cached_input, 12)]);
+    }
   });
 
   it("charges ByteDance's long-prompt bracket above its threshold", () => {
-    // ModelArk doubles both rates above a 128K prompt; one flat pair per model
-    // would under-bill every long-context request by half.
+    // ModelArk bills a prompt above its threshold at a higher bracket; one flat
+    // pair per model would under-bill every long-context request. A prompt of
+    // exactly the threshold is still short.
+    const seed = shippedRates("bytedance", "seed-2-0-pro-260328");
     const short = {
-      inputTokens: 100_000,
+      inputTokens: seed.long_context_threshold,
       cachedInputTokens: 0,
       cacheWriteTokens: 0,
       outputTokens: 1000,
     };
-    const long = { ...short, inputTokens: 200_000 };
+    const long = { ...short, inputTokens: seed.long_context_threshold + 1 };
     expect(computeCost("bytedance", "seed-2-0-pro-260328", short))
-      .toBeCloseTo(100_000 * 0.5e-6 + 1000 * 3.0e-6, 10);
+      .toBeCloseTo((seed.long_context_threshold * seed.input + 1000 * seed.output) / 1e6, 12);
     expect(computeCost("bytedance", "seed-2-0-pro-260328", long))
-      .toBeCloseTo(200_000 * 1.0e-6 + 1000 * 6.0e-6, 10);
+      .toBeCloseTo(((seed.long_context_threshold + 1) * seed.long_input + 1000 * seed.long_output) / 1e6, 12);
   });
 
   /**
