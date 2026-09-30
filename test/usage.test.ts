@@ -929,6 +929,13 @@ describe("the shipped price catalog", () => {
             expect([where, typeof value]).toEqual([where, "string"]);
             continue;
           }
+          if (field === "retirement_date") {
+            // A real calendar day, as the daily price sync writes it.
+            const day = String(value);
+            expect([where, /^\d{4}-\d{2}-\d{2}$/.test(day), new Date(`${day}T00:00:00Z`).toISOString().startsWith(day)])
+              .toEqual([where, true, true]);
+            continue;
+          }
           expect([where, field, typeof value]).toEqual([where, field, "number"]);
           expect([where, field, (value as number) >= 0]).toEqual([where, field, true]);
         }

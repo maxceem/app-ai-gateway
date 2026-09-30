@@ -48,6 +48,18 @@ export function renderReport(decision) {
     sections.push(`## Price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`);
   }
 
+  if (decision.retirements.length > 0) {
+    const rows = decision.retirements.map(
+      (item) =>
+        `| ${code(`${item.provider}/${item.model}`)} | ${item.from === undefined ? "" : `${item.from} → `}**${item.to}** | ${item.source} |`,
+    );
+    sections.push(
+      "## Retirement dates\n\n" +
+        "When each provider stops serving the model. The entry stays in the catalog and stays priced.\n\n" +
+        `| Model | Retires on | Source |\n| --- | --- | --- |\n${rows.join("\n")}`,
+    );
+  }
+
   if (decision.attention.length > 0) {
     sections.push(
       "## Needs attention\n\n" +
@@ -66,6 +78,13 @@ export function renderReport(decision) {
     );
   }
 
+  if (decision.retired.length > 0) {
+    sections.push(
+      "## Retired models gone from pricing pages\n\n" +
+        list(decision.retired, (item) => `${code(`${item.provider}/${item.model}`)} ${escape(item.text)}`),
+    );
+  }
+
   if (decision.sources.length > 0) {
     sections.push(
       "## Sources\n\n" + list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}`),
@@ -77,6 +96,15 @@ export function renderReport(decision) {
       details(
         "Not covered by any source",
         list(decision.noSource, (item) => code(`${item.provider}/${item.model}`)),
+      ),
+    );
+  }
+
+  if (decision.deprecationNotes.length > 0) {
+    sections.push(
+      details(
+        "Deprecation signals without a confirmed date",
+        list(decision.deprecationNotes, (item) => `${code(`${item.provider}/${item.model}`)}: ${escape(item.text)}`),
       ),
     );
   }
@@ -100,6 +128,6 @@ export function renderReport(decision) {
   }
 
   const header =
-    "Checked every model in `src/usage/prices.json` against its provider's pricing, by `scripts/update-prices.mjs`.";
+    "Checked every model in `src/usage/prices.json` against its provider's pricing and deprecation pages, by `scripts/update-prices.mjs`.";
   return `${header}\n\n${sections.join("\n\n")}\n`;
 }

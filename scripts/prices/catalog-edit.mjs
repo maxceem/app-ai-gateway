@@ -1,11 +1,14 @@
 // Surgical edits to src/usage/prices.json.
 //
-// The catalog is formatted by hand — short entries on one line, long ones a
-// field per line, `5.0` rather than `5` — and a `JSON.stringify` round trip
-// would rewrite every line of it. Instead the text is read with a small JSON
-// reader that records where each value sits, and only the number literals
-// being changed are replaced. The result is then parsed and compared with the
-// original, so an edit that touched anything else is refused.
+// The catalog is formatted by hand — an entry on one line when it fits in 100
+// columns, a field per line when it does not, `5.0` rather than `5` — and a
+// `JSON.stringify` round trip would rewrite every line of it. Instead the text
+// is read with a small JSON reader that records where each value sits, and
+// only the literals being changed are replaced. The one field that may be
+// added, `retirement_date`, goes after an entry's last field, and an entry
+// that no longer fits on its line is spread over several. The result is then
+// parsed and compared with the original, so an edit that touched anything
+// else is refused.
 
 import { isDeepStrictEqual } from "node:util";
 import { round6 } from "./price.mjs";
@@ -26,16 +29,18 @@ function readValue(text, position) {
     if (text[at] === close) return { ...node, end: at + 1 };
     for (;;) {
       let key;
+      let keyStart;
       if (node.type === "object") {
         const keyNode = readValue(text, at);
         if (keyNode.type !== "string") throw new Error(`prices.json: expected a key at ${at}`);
         key = keyNode.value;
+        keyStart = keyNode.start;
         at = skip(keyNode.end);
         if (text[at] !== ":") throw new Error(`prices.json: expected ":" at ${at}`);
         at += 1;
       }
       const value = readValue(text, at);
-      node.entries.push({ key, value });
+      node.entries.push({ key, keyStart, value });
       at = skip(value.end);
       if (text[at] === ",") {
         at += 1;
@@ -61,12 +66,14 @@ function readValue(text, position) {
   return { type: /^[-\d]/u.test(literal[0]) ? "number" : "literal", start, end };
 }
 
+/** Fields an edit may add to an entry; every other edit changes a value in place. */
+const ADDABLE = new Set(["retirement_date"]);
+const WIDTH = 100;
+
 function member(node, key, where) {
   const matches = node.entries.filter((entry) => entry.key === key);
-  if (matches.length !== 1) {
-    throw new Error(`prices.json: ${where} is ${matches.length === 0 ? "missing" : "duplicated"}`);
-  }
-  return matches[0].value;
+  if (matches.length > 1) throw new Error(`prices.json: ${where} is duplicated`);
+  return matches[0]?.value;
 }
 
 /**
@@ -79,34 +86,96 @@ export function formatPrice(value) {
   return /^\d+$/u.test(text) ? `${text}.0` : text;
 }
 
+function literal(value) {
+  return typeof value === "number" ? formatPrice(value) : JSON.stringify(value);
+}
+
+function lineStart(text, position) {
+  return text.lastIndexOf("\n", position - 1) + 1;
+}
+
+function lineEnd(text, position) {
+  const end = text.indexOf("\n", position);
+  return end === -1 ? text.length : end;
+}
+
+/** One model's object with its edits applied, formatted as the file formats it. */
+function rewriteEntry(text, node, edits, where) {
+  const original = text.slice(node.start, node.end);
+  const replaced = new Map();
+  const added = [];
+  for (const edit of edits) {
+    const value = member(node, edit.field, `${where} ${edit.field}`);
+    if (value === undefined) {
+      if (!ADDABLE.has(edit.field)) throw new Error(`prices.json: ${where} ${edit.field} is missing`);
+      added.push([edit.field, literal(edit.to)]);
+      continue;
+    }
+    const expected = typeof edit.to === "number" ? "number" : "string";
+    if (value.type !== expected) throw new Error(`prices.json: ${where} ${edit.field} is not a ${expected}`);
+    if (replaced.has(value)) throw new Error(`prices.json: two edits to ${where} ${edit.field}`);
+    replaced.set(value, literal(edit.to));
+  }
+
+  // Changing values keeps the entry's layout exactly.
+  let result = original;
+  for (const [value, written] of [...replaced].sort((a, b) => b[0].start - a[0].start)) {
+    result = result.slice(0, value.start - node.start) + written + result.slice(value.end - node.start);
+  }
+  if (added.length === 0) return result;
+
+  const members = node.entries.map((entry) => [
+    JSON.stringify(entry.key),
+    replaced.get(entry.value) ?? text.slice(entry.value.start, entry.value.end),
+  ]);
+  for (const [field, value] of added) members.push([JSON.stringify(field), value]);
+
+  if (!original.includes("\n")) {
+    const prefix = text.slice(lineStart(text, node.start), node.start);
+    const suffix = text.slice(node.end, lineEnd(text, node.end));
+    const inline = `{ ${members.map(([key, value]) => `${key}: ${value}`).join(", ")} }`;
+    if (prefix.length + inline.length + suffix.length <= WIDTH) return inline;
+    const indent = /^\s*/u.exec(prefix)[0];
+    return `{\n${members.map(([key, value]) => `${indent}  ${key}: ${value}`).join(",\n")}\n${indent}}`;
+  }
+
+  // A multi-line entry gains lines after its last field, at that field's indent.
+  const last = node.entries.at(-1);
+  const indent = /^\s*/u.exec(text.slice(lineStart(text, last.keyStart), last.keyStart))[0];
+  const cut = last.value.end - node.start;
+  const extra = added.map(([field, value]) => `,\n${indent}${JSON.stringify(field)}: ${value}`).join("");
+  return result.slice(0, cut) + extra + result.slice(cut);
+}
+
 /**
- * Applies `[{ provider, model, field, to }]` to the catalog text. Only a field
- * the entry already has can be changed; nothing is ever added or removed.
+ * Applies `[{ provider, model, field, to }]` to the catalog text. A price
+ * field must already exist; `retirement_date` may be added. Nothing is ever
+ * removed.
  */
 export function applyEdits(text, edits) {
   if (edits.length === 0) return text;
   const root = readValue(text, 0);
   if (root.type !== "object") throw new Error("prices.json: the root is not an object");
 
-  const replacements = edits.map((edit) => {
+  const byEntry = new Map();
+  for (const edit of edits) {
     const where = `${edit.provider}/${edit.model}`;
     const provider = member(root, edit.provider, edit.provider);
-    const model = member(provider, edit.model, where);
-    const value = member(model, edit.field, `${where} ${edit.field}`);
-    if (value.type !== "number") throw new Error(`prices.json: ${where} ${edit.field} is not a number`);
-    return { start: value.start, end: value.end, literal: formatPrice(edit.to) };
-  });
-  replacements.sort((a, b) => b.start - a.start);
+    const model = provider && member(provider, edit.model, where);
+    if (!model || model.type !== "object") throw new Error(`prices.json: ${where} is missing`);
+    if (!byEntry.has(model)) byEntry.set(model, { where, edits: [] });
+    byEntry.get(model).edits.push(edit);
+  }
+
   let result = text;
-  for (const [index, replacement] of replacements.entries()) {
-    if (replacements[index - 1]?.start === replacement.start) {
-      throw new Error("prices.json: two edits to the same value");
-    }
-    result = result.slice(0, replacement.start) + replacement.literal + result.slice(replacement.end);
+  for (const [node, { where, edits: entryEdits }] of [...byEntry].sort((a, b) => b[0].start - a[0].start)) {
+    result = result.slice(0, node.start) + rewriteEntry(text, node, entryEdits, where) + result.slice(node.end);
   }
 
   const expected = JSON.parse(text);
-  for (const edit of edits) expected[edit.provider][edit.model][edit.field] = round6(edit.to);
+  for (const edit of edits) {
+    expected[edit.provider][edit.model][edit.field] = typeof edit.to === "number" ? round6(edit.to) : edit.to;
+  }
   if (!isDeepStrictEqual(JSON.parse(result), expected)) {
     throw new Error("prices.json: the edited file differs from the original in more than the intended values");
   }

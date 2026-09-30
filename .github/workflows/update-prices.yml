@@ -1,7 +1,8 @@
 # Checks every model in src/usage/prices.json against its provider's pricing
-# once a day, and opens (or updates) one pull request with any price that
-# changed. The rules — official page first, the two community lists only when
-# they agree, nothing guessed — live in scripts/update-prices.mjs.
+# and deprecation pages once a day, and opens (or updates) one pull request
+# with any price or retirement date that changed. The rules — official page
+# first, the two community lists only when they agree, nothing guessed — live
+# in scripts/update-prices.mjs.
 #
 # The pull request always comes from the branch `automation/update-prices`, so
 # there is one rolling pull request rather than one a day, and no diff means no

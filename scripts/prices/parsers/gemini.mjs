@@ -12,7 +12,7 @@
 // and the caching row also carries a storage price per hour, which is dropped.
 // Anything else in a row this parser reads fails the page.
 
-import { ParseError, decimal, put, readTable } from "../price.mjs";
+import { ParseError, decimal, parseDate, put, readTable } from "../price.mjs";
 
 const HEADER = ["", "Free Tier", "Paid Tier, per 1M tokens in USD"];
 const ROWS = {
@@ -26,10 +26,6 @@ const ROWS = {
 const IDS_LINE = /^\*\[`[^`]+`\]\([^)\s]+\)(?:(?:, |,? and )\[`[^`]+`\]\([^)\s]+\))*\*$/u;
 const ID = /\[`([^`]+)`\]/gu;
 
-const MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
 const DATE = String.raw`([A-Z][a-z]+) (\d{1,2}), (\d{4})`;
 const MONEY = String.raw`\$(\d+(?:\.\d+)?)`;
 
@@ -47,15 +43,6 @@ const LONG = new RegExp(
   "u",
 );
 
-/** "December 31, 2026" as `2026-12-31`, refusing a date that does not exist. */
-function isoDate(month, day, year, where) {
-  const index = MONTHS.indexOf(month);
-  if (index === -1) throw new ParseError(`${where}: "${month}" is not a month`);
-  const date = new Date(Date.UTC(Number(year), index, Number(day)));
-  if (date.getUTCMonth() !== index) throw new ParseError(`${where}: ${month} ${day}, ${year} is not a date`);
-  return date.toISOString().slice(0, 10);
-}
-
 function nextDay(iso) {
   const date = new Date(`${iso}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + 1);
@@ -72,8 +59,8 @@ export function readPaidCell(text, where, today) {
 
   match = DATED.exec(text);
   if (match) {
-    const until = isoDate(match[2], match[3], match[4], where);
-    const from = isoDate(match[6], match[7], match[8], where);
+    const until = parseDate(`${match[2]} ${match[3]}, ${match[4]}`, where);
+    const from = parseDate(`${match[6]} ${match[7]}, ${match[8]}`, where);
     if (nextDay(until) !== from) {
       throw new ParseError(`${where}: the dated prices leave a gap or overlap (${until}, ${from})`);
     }

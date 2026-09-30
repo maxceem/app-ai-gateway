@@ -1,6 +1,11 @@
 // The decision rules of the price sync, as one pure function: given the
-// catalog, what every source said and today's date, which prices change and
-// what a person has to look at. No network, no filesystem.
+// catalog, what every source said and today's date, which prices and
+// retirement dates change and what a person has to look at. No network, no
+// filesystem.
+//
+// A retirement date only ever documents when a provider stops serving a
+// model. The entry stays in the catalog and stays priced, so an app that
+// still names it keeps billing exactly; nothing here removes a model.
 //
 // Every item that needs a person has a stable `key`. An owner who has seen one
 // and accepts it adds that key to scripts/prices/acknowledged.json with a
@@ -8,7 +13,7 @@
 
 import { fromLitellm, fromModelsDev } from "./lists.mjs";
 import { AUDIO_FIELDS, PRICE_FIELDS, effectivePrice, round6, samePrice } from "./price.mjs";
-import { SOURCES, officialId } from "./sources.mjs";
+import { SOURCES, sourceId } from "./sources.mjs";
 
 /** How far one run may move a price before a person has to confirm it. */
 export const MAX_FACTOR = 3;
@@ -108,15 +113,37 @@ export function compare(ours, source) {
   return { edits };
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+
+/**
+ * What the lists say about a model's retirement. Models.dev only flags a
+ * model deprecated and LiteLLM only gives a date, so a date is trusted when
+ * both speak: the flag from one, the date from the other.
+ */
+function listRetirement(lists, source, model) {
+  const models = lists.modelsDev?.[source.modelsDev]?.models;
+  const flagged = models !== undefined && Object.hasOwn(models, model) && models[model]?.status === "deprecated";
+  const key = source.litellm(model);
+  const entry = lists.litellm && Object.hasOwn(lists.litellm, key) ? lists.litellm[key] : undefined;
+  const date = typeof entry?.deprecation_date === "string" && ISO_DATE.test(entry.deprecation_date)
+    ? entry.deprecation_date
+    : undefined;
+  return { flagged, date };
+}
+
 /**
  * Applies the rules to every model in the catalog.
  *
- * `official[provider]` is `{ prices: Map }` when that provider's parser
- * succeeded, `{ error }` when it failed, and absent when there is none.
- * `lists` holds the two parsed lists, `null` for one that could not be read.
+ * `official[provider]` and `deprecations[provider]` are `{ prices: Map }` or
+ * `{ dates: Map }` when that provider's parser succeeded, `{ error }` when it
+ * failed, and absent when there is none. `lists` holds the two parsed lists,
+ * `null` for one that could not be read. `today` is `YYYY-MM-DD`, UTC.
  */
-export function decide({ catalog, official, lists, acknowledged = [] }) {
+export function decide({ catalog, official, deprecations = {}, lists, acknowledged = [], today }) {
   const changes = [];
+  const retirements = [];
+  const retired = [];
+  const deprecationNotes = [];
   const attention = [];
   const upcoming = [];
   const noSource = [];
@@ -136,26 +163,71 @@ export function decide({ catalog, official, lists, acknowledged = [] }) {
       continue;
     }
 
+    // Retirement dates first: a model that has retired, or is about to, is
+    // expected to leave its pricing page, and that is not news.
+    const deprecation = deprecations[provider];
+    if (deprecation?.error) {
+      flag(`${provider}: deprecation parser failed`, provider, null, `official deprecation parser failed: ${deprecation.error}`);
+    }
+    const retiresOn = new Map();
+    for (const [model, entry] of Object.entries(models)) {
+      const where = `${provider}/${model}`;
+      let date;
+      let label;
+      if (deprecation?.dates) {
+        const found = deprecation.dates.get(sourceId(source.deprecations, model));
+        if (found?.date) {
+          [date, label] = [found.date, OFFICIAL];
+        } else if (found?.deprecated) {
+          deprecationNotes.push({ provider, model, text: "deprecated on the official page, no retirement date yet" });
+        } else if (entry.retirement_date !== undefined) {
+          // A date that disappears was postponed or withdrawn; which one is
+          // for a person to find out, and ours stays until they do.
+          flag(`${where}: retirement date withdrawn`, provider, model, `ours retires on ${entry.retirement_date}, the official deprecation page no longer gives a date`);
+        }
+      } else {
+        const signal = listRetirement(lists, source, model);
+        if (signal.flagged && signal.date) {
+          [date, label] = [signal.date, LISTS];
+        } else if ((signal.flagged || signal.date) && entry.retirement_date === undefined) {
+          deprecationNotes.push({
+            provider,
+            model,
+            text: signal.date
+              ? `LiteLLM gives a deprecation date of ${signal.date}, Models.dev does not mark it deprecated`
+              : "Models.dev marks it deprecated, LiteLLM gives no date",
+          });
+        }
+      }
+      if (date !== undefined && date !== entry.retirement_date) {
+        retirements.push({ provider, model, from: entry.retirement_date, to: date, source: label });
+      }
+      const effective = date ?? entry.retirement_date;
+      if (effective !== undefined) retiresOn.set(model, effective);
+    }
+
     // Rule 2's last check: a page that parsed but holds under half of our
-    // models has most likely changed shape, and fails like any other.
+    // models has most likely changed shape, and fails like any other. Models
+    // already retired are not expected on it.
     let page = official[provider];
     if (page?.prices) {
-      const ids = Object.keys(models).map((model) => officialId(provider, model));
-      const found = ids.filter((id) => page.prices.get(id)).length;
-      if (found * 2 < ids.length) {
-        page = { error: `only ${found} of ${ids.length} catalog models found on the page` };
+      const live = Object.keys(models).filter((model) => !(retiresOn.get(model) <= today));
+      const found = live.filter((model) => page.prices.get(sourceId(source.official, model))).length;
+      if (found * 2 < live.length) {
+        page = { error: `only ${found} of ${live.length} catalog models found on the page` };
       }
     }
+    const retirementSource = deprecation?.dates ? "official" : deprecation?.error ? "official failed → lists" : "lists";
     if (page?.error) {
       flag(`${provider}: parser failed`, provider, null, `official parser failed: ${page.error}`);
-      sources.push({ provider, text: "official failed → lists" });
+      sources.push({ provider, text: `prices: official failed → lists; retirements: ${retirementSource}` });
     } else if (page?.prices) {
-      sources.push({ provider, text: "official OK" });
-      const ours = new Set(Object.keys(models).map((model) => officialId(provider, model)));
+      sources.push({ provider, text: `prices: official OK; retirements: ${retirementSource}` });
+      const ours = new Set(Object.keys(models).map((model) => sourceId(source.official, model)));
       const fresh = [...page.prices.keys()].filter((id) => !ours.has(id));
       if (fresh.length > 0) newModels.push({ provider, ids: fresh });
     } else {
-      sources.push({ provider, text: "lists only" });
+      sources.push({ provider, text: `prices: lists only; retirements: ${retirementSource}` });
     }
 
     for (const [model, entry] of Object.entries(models)) {
@@ -166,9 +238,14 @@ export function decide({ catalog, official, lists, acknowledged = [] }) {
       if (page?.prices) {
         // Rule 1: the official page outranks the lists, including when it no
         // longer lists the model at all.
-        price = page.prices.get(officialId(provider, model));
+        price = page.prices.get(sourceId(source.official, model));
         if (!price) {
-          flag(`${where}: not on official page`, provider, model, "not on official page (renamed or retired?)");
+          const date = retiresOn.get(model);
+          if (date !== undefined) {
+            retired.push({ provider, model, date, text: `not on the pricing page; ${date <= today ? "retired" : "retires"} on ${date}` });
+          } else {
+            flag(`${where}: not on official page`, provider, model, "not on official page (renamed or retired?)");
+          }
           continue;
         }
         if (price.unpriced) {
@@ -222,10 +299,29 @@ export function decide({ catalog, official, lists, acknowledged = [] }) {
     .filter((item) => acknowledgedKeys.has(item.key))
     .map((item) => ({ ...item, reason: acknowledgedKeys.get(item.key) }));
 
-  return { changes, attention: open, acknowledged: seen, upcoming, noSource, newModels, sources };
+  return {
+    changes,
+    retirements,
+    retired,
+    deprecationNotes,
+    attention: open,
+    acknowledged: seen,
+    upcoming,
+    noSource,
+    newModels,
+    sources,
+  };
 }
 
 /** Rule "needs a human": anything left in `attention` after acknowledgements. */
 export function needsHuman(decision) {
   return decision.attention.length > 0;
+}
+
+/** Every edit the decision makes to prices.json, prices and retirement dates alike. */
+export function catalogEdits(decision) {
+  return [
+    ...decision.changes.map(({ provider, model, field, to }) => ({ provider, model, field, to })),
+    ...decision.retirements.map(({ provider, model, to }) => ({ provider, model, field: "retirement_date", to })),
+  ];
 }

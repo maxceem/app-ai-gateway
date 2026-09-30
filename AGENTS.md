@@ -131,8 +131,12 @@ means a static import crept back in.
 
 - `src/usage/prices.json` is checked daily by `.github/workflows/update-prices.yml`
   (`scripts/update-prices.mjs`), which opens one rolling pull request from
-  `automation/update-prices`. It only changes the value of a price field an
-  entry already has; adding or removing models and fields stays a human edit.
+  `automation/update-prices`. It changes the value of a price field an entry
+  already has, and sets `retirement_date` from the provider's deprecation
+  page; adding or removing models and price fields stays a human edit.
+- `retirement_date` records when the provider stops serving a model. A retired
+  model stays in the catalog and stays priced, so apps that still name it keep
+  billing exactly; never delete an entry because it retired.
 - Keep the file's hand formatting and write whole prices as `5.0`; the sync
   edits number literals in place and never re-serialises the file.
 - Which page or list prices a provider, and any model id that differs there,

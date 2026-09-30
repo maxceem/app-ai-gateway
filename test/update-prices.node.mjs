@@ -4,19 +4,24 @@ import test from "node:test";
 import { applyEdits, formatPrice } from "../scripts/prices/catalog-edit.mjs";
 import { fromLitellm, fromModelsDev } from "../scripts/prices/lists.mjs";
 import { parseAnthropic } from "../scripts/prices/parsers/anthropic.mjs";
+import { parseAnthropicDeprecations } from "../scripts/prices/parsers/anthropic-deprecations.mjs";
 import { parseCerebras } from "../scripts/prices/parsers/cerebras.mjs";
 import { parseDeepseek } from "../scripts/prices/parsers/deepseek.mjs";
 import { parseGemini } from "../scripts/prices/parsers/gemini.mjs";
+import { parseGeminiDeprecations } from "../scripts/prices/parsers/gemini-deprecations.mjs";
 import { parseGroq } from "../scripts/prices/parsers/groq.mjs";
+import { parseGroqDeprecations } from "../scripts/prices/parsers/groq-deprecations.mjs";
 import { parseMoonshot } from "../scripts/prices/parsers/moonshot.mjs";
 import { parseOpenai } from "../scripts/prices/parsers/openai.mjs";
+import { parseOpenaiDeprecations } from "../scripts/prices/parsers/openai-deprecations.mjs";
 import { parsePerplexity } from "../scripts/prices/parsers/perplexity.mjs";
 import { parseTogether } from "../scripts/prices/parsers/together.mjs";
+import { parseTogetherDeprecations } from "../scripts/prices/parsers/together-deprecations.mjs";
 import { parseXai } from "../scripts/prices/parsers/xai.mjs";
-import { ParseError, effectivePrice, samePrice } from "../scripts/prices/price.mjs";
+import { ParseError, effectivePrice, parseDate, samePrice } from "../scripts/prices/price.mjs";
 import { renderReport } from "../scripts/prices/report.mjs";
-import { compare, decide, needsHuman } from "../scripts/prices/rules.mjs";
-import { SOURCES } from "../scripts/prices/sources.mjs";
+import { catalogEdits, compare, decide, needsHuman } from "../scripts/prices/rules.mjs";
+import { SOURCES, sourceId } from "../scripts/prices/sources.mjs";
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/prices/${name}`, import.meta.url), "utf8");
 const catalogText = readFileSync(new URL("../src/usage/prices.json", import.meta.url), "utf8");
@@ -277,6 +282,83 @@ test("lists: Models.dev and LiteLLM read into the same shape", () => {
   assert.equal(fromLitellm(litellm, "constructor"), undefined);
 });
 
+// Deprecation pages -----------------------------------------------------------
+
+test("dates: every written form the deprecation pages use", () => {
+  assert.equal(parseDate("October 23, 2026", "t"), "2026-10-23");
+  assert.equal(parseDate("Feb 26, 2027", "t"), "2027-02-26");
+  assert.equal(parseDate("Sept 1, 2026", "t"), "2026-09-01");
+  assert.equal(parseDate("2026-09-24", "t"), "2026-09-24");
+  assert.equal(parseDate("2026\u201103\u201126", "t"), "2026-03-26");
+  assert.equal(parseDate("09/14/26", "t"), "2026-09-14");
+  assert.equal(parseDate("1/6/25", "t"), "2025-01-06");
+  for (const bad of ["February 30, 2026", "Octember 1, 2026", "2026-13-01", "soon", "Q4 2026"]) {
+    assert.throws(() => parseDate(bad, "t"), ParseError, bad);
+  }
+});
+
+test("openai deprecations: every id in a model cell, and the newest date for one named twice", () => {
+  const text = fixture("openai-deprecations.md");
+  const dates = parse(parseOpenaiDeprecations, text, ["whisper-1", "gpt-4o-transcribe", "gpt-5", "gpt-4-1106-preview", "gpt-4-0314"]);
+  assert.deepEqual(dates.get("whisper-1"), { date: "2027-02-26" });
+  assert.deepEqual(dates.get("gpt-4o-transcribe"), { date: "2027-02-26" });
+  // A snapshot shutting down says nothing about its alias.
+  assert.equal(dates.has("gpt-5"), false);
+  // Moved from 2026-03-26 to October 23, announced again above the first.
+  assert.deepEqual(dates.get("gpt-4-1106-preview"), { date: "2026-10-23" });
+  assert.deepEqual(dates.get("gpt-4-0314"), { date: "2026-03-26" });
+  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Shutdown date | Model / system              |", "| Shutdown date | Model name                  |"), ["whisper-1"], /unknown model column/);
+  assertFails(parseOpenaiDeprecations, replaceOnce(text, "| Feb 26, 2027  | `whisper-1`", "| Early 2027    | `whisper-1`"), ["whisper-1"], /not a date/);
+});
+
+test("anthropic deprecations: a promise is not a date, a retirement is", () => {
+  const text = fixture("anthropic-deprecations.md");
+  const wanted = ["claude-fable-5", "claude-mythos-preview", "claude-opus-4-1-20250805", "claude-opus-4-5-20251101"];
+  const dates = parse(parseAnthropicDeprecations, text, wanted);
+  assert.equal(dates.has("claude-fable-5"), false);
+  assert.equal(dates.has("claude-opus-4-5-20251101"), false);
+  assert.deepEqual(dates.get("claude-mythos-preview"), { deprecated: true });
+  assert.deepEqual(dates.get("claude-opus-4-1-20250805"), { date: "2026-08-05" });
+  // The catalog names aliases; the table names the snapshot behind them.
+  assert.equal(sourceId(SOURCES.anthropic.deprecations, "claude-opus-4-5"), "claude-opus-4-5-20251101");
+  assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Current state |", "| State         |"), wanted, /header changed/);
+  assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Active        | N/A               | Not sooner than June 9, 2027", "| Active        | N/A               | Soon                        "), wanted, /active model/);
+  assertFails(parseAnthropicDeprecations, replaceOnce(text, "| Retired       |", "| Sunset        |"), wanted, /unknown state/);
+});
+
+test("gemini deprecations: a shutdown date or none announced", () => {
+  const text = fixture("gemini-deprecations.md");
+  const dates = parse(parseGeminiDeprecations, text, ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-image", "gemini-3-pro-preview"]);
+  assert.equal(dates.has("gemini-3.6-flash"), false);
+  assert.deepEqual(dates.get("gemini-3.1-flash-lite"), { date: "2027-05-07" });
+  assert.deepEqual(dates.get("gemini-2.5-flash-image"), { date: "2026-10-02" });
+  assert.deepEqual(dates.get("gemini-3-pro-preview"), { date: "2026-03-09" });
+  assertFails(parseGeminiDeprecations, text.replaceAll("**Shutdown date**", "**Retirement date**"), ["gemini-3.6-flash"], /no model tables/);
+  assertFails(parseGeminiDeprecations, replaceOnce(text, "| May 7, 2027 |", "| Mid 2027 |"), ["gemini-3.1-flash-lite"], /not a date/);
+});
+
+test("groq deprecations: month-first dates, newest announcement first", () => {
+  const text = fixture("groq-deprecations.md");
+  const dates = parse(parseGroqDeprecations, text, ["qwen/qwen3.6-27b", "llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b-specdec", "llama3-groq-8b-8192-tool-use-preview"]);
+  assert.deepEqual(dates.get("qwen/qwen3.6-27b"), { date: "2026-09-14" });
+  assert.deepEqual(dates.get("llama-3.3-70b-versatile"), { date: "2026-08-16" });
+  assert.deepEqual(dates.get("deepseek-r1-distill-llama-70b-specdec"), { date: "2025-04-14" });
+  assert.deepEqual(dates.get("llama3-groq-8b-8192-tool-use-preview"), { date: "2025-01-06" });
+  assertFails(parseGroqDeprecations, replaceOnce(text, "## [Deprecation History](#deprecation-history)", "## History"), ["qwen/qwen3.6-27b"], /missing/);
+  assertFails(parseGroqDeprecations, replaceOnce(text, "| Deprecated Model | Shutdown Date |", "| Old Model        | Shutdown Date |"), ["qwen/qwen3.6-27b"], /header/);
+});
+
+test("together deprecations: the removal history wins over the schedule", () => {
+  const text = fixture("together-deprecations.md");
+  const dates = parse(parseTogetherDeprecations, text, ["google/gemma-4-31B-it", "openai/gpt-oss-20b", "Qwen/Qwen3-235B-A22B-Thinking-2507", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"]);
+  assert.deepEqual(dates.get("google/gemma-4-31B-it"), { date: "2026-09-15" });
+  assert.deepEqual(dates.get("openai/gpt-oss-20b"), { date: "2026-09-14" });
+  assert.deepEqual(dates.get("Qwen/Qwen3-235B-A22B-Thinking-2507"), { date: "2026-04-16" });
+  // Removed from fine-tuning is not removed from inference.
+  assert.equal(dates.has("nvidia/NVIDIA-Nemotron-Nano-9B-v2"), false);
+  assertFails(parseTogetherDeprecations, replaceOnce(text, "| Removal date | Model | Supported by", "| Date | Model | Supported by"), ["openai/gpt-oss-20b"], /history table/);
+});
+
 // Rules ---------------------------------------------------------------------
 
 test("effective prices follow computeCost's fallbacks", () => {
@@ -505,6 +587,31 @@ test("catalog editor: a model id with braces or quotes does not confuse it", () 
   assert.equal(quoted, text.replace('"a{\\"}b": { "input": 1.0, "output": 2.0', '"a{\\"}b": { "input": 1.0, "output": 3.0'));
 });
 
+test("catalog editor: a retirement date joins a one-line entry that still fits", () => {
+  const edited = applyEdits(catalogText, [{ provider: "openai", model: "whisper-1", field: "retirement_date", to: "2027-02-26" }]);
+  const changed = catalogText.split("\n").flatMap((line, index) => (line === edited.split("\n")[index] ? [] : [[line, edited.split("\n")[index]]]));
+  assert.deepEqual(changed, [['    "whisper-1": { "per_minute": 0.006 }', '    "whisper-1": { "per_minute": 0.006, "retirement_date": "2027-02-26" }']]);
+});
+
+test("catalog editor: a one-line entry that would pass 100 columns is spread out", () => {
+  const edited = applyEdits(catalogText, [
+    { provider: "groq", model: "qwen/qwen3.6-27b", field: "retirement_date", to: "2026-09-14" },
+    { provider: "groq", model: "qwen/qwen3.6-27b", field: "input", to: 0.5 },
+  ]);
+  assert.ok(edited.includes(
+    '    "qwen/qwen3.6-27b": {\n      "input": 0.5,\n      "output": 3.0,\n      "author": "Alibaba",\n      "retirement_date": "2026-09-14"\n    },\n',
+  ));
+  const before = new Set(catalogText.split("\n"));
+  assert.ok(edited.split("\n").filter((line) => !before.has(line)).every((line) => line.length <= 100));
+});
+
+test("catalog editor: a multi-line entry gains a line after its last field", () => {
+  const edited = applyEdits(catalogText, [{ provider: "openai", model: "gpt-5.4", field: "retirement_date", to: "2027-06-01" }]);
+  assert.ok(edited.includes('      "long_output": 22.5,\n      "retirement_date": "2027-06-01"\n    },\n    "gpt-5.4-pro"'));
+  const moved = applyEdits(edited, [{ provider: "openai", model: "gpt-5.4", field: "retirement_date", to: "2027-07-01" }]);
+  assert.equal(moved, edited.replace('"retirement_date": "2027-06-01"', '"retirement_date": "2027-07-01"'));
+});
+
 test("catalog editor: refuses to add a field", () => {
   assert.throws(
     () => applyEdits(catalogText, [{ provider: "openai", model: "gpt-5-pro", field: "cached_input", to: 1 }]),
@@ -512,11 +619,111 @@ test("catalog editor: refuses to add a field", () => {
   );
 });
 
+// Retirement rules ------------------------------------------------------------
+
+const dates = (entries) => ({ dates: new Map(Object.entries(entries)) });
+const mdDeprecated = (provider, ids) => ({
+  [provider]: { models: Object.fromEntries(ids.map((id) => [id, { status: "deprecated", cost: { input: 1, output: 2 } }])) },
+});
+
+test("retirement: an official date is added, and a moved one updated", () => {
+  const decision = decide({
+    catalog: { openai: { a: { input: 1.0, output: 2.0 }, b: { input: 1.0, output: 2.0, retirement_date: "2026-12-01" }, c: { input: 1.0, output: 2.0 } } },
+    official: { openai: page({ a: { input: 1, output: 2 }, b: { input: 1, output: 2 }, c: { input: 1, output: 2 } }) },
+    deprecations: { openai: dates({ a: { date: "2027-02-26" }, b: { date: "2027-01-15" } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(
+    decision.retirements.map((item) => [item.model, item.from, item.to, item.source]),
+    [["a", undefined, "2027-02-26", "official"], ["b", "2026-12-01", "2027-01-15", "official"]],
+  );
+  assert.equal(needsHuman(decision), false);
+  assert.deepEqual(catalogEdits(decision).filter((edit) => edit.field === "retirement_date").length, 2);
+});
+
+test("retirement: a date the official page withdrew needs a person, and stays", () => {
+  const decision = decide({
+    catalog: { openai: { a: { input: 1.0, output: 2.0, retirement_date: "2027-02-26" } } },
+    official: { openai: page({ a: { input: 1, output: 2 } }) },
+    deprecations: { openai: dates({}) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(decision.retirements, []);
+  assert.deepEqual(decision.attention.map((item) => item.key), ["openai/a: retirement date withdrawn"]);
+});
+
+test("retirement: deprecated without a date is noted, not dated", () => {
+  const decision = decide({
+    catalog: { anthropic: { a: { input: 1.0, output: 2.0 } } },
+    official: { anthropic: page({ a: { input: 1, output: 2 } }) },
+    deprecations: { anthropic: dates({ a: { deprecated: true } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(decision.retirements, []);
+  assert.deepEqual(decision.deprecationNotes.map((item) => item.model), ["a"]);
+  assert.equal(needsHuman(decision), false);
+});
+
+test("retirement: the lists date a model only when both mark it", () => {
+  const catalog = { mistral: { both: { input: 1.0, output: 2.0 }, flag: { input: 1.0, output: 2.0 }, date: { input: 1.0, output: 2.0 } } };
+  const litellm = {
+    "mistral/both": { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, deprecation_date: "2026-12-31" },
+    "mistral/flag": { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+    "mistral/date": { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, deprecation_date: "2026-11-30" },
+  };
+  const modelsDev = { mistral: { models: { ...mdDeprecated("mistral", ["both", "flag"]).mistral.models, date: { cost: { input: 1, output: 2 } } } } };
+  const decision = decide({ catalog, official: {}, lists: { modelsDev, litellm }, today: TODAY });
+  assert.deepEqual(decision.retirements.map((item) => [item.model, item.to, item.source]), [["both", "2026-12-31", "models.dev + litellm"]]);
+  assert.deepEqual(decision.deprecationNotes.map((item) => item.model), ["flag", "date"]);
+  assert.equal(needsHuman(decision), false);
+});
+
+test("retirement: a retired model missing from its pricing page is expected", () => {
+  const decision = decide({
+    catalog: { groq: { gone: { input: 1.0, output: 2.0 }, live: { input: 1.0, output: 2.0 }, lost: { input: 1.0, output: 2.0 } } },
+    official: { groq: page({ live: { input: 1, output: 2 } }) },
+    deprecations: { groq: dates({ gone: { date: "2026-09-14" } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(decision.retired.map((item) => [item.model, item.date]), [["gone", "2026-09-14"]]);
+  assert.deepEqual(decision.attention.map((item) => item.key), ["groq/lost: not on official page"]);
+});
+
+test("retirement: retired models do not count against the half-found check", () => {
+  const decision = decide({
+    catalog: { groq: { a: { input: 1.0, output: 2.0 }, b: { input: 1.0, output: 2.0, retirement_date: "2026-01-01" }, c: { input: 1.0, output: 2.0, retirement_date: "2026-01-01" } } },
+    official: { groq: page({ a: { input: 1, output: 2 } }) },
+    deprecations: { groq: dates({ b: { date: "2026-01-01" }, c: { date: "2026-01-01" } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.equal(decision.attention.some((item) => item.key === "groq: parser failed"), false);
+});
+
+test("retirement: a failed deprecation parser needs a person and falls back to the lists", () => {
+  const decision = decide({
+    catalog: { openai: { a: { input: 1.0, output: 2.0 } } },
+    official: { openai: page({ a: { input: 1, output: 2 } }) },
+    deprecations: { openai: { error: "no Shutdown date tables" } },
+    lists: { modelsDev: mdDeprecated("openai", ["a"]), litellm: { a: { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, deprecation_date: "2027-01-01" } } },
+    today: TODAY,
+  });
+  assert.deepEqual(decision.attention.map((item) => item.key), ["openai: deprecation parser failed"]);
+  assert.deepEqual(decision.retirements.map((item) => [item.to, item.source]), [["2027-01-01", "models.dev + litellm"]]);
+});
+
 // Report --------------------------------------------------------------------
 
 test("report: fetched text is escaped", () => {
   const report = renderReport({
     changes: [{ provider: "p", model: "m`|<b>", field: "input", from: 1, to: 2, source: "official" }],
+    retirements: [],
+    retired: [],
+    deprecationNotes: [{ provider: "p", model: "m", text: "<script>alert(1)</script>" }],
     attention: [{ key: "p: parser failed", text: 'official parser failed: "<img src=x onerror=alert(1)>" | [link](https://evil) `x`' }],
     acknowledged: [],
     upcoming: [],

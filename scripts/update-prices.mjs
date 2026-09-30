@@ -1,7 +1,8 @@
 // Checks every model in src/usage/prices.json against its provider's official
-// pricing, falling back to Models.dev and LiteLLM where there is no official
-// source or its parser failed, and updates the prices that changed. Run daily
-// by .github/workflows/update-prices.yml, which opens the pull request.
+// pricing and deprecation pages, falling back to Models.dev and LiteLLM where
+// there is no official source or its parser failed, and updates the prices
+// and retirement dates that changed. Run daily by
+// .github/workflows/update-prices.yml, which opens the pull request.
 //
 //   node scripts/update-prices.mjs [--dry-run] [--report <path>] [--today YYYY-MM-DD]
 //
@@ -20,8 +21,8 @@ import { fileURLToPath } from "node:url";
 import { applyEdits } from "./prices/catalog-edit.mjs";
 import { ParseError } from "./prices/price.mjs";
 import { renderReport } from "./prices/report.mjs";
-import { decide, needsHuman } from "./prices/rules.mjs";
-import { LITELLM_URL, MODELS_DEV_URL, SOURCES, officialId } from "./prices/sources.mjs";
+import { catalogEdits, decide, needsHuman } from "./prices/rules.mjs";
+import { LITELLM_URL, MODELS_DEV_URL, SOURCES, sourceId } from "./prices/sources.mjs";
 
 const CATALOG = fileURLToPath(new URL("../src/usage/prices.json", import.meta.url));
 const ACKNOWLEDGED = fileURLToPath(new URL("./prices/acknowledged.json", import.meta.url));
@@ -63,18 +64,21 @@ async function fetchText(url, type) {
   throw new Error(`fetch failed: ${lastError?.message ?? lastError}`);
 }
 
-async function readOfficial(provider, models, today) {
-  const official = SOURCES[provider]?.official;
-  if (!official) return undefined;
-  const wanted = new Set(Object.keys(models).map((model) => officialId(provider, model)));
+/**
+ * One official source read with its parser: `{ result }`, `{ error }` when
+ * the page could not be fetched or read, or undefined when there is none.
+ */
+async function readSource(source, models, today) {
+  if (!source) return undefined;
+  const wanted = new Set(Object.keys(models).map((model) => sourceId(source, model)));
   let text;
   try {
-    text = await fetchText(official.url, official.type);
+    text = await fetchText(source.url, source.type);
   } catch (error) {
     return { error: error.message };
   }
   try {
-    return { prices: official.parse(text, { wanted, today }) };
+    return { result: source.parse(text, { wanted, today }) };
   } catch (error) {
     if (error instanceof ParseError) return { error: error.message };
     throw error;
@@ -101,21 +105,33 @@ async function main() {
   }
 
   const providers = Object.keys(catalog);
-  const [modelsDev, litellm, ...pages] = await Promise.all([
+  const read = (kind) =>
+    Promise.all(providers.map((provider) => readSource(SOURCES[provider]?.[kind], catalog[provider], options.today)));
+  const [modelsDev, litellm, pricePages, deprecationPages] = await Promise.all([
     readList(MODELS_DEV_URL, "application/json"),
     readList(LITELLM_URL, "text/plain"),
-    ...providers.map((provider) => readOfficial(provider, catalog[provider], options.today)),
+    read("official"),
+    read("deprecations"),
   ]);
-  const official = Object.fromEntries(
-    providers.flatMap((provider, index) => (pages[index] ? [[provider, pages[index]]] : [])),
-  );
+  const byProvider = (pages, key) =>
+    Object.fromEntries(
+      providers.flatMap((provider, index) => {
+        const page = pages[index];
+        if (!page) return [];
+        return [[provider, page.error !== undefined ? { error: page.error } : { [key]: page.result }]];
+      }),
+    );
 
-  const decision = decide({ catalog, official, lists: { modelsDev, litellm }, acknowledged });
+  const decision = decide({
+    catalog,
+    official: byProvider(pricePages, "prices"),
+    deprecations: byProvider(deprecationPages, "dates"),
+    lists: { modelsDev, litellm },
+    acknowledged,
+    today: options.today,
+  });
   const report = renderReport(decision);
-  const updated = applyEdits(
-    text,
-    decision.changes.map(({ provider, model, field, to }) => ({ provider, model, field, to })),
-  );
+  const updated = applyEdits(text, catalogEdits(decision));
 
   if (options.dryRun) {
     console.log(report);
@@ -125,7 +141,8 @@ async function main() {
     else console.log(report);
   }
   console.error(
-    `${decision.changes.length} price change(s), ${decision.attention.length} item(s) need attention`,
+    `${decision.changes.length} price change(s), ${decision.retirements.length} retirement date(s), ` +
+      `${decision.attention.length} item(s) need attention`,
   );
   return needsHuman(decision) ? 3 : 0;
 }

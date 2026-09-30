@@ -32,6 +32,12 @@ interface Price {
    * the prices; absent falls back to the provider type's own author.
    */
   author?: string;
+  /**
+   * The day (`YYYY-MM-DD`) the provider stops, or stopped, serving the model,
+   * kept current by the daily price sync. Informational: a retired model
+   * stays priced, so an app that still names it keeps billing exactly.
+   */
+  retirement_date?: string;
 }
 
 export interface UsageObservation extends UsageCounts {

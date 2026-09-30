@@ -43,6 +43,49 @@ export function decimal(text, where) {
   return Number(text);
 }
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const MONTH_DAY_YEAR = /^([A-Z][a-z]+)\.? (\d{1,2}), (\d{4})$/u;
+const ISO = /^(\d{4})-(\d{2})-(\d{2})$/u;
+const US_SHORT = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/u;
+
+function month(name, where) {
+  // "Oct", "Sept" and "October" all name the same month.
+  const index = MONTHS.findIndex((full) => full === name || (name.length >= 3 && full.startsWith(name)));
+  if (index === -1) throw new ParseError(`${where}: "${name}" is not a month`);
+  return index;
+}
+
+/**
+ * A calendar date as `YYYY-MM-DD`. Accepts "October 23, 2026", "Oct 1, 2026",
+ * "2026-09-24" and "09/14/26" (month first), and refuses a date that does
+ * not exist, such as February 30.
+ */
+export function parseDate(raw, where) {
+  // Some pages write ISO dates with non-breaking hyphens (U+2011).
+  const text = raw.replace(/[\u2010\u2011]/gu, "-");
+  let year;
+  let monthIndex;
+  let day;
+  let match;
+  if ((match = MONTH_DAY_YEAR.exec(text))) {
+    [year, monthIndex, day] = [Number(match[3]), month(match[1], where), Number(match[2])];
+  } else if ((match = ISO.exec(text))) {
+    [year, monthIndex, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
+  } else if ((match = US_SHORT.exec(text))) {
+    [year, monthIndex, day] = [2000 + Number(match[3]), Number(match[1]) - 1, Number(match[2])];
+  } else {
+    throw new ParseError(`${where}: "${text}" is not a date`);
+  }
+  const date = new Date(Date.UTC(year, monthIndex, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== monthIndex || date.getUTCDate() !== day) {
+    throw new ParseError(`${where}: "${text}" is not a date`);
+  }
+  return date.toISOString().slice(0, 10);
+}
+
 /**
  * What `computeCost` in `src/usage/pricing.ts` would actually charge for each
  * token kind, so two sources are compared on what they bill rather than on
@@ -155,6 +198,30 @@ export function readTable(lines, start, header, where) {
   }
   if (rows.length === 0) throw new ParseError(`${where}: the table has no rows`);
   return rows;
+}
+
+/**
+ * Every pipe table on the page, as `{ line, header, rows }`, for pages that
+ * hold many tables of the same shape (deprecation histories). A caller reads
+ * the ones whose header it recognises and checks their width itself.
+ */
+export function findTables(lines, where) {
+  const tables = [];
+  for (let index = 0; index + 1 < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line.startsWith("|") || (index > 0 && lines[index - 1].trim().startsWith("|"))) continue;
+    const separator = lines[index + 1].trim();
+    if (!/^\|(\s*:?-+:?\s*\|)+$/u.test(separator)) continue;
+    const header = splitRow(line, where);
+    const rows = [];
+    let row = index + 2;
+    for (; row < lines.length && lines[row].trim().startsWith("|"); row += 1) {
+      rows.push(splitRow(lines[row], where));
+    }
+    tables.push({ line: index, header, rows });
+    index = row - 1;
+  }
+  return tables;
 }
 
 /** The index of the one line equal to `text`, failing when there is none or several. */
