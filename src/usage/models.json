@@ -211,13 +211,17 @@
       "output": 15.0,
       "author": "Moonshot AI"
     },
-    "deepseek-ai/DeepSeek-V4-Pro-0813": { "input": 1.32, "output": 3.96, "author": "DeepSeek" },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      "input": 1.32,
+      "cached_input": 0.13,
+      "output": 3.96,
+      "author": "DeepSeek"
+    },
     "openai/gpt-oss-120b": { "input": 0.15, "output": 0.6, "author": "OpenAI" },
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": { "input": 1.04, "output": 1.04, "author": "Meta" }
   },
   "cerebras": {
-    "gpt-oss-120b": { "input": 0.35, "output": 0.75, "author": "OpenAI" },
-    "gemma-4-31b": { "input": 0.99, "output": 1.49, "author": "Google" }
+    "gpt-oss-120b": { "input": 0.35, "output": 0.75, "author": "OpenAI" }
   },
   "moonshot": {
     "kimi-k3": { "input": 3.0, "cached_input": 0.3, "output": 15.0 },

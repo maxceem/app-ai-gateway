@@ -5,6 +5,7 @@
 //   deprecations  the provider's own deprecation table, and its parser
 //   modelsDev     the provider key at https://models.dev/api.json
 //   litellm       the key a catalog model id has in LiteLLM's price file
+//                 (either absent when neither list covers the provider)
 //
 // Either source may carry `aliases`: catalog model id → the id that page uses.
 // A provider with no official source, or whose parser fails, is checked
@@ -166,11 +167,12 @@ export const SOURCES = {
     modelsDev: "baseten",
     litellm: (id) => `baseten/${id}`,
   },
-  bytedance: {
-    // ByteDance's models are sold through Volcengine.
-    modelsDev: "volcengine",
-    litellm: (id) => `volcengine/${id}`,
-  },
+  // BytePlus ModelArk, the international platform the provider type calls.
+  // Neither list covers it: their `volcengine` entries are the separate China
+  // platform, priced differently. Its official price page is a rich-text
+  // document rather than a table, so it is not read either, and its models
+  // are reported as covered by no source.
+  bytedance: {},
 };
 
 /** The id a source (`official` or `deprecations`) uses for a catalog model. */

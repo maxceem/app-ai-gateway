@@ -138,7 +138,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 function listRetirement(lists, source, model) {
   const models = lists.modelsDev?.[source.modelsDev]?.models;
   const flagged = models !== undefined && Object.hasOwn(models, model) && models[model]?.status === "deprecated";
-  const key = source.litellm(model);
+  const key = source.litellm?.(model);
   const entry = lists.litellm && Object.hasOwn(lists.litellm, key) ? lists.litellm[key] : undefined;
   const date = typeof entry?.deprecation_date === "string" && ISO_DATE.test(entry.deprecation_date)
     ? entry.deprecation_date
@@ -290,17 +290,18 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
         page = { error: `only ${found} of ${live.length} catalog models found on the page` };
       }
     }
-    const retirementSource = deprecation?.dates ? "official" : deprecation?.error ? "official failed → lists" : "lists";
+    const listed = source.modelsDev !== undefined || source.litellm !== undefined ? "lists" : "none";
+    const retirementSource = deprecation?.dates ? "official" : deprecation?.error ? `official failed → ${listed}` : listed;
     if (page?.error) {
       flag(`${provider}: parser failed`, provider, null, `official parser failed: ${page.error}`);
-      sources.push({ provider, text: `prices: official failed → lists; retirements: ${retirementSource}` });
+      sources.push({ provider, text: `prices: official failed → ${listed}; retirements: ${retirementSource}` });
     } else if (page?.prices) {
       sources.push({ provider, text: `prices: official OK; retirements: ${retirementSource}` });
       const ours = new Set(Object.keys(models).map((model) => sourceId(source.official, model)));
       const fresh = [...page.prices.keys()].filter((id) => !ours.has(id));
       if (fresh.length > 0) newModels.push({ provider, ids: fresh });
     } else {
-      sources.push({ provider, text: `prices: lists only; retirements: ${retirementSource}` });
+      sources.push({ provider, text: listed === "none" ? "no source" : `prices: lists only; retirements: ${retirementSource}` });
     }
 
     for (const [model, entry] of Object.entries(models)) {
@@ -329,7 +330,7 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
       } else {
         // Rule 3: only two lists that agree stand in for an official price.
         const modelsDev = fromModelsDev(lists.modelsDev, source.modelsDev, model);
-        const litellm = fromLitellm(lists.litellm, source.litellm(model));
+        const litellm = source.litellm ? fromLitellm(lists.litellm, source.litellm(model)) : undefined;
         if (!modelsDev && !litellm) {
           noSource.push({ provider, model });
           continue;
