@@ -583,6 +583,18 @@ test("rules: a dated price is applied on its day and announced before it", () =>
   assert.deepEqual(after.upcoming, []);
 });
 
+test("rules: a provider no source covers is reported as such, not as a disagreement", () => {
+  const decision = decide({
+    catalog: { bytedance: { a: { input: 1.0, output: 2.0 } } },
+    official: {},
+    lists: { modelsDev: { volcengine: { models: { a: { cost: { input: 9, output: 9 } } } } }, litellm: { "volcengine/a": { input_cost_per_token: 9e-6, output_cost_per_token: 9e-6 } } },
+    today: TODAY,
+  });
+  assert.deepEqual(decision.noSource.map((item) => item.model), ["a"]);
+  assert.deepEqual(decision.attention, []);
+  assert.deepEqual(decision.sources, [{ provider: "bytedance", text: "no source" }]);
+});
+
 test("sources: every catalog provider has an entry", () => {
   for (const provider of Object.keys(JSON.parse(liveCatalogText))) {
     assert.ok(SOURCES[provider], `scripts/models/sources.mjs has no entry for ${provider}`);
