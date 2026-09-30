@@ -1,15 +1,15 @@
 {
   "openai": {
     "gpt-5.6-sol": {
-      "input": 5.0,
-      "cached_input": 0.5,
-      "cache_write": 6.25,
-      "output": 30.0,
+      "input": 4.0,
+      "cached_input": 0.4,
+      "cache_write": 5.0,
+      "output": 20.0,
       "long_context_threshold": 272000,
-      "long_input": 10.0,
-      "long_cached_input": 1.0,
-      "long_cache_write": 12.5,
-      "long_output": 45.0
+      "long_input": 8.0,
+      "long_cached_input": 0.8,
+      "long_cache_write": 10.0,
+      "long_output": 30.0
     },
     "gpt-5.6-terra": {
       "input": 2.0,
@@ -73,9 +73,9 @@
     "gpt-4.1": { "input": 2.0, "cached_input": 0.5, "output": 8.0 },
     "gpt-4.1-mini": { "input": 0.4, "cached_input": 0.1, "output": 1.6 },
     "gpt-4o-mini": { "input": 0.15, "cached_input": 0.075, "output": 0.6 },
-    "gpt-4o-mini-transcribe": { "input": 1.25, "output": 5.0 },
-    "gpt-4o-transcribe": { "input": 2.5, "output": 10.0 },
-    "whisper-1": { "per_minute": 0.006 }
+    "gpt-4o-mini-transcribe": { "input": 1.25, "output": 5.0, "retirement_date": "2027-02-26" },
+    "gpt-4o-transcribe": { "input": 2.5, "output": 10.0, "retirement_date": "2027-02-26" },
+    "whisper-1": { "per_minute": 0.006, "retirement_date": "2027-02-26" }
   },
   "anthropic": {
     "claude-fable-5": { "input": 10.0, "cached_input": 1.0, "cache_write": 12.5, "output": 50.0 },
@@ -149,7 +149,7 @@
     "grok-transcribe": { "per_hour": 0.1 }
   },
   "gemini": {
-    "gemini-3.6-flash": { "input": 1.5, "cached_input": 0.15, "output": 7.5 },
+    "gemini-3.6-flash": { "input": 0.75, "cached_input": 0.075, "output": 3.75 },
     "gemini-3.5-flash": { "input": 1.5, "cached_input": 0.15, "output": 9.0 },
     "gemini-3.5-flash-lite": { "input": 0.3, "cached_input": 0.03, "output": 2.5 },
     "gemini-3.1-pro-preview": {
@@ -190,13 +190,18 @@
     "sonar-deep-research": { "input": 2.0, "output": 8.0 }
   },
   "deepseek": {
-    "deepseek-v4-flash": { "input": 0.44, "cached_input": 0.014, "output": 1.32 },
+    "deepseek-v4-flash": { "input": 0.3, "cached_input": 0.006, "output": 1.2 },
     "deepseek-v4-pro": { "input": 1.32, "cached_input": 0.044, "output": 3.96 }
   },
   "groq": {
     "openai/gpt-oss-120b": { "input": 0.15, "output": 0.6, "author": "OpenAI" },
     "openai/gpt-oss-20b": { "input": 0.075, "output": 0.3, "author": "OpenAI" },
-    "qwen/qwen3.6-27b": { "input": 0.6, "output": 3.0, "author": "Alibaba" },
+    "qwen/qwen3.6-27b": {
+      "input": 0.6,
+      "output": 3.0,
+      "author": "Alibaba",
+      "retirement_date": "2026-09-14"
+    },
     "qwen/qwen3.8-27b": { "input": 0.8, "output": 4.0, "author": "Alibaba" }
   },
   "mistral": {
