@@ -250,23 +250,29 @@ describe("initial database migration", () => {
       "expires_at",
       "created_at",
       "revoked_at",
+      "source",
+      "label",
     ]);
-    // Every CLI operation is one table: its proof is the id, and the server's
-    // own fields are columns, never fields mixed into the payload the CLI sent.
+    // Every CLI operation is one row of cf-auth's operation table: the digest
+    // of the CLI's token is how it is found, and the engine's own fields are
+    // columns, never fields mixed into the payload the CLI sent.
     const operationColumns = await env.DB.prepare("PRAGMA table_info(mgmt_operation)")
       .all<{ name: string; notnull: number }>();
     expect(operationColumns.results.map((column) => column.name)).toEqual(expect.arrayContaining([
       "kind",
       "state",
-      "request_json",
+      "payload",
       "request_hash",
+      "poll_token_hash",
       "browser_proof_hash",
-      "outcome_json",
+      "user_code_hash",
+      "outcome",
       "sealed_outcome",
       "sealed_until",
+      "retain_until",
     ]));
-    expect(operationColumns.results.find((column) => column.name === "request_hash"))
-      .toMatchObject({ notnull: 1 });
+    for (const column of ["request_hash", "poll_token_hash", "retain_until"])
+      expect(operationColumns.results.find(({ name }) => name === column)).toMatchObject({ notnull: 1 });
     expect(apiKeyColumns.results.map((column) => column.name)).toEqual([
       "id",
       "app_id",

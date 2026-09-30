@@ -113,8 +113,18 @@ function render(
     return [
       style.headline(`Waiting for browser approval (${result.id}).`),
       result.url,
+      // A login's page shows the same code; checking it is what tells a person
+      // the request they are approving is this one.
+      ...("userCode" in result && result.userCode
+        ? [`Pairing code: ${result.userCode} (check that the browser shows the same code)`]
+        : []),
       `Resume: agw operation wait ${result.id}`,
     ];
+  if (
+    (command === "operation wait" || command === "operation status") &&
+    "kind" in result && result.kind === "login" && result.state === "completed"
+  )
+    return [style.headline(`Signed in to ${context.url}.`), ...operation(result, style)];
   switch (command) {
     case "account status":
     case "account login":
@@ -342,7 +352,9 @@ function mutation(
   if ("loggedOut" in result)
     return [
       style.headline(`Signed out of ${context.url}.`) +
-        " The stored credential was removed.",
+        (result.revoked
+          ? " The key was revoked and removed from this machine."
+          : " The stored credential was removed."),
     ];
   if ("deleted" in result) {
     if ("provider_id" in result)

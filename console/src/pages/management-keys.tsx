@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AlertCircle, Ban, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,6 +27,35 @@ import {
   useRevokeManagementKey,
 } from "@/lib/queries";
 import type { CreatedManagementKey, ManagementKey } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+/**
+ * Where a key came from, as a short tag and the sentence behind it.
+ *
+ * The gateway reports the source as a plain string, so a value this console
+ * does not know yet is still shown, as itself, rather than hidden.
+ */
+const KEY_SOURCES: Record<string, { tag: string; title: string; cli: boolean }> = {
+  console: { tag: "Console", title: "Created in this console", cli: false },
+  cli: { tag: "CLI", title: "Issued to a CLI that was approved in a browser", cli: true },
+  bootstrap: { tag: "CLI setup", title: "The key a CLI started this account with", cli: true },
+};
+
+function KeySourceBadge({ source }: { source: string }) {
+  const known = KEY_SOURCES[source];
+  return (
+    <Badge
+      variant="outline"
+      title={known?.title}
+      className={cn(
+        "text-[11px] font-normal",
+        known?.cli ? "border-primary/40 text-primary-ink" : "text-muted-foreground",
+      )}
+    >
+      {known?.tag ?? source}
+    </Badge>
+  );
+}
 
 export function ManagementKeysPage() {
   const list = useManagementKeys();
@@ -96,6 +126,7 @@ export function ManagementKeysPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Source</TableHead>
               <TableHead>Key</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Status</TableHead>
@@ -106,21 +137,30 @@ export function ManagementKeysPage() {
             {list.isPending ? (
               [0, 1, 2].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={5}>
+                  <TableCell colSpan={6}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : keys.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
                   No management keys yet.
                 </TableCell>
               </TableRow>
             ) : (
               keys.map((key) => (
                 <TableRow key={key.id}>
-                  <TableCell className="font-medium">{key.name}</TableCell>
+                  <TableCell>
+                    <p className="font-medium">{key.name}</p>
+                    {/* Who holds it, as the CLI described itself, when that says more than the name. */}
+                    {key.label && key.label !== key.name ? (
+                      <p className="text-xs text-muted-foreground">{key.label}</p>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>
+                    <KeySourceBadge source={key.source} />
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {key.tokenHint === null ? "—" : `…${key.tokenHint}`}
                   </TableCell>

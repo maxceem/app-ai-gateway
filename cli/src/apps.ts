@@ -202,7 +202,7 @@ async function remoteValidation(
   doc: AppWrite,
   id?: string,
 ): Promise<ValidationResult> {
-  if (!ctx.active?.credential)
+  if (!ctx.managementKey)
     return {
       local: true,
       remote: false,

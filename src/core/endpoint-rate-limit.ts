@@ -38,6 +38,16 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "create an account",
     sharedBy: "everyone sharing your network address",
   },
+  // Anyone may ask for a login, and a login its asker declines at once frees
+  // its pending slot again, so the engine's cap on waiting logins does not
+  // bound how many are asked for. Twenty an hour is far above a person logging
+  // a few machines in and far below what filling the table needs.
+  login: {
+    limit: 20,
+    windowMs: 3_600_000,
+    action: "ask for a CLI login",
+    sharedBy: "everyone sharing your network address",
+  },
   operation: {
     limit: 10,
     windowMs: 60_000,
@@ -49,6 +59,16 @@ export const ENDPOINT_RATE_LIMITS = {
     windowMs: 60_000,
     action: "answer an approval page",
     sharedBy: "this operation",
+  },
+  // A user code is eight characters, short enough to guess in bulk, and
+  // looking one up is the only way a guess can be tried without already
+  // holding an approval link. Ten a minute is far above a person retyping a
+  // code they misread and far below what guessing needs.
+  user_code: {
+    limit: 10,
+    windowMs: 60_000,
+    action: "look up an approval code",
+    sharedBy: "everyone sharing your network address",
   },
   // Password sign-in is counted twice, because the two counters refuse two
   // different attacks and neither one sees the other's. The address counter

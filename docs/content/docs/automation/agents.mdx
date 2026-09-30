@@ -8,7 +8,7 @@ Install the [CLI](/automation/cli), then give your coding agent this instruction
 ```text
 Read https://docs.appaigateway.com/agents.md. Use agw to configure my gateway.
 Read before changing resources, use JSON output, and validate app configuration.
-Give me browser handoff URLs for provider secrets and account claim. I will open
+Give me browser handoff URLs for login, provider secrets and account claim. I will open
 those outside your browser session. Never print credentials or run inference
 unless I explicitly ask.
 ```
@@ -16,6 +16,27 @@ unless I explicitly ask.
 The first provider or app creation can initialize a new hosted account. Existing
 accounts use `agw account login`; your own deployment can be installed with
 `agw deployment setup`. Help, lists and status do not create accounts.
+
+## Signing the agent in
+
+`agw account login --no-open --json` returns at once with a pending login: a
+`url`, a `userCode` and an `id`. The agent gives you the URL and the code; open
+the URL in your own browser, check that the page shows the same pairing code,
+and approve it. The agent then runs `agw operation wait <id>` and the CLI
+receives a management key of its own. It never sees your password or your
+browser session. Without `--no-open`, the CLI also tries to open the page in
+this machine's browser.
+
+For CI, or an agent that should not wait for you, create a management key on the
+console's **Management keys** page and give it to the agent privately:
+
+- as `AGW_MANAGEMENT_KEY` in its environment. When set, it is the credential for
+  every command and overrides any saved login;
+- or piped once with `agw account login --key-stdin`, which saves it.
+
+Every key a CLI login creates is listed on the **Management keys** page with a
+**CLI** tag and the label of the machine that asked for it. `agw account logout`
+revokes the saved key; you can also revoke any of them on that page.
 
 For a provider credential, the agent can run:
 
@@ -28,13 +49,14 @@ and enter the credential. The agent polls the operation and receives only its
 nonsecret result. Hidden terminal prompts prevent echo, but do not isolate a
 credential from an agent controlling that terminal.
 
-Account login and claim open in your own browser too. The page names both the
+Account claim opens in your own browser too. The page names both the
 account being claimed and the person signed in to approve it; compare them with
 the terminal before approving. The person claiming creates their sign-in on
 that page; if the browser is already signed in as someone with an account, the
 page asks them to sign out first. Claiming keeps the CLI connected, so it can go on
 configuring resources and reading usage; human-only administration still needs
-you. Revoke its key from the console whenever you want that access to end.
+you. Run `agw account logout`, or revoke its key on the **Management keys** page,
+whenever you want that access to end.
 
 Application keys go to private files, never standard output. The CLI preserves
 retry proofs and credentials in protected local state. Keep that state after an

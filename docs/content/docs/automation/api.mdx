@@ -18,8 +18,12 @@ A management key acts within its owning identity's current account membership
 and role. It does not expire. Store it in a secret manager and read it from the
 environment. **Revoke key** stops it immediately.
 
-Keys are created, listed and revoked from the console only. A management key
-cannot do any of the three, so a key you hand to another system cannot issue
+Keys are listed and revoked on that page, and created there or by a CLI login
+you approve in the browser (`agw account login`). A key the CLI received is
+listed with a **CLI** tag and the label the CLI sent, such as `CLI on
+mac-studio`. A management key cannot create or list keys, and the only key it
+can revoke is itself (`DELETE /v1/cli/credential`, which is what
+`agw account logout` sends). So a key you hand to another system cannot issue
 itself a second key, and revoking the one you handed out ends that access for
 good.
 
@@ -30,7 +34,15 @@ what calls providers, and a management key is refused on those routes.
 
 Send the management credential as an `Authorization: Bearer` header from your
 HTTP client's protected credential store. Do not put it in shell arguments or
-logs. The CLI can read an existing key through stdin:
+logs. The CLI reads it from the `AGW_MANAGEMENT_KEY` environment variable,
+which takes precedence over any saved login and writes nothing to disk, so a CI
+job only needs the key in its secret store:
+
+```sh
+AGW_MANAGEMENT_KEY="$MANAGEMENT_KEY" agw app list --json
+```
+
+To save the key on a machine instead, pipe it once through stdin:
 
 ```sh
 agw deployment connect --url https://api.appaigateway.com --key-stdin < /private/path/management-key

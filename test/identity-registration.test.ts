@@ -334,7 +334,9 @@ describe("self-hosted registration policy", () => {
       .toBe(1);
     expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user_account").first("n"))
       .toBe(signup.status === 200 ? 1 : 0);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_operation WHERE kind='bootstrap'").first("n"))
+    // The engine opens the bootstrap before its account is attempted, so the
+    // one that lost the race is left pending, unused, until it expires.
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_operation WHERE kind='bootstrap' AND state='completed'").first("n"))
       .toBe(bootstrap.status === 200 ? 1 : 0);
     expect(barrier.guardedInsertCount()).toBe(1);
     expect(barrier.bootstrapPreflightCount()).toBe(1);
@@ -596,7 +598,11 @@ describe("Google registration policy", () => {
 
   it("normalizes a denied Google claim callback after another human registers", async () => {
     const testEnv = runtime({ google: true });
-    const operationId = "claim-google-policy-test";
+    // A claim is opened under the id the CLI knows it by — `op:` and its
+    // token's digest, which the row also keeps as `poll_token_hash`.
+    const tokenDigest = "c".repeat(64);
+    const operationId = `op:${tokenDigest}`;
+    const proof = "0123456789abcdef".repeat(4);
     const expires = Date.now() + 10 * 60_000;
     const now = Date.now();
     const iso = new Date(now).toISOString();
@@ -610,10 +616,10 @@ describe("Google registration policy", () => {
     ]);
     await env.DB.prepare(
       `INSERT INTO mgmt_operation(
-        id,kind,state,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
-        browser_proof_hash,expires_at,created_at,updated_at)
-       VALUES (?, 'claim', 'pending', '{}', 'hash', 'claim-account', 'claim-service', 'claim-key', 'proof', ?, ?, ?)`,
-    ).bind(operationId, expires, now, now).run();
+        id,kind,state,request_hash,poll_token_hash,organization_id,opener_user_id,opener_credential_id,
+        browser_proof_hash,expires_at,retain_until,created_at,updated_at)
+       VALUES (?, 'claim', 'pending', 'hash', ?, 'claim-account', 'claim-service', 'claim-key', ?, ?, ?, ?, ?)`,
+    ).bind(operationId, tokenDigest, await digest(proof), expires, expires, now, now).run();
     const claimAuth = await createIdentityAuth(resolveDeployment(testEnv), testEnv, ORIGIN, {
       claimRegistration: true,
     });
@@ -701,8 +707,12 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
     // sign-in screen: the claimant carries on here with a password, so the
     // refusal has to come back to the page they started on.
     const testEnv = runtime({ additional: true, google: true });
-    const operationId = "claim-google-takeover";
-    const submissionToken = "claim-submission-proof-0123456789abcdef";
+    // A claim is opened under the id the CLI knows it by — `op:` and its
+    // token's digest, which the row also keeps as `poll_token_hash` — and the
+    // engine's proofs are SHA-256-sized hex.
+    const tokenDigest = "d".repeat(64);
+    const operationId = `op:${tokenDigest}`;
+    const submissionToken = "0123456789abcdef".repeat(4);
     const expires = Date.now() + 10 * 60_000;
     const now = Date.now();
     const iso = new Date(now).toISOString();
@@ -716,15 +726,15 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
     ]);
     await env.DB.prepare(
       `INSERT INTO mgmt_operation(
-        id,kind,state,request_json,request_hash,organization_id,initiating_user_id,initiating_credential_id,
-        browser_proof_hash,expires_at,created_at,updated_at)
-       VALUES (?, 'claim', 'pending', '{}', 'hash', 'takeover-account', 'takeover-service', 'takeover-key', ?, ?, ?, ?)`,
-    ).bind(operationId, await digest(submissionToken), expires, now, now).run();
+        id,kind,state,request_hash,poll_token_hash,organization_id,opener_user_id,opener_credential_id,
+        browser_proof_hash,expires_at,retain_until,created_at,updated_at)
+       VALUES (?, 'claim', 'pending', 'hash', ?, 'takeover-account', 'takeover-service', 'takeover-key', ?, ?, ?, ?, ?)`,
+    ).bind(operationId, tokenDigest, await digest(submissionToken), expires, expires, now, now).run();
     // The email already signs in with a password, so Google must not open it.
     const squatted = await seedHuman("claim-victim@example.test");
 
     const started = await worker.request(
-      `${ORIGIN}/v1/cli/browser/${operationId}/google`,
+      `${ORIGIN}/v1/cli/browser/${encodeURIComponent(operationId)}/google`,
       {
         method: "POST",
         headers: { "content-type": "application/json", origin: ORIGIN },
@@ -744,7 +754,7 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
 
     expect(callback.status).toBe(302);
     expect(callback.headers.get("location")).toBe(
-      `${ORIGIN}/cli/approve/${operationId}?error=account_not_linked`,
+      `${ORIGIN}/cli/approve/${encodeURIComponent(operationId)}?error=account_not_linked`,
     );
     expect(callback.headers.getSetCookie().some((cookie) => cookie.includes("session_token=")))
       .toBe(false);

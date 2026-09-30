@@ -75,9 +75,11 @@ agw account claim
 
 Install `@maxceem/agw` first if necessary. The helper saves recovery proofs
 before requesting an account and stores its credential privately. Keep its state
-when retrying a lost response. Complete the browser claim using the separate
-terminal code and choose whether the CLI retains access. Once CLI initialization
-creates the account, ordinary registration cannot take it; its first person must
+when retrying a lost response. `agw account claim` prints a URL: open it in your
+own browser, check the account it names, create your sign-in on that page and
+approve. The CLI keeps its access afterwards; run `agw account logout` or revoke
+its key on the **Management keys** page when you no longer want it. Once CLI
+initialization creates the account, ordinary registration cannot take it; its first person must
 use this protected claim.
 
 <Callout type="warn" title="Initialize straight after deploying">

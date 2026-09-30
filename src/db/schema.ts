@@ -85,53 +85,14 @@ export const {
   organization: mgmtOrganization,
   organizationUser: mgmtOrganizationUser,
   apiKey: mgmtApiKey,
+  /**
+   * Every CLI operation — a bootstrap, an account claim, a login, or a
+   * resource write — is one row of cf-auth's operation table. The library owns
+   * its shape and its state machine; see `src/routes/cli/README.md` for what
+   * this gateway keeps in a row's record beside it.
+   */
+  operation: mgmtOperation,
 } = mgmtAuthTables;
-
-/**
- * One CLI operation: a bootstrap, an account claim, or a resource write, sent
- * immediately or after a browser step. The id is `op:` and the digest of the
- * one token the CLI holds, so holding the token is the whole proof, and a
- * retry with it finds this row rather than repeating the work.
- *
- * `state` is `pending` until the work lands, then `completed`. A bootstrap is
- * `retired` once its account is claimed and `expired` once account cleanup
- * collected it; that last row is kept on purpose, identities and secrets
- * cleared, so the same token cannot recreate an account the deadline removed.
- *
- * `outcome_json` is what the operation achieved with any one-time secret taken
- * out; the whole of it is sealed in `sealed_outcome` until `sealed_until`, so a
- * CLI whose response was lost can still collect a key it has not stored yet.
- */
-export const mgmtOperation = sqliteTable(
-  "mgmt_operation",
-  {
-    id: text("id").primaryKey(),
-    kind: text("kind").notNull(),
-    state: text("state", { enum: ["pending", "completed", "retired", "expired"] }).notNull(),
-    organizationId: text("organization_id").references(() => mgmtOrganization.id, {
-      onDelete: "set null",
-    }),
-    initiatingUserId: text("initiating_user_id"),
-    initiatingCredentialId: text("initiating_credential_id"),
-    /** The reviewable payload of a browser step, exactly as its schema accepted it. */
-    request: text("request_json"),
-    /** Digest of the whole request, which a retry with the same token must match. */
-    requestHash: text("request_hash").notNull(),
-    /** Digest of the browser's own proof, present only while a browser step is owed. */
-    browserProofHash: text("browser_proof_hash"),
-    outcome: text("outcome_json"),
-    sealedOutcome: text("sealed_outcome"),
-    sealedUntil: integer("sealed_until"),
-    /** A bootstrap's management key, the one it stands behind. */
-    credentialId: text("credential_id"),
-    expiresAt: integer("expires_at").notNull(),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => [
-    index("idx_mgmt_operation_organization").on(table.organizationId, table.state, table.expiresAt),
-  ],
-);
 
 export const app = sqliteTable(
   "app",

@@ -6,6 +6,13 @@ export { VERSION } from "./manifest.ts";
 export const CLOUD = "https://api.appaigateway.com";
 
 /**
+ * The environment variable that, when set, is the management credential for
+ * every command, ahead of whatever the state file holds. It is what an agent or
+ * a CI job uses: nothing is written to disk, and nothing needs a browser.
+ */
+export const MANAGEMENT_KEY_ENV = "AGW_MANAGEMENT_KEY";
+
+/**
  * Everything a failure has to say, in the shape the error envelope prints.
  *
  * `details` is declared rather than free-form: it reaches stdout, and

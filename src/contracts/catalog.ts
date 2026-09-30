@@ -35,7 +35,15 @@ import {
   CliBrowserGoogleResponseSchema,
   CliBrowserRegisterResponseSchema,
   CliBrowserSubmitResponseSchema,
+  CliBrowserDenyResponseSchema,
+  CliBrowserLookupRequestSchema,
+  CliBrowserLookupResponseSchema,
   CliCapabilitiesResponseSchema,
+  CliCredentialRevokeResponseSchema,
+  CliLoginRedeemRequestSchema,
+  CliLoginRedeemResponseSchema,
+  CliLoginRequestSchema,
+  CliLoginSchema,
   CliOperationRequestSchema,
   CliOperationSchema,
   CliUsageResponseSchema,
@@ -204,7 +212,7 @@ const CLI_ERRORS = {
 } as const;
 
 const BROWSER_HANDOFF_DESCRIPTION =
-  "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.";
+  "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.";
 
 // ---------------------------------------------------------------------------
 // Bodies this gateway documents but does not own: Better Auth's console
@@ -1145,12 +1153,54 @@ export const CATALOG = {
     errors: CLI_ERRORS,
   },
 
+  openCliLogin: {
+    method: "POST",
+    path: "/v1/cli/login",
+    tags: ["CLI"],
+    summary: "Ask a person to log this CLI in",
+    description: "Persist the random token before sending: its digest is the operation's id, and sending it again answers with where the login stands — `completed` once approved, when polling or redeeming collects the key — and never hands the key over itself. Needs no credential. Open `url` in a browser, or show `userCode` for the person to type on the console's code-entry page; once a signed-in person approves, the CLI receives a management key of its own in the account they chose. Without `loopbackRedirect`, poll `pollCliOperation` until it completes: the first completed answer carries the key in `result.credential`, and no later one does. With `loopbackRedirect`, the approval page sends the browser there with a one-time `code`, which `redeemCliLogin` exchanges for the key; polling then never returns it. A login expires after 15 minutes, and its record is kept for a day. Each network address may ask for 20 logins an hour — sending the same token again is not counted — and may have 10 waiting at once.",
+    security: "public",
+    request: CliLoginRequestSchema,
+    response: CliLoginSchema,
+    responseDescription: "The pending login, its approval URL and its user code.",
+    errors: CLI_ERRORS,
+  },
+
+  redeemCliLogin: {
+    method: "POST",
+    path: "/v1/cli/login/{id}/redeem",
+    tags: ["CLI"],
+    summary: "Exchange a login's redeem code for its credential",
+    description: "For a login opened with `loopbackRedirect`: send the operation token as the bearer credential and the `code` the approval page delivered to the local listener. Answers once; a second redemption is refused with `already_completed`. Never print or log the credential.",
+    security: "cliPoll",
+    params: { id: {} },
+    request: CliLoginRedeemRequestSchema,
+    response: CliLoginRedeemResponseSchema,
+    responseDescription: "The management key the login issued, and the account it belongs to.",
+    errors: CLI_ERRORS,
+  },
+
+  revokeCliCredential: {
+    method: "DELETE",
+    path: "/v1/cli/credential",
+    tags: ["CLI"],
+    summary: "Revoke the management key this request is sent with",
+    description: "Logging a CLI out. Any management key may end itself, whatever its role and whatever the account's standing; a browser session cannot use this and signs out instead.",
+    security: "management",
+    // Holding a key is authority enough to end it: a member may, and an
+    // account past its free window may.
+    policy: { role: "member", access: "read" },
+    response: CliCredentialRevokeResponseSchema,
+    responseDescription: "The key is revoked; the next request made with it is refused.",
+    errors: CLI_ERRORS,
+  },
+
   pollCliOperation: {
     method: "GET",
     path: "/v1/cli/operations/{id}",
     tags: ["CLI"],
     summary: "Poll a CLI operation",
-    description: "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes.",
+    description: "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes. A login's key is returned once, by the first completed answer, and never when the login registered a loopback redirect. A step a person declined answers `expired` with `denied: true`.",
     security: "cliPoll",
     params: { id: {} },
     response: CliOperationSchema,
@@ -1216,7 +1266,34 @@ export const CATALOG = {
     params: { id: {} },
     request: CliBrowserSubmitRequestSchema,
     response: CliBrowserSubmitResponseSchema,
-    responseDescription: "The handoff is approved and consumed. No submitted secret is ever echoed.",
+    responseDescription: "The handoff is approved and consumed. No submitted secret is ever echoed. For a login with a loopback redirect, `redirectUrl` is where to send the browser next.",
+    errors: CLI_ERRORS,
+  },
+
+  cliBrowserDeny: {
+    method: "POST",
+    path: "/v1/cli/browser/{id}/deny",
+    tags: ["CLI"],
+    summary: "Browser handoff: deny",
+    description: `${BROWSER_HANDOFF_DESCRIPTION} Anyone holding the link or the code may decline, signed in or not.`,
+    security: "public",
+    params: { id: {} },
+    request: CliBrowserProofSchema,
+    response: CliBrowserDenyResponseSchema,
+    responseDescription: "The handoff is declined; the CLI's next poll reports it. Repeating a denial answers the same.",
+    errors: CLI_ERRORS,
+  },
+
+  cliBrowserLookup: {
+    method: "POST",
+    path: "/v1/cli/browser/lookup",
+    tags: ["CLI"],
+    summary: "Browser handoff: find a step by its user code",
+    description: "First-party browser only, like the other handoff steps. Case and dashes are ignored. Continue with the code as `submissionToken` on the step it names. Rate limited per network address, because a code is short enough to guess in bulk.",
+    security: "public",
+    request: CliBrowserLookupRequestSchema,
+    response: CliBrowserLookupResponseSchema,
+    responseDescription: "Whether a pending step answers to the code, and which one.",
     errors: CLI_ERRORS,
   },
 
@@ -1230,7 +1307,7 @@ export const CATALOG = {
     params: { id: {} },
     request: CliBrowserRegisterRequestSchema,
     response: CliBrowserRegisterResponseSchema,
-    responseDescription: "A new human identity for a pending claim, with its session set as a cookie.",
+    responseDescription: "A new human identity for a pending claim or login, with its session set as a cookie.",
     errors: CLI_ERRORS,
   },
 
@@ -1244,7 +1321,7 @@ export const CATALOG = {
     params: { id: {} },
     request: CliBrowserProofSchema,
     response: CliBrowserGoogleResponseSchema,
-    responseDescription: "Where to send the browser to start Google consent for a pending claim.",
+    responseDescription: "Where to send the browser to start Google consent for a pending claim or login.",
     errors: CLI_ERRORS,
   },
 } as const satisfies Record<string, OperationSpec>;

@@ -10,6 +10,7 @@ import { AppsPage } from "@/pages/apps";
 import { BillingPage } from "@/pages/billing";
 import { CheckoutPage } from "@/pages/checkout";
 import { CliApprovePage } from "@/pages/cli-approve";
+import { CliCodePage } from "@/pages/cli-code";
 import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
 import { ProvidersPage } from "@/pages/providers";
@@ -180,6 +181,8 @@ export default function App() {
           secret must not be redirected away from the link their CLI printed.
         */}
         <Route path="/cli/approve/:id" element={<CliApprovePage />} />
+        {/* Where a person types the terminal's pairing code instead of following its link. */}
+        <Route path="/cli" element={<CliCodePage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

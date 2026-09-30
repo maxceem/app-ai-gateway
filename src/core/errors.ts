@@ -9,6 +9,19 @@ export type ErrorCode =
    */
   | "account_exists"
   | "registration_disabled"
+  /**
+   * A CLI login's approver belongs to no account they could log it in to, and
+   * this deployment does not give a person one of their own.
+   */
+  | "no_eligible_organization"
+  /** A browser step that ran out of time, or a one-time outcome past its window. */
+  | "operation_expired"
+  /** A browser step its approver declined. */
+  | "operation_denied"
+  /** Redeeming a login nobody has approved yet. */
+  | "operation_pending"
+  /** Approving, completing or redeeming a step that already was. */
+  | "already_completed"
   | "validation_error"
   | "rate_limited"
   | "conflict"

@@ -5740,6 +5740,18 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "source": {
+                            "type": "string",
+                            "description": "Where the key was issued: `console`, `cli` for a key a CLI login received, or `bootstrap` for the key a CLI account starts with. Display only.",
+                            "example": "cli"
+                          },
+                          "label": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only."
                           }
                         },
                         "required": [
@@ -5751,7 +5763,9 @@
                           "enabled",
                           "expiresAt",
                           "createdAt",
-                          "revokedAt"
+                          "revokedAt",
+                          "source",
+                          "label"
                         ]
                       }
                     }
@@ -5874,6 +5888,18 @@
                             "null"
                           ]
                         },
+                        "source": {
+                          "type": "string",
+                          "description": "Where the key was issued: `console`, `cli` for a key a CLI login received, or `bootstrap` for the key a CLI account starts with. Display only.",
+                          "example": "cli"
+                        },
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only."
+                        },
                         "plaintext": {
                           "type": "string"
                         }
@@ -5888,6 +5914,8 @@
                         "expiresAt",
                         "createdAt",
                         "revokedAt",
+                        "source",
+                        "label",
                         "plaintext"
                       ]
                     }
@@ -6012,6 +6040,18 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "description": "Where the key was issued: `console`, `cli` for a key a CLI login received, or `bootstrap` for the key a CLI account starts with. Display only.",
+                          "example": "cli"
+                        },
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only."
                         }
                       },
                       "required": [
@@ -6023,7 +6063,9 @@
                         "enabled",
                         "expiresAt",
                         "createdAt",
-                        "revokedAt"
+                        "revokedAt",
+                        "source",
+                        "label"
                       ]
                     }
                   },
@@ -10380,6 +10422,17 @@
                           "name"
                         ]
                       }
+                    },
+                    "features": {
+                      "type": "object",
+                      "properties": {
+                        "browserLogin": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "browserLogin"
+                      ]
                     }
                   },
                   "required": [
@@ -10440,6 +10493,7 @@
                       "type": "string",
                       "enum": [
                         "bootstrap",
+                        "login",
                         "claim",
                         "app.add",
                         "app.key.add",
@@ -10456,6 +10510,12 @@
                         "pending",
                         "completed",
                         "expired"
+                      ]
+                    },
+                    "denied": {
+                      "type": "boolean",
+                      "enum": [
+                        true
                       ]
                     },
                     "expiresAt": {
@@ -11250,6 +11310,7 @@
                       "type": "string",
                       "enum": [
                         "bootstrap",
+                        "login",
                         "claim",
                         "app.add",
                         "app.key.add",
@@ -11266,6 +11327,12 @@
                         "pending",
                         "completed",
                         "expired"
+                      ]
+                    },
+                    "denied": {
+                      "type": "boolean",
+                      "enum": [
+                        true
                       ]
                     },
                     "expiresAt": {
@@ -11534,6 +11601,471 @@
         }
       }
     },
+    "/v1/cli/login": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "openCliLogin",
+        "summary": "Ask a person to log this CLI in",
+        "description": "Persist the random token before sending: its digest is the operation's id, and sending it again answers with where the login stands — `completed` once approved, when polling or redeeming collects the key — and never hands the key over itself. Needs no credential. Open `url` in a browser, or show `userCode` for the person to type on the console's code-entry page; once a signed-in person approves, the CLI receives a management key of its own in the account they chose. Without `loopbackRedirect`, poll `pollCliOperation` until it completes: the first completed answer carries the key in `result.credential`, and no later one does. With `loopbackRedirect`, the approval page sends the browser there with a one-time `code`, which `redeemCliLogin` exchanges for the key; polling then never returns it. A login expires after 15 minutes, and its record is kept for a day. Each network address may ask for 20 logins an hour — sending the same token again is not counted — and may have 10 waiting at once.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  },
+                  "client": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "os": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "loopbackRedirect": {
+                    "type": "string",
+                    "pattern": "^http:\\/\\/127\\.0\\.0\\.1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])\\/callback$"
+                  }
+                },
+                "required": [
+                  "token",
+                  "client"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The pending login, its approval URL and its user code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "login"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "completed",
+                        "denied",
+                        "expired"
+                      ]
+                    },
+                    "url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uri"
+                    },
+                    "userCode": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "state",
+                    "url",
+                    "userCode",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/login/{id}/redeem": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "redeemCliLogin",
+        "summary": "Exchange a login's redeem code for its credential",
+        "description": "For a login opened with `loopbackRedirect`: send the operation token as the bearer credential and the `code` the approval page delivered to the local listener. Answers once; a second redemption is refused with `already_completed`. Never print or log the credential.",
+        "security": [
+          {
+            "CliPollProof": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "redeemCode": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                  }
+                },
+                "required": [
+                  "redeemCode"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The management key the login issued, and the account it belongs to.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "credential": {
+                      "type": "object",
+                      "properties": {
+                        "token": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "token"
+                      ]
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "claimed": {
+                          "type": "boolean"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "createdAt",
+                        "claimed",
+                        "expiresAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "credential",
+                    "account"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/credential": {
+      "delete": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "revokeCliCredential",
+        "summary": "Revoke the management key this request is sent with",
+        "description": "Logging a CLI out. Any management key may end itself, whatever its role and whatever the account's standing; a browser session cannot use this and signs out instead.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The key is revoked; the next request made with it is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli/operations/{id}": {
       "get": {
         "tags": [
@@ -11541,7 +12073,7 @@
         ],
         "operationId": "pollCliOperation",
         "summary": "Poll a CLI operation",
-        "description": "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes.",
+        "description": "Only the operation's token can read it. Completed claims report the account they landed on; the CLI keeps the access it already had. Provider secrets are never returned; a one-time key an operation created is, for 15 minutes. A login's key is returned once, by the first completed answer, and never when the login registered a loopback redirect. A step a person declined answers `expired` with `denied: true`.",
         "security": [
           {
             "CliPollProof": []
@@ -11572,6 +12104,7 @@
                       "type": "string",
                       "enum": [
                         "bootstrap",
+                        "login",
                         "claim",
                         "app.add",
                         "app.key.add",
@@ -11588,6 +12121,12 @@
                         "pending",
                         "completed",
                         "expired"
+                      ]
+                    },
+                    "denied": {
+                      "type": "boolean",
+                      "enum": [
+                        true
                       ]
                     },
                     "expiresAt": {
@@ -12378,7 +12917,7 @@
         ],
         "operationId": "cliBrowserDetails",
         "summary": "Browser handoff: details",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -12398,7 +12937,7 @@
                 "properties": {
                   "submissionToken": {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                    "pattern": "^(?:[A-Za-z0-9_-]{32,256}|[A-Za-z0-9]{4}-?[A-Za-z0-9]{4})$"
                   }
                 },
                 "required": [
@@ -12421,6 +12960,7 @@
                       "type": "string",
                       "enum": [
                         "bootstrap",
+                        "login",
                         "claim",
                         "app.add",
                         "app.key.add",
@@ -12436,7 +12976,10 @@
                       "additionalProperties": {}
                     },
                     "account": {
-                      "type": "object",
+                      "type": [
+                        "object",
+                        "null"
+                      ],
                       "properties": {
                         "id": {
                           "type": "string"
@@ -12497,6 +13040,7 @@
                       "enum": [
                         "registration_required",
                         "sign_out_required",
+                        "no_eligible_organization",
                         null
                       ]
                     },
@@ -12505,6 +13049,77 @@
                     },
                     "expiresAt": {
                       "type": "string"
+                    },
+                    "userCode": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "client": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "os": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ip": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "requestedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "os",
+                        "ip",
+                        "requestedAt"
+                      ]
+                    },
+                    "hasLoopbackRedirect": {
+                      "type": "boolean"
+                    },
+                    "organizations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "owner",
+                              "admin",
+                              "member"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "role"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -12514,7 +13129,10 @@
                     "viewer",
                     "blockedBy",
                     "googleEnabled",
-                    "expiresAt"
+                    "expiresAt",
+                    "userCode",
+                    "client",
+                    "hasLoopbackRedirect"
                   ]
                 }
               }
@@ -12600,7 +13218,7 @@
         ],
         "operationId": "cliBrowserSubmit",
         "summary": "Browser handoff: submit",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -12620,7 +13238,7 @@
                 "properties": {
                   "submissionToken": {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                    "pattern": "^(?:[A-Za-z0-9_-]{32,256}|[A-Za-z0-9]{4}-?[A-Za-z0-9]{4})$"
                   },
                   "approve": {
                     "type": "boolean",
@@ -12632,6 +13250,11 @@
                     "type": "string",
                     "maxLength": 16384,
                     "pattern": "\\S"
+                  },
+                  "organizationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "required": [
@@ -12645,7 +13268,7 @@
         },
         "responses": {
           "200": {
-            "description": "The handoff is approved and consumed. No submitted secret is ever echoed.",
+            "description": "The handoff is approved and consumed. No submitted secret is ever echoed. For a login with a loopback redirect, `redirectUrl` is where to send the browser next.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12666,12 +13289,319 @@
                         "cli",
                         "console"
                       ]
+                    },
+                    "redirectUrl": {
+                      "type": "string",
+                      "format": "uri"
                     }
                   },
                   "required": [
                     "state",
                     "message",
                     "continueTo"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/{id}/deny": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "cliBrowserDeny",
+        "summary": "Browser handoff: deny",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only. Anyone holding the link or the code may decline, signed in or not.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "submissionToken": {
+                    "type": "string",
+                    "pattern": "^(?:[A-Za-z0-9_-]{32,256}|[A-Za-z0-9]{4}-?[A-Za-z0-9]{4})$"
+                  }
+                },
+                "required": [
+                  "submissionToken"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The handoff is declined; the CLI's next poll reports it. Repeating a denial answers the same.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "denied"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting transition or setup cap prevents this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The protected credential exchange has expired; no replacement is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The durable initiation or submission rate limit was reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/browser/lookup": {
+      "post": {
+        "tags": [
+          "CLI"
+        ],
+        "operationId": "cliBrowserLookup",
+        "summary": "Browser handoff: find a step by its user code",
+        "description": "First-party browser only, like the other handoff steps. Case and dashes are ignored. Continue with the code as `submissionToken` on the step it names. Rate limited per network address, because a code is short enough to guess in bulk.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userCode": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  }
+                },
+                "required": [
+                  "userCode"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Whether a pending step answers to the code, and which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "found": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        }
+                      },
+                      "required": [
+                        "found"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "found": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "bootstrap",
+                            "login",
+                            "claim",
+                            "app.add",
+                            "app.key.add",
+                            "provider.add",
+                            "provider.update",
+                            "provider.rotate-key",
+                            "provider-gateway.add",
+                            "provider-gateway.rotate-key"
+                          ]
+                        },
+                        "expiresAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "found",
+                        "id",
+                        "kind",
+                        "expiresAt"
+                      ]
+                    }
                   ]
                 }
               }
@@ -12757,7 +13687,7 @@
         ],
         "operationId": "cliBrowserRegister",
         "summary": "Browser handoff: register",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -12777,7 +13707,7 @@
                 "properties": {
                   "submissionToken": {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                    "pattern": "^(?:[A-Za-z0-9_-]{32,256}|[A-Za-z0-9]{4}-?[A-Za-z0-9]{4})$"
                   },
                   "email": {
                     "type": "string",
@@ -12807,7 +13737,7 @@
         },
         "responses": {
           "200": {
-            "description": "A new human identity for a pending claim, with its session set as a cookie.",
+            "description": "A new human identity for a pending claim or login, with its session set as a cookie.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12907,7 +13837,7 @@
         ],
         "operationId": "cliBrowserGoogle",
         "summary": "Browser handoff: google",
-        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required. Identity approval also requires an interactive human session; registration is limited to a valid pending claim. Provider secret values are write-only.",
+        "description": "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.",
         "parameters": [
           {
             "schema": {
@@ -12927,7 +13857,7 @@
                 "properties": {
                   "submissionToken": {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9_-]{32,256}$"
+                    "pattern": "^(?:[A-Za-z0-9_-]{32,256}|[A-Za-z0-9]{4}-?[A-Za-z0-9]{4})$"
                   }
                 },
                 "required": [
@@ -12940,7 +13870,7 @@
         },
         "responses": {
           "200": {
-            "description": "Where to send the browser to start Google consent for a pending claim.",
+            "description": "Where to send the browser to start Google consent for a pending claim or login.",
             "content": {
               "application/json": {
                 "schema": {

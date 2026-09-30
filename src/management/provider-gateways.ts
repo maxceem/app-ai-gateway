@@ -20,6 +20,7 @@ import type { ManagementScope } from "./scope";
 import { probeGatewayPreset, type ProbeResult } from "../providers/provider-probe";
 import { invalidateOrganizationProviders } from "../providers/provider-store";
 import { database } from "../db";
+import { guardedInsert } from "../db/sql";
 import {
   provider,
   providerGateway,
@@ -136,10 +137,7 @@ export async function createProviderGateway(
   const cap = await planCap(scope, "providerGateway", actor.organizationId);
   await commitResourceWrite(
     scope,
-    (guard) => sql`INSERT INTO provider_gateway(id,organization_id,type,name,config_json,secret_blob,secret_hint,revision,created_by,status,created_at,updated_at)
-     SELECT ${row.id},${row.organizationId},${row.type},${row.name},${JSON.stringify(row.config)},${row.secretBlob},
-       ${row.secretHint},${row.revision},${row.createdBy},${row.status},${row.createdAt},${row.updatedAt}
-     WHERE ${guard}`,
+    (guard) => guardedInsert(database(env.DB), providerGateway, row, guard),
     { gateway: serialize(row, gateway, NO_REFERENCES) },
     { boundary, cap },
   );
@@ -170,9 +168,16 @@ export async function updateProviderGateway(
   const counts = await gatewayCounts(env.DB, actor.organizationId, id);
   await commitResourceWrite(
     scope,
-    (guard) => sql`UPDATE provider_gateway SET name=${row.name},revision=${row.revision},updated_at=${row.updatedAt}
-     WHERE id=${id} AND organization_id=${actor.organizationId} AND revision=${body.revision}
-       AND status='active' AND ${guard}`,
+    (guard) => database(env.DB)
+      .update(providerGateway)
+      .set({ name: row.name, revision: row.revision, updatedAt: row.updatedAt })
+      .where(and(
+        eq(providerGateway.id, id),
+        eq(providerGateway.organizationId, actor.organizationId),
+        eq(providerGateway.revision, body.revision),
+        eq(providerGateway.status, "active"),
+        guard,
+      )),
     { gateway: serialize(row, gateway, counts) },
     { boundary },
   );
@@ -205,10 +210,16 @@ export async function rotateProviderGateway(
   const counts = await gatewayCounts(env.DB, actor.organizationId, id);
   await commitResourceWrite(
     scope,
-    (guard) => sql`UPDATE provider_gateway SET secret_blob=${row.secretBlob},secret_hint=${row.secretHint},
-       revision=${row.revision},updated_at=${row.updatedAt}
-     WHERE id=${row.id} AND organization_id=${row.organizationId} AND revision=${body.revision}
-       AND status='active' AND ${guard}`,
+    (guard) => database(env.DB)
+      .update(providerGateway)
+      .set({ secretBlob: row.secretBlob, secretHint: row.secretHint, revision: row.revision, updatedAt: row.updatedAt })
+      .where(and(
+        eq(providerGateway.id, row.id),
+        eq(providerGateway.organizationId, row.organizationId),
+        eq(providerGateway.revision, body.revision),
+        eq(providerGateway.status, "active"),
+        guard,
+      )),
     { gateway: serialize(row, gateway, counts) },
     { boundary },
   );

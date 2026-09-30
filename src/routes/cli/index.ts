@@ -11,10 +11,13 @@ import { bootstrap } from "./bootstrap";
 import { cliAuthenticate, createOperation, deploymentMeta, pollOperation } from "./operations";
 import {
   assertConsoleOrigin,
+  browserDeny,
   browserDetails,
+  browserLookup,
   browserSubmit,
   browserRegister,
 } from "./browser";
+import { openLogin, redeemLogin, revokeCredential } from "./login";
 import type { CliCapabilitiesResponse } from "../../contracts/cli";
 import { catalogRouter } from "../catalog-router";
 import { SERVER_VERSION } from "../../core/version";
@@ -62,16 +65,22 @@ routes.handle("getCliCapabilities", (c) => {
       };
     }),
     providerGateways: GATEWAY_TYPES.map((type) => ({ type, name: gatewayDescriptor(type).label })),
+    features: { browserLogin: true },
   };
   return capabilities;
 });
 routes.handle("bootstrapCliAccount", bootstrap);
+routes.handle("openCliLogin", openLogin);
+routes.handle("redeemCliLogin", redeemLogin);
+routes.handle("revokeCliCredential", revokeCredential);
 routes.handle("createCliOperation", createOperation);
 routes.handle("pollCliOperation", pollOperation);
+routes.handle("cliBrowserLookup", browserLookup, { before: assertConsoleOrigin });
 routes.handle("cliBrowserDetails", browserDetails, { before: assertConsoleOrigin });
 routes.handle("cliBrowserSubmit", browserSubmit, { before: assertConsoleOrigin });
+routes.handle("cliBrowserDeny", browserDeny, { before: assertConsoleOrigin });
 /*
- * Two of the four browser endpoints relay Better Auth's own `Response` — its
+ * Two of the browser endpoints relay Better Auth's own `Response` — its
  * status and its `Set-Cookie` are the answer, not merely its body — so they are
  * mounted rather than assembled. The path still comes from the catalog.
  */

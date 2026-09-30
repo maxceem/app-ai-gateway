@@ -1,8 +1,9 @@
-import { fail, VERSION } from "./common.ts";
+import { fail, MANAGEMENT_KEY_ENV, VERSION } from "./common.ts";
 
 const secret = "key-prompt! key-stdin! browser! no-open!";
 const browser = "no-open!";
-const managementKey = "key-prompt! key-stdin!";
+/** A management key pasted in, or — the default — a login approved in a browser. */
+const managementKey = "key-prompt! key-stdin! no-open!";
 const common = "json! no-input!";
 
 export interface CommandSpec {
@@ -252,7 +253,9 @@ export function parse(argv: string[]): ParseResult {
   if (
     flags["no-open"] &&
     !flags.browser &&
-    command !== "account claim"
+    command !== "account claim" &&
+    command !== "account login" &&
+    command !== "deployment connect"
   )
     fail("invalid_input", "--no-open requires --browser.");
   if (flags["no-open"] && (flags["key-prompt"] || flags["key-stdin"]))
@@ -285,5 +288,5 @@ export function helpText(scope = ""): string {
     )
     .join(
       "\n\n",
-    )}\n\n--json: structured stdout; --no-input: never prompt; --help, -h: this help.\nSecrets: hidden prompt by default; --key-stdin reads one line. Provider --browser submits credentials directly to your gateway.\nBrowser operations: --no-open, --json or --no-input returns pending; operation wait resumes.\nNo account is created by help, status, list, validation or dry runs.\n`;
+    )}\n\n--json: structured stdout; --no-input: never prompt; --help, -h: this help.\nLogin: account login and deployment connect open the browser; check that it shows the pairing code the terminal prints. --no-open prints the URL instead; --key-stdin or --key-prompt takes a management key.\nCredentials: ${MANAGEMENT_KEY_ENV}, when set, is the management key for every command and overrides the saved login. account logout revokes the saved key.\nSecrets: hidden prompt by default; --key-stdin reads one line. Provider --browser submits credentials directly to your gateway.\nBrowser operations: --json or --no-input returns pending; operation wait resumes.\nNo account is created by help, status, list, validation or dry runs.\n`;
 }

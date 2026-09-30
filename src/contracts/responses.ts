@@ -314,6 +314,14 @@ export const ManagementKeySummarySchema = z.object({
   expiresAt: z.string().nullable(),
   createdAt: z.string(),
   revokedAt: z.string().nullable(),
+  source: z.string().meta({
+    description:
+      "Where the key was issued: `console`, `cli` for a key a CLI login received, or `bootstrap` for the key a CLI account starts with. Display only.",
+    example: "cli",
+  }),
+  label: z.string().nullable().meta({
+    description: "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only.",
+  }),
 });
 
 export const ManagementKeyListResponseSchema = z.object({

@@ -1,4 +1,4 @@
-import type { CfAuth, CfAuthError } from "@maxceem/cf-auth";
+import type { CfAuth, CfAuthError, OperationSweepStatements } from "@maxceem/cf-auth";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import {
@@ -9,6 +9,7 @@ import {
   type Deployment,
 } from "../policy/deployment";
 import { registrationCreateCondition } from "../policy/sql";
+import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds";
 
 /**
  * The identity library, loaded on first use and shared by every caller in the
@@ -149,6 +150,19 @@ export interface IdentityAuthOptions {
   onRegistrationDenied?: () => void;
 }
 
+/**
+ * What every browser proof and user code is bound to: the deployment's public
+ * identity, so a proof made for one deployment means nothing to another. Null
+ * where the deployment has none, and then there are no operations to prove.
+ */
+function operationsRealm(deployment: Deployment): string | null {
+  try {
+    return deployment.identity().id;
+  } catch {
+    return null;
+  }
+}
+
 export async function createIdentityAuth(
   deployment: Deployment,
   env: Env,
@@ -165,7 +179,10 @@ export async function createIdentityAuth(
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
   const rule = registrationRule(deployment, claimRegistration);
-  return createCfAuth({
+  const realm = operationsRealm(deployment);
+  // Read lazily by the claim kind, whose approval is this instance's own
+  // `claimOrganization`: no request reaches it before it is built.
+  const instance: CfAuth = createCfAuth({
     appName: "App AI Gateway",
     d1: env.DB,
     tables: mgmtAuthTables,
@@ -195,6 +212,21 @@ export async function createIdentityAuth(
       }),
     },
     apiKeys: { enabled: true, tokenPrefix: MANAGEMENT_KEY_PREFIX },
+    // The CLI's operations: the engine, its table and the built-in `login`
+    // are cf-auth's; the kinds and what completes them are this gateway's.
+    operations: {
+      enabled: realm !== null,
+      ...(realm === null ? {} : { realm }),
+      kinds: gatewayOperationKinds(() => instance),
+      // Any member may log a CLI in to their account, with a key that carries
+      // their own role; the library's default asks for an admin.
+      // A login's record is kept a day from when it was asked for: its key is
+      // collected within minutes or not at all, nothing retries a login days
+      // later, and an address that asks and declines over and over leaves
+      // nothing behind for long.
+      login: { minRole: "member", pendingTtlMs: 15 * 60_000, recordTtlMs: 86_400_000 },
+      limits: OPERATION_LIMITS,
+    },
     cookies: { prefix: "agw_identity" },
     ...(googleEnabled
       ? {
@@ -206,6 +238,27 @@ export async function createIdentityAuth(
         }
       : {}),
   });
+  return instance;
+}
+
+/**
+ * cf-auth's operation sweep as statements for the nightly run to batch itself,
+ * built over `binding` — the run's budgeted view of the database — so its
+ * allowance counts them as they go out. Built from an instance of its own,
+ * since the run has no request: the origin it is given only names cookies and
+ * callbacks nothing here issues.
+ */
+export async function operationSweepStatements(
+  deployment: Deployment,
+  env: Env,
+  binding: D1Database,
+  now: number,
+): Promise<OperationSweepStatements> {
+  const scoped = new Proxy(env, {
+    get: (target, key, receiver) => (key === "DB" ? binding : Reflect.get(target, key, receiver)),
+  });
+  const identity = await createIdentityAuth(deployment, scoped, "https://maintenance.invalid");
+  return identity.operations.sweepStatements(now);
 }
 
 /** The part of a request context this needs: the environment, the URL, and somewhere to memoize. */
@@ -344,7 +397,29 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
     last_owner: "last_owner",
     organization_expired: "account_expired",
     not_claimable: "conflict",
+    // The operation engine's refusals. The gateway's own codes where it has one
+    // that means the same; the engine's where a client acts on the difference.
+    operation_not_found: "not_found",
+    invalid_proof: "forbidden",
+    too_many_pending: "rate_limited",
+    api_key_required: "forbidden",
+    operation_expired: "operation_expired",
+    operation_denied: "operation_denied",
+    operation_pending: "operation_pending",
+    already_completed: "already_completed",
+    no_eligible_organization: "no_eligible_organization",
   };
+  // A claim kind's own refusals, when the engine's `approve` reaches them
+  // after the approval page's own check did not: answered exactly as the
+  // gateway answers them itself, so the page reads one vocabulary.
+  if (error.code === "registration_required")
+    return new GatewayError(401, "session_required", "Create a sign-in on the approval page before approving this request");
+  if (error.code === "sign_out_required")
+    return new GatewayError(
+      403,
+      "account_exists",
+      "This sign-in already has an account; sign out and create a new sign-in to claim this one",
+    );
   const code = mappedCodes[error.code] ?? "invalid_request";
   return new GatewayError(error.status, code, error.message);
 }
