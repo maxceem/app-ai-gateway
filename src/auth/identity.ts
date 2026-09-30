@@ -390,6 +390,7 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
     unauthorized: "auth_required",
     forbidden: "forbidden",
     session_required: "session_required",
+    grant_insufficient: "grant_insufficient",
     validation_error: "validation_error",
     conflict: "conflict",
     not_found: "not_found",

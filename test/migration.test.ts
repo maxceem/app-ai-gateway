@@ -37,7 +37,7 @@ describe("initial database migration", () => {
       unique: number;
     }>();
     const managementKeyColumns = await env.DB.prepare("PRAGMA table_info(mgmt_api_key)")
-      .all<{ name: string }>();
+      .all<{ name: string; notnull: number; dflt_value: string | null }>();
 
     expect(usageColumns.results.map((column) => column.name)).toContain("auth_method");
     expect(usageColumns.results.map((column) => column.name)).toContain("api_key_id");
@@ -252,7 +252,11 @@ describe("initial database migration", () => {
       "revoked_at",
       "source",
       "label",
+      "grant",
     ]);
+    // A key from before grants existed keeps doing what it did.
+    expect(managementKeyColumns.results.find((column) => column.name === "grant"))
+      .toMatchObject({ notnull: 1, dflt_value: "'manage'" });
     // Every CLI operation is one row of cf-auth's operation table: the digest
     // of the CLI's token is how it is found, and the engine's own fields are
     // columns, never fields mixed into the payload the CLI sent.

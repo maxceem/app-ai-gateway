@@ -1295,6 +1295,15 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "grant": {
+            "type": "string",
+            "enum": [
+              "read",
+              "manage"
+            ],
+            "default": "manage",
+            "description": "How much of your role the key may use. `read` may list, inspect and validate but cannot change your apps, providers or settings: a change your role would otherwise allow is refused with `403 grant_insufficient`, and the key may still revoke itself. `manage` may do everything your role allows. Defaults to `manage`."
           }
         },
         "required": [
@@ -5752,6 +5761,15 @@
                               "null"
                             ],
                             "description": "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only."
+                          },
+                          "grant": {
+                            "type": "string",
+                            "enum": [
+                              "read",
+                              "manage"
+                            ],
+                            "description": "How much of its holder's role the key may use: `read` may list, inspect and validate but cannot change anything other than revoking itself; `manage` does everything the role allows. Keys issued before grants existed are `manage`.",
+                            "example": "manage"
                           }
                         },
                         "required": [
@@ -5765,7 +5783,8 @@
                           "createdAt",
                           "revokedAt",
                           "source",
-                          "label"
+                          "label",
+                          "grant"
                         ]
                       }
                     }
@@ -5825,7 +5844,7 @@
         ],
         "operationId": "createManagementKey",
         "summary": "Create a management key",
-        "description": "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one.",
+        "description": "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one. A key created with the `read` grant cannot change your apps, providers or settings: a change its owner's role would otherwise allow is refused with `403 grant_insufficient`, and the key may still revoke itself.",
         "security": [
           {
             "ConsoleSession": []
@@ -5900,6 +5919,15 @@
                           ],
                           "description": "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only."
                         },
+                        "grant": {
+                          "type": "string",
+                          "enum": [
+                            "read",
+                            "manage"
+                          ],
+                          "description": "How much of its holder's role the key may use: `read` may list, inspect and validate but cannot change anything other than revoking itself; `manage` does everything the role allows. Keys issued before grants existed are `manage`.",
+                          "example": "manage"
+                        },
                         "plaintext": {
                           "type": "string"
                         }
@@ -5916,6 +5944,7 @@
                         "revokedAt",
                         "source",
                         "label",
+                        "grant",
                         "plaintext"
                       ]
                     }
@@ -6052,6 +6081,15 @@
                             "null"
                           ],
                           "description": "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only."
+                        },
+                        "grant": {
+                          "type": "string",
+                          "enum": [
+                            "read",
+                            "manage"
+                          ],
+                          "description": "How much of its holder's role the key may use: `read` may list, inspect and validate but cannot change anything other than revoking itself; `manage` does everything the role allows. Keys issued before grants existed are `manage`.",
+                          "example": "manage"
                         }
                       },
                       "required": [
@@ -6065,7 +6103,8 @@
                         "createdAt",
                         "revokedAt",
                         "source",
-                        "label"
+                        "label",
+                        "grant"
                       ]
                     }
                   },

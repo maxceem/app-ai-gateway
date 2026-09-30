@@ -77,6 +77,7 @@ export async function managementActor(state: AuthState): Promise<AdminActor> {
   const user = state.user;
   if (
     !user
+    || state.grant === null
     || (state.credentialType !== "session" && state.credentialType !== "apiKey")
   ) {
     throw new GatewayError(401, "auth_required", "Authentication is required");
@@ -90,5 +91,6 @@ export async function managementActor(state: AuthState): Promise<AdminActor> {
     role: resolved.role,
     credentialType: state.credentialType,
     identityKind: user.kind,
+    grant: state.grant,
   };
 }

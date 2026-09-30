@@ -18,6 +18,15 @@ A management key acts within its owning identity's current account membership
 and role. It does not expire. Store it in a secret manager and read it from the
 environment. **Revoke key** stops it immediately.
 
+Each key also has a grant, chosen when you create it. **Manage**, the default,
+lets the key do everything its owner's role allows. **Read only** lets it list,
+inspect and validate your apps, providers and usage, but not change them. A
+change the owner's role would otherwise allow is refused with
+`403 grant_insufficient`; one the role or the kind of credential rules out is
+refused for that reason instead. A read-only key can still revoke itself
+(`DELETE /v1/cli/credential`). Give one to a dashboard or an agent that only
+needs to look.
+
 Keys are listed and revoked on that page, and created there or by a CLI login
 you approve in the browser (`agw account login`). A key the CLI received is
 listed with a **CLI** tag and the label the CLI sent, such as `CLI on

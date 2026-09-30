@@ -225,7 +225,13 @@ describe("CLI browser login", () => {
     expect(second).toMatchObject({ state: "completed", account: { id: human.organizationId } });
     expect(second.result?.credential).toBeUndefined();
 
-    // The key works, and says where it came from.
+    // Asked for explicitly rather than left to the kind's default.
+    const opened = await env.DB.prepare("SELECT payload FROM mgmt_operation WHERE id=?")
+      .bind(login.id)
+      .first<{ payload: string | null }>();
+    expect(JSON.parse(opened!.payload!)).toEqual({ grant: "manage" });
+
+    // The key works, says where it came from, and may configure the gateway.
     const account = await send(testEnv, "GET", "/account", undefined, { authorization: `Bearer ${key}` });
     expect(account.status).toBe(200);
     const keys = await worker.request(
@@ -235,7 +241,7 @@ describe("CLI browser login", () => {
     );
     expect(keys.status).toBe(200);
     expect((await keys.json()) as { keys: unknown[] }).toMatchObject({
-      keys: expect.arrayContaining([expect.objectContaining({ source: "cli", label: "CLI on test-host" })]),
+      keys: expect.arrayContaining([expect.objectContaining({ source: "cli", label: "CLI on test-host", grant: "manage" })]),
     });
 
     // Sent again, it answers where it stands and hands nothing over.

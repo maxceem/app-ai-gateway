@@ -146,6 +146,7 @@ Every refusal is JSON:
 | 400 | `invalid_request` | The body is malformed or violates a rule; `message` says which. A create body that carries `id` gets this |
 | 401 | `auth_required` | Missing or wrong management key |
 | 403 | `forbidden` | The key's owner is read-only and may not change things |
+| 403 | `grant_insufficient` | The key is read-only and this call would change something; ask the person for a key with the manage grant |
 | 404 | `not_found`, `app_not_found` | No such app, provider, gateway or key |
 | 409 | `slug_taken` | A provider already has this slug; supply another |
 | 409 | `gateway_in_use` | A gateway still has providers routed through it |

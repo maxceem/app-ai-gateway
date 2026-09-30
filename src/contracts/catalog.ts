@@ -172,12 +172,16 @@ export interface OperationSpec {
    * that says so here, and it says so beside its own path instead of in a
    * regex in another file. `session: true` requires an interactive browser
    * session, which only a human has; a `session` security entry additionally
-   * refuses a management key.
+   * refuses a management key. `grant` is the least credential grant the
+   * caller needs, `manage` for anything but a `GET`; only an operation that
+   * changes nothing despite its method — a dry-run validation, a key ending
+   * itself — says `read`.
    */
   readonly policy?: {
     readonly role?: "member" | "admin";
     readonly access?: "read" | "setup";
     readonly session?: true;
+    readonly grant?: "read" | "manage";
   };
   /** Registered in the full document but not the published one. */
   readonly hidden?: true;
@@ -633,7 +637,7 @@ export const CATALOG = {
     security: "management",
     // A POST that stores nothing: it answers whether a body would be accepted,
     // which is a read of the configuration rules and not a write.
-    policy: { role: "member", access: "read" },
+    policy: { role: "member", access: "read", grant: "read" },
     params: APP_PARAM,
     request: AppWriteSchema,
     response: AppValidateResponseSchema,
@@ -647,7 +651,7 @@ export const CATALOG = {
     summary: "Validate a new application configuration without saving it",
     description: "Judged as a creation would be, against the account's current providers and prices.",
     security: "management",
-    policy: { role: "member", access: "read" },
+    policy: { role: "member", access: "read", grant: "read" },
     request: AppWriteSchema,
     response: AppDraftValidateResponseSchema,
     responseDescription: "The configuration would be accepted.",
@@ -684,7 +688,7 @@ export const CATALOG = {
     path: "/v1/admin/keys",
     tags: ["Admin management keys"],
     summary: "Create a management key",
-    description: "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one.",
+    description: "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one. A key created with the `read` grant cannot change your apps, providers or settings: a change its owner's role would otherwise allow is refused with `403 grant_insufficient`, and the key may still revoke itself.",
     security: "session",
     request: ManagementKeyCreateRequestSchema,
     status: 201,
@@ -863,6 +867,9 @@ export const CATALOG = {
     tags: ["Admin organizations"],
     summary: "List the organizations the caller belongs to",
     security: "management",
+    // cf-auth lists them only for an interactive session: a key is scoped to
+    // its one organization and may not read the others its owner belongs to.
+    policy: { session: true },
     response: OrganizationListResponseSchema,
     responseDescription: "Memberships ordered by organization creation time.",
   },
@@ -877,8 +884,11 @@ export const CATALOG = {
     // Switching the active organization re-signs the cookie naming which
     // tenant the caller reads; gating it behind owner/admin would strand a
     // read-only member in one organization, and gating it behind setup access
-    // would strand them in an account whose trial has ended.
-    policy: { role: "member", access: "read" },
+    // would strand them in an account whose trial has ended. Only an
+    // interactive session has a cookie to re-sign, and cf-auth refuses any
+    // other caller, so the entry says so rather than leaving a key to learn it
+    // from the handler — after the grant check, with a remedy that cannot work.
+    policy: { role: "member", access: "read", session: true },
     request: OrganizationSelectRequestSchema,
     response: IdentitySessionSchema,
     responseDescription: "Session rescoped to the selected organization.",
@@ -1189,9 +1199,9 @@ export const CATALOG = {
     summary: "Revoke the management key this request is sent with",
     description: "Logging a CLI out. Any management key may end itself, whatever its role and whatever the account's standing; a browser session cannot use this and signs out instead.",
     security: "management",
-    // Holding a key is authority enough to end it: a member may, and an
-    // account past its free window may.
-    policy: { role: "member", access: "read" },
+    // Holding a key is authority enough to end it: a member may, an account
+    // past its free window may, and a key with the `read` grant may.
+    policy: { role: "member", access: "read", grant: "read" },
     response: CliCredentialRevokeResponseSchema,
     responseDescription: "The key is revoked; the next request made with it is refused.",
     errors: CLI_ERRORS,

@@ -16,6 +16,7 @@ const EXISTING = {
   revokedAt: null,
   source: "console",
   label: null,
+  grant: "manage",
 };
 
 function stubKeys(created?: unknown, keys: unknown[] = [EXISTING]) {
@@ -84,6 +85,19 @@ describe("ManagementKeysPage", () => {
     expect(within(bootstrapRow).getByText("CLI setup")).toBeTruthy();
   });
 
+  it("names each key's grant", async () => {
+    stubKeys(undefined, [
+      EXISTING,
+      { ...EXISTING, id: "key-2", name: "Dashboards", tokenHint: "1234", grant: "read" },
+    ]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    const manageRow = (await screen.findByText("CI deploy")).closest("tr")!;
+    expect(within(manageRow).getByText("Manage")).toBeTruthy();
+    const readRow = screen.getByText("Dashboards").closest("tr")!;
+    expect(within(readRow).getByText("Read only")).toBeTruthy();
+  });
+
   it("does not call a key that has not been handed over active", async () => {
     stubKeys(undefined, [{ ...EXISTING, enabled: false }]);
     renderAuthenticated(<ManagementKeysPage />);
@@ -110,8 +124,38 @@ describe("ManagementKeysPage", () => {
 
     await waitFor(() => {
       const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
-      expect(post && JSON.parse(String(post[1]?.body)).name).toBe("Automation");
+      // Nothing chosen, so the key may do everything the role allows.
+      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Automation", grant: "manage" });
     });
+  });
+
+  it("offers the two grants, manage first and chosen, each explained", async () => {
+    stubKeys();
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
+    const group = await screen.findByRole("radiogroup", { name: /key grant/i });
+    const [manage, read] = within(group).getAllByRole("radio");
+    expect(manage!.textContent).toMatch(/^Manage.*everything your role allows/i);
+    expect(manage!.getAttribute("aria-checked")).toBe("true");
+    expect(read!.textContent).toMatch(/^Read only.*cannot change them/i);
+    expect(read!.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("creates a read-only key when that grant is chosen, and says what it can do", async () => {
+    const fetchMock = stubKeys({ key: { ...EXISTING, grant: "read", plaintext: PLAINTEXT } });
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
+    await userEvent.type(await screen.findByLabelText(/key name/i), "Dashboards");
+    await userEvent.click(screen.getByRole("radio", { name: /read only/i }));
+    await userEvent.click(screen.getByRole("button", { name: /create key/i }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Dashboards", grant: "read" });
+    });
+    expect(await screen.findByText(/can read every app and provider here, but cannot change them/i)).toBeTruthy();
   });
 
   it("reveals the plaintext exactly once and warns it will not reappear", async () => {

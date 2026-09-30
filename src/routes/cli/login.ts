@@ -57,6 +57,9 @@ export async function openLogin(
     id,
     kind: "login",
     token: body.token,
+    // Said rather than left to the kind's default: the CLI configures the
+    // gateway, so the key it receives needs the `manage` grant.
+    payload: { grant: "manage" },
     rateLimitKey: ip,
     client: {
       label: body.client.label,

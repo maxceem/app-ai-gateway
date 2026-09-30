@@ -812,15 +812,23 @@ export const OrganizationSelectRequestSchema = z.object({
 }).meta({ id: "OrganizationSelectRequest" });
 
 /**
- * The one field a credential is created with. Both key surfaces take a name and
- * nothing else — the token itself is minted here, never supplied — so they
- * share one shape rather than two that could drift apart.
+ * The field every credential is created with. Both key surfaces take a name —
+ * the token itself is minted here, never supplied — so they share one shape
+ * rather than two that could drift apart; a management key adds its grant.
  */
 export const CredentialNameRequestSchema = z.object({
   name: z.string().trim().min(1).max(100),
 });
-export const ManagementKeyCreateRequestSchema = CredentialNameRequestSchema
-  .meta({ id: "ManagementKeyCreateRequest" });
+
+/** How much of its holder's role a management key may use. */
+export const CredentialGrantSchema = z.enum(["read", "manage"]);
+
+export const ManagementKeyCreateRequestSchema = CredentialNameRequestSchema.extend({
+  grant: CredentialGrantSchema.default("manage").meta({
+    description:
+      "How much of your role the key may use. `read` may list, inspect and validate but cannot change your apps, providers or settings: a change your role would otherwise allow is refused with `403 grant_insufficient`, and the key may still revoke itself. `manage` may do everything your role allows. Defaults to `manage`.",
+  }),
+}).meta({ id: "ManagementKeyCreateRequest" });
 export const ApiKeyCreateRequestSchema = CredentialNameRequestSchema
   .meta({ id: "ApiKeyCreateRequest" });
 

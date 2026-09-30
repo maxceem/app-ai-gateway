@@ -53,7 +53,7 @@
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.6.9",
     "@hono/zod-openapi": "^1.5.1",
-    "@maxceem/cf-auth": "file:/Users/maks/.t3/worktrees/cf-auth/maxceem-cf-auth-local.tgz",
+    "@maxceem/cf-auth": "file:/Users/maks/.t3/worktrees/cf-auth/maxceem-cf-auth-local-f4afe32f1f.tgz",
     "@maxceem/cf-kms": "https://github.com/maxceem/cf-kms/releases/download/v0.1.0/maxceem-cf-kms-0.1.0.tgz",
     "asn1js": "^3.0.7",
     "better-auth": "1.6.9",

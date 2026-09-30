@@ -80,6 +80,13 @@ export function operationPolicy(spec: OperationSpec) {
     session: spec.policy?.session === true,
     /** A session-only operation refuses a management key, however privileged. */
     sessionOnly: spec.security === "session",
+    /**
+     * The least credential grant the operation needs: anything that writes
+     * needs `manage`, so a `read` key may list and inspect and nothing more.
+     * Derived from the method unless the entry says otherwise, which only one
+     * that changes nothing does.
+     */
+    grant: spec.policy?.grant ?? (writes ? "manage" : "read"),
   } as const;
 }
 
@@ -117,13 +124,13 @@ async function resolveApp(caller: OperationCaller, appId: string | undefined): P
  * Applies one operation's declared policy to the authenticated caller.
  *
  * The order is fixed, so a caller short of two things is always told about the
- * same one.
+ * same one: role, session, organization, account access, session-only, grant.
  */
 async function authorize(spec: OperationSpec, caller: OperationCaller): Promise<void> {
   if (!guarded(spec)) return;
   const { state, actor } = requireAuth(caller);
   const policy = operationPolicy(spec);
-  const { canManageOrganization, requireOrganization, requireUser } = await cfAuth();
+  const { canManageOrganization, hasGrantAtLeast, requireOrganization, requireUser } = await cfAuth();
   if (policy.role === "admin" && !canManageOrganization(actor.role)) {
     throw new GatewayError(
       403,
@@ -141,7 +148,13 @@ async function authorize(spec: OperationSpec, caller: OperationCaller): Promise<
       "Management keys can only be administered from a user session",
     );
   }
-  // Grant check (credential `read` vs a writing policy) goes here in a later step.
+  if (!hasGrantAtLeast(actor.grant, policy.grant)) {
+    throw new GatewayError(
+      403,
+      "grant_insufficient",
+      "This key has the read grant; use a session or a key with the manage grant",
+    );
+  }
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ChoiceList, type Choice } from "@/components/choice-list";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
@@ -41,6 +42,39 @@ const KEY_SOURCES: Record<string, { tag: string; title: string; cli: boolean }> 
   bootstrap: { tag: "CLI setup", title: "The key a CLI started this account with", cli: true },
 };
 
+type KeyGrant = ManagementKey["grant"];
+
+/**
+ * How much of the creator's role a key may use, as the create dialog offers it
+ * and the list names it. `manage` first: it is the default, and what a key
+ * for CI or the CLI needs.
+ */
+const KEY_GRANTS: Choice<KeyGrant>[] = [
+  {
+    value: "manage",
+    label: "Manage",
+    description: "Everything your role allows: create, change and delete apps, providers and keys.",
+  },
+  {
+    value: "read",
+    label: "Read only",
+    description: "Lists and inspects apps, providers and usage, but cannot change them.",
+  },
+];
+
+function KeyGrantBadge({ grant }: { grant: KeyGrant }) {
+  const known = KEY_GRANTS.find((choice) => choice.value === grant);
+  return (
+    <Badge
+      variant="outline"
+      title={known?.description}
+      className="text-[11px] font-normal text-muted-foreground"
+    >
+      {known?.label ?? grant}
+    </Badge>
+  );
+}
+
 function KeySourceBadge({ source }: { source: string }) {
   const known = KEY_SOURCES[source];
   return (
@@ -64,15 +98,17 @@ export function ManagementKeysPage() {
 
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [grant, setGrant] = useState<KeyGrant>("manage");
   const [created, setCreated] = useState<CreatedManagementKey | null>(null);
   const [pendingRevoke, setPendingRevoke] = useState<ManagementKey | null>(null);
 
   const create = async () => {
     if (!name.trim()) return;
     try {
-      const result = await createKey.mutateAsync(name.trim());
+      const result = await createKey.mutateAsync({ name: name.trim(), grant });
       setCreating(false);
       setName("");
+      setGrant("manage");
       setCreated(result.key);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create the key");
@@ -102,6 +138,7 @@ export function ManagementKeysPage() {
             size="sm"
             onClick={() => {
               setName("");
+              setGrant("manage");
               setCreating(true);
             }}
           >
@@ -127,6 +164,7 @@ export function ManagementKeysPage() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Source</TableHead>
+              <TableHead>Grant</TableHead>
               <TableHead>Key</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Status</TableHead>
@@ -137,14 +175,14 @@ export function ManagementKeysPage() {
             {list.isPending ? (
               [0, 1, 2].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={7}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : keys.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   No management keys yet.
                 </TableCell>
               </TableRow>
@@ -160,6 +198,9 @@ export function ManagementKeysPage() {
                   </TableCell>
                   <TableCell>
                     <KeySourceBadge source={key.source} />
+                  </TableCell>
+                  <TableCell>
+                    <KeyGrantBadge grant={key.grant} />
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {key.tokenHint === null ? "—" : `…${key.tokenHint}`}
@@ -222,6 +263,10 @@ export function ManagementKeysPage() {
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
+        <div className="space-y-1">
+          <p className="text-sm font-medium">What may this key do?</p>
+          <ChoiceList label="Key grant" choices={KEY_GRANTS} value={grant} onChange={setGrant} />
+        </div>
       </FormDialog>
 
       <SecretRevealDialog
@@ -236,7 +281,11 @@ export function ManagementKeysPage() {
         }
         label="Management key"
         secret={created?.plaintext ?? ""}
-        footnote="Store it in your secret manager. It acts with full authority over every app and provider key here."
+        footnote={
+          created?.grant === "read"
+            ? "Store it in your secret manager. It can read every app and provider here, but cannot change them."
+            : "Store it in your secret manager. It acts with full authority over every app and provider key here."
+        }
         onAcknowledge={() => {
           setCreated(null);
           // The plaintext also sits in the mutation's cached result; drop it

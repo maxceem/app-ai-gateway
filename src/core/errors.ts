@@ -3,6 +3,12 @@ export type ErrorCode =
   | "forbidden"
   | "session_required"
   /**
+   * The credential is valid and its holder has the role, but it was issued
+   * with the `read` grant and the operation writes. Retrying with the same
+   * key never helps; a session or a key with the `manage` grant does.
+   */
+  | "grant_insufficient"
+  /**
    * A claim was refused because the signed-in human already belongs to another
    * account. Claiming is how a person gets their first account, so it is taken
    * from a browser that owns none but the one being claimed.

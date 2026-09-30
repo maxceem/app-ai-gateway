@@ -1,4 +1,4 @@
-import type { OrganizationRole } from "@maxceem/cf-auth";
+import type { CredentialGrant, OrganizationRole } from "@maxceem/cf-auth";
 
 /**
  * Who is writing, in the one shape the management layer understands.
@@ -19,5 +19,11 @@ export interface AdminActor extends Actor {
   role: OrganizationRole;
   credentialType: "session" | "apiKey";
   identityKind: "human" | "service";
+  /**
+   * How much of the role this credential may use: a session is always
+   * `manage`, a management key whatever it was issued with. The executor
+   * refuses a `read` one on any operation that writes.
+   */
+  grant: CredentialGrant;
 }
 

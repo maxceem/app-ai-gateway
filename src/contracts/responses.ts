@@ -25,6 +25,7 @@ import {
 } from "../shared/gateways.ts";
 import {
   AppConfigSchema,
+  CredentialGrantSchema,
   GatewayRouteConfigSchema,
   OrganizationRoleSchema,
   ProviderPricingSchema,
@@ -321,6 +322,11 @@ export const ManagementKeySummarySchema = z.object({
   }),
   label: z.string().nullable().meta({
     description: "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only.",
+  }),
+  grant: CredentialGrantSchema.meta({
+    description:
+      "How much of its holder's role the key may use: `read` may list, inspect and validate but cannot change anything other than revoking itself; `manage` does everything the role allows. Keys issued before grants existed are `manage`.",
+    example: "manage",
   }),
 });
 

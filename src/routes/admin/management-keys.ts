@@ -5,10 +5,11 @@ import { GatewayError } from "../../core/errors";
 import type { AdminVariables } from "../../middleware/admin";
 
 /**
- * Session-only surface. A management key carries full account administration,
- * and every key is equal: one could mint a replacement that survives revoking
- * the original, so handing a key to an outside system would hand over more than
- * the key itself. Reading and revoking are closed too, so the rule is one line
+ * Session-only surface. A `manage` management key carries full account
+ * administration: one could mint a replacement that survives revoking the
+ * original, so handing a key to an outside system would hand over more than
+ * the key itself. A `read` key could mint nothing at all, but keeping keys out
+ * of the reach of every key is simpler than a rule per grant. Reading and revoking are closed too, so the rule is one line
  * to state — management keys are administered by a person, in the console.
  *
  * That rule is `security: "session"` on the three catalog entries, and the
@@ -33,6 +34,7 @@ routes.handle("createManagementKey", async (c, { actor, body }) => {
     actor: c.get("authState"),
     organizationId: actor.organizationId,
     name: body.name,
+    grant: body.grant,
     // Said rather than left to the library's default: the list shows where
     // each key came from, and a key minted here came from the console.
     source: "console",
