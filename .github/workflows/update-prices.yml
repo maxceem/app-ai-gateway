@@ -1,0 +1,93 @@
+# Checks every model in src/usage/prices.json against its provider's pricing
+# once a day, and opens (or updates) one pull request with any price that
+# changed. The rules — official page first, the two community lists only when
+# they agree, nothing guessed — live in scripts/update-prices.mjs.
+#
+# The pull request always comes from the branch `automation/update-prices`, so
+# there is one rolling pull request rather than one a day, and no diff means no
+# pull request. The report is its body and this run's summary.
+#
+# The run ends red when something needs a person: a parser that no longer
+# reads its page, lists that disagree, a suspicious move, a model gone from its
+# official page. An item that is expected is acknowledged by adding its key and
+# a reason to scripts/prices/acknowledged.json.
+#
+# A pull request opened with the default token does not start `pull_request`
+# workflows, so CI is dispatched on the branch by hand, and its checks attach
+# to the pull request's head commit. That needs `actions: write`, and the
+# repository setting "Allow GitHub Actions to create and approve pull requests"
+# for the pull request itself.
+name: Update prices
+
+on:
+  schedule:
+    - cron: "17 5 * * *" # daily, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: update-prices
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'maxceem/app-ai-gateway'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      # The script uses nothing but Node's standard library, so nothing is
+      # installed into a job that holds a write token.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check prices
+        id: prices
+        run: |
+          set +e
+          node scripts/update-prices.mjs --report "$RUNNER_TEMP/prices.md"
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ -f "$RUNNER_TEMP/prices.md" ]; then
+            cat "$RUNNER_TEMP/prices.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open or update the pull request
+        id: pr
+        if: steps.prices.outputs.code == '0' || steps.prices.outputs.code == '3'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: automation/update-prices
+          base: main
+          title: Update model prices
+          commit-message: Update model prices
+          body-path: ${{ runner.temp }}/prices.md
+          add-paths: src/usage/prices.json
+          delete-branch: true
+
+      - name: Run CI on the pull request
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-prices
+
+      - name: Fail when something needs a person
+        if: steps.prices.outputs.code != '0'
+        env:
+          CODE: ${{ steps.prices.outputs.code }}
+        run: |
+          if [ "$CODE" = "3" ]; then
+            echo "::error::Some prices need a person; see the run summary or the pull request."
+          else
+            echo "::error::scripts/update-prices.mjs failed (exit $CODE)."
+          fi
+          exit 1

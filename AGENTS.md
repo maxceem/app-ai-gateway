@@ -127,6 +127,20 @@ means a static import crept back in.
   a gitignored `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked
   config; deploy it with `pnpm run docs:deploy --profile <name>`.
 
+## Model prices
+
+- `src/usage/prices.json` is checked daily by `.github/workflows/update-prices.yml`
+  (`scripts/update-prices.mjs`), which opens one rolling pull request from
+  `automation/update-prices`. It only changes the value of a price field an
+  entry already has; adding or removing models and fields stays a human edit.
+- Keep the file's hand formatting and write whole prices as `5.0`; the sync
+  edits number literals in place and never re-serialises the file.
+- Which page or list prices a provider, and any model id that differs there,
+  lives in `scripts/prices/sources.mjs` and nowhere else. A report item that
+  is expected is acknowledged in `scripts/prices/acknowledged.json` with a
+  reason, not by loosening a parser or a test.
+- Preview the sync with `node scripts/update-prices.mjs --dry-run`.
+
 ## Security
 
 - Never print or commit provider keys, `BETTER_AUTH_SECRET`, vault keys

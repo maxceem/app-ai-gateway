@@ -1,0 +1,25 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "gpt-oss-120b",
+      "object": "model",
+      "owned_by": "OpenAI",
+      "name": "OpenAI GPT OSS",
+      "pricing": {
+        "prompt": "0.00000035",
+        "completion": "0.00000075"
+      }
+    },
+    {
+      "id": "qwen-3.8-27b",
+      "object": "model",
+      "owned_by": "Cerebras",
+      "name": "Qwen 3.8 27B",
+      "pricing": {
+        "prompt": "0.00000099",
+        "completion": "0.00000149"
+      }
+    }
+  ]
+}

@@ -14,6 +14,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The daily price pull request (.github/workflows/update-prices.yml) is
+  # opened with the default token, which starts no `pull_request` run; that
+  # workflow dispatches this one on its branch instead.
+  workflow_dispatch:
 
 permissions:
   contents: read
