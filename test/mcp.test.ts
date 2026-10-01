@@ -519,19 +519,25 @@ describe("MCP bearer gate", () => {
     expect(body).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 }, id: null });
   }
 
+  // The deployment runs OAuth, so every challenge names the endpoint's own
+  // protected resource metadata, which is where a client discovers it.
+  const METADATA = `resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`;
+  const REALM = 'realm="management"';
+
   it("asks for a bearer token when there is none", async () => {
-    await refused({}, "Bearer");
+    await refused({}, `Bearer ${REALM}, ${METADATA}`);
   });
 
   it("never takes a console session, even with the console's own header", async () => {
     const human = await seedHuman("mcp-cookie@example.test");
-    await refused({ cookie: human.cookie, "x-console-request": "1" }, "Bearer");
+    await refused({ cookie: human.cookie, "x-console-request": "1" }, `Bearer ${REALM}, ${METADATA}`);
   });
 
   it("refuses a token that is not a live management key", async () => {
-    await refused(bearer("agw_mgmt_not-a-real-key"), 'Bearer error="invalid_token"');
-    await refused(bearer("agw_0123456789abcdef"), 'Bearer error="invalid_token"');
-    await refused({ authorization: "Basic dXNlcjpwYXNz" }, "Bearer");
+    await refused(bearer("agw_mgmt_not-a-real-key"), `Bearer ${REALM}, error="invalid_token", ${METADATA}`);
+    await refused(bearer("agw_0123456789abcdef"), `Bearer ${REALM}, error="invalid_token", ${METADATA}`);
+    await refused(bearer("agw_oat_not-a-real-connection.token"), `Bearer ${REALM}, error="invalid_token", ${METADATA}`);
+    await refused({ authorization: "Basic dXNlcjpwYXNz" }, `Bearer ${REALM}, ${METADATA}`);
   });
 
   it("takes the scheme in any case", async () => {
@@ -576,6 +582,8 @@ describe("MCP host and origin", () => {
       "access-control-allow-origin": BROWSER_ORIGIN,
       "access-control-allow-methods": "POST, OPTIONS",
       "access-control-allow-headers": "Authorization, Content-Type, MCP-Protocol-Version, Mcp-Method, Mcp-Name",
+      // So a browser client can read the challenge that says where to authorize.
+      "access-control-expose-headers": "WWW-Authenticate",
       vary: "Origin",
     };
     const preflight = await send({

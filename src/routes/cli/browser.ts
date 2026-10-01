@@ -39,12 +39,13 @@ import type { CliContext } from "./types";
  * The whole of what the page says once the step is approved, keyed on where
  * the registry sends the person next: a claim ends with its approver holding a
  * console session for the account they just took, and every other kind was
- * opened by a command that is still running, whose terminal already has the
- * answer.
+ * opened by something still waiting for the answer — a CLI command, or an
+ * agent's tool call — which already has it. Worded for either door, since the
+ * page cannot tell which one opened the step.
  */
 const CONTINUATION_MESSAGE: Record<CliHandoffContinuation, string> = {
   console: "This account is yours.",
-  cli: "You can close this tab and return to your CLI.",
+  cli: "You can close this tab and return to the CLI or agent that asked.",
 };
 
 function outcomeFor(kind: OperationKind): CliBrowserSubmitResponse {
@@ -253,7 +254,7 @@ export async function browserDeny(
 ): Promise<CliBrowserDenyResponse> {
   const { step, credential, viewer } = await verifiedSubmission(c, params.id, body);
   await (await operationEngine(c)).deny({ id: step.details.id, ...credential, actor: viewer });
-  return { state: "denied", message: "Declined. You can close this tab; your CLI has been told." };
+  return { state: "denied", message: "Declined. You can close this tab; the CLI or agent that asked will be told." };
 }
 
 /**

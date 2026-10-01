@@ -60,6 +60,8 @@ import {
   GoogleSignInRequestSchema,
   ManagementKeyCreateRequestSchema,
   MonthSchema,
+  OAuthConsentAllowRequestSchema,
+  OAuthConsentProofSchema,
   OrganizationSelectRequestSchema,
   PROVIDER_SLUG_PATTERN,
   ProviderCreateRequestSchema,
@@ -99,6 +101,8 @@ import {
   ManagementKeyListResponseSchema,
   ManagementKeyResponseSchema,
   MonthlyUsageResponseSchema,
+  OAuthConsentDetailsResponseSchema,
+  OAuthConsentRedirectResponseSchema,
   OrganizationListResponseSchema,
   PricesResponseSchema,
   ProviderDeleteResponseSchema,
@@ -221,6 +225,15 @@ const CLI_ERRORS = {
   410: "The protected credential exchange has expired; no replacement is minted.",
   429: "The durable initiation or submission rate limit was reached.",
 } as const;
+
+/** The refusals every OAuth consent call shares, beside the shared set. */
+const CONSENT_ERRORS = {
+  409: "The authorization was denied, already completed by another choice, or the account the choice needed is gone; nothing was written.",
+  410: "The authorization lapsed: it is open for ten minutes. Start the connection again from the client.",
+} as const;
+
+const CONSENT_DESCRIPTION =
+  "The API of the console's OAuth consent page, which an MCP client's authorization request sends a person to. First-party browser only: both the request URL origin and the exact Origin header must match the console origin, and `submissionToken` is the proof from the consent page URL's fragment, so it never travels in a URL. Allowing, continuing without an account and denying each answer the `redirect` to send the browser to, and answer it again, byte for byte, when repeated with the same proof.";
 
 const BROWSER_HANDOFF_DESCRIPTION =
   "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.";
@@ -1381,6 +1394,78 @@ export const CATALOG = {
     response: CliBrowserRegisterResponseSchema,
     responseDescription: "A new human identity for a pending claim or login, with its session set as a cookie.",
     errors: CLI_ERRORS,
+  },
+
+  /*
+   * The OAuth consent page's API. Like the CLI handoff, there is no page to
+   * fetch here: the console renders `/oauth/consent` from its own bundle, and
+   * these four carry the proof from its fragment in their bodies. The OAuth
+   * endpoints themselves — discovery, `/oauth/authorize`, `/oauth/token` and
+   * `/oauth/revoke` — are HTTP-only and not management operations, so they
+   * have no entries; the MCP guide documents them.
+   */
+  getOauthConsentDetails: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/details",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: details",
+    description: `${CONSENT_DESCRIPTION} Reading the details changes nothing. The client's name is its own claim, shown as declared by the host that served its metadata document.`,
+    security: "public",
+    params: { id: { description: "The authorization's id, from the consent page URL's `id` query parameter." } },
+    request: OAuthConsentProofSchema,
+    response: OAuthConsentDetailsResponseSchema,
+    responseDescription: "Who is asking and for what, who this browser would allow it as, the accounts that person may choose, and whether continuing without an account is available.",
+    errors: CONSENT_ERRORS,
+  },
+
+  allowOauthConsent: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/allow",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: allow",
+    description: `${CONSENT_DESCRIPTION} Console session only: the person signed in to this browser connects the client to one of their accounts, with the grant they choose. A management key or an OAuth access token is refused with \`403 session_required\`.`,
+    security: "session",
+    // Any member may connect a client with their own role, as any member may
+    // log a CLI in; the grant is theirs to narrow. Read access, because
+    // connecting changes nothing in the account.
+    policy: { role: "member", access: "read", session: true },
+    params: { id: { description: "The authorization's id." } },
+    request: OAuthConsentAllowRequestSchema,
+    response: OAuthConsentRedirectResponseSchema,
+    responseDescription: "The client's redirect URI with the authorization code.",
+    errors: CONSENT_ERRORS,
+  },
+
+  continueOauthWithoutAccount: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/guest",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: continue without an account",
+    description: `${CONSENT_DESCRIPTION} Creates an account nobody has claimed yet, owned by the connection's own service identity, and connects the client to it with the \`manage\` grant whatever it asked for. Admitted where the deployment allows a new unclaimed account — always on the hosted service, where it is deleted unless a person claims it, and on a self-hosted deployment only while it is empty — and counted per network address with the CLI's account creation. Repeating it for the same authorization answers the same account.`,
+    security: "public",
+    params: { id: { description: "The authorization's id." } },
+    request: OAuthConsentProofSchema,
+    response: OAuthConsentRedirectResponseSchema,
+    responseDescription: "The client's redirect URI with the authorization code.",
+    errors: {
+      ...CONSENT_ERRORS,
+      409: "This deployment no longer admits an account without a person (a self-hosted one that has been initialized), or another choice completed the authorization first.",
+      429: "Too many accounts were created from this network address. Carries Retry-After.",
+    },
+  },
+
+  denyOauthConsent: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/deny",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: deny",
+    description: `${CONSENT_DESCRIPTION} Anyone holding the link may decline, signed in or not.`,
+    security: "public",
+    params: { id: { description: "The authorization's id." } },
+    request: OAuthConsentProofSchema,
+    response: OAuthConsentRedirectResponseSchema,
+    responseDescription: "The client's redirect URI with `error=access_denied`.",
+    errors: CONSENT_ERRORS,
   },
 
   cliBrowserGoogle: {

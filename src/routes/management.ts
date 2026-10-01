@@ -7,10 +7,12 @@ import { adminRoutes } from "./admin";
 import { cliRoutes } from "./cli";
 import { consoleRoutes } from "./console";
 import { identityAuthRoutes } from "./identity-auth";
+import { oauthRoutes } from "./oauth";
 
 /**
- * The management surface — the operator console, the CLI and operator identity —
- * as one app the entry module mounts lazily through `./lazy`.
+ * The management surface — the operator console, the CLI, operator identity and
+ * the OAuth authorization server MCP clients connect through — as one app the
+ * entry module mounts lazily through `./lazy`.
  *
  * It is a separate module precisely so that importing it is a decision a request
  * makes rather than something the isolate does on startup: this is where the
@@ -38,6 +40,9 @@ managementRoutes.route("/v1/admin", adminRoutes);
 managementRoutes.route("/v1/cli", cliRoutes);
 managementRoutes.route("/v1/auth", identityAuthRoutes);
 managementRoutes.route("/v1/console", consoleRoutes);
+// OAuth for MCP clients: discovery under `/.well-known` and the endpoints
+// under `/oauth`, with paths as the authorization server document names them.
+managementRoutes.route("/", oauthRoutes);
 
 managementRoutes.notFound((c) => c.json(ROUTE_NOT_FOUND, 404));
 

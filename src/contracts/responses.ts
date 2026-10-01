@@ -317,7 +317,7 @@ export const ManagementKeySummarySchema = z.object({
   revokedAt: z.string().nullable(),
   source: z.string().meta({
     description:
-      "Where the key was issued: `console`, `cli` for a key a CLI login received, or `bootstrap` for the key a CLI account starts with. Display only.",
+      "Where the key was issued: `console`, `cli` for a key a CLI login received, `bootstrap` for the key a CLI account starts with, or `oauth` for an OAuth connection an MCP client holds. Display only.",
     example: "cli",
   }),
   label: z.string().nullable().meta({
@@ -327,6 +327,10 @@ export const ManagementKeySummarySchema = z.object({
     description:
       "How much of its holder's role the key may use: `read` may list, inspect and validate but cannot change anything other than revoking itself; `manage` does everything the role allows. Keys issued before grants existed are `manage`.",
     example: "manage",
+  }),
+  clientId: z.string().nullable().meta({
+    description:
+      "For an OAuth connection (`source: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first.",
   }),
 });
 
@@ -533,7 +537,7 @@ export const IdentitySessionSchema = z.object({
     organization: OrganizationSummarySchema.nullable(),
     role: OrganizationRoleSchema,
     memberships: z.array(OrganizationMembershipSchema),
-    credentialType: z.enum(["session", "apiKey"]),
+    credentialType: z.enum(["session", "apiKey", "oauth"]),
     /**
      * How the caller proved who they are: `interactive` for a human who just
      * signed in, `credential` for a key. The CLI's browser handoff refuses to
@@ -549,6 +553,66 @@ export const IdentitySessionSchema = z.object({
       credentialId: z.string().nullable(),
       actionSource: z.string(),
     }).nullable(),
+  }),
+});
+
+/**
+ * What an OAuth consent page reads before it shows anything: who is asking,
+ * for what, where the browser goes afterwards, and what this browser may do
+ * about it. No secret is ever part of it.
+ */
+export const OAuthConsentDetailsResponseSchema = z.object({
+  id: z.string(),
+  /** `pending` until a person allows or denies it, or it lapses ten minutes after it opened. */
+  state: z.enum(["pending", "completed", "denied", "expired", "retired"]),
+  client: z.object({
+    /** The `client_id`: a registered client's id, or the https URL of its metadata document. */
+    id: z.string(),
+    /**
+     * The client's own name for itself. Untrusted text: show it as text, as
+     * declared by `domain`, never as markup.
+     */
+    name: z.string(),
+    /** The host that served the client's metadata document; null for a registered client. */
+    domain: z.string().nullable(),
+    source: z.enum(["cimd", "registered"]),
+  }),
+  /** Where the browser is sent once this is decided: the host of the client's redirect URI. */
+  redirectHost: z.string(),
+  /** What the client asked for. The person chooses the grant; it is only the default. */
+  requestedGrant: CredentialGrantSchema,
+  expiresAt: z.string(),
+  /** The person signed in to this browser, who would allow it; null when nobody is. */
+  viewer: z.object({ name: z.string().nullable(), email: z.string().nullable() }).nullable(),
+  /** The accounts that person may connect the client to: every live membership. */
+  accounts: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    role: OrganizationRoleSchema,
+  })),
+  /**
+   * What stands between this browser and Allow: nobody is signed in, or the
+   * person signed in belongs to no account the client could use. Null when
+   * nothing does.
+   */
+  blockedBy: z.enum(["registration_required", "no_eligible_organization"]).nullable(),
+  /**
+   * Whether "continue without an account" would be admitted now: always on
+   * the hosted service, and on a self-hosted deployment only while it is
+   * empty. A guest connection always has the `manage` grant.
+   */
+  guestAvailable: z.boolean(),
+  /** When an account created now without a person would be deleted unless claimed; null where accounts have no deadline. */
+  guestExpiresAt: z.string().nullable(),
+  googleEnabled: z.boolean(),
+  /** Whether the console's own registration would admit a new person now. */
+  registrationOpen: z.boolean(),
+});
+
+/** Where the consent page sends the browser next: the client's redirect URI, with the code or the refusal. */
+export const OAuthConsentRedirectResponseSchema = z.object({
+  redirect: z.string().meta({
+    description: "The client's redirect URI with `code`, `state` and `iss`, or with `error=access_denied` after a denial. Navigate the browser there.",
   }),
 });
 
@@ -571,6 +635,8 @@ export type AuthEventSummary = z.infer<typeof AuthEventSummarySchema>;
 export type AppResponse = z.infer<typeof AppResponseSchema>;
 export type AppDeleteResponse = z.infer<typeof AppDeleteResponseSchema>;
 export type ManagementKeySummary = z.infer<typeof ManagementKeySummarySchema>;
+export type OAuthConsentDetailsResponse = z.infer<typeof OAuthConsentDetailsResponseSchema>;
+export type OAuthConsentRedirectResponse = z.infer<typeof OAuthConsentRedirectResponseSchema>;
 export type ManagementKeyListResponse = z.infer<typeof ManagementKeyListResponseSchema>;
 export type CreatedManagementKeyResponse = z.infer<typeof CreatedManagementKeyResponseSchema>;
 export type ManagementKeyResponse = z.infer<typeof ManagementKeyResponseSchema>;

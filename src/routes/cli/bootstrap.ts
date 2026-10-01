@@ -77,6 +77,8 @@ export async function bootstrap(
       engine,
       { id, view: () => engine.poll({ id, token: input.token }) },
       decision,
+      // The door names the identity that owns what it creates.
+      "CLI service",
     );
   }
 

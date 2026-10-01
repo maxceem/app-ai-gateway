@@ -861,11 +861,33 @@ export const ManagementKeyCreateRequestSchema = CredentialNameRequestSchema.exte
 export const ApiKeyCreateRequestSchema = CredentialNameRequestSchema
   .meta({ id: "ApiKeyCreateRequest" });
 
+/**
+ * The browser proof an OAuth consent page holds: the fragment of the URL the
+ * authorization endpoint sent the browser to, which never reaches a server
+ * log. Carried in a body, never a URL, by every consent call.
+ */
+const OAuthConsentProofTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/).meta({
+  description: "The proof from the consent page URL's fragment.",
+});
+export const OAuthConsentProofSchema = z.object({ submissionToken: OAuthConsentProofTokenSchema }).strict();
+/** A signed-in person's "allow": which of their accounts, with how much of their role. */
+export const OAuthConsentAllowRequestSchema = z.object({
+  submissionToken: OAuthConsentProofTokenSchema,
+  organizationId: z.string().min(1).max(256).meta({
+    description: "The account the connection acts in: one the signed-in person is a member of.",
+  }),
+  grant: CredentialGrantSchema.meta({
+    description: "How much of the person's role the connection may use, whatever the client asked for.",
+  }),
+}).strict();
+
 /** Inferred request bodies, so a consumer never re-describes one by hand. */
 export type AppWrite = z.output<typeof AppWriteSchema>;
 /** The same body as a client composes it, before the schema's defaults apply. */
 export type AppWriteInput = z.input<typeof AppWriteSchema>;
 export type ClaimRequirement = z.output<typeof ClaimRequirementSchema>;
+export type OAuthConsentProof = z.output<typeof OAuthConsentProofSchema>;
+export type OAuthConsentAllowRequest = z.output<typeof OAuthConsentAllowRequestSchema>;
 export type IssuerAuthentication = z.output<typeof IssuerAuthenticationSchema>;
 export type IssuerAuthenticationInput = z.input<typeof IssuerAuthenticationSchema>;
 export type IssuerProvider = (typeof ISSUER_PROVIDERS)[number];

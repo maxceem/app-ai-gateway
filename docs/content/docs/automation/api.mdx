@@ -11,8 +11,10 @@ integrations can use the same API from a deployment script or CI job.
 ## Management keys
 
 A management key authenticates API calls to the `/v1/admin/*` routes. Open
-the user menu in the console, choose **Management keys**, and click **New
-key**. The key is shown once in a dialog titled **Copy your new key now**.
+the user menu in the console, choose **Access**, and click **New
+key**. The key is shown once in a dialog titled **Copy your new key now**. The
+same page lists the MCP clients connected with OAuth, whose access tokens the
+`/v1/admin/*` routes accept too; see [MCP server](/automation/mcp#connect-with-oauth).
 
 A management key acts within its owning identity's current account membership
 and role. It does not expire. Store it in a secret manager and read it from the

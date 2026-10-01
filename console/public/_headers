@@ -1,0 +1,10 @@
+# Applied by Workers Static Assets to every console response, the
+# single-page fallback included. The console is never legitimately framed, and
+# a page reached by client-side navigation — the OAuth consent page or the
+# one-time reveal of a key, after signing in — never loads a document of its
+# own whose headers a narrower rule could match. So one rule covers every path,
+# and no path-specific frame rule may narrow it; console/src/headers.test.ts
+# holds that.
+/*
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY

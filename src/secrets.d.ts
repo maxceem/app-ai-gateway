@@ -35,6 +35,14 @@ interface Env {
   // only non-browser clients and the console itself; an invalid entry is
   // dropped with a warning. Not a secret.
   MCP_ALLOWED_ORIGINS?: string;
+  // `false` refuses OAuth clients that identify themselves with a Client ID
+  // Metadata Document (an https client_id). Unset or anything else leaves it on.
+  // Not a secret.
+  OAUTH_CIMD?: string;
+  // OAuth clients the deployment registers itself, as a JSON array of
+  // { clientId, name, redirectUris }. Unset means none; an invalid entry is
+  // dropped with a warning. Not a secret.
+  OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
   // The vault mode and KEK version are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
@@ -67,6 +75,8 @@ declare namespace Cloudflare {
     PUBLIC_API_URL?: string;
     OAUTH_RELAY_URL?: string;
     MCP_ALLOWED_ORIGINS?: string;
+    OAUTH_CIMD?: string;
+    OAUTH_CLIENTS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;

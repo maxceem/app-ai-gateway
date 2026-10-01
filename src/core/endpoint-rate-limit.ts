@@ -48,6 +48,17 @@ export const ENDPOINT_RATE_LIMITS = {
     action: "ask for a CLI login",
     sharedBy: "everyone sharing your network address",
   },
+  // An OAuth authorization request is public, and one naming a client's
+  // metadata document makes the gateway fetch it, so it is counted before the
+  // request is read. Thirty in ten minutes is far above a person connecting a
+  // few clients, retries included, and far below what a fetch flood needs;
+  // what waits for consent is capped separately, by the engine.
+  oauth_authorize: {
+    limit: 30,
+    windowMs: 600_000,
+    action: "start an OAuth connection",
+    sharedBy: "everyone sharing your network address",
+  },
   operation: {
     limit: 10,
     windowMs: 60_000,

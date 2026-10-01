@@ -38,10 +38,23 @@ export type OriginDecision =
   | { allowed: true; cors: Record<string, string> | null }
   | { allowed: false };
 
-export function originDecision(origin: string | null, deployment: Deployment): OriginDecision {
+/**
+ * Which surface a listed browser origin is calling, which decides only the
+ * methods its preflight is told it may use: the MCP endpoint takes `POST`,
+ * and the OAuth endpoints a browser-based MCP client calls — the
+ * authorization request, the token and the revocation endpoints — take `GET`
+ * and `POST`. Who may call is the same rule for both.
+ */
+export type CorsSurface = "mcp" | "oauth";
+
+export function originDecision(
+  origin: string | null,
+  deployment: Deployment,
+  surface: CorsSurface = "mcp",
+): OriginDecision {
   if (origin === null || origin === "") return { allowed: true, cors: null };
   if (origin === deployment.consoleOrigin()) return { allowed: true, cors: null };
-  if (deployment.mcp.allowedOrigins.includes(origin)) return { allowed: true, cors: corsHeaders(origin) };
+  if (deployment.mcp.allowedOrigins.includes(origin)) return { allowed: true, cors: corsHeaders(origin, surface) };
   return { allowed: false };
 }
 
@@ -53,13 +66,16 @@ export function originDecision(origin: string | null, deployment: Deployment): O
  * requires them on a request (SEP-2243): the SDK refuses a modern request
  * without `Mcp-Method`, and a `tools/call` or `resources/read` without
  * `Mcp-Name`, so a browser client could not send one if its preflight left
- * them out.
+ * them out. The OAuth endpoints allow the same headers, since the same client
+ * sends them. `WWW-Authenticate` is exposed so a browser client can read the
+ * challenge that tells it where to authorize.
  */
-function corsHeaders(origin: string): Record<string, string> {
+function corsHeaders(origin: string, surface: CorsSurface): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": surface === "mcp" ? "POST, OPTIONS" : "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version, Mcp-Method, Mcp-Name",
+    "Access-Control-Expose-Headers": "WWW-Authenticate",
     Vary: "Origin",
   };
 }

@@ -17,6 +17,22 @@ const EXISTING = {
   source: "console",
   label: null,
   grant: "manage",
+  clientId: null,
+  expiresAt: null,
+};
+
+/** An OAuth connection an MCP client holds, as the gateway lists it beside the keys. */
+const CONNECTION = {
+  ...EXISTING,
+  id: "connection-1",
+  // The client's own claim for itself: untrusted text the page must show as text.
+  name: "<img src=x onerror=alert(1)> Agent",
+  tokenHint: "zzzz",
+  source: "oauth",
+  label: "<img src=x onerror=alert(1)> Agent",
+  grant: "read",
+  clientId: "https://agent.example/oauth/client.json",
+  expiresAt: "2026-03-03T00:00:00.000Z",
 };
 
 function stubKeys(created?: unknown, keys: unknown[] = [EXISTING]) {
@@ -83,6 +99,49 @@ describe("ManagementKeysPage", () => {
 
     const bootstrapRow = screen.getByText("agw init").closest("tr")!;
     expect(within(bootstrapRow).getByText("CLI setup")).toBeTruthy();
+  });
+
+  it("lists OAuth connections beside the keys, by kind, client and domain", async () => {
+    stubKeys(undefined, [
+      EXISTING,
+      CONNECTION,
+      { ...CONNECTION, id: "connection-2", name: "Registered tool", label: "Registered tool", clientId: "test-client", grant: "manage" },
+    ]);
+    const { container } = renderAuthenticated(<ManagementKeysPage />);
+
+    expect(await screen.findByRole("heading", { name: "Access" })).toBeTruthy();
+    const keyRow = (await screen.findByText("CI deploy")).closest("tr")!;
+    expect(within(keyRow).getByText("Key")).toBeTruthy();
+    expect(within(keyRow).getByText("Acme")).toBeTruthy();
+    expect(within(keyRow).getByText("Never")).toBeTruthy();
+
+    // The declared name is text, never markup, and its domain says who vouched for it.
+    const connectionRow = screen.getByText(CONNECTION.name).closest("tr")!;
+    expect(container.querySelector("img")).toBeNull();
+    expect(within(connectionRow).getByText("Connection")).toBeTruthy();
+    expect(within(connectionRow).getByText("as declared by agent.example")).toBeTruthy();
+    expect(within(connectionRow).getByText("Read only")).toBeTruthy();
+    expect(within(connectionRow).queryByText("…zzzz")).toBeNull();
+    expect(within(connectionRow).queryByText("Never")).toBeNull();
+
+    const registeredRow = screen.getByText("Registered tool").closest("tr")!;
+    expect(within(registeredRow).getByText("Registered client")).toBeTruthy();
+  });
+
+  it("revokes a connection with the same operation as a key", async () => {
+    const fetchMock = stubKeys(undefined, [CONNECTION]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    const menu = await openRowActions(CONNECTION.name);
+    await userEvent.click(within(menu).getByRole("menuitem", { name: /revoke connection/i }));
+    expect(await screen.findByText(/has to be connected again/i)).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: /revoke connection/i }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/v1/admin/keys/connection-1/revoke")),
+      ).toBe(true);
+    });
   });
 
   it("names each key's grant", async () => {

@@ -27,9 +27,21 @@
   "assets": {
     "directory": "./console/dist",
     "not_found_handling": "single-page-application",
-    // The API, and the MCP endpoint: an MCP client posts to `/mcp`, and a
-    // browser navigating there must reach the Worker rather than the console.
-    "run_worker_first": ["/v1/*", "/mcp"]
+    // The API, the MCP endpoint and the OAuth authorization server MCP
+    // clients connect through: an MCP client posts to `/mcp`, and a browser
+    // navigating there or to `/oauth/authorize` must reach the Worker rather
+    // than the console. `/oauth/consent` is the console's own page, so the
+    // OAuth paths are listed one by one.
+    "run_worker_first": [
+      "/v1/*",
+      "/mcp",
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+      "/.well-known/oauth-authorization-server",
+      "/oauth/authorize",
+      "/oauth/token",
+      "/oauth/revoke"
+    ]
   },
   "d1_databases": [
     {

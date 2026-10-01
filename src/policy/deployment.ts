@@ -102,6 +102,33 @@ export interface Deployment {
      */
     readonly allowedOrigins: readonly string[];
   };
+  /** How MCP clients connect with OAuth instead of a management key. */
+  readonly oauth: {
+    /**
+     * The authorization server and the one protected resource: the console
+     * origin the deployment configured in `CLI_CONSOLE_ORIGIN`, or null where
+     * it runs none. Never the request's own origin: a token is bound to its
+     * issuer, so a deployment answering on two names would otherwise issue
+     * tokens for both, and the nightly sweep, which has no request, would see
+     * none. Null too without a `DEPLOYMENT_ID` for the authorizations to be
+     * bound to, or where the configured origin is not one an issuer may be
+     * (https, or http on `localhost` or `127.0.0.1` exactly). Lazy for the
+     * reason `identity()` is.
+     */
+    issuer(): string | null;
+    /**
+     * Whether a client may identify itself with a Client ID Metadata Document,
+     * an https `client_id` fetched when it asks. On unless `OAUTH_CIMD` is
+     * `false`.
+     */
+    readonly cimd: boolean;
+    /**
+     * `OAUTH_CLIENTS` as the deployment set it, unparsed: the clients it
+     * registers are read where the identity library is built
+     * (`src/auth/oauth-clients.ts`), never on a proxied request.
+     */
+    readonly clients: string | undefined;
+  };
 }
 
 /** The subset the pure policy helpers below decide on. */
@@ -193,6 +220,31 @@ function mcpAllowedOrigins(raw: string | undefined): readonly string[] {
   return origins;
 }
 
+/** Hosts an http issuer may name: the machine itself, spelled exactly so. */
+const LOOPBACK_ISSUER_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost"]);
+
+/**
+ * The configured console origin as an OAuth issuer, or null where there is
+ * none. Read from `CLI_CONSOLE_ORIGIN` alone, never from a request. The
+ * identity library refuses an issuer that is not https, or http on a host
+ * written exactly `localhost` or `127.0.0.1` — stricter than the console
+ * origin itself, which also admits `*.localhost` for local development — so a
+ * deployment configured with such a name simply has no OAuth.
+ */
+function oauthIssuer(env: Env): string | null {
+  if (!env.DEPLOYMENT_ID || !env.CLI_CONSOLE_ORIGIN) return null;
+  let origin: string;
+  try {
+    origin = resolveOrigins(env, undefined).consoleOrigin;
+  } catch {
+    return null;
+  }
+  const url = new URL(origin);
+  return url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_ISSUER_HOSTS.has(url.hostname))
+    ? origin
+    : null;
+}
+
 /**
  * The one derivation of deployment shape from the environment.
  *
@@ -204,6 +256,7 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
   const mode: DeploymentMode = billing ? "cloud" : "self_hosted";
   let identity: DeploymentIdentity | undefined;
   let origins: Omit<DeploymentIdentity, "id"> | undefined;
+  let issuer: { value: string | null } | undefined;
   return {
     mode,
     rules: DEPLOYMENT_RULES[mode],
@@ -223,6 +276,11 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
       return origins.consoleOrigin;
     },
     mcp: { allowedOrigins: mcpAllowedOrigins(env.MCP_ALLOWED_ORIGINS) },
+    oauth: {
+      issuer: () => (issuer ??= { value: oauthIssuer(env) }).value,
+      cimd: env.OAUTH_CIMD?.trim().toLowerCase() !== "false",
+      clients: env.OAUTH_CLIENTS,
+    },
   };
 }
 

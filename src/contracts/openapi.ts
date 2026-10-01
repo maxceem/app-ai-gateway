@@ -112,8 +112,8 @@ for (const target of [registry, documentationRegistry]) {
   target.openAPIRegistry.registerComponent("securitySchemes", "ManagementBearer", {
     type: "http",
     scheme: "bearer",
-    bearerFormat: "agw_mgmt_…",
-    description: "A management API key. It acts with its owning identity's current role for one account.",
+    bearerFormat: "agw_mgmt_… or agw_oat_…",
+    description: "A management API key, or the access token of an OAuth connection an MCP client holds. Either acts with its owning identity's current role for one account, within its grant.",
   });
   target.openAPIRegistry.registerComponent("securitySchemes", "ConsoleSession", {
     type: "apiKey",
@@ -164,6 +164,7 @@ export function createOpenAPIDocument({ includeHidden = true } = {}) {
       { name: "Admin providers", description: "Named provider instances and their credentials." },
       { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },
       { name: "Admin organizations", description: "Caller identity and organization switching." },
+      { name: "Console OAuth consent", description: "The console's consent page for MCP clients connecting with OAuth: details, allow, continue without an account, and deny." },
       { name: "Admin billing", description: "Optional billing service-binding operations." },
       { name: "Admin models", description: "Model pricing metadata." },
     ],

@@ -55,7 +55,7 @@ https://ai.example.com`, which runs the same login against that URL.
   person, then run `agw operation wait <id>` to finish the login once they have
   approved it.
 
-Each key a login creates is listed on the console's **Management keys** page
+Each key a login creates is listed on the console's **Access** page
 with a **CLI** tag and the label the CLI sent, such as `CLI on mac-studio`, so
 you can tell which machine holds which key. Revoke one there to end that
 machine's access.
@@ -63,12 +63,12 @@ machine's access.
 `agw account logout` revokes the saved key on the deployment and removes it from
 this machine. If the deployment cannot be reached, the key is still removed
 here, the command says it could not be revoked, and `revoked` is `false` in its
-`--json` result; revoke it on the **Management keys** page instead.
+`--json` result; revoke it on the **Access** page instead.
 
 ### Keys for agents and CI
 
 A machine that cannot approve anything in a browser uses an existing management
-key. Create one on the console's **Management keys** page, then either:
+key. Create one on the console's **Access** page, then either:
 
 - set `AGW_MANAGEMENT_KEY` in the environment. When it is set, it is the
   credential for every command and takes precedence over any saved login, and
@@ -96,7 +96,7 @@ as someone with an account, the page asks you to sign out first. The page shows
 the account being claimed and the person approving, and one button completes
 it. The CLI stays connected afterwards, so an interrupted command can
 simply continue; to end that access later, run `agw account logout` or revoke
-its key on the console's **Management keys** page.
+its key on the console's **Access** page.
 
 Provider commands offer a browser handoff for write-only secrets. Share the URL
 with the person supplying the credential. The page shows the provider, destination and proposed

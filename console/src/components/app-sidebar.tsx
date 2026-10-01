@@ -227,9 +227,9 @@ function UserMenu({ onNavigate }: { onNavigate?: () => void }) {
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
-          <Link to="/keys" onClick={onNavigate}>
+          <Link to="/access" onClick={onNavigate}>
             <KeyRound className="size-4" />
-            Management keys
+            Access
           </Link>
         </DropdownMenuItem>
         {capabilities.billing ? (

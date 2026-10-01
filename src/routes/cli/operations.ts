@@ -51,6 +51,9 @@ export async function authState(c: CliContext, interactive = false) {
   const auth = await cliIdentity(c);
   await auth.middleware<CliEnv>({
     apiKeys: !interactive,
+    // The CLI's surface takes a management key; an OAuth connection's token
+    // is for the two entry points an MCP client calls, `/mcp` and `/v1/admin`.
+    oauth: false,
     syncCurrentOrganizationCookie: false,
   })(c, async () => {});
   return c.get("authState");

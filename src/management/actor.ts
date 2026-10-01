@@ -17,11 +17,17 @@ export interface Actor {
 /** An actor on the admin surface, where the credential that authenticated is known. */
 export interface AdminActor extends Actor {
   role: OrganizationRole;
-  credentialType: "session" | "apiKey";
+  /**
+   * `session` for a person in the console, `apiKey` for a management key, and
+   * `oauth` for a connection an MCP client holds, which is held to its
+   * account and its grant exactly as a key is.
+   */
+  credentialType: "session" | "apiKey" | "oauth";
   identityKind: "human" | "service";
   /**
    * How much of the role this credential may use: a session is always
-   * `manage`, a management key whatever it was issued with. The executor
+   * `manage`, a management key whatever it was issued with, a connection
+   * whatever its person chose on the consent page. The executor
    * refuses a `read` one on any operation that writes.
    */
   grant: CredentialGrant;

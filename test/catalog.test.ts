@@ -20,20 +20,22 @@ import { resolveDeployment } from "../src/policy/deployment";
 const CATALOG_MOUNTED_SECURITY: ReadonlySet<SecurityKind> = new Set(["management", "session", "cliPoll"]);
 /** Documented, but served by Better Auth's own handler rather than a catalog router. */
 const BETTER_AUTH_TAG = "Console authentication";
+/** The public steps a browser takes through a catalog router: a CLI handoff, and an OAuth consent. */
+const BROWSER_STEP_TAGS = ["CLI", "Console OAuth consent"];
 
 /**
  * The half of the catalog the management app is supposed to serve, picked by
  * the credential that reaches it rather than by where its path lives, so a new
  * surface cannot fall out of this check by choosing a new prefix: everything a
  * management key, a browser session or a CLI poll reaches, and the public
- * steps of a CLI handoff.
- * Those public handoff steps are selected by their `CLI` tag.
+ * steps of a CLI handoff and of an OAuth consent.
+ * Those public steps are selected by their tags.
  */
 const SERVED = Object.entries<OperationSpec>(CATALOG)
   .filter(([, spec]) =>
     !spec.tags.includes(BETTER_AUTH_TAG)
     && (CATALOG_MOUNTED_SECURITY.has(spec.security)
-      || (spec.security === "public" && spec.tags.includes("CLI"))))
+      || (spec.security === "public" && spec.tags.some((tag) => BROWSER_STEP_TAGS.includes(tag)))))
   .map(([name]) => name);
 
 describe("operation catalog", () => {

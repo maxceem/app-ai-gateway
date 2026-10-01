@@ -118,7 +118,9 @@ upload it as a secret. Local setup stores its development value in ignored
 Optional secure first-party origin for browser handoffs. It must serve the same
 Worker: both the console, which renders the approval page the CLI links to, and
 the `/v1/cli/browser/` routes that page calls. HTTPS is required outside local
-development. Leave it unset when the API and console share an origin.
+development. Leave it unset when the API and console share an origin, unless
+you want MCP clients to connect with OAuth: that needs it set to the console's
+one canonical address; see [MCP clients](#mcp-clients).
 
 ### `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
 
@@ -156,11 +158,30 @@ must be an origin: `https`, no path, no query. It changes what the console
 prints as the base URL and which routes answer on that host; see
 [Custom domain and rate limiting](/self-hosting/custom-domain).
 
+## MCP clients
+
+The [MCP server](/automation/mcp) needs nothing configured: a client connects
+with a management key, or with OAuth through the console's consent page. These
+three variables decide which browsers may call it and which clients may connect
+with OAuth.
+
+OAuth for MCP clients needs two settings: `DEPLOYMENT_ID`, and
+[`CLI_CONSOLE_ORIGIN`](#cli_console_origin) set to the one canonical address of
+your console — `https`, or `http` on `localhost` or `127.0.0.1` exactly for
+local development. That address is the authorization server every token is
+issued by and bound to, so it has to be one fixed origin: if the gateway took
+it from each request, a deployment answering on two names would issue tokens
+for both, and the nightly cleanup of ended connections, which has no request,
+would have none. Without it — or with another `http` name, such as one under
+`*.localhost` — OAuth is off: the `/.well-known` and `/oauth` addresses answer
+`404`, access tokens are refused, and clients connect with management keys
+only.
+
 ### `MCP_ALLOWED_ORIGINS`
 
 Plain variable, unset by default. The browser origins, besides the console's
-own, that may call the [MCP server](/automation/mcp) at `/mcp`,
-comma-separated:
+own, that may call the [MCP server](/automation/mcp) at `/mcp` and its OAuth
+endpoints under `/oauth`, comma-separated:
 
 ```jsonc title="wrangler.prod.overlay.jsonc"
 {
@@ -177,6 +198,48 @@ are served whatever this says, so most deployments leave it unset. On a
 deployment reachable through more than one host name, also set
 [`CLI_CONSOLE_ORIGIN`](#cli_console_origin): without it, every host the Worker
 answers on counts as the console's, and so does each host's own origin.
+
+### `OAUTH_CIMD`
+
+Plain variable, unset by default, which leaves it on. An MCP client connecting
+with OAuth identifies itself with an `https` URL, the address of a Client ID
+Metadata Document describing it; the gateway fetches that document when the
+client asks to connect, within fixed bounds: `https` only, no address or
+`localhost` hosts, no redirects, five seconds and 64 KiB. Set it to `false` to
+refuse every client that identifies itself this way, so only the clients in
+`OAUTH_CLIENTS` can connect:
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "vars": { "OAUTH_CIMD": "false" }
+}
+```
+
+The authorization server's metadata says which: its
+`client_id_metadata_document_supported` follows this variable.
+
+### `OAUTH_CLIENTS`
+
+Plain variable, unset by default. An advanced option: OAuth clients you register
+yourself, for a client that cannot publish a metadata document, as a JSON array
+of `clientId`, `name` and `redirectUris`:
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "vars": {
+    "OAUTH_CLIENTS": "[{\"clientId\":\"my-tool\",\"name\":\"My tool\",\"redirectUris\":[\"http://127.0.0.1/callback\"]}]"
+  }
+}
+```
+
+A registered client is a public client, with no secret. Its `name` is shown on
+the consent page as yours rather than the client's, so the page does not name a
+domain for it. Each redirect URI must be absolute, with no fragment: `https`,
+`http` on a host written exactly `127.0.0.1`, `[::1]` or `localhost` (any port
+then matches), or an app's own scheme such as `com.example.app:/callback`. Any
+other address must match character for character. An entry that breaks a rule
+is ignored and logged as a warning, and the others still apply. A registered
+`clientId` wins over a metadata document of the same address.
 
 ## Providers
 
@@ -257,6 +320,8 @@ so changing either means deploying again.
 | `OAUTH_RELAY_URL` | Variable | Unset |
 | `PUBLIC_API_URL` | Variable | Unset |
 | `MCP_ALLOWED_ORIGINS` | Variable | Unset |
+| `OAUTH_CIMD` | Variable | Unset (on) |
+| `OAUTH_CLIENTS` | Variable | Unset |
 | `PROVIDER_TTFB_TIMEOUT_SECONDS` | Variable | `120` |
 | `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |

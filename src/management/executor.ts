@@ -153,7 +153,9 @@ async function authorize(spec: OperationSpec, caller: OperationCaller): Promise<
     throw new GatewayError(
       403,
       "grant_insufficient",
-      "This key has the read grant; use a session or a key with the manage grant",
+      actor.credentialType === "oauth"
+        ? "This connection has the read grant; connect again and allow it the manage grant"
+        : "This key has the read grant; use a session or a key with the manage grant",
     );
   }
 }

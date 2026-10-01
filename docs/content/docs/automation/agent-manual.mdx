@@ -74,7 +74,7 @@ unless the person explicitly requests it.
 - `agw account logout --json` revokes the saved key and removes it locally. Its
   result is `{loggedOut: true, revoked: true|false}`; `revoked: false` means the
   key was already refused or the deployment could not be reached.
-- Every key a CLI login creates appears on the console's Management keys page,
+- Every key a CLI login creates appears on the console's Access page,
   tagged CLI and labelled with the machine it was issued to, for example
   `CLI on mac-studio`. The person can revoke it there at any time.
 
@@ -82,7 +82,13 @@ unless the person explicitly requests it.
 
 If you are connected to the gateway as an MCP server, at the console's address
 followed by `/mcp` (`https://console.appaigateway.com/mcp` when hosted), you
-can work with the same account through its tools instead of the CLI:
+can work with the same account through its tools instead of the CLI. A client
+connects with OAuth by itself: the person approves it on the console's consent
+page, choosing the account and whether you may read or manage, or continues
+without an account, which creates an unclaimed account your connection manages.
+An unclaimed account expires unless a person claims it: when `get_account`
+says so, call `claim_account` and give the person its URL. A management key as
+a bearer token works too. Use the tools:
 `get_account` first, then `list_providers`, `list_apps`, `get_app`,
 `validate_app`, `check_app`, usage and event tools, and the change tools.
 `add_app` and `add_app_key` take two calls: the first reserves and creates

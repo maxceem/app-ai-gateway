@@ -1344,7 +1344,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   validation_error: "Correct the arguments as the message says and call the tool again.",
   unsupported_snippet: "Ask for the other language: swift for an App Attest app, curl for a server app.",
   provider_unavailable: "Call check_app to see which providers the app can reach.",
-  grant_insufficient: "This credential has the read grant. A change needs a management key with the manage grant.",
+  grant_insufficient: "This credential has the read grant. A change needs a management key with the manage grant, or a connection a person allowed with the manage grant.",
   forbidden: "Your role in this account does not allow this. Ask an owner or admin of the account.",
   session_required: "This needs a person signed in to the console. Ask them to do it there, in a browser.",
   auth_required: "Reconnect with a valid management key.",

@@ -25,6 +25,8 @@ import { DEFAULT_LANDING } from "@/lib/auth-redirect";
  * Outside the console's shell, like the CLI's approval page, because it is a
  * page a person is sent to rather than one they navigate to. Without a session
  * the console's global handling of `401` sends them to sign in, and back here.
+ * It is never framed by the console-wide rule in `console/public/_headers`,
+ * which covers it however it is reached, client-side navigation included.
  */
 
 /** What a refused reveal means to the person, by the gateway's code. */
