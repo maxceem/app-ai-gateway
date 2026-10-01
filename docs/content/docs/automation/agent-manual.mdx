@@ -82,12 +82,19 @@ unless the person explicitly requests it.
 
 If you are connected to the gateway as an MCP server, at the console's address
 followed by `/mcp` (`https://console.appaigateway.com/mcp` when hosted), you
-can read the same account through its tools instead of the CLI: `get_account`
-first, then `list_providers`, `list_apps`, `get_app`, `validate_app`,
-`check_app`, usage and event tools. Every tool reads; make changes with the
-CLI. A refusal is a tool result marked as an error with the gateway's code and
-the next step to take. The server's `agw://guide` resource has its full rules,
-and the MCP server guide at `/automation/mcp` lists every tool.
+can work with the same account through its tools instead of the CLI:
+`get_account` first, then `list_providers`, `list_apps`, `get_app`,
+`validate_app`, `check_app`, usage and event tools, and the change tools.
+`add_app` and `add_app_key` take two calls: the first reserves and creates
+nothing, the second, with the same arguments and the answer's `operation`,
+creates it once, and repeating it is safe. A key is revealed on a page a
+person opens, never in a tool result: give them `reveal_url`. A provider key
+or gateway token is never a tool argument: `add_provider` and the rotate tools
+answer a URL where the person enters it, and `get_operation` reports when they
+have finished. A refusal is a tool result marked as an error with the
+gateway's code and the next step to take. The server's `agw://guide` resource
+has its full rules, and the MCP server guide at `/automation/mcp` lists every
+tool.
 
 The API reference below is useful for integrations that do not use the CLI.
 

@@ -109,6 +109,8 @@ import {
   ProviderListResponseSchema,
   ProviderResponseSchema,
   ProviderTestResponseSchema,
+  OperationStatusResponseSchema,
+  RevealedOperationResponseSchema,
   TimeseriesResponseSchema,
   UsageEventListSchema,
   UsageRepriceResponseSchema,
@@ -1150,6 +1152,36 @@ export const CATALOG = {
     security: "management",
     response: PricesResponseSchema,
     responseDescription: "The priced model catalog this deployment enforces.",
+  },
+
+  getOperation: {
+    method: "GET",
+    path: "/v1/admin/operations/{id}",
+    tags: ["Admin change operations"],
+    summary: "Get where an operation stands",
+    description: "Any credential of the account that opened the operation may read it, whatever its role and grant; any other is answered `404 operation_not_found`, so the answer never says whether the id exists elsewhere. A pending operation reports when it lapses, a completed one what it changed, and one declined in a browser `expired` with `denied: true`. It never returns a secret and never collects one: a key the operation created is revealed only on the page `reveal_url` names, to a person signed in to the console as an owner or admin. The approval link of a pending browser step is in the answer that opened it and nowhere else.",
+    security: "management",
+    params: { id: { example: "4b1e…" } },
+    response: OperationStatusResponseSchema,
+    responseDescription: "Where the operation stands, and what it changed once completed.",
+  },
+
+  revealOperation: {
+    method: "POST",
+    path: "/v1/admin/operations/{id}/reveal",
+    tags: ["Admin change operations"],
+    summary: "Reveal the key an operation created, once",
+    description: "Console session only, and requires the owner or admin role in the operation's account; a management key is refused with `403 session_required`. First-party console only: the request URL's origin and the exact `Origin` header must both be the console origin. Answers the key an app or key creation made once, within 15 minutes of its creation: a second reveal is `409 already_revealed`, and one after the window, or for a key revoked since, is `410 operation_expired`. Reveal it only on a page a person asked to see it on, never on load.",
+    security: "session",
+    // Read access: the key already exists, and collecting it is not a change.
+    policy: { role: "admin", access: "read", session: true },
+    params: { id: { example: "4b1e…" } },
+    response: RevealedOperationResponseSchema,
+    responseDescription: "The key the operation created, with its plaintext.",
+    errors: {
+      409: "The key was already revealed.",
+      410: "The reveal window passed, or the key was revoked since it was created.",
+    },
   },
 
   getCliCapabilities: {

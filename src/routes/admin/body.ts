@@ -1,3 +1,4 @@
+import { identityAuthFor, MANAGEMENT_IDENTITY } from "../../auth/identity";
 import { GatewayError } from "../../core/errors";
 import type { ManagementScope } from "../../management/scope";
 import type { RequestVariables } from "../../middleware/request-scope";
@@ -11,13 +12,20 @@ import type { RequestVariables } from "../../middleware/request-scope";
  */
 export function managementScope(c: {
   env: Env;
+  req: { url: string };
   get(key: "deployment"): RequestVariables["deployment"];
   get(key: "billingRequestCache"): RequestVariables["billingRequestCache"];
+  get(key: "identityAuthCache"): RequestVariables["identityAuthCache"];
 }): ManagementScope {
   return {
     env: c.env,
     deployment: c.get("deployment"),
     billingCache: c.get("billingRequestCache"),
+    // Memoised by the request's own cache, so every caller in the request —
+    // the CLI's routes, a management service, the MCP server — shares one
+    // build. It never provisions an account as a side effect: nothing on the
+    // management surface registers anybody.
+    identity: () => identityAuthFor(c, MANAGEMENT_IDENTITY),
   };
 }
 

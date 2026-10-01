@@ -22,7 +22,7 @@ import {
   operationEngine,
   provenOperation,
 } from "./operations";
-import { kindOf, operationId } from "./operation-rows";
+import { kindOf, operationId } from "../../management/operation-kinds";
 import type { CliContext } from "./types";
 
 /** The longest client text the engine stores; a longer user agent is cut rather than refused. */

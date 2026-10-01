@@ -21,7 +21,7 @@ import type { CliApprovalRefusal, CliLoginOrganization } from "../../contracts/c
 import { prepared } from "../../db/sql";
 import { shouldProvisionDefaultOrganization } from "../../policy/deployment";
 import { authState, operationEngine } from "./operations";
-import type { ClaimKind, LoginKind } from "./operation-kinds";
+import type { ClaimKind, LoginKind } from "../../management/operation-kinds";
 import type { CliContext } from "./types";
 
 /** Whether this browser holds an interactive human session, which approving either kind needs. */

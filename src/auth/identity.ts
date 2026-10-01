@@ -151,6 +151,13 @@ export interface IdentityAuthOptions {
 }
 
 /**
+ * The options the management surface builds its cf-auth instance with: the
+ * CLI's routes, the management services and the MCP server share it. It never
+ * provisions an account as a side effect, since nothing there registers anyone.
+ */
+export const MANAGEMENT_IDENTITY: IdentityAuthOptions = { suppressDefaultOrganization: true };
+
+/**
  * What every browser proof and user code is bound to: the deployment's public
  * identity, so a proof made for one deployment means nothing to another. Null
  * where the deployment has none, and then there are no operations to prove.
@@ -413,6 +420,8 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
     operation_denied: "operation_denied",
     operation_pending: "operation_pending",
     already_completed: "already_completed",
+    operation_mismatch: "operation_mismatch",
+    already_revealed: "already_revealed",
     no_eligible_organization: "no_eligible_organization",
   };
   // A claim kind's own refusals, when the engine's `approve` reaches them

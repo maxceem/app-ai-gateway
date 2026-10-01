@@ -691,6 +691,13 @@ export const CreatedApiKeySchema = z.object({
   created_at: z.string(),
 });
 
+/**
+ * An application key as a result names it once it has been created: every
+ * field but its value. What a change operation records, and what an agent
+ * reads, in place of the key itself.
+ */
+export const AppKeyMetadataSchema = CreatedApiKeySchema.omit({ key: true });
+
 export const CreatedAppResponseSchema = AppResponseSchema.extend({
   api_key: CreatedApiKeySchema.nullable(),
 });
@@ -825,6 +832,58 @@ export const PricesResponseSchema = z.object({
   prices: z.record(z.string(), z.record(z.string(), ModelPriceSchema)),
 });
 
+/**
+ * What a completed operation leaves in the clear: the ids and metadata of
+ * what it changed, never a secret. An application key it created appears
+ * without its value, which only the reveal page shows.
+ */
+export const OperationResultSchema = z.object({
+  /** The account a claim settled, a login landed in, or a bootstrap created. */
+  accountId: z.string().optional(),
+  app: AppResponseSchema.shape.app.optional(),
+  api_key: AppKeyMetadataSchema.nullable().optional(),
+  provider: ProviderSummarySchema.optional(),
+  gateway: ProviderGatewaySummarySchema.optional(),
+}).meta({ id: "OperationResult" });
+
+/**
+ * Where one operation of your account stands, read by any credential of it.
+ * Never a secret: a key the operation created is revealed only on the page
+ * `reveal_url` names, to a person signed in as an owner or admin.
+ */
+export const OperationStatusResponseSchema = z.object({
+  id: z.string(),
+  /**
+   * The operation's kind as the gateway runs it: `app.add.reserved` for an app
+   * created under a reservation, `provider.add.browser` for a provider whose
+   * key a person enters in a browser, `claim`, and so on.
+   */
+  kind: z.string(),
+  state: z.enum(["pending", "completed", "expired"]),
+  /** Set beside `state: "expired"` when a person declined the browser step rather than letting it lapse. */
+  denied: z.literal(true).optional(),
+  createdAt: z.string(),
+  /** While pending, when it lapses unless completed. */
+  expiresAt: z.string(),
+  result: OperationResultSchema.optional(),
+  /** While a key the operation created can still be revealed, once, the page a person opens to see it. */
+  reveal_url: z.url().optional(),
+}).meta({ id: "OperationStatus" });
+
+/** A key an operation created, revealed once to the person who asked for it. */
+export const RevealedOperationResponseSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  result: z.object({
+    app: AppResponseSchema.shape.app.optional(),
+    /** `key` is the plaintext. It is shown this once; the gateway keeps only a hash. */
+    api_key: CreatedApiKeySchema.nullable().optional(),
+  }),
+}).meta({ id: "RevealedOperation" });
+
+export type OperationResult = z.infer<typeof OperationResultSchema>;
+export type OperationStatusResponse = z.infer<typeof OperationStatusResponseSchema>;
+export type RevealedOperationResponse = z.infer<typeof RevealedOperationResponseSchema>;
 export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
 export type AppSummary = z.infer<typeof AppSummarySchema>;
 export type AppListResponse = z.infer<typeof AppListResponseSchema>;

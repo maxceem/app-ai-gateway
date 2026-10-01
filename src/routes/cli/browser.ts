@@ -1,5 +1,6 @@
 import type { OperationBrowserCredential, OperationDetails } from "@maxceem/cf-auth";
 import { cliJson } from "./security";
+import { assertConsoleOrigin } from "../console-origin";
 import { GatewayError } from "../../core/errors";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import type { z } from "zod";
@@ -20,14 +21,16 @@ import {
 } from "../../core/account-lifecycle";
 import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
 import {
+  kindOf,
   TARGET_SNAPSHOTS,
   type ClaimKind,
   type LoginKind,
   type OperationKind,
   type ResourceKind,
-} from "./operation-kinds";
-import { authState, operationEngine, runResourceOperation } from "./operations";
-import { kindOf } from "./operation-rows";
+} from "../../management/operation-kinds";
+import { runResourceOperation } from "../../management/resource-operations";
+import { managementScope } from "../admin/body";
+import { authState, operationEngine } from "./operations";
 import { approveClaim, approveLogin, loginOrganizations, pageRefusal } from "./identity-handoff";
 import type { OperationInput } from "../../management/executor";
 import type { CliContext } from "./types";
@@ -50,19 +53,6 @@ function outcomeFor(kind: OperationKind): CliBrowserSubmitResponse {
     message: CONTINUATION_MESSAGE[kind.continueTo],
     continueTo: kind.continueTo,
   };
-}
-
-/**
- * Refuses a browser endpoint reached other than from the first-party approval
- * page. Runs before the body is read, so a request from anywhere else learns
- * nothing about what it sent.
- */
-export function assertConsoleOrigin(c: CliContext): void {
-  const consoleOrigin = c.get("deployment").identity().consoleOrigin;
-  if (new URL(c.req.url).origin !== consoleOrigin)
-    throw new GatewayError(404, "not_found", "Page was not found");
-  if (c.req.header("origin") !== consoleOrigin)
-    throw new GatewayError(403, "forbidden", "Use the first-party approval page");
 }
 
 /**
@@ -239,7 +229,7 @@ export async function browserSubmit(
   if (!review || !sender || !details.organization)
     throw new GatewayError(500, "internal_error", "A stored operation does not match its kind");
   const engine = await operationEngine(c);
-  await runResourceOperation(c, {
+  await runResourceOperation(managementScope(c), {
     id: details.id,
     // The write runs as the CLI that sent it; the engine rechecks that
     // credential, and its role, when it commits.
@@ -280,3 +270,5 @@ export async function browserLookup(
   if (!found) return { found: false };
   return { found: true, id: found.id, kind: kindOf(found.kind).kind, expiresAt: found.expiresAt };
 }
+
+export { assertConsoleOrigin };

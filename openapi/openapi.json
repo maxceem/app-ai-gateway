@@ -49,6 +49,10 @@
       "description": "Keys, users, and usage."
     },
     {
+      "name": "Admin change operations",
+      "description": "Where a change opened by the CLI or an MCP tool stands, and the one-time reveal of a key it created."
+    },
+    {
       "name": "Admin management keys",
       "description": "agw_mgmt_ credentials for scripts, CI and agents. They never expire, and are created and revoked from the console only."
     },
@@ -2665,6 +2669,224 @@
           "month"
         ],
         "additionalProperties": false
+      },
+      "OperationStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "expired"
+            ]
+          },
+          "denied": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/OperationResult"
+          },
+          "reveal_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "createdAt",
+          "expiresAt"
+        ]
+      },
+      "OperationResult": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string"
+          },
+          "app": {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "id": {
+                "type": "string",
+                "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+              },
+              "name": {
+                "type": "string"
+              },
+              "config": {
+                "$ref": "#/components/schemas/AppConfig"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "disabled"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "revision",
+              "id",
+              "name",
+              "config",
+              "status",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "api_key": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "key_prefix": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "key_prefix",
+              "created_at"
+            ]
+          },
+          "provider": {
+            "$ref": "#/components/schemas/Provider"
+          },
+          "gateway": {
+            "$ref": "#/components/schemas/ProviderGateway"
+          }
+        }
+      },
+      "RevealedOperation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "app": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "The gateway-assigned id, and the `{app}` segment of every URL for this application."
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "config": {
+                    "$ref": "#/components/schemas/AppConfig"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "disabled"
+                    ]
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "id",
+                  "name",
+                  "config",
+                  "status",
+                  "created_at",
+                  "updated_at"
+                ]
+              },
+              "api_key": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "string"
+                  },
+                  "key_prefix": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "key",
+                  "key_prefix",
+                  "created_at"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "result"
+        ]
       }
     },
     "parameters": {}
@@ -10641,6 +10863,185 @@
           },
           "404": {
             "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/operations/{id}": {
+      "get": {
+        "tags": [
+          "Admin change operations"
+        ],
+        "operationId": "getOperation",
+        "summary": "Get where an operation stands",
+        "description": "Any credential of the account that opened the operation may read it, whatever its role and grant; any other is answered `404 operation_not_found`, so the answer never says whether the id exists elsewhere. A pending operation reports when it lapses, a completed one what it changed, and one declined in a browser `expired` with `denied: true`. It never returns a secret and never collects one: a key the operation created is revealed only on the page `reveal_url` names, to a person signed in to the console as an owner or admin. The approval link of a pending browser step is in the answer that opened it and nowhere else.",
+        "security": [
+          {
+            "ConsoleSession": []
+          },
+          {
+            "ManagementBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "4b1e…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where the operation stands, and what it changed once completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/operations/{id}/reveal": {
+      "post": {
+        "tags": [
+          "Admin change operations"
+        ],
+        "operationId": "revealOperation",
+        "summary": "Reveal the key an operation created, once",
+        "description": "Console session only, and requires the owner or admin role in the operation's account; a management key is refused with `403 session_required`. First-party console only: the request URL's origin and the exact `Origin` header must both be the console origin. Answers the key an app or key creation made once, within 15 minutes of its creation: a second reveal is `409 already_revealed`, and one after the window, or for a key revoked since, is `410 operation_expired`. Reveal it only on a page a person asked to see it on, never on load.",
+        "security": [
+          {
+            "ConsoleSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "4b1e…"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The key the operation created, with its plaintext.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevealedOperation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated identity is not allowed to perform this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key was already revealed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The reveal window passed, or the key was revoked since it was created.",
             "content": {
               "application/json": {
                 "schema": {

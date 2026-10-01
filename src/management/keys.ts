@@ -22,7 +22,7 @@ type AppRow = typeof app.$inferSelect;
  * Read off the column rather than the configuration: what kind of application
  * this is does not need the whole grammar run over it.
  */
-function apiKeyApp(row: AppRow): AppRow {
+export function apiKeyApp(row: AppRow): AppRow {
   if (row.authType !== "api_key") {
     throw new GatewayError(400, "invalid_request", "API keys can only be managed for api_key apps");
   }

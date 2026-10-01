@@ -159,6 +159,7 @@ export function createOpenAPIDocument({ includeHidden = true } = {}) {
       { name: "Custom endpoints", description: "Server-configured provider and model behind a stable slug." },
       { name: "Admin applications", description: "Application configuration lifecycle." },
       { name: "Admin operations", description: "Keys, users, and usage." },
+      { name: "Admin change operations", description: "Where a change opened by the CLI or an MCP tool stands, and the one-time reveal of a key it created." },
       { name: "Admin management keys", description: "agw_mgmt_ credentials for scripts, CI and agents. They never expire, and are created and revoked from the console only." },
       { name: "Admin providers", description: "Named provider instances and their credentials." },
       { name: "Admin provider gateways", description: "Reusable Cloudflare AI Gateway connections shared by provider instances." },

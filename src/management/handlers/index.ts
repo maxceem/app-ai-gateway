@@ -3,6 +3,7 @@ import { accountHandlers } from "./account";
 import { appHandlers } from "./apps";
 import { authEventHandlers } from "./auth-events";
 import { keyHandlers } from "./keys";
+import { operationHandlers } from "./operations";
 import { priceHandlers } from "./prices";
 import { providerGatewayHandlers } from "./provider-gateways";
 import { providerHandlers } from "./providers";
@@ -28,6 +29,7 @@ const HANDLERS = {
   ...providerHandlers,
   ...providerGatewayHandlers,
   ...accountHandlers,
+  ...operationHandlers,
 } satisfies OperationHandlerTable;
 
 /** The operations {@link OPERATION_HANDLERS} serves. */

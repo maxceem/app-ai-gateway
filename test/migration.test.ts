@@ -209,6 +209,7 @@ describe("initial database migration", () => {
     ).all<{ name: string }>();
     expect(mgmtTables.results.map((row) => row.name)).toEqual([
       "mgmt_api_key",
+      "mgmt_oauth_token",
       "mgmt_operation",
       "mgmt_organization",
       "mgmt_organization_user",
@@ -253,10 +254,41 @@ describe("initial database migration", () => {
       "source",
       "label",
       "grant",
+      "client_id",
+      "resource",
     ]);
     // A key from before grants existed keeps doing what it did.
     expect(managementKeyColumns.results.find((column) => column.name === "grant"))
       .toMatchObject({ notnull: 1, dflt_value: "'manage'" });
+    // An OAuth connection is a key row of its own; every other key has neither.
+    for (const column of ["client_id", "resource"])
+      expect(managementKeyColumns.results.find(({ name }) => name === column)).toMatchObject({ notnull: 0 });
+    // A connection's token generations, cf-auth's, removed with the connection.
+    const oauthTokenColumns = await env.DB.prepare("PRAGMA table_info(mgmt_oauth_token)")
+      .all<{ name: string; notnull: number }>();
+    expect(oauthTokenColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "api_key_id",
+      "generation",
+      "access_token_hash",
+      "access_expires_at",
+      "refresh_token_hash",
+      "rotated_at",
+      "sealed_response",
+      "created_at",
+    ]);
+    const oauthTokenIndexes = await env.DB.prepare("PRAGMA index_list(mgmt_oauth_token)")
+      .all<{ name: string; unique: number }>();
+    expect(oauthTokenIndexes.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "mgmt_oauth_token_access_token_hash_unique", unique: 1 }),
+      expect.objectContaining({ name: "mgmt_oauth_token_refresh_token_hash_unique", unique: 1 }),
+      expect.objectContaining({ name: "mgmt_oauth_token_api_key_id_generation_unique", unique: 1 }),
+    ]));
+    const oauthTokenKeys = await env.DB.prepare("PRAGMA foreign_key_list(mgmt_oauth_token)")
+      .all<{ table: string; from: string; on_delete: string }>();
+    expect(oauthTokenKeys.results).toEqual([
+      expect.objectContaining({ table: "mgmt_api_key", from: "api_key_id", on_delete: "CASCADE" }),
+    ]);
     // Every CLI operation is one row of cf-auth's operation table: the digest
     // of the CLI's token is how it is found, and the engine's own fields are
     // columns, never fields mixed into the payload the CLI sent.
@@ -274,9 +306,13 @@ describe("initial database migration", () => {
       "sealed_outcome",
       "sealed_until",
       "retain_until",
+      "execution_claim",
     ]));
     for (const column of ["request_hash", "poll_token_hash", "retain_until"])
       expect(operationColumns.results.find(({ name }) => name === column)).toMatchObject({ notnull: 1 });
+    // What holds a reservation while one call executes it: nothing until then,
+    // so every operation from before reservations existed holds none.
+    expect(operationColumns.results.find(({ name }) => name === "execution_claim")).toMatchObject({ notnull: 0 });
     expect(apiKeyColumns.results.map((column) => column.name)).toEqual([
       "id",
       "app_id",

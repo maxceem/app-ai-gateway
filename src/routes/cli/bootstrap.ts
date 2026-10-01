@@ -22,7 +22,7 @@ import type { CliOperation } from "../../contracts/cli";
 import { unclaimedAccessDeadline } from "../../policy/accounts";
 import { humanOwnerCondition } from "../../policy/sql";
 import { cliIdentity, operationEngine } from "./operations";
-import { kindOf, operationId } from "./operation-rows";
+import { kindOf, operationId } from "../../management/operation-kinds";
 import { digest } from "./security";
 import type { OperationInput } from "../../management/executor";
 import type { CliContext } from "./types";

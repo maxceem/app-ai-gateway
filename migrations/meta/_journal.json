@@ -22,6 +22,20 @@
       "when": 1790768419207,
       "tag": "0002_management_key_grant",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790820709998,
+      "tag": "0003_operation_execution_claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790835836156,
+      "tag": "0004_oauth_token",
+      "breakpoints": true
     }
   ]
 }

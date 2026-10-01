@@ -15,6 +15,7 @@ import { CliCodePage } from "@/pages/cli-code";
 import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
 import { ProvidersPage } from "@/pages/providers";
+import { RevealPage } from "@/pages/reveal";
 import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
 import { ConsoleSessionProvider } from "@/lib/console-session";
@@ -187,6 +188,12 @@ export default function App() {
         <Route path="/cli/approve/:id" element={<CliApprovePage />} />
         {/* Where a person types the terminal's pairing code instead of following its link. */}
         <Route path="/cli" element={<CliCodePage />} />
+        {/*
+          Where a person sees, once, a key an agent created for them. Outside
+          the shell like the approval page: a person is sent here by a link,
+          and signing in brings them back.
+        */}
+        <Route path="/reveal/:id" element={<RevealPage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

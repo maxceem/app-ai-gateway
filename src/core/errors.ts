@@ -26,8 +26,18 @@ export type ErrorCode =
   | "operation_denied"
   /** Redeeming a login nobody has approved yet. */
   | "operation_pending"
-  /** Approving, completing or redeeming a step that already was. */
+  /** Approving, completing or redeeming a step that already was; executing a reservation past its replay window. */
   | "already_completed"
+  /** No operation of the caller's account has this id, or no reservation answers to this handle. */
+  | "operation_not_found"
+  /**
+   * A reservation's handle sent for another request than the one reserved:
+   * another kind, another account, or other input. Nothing was written;
+   * reserve again for the new request.
+   */
+  | "operation_mismatch"
+  /** The key an operation created was already revealed, and is shown once. */
+  | "already_revealed"
   | "validation_error"
   | "rate_limited"
   | "conflict"

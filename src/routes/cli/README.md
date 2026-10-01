@@ -50,13 +50,15 @@ write. It also seals what an operation produced and hands it over. This gateway
 registers its kinds with the engine (`src/auth/operation-kinds.ts`, loaded by
 `createIdentityAuth` with the deployment id as the realm every proof and user
 code is bound to), and decides everything the engine does not: what each kind
-does (`operation-kinds.ts` here), who may approve a claim or a login and what
-the page is told (`identity-handoff.ts`, `browser.ts`), and what a completed
-operation's record holds (`operation-rows.ts`, and for a bootstrap
-`src/management/provisioning.ts`). The routes read operations only
-through the engine's views — `findByToken`, `poll` and `details` — and never
-the table; the exceptions are the claim's Google grant and its bootstrap
-retirement, below under Claim, and account cleanup.
+does and what a completed operation's record holds
+(`src/management/operation-kinds.ts`, and for a bootstrap
+`src/management/provisioning.ts`), how a resource write runs under the
+engine's guard (`src/management/resource-operations.ts`, which the MCP server's
+change tools run through too), and who may approve a claim or a login and what
+the page is told (`identity-handoff.ts`, `browser.ts`). The routes read
+operations only through the engine's views — `findByToken`, `poll` and
+`details` — and never the table; the exceptions are the claim's Google grant
+and its bootstrap retirement, below under Claim, and account cleanup.
 
 The engine's own `login` kind is used as it ships. A claim is an engine browser
 kind whose approval is cf-auth's `claimOrganization`; asking for one is

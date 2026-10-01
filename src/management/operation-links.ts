@@ -19,3 +19,17 @@ export function approvalUrl(
   if (view.browserProof === null) return null;
   return `${deployment.identity().consoleOrigin}${browserPath(view.id)}#${view.browserProof}`;
 }
+
+/** The console page a person reveals a key an operation created on. */
+export function revealPath(id: string): string {
+  return `/reveal/${encodeURIComponent(id)}`;
+}
+
+/**
+ * The link a person opens to reveal, once, the key an operation created. It
+ * carries nothing but the operation's id: the person's own session, as an
+ * owner or admin of the account, is the whole authority to reveal it.
+ */
+export function revealUrl(deployment: Deployment, id: string): string {
+  return `${deployment.identity().consoleOrigin}${revealPath(id)}`;
+}

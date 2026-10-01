@@ -81,6 +81,8 @@ describe("operation catalog", () => {
         env: deploymentEnv,
         deployment: resolveDeployment(deploymentEnv, "https://example.test/"),
         billingCache: new Map(),
+        // Neither operation below reaches the identity library.
+        identity: () => Promise.reject(new Error("not used by these operations")),
       },
     };
     const request = { params: {}, query: {} };

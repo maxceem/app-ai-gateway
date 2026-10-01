@@ -8,7 +8,7 @@ import { authenticateMcp } from "../src/mcp/auth";
 import { CATALOG } from "../src/contracts/catalog";
 import { operationPolicy } from "../src/management/executor";
 import { OPERATION_HANDLERS } from "../src/management/handlers";
-import { MCP_TOOLS, type ReadOperation } from "../src/mcp/tools";
+import { MCP_TOOLS, MCP_WRITE_OPERATIONS, type ToolOperation } from "../src/mcp/tools";
 import { resolveDeployment } from "../src/policy/deployment";
 import { TEST_MANAGEMENT_KEY } from "./apply-migrations";
 import { seedHuman, seedProvider, seedServerApp, serverConfig, TEST_ORGANIZATION_ID } from "./helpers";
@@ -155,8 +155,8 @@ async function issueKey(cookie: string, grant: CredentialGrant): Promise<string>
   return (await created.json<{ key: { plaintext: string } }>()).key.plaintext;
 }
 
-/** The design's table, in its order. */
-const TOOL_NAMES = [
+/** The design's read tools, in its order. */
+const READ_TOOL_NAMES = [
   "get_account",
   "get_capabilities",
   "list_models",
@@ -179,6 +179,30 @@ const TOOL_NAMES = [
   "get_usage_breakdown",
   "get_usage_timeseries",
 ];
+
+/** The design's change tools, in its order, after the reads. */
+const CHANGE_TOOL_NAMES = [
+  "get_operation",
+  "add_provider",
+  "add_provider_gateway",
+  "update_provider",
+  "update_provider_gateway",
+  "rotate_provider_key",
+  "rotate_provider_gateway_key",
+  "remove_provider",
+  "remove_provider_gateway",
+  "add_app",
+  "update_app",
+  "remove_app",
+  "add_app_key",
+  "revoke_app_key",
+  "block_app_user",
+  "unblock_app_user",
+  "claim_account",
+];
+
+/** The design's whole table, in its order. */
+const TOOL_NAMES = [...READ_TOOL_NAMES, ...CHANGE_TOOL_NAMES];
 
 /** Arguments every tool succeeds with, in an account made by {@link populated}. */
 function argumentsFor(app: string): Record<string, Record<string, unknown>> {
@@ -230,17 +254,31 @@ afterEach(() => {
 });
 
 describe("MCP tool table", () => {
-  it("names only registered operations a read grant may run", () => {
+  it("names only registered operations a read grant may run, and the design's writes", () => {
     for (const tool of MCP_TOOLS) {
-      const operations = typeof tool.operation === "string" ? [tool.operation] : tool.operation;
+      const operations = tool.operation === undefined
+        ? []
+        : typeof tool.operation === "string" ? [tool.operation] : tool.operation;
+      // Every tool runs a catalog operation or opens one of the engine's kinds.
+      expect(operations.length > 0 || tool.kind !== undefined, tool.name).toBe(true);
       for (const operation of operations) {
         expect(Object.keys(OPERATION_HANDLERS), tool.name).toContain(operation);
-        expect(operationPolicy(CATALOG[operation]).grant, tool.name).toBe("read");
+        if (tool.annotations.readOnlyHint) {
+          expect(operationPolicy(CATALOG[operation]).grant, tool.name).toBe("read");
+        } else {
+          expect(MCP_WRITE_OPERATIONS as readonly string[], tool.name).toContain(operation);
+        }
       }
     }
-    // A writing operation is not a `ReadOperation`, so a tool cannot name one.
-    // @ts-expect-error createApp writes
-    const writes: ReadOperation = "createApp";
+    // Every exposed write is some tool's, and nothing more is exposed.
+    const named = MCP_TOOLS.flatMap((tool) => tool.operation === undefined ? [] : [tool.operation].flat());
+    expect([...MCP_WRITE_OPERATIONS].sort()).toEqual(
+      named.filter((operation) => operationPolicy(CATALOG[operation]).grant !== "read").sort(),
+    );
+    // A writing operation outside the design's list is not a `ToolOperation`,
+    // so a tool cannot name one.
+    // @ts-expect-error createApp is not exposed
+    const writes: ToolOperation = "createApp";
     expect(writes).toBe("createApp");
   });
 });
@@ -313,13 +351,36 @@ describe("MCP handshake", () => {
     });
   });
 
-  it("lists the tools in the fixed order, read-only, with a public day-long cache hint", async () => {
+  it("lists the tools in the fixed order, annotated by what they change, with a public day-long cache hint", async () => {
     const { message } = await rpc(TEST_MANAGEMENT_KEY, "tools/list");
     const tools = message.result.tools as { name: string; annotations: unknown; inputSchema: any }[];
     expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
     expect(MCP_TOOLS.map((tool) => tool.name)).toEqual(TOOL_NAMES);
+    const READS = { readOnlyHint: true, idempotentHint: true, openWorldHint: false };
+    const effect = (destructive: boolean, idempotent: boolean) =>
+      ({ readOnlyHint: false, destructiveHint: destructive, idempotentHint: idempotent, openWorldHint: false });
+    const expected: Record<string, unknown> = {
+      ...Object.fromEntries(READ_TOOL_NAMES.map((name) => [name, READS])),
+      get_operation: READS,
+      add_provider: effect(false, false),
+      add_provider_gateway: effect(false, false),
+      update_provider: effect(false, true),
+      update_provider_gateway: effect(false, true),
+      rotate_provider_key: effect(false, false),
+      rotate_provider_gateway_key: effect(false, false),
+      remove_provider: effect(true, true),
+      remove_provider_gateway: effect(true, true),
+      add_app: effect(false, false),
+      update_app: effect(false, true),
+      remove_app: effect(true, true),
+      add_app_key: effect(false, false),
+      revoke_app_key: effect(true, true),
+      block_app_user: effect(true, true),
+      unblock_app_user: effect(false, true),
+      claim_account: effect(false, false),
+    };
     for (const tool of tools) {
-      expect(tool.annotations, tool.name).toEqual({ readOnlyHint: true, idempotentHint: true, openWorldHint: false });
+      expect(tool.annotations, tool.name).toEqual(expected[tool.name]);
       expect(tool.inputSchema.type, tool.name).toBe("object");
     }
     expect(message.result).toMatchObject({ ttlMs: 86_400_000, cacheScope: "public" });
@@ -480,12 +541,12 @@ describe("MCP bearer gate", () => {
     expect(status).toBe(200);
   });
 
-  it("lets a read key and a manage key call every tool", async () => {
+  it("lets a read key and a manage key call every read tool", async () => {
     const fixture = await populated("mcp-every-tool@example.test");
     const args = argumentsFor(fixture.app);
-    expect(Object.keys(args)).toEqual(TOOL_NAMES);
+    expect(Object.keys(args)).toEqual(READ_TOOL_NAMES);
     for (const key of [fixture.read, fixture.key]) {
-      for (const name of TOOL_NAMES) {
+      for (const name of READ_TOOL_NAMES) {
         const result = await callTool(key, name, args[name]);
         expect(result.isError, `${name}: ${result.content[0]?.text}`).toBeFalsy();
         expect(result.content[0]!.type).toBe("text");
@@ -693,15 +754,16 @@ describe("MCP read tools", () => {
     });
     expect(result.content[0]!.text).toBe("app_not_found: App is not registered. Call list_apps for the ids of your apps.");
 
-    // The refusal is logged once, as the HTTP surface logs one, and says where it came from.
+    // The refusal is logged once, as the HTTP surface logs one, and says where
+    // it came from — but nothing the caller sent, the app id it named included.
     const logged = warnings.mock.calls.map(([line]) => JSON.parse(String(line)));
     expect(logged).toContainEqual(expect.objectContaining({
       message: "gateway_error",
       code: "app_not_found",
       tool: "get_app",
-      app: "mcp-foreign-app",
       source: "mcp",
     }));
+    expect(warnings.mock.calls.map(([line]) => String(line)).join("\n")).not.toContain("mcp-foreign-app");
   });
 
   it("validates an app document as a draft and as an update, and refuses one in the schema's words", async () => {

@@ -2,6 +2,7 @@ import type { AuthState } from "@maxceem/cf-auth";
 import {
   identityAuthFor,
   isCfAuthError,
+  MANAGEMENT_IDENTITY,
   MANAGEMENT_KEY_PREFIX,
   type IdentityAuthScope,
 } from "../auth/identity";
@@ -74,7 +75,9 @@ export async function authenticateMcp(
   const refused = () =>
     authenticationRequired(deployment, "The bearer token is not a valid management key", "invalid_token");
   if (!token.startsWith(MANAGEMENT_KEY_PREFIX)) return refused();
-  const identity = await identityAuthFor(c);
+  // The management surface's own instance, which the tools' operations then
+  // reuse rather than build a second.
+  const identity = await identityAuthFor(c, MANAGEMENT_IDENTITY);
   const state = await identity.service.resolveApiKeyAuthState(token, "mcp");
   if (!state.authenticated) return refused();
   try {

@@ -1,14 +1,9 @@
 import { GatewayError } from "../../core/errors";
+import { digest } from "../../management/digest";
+
+export { digest };
 
 const encoder = new TextEncoder();
-export async function digest(value: string): Promise<string> {
-  return Array.from(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", encoder.encode(value)),
-    ),
-    (b) => b.toString(16).padStart(2, "0"),
-  ).join("");
-}
 export async function derive(secret: string, purpose: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",

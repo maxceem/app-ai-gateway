@@ -4,6 +4,7 @@ import type { AdminVariables } from "../../middleware/admin";
 import { appRoutes } from "./apps";
 import { authEventRoutes } from "./auth-events";
 import { keyRoutes } from "./keys";
+import { operationRoutes } from "./operations";
 import { usageRoutes } from "./usage";
 import { userRoutes } from "./users";
 import { managementKeyRoutes } from "./management-keys";
@@ -24,6 +25,7 @@ adminRouter(adminRoutes).handle("listModelPrices");
 
 adminRoutes.route("/", appRoutes);
 adminRoutes.route("/", keyRoutes);
+adminRoutes.route("/", operationRoutes);
 adminRoutes.route("/", userRoutes);
 adminRoutes.route("/", usageRoutes);
 adminRoutes.route("/", authEventRoutes);

@@ -11,7 +11,8 @@ import {
 } from "../management/executor";
 import { OPERATION_HANDLERS } from "../management/handlers";
 import { MCP_GUIDE, MCP_GUIDE_URI, MCP_INSTRUCTIONS } from "./guide";
-import { MCP_TOOLS, nextAction, type McpTool, type ReadOperation } from "./tools";
+import { redactSecrets } from "./secret-fields";
+import { MCP_TOOLS, nextAction, type McpTool, type ToolOperation } from "./tools";
 
 type Sdk = typeof import("@modelcontextprotocol/server");
 
@@ -84,13 +85,27 @@ const mcpHandler = (): Promise<McpHttpHandler> =>
       responseMode: "json",
       maxSubscriptions: 0,
       // Reporting only: what the SDK refused, it has already answered.
-      onerror: (error) => log("warn", "mcp_request_rejected", { error: error.message }),
+      onerror: (error) => log("warn", "mcp_request_rejected", failureKind(error)),
     })).catch((error: unknown) => {
       handler = undefined;
       throw error;
     }));
 
 let handler: Promise<McpHttpHandler> | undefined;
+
+/**
+ * What may be logged about a failure: its class and name, and a gateway
+ * error's code — never its message, its stack or its cause, any of which can
+ * quote what the caller sent.
+ */
+function failureKind(error: unknown): { error: string; errorClass?: string; code?: string } {
+  if (!(error instanceof Error)) return { error: typeof error };
+  return {
+    error: /^[A-Za-z_]\w{0,63}$/u.test(error.name) ? error.name : "Error",
+    errorClass: error.constructor.name,
+    ...(error instanceof GatewayError ? { code: error.code } : {}),
+  };
+}
 
 function callerOf(extra: Record<string, unknown> | undefined): OperationCaller {
   const caller = extra?.caller as OperationCaller | undefined;
@@ -171,13 +186,16 @@ function advertised(schema: z.ZodObject): StandardSchemaWithJSON<Record<string, 
 }
 
 /**
- * Runs one tool call as its catalog operation.
+ * Runs one tool call as its catalog operation, or as the engine operation it
+ * opens.
  *
  * The arguments arrive as the client sent them. The executor parses them with
  * the operation's own schemas, exactly as it parses a request from the API,
  * after it has resolved the application and applied the operation's policy to
  * the caller; an argument no operation schema covers is checked by the tool's
- * `before`, at the same point. The callback itself parses nothing.
+ * `before`, at the same point. A tool that opens an engine operation hands
+ * them to the management function for it, which applies the kind's authority
+ * first in the same way. The callback itself parses nothing.
  *
  * A refusal is an answer, not a failure of the protocol: a gateway error
  * becomes a tool result marked as an error, carrying its code, its message and
@@ -189,24 +207,28 @@ async function callTool(
   caller: OperationCaller,
 ): Promise<CallToolResult> {
   try {
-    const { operation, request, before } = tool.call(input);
-    const body = await run(operation, request as never, caller, before);
-    const result = tool.result ? tool.result(body, input) : body;
+    const body = tool.perform ? await tool.perform(input, caller) : await call(tool, input, caller);
+    // Redacted before the summary is written from it: what a tool answers may
+    // have been stored by any transport, and an app document stored through
+    // the API may hold provider-native parameters of any name.
+    const result = redactSecrets(tool.result ? tool.result(body, input) : body, tool.keyMetadataAt);
     return {
-      content: [{ type: "text", text: tool.summary(result, input) }],
+      content: [{ type: "text", text: tool.summary(result, redactSecrets(input)) }],
       structuredContent: result as Record<string, unknown>,
     };
   } catch (error) {
     const refusal = isCfAuthError(error) ? asGatewayAuthError(error) : error;
-    if (refusal instanceof GatewayError) return refused(tool, input, caller, refusal);
-    // Logged as the entry module logs a failure it did not expect, and
-    // answered with nothing of it: no message, no stack.
+    if (refusal instanceof GatewayError) return refused(tool, caller, refusal);
+    // Answered with nothing of it, and logged with nothing of it either: a
+    // failure's message can carry what the call sent — a database error
+    // quotes its bound parameters — so only what kind of failure it was is
+    // logged, beside where it happened.
     log("error", "unhandled_error", {
       path: "/mcp",
       method: "POST",
       tool: tool.name,
       source: actionSource(caller),
-      error: error instanceof Error ? error.message : String(error),
+      ...failureKind(error),
     });
     return {
       isError: true,
@@ -221,8 +243,14 @@ async function callTool(
   }
 }
 
+function call(tool: McpTool, input: Record<string, unknown>, caller: OperationCaller): Promise<unknown> {
+  if (!tool.call) throw new Error(`MCP tool ${tool.name} has neither an operation nor a perform`);
+  const { operation, request, before } = tool.call(input);
+  return run(operation, request as never, caller, before);
+}
+
 /** One operation, run with its own registered handler and the tool's own check. */
-function run<K extends ReadOperation>(
+function run<K extends ToolOperation>(
   operation: K,
   request: OperationRequest<K>,
   caller: OperationCaller,
@@ -242,13 +270,12 @@ function actionSource(caller: OperationCaller): string | undefined {
 }
 
 /**
- * A business refusal as a tool result, logged exactly as the entry module logs
- * one it answers over HTTP — code, status and where, never a body — plus the
- * tool, and the credential's action source.
+ * A business refusal as a tool result, logged as the entry module logs one it
+ * answers over HTTP — code, status and where, never a body — plus the tool and
+ * the credential's action source, and never an argument.
  */
 function refused(
   tool: McpTool,
-  input: Record<string, unknown>,
   caller: OperationCaller,
   error: GatewayError,
 ): CallToolResult {
@@ -259,10 +286,12 @@ function refused(
     path: "/mcp",
     method: "POST",
     tool: tool.name,
-    app: typeof input.app === "string" ? input.app : undefined,
+    // Nothing the caller sent: an argument may be a secret the tool has just
+    // refused, wherever the caller put it, so a refusal is logged by its code
+    // and the tool alone.
     source: actionSource(caller),
   });
-  const next = nextAction(error.code);
+  const next = tool.next?.[error.code] ?? nextAction(error.code);
   const message = error.message.replace(/[.\s]+$/u, "");
   return {
     isError: true,
@@ -272,7 +301,7 @@ function refused(
       message: error.message,
       status: error.status,
       next,
-      ...(error.data === undefined ? {} : { data: error.data }),
+      ...(error.data === undefined ? {} : { data: redactSecrets(error.data) }),
     },
   };
 }

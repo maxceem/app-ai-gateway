@@ -12,7 +12,8 @@ export const MCP_INSTRUCTIONS = [
   "This server manages an App AI Gateway account: the AI provider credentials it holds, the apps that call providers through it, their end users, and their usage.",
   "Read before you write: call get_account first, and list or get a resource before proposing a change to it.",
   "Secrets never pass through a tool: provider keys are entered by a person in a browser, and an app key is only ever revealed on a browser page.",
-  "A change hands back an operation you poll with get_operation until it completes.",
+  "add_app and add_app_key take two calls: the first reserves and creates nothing, and the second, with the same arguments and the answer's operation, creates it once.",
+  "A change that needs a secret answers a URL for a person to open; poll get_operation until it completes.",
   "An unclaimed account expires unless a person claims it; get_account says so, and claim_account starts the claim.",
   "Read agw://guide for the full rules.",
 ].join(" ");
@@ -75,20 +76,88 @@ check the change with \`validate_app\` before making it. An app document is
 revision; the gateway assigns an app's id, which never changes, and an update carries the \`revision\` it was read at, so a document
 someone changed since is refused rather than overwritten.
 
-A change is an operation. The tool that asks for it returns the operation, and
-\`get_operation\` reports when it has completed. Anything that needs a secret
-or a person's approval completes in a browser: the tool returns a URL, you give
-it to the person, and you poll \`get_operation\` while they finish. Prefer
-reversible changes: disable an app or a provider rather than deleting it unless
-the person asked for the deletion.
+Changes come in three shapes.
+
+**Creates take two calls.** \`add_app\` and \`add_app_key\` first reserve: called
+without \`operation\`, they check the arguments, create nothing, and answer a
+handle as \`operation\`. Call the same tool again with the same arguments and
+that handle, within 15 minutes, to create it. If that answer is lost, call
+again with the same handle: it answers the same result with \`replayed: true\`
+and creates nothing more. A handle sent with different arguments is refused
+with \`operation_mismatch\`; one that lapsed with \`operation_expired\`; reserve
+again in either case. When a reservation answers a \`notice\`, an identical
+request was made in the last hour: inspect it with \`get_operation\` before you
+create a second.
+
+**Changes that need a secret complete in a browser.** \`add_provider\`,
+\`add_provider_gateway\`, \`rotate_provider_key\` and
+\`rotate_provider_gateway_key\` take everything but the key or token, and answer
+a URL. Give it to the person: they open it, enter the secret there and
+approve. Poll \`get_operation\` with the answer's \`operation\` until it is
+\`completed\`, or \`expired\` (with \`denied\` when they declined). Never open the
+URL yourself.
+
+**Everything else takes effect at once**: \`update_provider\`,
+\`update_provider_gateway\` and \`update_app\` carry the revision you read, so a
+change someone made since is refused rather than overwritten;
+\`remove_provider\`, \`remove_provider_gateway\` and \`remove_app\` delete for
+good and need the id again as \`confirm\`; \`revoke_app_key\`,
+\`block_app_user\` and \`unblock_app_user\` act at once. Prefer reversible
+changes: disable an app or a provider rather than deleting it unless the
+person asked for the deletion.
+
+\`get_operation\` reads any operation a change tool opened, by its id. It never
+returns a secret.
 
 ## Secrets
 
 No secret ever passes through a tool, in either direction. A provider
 credential is typed by the person into a browser page, never given to you and
-never accepted as a tool argument. A server app's key is revealed once, on a
-browser page; tools return only its metadata. Never ask the person to paste a
-secret into the conversation, and never print one you come across.
+never accepted as a tool argument. A key \`add_app\` or \`add_app_key\` creates
+is never in a tool result: the answer carries \`reveal_url\`, a page the person
+opens signed in to the console as an owner or admin, where they see the key
+once and copy it. Never ask the person to paste a secret into the
+conversation, and never print one you come across.
+
+How the server holds to that:
+
+- **Credential names.** A field is named like a credential when its name,
+  lower-cased and with \`_\` and \`-\` removed, is one of \`secret\`, \`token\`, \`apikey\`, \`password\`, \`passwd\`, \`passphrase\`, \`credential\`, \`credentials\`, \`authorization\`, \`accesstoken\`, \`refreshtoken\`, \`idtoken\`, \`authtoken\`, \`sessiontoken\`, \`bearertoken\`, \`clientsecret\`, \`apisecret\`, \`secretkey\` and \`privatekey\`. The whole name
+  is compared: \`api_key\`, \`apiKey\` and \`Token\` match; \`secretHint\`,
+  \`tokenHint\` and \`max_tokens\` do not.
+- **Refused arguments.** Every tool that answers a URL for a browser step
+  (\`add_provider\`, \`add_provider_gateway\`, \`rotate_provider_key\`,
+  \`rotate_provider_gateway_key\`), and \`add_app\`, \`update_app\` and
+  \`validate_app\` for the app document they take, refuse a call carrying a
+  field with such a name anywhere in its arguments: at any depth, inside a
+  list, beside the documented arguments or inside them. The refusal names the
+  field, never its value, and nothing is stored.
+- **URLs in a browser step.** Before a browser step is stored, every string in
+  its arguments is trimmed; one longer than any field of a browser step accepts
+  is refused at once, and the rest are read with the platform's URL parser, as
+  a browser would read them. A \`baseUrl\` must pass the same rules the provider
+  write applies: \`https://\` on a public domain name, no credentials, no query
+  string or fragment, no port. Any other string the parser reads as a URL is
+  refused when it carries credentials (\`https://user:pass@…\`, however it is
+  written) or when its query or fragment names a credential: both are first
+  percent-decoded, repeatedly, so an encoded delimiter delimits, then split on
+  every \`?\`, \`&\`, \`#\` and \`;\`. A piece with an \`=\` is a parameter: its name is
+  stripped of leading \`?\`, \`#\` and \`/\` and compared with the names above. A piece without one is a route or a flag and is not judged. So
+  \`?api_key=…\`, \`#access_token=…\` and \`#/callback?token=…\` are refused, while
+  \`https://example.com/?version=2\`, \`https://example.com/#/settings/password\`
+  and a name like \`OpenAI: production\` are accepted.
+- **Results.** In every tool result, a field with a credential name is shown
+  as \`[redacted]\` — the whole field, whatever it holds: a string, a number, a
+  list or an object — whatever stored it, since an app document written
+  through the API may carry provider-native parameters of any name. The one
+  exception is the metadata of the key a tool created, in the \`api_key\` of an
+  \`add_app\` or \`add_app_key\` result and in \`result.api_key\` of a
+  \`get_operation\` result (\`id\`, \`name\`, \`key_prefix\`, \`created_at\`), shown
+  when it holds nothing else. An \`api_key\` anywhere else, inside an app
+  document included, is redacted. A field holding \`null\` stays \`null\`, and
+  hint fields such as \`secretHint\` are shown as they are. Do not send a
+  \`[redacted]\` value back in an update; leave that field out or ask the
+  person.
 
 ## Errors
 

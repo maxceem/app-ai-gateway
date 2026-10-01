@@ -25,15 +25,16 @@ type AppRow = typeof appTable.$inferSelect;
 /**
  * Everything a handler is handed, already parsed and resolved: the path
  * parameters, the query and the body through the operation's own schemas, the
- * request's management scope, the actor on an operation that has one, and the
- * application an `/apps/{app}` operation is about.
+ * request's management scope, the actor on an operation that has one — beside
+ * the cf-auth state it was resolved from, which an operation the engine runs
+ * binds to — and the application an `/apps/{app}` operation is about.
  */
 export type OperationInput<K extends OperationName> = {
   params: OperationParams<K>;
   query: ParsedOperationQuery<K>;
   body: ParsedOperationRequest<K>;
   scope: ManagementScope;
-} & (Catalog[K]["security"] extends "management" | "session" ? { actor: AdminActor } : unknown)
+} & (Catalog[K]["security"] extends "management" | "session" ? { actor: AdminActor; state: AuthState } : unknown)
   & ("app" extends keyof OperationParams<K> ? { app: AppRow } : unknown);
 
 /**
@@ -209,7 +210,7 @@ export async function runOperation<K extends BodiedOperation>(
     query,
     body,
     scope: caller.scope,
-    ...(guarded(spec) ? { actor: requireAuth(caller).actor } : {}),
+    ...(guarded(spec) ? { actor: requireAuth(caller).actor, state: requireAuth(caller).state } : {}),
     ...(app ? { app } : {}),
   } as unknown as OperationInput<K>;
   return handler(input);

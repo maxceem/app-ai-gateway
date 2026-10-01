@@ -1,15 +1,16 @@
 ---
 title: MCP server
-description: Connect an MCP client such as a coding agent to your gateway and let it read your apps, providers and usage.
+description: Connect an MCP client such as a coding agent to your gateway and let it read and change your apps, providers and usage.
 ---
 
 The gateway is also a [Model Context Protocol](https://modelcontextprotocol.io)
 server. An MCP client — a coding agent, a desktop assistant, an IDE — can
-connect to it and read everything the [API](/automation/api) reads, through
-tools written for an agent rather than for an HTTP client. Each tool runs the
-same operation the API and the [CLI](/automation/cli) run, with the same
-rules, so connecting a client over MCP gives it no more and no less than the
-credential it connects with.
+connect to it to read your apps, providers and usage and to change them,
+through tools written for an agent rather than for an HTTP client. Each tool
+runs the same operation the API and the [CLI](/automation/cli) run, with the
+same rules, so connecting a client over MCP gives it no more and no less than
+the credential it connects with. No key or token ever passes through a tool,
+in either direction.
 
 ## Endpoint
 
@@ -34,10 +35,11 @@ Create a management key on the console's **Management keys** page and give it
 to the client as a bearer token, in an `Authorization: Bearer` header. Choose
 the key's grant for what the client should be able to do:
 
-- **Read only** for a client that only looks. This is enough for every tool
-  the server offers today.
-- **Manage** for a client that will also change things once change tools are
-  available. It can do what the key's owner's role allows.
+- **Read only** for a client that only looks. Every reading tool works with
+  it, and every change tool is refused with `grant_insufficient`.
+- **Manage** for a client that will also change things. It can do what the
+  key's owner's role allows: an owner's or admin's key can make every change
+  below, a member's none.
 
 Keep the key out of the client's configuration file where you can. A client
 that expands environment variables, such as Claude Code with a project
@@ -63,10 +65,10 @@ never accepts a console sign-in cookie. Revoking the key on the
 Each request a client sends with your key is attributed to MCP, whatever the
 client calls itself.
 
-## Tools
+## Reading tools
 
-Every tool reads; none of them changes anything or sends a request to a
-provider. Tools about one app take its id as `app`.
+These tools change nothing and never send a request to a provider. Tools
+about one app take its id as `app`.
 
 | Tool | What it returns |
 | --- | --- |
@@ -91,6 +93,100 @@ provider. Tools about one app take its id as `app`.
 | `get_usage` | One month's totals, for all your apps or for one |
 | `get_usage_breakdown` | An app's usage grouped by model, provider, user or another dimension |
 | `get_usage_timeseries` | An app's usage per day |
+
+## Change tools
+
+| Tool | What it does |
+| --- | --- |
+| `get_operation` | Where a change a tool started stands: pending, completed with what it created, or expired |
+| `add_provider`, `add_provider_gateway` | Start adding a provider or a provider gateway; you enter its key or token in your browser |
+| `update_provider`, `update_provider_gateway` | Change a provider's name, routing, pricing or status, or rename a provider gateway |
+| `rotate_provider_key`, `rotate_provider_gateway_key` | Start replacing a key or token; you enter the new one in your browser |
+| `remove_provider`, `remove_provider_gateway` | Delete one for good, with its id repeated as `confirm` |
+| `add_app` | Create an app; a server app's key is shown to you on a page, never to the agent |
+| `update_app` | Replace an app's document, at the revision it was read at |
+| `remove_app` | Delete an app for good, with its id repeated as `confirm` |
+| `add_app_key` | Create another key for a server app, shown to you on a page |
+| `revoke_app_key` | Revoke one of a server app's keys |
+| `block_app_user`, `unblock_app_user` | Block or unblock one of an app's users |
+| `claim_account` | Start claiming an account nobody owns yet, in your browser |
+
+### Creating takes two calls
+
+`add_app` and `add_app_key` create something an agent may need to ask for
+again after a lost answer, so each takes two calls. The first, without
+`operation`, checks the request, creates nothing, and answers a handle as
+`operation`. The second, with the same arguments and that handle, creates it
+— once. Calling again with the same handle answers the same result with
+`replayed: true` and creates nothing more, so an agent can always retry. A
+handle lapses after 15 minutes unused, and one sent with different arguments
+is refused with `operation_mismatch`. When the first call answers a `notice`,
+the same request was already made within the last hour, and the notice names
+it so the agent can look before creating a second.
+
+### A key is revealed on a page you open
+
+A key is revealed on a page a person opens, never in a tool result. When
+`add_app` creates a server app, or `add_app_key` a key, the answer carries
+`reveal_url`, a page on your console. Open it signed in as an owner or admin
+of the account, press **Reveal the key** and copy it: it is shown once, within
+15 minutes of its creation, and nothing reveals it again. Nobody else can open
+it with the link alone, and the agent never sees the key.
+
+### Keys and tokens are entered in your browser
+
+`add_provider`, `add_provider_gateway`, `rotate_provider_key` and
+`rotate_provider_gateway_key` take everything except the secret, and answer a
+URL. Open it in your browser, check what is about to be stored, enter the key
+or token there and approve. The agent waits with `get_operation` until the
+change completes, or until it lapses after 15 minutes or you decline it. A
+tool called with a key or token as an argument refuses it.
+
+### How secrets are kept out of tools
+
+A field is named like a credential when its name, lower-cased and with `_`
+and `-` removed, is one of `secret`, `token`, `apikey`, `password`, `passwd`, `passphrase`, `credential`, `credentials`, `authorization`, `accesstoken`, `refreshtoken`, `idtoken`, `authtoken`, `sessiontoken`, `bearertoken`, `clientsecret`, `apisecret`, `secretkey` and `privatekey`. The whole name is compared, so `api_key`,
+`apiKey` and `Token` match, and `secretHint`, `tokenHint` and `max_tokens` do
+not.
+
+- **Arguments.** The four browser-step tools above, and `add_app`,
+  `update_app` and `validate_app` for the app document they take, refuse a
+  call with a field of such a name anywhere in its arguments: at any depth,
+  inside a list, beside the documented arguments or inside them. The refusal
+  names the field and never its value, and nothing is stored.
+- **URLs in a browser step.** Every string in a browser step's arguments is
+  trimmed before anything is stored. One longer than any field of a browser
+  step accepts is refused at once; the rest are read with the URL parser a
+  browser uses. A `baseUrl` follows the rules a provider's base URL always follows:
+  an `https://` address on a public domain name, with no credentials, query
+  string, fragment or port. Any other string the parser reads as a URL is
+  refused when it carries credentials (`https://user:pass@…`, however it is
+  written) or when its query or fragment names a credential. Both are first
+  percent-decoded, repeatedly, so an encoded delimiter such as `%3D` delimits,
+  and then split on every `?`, `&`, `#` and `;`. A piece with an `=` is a
+  parameter: its name is stripped of leading `?`, `#` and `/` and compared with
+  the names above. A piece without one is a route or a flag and is not judged. So
+  `?api_key=…`, `#access_token=…` and `#/callback?token=…` are refused, while
+  `https://example.com/?version=2`, `https://example.com/#/settings/password`
+  or a name like `OpenAI: production` is accepted.
+- **Results.** In every tool result, a field with a credential name is shown
+  as `[redacted]` — the whole field, whatever it holds: a string, a number, a
+  list or an object — however it was stored. An app you configured through
+  the API or the CLI may carry provider-native parameters of any name, and an
+  agent reads them as `[redacted]`. The one exception is the metadata of the
+  key a tool just created — the `api_key` of an `add_app` or `add_app_key`
+  result and `result.api_key` of a `get_operation` result (`id`, `name`,
+  `key_prefix`, `created_at`) — shown when it holds nothing else. An `api_key`
+  anywhere else, inside an app document included, is redacted. A field holding `null` stays `null`, and hint fields
+  such as `secretHint` are shown as they are.
+
+### Everything else takes effect at once
+
+Updates carry the `revision` the agent read, so a change someone made since is
+refused rather than overwritten. Deletions repeat the id as `confirm`; prefer
+disabling an app or a provider, which you can undo.
+
+## Results and refusals
 
 Each result has a one- or two-sentence summary for the agent to read and the
 same body the API answers with as structured content. A refusal is a tool
@@ -118,7 +214,5 @@ console's own.
 
 ## Coming next
 
-This server reads today. Tools that add and change providers and apps, and
-OAuth sign-in for MCP clients so you can connect one without creating a key
-first, are being added. Until then, make changes with the
-[CLI](/automation/cli) or the [API](/automation/api).
+OAuth sign-in for MCP clients, so you can connect one without creating a key
+first, is being added. Until then, connect with a management key.
