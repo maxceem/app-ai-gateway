@@ -30,6 +30,11 @@ interface Env {
   // changes and so cannot be registered with Google. Not a secret, and unset in
   // every deployment that owns its callback URL. See the deployment guide.
   OAUTH_RELAY_URL?: string;
+  // Browser origins besides the console's own that may call the MCP endpoint,
+  // comma-separated, each an https origin with no path. Unset or empty means
+  // only non-browser clients and the console itself; an invalid entry is
+  // dropped with a warning. Not a secret.
+  MCP_ALLOWED_ORIGINS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
   // The vault mode and KEK version are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
@@ -61,6 +66,7 @@ declare namespace Cloudflare {
     PRIVACY_POLICY_URL?: string;
     PUBLIC_API_URL?: string;
     OAUTH_RELAY_URL?: string;
+    MCP_ALLOWED_ORIGINS?: string;
     BILLING?: import("./billing/contract").BillingRuntime;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;

@@ -1,0 +1,124 @@
+---
+title: MCP server
+description: Connect an MCP client such as a coding agent to your gateway and let it read your apps, providers and usage.
+---
+
+The gateway is also a [Model Context Protocol](https://modelcontextprotocol.io)
+server. An MCP client — a coding agent, a desktop assistant, an IDE — can
+connect to it and read everything the [API](/automation/api) reads, through
+tools written for an agent rather than for an HTTP client. Each tool runs the
+same operation the API and the [CLI](/automation/cli) run, with the same
+rules, so connecting a client over MCP gives it no more and no less than the
+credential it connects with.
+
+## Endpoint
+
+The server is one URL on the host you sign in to the console at:
+
+```text
+https://console.appaigateway.com/mcp
+```
+
+On your own deployment it is your console's address followed by `/mcp`, such
+as `https://console.example.com/mcp`. If you serve your apps from a separate
+API host with `PUBLIC_API_URL`, the MCP endpoint is not on that host; it answers
+`404` there, like the console's own routes.
+
+It speaks the Streamable HTTP transport over `POST`, statelessly: there is no
+session to keep, and every request carries its credential. Clients on protocol
+revision `2026-07-28` and clients on the 2025 revisions are both served.
+
+## Connect with a management key
+
+Create a management key on the console's **Management keys** page and give it
+to the client as a bearer token, in an `Authorization: Bearer` header. Choose
+the key's grant for what the client should be able to do:
+
+- **Read only** for a client that only looks. This is enough for every tool
+  the server offers today.
+- **Manage** for a client that will also change things once change tools are
+  available. It can do what the key's owner's role allows.
+
+Keep the key out of the client's configuration file where you can. A client
+that expands environment variables, such as Claude Code with a project
+`.mcp.json`, can read it from the environment:
+
+```json title=".mcp.json"
+{
+  "mcpServers": {
+    "app-ai-gateway": {
+      "type": "http",
+      "url": "https://console.appaigateway.com/mcp",
+      "headers": { "Authorization": "Bearer ${AGW_MANAGEMENT_KEY}" }
+    }
+  }
+}
+```
+
+A request without a bearer token, or with one that is not a live management
+key, is answered `401` with a `WWW-Authenticate: Bearer` challenge. The server
+never accepts a console sign-in cookie. Revoking the key on the
+**Management keys** page ends the client's access at once.
+
+Each request a client sends with your key is attributed to MCP, whatever the
+client calls itself.
+
+## Tools
+
+Every tool reads; none of them changes anything or sends a request to a
+provider. Tools about one app take its id as `app`.
+
+| Tool | What it returns |
+| --- | --- |
+| `get_account` | Your account and the deployment it lives on; for an account nobody has claimed yet, its deadlines |
+| `get_capabilities` | The provider types and provider gateway types the deployment supports |
+| `list_models` | The priced models, with per-token prices and retirement dates |
+| `list_providers` | Your providers' metadata; never a key, only its last characters |
+| `get_provider` | One provider's metadata, by id or slug |
+| `list_provider_gateways` | Your provider gateways' metadata |
+| `list_apps` | Your apps, with their status and a month's usage |
+| `get_app` | One app's whole stored document, with its revision |
+| `validate_app` | Whether an app document would be accepted, as a new app or as an update of one, without saving it |
+| `check_app` | Whether an app can serve requests, without sending one |
+| `get_app_snippet` | The first request an app can send, without a credential in it |
+| `list_app_keys` | A server app's keys, as metadata; never a key's value |
+| `list_app_users` | An app's end users, a page at a time |
+| `get_app_user` | One end user, with status and usage |
+| `list_app_events` | An app's proxied requests, newest first |
+| `list_auth_events` | An app's sign-in and App Attest attempts, newest first |
+| `get_auth_event_summary` | An app's sign-in outcomes per day |
+| `list_rejection_events` | Samples of the requests the gateway refused for an app |
+| `get_usage` | One month's totals, for all your apps or for one |
+| `get_usage_breakdown` | An app's usage grouped by model, provider, user or another dimension |
+| `get_usage_timeseries` | An app's usage per day |
+
+Each result has a one- or two-sentence summary for the agent to read and the
+same body the API answers with as structured content. A refusal is a tool
+result marked as an error, carrying the gateway's error code, its message and
+what to do next, such as `app_not_found` with "Call list_apps for the ids of
+your apps". Only a missing or invalid credential is answered with an HTTP
+error.
+
+The server also publishes `agw://guide`, a resource with the full rules for
+working with the gateway over MCP. Clients that read resources can hand it to
+the agent; its contents are the same as what the server tells every client
+when it connects, at length.
+
+## Calling from a browser
+
+Most MCP clients are not browsers and send no `Origin` header; they are always
+served. A request from a web page is served only from the console's own origin
+or from one you list. On your own deployment, list the origins of browser-based
+MCP clients you trust in the `MCP_ALLOWED_ORIGINS` variable; see
+[Configuration](/self-hosting/configuration#mcp_allowed_origins). They receive
+CORS headers, and every other origin is refused with `403`. If your deployment
+answers on more than one host name, set `CLI_CONSOLE_ORIGIN` to the console's
+address, so only that host serves `/mcp` and only its origin counts as the
+console's own.
+
+## Coming next
+
+This server reads today. Tools that add and change providers and apps, and
+OAuth sign-in for MCP clients so you can connect one without creating a key
+first, are being added. Until then, make changes with the
+[CLI](/automation/cli) or the [API](/automation/api).

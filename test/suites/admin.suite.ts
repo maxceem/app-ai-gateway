@@ -7,3 +7,4 @@ import "../admin-providers.test";
 import "../app-check-snippet.test";
 
 import "../app-operations.test";
+import "../mcp.test";

@@ -71,6 +71,7 @@ const consoleHostOnly: MiddlewareHandler<{ Bindings: Env }> = async (c, next) =>
 app.use("/v1/auth/*", consoleHostOnly);
 app.use("/v1/console/*", consoleHostOnly);
 app.use("/v1/cli/browser/*", consoleHostOnly);
+app.use("/mcp", consoleHostOnly);
 
 /**
  * The management surface is mounted as a whole app behind a dynamic `import()`,
@@ -91,6 +92,19 @@ const management = lazyRoutes<AppEnv>(
 app.all("/v1/cli/*", management);
 app.all("/v1/auth/*", management);
 app.all("/v1/console/*", management);
+
+/**
+ * The MCP endpoint, a bundle of its own behind the same kind of mount: the tool
+ * table, the catalog and the MCP SDK are evaluated by the first MCP request an
+ * isolate serves. A second loader rather than a fifth prefix on the management
+ * one, so an MCP request does not evaluate the console and CLI routes and a
+ * management request does not evaluate the tool table. Console host only, like
+ * every surface a person or an agent manages the account through.
+ */
+app.all(
+  "/mcp",
+  lazyRoutes<AppEnv>(() => import("./routes/mcp").then((module) => module.mcpRoutes)),
+);
 
 // The application token exchange is on the client path and mounted statically:
 // what a proxied request would rather not evaluate — better-auth behind the

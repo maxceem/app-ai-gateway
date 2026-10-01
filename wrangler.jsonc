@@ -27,7 +27,9 @@
   "assets": {
     "directory": "./console/dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/v1/*"]
+    // The API, and the MCP endpoint: an MCP client posts to `/mcp`, and a
+    // browser navigating there must reach the Worker rather than the console.
+    "run_worker_first": ["/v1/*", "/mcp"]
   },
   "d1_databases": [
     {

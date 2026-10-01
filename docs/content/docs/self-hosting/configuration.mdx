@@ -156,6 +156,28 @@ must be an origin: `https`, no path, no query. It changes what the console
 prints as the base URL and which routes answer on that host; see
 [Custom domain and rate limiting](/self-hosting/custom-domain).
 
+### `MCP_ALLOWED_ORIGINS`
+
+Plain variable, unset by default. The browser origins, besides the console's
+own, that may call the [MCP server](/automation/mcp) at `/mcp`,
+comma-separated:
+
+```jsonc title="wrangler.prod.overlay.jsonc"
+{
+  "vars": { "MCP_ALLOWED_ORIGINS": "https://inspector.example.com,https://agent.example.org" }
+}
+```
+
+Each entry is an exact origin: `https` (or `http` on a loopback host such as
+`localhost`, for local development), host and port, no path. An entry that is
+not one is ignored and logged as a warning, and the others still apply. A listed origin receives
+CORS headers and its preflight is answered; a request from any other web page
+is refused with `403`. MCP clients that are not browsers send no origin and
+are served whatever this says, so most deployments leave it unset. On a
+deployment reachable through more than one host name, also set
+[`CLI_CONSOLE_ORIGIN`](#cli_console_origin): without it, every host the Worker
+answers on counts as the console's, and so does each host's own origin.
+
 ## Providers
 
 ### `PROVIDER_TTFB_TIMEOUT_SECONDS`
@@ -234,6 +256,7 @@ so changing either means deploying again.
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |
 | `OAUTH_RELAY_URL` | Variable | Unset |
 | `PUBLIC_API_URL` | Variable | Unset |
+| `MCP_ALLOWED_ORIGINS` | Variable | Unset |
 | `PROVIDER_TTFB_TIMEOUT_SECONDS` | Variable | `120` |
 | `MAINTENANCE_QUERY_BUDGET` | Variable | `50` |
 | `TERMS_OF_SERVICE_URL`, `PRIVACY_POLICY_URL` | Variable | Unset |

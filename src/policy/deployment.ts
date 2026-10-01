@@ -1,5 +1,6 @@
 import type { BillingRuntime } from "../billing/contract";
 import { GatewayError } from "../core/errors";
+import { log } from "../core/log";
 import { ACCOUNT_RECOVERY_MS } from "./accounts";
 
 export type DeploymentMode = "cloud" | "self_hosted";
@@ -86,6 +87,21 @@ export interface Deployment {
    * request is worth writing on a deployment no CLI has been pointed at yet.
    */
   apiUrl(): string;
+  /**
+   * The origin the console is served from: `CLI_CONSOLE_ORIGIN`, or else the
+   * request's own. The same value as `identity().consoleOrigin`, without
+   * needing `DEPLOYMENT_ID`, for a surface that has to know which host is the
+   * console's but has no use for the deployment's name.
+   */
+  consoleOrigin(): string;
+  /** How the MCP endpoint on the console host treats browsers. */
+  readonly mcp: {
+    /**
+     * Browser origins besides the console's own that may call `/mcp`, from
+     * `MCP_ALLOWED_ORIGINS`. Empty unless the deployment lists some.
+     */
+    readonly allowedOrigins: readonly string[];
+  };
 }
 
 /** The subset the pure policy helpers below decide on. */
@@ -109,20 +125,72 @@ function resolveOrigins(
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const configuredOrigin = new URL(configured);
-  const loopback =
-    configuredOrigin.hostname === "localhost" ||
-    configuredOrigin.hostname.endsWith(".localhost") ||
-    configuredOrigin.hostname === "127.0.0.1";
-  if (
-    (configuredOrigin.protocol !== "https:" &&
-      !(configuredOrigin.protocol === "http:" && loopback)) ||
-    configuredOrigin.username ||
-    configuredOrigin.password
-  ) {
+  if (!secureOrigin(configuredOrigin)) {
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const consoleOrigin = configuredOrigin.origin;
   return { consoleOrigin, apiUrl: env.PUBLIC_API_URL ?? consoleOrigin };
+}
+
+/** HTTPS, or plain HTTP on a loopback host for local development; never with credentials. */
+function secureOrigin(url: URL): boolean {
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname.endsWith(".localhost") ||
+    url.hostname === "127.0.0.1";
+  return (url.protocol === "https:" || (url.protocol === "http:" && loopback))
+    && !url.username
+    && !url.password;
+}
+
+/** The last `MCP_ALLOWED_ORIGINS` value parsed, so an isolate parses and warns about one value once. */
+let parsedMcpOrigins: { raw: string; origins: readonly string[] } | undefined;
+
+/**
+ * `MCP_ALLOWED_ORIGINS` as the exact origins a browser sends: comma-separated,
+ * each an `https` origin (or `http` on a loopback host) with no wildcard, path,
+ * query or credentials, normalised as a browser writes one — lower case, no
+ * default port, no trailing slash. An entry that is not one is dropped with a
+ * warning giving its position and why, rather than refusing every request over
+ * a typo in one of them. The warning never repeats the entry itself: one that
+ * does not parse may still carry credentials nobody can strip from it.
+ */
+function mcpAllowedOrigins(raw: string | undefined): readonly string[] {
+  const value = raw?.trim() ?? "";
+  if (value === "") return [];
+  if (parsedMcpOrigins?.raw === value) return parsedMcpOrigins.origins;
+  const origins: string[] = [];
+  const entries = value.split(",").map((part) => part.trim()).filter(Boolean);
+  for (const [index, entry] of entries.entries()) {
+    let url: URL | undefined;
+    try {
+      url = new URL(entry);
+    } catch {
+      url = undefined;
+    }
+    // A browser sends one exact origin, so an entry is matched exactly too: a
+    // wildcard host would match nothing, and is refused rather than kept as
+    // a rule that looks broader than it is.
+    const bare = url !== undefined
+      && secureOrigin(url)
+      && !url.hostname.includes("*")
+      && url.pathname === "/"
+      && !url.search
+      && !url.hash;
+    if (!url || !bare) {
+      log("warn", "mcp_allowed_origin_ignored", {
+        // 1-based, as a person counts the entries of the list they wrote.
+        position: index + 1,
+        reason: url === undefined
+          ? "not a URL"
+          : "not an exact https origin (http only on a loopback host) without a wildcard, path, query or credentials",
+      });
+      continue;
+    }
+    if (!origins.includes(url.origin)) origins.push(url.origin);
+  }
+  parsedMcpOrigins = { raw: value, origins };
+  return origins;
 }
 
 /**
@@ -150,6 +218,11 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
       origins ??= resolveOrigins(env, requestUrl);
       return origins.apiUrl;
     },
+    consoleOrigin(): string {
+      origins ??= resolveOrigins(env, requestUrl);
+      return origins.consoleOrigin;
+    },
+    mcp: { allowedOrigins: mcpAllowedOrigins(env.MCP_ALLOWED_ORIGINS) },
   };
 }
 

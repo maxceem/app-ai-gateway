@@ -78,6 +78,17 @@ unless the person explicitly requests it.
   tagged CLI and labelled with the machine it was issued to, for example
   `CLI on mac-studio`. The person can revoke it there at any time.
 
+## MCP
+
+If you are connected to the gateway as an MCP server, at the console's address
+followed by `/mcp` (`https://console.appaigateway.com/mcp` when hosted), you
+can read the same account through its tools instead of the CLI: `get_account`
+first, then `list_providers`, `list_apps`, `get_app`, `validate_app`,
+`check_app`, usage and event tools. Every tool reads; make changes with the
+CLI. A refusal is a tool result marked as an error with the gateway's code and
+the next step to take. The server's `agw://guide` resource has its full rules,
+and the MCP server guide at `/automation/mcp` lists every tool.
+
 The API reference below is useful for integrations that do not use the CLI.
 
 ## What the gateway is
