@@ -2,83 +2,65 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { addModels } from "../scripts/models/catalog-edit.mjs";
-import { discoveryUpdate, notAddedKey } from "../scripts/models/new-models.mjs";
+import { createClassifier, recommendModels } from "../scripts/models/ai-review.mjs";
+import { applyChoices, collectCandidates, modelKey, REVIEW_PATH, validateChoices } from "../scripts/models/choices.mjs";
+import { notAddedKey } from "../scripts/models/new-models.mjs";
 import { renderReport } from "../scripts/models/report.mjs";
 import { decide, catalogEdits, needsHuman } from "../scripts/models/rules.mjs";
-import { applyDecisions, catalogRates, ISSUE_MARKER, parseCommands, pendingDecisions, renderDecision, renderIssue } from "../scripts/models/review.mjs";
-import { prepareReview, publishReview, githubClient } from "../scripts/review-models.mjs";
+import { catalogRates, parseCommands } from "../scripts/models/review.mjs";
+import { githubClient, loadReview, prepareReview, readReview, trustedPull } from "../scripts/review-models.mjs";
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/models/${name}`, import.meta.url), "utf8");
 const text = '{\n  "openai": {\n    "old": { "input": 1.0, "output": 2.0 }\n  }\n}\n';
-const today = "2026-09-30";
+const today = "2026-10-01";
 const noLists = { modelsDev: {}, litellm: {} };
-const commands = (body) => parseCommands(body);
+const candidate = (model, price = { input: 1, output: 2 }) => ({ provider: "openai", model, canonical: model, ...(price ? { price } : { problem: "No supported public rates." }), info: {} });
+const choice = (model, action = "add", origin = "ai", reason = "Useful current model.") => ({ provider: "openai", model, action, reason, origin, reviewer: origin === "ai" ? "gpt-6-luna" : "owner" });
+const context = { today, catalog: { openai: ["old"] }, newModels: [{ provider: "openai", ids: ["new"] }] };
+const response = (decisions, overrides = {}) => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ decisions }) } }], ...overrides }));
+const apiSettings = { url: "https://example.com/v1/chat/completions", key: "private-test-credential-never-in-output" };
 
-test("discovery: exact skips leave other models pending and trigger a notification PR without catalog edits", () => {
-  const decision = decide({
-    catalog: JSON.parse(text),
-    official: { openai: { prices: new Map([["old", { input: 1, output: 2 }], ["new", null], ["skipped", null], ["skipped-next", null]]) } },
-    acknowledged: [{ key: notAddedKey("openai", "skipped"), reason: "Older snapshot" }],
-    lists: noLists, today,
-  });
+test("discovery: exact skip acknowledgements leave other models pending and still trigger a PR", () => {
+  const decision = decide({ catalog: JSON.parse(text), official: { openai: { prices: new Map([["old", { input: 1, output: 2 }], ["new", null], ["skipped", null], ["skipped-next", null]]) } },
+    acknowledged: [{ key: notAddedKey("openai", "skipped"), reason: "Older snapshot" }], lists: noLists, today });
   assert.deepEqual(decision.newModels, [{ provider: "openai", ids: ["new", "skipped-next"] }]);
   assert.deepEqual(decision.skippedModels, [{ provider: "openai", model: "skipped", reason: "Older snapshot" }]);
   assert.deepEqual(catalogEdits(decision), []);
   assert.equal(needsHuman(decision), false);
-  const discoveries = discoveryUpdate(decision.newModels, []);
-  assert.deepEqual(discoveries.notifications, decision.newModels);
-  assert.notEqual(JSON.stringify(discoveries.notified), "[]", "a discovery-only PR must have a reviewable file change");
-  const report = renderReport({ ...decision, notifications: discoveries.notifications });
-  assert.match(report, /### Newly discovered models[\s\S]*\| `openai` \| `new` \|/u);
-  assert.ok(report.indexOf("### Newly discovered models") < report.indexOf("## Additional information"));
-  assert.ok(report.indexOf("### Newly discovered models") < report.indexOf("### Sources"));
-  assert.doesNotMatch(report, /<summary>New models/u);
-  assert.match(report, /Models deliberately not added[\s\S]*Older snapshot/u);
-});
-
-test("discovery: merged notifications do not open repeated PRs or resolve add/skip decisions", () => {
-  const newModels = [{ provider: "openai", ids: ["known", "new"] }, { provider: "together", ids: ["Qwen/new"] }];
-  const previous = [{ provider: "openai", ids: ["gone", "known"] }];
-  const first = discoveryUpdate(newModels, previous);
-  assert.deepEqual(first.notifications, [{ provider: "openai", ids: ["new"] }, { provider: "together", ids: ["Qwen/new"] }]);
-  assert.deepEqual(first.notified, [{ provider: "openai", ids: ["gone", "known", "new"] }, { provider: "together", ids: ["Qwen/new"] }]);
-  assert.deepEqual(discoveryUpdate(newModels, previous), first, "retries before merge produce the same rolling PR diff");
-  const merged = discoveryUpdate(newModels, first.notified);
-  assert.deepEqual(merged.notifications, []);
-  assert.equal(merged.notified, first.notified, "no repeated file change after merge");
-  assert.deepEqual(discoveryUpdate([], first.notified).notified, first.notified, "missing pages do not erase notification history");
-  assert.throws(() => discoveryUpdate(newModels, {}), /notified.json/u);
-  const report = renderReport({
-    changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], upcoming: [], noSource: [], sources: [],
-    newModels, notifications: merged.notifications,
-  });
+  const report = renderReport({ ...decision, modelChoices: [choice("new"), choice("skipped-next", "skip")] });
   const [trigger, additional] = report.split("## Additional information");
-  assert.match(trigger, /No pull request is needed/u);
-  assert.doesNotMatch(trigger, /### Newly discovered models/u);
-  assert.match(additional, /Previously reported models awaiting a decision[\s\S]*Qwen\/new/u);
-  const mixed = renderReport({
-    changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], upcoming: [], noSource: [], sources: [],
-    newModels, notifications: first.notifications,
-  });
-  const [newTrigger, alreadyReported] = mixed.split("## Additional information");
-  assert.match(newTrigger, /\| `openai` \| `new` \|/u);
-  assert.doesNotMatch(newTrigger, /\| `openai` \| `known` \|/u);
-  assert.match(alreadyReported, /\| `openai` \| `known` \|/u);
-  assert.doesNotMatch(alreadyReported, /\| `openai` \| `new` \|/u);
+  assert.match(trigger, /Newly discovered models[\s\S]*`openai\/new` \| \*\*Add\*\*/u);
+  assert.match(trigger, /`openai\/skipped-next` \| \*\*Skip\*\*/u);
+  assert.match(trigger, /comment on this PR/u);
+  assert.doesNotMatch(report, /<summary>New models|rolling.*issue/u);
+  assert.match(additional, /Older snapshot/u);
 });
 
-test("commands: explicit actions, nested model IDs, reasons, no shell or ambiguous batches", () => {
-  assert.deepEqual(commands("/models add together/Qwen/Qwen3.8-Flash\n/models skip openai/gpt-4o Old model"), [
-    { action: "add", provider: "together", model: "Qwen/Qwen3.8-Flash" },
-    { action: "skip", provider: "openai", model: "gpt-4o", reason: "Old model" },
+test("candidates: new IDs are priced individually, unsupported formats do not hide supported models", () => {
+  const page = fixture("openai.md");
+  const candidates = collectCandidates({ newModels: [{ provider: "openai", ids: ["gpt-6-astra", "omni-moderation-latest"] }], official: { openai: { text: page } }, lists: noLists, today });
+  assert.equal(candidates[0].price.input, 10);
+  assert.equal(candidates[0].price.long_context_threshold, 272000);
+  assert.equal(candidates[1].price, undefined);
+  assert.match(candidates[1].problem, /Unsupported public pricing:.*Free/u);
+  assert.deepEqual(catalogRates({ input: 1, output: 2, upcoming: [{ date: "2027-01-01", field: "input", value: 3 }] }), { input: 1, output: 2 });
+});
+
+test("commands: explicit actions, nested IDs, bounded batches, no executable syntax", () => {
+  assert.deepEqual(parseCommands("/models add together/Qwen/Qwen3.8-Flash\n/models skip openai/gpt-4o Old model"), [
+    { action: "add", provider: "together", model: "Qwen/Qwen3.8-Flash" }, { action: "skip", provider: "openai", model: "gpt-4o", reason: "Old model" },
   ]);
-  for (const body of ["", "/models skip openai/a", "/models add openai/a reason", "/models add openai/$(id)", "/models add unknown/a", "/models add openai/a\n/models skip openai/a why", "/models add openai/a\nrun me"]) {
-    assert.throws(() => commands(body));
-  }
-  assert.throws(() => commands(`/models add openai/${"a".repeat(9000)}`), /8,000/u);
+  for (const body of ["", "/models skip openai/a", "/models add openai/a reason", "/models add openai/$(id)", "/models add unknown/a", "/models add openai/a\n/models skip openai/a why", "/models add openai/a\nrun me"]) assert.throws(() => parseCommands(body));
+  assert.throws(() => parseCommands(`/models add openai/${"a".repeat(9000)}`), /8,000/u);
 });
 
-test("catalog additions: surgical formatting, whole prices and long-context integer thresholds", () => {
+test("candidates: hosted models retain confirmed authors, including the official table's organization", () => {
+  const candidates = collectCandidates({ newModels: [{ provider: "together", ids: ["moonshotai/Kimi-K3", "zai-org/GLM-5.3"] }, { provider: "cerebras", ids: ["qwen-3.8-27b"] }],
+    official: { together: { text: fixture("together.md") }, cerebras: { text: fixture("cerebras.json") } }, lists: noLists, today });
+  assert.deepEqual(candidates.map(({ price }) => price.author), ["Moonshot AI", "Z.ai", "Alibaba"]);
+});
+
+test("catalog additions: preserve original entries, whole prices and integer thresholds", () => {
   const added = addModels(text, [{ provider: "openai", model: "new", price: { input: 2, output: 10 } }]);
   assert.match(added, /"new": \{ "input": 2\.0, "output": 10\.0 \}/u);
   assert.ok(added.includes('    "old": { "input": 1.0, "output": 2.0 }'));
@@ -89,134 +71,184 @@ test("catalog additions: surgical formatting, whole prices and long-context inte
   assert.throws(() => addModels(long, [{ provider: "openai", model: "old", price: { input: 9, output: 9 } }]), /already exists/u);
 });
 
-test("decisions: current official rates are parsed fresh; future rates are not stored", async () => {
-  const result = await applyDecisions({ text, acknowledged: [], today,
-    commands: commands("/models add openai/gpt-6-astra\n/models skip openai/gpt-4o Older model"),
-    loadPage: async () => fixture("openai.md"),
-  });
-  const entry = JSON.parse(result.text).openai["gpt-6-astra"];
-  assert.equal(entry.input, 10);
-  assert.equal(entry.long_context_threshold, 272000);
-  assert.deepEqual(result.acknowledged, [{ key: "openai/gpt-4o: not added", reason: "Older model" }]);
-  assert.deepEqual(catalogRates({ input: 1, output: 2, upcoming: [{ date: "2027-01-01", field: "input", value: 3 }] }), { input: 1, output: 2 });
+test("classifier: OpenAI-compatible bounded request; credentials only in headers; no tools", async () => {
+  const calls = [];
+  const classify = createClassifier({ ...apiSettings, fetcher: async (url, options) => {
+    calls.push([url, options]); return response([{ id: "openai/new", action: "add", reason: "Useful current model." }]);
+  } });
+  assert.deepEqual(await classify([candidate("new")], context), [choice("new")]);
+  const [url, options] = calls[0];
+  const payload = JSON.parse(options.body);
+  assert.equal(url, apiSettings.url);
+  assert.equal(options.headers.authorization, `Bearer ${apiSettings.key}`);
+  assert.equal(options.redirect, "error");
+  assert.equal(payload.model, "gpt-6-luna");
+  assert.equal(payload.reasoning_effort, "none");
+  assert.equal(payload.max_completion_tokens, 4096);
+  assert.equal(payload.store, false);
+  assert.equal(payload.tools, undefined);
+  assert.equal(payload.response_format.json_schema.strict, true);
+  assert.deepEqual(payload.response_format.json_schema.schema.properties.decisions.items.properties.id.enum, ["openai/new"]);
+  assert.ok(!options.body.includes(apiSettings.key));
 });
 
-test("decisions: unsupported prices, absent IDs, pending conflicts and invalid rates are refused", async () => {
-  for (const body of ["/models add openai/omni-moderation-latest", "/models add openai/made-up"]) {
-    await assert.rejects(applyDecisions({ text, acknowledged: [], today, commands: commands(body), loadPage: async () => fixture("openai.md") }));
+test("classifier: rejects omissions, duplicates, invented models, prices and malformed reasons", async () => {
+  for (const decisions of [[], [{ id: "openai/other", action: "add", reason: "x" }], [{ id: "openai/new", action: "pending", reason: "x" }],
+    [{ id: "openai/new", action: "add", reason: "x", price: 0 }], [{ id: "openai/new", action: "add", reason: "" }], [{ id: "openai/new", action: "add", reason: "x".repeat(501) }]]) {
+    await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => response(decisions) })([candidate("new")], context));
   }
-  await assert.rejects(applyDecisions({ text, acknowledged: [], today, commands: commands("/models add openai/gpt-6-astra"), pending: new Map([["openai/gpt-6-astra", "PR"]]), loadPage: async () => fixture("openai.md") }), /awaiting merge/u);
-  for (const price of [{ input: NaN, output: 2 }, { input: 1e-6, output: 2 }, { input: 1, output: 2, cached_input: 3 }, { input: 1, output: 2, long_context_threshold: 5 }]) assert.throws(() => catalogRates(price));
+  await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => response([{ id: "openai/new", action: "add", reason: "x" }, { id: "openai/new", action: "skip", reason: "y" }]) })([candidate("new"), candidate("other")], context), /duplicate/u);
+  for (const bad of [{ ...choice("new"), model: null }, { ...choice("new"), input: 0 }, choice("$(id)")]) assert.throws(() => validateChoices([bad]));
 });
 
-test("decisions: skip retries are idempotent and adding a previously skipped model removes its acknowledgement", async () => {
-  const acknowledged = [{ key: "openai/gpt-6-astra: not added", reason: "Not needed" }, { key: "parser", reason: "Expected" }];
-  const retry = await applyDecisions({ text, acknowledged, today, commands: commands("/models skip openai/gpt-6-astra Not needed"), loadPage: async () => fixture("openai.md") });
-  assert.deepEqual(retry.acknowledged, acknowledged);
-  const added = await applyDecisions({ text, acknowledged, today, commands: commands("/models add openai/gpt-6-astra"), loadPage: async () => fixture("openai.md") });
-  assert.deepEqual(added.acknowledged, [{ key: "parser", reason: "Expected" }]);
-  const again = await applyDecisions({ text: added.text, acknowledged: added.acknowledged, today, commands: commands("/models add openai/gpt-6-astra"), loadPage: async () => fixture("openai.md") });
-  assert.equal(again.text, added.text);
+test("classifier: refusal, truncation and error bodies never leak the key", async () => {
+  const responses = [
+    response([], { choices: [{ finish_reason: "length", message: { content: "{}" } }] }),
+    response([], { choices: [{ finish_reason: "stop", message: { content: "{}", refusal: "No" } }] }),
+    new Response(apiSettings.key, { status: 401 }), new Response(apiSettings.key), new Response("not JSON"),
+  ];
+  for (const result of responses) await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => result })([candidate("new")], context), (error) => !error.message.includes(apiSettings.key));
+  await assert.rejects(createClassifier({ ...apiSettings, fetcher: async () => { throw new Error(apiSettings.key); } })([candidate("new")], context), /failed or timed out/u);
+  assert.throws(() => createClassifier({ ...apiSettings, url: "http://example.com/v1/chat/completions" }), /HTTPS/u);
+});
+
+test("recommendations: unsupported metering skips deterministically without paying for AI", async () => {
+  let calls = 0;
+  const result = await recommendModels([candidate("unsupported", null)], { classify: async () => { calls++; }, context });
+  assert.equal(calls, 0);
+  assert.equal(result.choices[0].action, "skip");
+  assert.equal(result.choices[0].origin, "rules");
+  assert.match(result.choices[0].reason, /supported public rates/u);
+});
+
+test("recommendations: cache suggestions and preserve manual overrides on daily reruns", async () => {
+  let calls = 0;
+  const candidates = [candidate("new"), candidate("other")];
+  const previous = [choice("new"), choice("other", "skip")];
+  const override = choice("new", "skip", "manual", "Not useful for our apps.");
+  const options = { context, classify: async () => { calls++; throw new Error("Must not call"); } };
+  const result = await recommendModels(candidates, { ...options, previous, overrides: [override] });
+  assert.deepEqual(result.choices, [override, previous[1]]);
+  assert.deepEqual((await recommendModels(candidates, { ...options, previous: result.choices })).choices, result.choices);
+  assert.equal(calls, 0);
+  await assert.rejects(recommendModels([candidate("unsupported", null)], { ...options, overrides: [choice("unsupported", "add", "manual")] }), /supported public rates/u);
+  await assert.rejects(recommendModels(candidates, { ...options, overrides: [choice("unknown", "skip", "manual")] }), /current discovery/u);
+});
+
+test("recommendations: one failed batch leaves every fresh suggestion pending, with cached choices retained", async () => {
+  const candidates = Array.from({ length: 26 }, (_, index) => candidate(`m-${index}`));
+  let calls = 0;
+  const result = await recommendModels([candidate("saved"), ...candidates], { previous: [choice("saved")], context, classify: async (batch) => {
+    calls++;
+    if (calls === 2) throw new Error("HTTP 429");
+    return batch.map(({ model }) => choice(model));
+  } });
+  assert.equal(calls, 2);
+  assert.equal(result.choices[0].action, "add");
+  assert.ok(result.choices.slice(1).every(({ action }) => action === "pending"));
+  assert.equal(result.error, "HTTP 429");
+});
+
+test("recommendations: preview avoids inference; missing configuration stays pending and fails a normal run", async () => {
+  const preview = await recommendModels([candidate("new")], { context, preview: true });
+  assert.equal(preview.error, undefined);
+  assert.equal(preview.choices[0].action, "pending");
+  const normal = await recommendModels([candidate("new")], { context });
+  assert.match(normal.error, /MODEL_REVIEW_API_URL/u);
+  const retry = await recommendModels([candidate("new")], { context, previous: normal.choices, classify: async () => [choice("new")] });
+  assert.equal(retry.choices[0].action, "add");
+});
+
+test("application: prices stay deterministic; additions and skip acknowledgements are reviewable", () => {
+  const candidates = [candidate("new", { input: 4, output: 10 }), candidate("skip")];
+  const choices = [choice("new"), choice("skip", "skip")];
+  const acknowledged = [{ key: "parser", reason: "Expected" }];
+  const applied = applyChoices({ text, acknowledged, candidates, choices });
+  assert.deepEqual(JSON.parse(applied.text).openai.new, { input: 4, output: 10 }, "uses fresh official rates, not cached AI data");
+  assert.deepEqual(JSON.parse(applied.text).openai.old, { input: 1, output: 2 });
+  assert.deepEqual(applied.acknowledged, [...acknowledged, { key: "openai/skip: not added", reason: "Useful current model." }]);
+  assert.throws(() => applyChoices({ text, acknowledged, candidates: [...candidates, candidate("invalid", null)], choices: [choice("new"), choice("invalid")] }), /supported public rates/u);
+  assert.equal(text.includes('"new"'), false, "invalid batch leaves the input unchanged");
+  assert.throws(() => applyChoices({ text, acknowledged, candidates: [candidate("old")], choices: [choice("old", "skip")] }), /shipped catalog/u);
+  const next = decide({ catalog: JSON.parse(applied.text), acknowledged: applied.acknowledged, official: { openai: { prices: new Map([["old", { input: 1, output: 2 }], ["new", { input: 4, output: 10 }], ["skip", { input: 1, output: 2 }]]) } }, lists: noLists, today });
+  assert.deepEqual(next.newModels, [], "merged additions and skips do not repeatedly create PRs");
 });
 
 const repository = "maxceem/app-ai-gateway";
-const issue = { number: 123, state: "open", html_url: `https://github.com/${repository}/issues/123`, user: { login: "github-actions[bot]" }, body: ISSUE_MARKER };
-const comment = { id: 456, body: "/models add openai/gpt-6-astra", user: { id: 1, login: "owner", type: "User" } };
-const event = { action: "created", issue, comment };
-const pr = (cmds = commands(comment.body)) => ({ state: "open", user: { login: "github-actions[bot]" }, base: { ref: "main" }, head: { ref: "automation/model-review-456", repo: { full_name: repository } }, body: renderDecision(cmds, issue.html_url), html_url: `https://github.com/${repository}/pull/999` });
-
-test("pending decisions: only matching bot PRs are trusted; issue stays visible and reasons inert", () => {
-  const pending = pendingDecisions([pr(), { ...pr(), user: { login: "outsider" } }, { ...pr(), head: { ...pr().head, repo: { full_name: "outsider/fork" } } }], repository);
-  assert.equal(pending.size, 1);
-  const body = renderIssue({ newModels: [{ provider: "openai", ids: ["gpt-6-astra", "other"] }], skippedModels: [{ provider: "openai", model: "old", reason: "<script>[evil](url)" }] }, pending);
-  assert.match(body, /Awaiting a decision[\s\S]*Decision PR[\s\S]*`openai\/other` \| Add or skip/u);
-  assert.doesNotMatch(body, /<details>|<script>|(?<!\\)\[evil\]/u);
-});
+const pr = { number: 26, state: "open", user: { login: "github-actions[bot]" }, base: { ref: "main" }, head: { ref: "automation/update-models", sha: "a".repeat(40), repo: { full_name: repository } } };
+const comment = { id: 456, body: "/models skip openai/new Not needed", user: { id: 1, login: "owner", type: "User" } };
+const event = { action: "created", issue: { number: 26, pull_request: {} }, comment };
 
 function harness(overrides = {}) {
   const calls = [], writes = [], outputs = [];
   const api = async (path, options = {}) => {
     calls.push([path, options]);
     if (options.method === "POST") return {};
-    if (path === "issues/123") return overrides.issue ?? issue;
+    if (path === "pulls/26") return overrides.pr ?? pr;
     if (path === "issues/comments/456") return overrides.comment ?? comment;
     if (path.startsWith("collaborators/")) return { permission: overrides.permission ?? "admin" };
-    if (path.startsWith("pulls?")) return overrides.pulls ?? [];
+    if (path.startsWith("contents/")) return { encoding: "base64", content: Buffer.from(JSON.stringify(overrides.choices ?? [choice("new")])).toString("base64") };
+    if (path.startsWith("pulls?")) return overrides.pulls ?? [pr];
     throw new Error(`Unexpected ${path}`);
   };
-  return { calls, writes, outputs, options: { api, repository, bodyPath: "body.md", today,
-    read: async (path) => path.endsWith("models.json") ? text : "[]",
-    write: async (...args) => writes.push(args), output: async (value) => outputs.push(value),
-    loadPage: async () => fixture("openai.md"),
-  } };
+  return { calls, writes, outputs, options: { api, repository, reviewPath: "review.json", overridesPath: "overrides.json", write: async (...args) => writes.push(args), output: async (value) => outputs.push(value) } };
 }
 
-test("prepare: authorized comment stages two allowed files and one PR body with a fixed branch", async () => {
+test("PR overrides: authorized comment stages data for the same PR, never checks out PR code", async () => {
   const h = harness();
   await prepareReview(event, h.options);
-  assert.equal(h.writes.length, 3);
-  assert.ok(h.writes[0][0].endsWith("src/usage/models.json"));
-  assert.ok(h.writes[1][0].endsWith("scripts/models/acknowledged.json"));
-  assert.equal(h.writes[2][0], "body.md");
-  assert.deepEqual(h.outputs, ["ready=true\nbranch=automation/model-review-456\n"]);
+  assert.deepEqual(h.writes.map(([path]) => path), ["review.json", "overrides.json"]);
+  assert.deepEqual(JSON.parse(h.writes[1][1]), [choice("new", "skip", "manual", "Not needed")]);
+  assert.deepEqual(h.outputs, ["ready=true\n"]);
+  assert.ok(h.calls.some(([path]) => path === `contents/${REVIEW_PATH}?ref=${pr.head.sha}`));
+  assert.ok(h.calls.every(([path]) => !path.includes(".github") && !path.includes("scripts/update-models")));
 });
 
-test("prepare: unrelated issues, PRs, bots and users without live write permission make no writes", async () => {
-  for (const overrides of [{ issue: { ...issue, user: { login: "outsider" } } }, { issue: { ...issue, pull_request: {} } }, { permission: "read" }, { comment: { ...comment, user: { ...comment.user, type: "Bot" } } }, { comment: { ...comment, user: { ...comment.user, id: 2 } } }]) {
+test("PR overrides: unrelated issues, forks, branches, bots and stale permissions write nothing", async () => {
+  for (const overrides of [{ pr: { ...pr, user: { login: "outsider" } } }, { pr: { ...pr, state: "closed" } }, { pr: { ...pr, head: { ...pr.head, ref: "other" } } }, { pr: { ...pr, head: { ...pr.head, repo: { full_name: "outsider/fork" } } } }, { permission: "read" }, { comment: { ...comment, user: { ...comment.user, type: "Bot" } } }, { comment: { ...comment, user: { ...comment.user, id: 2 } } }]) {
     const h = harness(overrides);
     await prepareReview(event, h.options);
     assert.deepEqual(h.writes, []);
     assert.deepEqual(h.outputs, []);
     assert.ok(h.calls.every(([, options]) => options.method !== "POST"));
   }
+  const h = harness();
+  await prepareReview({ ...event, issue: { number: 26 } }, h.options);
+  assert.deepEqual(h.calls, []);
+  assert.equal(trustedPull(pr, repository), true);
 });
 
-test("prepare: invalid second decision leaves both files untouched and explains failure", async () => {
-  const h = harness({ comment: { ...comment, body: "/models add openai/gpt-6-astra\n/models add openai/made-up" } });
-  await assert.rejects(prepareReview(event, h.options));
+test("PR overrides: invalid second choice leaves all data untouched and explains the error", async () => {
+  const h = harness({ comment: { ...comment, body: "/models add openai/new\n/models add openai/unknown" } });
+  await assert.rejects(prepareReview(event, h.options), /no proposal/u);
   assert.deepEqual(h.writes, []);
   assert.deepEqual(h.outputs, []);
-  assert.ok(h.calls.some(([path, options]) => path === "issues/123/comments" && options.body.body.includes("not applied")));
+  assert.ok(h.calls.some(([path, options]) => path === "issues/26/comments" && options.body.body.includes("not applied")));
 });
 
-test("publish: refreshes one existing issue; a partial scan cannot erase pending discoveries", async () => {
+test("PR state: loads only the bot's fixed review JSON at its immutable head SHA", async () => {
+  const h = harness({ pulls: [{ ...pr, head: { ...pr.head, ref: "different" } }, pr] });
+  assert.deepEqual(await loadReview(h.options), [choice("new")]);
+  const bad = harness({ choices: [{ ...choice("new"), command: "execute this" }] });
+  await assert.rejects(readReview(pr, bad.options), /Invalid/u);
+  assert.deepEqual(await readReview(pr, { repository, api: async () => { throw Object.assign(new Error("Not found"), { status: 404 }); } }), []);
+  assert.deepEqual(await loadReview(harness({ pulls: [] }).options), []);
+});
+
+test("report: proposal reasons are visible and inert; informative changes stay separate", () => {
+  const report = renderReport({ changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], upcoming: [{ provider: "openai", model: "old", field: "input", value: 3, date: "2027-01-01" }], noSource: [], sources: [], newModels: [{ provider: "openai", ids: ["new"] }], modelChoices: [choice("new", "skip", "ai", "<script>[evil](url) | text")] });
+  assert.doesNotMatch(report, /<script>|(?<!\\)\[evil\]/u);
+  const [trigger, additional] = report.split("## Additional information");
+  assert.match(trigger, /\*\*Skip\*\*[\s\S]*gpt-6-luna/u);
+  assert.doesNotMatch(trigger, /2027-01-01/u);
+  assert.match(additional, /2027-01-01/u);
+});
+
+test("GitHub client: credentials stay in headers and comments are JSON, not commands", async () => {
   const calls = [];
-  const api = async (path, options = {}) => {
-    calls.push([path, options]);
-    if (path.startsWith("issues?")) return [issue];
-    if (path.startsWith("pulls?")) return [pr()];
-    return issue;
-  };
-  const snapshot = { complete: true, newModels: [{ provider: "openai", ids: ["gpt-6-astra"] }], skippedModels: [] };
-  await publishReview(snapshot, { api, repository });
-  assert.equal(calls.filter(([, options]) => options.method === "PATCH").length, 1);
-  assert.match(calls.at(-1)[1].body.body, /Decision PR/u);
-  calls.length = 0;
-  await publishReview({ ...snapshot, complete: false }, { api, repository });
-  assert.deepEqual(calls, []);
-});
-
-test("publish: creates one review issue for discoveries, but none for an empty initial scan", async () => {
-  const calls = [];
-  const api = async (path, options = {}) => {
-    calls.push([path, options]);
-    return options.method === "POST" ? issue : [];
-  };
-  await publishReview({ complete: true, newModels: [], skippedModels: [] }, { api, repository });
-  assert.ok(calls.every(([, options]) => options.method !== "POST"));
-  calls.length = 0;
-  await publishReview({ complete: true, newModels: [{ provider: "openai", ids: ["new"] }], skippedModels: [] }, { api, repository });
-  const created = calls.filter(([, options]) => options.method === "POST");
-  assert.equal(created.length, 1);
-  assert.equal(created[0][0], "issues");
-  assert.ok(created[0][1].body.body.startsWith(ISSUE_MARKER));
-});
-
-test("GitHub client: credentials stay in headers and commands are JSON data", async () => {
-  let captured;
-  const api = githubClient(repository, "test-token", async (...args) => { captured = args; return new Response("{}", { status: 200 }); });
-  await api("issues", { method: "POST", body: { body: "$(do-not-execute)" } });
-  assert.equal(captured[1].headers.authorization, "Bearer test-token");
-  assert.ok(!captured[0].includes("test-token"));
-  assert.deepEqual(JSON.parse(captured[1].body), { body: "$(do-not-execute)" });
+  const api = githubClient(repository, apiSettings.key, async (url, options) => { calls.push([url, options]); return new Response("{}"); });
+  await api("issues/26/comments", { method: "POST", body: { body: "$(do not execute)" } });
+  assert.equal(calls[0][1].headers.authorization, `Bearer ${apiSettings.key}`);
+  assert.equal(calls[0][1].body, '{"body":"$(do not execute)"}');
+  assert.ok(!calls[0][0].includes(apiSettings.key));
 });

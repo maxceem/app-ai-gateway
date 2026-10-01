@@ -1,5 +1,6 @@
 # Commands run only the scripts checked out from main. No PR/fork code or
-# comment text is executed; current write access is checked through GitHub.
+# comment text is executed. Only the fixed review JSON is read from the PR;
+# current write access is checked through GitHub before applying overrides.
 name: Review new models
 
 on:
@@ -14,9 +15,9 @@ permissions:
 
 jobs:
   decide:
-    if: github.repository == 'maxceem/app-ai-gateway' && !github.event.issue.pull_request && github.event.issue.user.login == 'github-actions[bot]' && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) && startsWith(github.event.comment.body, '/models ')
+    if: github.repository == 'maxceem/app-ai-gateway' && github.event.issue.pull_request && github.event.issue.user.login == 'github-actions[bot]' && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) && startsWith(github.event.comment.body, '/models ')
     concurrency:
-      group: model-review-decisions
+      group: model-catalog-sync
       cancel-in-progress: false
       # Queue comment batches instead of dropping all but the newest pending one.
       queue: max
@@ -29,34 +30,57 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Apply explicit decisions
+      - name: Validate PR overrides
         id: decisions
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/review-models.mjs prepare "$RUNNER_TEMP/model-decisions.md"
-      - name: Open or update the decision PR
-        id: pr
+        run: node scripts/review-models.mjs prepare "$RUNNER_TEMP/model-review.json" "$RUNNER_TEMP/model-overrides.json"
+      - name: Rebuild the proposed catalog with overrides
+        id: models
         if: steps.decisions.outputs.ready == 'true'
+        env:
+          MODEL_REVIEW_API_KEY: ${{ secrets.MODEL_REVIEW_API_KEY }}
+          MODEL_REVIEW_API_URL: ${{ vars.MODEL_REVIEW_API_URL }}
+          MODEL_REVIEW_MODEL: ${{ vars.MODEL_REVIEW_MODEL }}
+        run: |
+          set +e
+          node scripts/update-models.mjs --review "$RUNNER_TEMP/model-review.json" --overrides "$RUNNER_TEMP/model-overrides.json" --report "$RUNNER_TEMP/models.md"
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ -f "$RUNNER_TEMP/models.md" ]; then
+            cat "$RUNNER_TEMP/models.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Update this PR
+        id: pr
+        if: steps.decisions.outputs.ready == 'true' && (steps.models.outputs.code == '0' || steps.models.outputs.code == '3')
         uses: peter-evans/create-pull-request@v8
         with:
-          branch: ${{ steps.decisions.outputs.branch }}
+          branch: automation/update-models
           base: main
-          title: Apply model review decisions
-          commit-message: Apply model review decisions
-          body-path: ${{ runner.temp }}/model-decisions.md
+          title: Update the model catalog
+          commit-message: Update the model catalog
+          body-path: ${{ runner.temp }}/models.md
           add-paths: |
             src/usage/models.json
             scripts/models/acknowledged.json
+            scripts/models/review.json
           delete-branch: true
       - name: Run CI on the decision PR
         if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ steps.decisions.outputs.branch }}
-        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
-      - name: Link the decision PR in the review issue
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-models
+      - name: Confirm the overrides
         if: always() && steps.pr.outputs.pull-request-url != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
-        run: node scripts/review-models.mjs reply "$PR_URL"
+        run: node scripts/review-models.mjs reply
+      - name: Explain an invalid override
+        if: always() && steps.decisions.outputs.ready == 'true' && steps.models.outputs.code != '0' && steps.models.outputs.code != '3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/review-models.mjs failed
+      - name: Fail when something needs a person
+        if: steps.decisions.outputs.ready == 'true' && steps.models.outputs.code != '0'
+        run: exit 1

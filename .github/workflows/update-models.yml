@@ -1,7 +1,8 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# when a current price changed or new models need review. New discoveries are
-# recorded in notified.json; adding or skipping them is an explicit decision.
+# when a current price changed or new models need review. AI proposes add/skip
+# choices; prices are parsed and validated in code. Comments override choices
+# on the same PR, and merging applies them. No review issue is created.
 # Retirement dates accompany current price changes.
 # Retirement-only changes and upcoming prices stay in the run summary.
 # The rules — official page
@@ -35,13 +36,13 @@ permissions:
   actions: write
   issues: write
 
-concurrency:
-  group: update-models
-  cancel-in-progress: false
-
 jobs:
   update:
     if: github.repository == 'maxceem/app-ai-gateway'
+    concurrency:
+      group: model-catalog-sync
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -55,8 +56,17 @@ jobs:
         with:
           node-version: 22
 
+      - name: Preserve choices from the rolling PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/review-models.mjs load "$RUNNER_TEMP/model-review.json"
+
       - name: Check models
         id: models
+        env:
+          MODEL_REVIEW_API_KEY: ${{ secrets.MODEL_REVIEW_API_KEY }}
+          MODEL_REVIEW_API_URL: ${{ vars.MODEL_REVIEW_API_URL }}
+          MODEL_REVIEW_MODEL: ${{ vars.MODEL_REVIEW_MODEL }}
         run: |
           set +e
           node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md" --review "$RUNNER_TEMP/model-review.json"
@@ -66,14 +76,6 @@ jobs:
           if [ -f "$RUNNER_TEMP/models.md" ]; then
             cat "$RUNNER_TEMP/models.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Refresh the new model review issue
-        id: review
-        continue-on-error: true # An issue failure must not suppress a catalog-review PR.
-        if: steps.models.outputs.code == '0' || steps.models.outputs.code == '3'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/review-models.mjs publish "$RUNNER_TEMP/model-review.json"
 
       - name: Open or update the pull request
         id: pr
@@ -87,7 +89,8 @@ jobs:
           body-path: ${{ runner.temp }}/models.md
           add-paths: |
             src/usage/models.json
-            scripts/models/notified.json
+            scripts/models/acknowledged.json
+            scripts/models/review.json
           delete-branch: true
 
       - name: Run CI on the pull request
@@ -97,17 +100,13 @@ jobs:
         run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-models
 
       - name: Fail when something needs a person
-        if: steps.models.outputs.code != '0' || steps.review.outcome == 'failure'
+        if: steps.models.outputs.code != '0'
         env:
           CODE: ${{ steps.models.outputs.code }}
-          REVIEW_RESULT: ${{ steps.review.outcome }}
         run: |
           if [ "$CODE" = "3" ]; then
             echo "::error::Some models need a person; see the run summary or the pull request."
           elif [ "$CODE" != "0" ]; then
             echo "::error::scripts/update-models.mjs failed (exit $CODE)."
-          fi
-          if [ "$REVIEW_RESULT" = "failure" ]; then
-            echo "::error::The new model review issue could not be refreshed."
           fi
           exit 1

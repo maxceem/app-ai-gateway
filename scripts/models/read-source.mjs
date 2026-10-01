@@ -32,7 +32,7 @@ export async function readSource(source, models, today) {
     return { error: error.message };
   }
   try {
-    return { result: source.parse(text, { wanted, today }) };
+    return { result: source.parse(text, { wanted, today }), text };
   } catch (error) {
     if (error instanceof ParseError) return { error: error.message };
     throw error;

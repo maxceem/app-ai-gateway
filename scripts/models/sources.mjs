@@ -36,6 +36,15 @@ export const LITELLM_URL =
 
 const MARKDOWN = "text/markdown";
 
+// Curated authors for the official hosts that serve other labs' models.
+// Unknown namespaces need a source update, not an AI guess at authorship.
+const HOSTED_AUTHORS = {
+  openai: "OpenAI", "meta-llama": "Meta", qwen: "Alibaba",
+  "deepseek-ai": "DeepSeek", moonshotai: "Moonshot AI", "zai-org": "Z.ai",
+  thinkingmachines: "Thinking Machines",
+};
+const hostedAuthor = (id) => HOSTED_AUTHORS[id.split("/")[0].toLowerCase()] ?? null;
+
 export const SOURCES = {
   openai: {
     official: {
@@ -98,6 +107,7 @@ export const SOURCES = {
     litellm: (id) => `xai/${id}`,
   },
   together: {
+    author: (_id, price) => ({ Moonshot: "Moonshot AI", Qwen: "Alibaba" })[price.author] ?? price.author ?? null,
     official: {
       url: "https://docs.together.ai/docs/serverless-models.md",
       type: MARKDOWN,
@@ -112,6 +122,7 @@ export const SOURCES = {
     litellm: (id) => `together_ai/${id}`,
   },
   groq: {
+    author: (id) => id.startsWith("llama-") ? "Meta" : id.startsWith("whisper-") ? "OpenAI" : hostedAuthor(id),
     official: { url: "https://console.groq.com/docs/models.md", type: MARKDOWN, parse: parseGroq },
     deprecations: {
       url: "https://console.groq.com/docs/deprecations.md",
@@ -151,6 +162,7 @@ export const SOURCES = {
     litellm: (id) => `perplexity/${id}`,
   },
   cerebras: {
+    author: (id) => id.startsWith("qwen-") ? "Alibaba" : id.startsWith("gpt-oss-") ? "OpenAI" : null,
     official: {
       url: "https://api.cerebras.ai/public/v1/models",
       type: "application/json",

@@ -37,9 +37,11 @@ export function parseTogether(text, { wanted }) {
       continue;
     }
     const where = `chat models, ${id}`;
+    if (!/^[A-Za-z0-9][A-Za-z0-9 .&'-]{0,99}$/u.test(row[0])) throw new ParseError(`${where}: unsupported organization name`);
     const price = { input: money(row[4], where) };
     if (row[5] !== "-") price.cached_input = money(row[5], where);
     price.output = money(row[6], where);
+    price.author = row[0];
     put(prices, id, price);
   }
   return prices;

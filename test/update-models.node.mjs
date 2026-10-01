@@ -204,8 +204,8 @@ test("xai: pairs long-context rows and reads speech to text per hour", () => {
 test("together: reads escaped prices by API model string", () => {
   const text = fixture("together.md");
   const prices = parse(parseTogether, text, ["moonshotai/Kimi-K3", "openai/gpt-oss-120b"]);
-  assert.deepEqual(prices.get("moonshotai/Kimi-K3"), { input: 3, cached_input: 0.3, output: 15 });
-  assert.deepEqual(prices.get("openai/gpt-oss-120b"), { input: 0.15, output: 0.6 });
+  assert.deepEqual(prices.get("moonshotai/Kimi-K3"), { input: 3, cached_input: 0.3, output: 15, author: "Moonshot" });
+  assert.deepEqual(prices.get("openai/gpt-oss-120b"), { input: 0.15, output: 0.6, author: "OpenAI" });
   assert.equal(prices.get("Prism-ML/Ternary-Bonsai-27B"), null);
   assertFails(parseTogether, text, ["Prism-ML/Ternary-Bonsai-27B"], /not a price/);
   assertFails(parseTogether, replaceOnce(text, "| API model string |", "| Model string |"), ["openai/gpt-oss-120b"], /header changed/);

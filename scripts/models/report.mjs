@@ -1,4 +1,4 @@
-// The Markdown report that becomes the price pull request's body and the
+// The Markdown report that becomes the catalog pull request's body and the
 // workflow's step summary. Current prices and new discoveries explain the PR trigger;
 // everything else is additional information. Empty subsections are left out.
 //
@@ -6,6 +6,8 @@
 // id a page lists), so every value goes through `escape` before it is placed
 // in Markdown: nothing a page says can become a link, an image, HTML or a
 // broken table.
+import { SOURCES } from "./sources.mjs";
+import { REVIEW_MARKER } from "./choices.mjs";
 
 /** Makes text inert in Markdown, inside or outside a table cell. */
 export function escape(value) {
@@ -40,8 +42,6 @@ function details(summary, body) {
 
 export function renderReport(decision) {
   const sections = [];
-  const notifications = decision.notifications ?? decision.newModels;
-  const notified = new Set(notifications.flatMap(({ provider, ids }) => ids.map((id) => `${provider}/${id}`)));
   const triggers = [];
 
   if (decision.changes.length > 0) {
@@ -52,25 +52,20 @@ export function renderReport(decision) {
     triggers.push(`### Current price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`);
   }
 
-  if (notifications.length > 0) {
-    const rows = notifications.flatMap(({ provider, ids }) =>
+  if (decision.newModels.length > 0) {
+    const rows = decision.modelChoices?.length ? decision.modelChoices.map((choice) =>
+      `| ${code(`${choice.provider}/${choice.model}`)} | **${choice.action === "add" ? "Add" : choice.action === "skip" ? "Skip" : "Pending"}** | ${escape(choice.reason)} | ${escape(choice.origin === "ai" ? choice.reviewer : choice.origin === "manual" ? `@${choice.reviewer}` : "Catalog validation")} |`,
+    ) : decision.newModels.flatMap(({ provider, ids }) =>
       ids.map((id) => `| ${code(provider)} | ${code(id)} |`),
     );
     triggers.push(
       "### Newly discovered models\n\n" +
-      "These discoveries trigger this PR, even without price changes. The diff records their IDs in `scripts/models/notified.json`; merging it does not add them to the shipped catalog. Add each model or record a reason to skip it in the rolling **New model review** issue.\n\n" +
-      `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`,
+      "These discoveries trigger this PR, even without price changes. Merging applies the proposed **Add** entries to the catalog and saves each **Skip** reason. AI chooses models; code reads and validates every price from the official source. Pending models remain undecided.\n\n" +
+      (decision.modelChoices?.length ? `| Model | Proposal | Reason | Reviewer |\n| --- | --- | --- | --- |\n${rows.join("\n")}` : `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`) +
+      "\n\nTo override a proposal, comment on this PR with one or more commands, one per line. The bot updates this same PR and preserves your choices on later runs:\n\n" +
+      "```text\n/models add openai/gpt-6-luna\n/models skip openai/gpt-4o-2024-05-13 Prefer current models\n```",
     );
   }
-
-  const awaiting = decision.newModels.flatMap(({ provider, ids }) =>
-    ids.filter((id) => !notified.has(`${provider}/${id}`)).map((id) => `| ${code(provider)} | ${code(id)} |`),
-  );
-  if (awaiting.length > 0) sections.push(
-    "### Previously reported models awaiting a decision\n\n" +
-    "These models remain visible in the **New model review** issue until you add or skip them. They do not repeatedly trigger PRs.\n\n" +
-    `| Provider | Model |\n| --- | --- |\n${awaiting.join("\n")}`,
-  );
 
   if (decision.retirements.length > 0) {
     const rows = decision.retirements.map(
@@ -114,7 +109,7 @@ export function renderReport(decision) {
 
   if (decision.sources.length > 0) {
     sections.push(
-      "### Sources\n\n" + list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}`),
+      "### Sources\n\n" + list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}${SOURCES[item.provider]?.official ? ` — [official pricing](${SOURCES[item.provider].official.url})` : ""}`),
     );
   }
 
@@ -164,5 +159,5 @@ export function renderReport(decision) {
       "The information below does not trigger a pull request.\n\n" +
       sections.join("\n\n")
     : "";
-  return `${header}\n\n${trigger}${additional}\n`;
+  return `${REVIEW_MARKER}\n${header}\n\n${trigger}${additional}\n`;
 }
