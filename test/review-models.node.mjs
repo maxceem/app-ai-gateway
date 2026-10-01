@@ -29,8 +29,8 @@ test("discovery: exact skip acknowledgements leave other models pending and stil
   assert.equal(needsHuman(decision), false);
   const report = renderReport({ ...decision, modelChoices: [choice("new"), choice("skipped-next", "skip")] });
   const [trigger, additional] = report.split("## Additional information");
-  assert.match(trigger, /Newly discovered models[\s\S]*`openai\/new` \| \*\*Add\*\*/u);
-  assert.match(trigger, /`openai\/skipped-next` \| \*\*Skip\*\*/u);
+  assert.match(trigger, /Newly discovered models[\s\S]*`openai\/new` \| \*\*✅ Add\*\*/u);
+  assert.match(trigger, /`openai\/skipped-next` \| \*\*⏭️ Skip\*\*/u);
   assert.match(trigger, /comment on this PR/u);
   assert.doesNotMatch(report, /<summary>New models|rolling.*issue/u);
   assert.match(additional, /Older snapshot/u);
@@ -239,7 +239,7 @@ test("report: proposal reasons are visible and inert; informative changes stay s
   const report = renderReport({ changes: [], retirements: [], retired: [], deprecationNotes: [], attention: [], acknowledged: [], upcoming: [{ provider: "openai", model: "old", field: "input", value: 3, date: "2027-01-01" }], noSource: [], sources: [], newModels: [{ provider: "openai", ids: ["new"] }], modelChoices: [choice("new", "skip", "ai", "<script>[evil](url) | text")] });
   assert.doesNotMatch(report, /<script>|(?<!\\)\[evil\]/u);
   const [trigger, additional] = report.split("## Additional information");
-  assert.match(trigger, /\*\*Skip\*\*[\s\S]*gpt-6-luna/u);
+  assert.match(trigger, /\*\*⏭️ Skip\*\*[\s\S]*gpt-6-luna/u);
   assert.doesNotMatch(trigger, /2027-01-01/u);
   assert.match(additional, /2027-01-01/u);
 });
