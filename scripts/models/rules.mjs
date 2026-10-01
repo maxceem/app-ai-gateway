@@ -400,8 +400,9 @@ export function needsHuman(decision) {
   return decision.attention.length > 0;
 }
 
-/** Every edit the decision makes to models.json, prices and retirement dates alike. */
+/** Only current price changes trigger an update; retirement dates travel with them. */
 export function catalogEdits(decision) {
+  if (decision.changes.length === 0) return [];
   return [
     ...decision.changes.map(({ provider, model, field, to }) => ({ provider, model, field, to })),
     ...decision.retirements.map(({ provider, model, to }) => ({ provider, model, field: "retirement_date", to })),

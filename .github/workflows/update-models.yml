@@ -1,6 +1,8 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# with any price or retirement date that changed. The rules — official page
+# when a current price changed, including any retirement dates alongside it.
+# Retirement-only changes and upcoming prices stay in the run summary.
+# The rules — official page
 # first, the two community lists only when they agree, nothing guessed — live
 # in scripts/update-models.mjs.
 #

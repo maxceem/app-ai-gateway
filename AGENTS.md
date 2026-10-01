@@ -135,9 +135,11 @@ means a static import crept back in.
   (`listModelPrices`).
 - It is checked daily by `.github/workflows/update-models.yml`
   (`scripts/update-models.mjs`), which opens one rolling pull request from
-  `automation/update-models`. It changes the value of a price field an entry
-  already has, and sets `retirement_date` from the provider's deprecation
-  page; adding or removing models and price fields stays a human edit.
+  `automation/update-models` only when a current price changes. It changes the
+  value of a price field an entry already has, and includes `retirement_date`
+  updates from the provider's deprecation page alongside those prices.
+  Retirement-only changes and upcoming prices stay in the run summary;
+  adding or removing models and price fields stays a human edit.
 - `retirement_date` records when the provider stops serving a model. A retired
   model stays in the catalog and stays priced, so apps that still name it keep
   billing exactly; never delete an entry because it retired.

@@ -1,5 +1,6 @@
 // The Markdown report that becomes the price pull request's body and the
-// workflow's step summary. Empty sections are left out.
+// workflow's step summary. Current price changes explain the PR trigger;
+// everything else is additional information. Empty subsections are left out.
 //
 // Much of what it quotes came from a fetched page (a parser's reason, a model
 // id a page lists), so every value goes through `escape` before it is placed
@@ -39,13 +40,17 @@ function details(summary, body) {
 
 export function renderReport(decision) {
   const sections = [];
+  let trigger = "## Changes that trigger a pull request\n\nNo current price changes. No pull request is needed.";
 
   if (decision.changes.length > 0) {
     const rows = decision.changes.map(
       (change) =>
         `| ${code(`${change.provider}/${change.model}`)} | ${change.field} | ${change.from} → **${change.to}** | ${change.source} |`,
     );
-    sections.push(`## Price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`);
+    trigger =
+      "## Changes that trigger a pull request\n\n" +
+      "Only changes to prices currently in effect trigger a pull request.\n\n" +
+      `### Current price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`;
   }
 
   if (decision.retirements.length > 0) {
@@ -54,15 +59,17 @@ export function renderReport(decision) {
         `| ${code(`${item.provider}/${item.model}`)} | ${item.from === undefined ? "" : `${item.from} → `}**${item.to}** | ${item.source} |`,
     );
     sections.push(
-      "## Retirement dates\n\n" +
+      "### Retirement dates\n\n" +
         "When each provider stops serving the model. The entry stays in the catalog and stays priced.\n\n" +
+        "These updates are included in the catalog only alongside current price changes.\n\n" +
         `| Model | Retires on | Source |\n| --- | --- | --- |\n${rows.join("\n")}`,
     );
   }
 
   if (decision.attention.length > 0) {
     sections.push(
-      "## Needs attention\n\n" +
+      "### Needs attention\n\n" +
+        "These items fail the workflow but do not trigger a pull request.\n\n" +
         list(decision.attention, (item) => `${escape(item.text)} — ${code(item.key)}`) +
         "\n\nAn item that is expected can be acknowledged by adding its key, with a reason, to `scripts/models/acknowledged.json`.",
     );
@@ -70,7 +77,8 @@ export function renderReport(decision) {
 
   if (decision.upcoming.length > 0) {
     sections.push(
-      "## Upcoming price changes\n\n" +
+      "### Upcoming price changes\n\n" +
+        "Advance notice only. Future rates are not stored or applied by this update.\n\n" +
         list(
           decision.upcoming,
           (item) => `${code(`${item.provider}/${item.model}`)} ${item.field} becomes $${item.value} on ${item.date}`,
@@ -80,14 +88,14 @@ export function renderReport(decision) {
 
   if (decision.retired.length > 0) {
     sections.push(
-      "## Retired models gone from pricing pages\n\n" +
+      "### Retired models gone from pricing pages\n\n" +
         list(decision.retired, (item) => `${code(`${item.provider}/${item.model}`)} ${escape(item.text)}`),
     );
   }
 
   if (decision.sources.length > 0) {
     sections.push(
-      "## Sources\n\n" + list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}`),
+      "### Sources\n\n" + list(decision.sources, (item) => `${code(item.provider)}: ${escape(item.text)}`),
     );
   }
 
@@ -129,5 +137,10 @@ export function renderReport(decision) {
 
   const header =
     "Checked every model in `src/usage/models.json` against its provider's pricing and deprecation pages, by `scripts/update-models.mjs`.";
-  return `${header}\n\n${sections.join("\n\n")}\n`;
+  const additional = sections.length > 0
+    ? "\n\n## Additional information\n\n" +
+      "The information below does not trigger a pull request.\n\n" +
+      sections.join("\n\n")
+    : "";
+  return `${header}\n\n${trigger}${additional}\n`;
 }

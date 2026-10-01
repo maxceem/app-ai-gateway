@@ -1,7 +1,7 @@
 // Checks every model in src/usage/models.json against its provider's official
 // pricing and deprecation pages, falling back to Models.dev and LiteLLM where
 // there is no official source or its parser failed, and updates the prices
-// and retirement dates that changed. Run daily by
+// that changed, including retirement dates only alongside a price update. Run daily by
 // .github/workflows/update-models.yml, which opens the pull request.
 //
 //   node scripts/update-models.mjs [--dry-run] [--report <path>] [--today YYYY-MM-DD]
