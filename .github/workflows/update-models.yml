@@ -1,6 +1,8 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# when a current price changed, including any retirement dates alongside it.
+# when a current price changed or new models need review. New discoveries are
+# recorded in notified.json; adding or skipping them is an explicit decision.
+# Retirement dates accompany current price changes.
 # Retirement-only changes and upcoming prices stay in the run summary.
 # The rules — official page
 # first, the two community lists only when they agree, nothing guessed — live
@@ -31,6 +33,7 @@ permissions:
   contents: write
   pull-requests: write
   actions: write
+  issues: write
 
 concurrency:
   group: update-models
@@ -56,13 +59,21 @@ jobs:
         id: models
         run: |
           set +e
-          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md"
+          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md" --review "$RUNNER_TEMP/model-review.json"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ -f "$RUNNER_TEMP/models.md" ]; then
             cat "$RUNNER_TEMP/models.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Refresh the new model review issue
+        id: review
+        continue-on-error: true # An issue failure must not suppress a catalog-review PR.
+        if: steps.models.outputs.code == '0' || steps.models.outputs.code == '3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/review-models.mjs publish "$RUNNER_TEMP/model-review.json"
 
       - name: Open or update the pull request
         id: pr
@@ -74,7 +85,9 @@ jobs:
           title: Update the model catalog
           commit-message: Update the model catalog
           body-path: ${{ runner.temp }}/models.md
-          add-paths: src/usage/models.json
+          add-paths: |
+            src/usage/models.json
+            scripts/models/notified.json
           delete-branch: true
 
       - name: Run CI on the pull request
@@ -84,13 +97,17 @@ jobs:
         run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref automation/update-models
 
       - name: Fail when something needs a person
-        if: steps.models.outputs.code != '0'
+        if: steps.models.outputs.code != '0' || steps.review.outcome == 'failure'
         env:
           CODE: ${{ steps.models.outputs.code }}
+          REVIEW_RESULT: ${{ steps.review.outcome }}
         run: |
           if [ "$CODE" = "3" ]; then
             echo "::error::Some models need a person; see the run summary or the pull request."
-          else
+          elif [ "$CODE" != "0" ]; then
             echo "::error::scripts/update-models.mjs failed (exit $CODE)."
+          fi
+          if [ "$REVIEW_RESULT" = "failure" ]; then
+            echo "::error::The new model review issue could not be refreshed."
           fi
           exit 1

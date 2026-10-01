@@ -135,7 +135,10 @@ means a static import crept back in.
   (`listModelPrices`).
 - It is checked daily by `.github/workflows/update-models.yml`
   (`scripts/update-models.mjs`), which opens one rolling pull request from
-  `automation/update-models` only when a current price changes. It changes the
+  `automation/update-models` when a current price changes or a new model is
+  discovered. Discoveries change `scripts/models/notified.json`, an ID list
+  that prevents repeated notification PRs; they do not add catalog entries.
+  The sync changes the
   value of a price field an entry already has, and includes `retirement_date`
   updates from the provider's deprecation page alongside those prices.
   Retirement-only changes and upcoming prices stay in the run summary;
@@ -150,6 +153,15 @@ means a static import crept back in.
   is expected is acknowledged in `scripts/models/acknowledged.json` with a
   reason, not by loosening a parser or a test.
 - Preview the sync with `node scripts/update-models.mjs --dry-run`.
+- New discoveries are visible in the report and one rolling **New model review**
+  issue. Members with write access comment `/models add provider/model` or
+  `/models skip provider/model reason`, one command per line. Each comment
+  produces one decision PR; merging it adds current official rates or saves
+  an exact `<provider>/<model>: not added` acknowledgement. A discovery-only
+  notification PR does not resolve these decisions; models remain pending in
+  the issue. This explicit review is separate from the daily price sync.
+  The command workflow executes only main-branch scripts, checks live write
+  access, and never checks out or executes code from a PR.
 - A test never writes a shipped price down. It asserts the arithmetic — which
   rate each kind of token bills at — and reads the rates with `shippedRates`
   from `test/shipped-rates.ts`, so the daily sync changing a price breaks no

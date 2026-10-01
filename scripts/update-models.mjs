@@ -1,88 +1,50 @@
 // Checks every model in src/usage/models.json against its provider's official
 // pricing and deprecation pages, falling back to Models.dev and LiteLLM where
 // there is no official source or its parser failed, and updates the prices
-// that changed, including retirement dates only alongside a price update. Run daily by
+// that changed, including retirement dates only alongside a price update. New
+// model IDs also open a review PR; add/skip decisions remain explicit. Run daily by
 // .github/workflows/update-models.yml, which opens the pull request.
 //
-//   node scripts/update-models.mjs [--dry-run] [--report <path>] [--today YYYY-MM-DD]
+//   node scripts/update-models.mjs [--dry-run] [--report <path>] [--review <path>] [--today YYYY-MM-DD]
 //
 //   --dry-run  print the report and write nothing
 //   --report   also write the Markdown report to <path>
+//   --review   also write discovery data for the rolling review issue
 //   --today    the date dated prices are resolved against (default: today, UTC)
 //
 // Exit code: 0 when nothing needs a person, 3 when something does (the report
 // says what), 1 when the script itself failed.
 //
 // Everything fetched is untrusted. Nothing fetched is evaluated, and the only
-// files written are models.json and the report.
+// files written are models.json, notified.json, the report and discovery data.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { applyEdits } from "./models/catalog-edit.mjs";
-import { ParseError } from "./models/price.mjs";
+import { discoveryUpdate } from "./models/new-models.mjs";
+import { fetchText, readSource } from "./models/read-source.mjs";
 import { renderReport } from "./models/report.mjs";
 import { catalogEdits, decide, needsHuman } from "./models/rules.mjs";
-import { LITELLM_URL, MODELS_DEV_URL, SOURCES, sourceId } from "./models/sources.mjs";
+import { LITELLM_URL, MODELS_DEV_URL, SOURCES } from "./models/sources.mjs";
 
 const CATALOG = fileURLToPath(new URL("../src/usage/models.json", import.meta.url));
 const ACKNOWLEDGED = fileURLToPath(new URL("./models/acknowledged.json", import.meta.url));
-const USER_AGENT = "app-ai-gateway-price-sync (+https://github.com/maxceem/app-ai-gateway)";
-const TIMEOUT_MS = 20_000;
+const NOTIFIED = fileURLToPath(new URL("./models/notified.json", import.meta.url));
 
 function parseArgs(argv) {
-  const options = { dryRun: false, report: null, today: new Date().toISOString().slice(0, 10) };
+  const options = { dryRun: false, report: null, review: null, today: new Date().toISOString().slice(0, 10) };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--report") options.report = argv[++index];
+    else if (arg === "--review") options.review = argv[++index];
     else if (arg === "--today") options.today = argv[++index];
     else throw new Error(`unknown argument "${arg}"`);
   }
+  if (options.review === undefined) throw new Error("--review needs a path");
   if (options.report === undefined) throw new Error("--report needs a path");
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(options.today ?? "")) throw new Error("--today needs YYYY-MM-DD");
   return options;
-}
-
-/** A page as text: one retry, a timeout, and the content type it must have. */
-async function fetchText(url, type) {
-  let lastError;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        headers: { "user-agent": USER_AGENT },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        redirect: "follow",
-      });
-      if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
-      const contentType = response.headers.get("content-type") ?? "";
-      if (!contentType.startsWith(type)) throw new Error(`content type "${contentType}", expected ${type}`);
-      return await response.text();
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw new Error(`fetch failed: ${lastError?.message ?? lastError}`);
-}
-
-/**
- * One official source read with its parser: `{ result }`, `{ error }` when
- * the page could not be fetched or read, or undefined when there is none.
- */
-async function readSource(source, models, today) {
-  if (!source) return undefined;
-  const wanted = new Set(Object.keys(models).map((model) => sourceId(source, model)));
-  let text;
-  try {
-    text = await fetchText(source.url, source.type);
-  } catch (error) {
-    return { error: error.message };
-  }
-  try {
-    return { result: source.parse(text, { wanted, today }) };
-  } catch (error) {
-    if (error instanceof ParseError) return { error: error.message };
-    throw error;
-  }
 }
 
 async function readList(url, type) {
@@ -130,18 +92,26 @@ async function main() {
     acknowledged,
     today: options.today,
   });
-  const report = renderReport(decision);
+  const notified = JSON.parse(await readFile(NOTIFIED, "utf8"));
+  const discoveries = discoveryUpdate(decision.newModels, notified);
+  const report = renderReport({ ...decision, notifications: discoveries.notifications });
   const updated = applyEdits(text, catalogEdits(decision));
 
   if (options.dryRun) {
     console.log(report);
   } else {
     if (updated !== text) await writeFile(CATALOG, updated);
+    if (discoveries.notifications.length) await writeFile(NOTIFIED, `${JSON.stringify(discoveries.notified, null, 2)}\n`);
     if (options.report) await writeFile(options.report, report);
     else console.log(report);
+    if (options.review) await writeFile(options.review, JSON.stringify({
+      newModels: decision.newModels,
+      skippedModels: decision.skippedModels,
+      complete: decision.sources.every(({ provider, text }) => !SOURCES[provider]?.official || text.startsWith("prices: official OK")),
+    }));
   }
   console.error(
-    `${decision.changes.length} price change(s), ${decision.retirements.length} retirement date(s), ` +
+    `${decision.changes.length} price change(s), ${discoveries.notifications.reduce((count, { ids }) => count + ids.length, 0)} new model(s), ${decision.retirements.length} retirement date(s), ` +
       `${decision.attention.length} item(s) need attention`,
   );
   return needsHuman(decision) ? 3 : 0;

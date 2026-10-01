@@ -14,6 +14,7 @@
 import { fromLitellm, fromModelsDev } from "./lists.mjs";
 import { AUDIO_FIELDS, PRICE_FIELDS, effectivePrice, round6 } from "./price.mjs";
 import { SOURCES, sourceId } from "./sources.mjs";
+import { notAddedKey } from "./new-models.mjs";
 
 /** How far one run may move a price before a person has to confirm it. */
 export const MAX_FACTOR = 3;
@@ -221,6 +222,8 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
   const upcoming = [];
   const noSource = [];
   const newModels = [];
+  const skippedModels = [];
+  const acknowledgedKeys = new Map(acknowledged.map((item) => [item.key, item.reason]));
   const sources = [];
 
   const flag = (key, provider, model, text) => attention.push({ key, provider, model, text });
@@ -298,7 +301,15 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
     } else if (page?.prices) {
       sources.push({ provider, text: `prices: official OK; retirements: ${retirementSource}` });
       const ours = new Set(Object.keys(models).map((model) => sourceId(source.official, model)));
-      const fresh = [...page.prices.keys()].filter((id) => !ours.has(id));
+      const fresh = [...page.prices.keys()].filter((id) => {
+        if (ours.has(id)) return false;
+        const reason = acknowledgedKeys.get(notAddedKey(provider, id));
+        if (reason !== undefined) {
+          skippedModels.push({ provider, model: id, reason });
+          return false;
+        }
+        return true;
+      });
       if (fresh.length > 0) newModels.push({ provider, ids: fresh });
     } else {
       sources.push({ provider, text: listed === "none" ? "no source" : `prices: lists only; retirements: ${retirementSource}` });
@@ -375,7 +386,6 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
     }
   }
 
-  const acknowledgedKeys = new Map(acknowledged.map((item) => [item.key, item.reason]));
   const open = attention.filter((item) => !acknowledgedKeys.has(item.key));
   const seen = attention
     .filter((item) => acknowledgedKeys.has(item.key))
@@ -391,6 +401,7 @@ export function decide({ catalog, official, deprecations = {}, lists, acknowledg
     upcoming,
     noSource,
     newModels,
+    skippedModels,
     sources,
   };
 }

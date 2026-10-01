@@ -816,7 +816,7 @@ for (const changed of [false, true]) {
       assert.doesNotMatch(trigger, /No pull request is needed/u);
       assert.ok(catalogEdits(decision).length > 0);
     } else {
-      assert.match(trigger, /No current price changes\. No pull request is needed\./u);
+      assert.match(trigger, /No current price changes or newly discovered models\. No pull request is needed\./u);
       assert.doesNotMatch(trigger, /### Current price changes/u);
       assert.deepEqual(catalogEdits(decision), []);
     }
@@ -841,6 +841,6 @@ test("report: fetched text is escaped", () => {
   assert.match(report, /&lt;img/u);
   const row = report.split("\n").find((line) => line.startsWith("| `p/m"));
   assert.equal(row.split(/(?<!\\)\|/u).length, 6, "the model id must not add a table cell");
-  assert.match(report, /## Changes that trigger a pull request[\s\S]*### Current price changes[\s\S]*## Additional information[\s\S]*### Needs attention[\s\S]*### Sources[\s\S]*New on official pages/u);
+  assert.match(report, /## Changes that trigger a pull request[\s\S]*### Current price changes[\s\S]*### Newly discovered models[\s\S]*## Additional information[\s\S]*### Needs attention[\s\S]*### Sources/u);
   assert.match(report, /These items fail the workflow but do not trigger a pull request/u);
 });

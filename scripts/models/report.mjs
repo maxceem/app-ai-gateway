@@ -1,5 +1,5 @@
 // The Markdown report that becomes the price pull request's body and the
-// workflow's step summary. Current price changes explain the PR trigger;
+// workflow's step summary. Current prices and new discoveries explain the PR trigger;
 // everything else is additional information. Empty subsections are left out.
 //
 // Much of what it quotes came from a fetched page (a parser's reason, a model
@@ -17,7 +17,7 @@ export function escape(value) {
     .replace(/[\\`*_[\]|]/gu, (char) => `\\${char}`);
 }
 
-function code(value) {
+export function code(value) {
   // Inside a code span nothing is interpreted, but a backtick would end it, a
   // pipe would still split a table cell, and a renderer that is not strict
   // CommonMark might still read a tag. None of them belongs in a model id.
@@ -40,18 +40,37 @@ function details(summary, body) {
 
 export function renderReport(decision) {
   const sections = [];
-  let trigger = "## Changes that trigger a pull request\n\nNo current price changes. No pull request is needed.";
+  const notifications = decision.notifications ?? decision.newModels;
+  const notified = new Set(notifications.flatMap(({ provider, ids }) => ids.map((id) => `${provider}/${id}`)));
+  const triggers = [];
 
   if (decision.changes.length > 0) {
     const rows = decision.changes.map(
       (change) =>
         `| ${code(`${change.provider}/${change.model}`)} | ${change.field} | ${change.from} → **${change.to}** | ${change.source} |`,
     );
-    trigger =
-      "## Changes that trigger a pull request\n\n" +
-      "Only changes to prices currently in effect trigger a pull request.\n\n" +
-      `### Current price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`;
+    triggers.push(`### Current price changes\n\n| Model | Field | Old → new | Source |\n| --- | --- | --- | --- |\n${rows.join("\n")}`);
   }
+
+  if (notifications.length > 0) {
+    const rows = notifications.flatMap(({ provider, ids }) =>
+      ids.map((id) => `| ${code(provider)} | ${code(id)} |`),
+    );
+    triggers.push(
+      "### Newly discovered models\n\n" +
+      "These discoveries trigger this PR, even without price changes. The diff records their IDs in `scripts/models/notified.json`; merging it does not add them to the shipped catalog. Add each model or record a reason to skip it in the rolling **New model review** issue.\n\n" +
+      `| Provider | Model |\n| --- | --- |\n${rows.join("\n")}`,
+    );
+  }
+
+  const awaiting = decision.newModels.flatMap(({ provider, ids }) =>
+    ids.filter((id) => !notified.has(`${provider}/${id}`)).map((id) => `| ${code(provider)} | ${code(id)} |`),
+  );
+  if (awaiting.length > 0) sections.push(
+    "### Previously reported models awaiting a decision\n\n" +
+    "These models remain visible in the **New model review** issue until you add or skip them. They do not repeatedly trigger PRs.\n\n" +
+    `| Provider | Model |\n| --- | --- |\n${awaiting.join("\n")}`,
+  );
 
   if (decision.retirements.length > 0) {
     const rows = decision.retirements.map(
@@ -117,11 +136,11 @@ export function renderReport(decision) {
     );
   }
 
-  if (decision.newModels.length > 0) {
+  if ((decision.skippedModels ?? []).length > 0) {
     sections.push(
       details(
-        "New on official pages, not in the catalog",
-        list(decision.newModels, (item) => `${code(item.provider)}: ${item.ids.map(code).join(", ")}`),
+        "Models deliberately not added",
+        list(decision.skippedModels, (item) => `${code(`${item.provider}/${item.model}`)}: ${escape(item.reason)}`),
       ),
     );
   }
@@ -137,6 +156,9 @@ export function renderReport(decision) {
 
   const header =
     "Checked every model in `src/usage/models.json` against its provider's pricing and deprecation pages, by `scripts/update-models.mjs`.";
+  const trigger = "## Changes that trigger a pull request\n\n" + (triggers.length
+    ? "Current price changes and newly discovered models trigger a pull request.\n\n" + triggers.join("\n\n")
+    : "No current price changes or newly discovered models. No pull request is needed.");
   const additional = sections.length > 0
     ? "\n\n## Additional information\n\n" +
       "The information below does not trigger a pull request.\n\n" +
