@@ -18,6 +18,7 @@ import { authErrorMessage } from "@/lib/auth-errors";
 import { formatDateTime } from "@/lib/format";
 import { useChangePassword } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { CONSOLE_VERSION } from "@/lib/version";
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -77,6 +78,13 @@ export function SettingsPage() {
           <active.Component />
         </div>
       </div>
+
+      {/* Pinned to the viewport rather than the page, so it stays in the corner
+          however short the active section is. It is reference, not content, so
+          it never takes a click meant for what is underneath. */}
+      <p className="pointer-events-none fixed right-4 bottom-3 text-xs text-muted-foreground tabular-nums lg:right-6 lg:bottom-5">
+        v{CONSOLE_VERSION}
+      </p>
     </div>
   );
 }

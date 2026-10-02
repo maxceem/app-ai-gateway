@@ -3,6 +3,7 @@ import { Route, Routes } from "react-router-dom";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./settings";
+import { version } from "../../../package.json";
 import { renderAuthenticated } from "@/test/render";
 
 /** Settings is only reachable through its section routes, so tests mount them. */
@@ -23,6 +24,12 @@ describe("SettingsPage", () => {
     expect(menu.querySelectorAll("a")).toHaveLength(2);
     expect(screen.getByRole("link", { name: "Account" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByText("ada@example.test")).toBeTruthy();
+  });
+
+  it("shows the release the console was built from", () => {
+    renderSettings();
+
+    expect(screen.getByText(`v${version}`)).toBeTruthy();
   });
 
   it("swaps the panel for the section the operator picks", async () => {
