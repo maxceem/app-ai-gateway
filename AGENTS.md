@@ -2,8 +2,6 @@
 
 This is a minimal AI gateway (proxy) for applications. Its main purpose is to quickly and securely give applications access to AI providers, with one monthly request allowance per organization, and provide observability of AI usage inside all the applications from one place.
 
-There are two unrelated quota systems, and conflating them has broken this project once already. The **plan allowance** (`billing_*` codes, `src/do/OrgQuota.ts`) meters an organization against what it pays for. **Application limits** (`app_*` codes, `src/do/UserLimiter.ts`) are what an organization sets on its own app's end users. Neither reads the other, app limits are checked first, and no plan value may cap what an organization grants its users.
-
 The primary target is iOS applications, with secure measures for calling AI APIs directly from an iOS app: App Attest, user auth verification, and paid entitlement verification. Support for server applications via API keys is complementary — it makes it possible to observe multiple applications from one place. Android applications are not supported yet, but are planned for the future.
 
 ## Main principles
@@ -13,168 +11,31 @@ The primary target is iOS applications, with secure measures for calling AI APIs
 - The project is distributed as an open-source, self-hosted project. It should be very easy to deploy for anyone who wants to self-host it.
 - The project is also deployed as a hosted cloud version, so anyone who doesn't want to self-host can start using it right away. The cloud deployment process doesn't have to be as easy as the self-hosted one, but it must prioritize reliability and security for cloud customers.
 
-## API contract changes
+## Code
 
-- `src/contracts/catalog.ts` is the one place an operation is declared: its
-  method, its path, the parameters, query and body it takes, the body it
-  answers with, and the prose the document carries. `schemas.ts` (requests),
-  `responses.ts` (response bodies), `cli.ts` and `billing.ts` hold the schemas
-  it composes. Nothing else may write a path, a method or a second copy of a
-  shape.
-- Everything else is derived from that table: the OpenAPI document
-  (`openapi.ts`, one loop), the console's `call` and the CLI's
-  `call`/`publicCall`/`create`, the schema the CLI parses each response with,
-  the server's own mounts, and who may call each one. Adding an endpoint is one
-  catalog entry plus one `catalogRouter(...).handle("<name>", …)` — or
-  `adminRouter(...)`, which is the same router with the entry's authorization
-  applied — and there is nothing else to keep in step; `test/catalog.test.ts`
-  fails if a documented admin or CLI operation is not mounted.
-- Authorization on the management surface is the entry's `policy`, and lives
-  nowhere else. `security` names the credential; `policy` names the role, the
-  account access mode and whether a person is required, defaulting to
-  member/read for `GET` and admin/setup for everything else.
-  `src/middleware/admin.ts` only authenticates: it establishes the one `Actor`
-  (`src/management/actor.ts`) and decides nothing about it. Never write a path
-  string or a method test to gate a route.
-- What an admin route does lives in `src/management/`, not beside its path: the
-  router parses the operation's query and body with the catalog's schemas and
-  hands the route the `ManagementScope`, the actor and, under `/apps/{app}`,
-  the application; the route calls one service function taking
-  `(scope, actor, …)` with that typed body, and no service parses one itself.
-  Nothing under `src/management` may
-  import from `src/routes`; when a route file holds something a service needs,
-  move it into `src/management` rather than importing upwards.
-- `AppConfigSchema` in `src/contracts/schemas.ts` is the only parser of an
-  application configuration, and its output is what is stored. The server, the
-  console and the CLI all reach it through `parseAppConfig` in
-  `src/shared/app-config.ts`. Add a rule there and nowhere else; a check written
-  beside a caller is a second grammar, and this project has had one before.
-  `schemaIssueMessage` in `src/shared/schema-issues.ts` words every schema
-  rejection the server answers with — a request body or a query — and the ones
-  `parseAppConfig` and `parseAppWrite` throw.
-- A catalog-mounted handler returns the operation's response body; its type is
-  the catalog's, so a handler that drifts from its own document fails
-  `pnpm run check` at its `return`. `satisfies` is for the few routes mounted
-  outside the catalog — health, the gateway proxy, endpoints, `me` and the
-  application-auth surface. Never add runtime parsing to a server response.
-- Never edit `openapi/openapi.json` manually.
-- Run `pnpm run openapi:generate` after changing a route contract.
-- Run `pnpm run openapi:check` to detect generated-document drift.
+- Every API operation is declared once in `src/contracts/catalog.ts`; the
+  OpenAPI document, clients and server mounts derive from it. Never edit
+  `openapi/openapi.json` manually; run `pnpm run openapi:generate` instead.
 - Keep provider proxy bodies permissive: they preserve provider-native formats.
-- Add runtime validation from the shared schema when accepting a documented body.
-
-## Request scope
-
-`requestScope` (`src/middleware/request-scope.ts`) runs on the outer app and
-again on the lazily mounted management app, and puts three things on the
-context: the request's `Deployment`, its billing cache and its cf-auth
-instances. `resolveDeployment` in `src/policy/deployment.ts` is the only place
-a deployment's mode, its rules, its billing service and its public identity are
-derived from `env`; inside a request, read `c.get("deployment")`, and give a
-function that has no context a `Deployment` rather than an `Env` to re-derive
-one from. `deployment.billing === null` is what "self-hosted" means, and
-`getBillingAccess` is the only producer of the `self_hosted` state. Everything
-else a hosted deployment does differently is a field of `deployment.rules`, read
-from the one `DEPLOYMENT_RULES` table beside `resolveDeployment`; nothing
-outside `src/policy` compares `deployment.mode`, which is only that table's key
-and the value the CLI is told.
-
-## Deferred modules
-
-Startup CPU is paid by the request that lands on a cold isolate, so what a
-proxied request never touches is not evaluated there. Two things are deferred,
-in two different ways.
-
-The identity library is deferred per function. `@maxceem/cf-auth` — with
-better-auth, its `@opentelemetry` semantic conventions and kysely behind it —
-is reached only through `cfAuth()` in `src/auth/identity.ts`, one memoised
-`import()` the whole isolate shares. Never import a runtime value from that
-package anywhere else, and never import `better-auth` directly; type-only
-imports are erased and cost nothing, and `@maxceem/cf-auth/schema` is exempt
-because `src/db/schema.ts` is on every request's path already.
-
-The management surface is deferred per mount, because the operation catalog and
-the zod request and response schemas it composes are about 20ms of startup on
-their own. It is one app assembled in `src/routes/management.ts` and mounted
-behind `lazyRoutes` (`src/routes/lazy.ts`), which is also why `requestScope`
-runs twice and why that app maps a cf-auth rejection and rethrows it for the
-entry module to format. Everything on the client path, the application token
-exchange included, mounts on the entry app directly.
-
-`pnpm run startup:check` writes a CPU profile of the startup phase; the budget
-is about 70ms busy, and a better-auth, `@opentelemetry` or kysely frame in it
-means a static import crept back in.
+- Reach `@maxceem/cf-auth` only through `cfAuth()` in `src/auth/identity.ts` and
+  never import `better-auth` directly: a static import puts them on every
+  proxied request's cold start. Type-only imports are fine.
+- There are two unrelated quota systems that must never read each other: the plan allowance (`billing_*`, `src/do/OrgQuota.ts`) for what a gateway customer pays for, and application limits (`app_*`, `src/do/UserLimiter.ts`) that a customer sets on their own app's end users.
 
 ## Documentation changes
 
-- Handwritten guides live in `docs/content/docs/`.
-- Generated endpoint pages under `docs/content/docs/api/` are ignored and replaced
-  by `docs/scripts/generate-api.mjs`; never edit them.
-- `docs/scripts/generate-machine-files.mjs` publishes the guides for machines
-  before every docs build: `llms.txt`, `llms-full.txt`, `agents.md`, a `.md`
-  copy of each page and `openapi.json` under `docs/public/`. They are
-  gitignored; never edit them, and keep `automation/agent-manual.mdx` free of
-  MDX components because it is served verbatim as `/agents.md`.
+- Handwritten guides live in `docs/content/docs/`. Everything generated from
+  them — `docs/content/docs/api/` and the machine files under `docs/public/` —
+  is gitignored; never edit it. Keep `automation/agent-manual.mdx` free of MDX
+  components: it is served verbatim as `/agents.md`.
 - Never write "organization", "tenant" or "operator" in a guide, and do not
   document billing or plans there. Say "you", "your account" or "all your
   apps" instead.
-- Build docs separately with `pnpm run docs:build`. Do not add Fumadocs code or
-  dependencies to the deployed gateway Worker.
-- Keep the production docs deployment static-only. Do not add route handlers,
-  SSR, OpenNext, `run_worker_first`, or a Worker `main` entry without explicit
-  approval; those would introduce Worker invocations and billing.
-- Deploy documentation with `pnpm run docs:deploy`. A custom domain belongs in
-  a gitignored `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked
-  config; deploy it with `pnpm run docs:deploy --profile <name>`.
-
-## Model catalog
-
-- `src/usage/models.json` is the shipped model catalog: the models the console
-  offers per provider, who made each (`author`), what it costs and when it
-  retires. The API still serves it as `GET /v1/admin/prices`
-  (`listModelPrices`).
-- It is checked daily by `.github/workflows/update-models.yml`
-  (`scripts/update-models.mjs`), which opens one rolling pull request from
-  `automation/update-models` when a current price changes or a new model is
-  discovered. An OpenAI-compatible classifier (GPT-6 Luna by default) proposes
-  which discoveries to add or skip, with a reason for each. The sync changes the
-  value of a price field an entry already has, and includes `retirement_date`
-  updates from the provider's deprecation page alongside those prices.
-  Retirement-only changes and upcoming prices stay in the run summary;
-  new price fields on existing entries and removing models stay a human edit.
-- `retirement_date` records when the provider stops serving a model. A retired
-  model stays in the catalog and stays priced, so apps that still name it keep
-  billing exactly; never delete an entry because it retired.
-- Keep the file's hand formatting and write whole prices as `5.0`; the sync
-  edits number literals in place and never re-serialises the file.
-- Which page or list prices a provider, and any model id that differs there,
-  lives in `scripts/models/sources.mjs` and nowhere else. A report item that
-  is expected is acknowledged in `scripts/models/acknowledged.json` with a
-  reason, not by loosening a parser or a test.
-- Preview with `node scripts/update-models.mjs --dry-run`: no files are written
-  and AI is not called. Add `--classify` to explicitly run paid classification.
-- New discoveries and all add/skip reasons are visible directly in the rolling
-  PR. Merging adds current official rates or saves an exact
-  `<provider>/<model>: not added` acknowledgement. No issue is created.
-  Members with write access override proposals by commenting
-  `/models add provider/model` or `/models skip provider/model reason` on that
-  PR, one command per line. The bot updates the same PR.
-- `scripts/models/review.json` holds proposed choices, their reasons and who
-  made them. Daily runs reuse the PR's choices and preserve manual overrides.
-  AI only returns add/skip choices for supplied IDs; code alone determines and
-  validates prices. Unsupported billing is skipped with an explicit reason.
-  AI failure keeps new models pending in a reviewable PR and fails the run;
-  it does not block valid current price edits.
-- Both workflows share one queue and execute only main-branch scripts. The
-  command workflow checks live write access and reads only the fixed review
-  JSON from the PR; it never checks out or executes PR code. Configure the
-  full OpenAI-compatible chat/completions URL in `MODEL_REVIEW_API_URL`, the
-  model in `MODEL_REVIEW_MODEL` (repository variables), and the application
-  key in the `MODEL_REVIEW_API_KEY` Actions secret.
-- A test never writes a shipped price down. It asserts the arithmetic — which
-  rate each kind of token bills at — and reads the rates with `shippedRates`
-  from `test/shipped-rates.ts`, so the daily sync changing a price breaks no
-  test.
+- Keep docs out of the gateway Worker and keep their deployment static-only: no
+  route handlers, SSR, OpenNext, `run_worker_first` or Worker `main` entry
+  without explicit approval.
+- A custom docs domain belongs in a gitignored
+  `docs/wrangler.<profile>.overlay.jsonc`, never in the tracked config.
 
 ## Security
 
@@ -201,56 +62,8 @@ means a static import crept back in.
 - `pnpm run verify` — both of the above, once, before a commit or hand-off. It
   costs essentially no more than `pnpm run test` alone, because the checks run
   alongside the suites rather than after them.
-
-The Worker suite runs through the barrels in `test/suites`, which is what keeps
-it near a minute: a test file costs about nine seconds to load before it runs a
-single test, so the suite pays that nine times rather than thirty-nine. A new
-test file has to be imported by one of them, and `pnpm run check` fails while it
-is not. A barrel's members share one database, so a file that needs a clean one
-belongs in a barrel of its own.
-
-A test that needs an authenticated human should call `seedHuman` from
-`test/helpers.ts`, not sign one up: signing up hashes a password with a pure-JS
-scrypt and costs about two and a half seconds. Sign up only where registering is
-what the test is about.
-
-Do not verify a change by driving the app in a browser unless you are explicitly
-asked to. The commands above are the expected evidence; a running app is the
-author's to look at.
-
-Two things `verify` does not cover: run `pnpm run deploy:dry-run` for Worker
-configuration changes, and `pnpm run docs:build` when you change anything under
-`docs/`, which is left out because it is slow and the gateway never imports it.
-
-Type checking runs on `tsgo` (`@typescript/native-preview`), which is fast but
-still a preview build. `pnpm run typecheck:tsc` checks the same projects on
-`tsc` to confirm a diagnostic it reports, or fails to report, is real.
-
-## Releasing
-
-Only the project owner releases. Contributors send pull requests, and nothing a
-pull request changes can release or deploy anything: releases are cut from
-`vX.Y.Z` tags, creating one is restricted to the owner by a repository ruleset,
-and CI fails a pull request that edits a version field. Do not add a
-contributing guide or release instructions aimed at anyone else.
-
-One command, on a clean and up-to-date `main`:
-
-```sh
-pnpm run release 0.1.8            # add --dry-run to print the plan and write nothing
-pnpm run release 0.1.8 --breaks-upgrades   # when this release cannot migrate the previous one's database
-```
-
-`scripts/release.mjs` sets the version in `package.json` and `cli/package.json`,
-prepends the previous version to `upgradeFrom`, runs `pnpm run check`, commits
-`Release 0.1.8`, tags `v0.1.8` and pushes the commit and the tag atomically.
-The tag triggers `.github/workflows/release.yml`, which verifies, publishes the
-gateway archive to the GitHub release, deploys the Worker with the `cloud`
-profile, publishes `@maxceem/agw` to npm and deploys the documentation. Its
-header comment lists the repository secrets it needs; npm uses trusted
-publishing configured on npmjs.com for this repository and workflow file, so
-no npm token exists anywhere.
-
-Rolling back: `wrangler rollback` returns a Worker to its previous version, but
-a D1 migration is forward-only, so ship a fix release instead. A published npm
-version cannot be replaced; `npm deprecate` it and release the fix.
+- `verify` does not cover Worker configuration (`pnpm run deploy:dry-run`) or
+  `docs/` (`pnpm run docs:build`).
+- In tests, use `seedHuman` from `test/helpers.ts` rather than signing up, which
+  costs about two and a half seconds.
+- Do not verify a change by driving the app in a browser unless explicitly asked.
