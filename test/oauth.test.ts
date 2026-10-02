@@ -391,6 +391,44 @@ describe("OAuth discovery", () => {
     expect((await request(runtime(), "/oauth/token", { ...form({}), host: API_HOST })).status).toBe(404);
   });
 
+  it("takes the configured console origin as its issuer where the identity library would", () => {
+    const issuer = (origin: string) => resolveDeployment(runtime(true, { CLI_CONSOLE_ORIGIN: origin })).oauth.issuer();
+    expect(issuer("https://example.test")).toBe("https://example.test");
+    expect(issuer("http://localhost:8787")).toBe("http://localhost:8787");
+    expect(issuer("http://127.0.0.1:8787")).toBe("http://127.0.0.1:8787");
+    expect(issuer("http://[::1]:8787")).toBe("http://[::1]:8787");
+    // A name under the reserved `.localhost` TLD is this machine too, which
+    // is what a local preview on a worktree or branch name looks like.
+    expect(issuer("http://my-branch.app.localhost:8080")).toBe("http://my-branch.app.localhost:8080");
+    // Only the TLD counts: `localhost` as a label of a public name is not one.
+    expect(issuer("http://localhost.example.com")).toBeNull();
+    expect(issuer("http://example.test")).toBeNull();
+    // The URL parser keeps an empty label, which the library refuses.
+    expect(issuer("http://.localhost:8080")).toBeNull();
+    expect(issuer("http://a..localhost:8080")).toBeNull();
+  });
+
+  it("refuses a console origin under .localhost with an empty label, never handing it to the library", async () => {
+    // Before the gateway matched the library's rule, this passed as an issuer
+    // and the library's own validation answered 422 on the first OAuth request.
+    const testEnv = runtime(true, { CLI_CONSOLE_ORIGIN: "http://a..localhost:8080" });
+    const server = await request(testEnv, "/.well-known/oauth-authorization-server");
+    expect(server.status).toBe(503);
+    expect(await server.json()).toEqual({
+      error: { code: "invalid_request", message: "Configure a secure console origin" },
+    });
+  });
+
+  it("serves discovery on an http origin under .localhost", async () => {
+    const local = "http://my-branch.app.localhost:8080";
+    const testEnv = runtime(true, { CLI_CONSOLE_ORIGIN: local, PUBLIC_API_URL: undefined, MCP_ALLOWED_ORIGINS: undefined });
+    const server = await request(testEnv, "/.well-known/oauth-authorization-server", { host: local });
+    expect(server.status, await server.clone().text()).toBe(200);
+    expect(await server.json()).toMatchObject({ issuer: local, authorization_endpoint: `${local}/oauth/authorize` });
+    const resource = await request(testEnv, "/.well-known/oauth-protected-resource/mcp", { host: local });
+    expect(await resource.json()).toMatchObject({ resource: `${local}/mcp`, authorization_servers: [local] });
+  });
+
   it("says CIMD is off when the deployment turned it off, and refuses an https client then", async () => {
     const testEnv = runtime(true, { OAUTH_CIMD: "false" });
     const server = await request(testEnv, "/.well-known/oauth-authorization-server");

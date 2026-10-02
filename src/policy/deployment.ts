@@ -112,8 +112,8 @@ export interface Deployment {
      * tokens for both, and the nightly sweep, which has no request, would see
      * none. Null too without a `DEPLOYMENT_ID` for the authorizations to be
      * bound to, or where the configured origin is not one an issuer may be
-     * (https, or http on `localhost` or `127.0.0.1` exactly). Lazy for the
-     * reason `identity()` is.
+     * (https, or http on a loopback host: `localhost`, `127.0.0.1`, `[::1]`
+     * or a name under `.localhost`). Lazy for the reason `identity()` is.
      */
     issuer(): string | null;
     /**
@@ -159,13 +159,23 @@ function resolveOrigins(
   return { consoleOrigin, apiUrl: env.PUBLIC_API_URL ?? consoleOrigin };
 }
 
+/** `localhost`, or a name under it whose every label is non-empty. */
+const LOCALHOST_NAME = /^(?:localhost|(?:[^.]+\.)+localhost)$/u;
+
+/**
+ * A host that can only be this machine: `127.0.0.1`, `[::1]`, `localhost`, or
+ * a name under the reserved `.localhost` TLD (RFC 6761 §6.3), which is what a
+ * local instance answering on a worktree or branch name looks like. The URL
+ * parser keeps empty labels (`.localhost`, `a..localhost`), and they are
+ * refused here as the identity library refuses them.
+ */
+function loopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "[::1]" || LOCALHOST_NAME.test(hostname);
+}
+
 /** HTTPS, or plain HTTP on a loopback host for local development; never with credentials. */
 function secureOrigin(url: URL): boolean {
-  const loopback =
-    url.hostname === "localhost" ||
-    url.hostname.endsWith(".localhost") ||
-    url.hostname === "127.0.0.1";
-  return (url.protocol === "https:" || (url.protocol === "http:" && loopback))
+  return (url.protocol === "https:" || (url.protocol === "http:" && loopbackHost(url.hostname)))
     && !url.username
     && !url.password;
 }
@@ -220,16 +230,12 @@ function mcpAllowedOrigins(raw: string | undefined): readonly string[] {
   return origins;
 }
 
-/** Hosts an http issuer may name: the machine itself, spelled exactly so. */
-const LOOPBACK_ISSUER_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost"]);
-
 /**
  * The configured console origin as an OAuth issuer, or null where there is
- * none. Read from `CLI_CONSOLE_ORIGIN` alone, never from a request. The
- * identity library refuses an issuer that is not https, or http on a host
- * written exactly `localhost` or `127.0.0.1` — stricter than the console
- * origin itself, which also admits `*.localhost` for local development — so a
- * deployment configured with such a name simply has no OAuth.
+ * none. Read from `CLI_CONSOLE_ORIGIN` alone, never from a request. The rule
+ * is the identity library's own, which refuses any other issuer: https, or
+ * http on a loopback host (`localhost`, `127.0.0.1`, `[::1]` or a name under
+ * `.localhost`).
  */
 function oauthIssuer(env: Env): string | null {
   if (!env.DEPLOYMENT_ID || !env.CLI_CONSOLE_ORIGIN) return null;
@@ -240,7 +246,7 @@ function oauthIssuer(env: Env): string | null {
     return null;
   }
   const url = new URL(origin);
-  return url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_ISSUER_HOSTS.has(url.hostname))
+  return url.protocol === "https:" || (url.protocol === "http:" && loopbackHost(url.hostname))
     ? origin
     : null;
 }

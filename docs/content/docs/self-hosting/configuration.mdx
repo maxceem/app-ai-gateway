@@ -167,15 +167,18 @@ with OAuth.
 
 OAuth for MCP clients needs two settings: `DEPLOYMENT_ID`, and
 [`CLI_CONSOLE_ORIGIN`](#cli_console_origin) set to the one canonical address of
-your console — `https`, or `http` on `localhost` or `127.0.0.1` exactly for
-local development. That address is the authorization server every token is
-issued by and bound to, so it has to be one fixed origin: if the gateway took
-it from each request, a deployment answering on two names would issue tokens
-for both, and the nightly cleanup of ended connections, which has no request,
-would have none. Without it — or with another `http` name, such as one under
-`*.localhost` — OAuth is off: the `/.well-known` and `/oauth` addresses answer
-`404`, access tokens are refused, and clients connect with management keys
-only.
+your console — `https`, or for local development `http` on a loopback host:
+`localhost`, `127.0.0.1`, `[::1]` or any name under `.localhost`, such as
+`http://my-branch.app.localhost:8080`. That address is the authorization
+server every token is issued by and bound to, so it has to be one fixed origin:
+if the gateway took it from each request, a deployment answering on two names
+would issue tokens for both, and the nightly cleanup of ended connections,
+which has no request, would have none. Without either setting, OAuth is off:
+the `/.well-known` and `/oauth` addresses answer `404`, access tokens are
+refused, and clients connect with management keys only. A plain `http` address
+on any other host is not a console origin the gateway accepts at all, so it is
+refused rather than leaving OAuth off; see
+[`CLI_CONSOLE_ORIGIN`](#cli_console_origin).
 
 ### `MCP_ALLOWED_ORIGINS`
 
