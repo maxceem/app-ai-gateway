@@ -132,8 +132,8 @@ const reduceWizard = (session: EditorSession, action: AppDraftAction): EditorSes
 
 /**
  * `trigger` replaces the default "New app" button for callers that open the
- * same wizard from somewhere the button would read wrong — the first-run card
- * on the apps page, where it is one numbered step among three. It must still
+ * same wizard from somewhere the button would read wrong — the first-run
+ * checklist in the rail, where it is one numbered step among three. It must still
  * be a {@link GuardedButton}: the guard is what tells a read-only member why
  * nothing happens, and a bare element would simply fail on submit instead.
  */

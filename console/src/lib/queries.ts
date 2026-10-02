@@ -173,10 +173,16 @@ export function useRevokeManagementKey() {
   });
 }
 
-export function useProviders() {
+/**
+ * `enabled` is for a reader that only sometimes needs the list — the first-run
+ * checklist in the rail, which is on every page but up on few — so that a
+ * console past its first request does not fetch providers everywhere it goes.
+ */
+export function useProviders(enabled = true) {
   return useQuery({
     queryKey: keys.providers,
     queryFn: () => call("listProviders"),
+    enabled,
   });
 }
 
