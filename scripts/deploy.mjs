@@ -10,9 +10,12 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   createMissingGeneratedSecrets,
+  deploymentIdFromVersion,
+  deploymentVersionIds,
   missingRequiredSecrets,
   parseSecretList,
   requiredUserSecrets,
+  resolveDeploymentId,
 } from "./deploy-lib.mjs";
 import {
   projectRoot,
@@ -42,10 +45,25 @@ function prepare(argv) {
   localSecretsFile = profile ? `.dev.vars.${profile}` : ".dev.vars";
   localSecretsPath = join(projectRoot, localSecretsFile);
   const local = existsSync(localSecretsPath) ? parseEnv(readFileSync(localSecretsPath, "utf8")) : {};
-  deploymentId = process.env.DEPLOYMENT_ID || config.vars?.DEPLOYMENT_ID || local.DEPLOYMENT_ID;
-  if (!deploymentId || !/^[A-Za-z0-9_-]{8,128}$/.test(deploymentId)) {
-    throw new Error("Set an immutable DEPLOYMENT_ID UUID in Wrangler vars, the build environment, or your ignored local secrets file before deploying. Preserve the same value on every update.");
+  deploymentId = resolveDeploymentId(
+    readDeployedIds(),
+    process.env.DEPLOYMENT_ID || config.vars?.DEPLOYMENT_ID,
+    local.DEPLOYMENT_ID,
+  );
+}
+
+function readDeployedIds() {
+  const result = wrangler(["deployments", "list", "--json"], { capture: true, allowFailure: true });
+  if (result.status !== 0) {
+    // Cloudflare's specific Worker-not-found code. Authentication, network and
+    // other lookup failures must never be interpreted as a fresh installation.
+    if (/\[code: 10007\]/u.test(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)) return [];
+    throw new Error("Unable to inspect the deployed identity; check Wrangler authentication and retry");
   }
+  return deploymentVersionIds(result.stdout).map((id) => {
+    const version = wrangler(["versions", "view", id, "--json"], { capture: true });
+    return deploymentIdFromVersion(version.stdout);
+  });
 }
 
 function wrangler(args, options = {}) {

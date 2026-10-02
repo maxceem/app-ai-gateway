@@ -5,8 +5,8 @@
 SECRET_VAULT_LOCAL_KEK_V1=
 
 # JWT_SECRET and BETTER_AUTH_SECRET are generated during the first deployment.
-# DEPLOYMENT_ID is an immutable public UUID set in Wrangler vars. Local setup
-# stores it here for development; deployment passes it as a plain binding.
+# DEPLOYMENT_ID is generated once and reused by the deploy script as a plain
+# binding. Local setup stores a separate development value here.
 # CLI_CONSOLE_ORIGIN optionally selects the secure first-party browser origin.
 # For local development, run `pnpm run secrets:setup-local` to generate them.
 

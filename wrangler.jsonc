@@ -13,10 +13,9 @@
   "vars": {
     "SECRET_VAULT_MODE": "local",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1",
-    "ALLOW_ADDITIONAL_REGISTRATIONS": "false",
-    // Set once per deployment to a UUID; preserve it across updates and domains.
-    "DEPLOYMENT_ID": ""
+    "ALLOW_ADDITIONAL_REGISTRATIONS": "false"
   },
+  // The deploy script generates DEPLOYMENT_ID once and reuses its deployed binding.
   // Nightly maintenance: retention, expired accounts and authorizations.
   "triggers": { "crons": ["17 3 * * *"] },
   "observability": {

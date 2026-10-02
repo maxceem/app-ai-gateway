@@ -35,9 +35,8 @@ for every deployment command.
 
 ## Prepare the deployment values
 
-Generate a vault key with `openssl rand -base64 32` and a public deployment ID
-with `node -p "crypto.randomUUID()"`. Save the vault key privately. Preserve the
-same deployment ID across updates and custom domains.
+Generate a vault key with `openssl rand -base64 32` and save it privately.
+The deployment ID is generated automatically.
 
 <Callout type="warn" title="Back up the vault key">
   Losing `SECRET_VAULT_LOCAL_KEK_V1` makes stored provider credentials unreadable.
@@ -54,18 +53,18 @@ Fill in these values:
 | Field | Value |
 | --- | --- |
 | `SECRET_VAULT_LOCAL_KEK_V1` | Your private vault key. |
-| `DEPLOYMENT_ID` | Your public UUID; keep it unchanged. |
 | `SECRET_VAULT_MODE` | `local` |
 | `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | `1` |
 | `ALLOW_ADDITIONAL_REGISTRATIONS` | `false` |
 
-The deploy script generates internal signing secrets once, applies migrations
-and deploys the console and Worker. Your saved plain `DEPLOYMENT_ID` must remain
-in the build configuration or build environment on later builds; do not generate
-a new one. The script refuses deployment when this value is absent.
+The deploy script generates the deployment ID and internal signing secrets once,
+applies migrations and deploys the console and Worker. Later builds read and
+reuse the deployed ID, including after a custom-domain change. You do not need
+to generate it or add it to the build environment. If the script cannot read the
+existing deployment, it stops rather than risking a change to its identity.
 
 Check `https://YOUR-WORKER.workers.dev/v1/healthz` and confirm `"vault":"ok"`.
-Then check `/v1/cli/capabilities` and confirm the expected deployment ID.
+The generated deployment ID is available at `/v1/cli/capabilities`.
 
 ## Initialize and claim privately
 
