@@ -92,6 +92,12 @@ export const {
    * this gateway keeps in a row's record beside it.
    */
   operation: mgmtOperation,
+  /**
+   * The token generations of an OAuth connection, which is an `api_key` row of
+   * its own (`client_id`, `resource`). cf-auth owns both; nothing in the
+   * gateway reads them yet.
+   */
+  oauthToken: mgmtOauthToken,
 } = mgmtAuthTables;
 
 export const app = sqliteTable(

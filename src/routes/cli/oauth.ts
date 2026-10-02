@@ -4,8 +4,9 @@ import { identityAuthFor, relaySocialSignIn } from "../../auth/identity";
 import { database } from "../../db";
 import { mgmtOperation } from "../../db/schema";
 import { GatewayError } from "../../core/errors";
+import { deploymentMeta } from "../../management/deployment-meta";
 import { derive, digest, proofMatches } from "./security";
-import { browserPath, deploymentMeta } from "./operations";
+import { browserPath } from "../../management/operation-links";
 import { relayedSubmission } from "./browser";
 import { CliBrowserProofSchema } from "../../contracts/cli";
 import type { CliContext } from "./types";
@@ -57,7 +58,7 @@ export async function browserGoogle(c: CliContext): Promise<Response> {
   if ((step.entry.type !== "claim" && step.entry.type !== "login") || details.state !== "pending")
     throw new GatewayError(403, "forbidden", "Google registration requires a pending claim or login");
   const expiresAt = Date.parse(details.expiresAt);
-  const meta = deploymentMeta(c);
+  const meta = deploymentMeta(c.get("deployment"));
   // A login's approver signs in or registers exactly as on the console's own
   // sign-in page, so it needs no grant: the callback treats it as any other.
   // Only a claim carries the cookie that lets its one person in where

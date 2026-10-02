@@ -118,9 +118,14 @@ function signupWinsBootstrapEnv(base: Env): {
     get(target, property, receiver) {
       if (property === "batch") {
         return async (statements: PreparedStatement[]) => {
-          const result = await target.batch(statements);
-          if (bootstrapMayBatch) bootstrapBatchFinished();
-          return result;
+          try {
+            return await target.batch(statements);
+          } finally {
+            // A batch the engine refuses throws — its completion asserts it
+            // landed, and rolls the whole batch back when it did not — and has
+            // observed the new human all the same.
+            if (bootstrapMayBatch) bootstrapBatchFinished();
+          }
         };
       }
       if (property !== "prepare") return Reflect.get(target, property, receiver);

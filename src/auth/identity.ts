@@ -1,4 +1,5 @@
 import type { CfAuth, CfAuthError, OperationSweepStatements } from "@maxceem/cf-auth";
+import type { OAuthSweepStatements } from "../core/account-lifecycle";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import {
@@ -9,6 +10,7 @@ import {
   type Deployment,
 } from "../policy/deployment";
 import { registrationCreateCondition } from "../policy/sql";
+import { oauthClients } from "./oauth-clients";
 import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds";
 
 /**
@@ -47,6 +49,12 @@ function forget(error: unknown): never {
 
 export const IDENTITY_AUTH_BASE_PATH = "/v1/auth";
 export const MANAGEMENT_KEY_PREFIX = "agw_mgmt_";
+/**
+ * What an OAuth connection's tokens begin with. A bearer token is routed by
+ * its prefix, so neither may be one a management key could begin with.
+ */
+export const OAUTH_ACCESS_TOKEN_PREFIX = "agw_oat_";
+export const OAUTH_REFRESH_TOKEN_PREFIX = "agw_ort_";
 export const CONSOLE_REQUEST_HEADER = "x-console-request";
 
 async function registrationState(env: Env): Promise<{
@@ -151,6 +159,13 @@ export interface IdentityAuthOptions {
 }
 
 /**
+ * The options the management surface builds its cf-auth instance with: the
+ * CLI's routes, the management services and the MCP server share it. It never
+ * provisions an account as a side effect, since nothing there registers anyone.
+ */
+export const MANAGEMENT_IDENTITY: IdentityAuthOptions = { suppressDefaultOrganization: true };
+
+/**
  * What every browser proof and user code is bound to: the deployment's public
  * identity, so a proof made for one deployment means nothing to another. Null
  * where the deployment has none, and then there are no operations to prove.
@@ -161,6 +176,30 @@ function operationsRealm(deployment: Deployment): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * OAuth for MCP clients, where the deployment can run it: an operation realm
+ * for the authorizations to be bound to, and a console origin that may be an
+ * issuer (see `Deployment.oauth`). The console origin is both the issuer and
+ * the one protected resource, `/mcp` and `/v1/admin` alike. Lifetimes are the
+ * library's defaults: a ten-minute access token, a thirty-day refresh token
+ * restarted by each rotation, and no cap on a connection used at least monthly.
+ */
+function oauthOptions(deployment: Deployment, realm: string | null) {
+  const issuer = realm === null ? null : deployment.oauth.issuer();
+  if (issuer === null) return {};
+  return {
+    oauth: {
+      enabled: true,
+      issuer,
+      tokenPrefix: { access: OAUTH_ACCESS_TOKEN_PREFIX, refresh: OAUTH_REFRESH_TOKEN_PREFIX },
+      clients: oauthClients(deployment.oauth.clients).map((client) => ({ ...client, redirectUris: [...client.redirectUris] })),
+      // An https `client_id` is fetched with the platform's own `fetch`, within
+      // the library's bounds, unless the deployment turned that off.
+      cimd: deployment.oauth.cimd ? {} : (false as const),
+    },
+  };
 }
 
 export async function createIdentityAuth(
@@ -227,6 +266,7 @@ export async function createIdentityAuth(
       login: { minRole: "member", pendingTtlMs: 15 * 60_000, recordTtlMs: 86_400_000 },
       limits: OPERATION_LIMITS,
     },
+    ...oauthOptions(deployment, realm),
     cookies: { prefix: "agw_identity" },
     ...(googleEnabled
       ? {
@@ -242,24 +282,54 @@ export async function createIdentityAuth(
 }
 
 /**
- * cf-auth's operation sweep as statements for the nightly run to batch itself,
+ * cf-auth's two sweeps as statements for the nightly run to batch itself,
  * built over `binding` — the run's budgeted view of the database — so its
- * allowance counts them as they go out. Built from an instance of its own,
- * since the run has no request: the origin it is given only names cookies and
- * callbacks nothing here issues.
+ * allowance counts them as they go out: the operation engine's, and the OAuth
+ * one, which deletes the token generations of connections revoked or past
+ * their lifetime (null where the deployment runs no OAuth). Built from an
+ * instance of its own, since the run has no request: the origin it is given
+ * only names cookies and callbacks nothing here issues, and neither sweep
+ * reads the issuer.
  */
+export async function maintenanceSweepStatements(
+  deployment: Deployment,
+  env: Env,
+  binding: D1Database,
+  now: number,
+): Promise<{ operations: OperationSweepStatements; oauth: OAuthSweepStatements | null }> {
+  const scoped = new Proxy(env, {
+    get: (target, key, receiver) => (key === "DB" ? binding : Reflect.get(target, key, receiver)),
+  });
+  // The configured console origin where there is one — the issuer the OAuth
+  // sweep is bound to, and the only origin OAuth is ever enabled for — and a
+  // placeholder otherwise, which names nothing the operation sweep reads.
+  const origin = deployment.oauth.issuer() ?? configuredConsoleOrigin(deployment) ?? "https://maintenance.invalid";
+  const identity = await createIdentityAuth(deployment, scoped, origin);
+  return {
+    operations: identity.operations.sweepStatements(now),
+    oauth: identity.config.oauth === null ? null : identity.oauth.sweepStatements(now),
+  };
+}
+
+/** The console origin the deployment configured, or null where it relies on each request's own. */
+function configuredConsoleOrigin(deployment: Deployment): string | null {
+  try {
+    return deployment.consoleOrigin();
+  } catch {
+    return null;
+  }
+}
+
+/** The operation engine's sweep alone, for a caller that runs nothing else. */
 export async function operationSweepStatements(
   deployment: Deployment,
   env: Env,
   binding: D1Database,
   now: number,
 ): Promise<OperationSweepStatements> {
-  const scoped = new Proxy(env, {
-    get: (target, key, receiver) => (key === "DB" ? binding : Reflect.get(target, key, receiver)),
-  });
-  const identity = await createIdentityAuth(deployment, scoped, "https://maintenance.invalid");
-  return identity.operations.sweepStatements(now);
+  return (await maintenanceSweepStatements(deployment, env, binding, now)).operations;
 }
+
 
 /** The part of a request context this needs: the environment, the URL, and somewhere to memoize. */
 export interface IdentityAuthScope {
@@ -385,11 +455,17 @@ export function isCfAuthError(error: unknown): error is CfAuthError {
   return typeof candidate.code === "string" && typeof candidate.status === "number";
 }
 
+/** Whether a failure is cf-auth — its operation engine, typically — refusing with `code`. */
+export function engineRefused(error: unknown, code: string): boolean {
+  return isCfAuthError(error) && error.code === code;
+}
+
 export function asGatewayAuthError(error: CfAuthError): GatewayError {
   const mappedCodes: Record<string, ErrorCode> = {
     unauthorized: "auth_required",
     forbidden: "forbidden",
     session_required: "session_required",
+    grant_insufficient: "grant_insufficient",
     validation_error: "validation_error",
     conflict: "conflict",
     not_found: "not_found",
@@ -407,6 +483,8 @@ export function asGatewayAuthError(error: CfAuthError): GatewayError {
     operation_denied: "operation_denied",
     operation_pending: "operation_pending",
     already_completed: "already_completed",
+    operation_mismatch: "operation_mismatch",
+    already_revealed: "already_revealed",
     no_eligible_organization: "no_eligible_organization",
   };
   // A claim kind's own refusals, when the engine's `approve` reaches them

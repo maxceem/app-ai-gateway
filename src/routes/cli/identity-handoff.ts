@@ -9,7 +9,7 @@
 import { sql } from "drizzle-orm";
 import type { AuthState, OperationBrowserCredential, OperationDetails } from "@maxceem/cf-auth";
 import { claimRefusal } from "../../auth/operation-kinds";
-import { identityAuthFor } from "../../auth/identity";
+import { engineRefused, identityAuthFor } from "../../auth/identity";
 import { invalidateBillingAccess } from "../../billing/gateway";
 import {
   assertAccountAccess,
@@ -20,8 +20,8 @@ import { log } from "../../core/log";
 import type { CliApprovalRefusal, CliLoginOrganization } from "../../contracts/cli";
 import { prepared } from "../../db/sql";
 import { shouldProvisionDefaultOrganization } from "../../policy/deployment";
-import { authState, engineRefused, operationEngine } from "./operations";
-import type { ClaimKind, LoginKind } from "./operation-kinds";
+import { authState, operationEngine } from "./operations";
+import type { ClaimKind, LoginKind } from "../../management/operation-kinds";
 import type { CliContext } from "./types";
 
 /** Whether this browser holds an interactive human session, which approving either kind needs. */

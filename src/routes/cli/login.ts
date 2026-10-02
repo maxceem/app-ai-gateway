@@ -13,16 +13,16 @@
 import { accountLifecycle } from "../../core/account-lifecycle";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import { GatewayError } from "../../core/errors";
+import { deploymentMeta } from "../../management/deployment-meta";
 import type { CliLogin, CliLoginRedeemResponse } from "../../contracts/cli";
-import type { OperationInput } from "../catalog-router";
+import type { OperationInput } from "../../management/executor";
+import { browserPath } from "../../management/operation-links";
 import {
-  browserPath,
   cliIdentity,
-  deploymentMeta,
   operationEngine,
   provenOperation,
 } from "./operations";
-import { kindOf, operationId } from "./operation-rows";
+import { kindOf, operationId } from "../../management/operation-kinds";
 import type { CliContext } from "./types";
 
 /** The longest client text the engine stores; a longer user agent is cut rather than refused. */
@@ -32,7 +32,7 @@ export async function openLogin(
   c: CliContext,
   { body }: OperationInput<"openCliLogin">,
 ): Promise<CliLogin> {
-  const meta = deploymentMeta(c);
+  const meta = deploymentMeta(c.get("deployment"));
   const userAgent = c.req.header("user-agent")?.slice(0, CLIENT_TEXT_LIMIT);
   const id = await operationId(body.token);
   // Both limits on an endpoint anyone may call are taken over this address —
@@ -57,6 +57,9 @@ export async function openLogin(
     id,
     kind: "login",
     token: body.token,
+    // Said rather than left to the kind's default: the CLI configures the
+    // gateway, so the key it receives needs the `manage` grant.
+    payload: { grant: "manage" },
     rateLimitKey: ip,
     client: {
       label: body.client.label,
@@ -86,9 +89,9 @@ export async function openLogin(
  */
 export async function redeemLogin(
   c: CliContext,
-  { body }: OperationInput<"redeemCliLogin">,
+  { body, params }: OperationInput<"redeemCliLogin">,
 ): Promise<CliLoginRedeemResponse> {
-  const { view, token } = await provenOperation(c);
+  const { view, token } = await provenOperation(c, params.id);
   if (kindOf(view.kind).entry.type !== "login")
     throw new GatewayError(400, "invalid_request", "Only a login is redeemed");
   const { outcome } = await (await operationEngine(c)).redeem({

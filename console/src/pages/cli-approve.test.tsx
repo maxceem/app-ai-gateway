@@ -48,7 +48,7 @@ const CONSOLE_OUTCOME = {
 const CLI_OUTCOME = {
   body: {
     state: "completed",
-    message: "You can close this tab and return to your CLI.",
+    message: "You can close this tab and return to the CLI or agent that asked.",
     continueTo: "cli",
   },
 };
@@ -119,7 +119,7 @@ describe("CliApprovePage proof handling", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toMatch(/can no longer be approved/i);
-    expect(alert.textContent).toMatch(/rerun the command/i);
+    expect(alert.textContent).toMatch(/start the request again/i);
     // The id identifies the request even when nothing about it could load.
     const footnote = screen.getByText(OPERATION_ID);
     expect(footnote).toBeTruthy();
@@ -296,7 +296,7 @@ describe("CliApprovePage claim", () => {
     expect(await screen.findByText(/this account is yours/i)).toBeTruthy();
     const onwards = screen.getByRole("link", { name: /go to your console/i });
     expect(onwards.getAttribute("href")).toBe("/apps");
-    expect(screen.queryByText(/return to your cli/i)).toBeNull();
+    expect(screen.queryByText(/return to the cli or agent/i)).toBeNull();
     expect(sessionStorage.getItem(`app-ai-gateway:cli-approve:${PATH}`)).toBeNull();
   });
 });
@@ -336,7 +336,7 @@ describe("CliApprovePage provider handoffs", () => {
       });
     });
     // The command is still running, so this tab offers no way onwards.
-    expect(await screen.findByText(/return to your cli/i)).toBeTruthy();
+    expect(await screen.findByText(/return to the cli or agent/i)).toBeTruthy();
     expect(screen.queryByRole("link", { name: /console/i })).toBeNull();
   });
 

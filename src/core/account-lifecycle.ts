@@ -7,7 +7,10 @@ import {
   type AccountLifecycle,
 } from "../policy/accounts";
 import { sql, type SQL } from "drizzle-orm";
-import type { OperationSweepStatements } from "@maxceem/cf-auth";
+import type { CfAuthOAuth, OperationSweepStatements } from "@maxceem/cf-auth";
+
+/** The OAuth sweep's statements, as `CfAuthOAuth.sweepStatements` answers them. */
+export type OAuthSweepStatements = ReturnType<CfAuthOAuth["sweepStatements"]>;
 import { database } from "../db";
 import { prepared } from "../db/sql";
 import type { Deployment } from "../policy/deployment";
@@ -117,7 +120,7 @@ export async function assertAccountAccess(
  * Accounts one cleanup pass deletes.
  *
  * The batch is not what bounds a night's work — the loop below is — but a pass
- * costs the same seventeen statements whether it collects one account or two
+ * costs the same eighteen statements whether it collects one account or two
  * hundred, so collecting one at a time would make the query allowance, not the
  * database, the thing that decides how fast an expired backlog drains. The
  * ceiling on the batch is transaction size: every statement in a pass is one
@@ -183,6 +186,11 @@ function accountCleanupStatements(cutoffMs: number): {
       : sql.empty();
     statements.push(sql`DELETE FROM ${sql.identifier(table)} WHERE app_id IN (${apps})${stamped}`);
   }
+  // An OAuth connection's token generations, before the connection itself:
+  // the foreign key would cascade them, but what a pass removes is written in
+  // the pass, and an unclaimed account's connections end with it.
+  statements.push(sql`DELETE FROM mgmt_oauth_token WHERE api_key_id IN (
+    SELECT id FROM mgmt_api_key WHERE organization_id IN (${expired}))`);
   for (const table of ORGANIZATION_SCOPED_TABLES) {
     statements.push(sql`DELETE FROM ${sql.identifier(table)} WHERE organization_id IN (${expired})`);
   }
@@ -265,4 +273,15 @@ export async function pruneExpiredAuthorizations(
 ): Promise<void> {
   if (sweep.length === 0) return;
   await database(db).batch(sweep as [OperationSweepStatements[number], ...OperationSweepStatements]);
+}
+
+/**
+ * cf-auth's OAuth sweep, as one batch: the token generations of connections
+ * that were revoked or passed their lifetime. A revocation already deletes
+ * them, so what this collects is a connection that simply lapsed. Built over
+ * `db`, like the operation sweep, so the run's allowance counts it.
+ */
+export async function pruneOAuthTokens(db: D1Database, sweep: OAuthSweepStatements): Promise<void> {
+  if (sweep.length === 0) return;
+  await database(db).batch(sweep as [OAuthSweepStatements[number], ...OAuthSweepStatements]);
 }

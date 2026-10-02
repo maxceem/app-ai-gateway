@@ -108,7 +108,7 @@ describe("console bootstrap", () => {
     // Neither the console nor the sign-in screen may appear on a guess.
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
-    expect(screen.queryByRole("link", { name: /management keys/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^access$/i })).toBeNull();
     expect(router.location.pathname).toBe("/apps");
   });
 

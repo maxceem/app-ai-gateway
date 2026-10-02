@@ -1,0 +1,337 @@
+---
+title: MCP server
+description: Connect an MCP client such as a coding agent to your gateway and let it read and change your apps, providers and usage.
+---
+
+The gateway is also a [Model Context Protocol](https://modelcontextprotocol.io)
+server. An MCP client — a coding agent, a desktop assistant, an IDE — can
+connect to it to read your apps, providers and usage and to change them,
+through tools written for an agent rather than for an HTTP client. Each tool
+runs the same operation the API and the [CLI](/automation/cli) run, with the
+same rules, so connecting a client over MCP gives it no more and no less than
+the credential it connects with. No key or token ever passes through a tool,
+in either direction.
+
+## Endpoint
+
+The server is one URL on the host you sign in to the console at:
+
+```text
+https://console.appaigateway.com/mcp
+```
+
+On your own deployment it is your console's address followed by `/mcp`, such
+as `https://console.example.com/mcp`. If you serve your apps from a separate
+API host with `PUBLIC_API_URL`, the MCP endpoint is not on that host; it answers
+`404` there, like the console's own routes.
+
+It speaks the Streamable HTTP transport over `POST`, statelessly: there is no
+session to keep, and every request carries its credential. Clients on protocol
+revision `2026-07-28` and clients on the 2025 revisions are both served.
+
+A client connects in one of two ways: with OAuth, where you approve it in your
+browser and it never holds a key, or with a management key you create and give
+it. Either way it gets the same tools, under the same rules.
+
+## Connect with OAuth
+
+Give the client the endpoint URL and nothing else. Most MCP clients then sign
+in on their own. On your own deployment this needs the console's address
+configured; see [Configuration](/self-hosting/configuration#mcp-clients).
+
+1. The client's first request is refused with `401` and a challenge naming
+   `https://console.appaigateway.com/.well-known/oauth-protected-resource/mcp`.
+   That document names your console's address as the authorization server,
+   and the client reads where to send you from
+   `/.well-known/oauth-authorization-server`.
+2. The client opens your browser at the console's consent page. It shows the
+   app's name as the app declares it, the domain that vouches for that name,
+   and what the app asks for: **Read only** or **Manage**.
+3. You decide:
+   - **Signed in:** pick which of your accounts the app may use and what it
+     may do, then **Allow**. The grant starts at what the app asked for, and
+     you may give it less or more; a **Read only** connection can use every
+     reading tool, and every change tool refuses it with `grant_insufficient`.
+     A **Manage** connection can do what your role allows.
+   - **Not signed in:** sign in, or create an account, and you come back to
+     the same page. Google sign-in is offered where the deployment has it.
+   - **Continue without an account**, where it is offered: see below.
+   - **Deny** sends the app away with nothing.
+4. The browser returns to the app, which exchanges what it received for its
+   tokens. From then on it calls `/mcp` with them, and renews them by itself.
+
+The consent page is open for ten minutes. Each request a connection sends is
+attributed to MCP and to the app it was issued to.
+
+### Continue without an account
+
+You can start without signing up: **Continue without an account** creates a new
+account nobody has claimed yet, and connects the app to it. It is the same kind
+of account the [CLI](/automation/cli) creates the first time it is used without
+signing in:
+
+- The connection always gets the **Manage** grant, because it is the only way
+  into that account. If the app asked for **Read only**, the page says so.
+- On the hosted service, an account nobody has claimed is deleted unless a
+  person claims it; the consent page shows when, and `get_account` reports it
+  to the agent.
+- To keep it, ask the agent to call `claim_account`, open the link it gives
+  you, and create your sign-in there. The connection keeps working afterwards,
+  and you will find it on your **Access** page.
+- On a self-hosted deployment it is offered only before anyone has set the
+  deployment up: the first connection's account becomes the deployment's
+  account, exactly as the CLI's first account does, and the door closes after
+  it.
+
+On the hosted service, each network address can create a few such accounts a
+day, counted together with the CLI's.
+
+### How a client identifies itself
+
+An app identifies itself with an `https` URL as its `client_id`: the address of
+a small JSON document describing it, its Client ID Metadata Document. The
+gateway fetches it when the app asks to connect, and only the redirect
+addresses it lists can receive the result. The name the document declares is
+the app's own claim, which is why the consent page always shows it beside the
+domain that served it.
+
+A self-hosted deployment can turn this off with `OAUTH_CIMD`, and can register
+apps itself with `OAUTH_CLIENTS`, an advanced option for clients that cannot
+publish such a document; see [Configuration](/self-hosting/configuration#oauth_cimd).
+
+### Tokens and how long they last
+
+| What | How long |
+| --- | --- |
+| Access token (`agw_oat_…`) | 10 minutes |
+| Refresh token (`agw_ort_…`) and the connection itself | 30 days, restarted each time the app refreshes |
+| The code the browser brings back | Once, within 10 minutes |
+
+A connection the app uses at least once a month lives until you revoke it.
+Every refresh replaces both tokens; presenting an old refresh token again,
+after a short grace period, ends the whole connection, because only a stolen
+copy would. Presenting the newest refresh token within 5 seconds of the
+refresh that issued it is answered `429` with `slow_down` and a `Retry-After`
+header, and that token stays good; presenting the previous one within the grace
+period instead answers the same tokens that refresh did.
+The same access token also works as a bearer token on the
+management API under `/v1/admin`, with the same grant, though a client
+discovers how to authorize only from `/mcp`: the API's refusals carry a
+`Bearer realm="management"` challenge that names no metadata. Neither ever reaches your keys and
+connections themselves: those are managed only in the console.
+
+### Revoking a connection
+
+The console's **Access** page lists every connection beside your management
+keys: the app's name and domain, its grant, the account, when it was created
+and when it lapses unless renewed. **Revoke connection** ends it at once, and
+the app has to be approved again to come back. An app can also end its own
+connection at `/oauth/revoke`.
+
+### Endpoints
+
+All of them are on the console's address, never on a separate API host:
+
+| URL | What it is |
+| --- | --- |
+| `/.well-known/oauth-protected-resource/mcp` | Where the MCP endpoint says to authorize; also at `/.well-known/oauth-protected-resource` |
+| `/.well-known/oauth-authorization-server` | The authorization server's metadata |
+| `/oauth/authorize` | Where the app sends the browser: the authorization-code flow with PKCE (`S256`) |
+| `/oauth/token` | The code exchange and refresh, form-encoded |
+| `/oauth/revoke` | Revocation, form-encoded |
+
+The scopes are `read` and `manage`, and `resource` is the console's address or
+the MCP endpoint's. There is no dynamic client registration and no client
+secret: every app is a public client.
+
+## Connect with a management key
+
+Create a management key on the console's **Access** page and give it
+to the client as a bearer token, in an `Authorization: Bearer` header. Choose
+the key's grant for what the client should be able to do:
+
+- **Read only** for a client that only looks. Every reading tool works with
+  it, and every change tool is refused with `grant_insufficient`.
+- **Manage** for a client that will also change things. It can do what the
+  key's owner's role allows: an owner's or admin's key can make every change
+  below, a member's none.
+
+Keep the key out of the client's configuration file where you can. A client
+that expands environment variables, such as Claude Code with a project
+`.mcp.json`, can read it from the environment:
+
+```json title=".mcp.json"
+{
+  "mcpServers": {
+    "app-ai-gateway": {
+      "type": "http",
+      "url": "https://console.appaigateway.com/mcp",
+      "headers": { "Authorization": "Bearer ${AGW_MANAGEMENT_KEY}" }
+    }
+  }
+}
+```
+
+A request without a bearer token, or with one that is not a live management
+key or access token, is answered `401` with a `WWW-Authenticate: Bearer
+realm="management"` challenge that also names where to authorize, when the
+deployment runs OAuth. The server never accepts a console
+sign-in cookie. Revoking the key on the **Access** page ends the client's
+access at once.
+
+Each request a client sends with your key is attributed to MCP, whatever the
+client calls itself.
+
+## Reading tools
+
+These tools change nothing and never send a request to a provider. Tools
+about one app take its id as `app`.
+
+| Tool | What it returns |
+| --- | --- |
+| `get_account` | Your account and the deployment it lives on; for an account nobody has claimed yet, its deadlines |
+| `get_capabilities` | The provider types and provider gateway types the deployment supports |
+| `list_models` | The priced models, with per-token prices and retirement dates |
+| `list_providers` | Your providers' metadata; never a key, only its last characters |
+| `get_provider` | One provider's metadata, by id or slug |
+| `list_provider_gateways` | Your provider gateways' metadata |
+| `list_apps` | Your apps, with their status and a month's usage |
+| `get_app` | One app's whole stored document, with its revision |
+| `validate_app` | Whether an app document would be accepted, as a new app or as an update of one, without saving it |
+| `check_app` | Whether an app can serve requests, without sending one |
+| `get_app_snippet` | The first request an app can send, without a credential in it |
+| `list_app_keys` | A server app's keys, as metadata; never a key's value |
+| `list_app_users` | An app's end users, a page at a time |
+| `get_app_user` | One end user, with status and usage |
+| `list_app_events` | An app's proxied requests, newest first |
+| `list_auth_events` | An app's sign-in and App Attest attempts, newest first |
+| `get_auth_event_summary` | An app's sign-in outcomes per day |
+| `list_rejection_events` | Samples of the requests the gateway refused for an app |
+| `get_usage` | One month's totals, for all your apps or for one |
+| `get_usage_breakdown` | An app's usage grouped by model, provider, user or another dimension |
+| `get_usage_timeseries` | An app's usage per day |
+
+## Change tools
+
+| Tool | What it does |
+| --- | --- |
+| `get_operation` | Where a change a tool started stands: pending, completed with what it created, or expired |
+| `add_provider`, `add_provider_gateway` | Start adding a provider or a provider gateway; you enter its key or token in your browser |
+| `update_provider`, `update_provider_gateway` | Change a provider's name, routing, pricing or status, or rename a provider gateway |
+| `rotate_provider_key`, `rotate_provider_gateway_key` | Start replacing a key or token; you enter the new one in your browser |
+| `remove_provider`, `remove_provider_gateway` | Delete one for good, with its id repeated as `confirm` |
+| `add_app` | Create an app; a server app's key is shown to you on a page, never to the agent |
+| `update_app` | Replace an app's document, at the revision it was read at |
+| `remove_app` | Delete an app for good, with its id repeated as `confirm` |
+| `add_app_key` | Create another key for a server app, shown to you on a page |
+| `revoke_app_key` | Revoke one of a server app's keys |
+| `block_app_user`, `unblock_app_user` | Block or unblock one of an app's users |
+| `claim_account` | Start claiming an account nobody owns yet, in your browser |
+
+### Creating takes two calls
+
+`add_app` and `add_app_key` create something an agent may need to ask for
+again after a lost answer, so each takes two calls. The first, without
+`handle`, checks the request, creates nothing, and answers a `handle` and the
+reserved operation's `id`. The second, with the same arguments and that
+`handle`, creates it — once. Calling again with the same handle answers the same result with
+`replayed: true` and creates nothing more, so an agent can always retry. A
+handle lapses after 15 minutes unused, and one sent with different arguments
+is refused with `operation_mismatch`. When the first call answers a `notice`,
+the same request was already made within the last hour, and the notice names
+it so the agent can look before creating a second.
+
+Every tool answer that names an operation calls it `id`, and `get_operation`
+takes that `id`. A `handle` is only ever what the second call of a create
+takes.
+
+### A key is revealed on a page you open
+
+A key is revealed on a page a person opens, never in a tool result. When
+`add_app` creates a server app, or `add_app_key` a key, the answer carries
+`reveal_url`, a page on your console. Open it signed in as an owner or admin
+of the account, press **Reveal the key** and copy it: it is shown once, within
+15 minutes of its creation, and nothing reveals it again. Nobody else can open
+it with the link alone, and the agent never sees the key.
+
+### Keys and tokens are entered in your browser
+
+`add_provider`, `add_provider_gateway`, `rotate_provider_key` and
+`rotate_provider_gateway_key` take everything except the secret, and answer a
+URL. Open it in your browser, check what is about to be stored, enter the key
+or token there and approve. The agent waits with `get_operation`, passing
+the answer's `id`, until the change completes, or until it lapses after 15
+minutes or you decline it. A tool called with a key or token as an argument
+refuses it.
+
+### How secrets are kept out of tools
+
+A field is named like a credential when its name, lower-cased and with `_`
+and `-` removed, is one of `secret`, `token`, `apikey`, `password`, `passwd`, `passphrase`, `credential`, `credentials`, `authorization`, `accesstoken`, `refreshtoken`, `idtoken`, `authtoken`, `sessiontoken`, `bearertoken`, `clientsecret`, `apisecret`, `secretkey` and `privatekey`. The whole name is compared, so `api_key`,
+`apiKey` and `Token` match, and `secretHint`, `tokenHint` and `max_tokens` do
+not.
+
+- **Arguments.** The four browser-step tools above, and `add_app`,
+  `update_app` and `validate_app` for the app document they take, refuse a
+  call with a field of such a name anywhere in its arguments: at any depth,
+  inside a list, beside the documented arguments or inside them. The refusal
+  names the field and never its value, and nothing is stored.
+- **URLs in a browser step.** Every string in a browser step's arguments is
+  trimmed before anything is stored. One longer than any field of a browser
+  step accepts is refused at once; the rest are read with the URL parser a
+  browser uses. A `baseUrl` follows the rules a provider's base URL always follows:
+  an `https://` address on a public domain name, with no credentials, query
+  string, fragment or port. Any other string the parser reads as a URL is
+  refused when it carries credentials (`https://user:pass@…`, however it is
+  written) or when its query or fragment names a credential. Both are first
+  percent-decoded, repeatedly, so an encoded delimiter such as `%3D` delimits,
+  and then split on every `?`, `&`, `#` and `;`. A piece with an `=` is a
+  parameter: its name is stripped of leading `?`, `#` and `/` and compared with
+  the names above. A piece without one is a route or a flag and is not judged. So
+  `?api_key=…`, `#access_token=…` and `#/callback?token=…` are refused, while
+  `https://example.com/?version=2`, `https://example.com/#/settings/password`
+  or a name like `OpenAI: production` is accepted.
+- **Results.** In every tool result, a field with a credential name is shown
+  as `[redacted]` — the whole field, whatever it holds: a string, a number, a
+  list or an object — however it was stored. An app you configured through
+  the API or the CLI may carry provider-native parameters of any name, and an
+  agent reads them as `[redacted]`. The one exception is the metadata of the
+  key a tool just created — the `api_key` of an `add_app` or `add_app_key`
+  result and `result.api_key` of a `get_operation` result (`id`, `name`,
+  `key_prefix`, `created_at`) — shown when it holds nothing else. An `api_key`
+  anywhere else, inside an app document included, is redacted. A field holding `null` stays `null`, and hint fields
+  such as `secretHint` are shown as they are.
+
+### Everything else takes effect at once
+
+Updates carry the `revision` the agent read, so a change someone made since is
+refused rather than overwritten. Deletions repeat the id as `confirm`; prefer
+disabling an app or a provider, which you can undo.
+
+## Results and refusals
+
+Each result has a one- or two-sentence summary for the agent to read and the
+same body the API answers with as structured content. A refusal is a tool
+result marked as an error, carrying the gateway's error code, its message and
+what to do next, such as `app_not_found` with "Call list_apps for the ids of
+your apps". Only a missing or invalid credential is answered with an HTTP
+error; a **Read only** credential asking for a change is a tool result too.
+
+The server also publishes `agw://guide`, a resource with the full rules for
+working with the gateway over MCP. Clients that read resources can hand it to
+the agent; its contents are the same as what the server tells every client
+when it connects, at length.
+
+## Calling from a browser
+
+Most MCP clients are not browsers and send no `Origin` header; they are always
+served. A request from a web page is served only from the console's own origin
+or from one you list. On your own deployment, list the origins of browser-based
+MCP clients you trust in the `MCP_ALLOWED_ORIGINS` variable; see
+[Configuration](/self-hosting/configuration#mcp_allowed_origins). They receive
+CORS headers on `/mcp` and on the three `/oauth` endpoints, and every other
+origin is refused with `403`. The discovery documents are readable from any
+origin. If your deployment
+answers on more than one host name, set `CLI_CONSOLE_ORIGIN` to the console's
+address, so only that host serves `/mcp` and only its origin counts as the
+console's own.

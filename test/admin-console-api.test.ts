@@ -907,6 +907,7 @@ describe("authoritative admin configuration", () => {
         memberships: [],
         credentialType: "apiKey",
         assurance: "credential",
+        grant: "manage",
         actor: { id: "operator-test-owner", credentialId: "test-management-key" },
       } as unknown as AuthState);
       c.set("actor", {
@@ -916,8 +917,10 @@ describe("authoritative admin configuration", () => {
         organizationId: "operator-test-organization",
         role: "owner",
         credentialType: "apiKey",
+        grant: "manage",
       });
-      c.set("adminApp", scopedRow);
+      // The application itself is resolved by the executor, through this
+      // request's primary-only binding like the write.
       await next();
     });
     route.route("/", appRoutes);

@@ -134,8 +134,10 @@ describe("operator authentication", () => {
       body: JSON.stringify({ name: "Automation" }),
     });
     expect(created.status).toBe(201);
-    const body = await created.json<{ key: { id: string; plaintext: string; tokenHint: string } }>();
+    const body = await created.json<{ key: { id: string; plaintext: string; tokenHint: string; grant: string } }>();
     expect(body.key.plaintext).toMatch(/^agw_mgmt_/u);
+    // Nothing asked for a grant, so the key may do everything the role allows.
+    expect(body.key.grant).toBe("manage");
     expect(body.key.tokenHint).toBe(body.key.plaintext.slice(-4));
 
     const keyAccess = await exports.default.fetch(`${ORIGIN}/v1/admin/apps`, {
@@ -378,34 +380,50 @@ describe("operator authentication", () => {
     expect(organizations.organizations.map((entry) => entry.organization.id)).toContain(expired);
   });
 
-  it("keeps management-key callers out of organization switching", async () => {
+  it("keeps management-key callers out of organization switching, whatever their grant", async () => {
     const { cookie, organizationId } = await seedHuman("machine-seat@example.test");
-    const created = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
+
+    for (const grant of ["manage", "read"] as const) {
+      const created = await exports.default.fetch(`${ORIGIN}/v1/admin/keys`, {
+        method: "POST",
+        headers: sessionHeaders(cookie, true),
+        body: JSON.stringify({ name: `Automation (${grant})`, grant }),
+      });
+      const { key } = await created.json<{ key: { plaintext: string } }>();
+
+      // Both are session-only, and that is the refusal a key gets: never a
+      // grant remedy no key could satisfy.
+      for (const request of [
+        new Request(`${ORIGIN}/v1/admin/organizations`, {
+          headers: { authorization: `Bearer ${key.plaintext}` },
+        }),
+        new Request(`${ORIGIN}/v1/admin/organizations/select`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${key.plaintext}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ organizationId }),
+        }),
+      ]) {
+        const response = await exports.default.fetch(request);
+        expect(response.status, `${grant} ${request.url}`).toBe(403);
+        await expect(response.json()).resolves.toMatchObject({
+          error: { code: "session_required" },
+        });
+      }
+    }
+
+    // The session that made them switches as before.
+    const selected = await exports.default.fetch(`${ORIGIN}/v1/admin/organizations/select`, {
       method: "POST",
       headers: sessionHeaders(cookie, true),
-      body: JSON.stringify({ name: "Automation" }),
+      body: JSON.stringify({ organizationId }),
     });
-    const { key } = await created.json<{ key: { plaintext: string } }>();
-
-    for (const request of [
-      new Request(`${ORIGIN}/v1/admin/organizations`, {
-        headers: { authorization: `Bearer ${key.plaintext}` },
-      }),
-      new Request(`${ORIGIN}/v1/admin/organizations/select`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${key.plaintext}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ organizationId }),
-      }),
-    ]) {
-      const response = await exports.default.fetch(request);
-      expect(response.status, request.url).toBe(403);
-      await expect(response.json()).resolves.toMatchObject({
-        error: { code: "session_required" },
-      });
-    }
+    expect(selected.status, await selected.clone().text()).toBe(200);
+    await expect(selected.json()).resolves.toMatchObject({
+      session: { organization: { id: organizationId } },
+    });
   });
 
   it("keeps applications and every nested admin surface invisible across organizations", async () => {

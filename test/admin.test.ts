@@ -1,8 +1,17 @@
 import { env, exports } from "cloudflare:workers";
+import { grantInsufficient, type AuthState, type CredentialGrant } from "@maxceem/cf-auth";
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
+import { asGatewayAuthError, isCfAuthError } from "../src/auth/identity";
+import { accountLifecycleCache } from "../src/core/account-lifecycle";
+import { GatewayError } from "../src/core/errors";
+import type { AdminVariables } from "../src/middleware/admin";
+import { resolveDeployment } from "../src/policy/deployment";
+import { adminRouter } from "../src/routes/catalog-router";
 import { monthlySpendMicrousd } from "../src/usage/app-usage-accounting";
 import worker from "../src/index";
-import { appleConfig, seedApp, seedProvider, seedServerApp, serverConfig } from "./helpers";
+import { TEST_MANAGEMENT_KEY, TEST_ORGANIZATION_ID, TEST_SERVICE_USER_ID } from "./apply-migrations";
+import { appleConfig, seedApp, seedHuman, seedProvider, seedServerApp, serverConfig } from "./helpers";
 import { microusd, shippedRates } from "./shipped-rates";
 
 /** What the seeded 50/40/10/20-token gpt-5.6-luna event costs at the shipped rates. */
@@ -882,5 +891,310 @@ describe("admin API", () => {
         error: { code: "invalid_request" },
       });
     }
+  });
+});
+
+describe("admin refusal order", () => {
+  /*
+   * Which refusal a request gets when it earns more than one is part of the
+   * contract: the application an `/apps/{app}` operation names is resolved
+   * first, inside the caller's account, then the operation's policy, and only
+   * then is the body read. Each request below is short of at least two of
+   * those and must be told about the first.
+   */
+  const MALFORMED = "{ not json";
+
+  function write(path: string, method: string, headers: Record<string, string>) {
+    return exports.default.fetch(`https://example.test${path}`, {
+      method,
+      headers: { ...headers, "content-type": "application/json" },
+      body: MALFORMED,
+    });
+  }
+
+  const KEY = { authorization: `Bearer ${TEST_MANAGEMENT_KEY}` };
+
+  /** A read-only member of an account of their own, signed in to the console. */
+  async function member(email: string) {
+    const human = await seedHuman(email);
+    await env.DB.prepare("UPDATE mgmt_organization_user SET role = 'member' WHERE organization_id = ?")
+      .bind(human.organizationId)
+      .run();
+    return {
+      organizationId: human.organizationId,
+      headers: { cookie: human.cookie, "x-console-request": "1" },
+    };
+  }
+
+  it("resolves the application inside the caller's account before its policy", async () => {
+    const { organizationId, headers } = await member("refusal-order-member@example.test");
+    // In the test operator's account, not the member's.
+    await seedServerApp("refusal-order-elsewhere");
+    await seedServerApp("refusal-order-own", { organizationId });
+
+    for (const app of ["refusal-order-missing", "refusal-order-elsewhere"]) {
+      const response = await write(`/v1/admin/apps/${app}`, "PUT", headers);
+      expect(response.status, app).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "app_not_found", message: "App is not registered" },
+      });
+    }
+
+    // Found, so now the policy: a member may not write, whatever the body.
+    const own = await write("/v1/admin/apps/refusal-order-own", "PUT", headers);
+    expect(own.status).toBe(403);
+    await expect(own.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+  });
+
+  it("refuses an unparseable body only once the caller may write", async () => {
+    await seedServerApp("refusal-order-present");
+    const response = await write("/v1/admin/apps/refusal-order-present", "PUT", KEY);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "A JSON object is required" },
+    });
+  });
+
+  it("refuses a management key on a session-only operation before reading the body", async () => {
+    const response = await write("/v1/admin/keys", "POST", KEY);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "session_required" } });
+  });
+
+  /** An owner of an account of their own, and a `read` key they made in the console. */
+  async function readKey(email: string) {
+    const human = await seedHuman(email);
+    const created = await exports.default.fetch("https://example.test/v1/admin/keys", {
+      method: "POST",
+      headers: { cookie: human.cookie, "x-console-request": "1", "content-type": "application/json" },
+      body: JSON.stringify({ name: "Inspector", grant: "read" }),
+    });
+    expect(created.status).toBe(201);
+    const { key } = await created.json<{ key: { id: string; plaintext: string; grant: string } }>();
+    expect(key.grant).toBe("read");
+    return {
+      organizationId: human.organizationId,
+      headers: { authorization: `Bearer ${key.plaintext}` },
+    };
+  }
+
+  it("refuses a read key on a write last: after the application, the role and a session-only operation", async () => {
+    const { organizationId, headers } = await readKey("refusal-order-read@example.test");
+    await seedServerApp("refusal-order-read-own", { organizationId });
+    // In the test operator's account, not the key holder's.
+    await seedServerApp("refusal-order-read-elsewhere");
+
+    for (const app of ["refusal-order-read-missing", "refusal-order-read-elsewhere"]) {
+      const response = await write(`/v1/admin/apps/${app}`, "PUT", headers);
+      expect(response.status, app).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "app_not_found" } });
+    }
+
+    // Found, the owner's role allows it, so the grant: refused before the
+    // malformed body is read, with the remedy in the message.
+    const own = await write("/v1/admin/apps/refusal-order-read-own", "PUT", headers);
+    expect(own.status).toBe(403);
+    await expect(own.json()).resolves.toMatchObject({
+      error: {
+        code: "grant_insufficient",
+        message: "This key has the read grant; use a session or a key with the manage grant",
+      },
+    });
+
+    // A session-only operation is refused as such, before the grant.
+    const keys = await write("/v1/admin/keys", "POST", headers);
+    expect(keys.status).toBe(403);
+    await expect(keys.json()).resolves.toMatchObject({ error: { code: "session_required" } });
+
+    // Reading is what the grant is for.
+    const read = await exports.default.fetch("https://example.test/v1/admin/apps/refusal-order-read-own", {
+      headers,
+    });
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toMatchObject({ app: { id: "refusal-order-read-own" } });
+
+  });
+
+  it("lets a read key validate, which changes nothing", async () => {
+    const { organizationId, headers } = await readKey("refusal-order-read-validate@example.test");
+    await seedServerApp("refusal-order-read-validate", { organizationId });
+    const validate = (path: string) =>
+      exports.default.fetch(`https://example.test${path}`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Validated by a read key", config: serverConfig() }),
+      });
+
+    for (const path of ["/v1/admin/apps/refusal-order-read-validate/validate", "/v1/admin/app-drafts/validate"]) {
+      const response = await validate(path);
+      expect(response.status, path).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ valid: true });
+    }
+    // And wrote nothing: the application is as it was seeded.
+    const row = await env.DB.prepare("SELECT name FROM app WHERE id = ?")
+      .bind("refusal-order-read-validate")
+      .first<{ name: string }>();
+    expect(row?.name).toBe("Test refusal-order-read-validate");
+  });
+
+  it("refuses a read key on a session policy as session_required, not for its grant", async () => {
+    const { organizationId, headers } = await readKey("refusal-order-read-session@example.test");
+    // `session: true` on a write: billing, and switching the active account.
+    // Billing is refused as unconfigured only after the policy, so a key is
+    // told what no key can fix rather than what a manage key would not fix.
+    for (const [path, body] of [
+      ["/v1/admin/billing/checkout", { planKey: "pro" }],
+      ["/v1/admin/organizations/select", { organizationId }],
+    ] as const) {
+      const response = await exports.default.fetch(`https://example.test${path}`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, path).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "session_required" } });
+    }
+  });
+
+  it("refuses a read key on a write in an account past its free window for the account", async () => {
+    const { organizationId, headers } = await readKey("refusal-order-read-unclaimed@example.test");
+    await seedServerApp("refusal-order-read-unclaimed", { organizationId });
+    // No human owner makes the account unclaimed; an admin still may write.
+    await env.DB.batch([
+      env.DB.prepare("UPDATE mgmt_organization_user SET role = 'admin' WHERE organization_id = ?")
+        .bind(organizationId),
+      env.DB.prepare("UPDATE mgmt_organization SET created_at = ?, expires_at = ? WHERE id = ?")
+        .bind(
+          new Date(Date.now() - 31 * 86_400_000).toISOString(),
+          new Date(Date.now() + 60 * 86_400_000).toISOString(),
+          organizationId,
+        ),
+    ]);
+    accountLifecycleCache.clear();
+    // Only a hosted deployment runs an unclaimed account's free window.
+    const hosted = new Proxy(env, {
+      get: (target, key, receiver) =>
+        key === "BILLING" ? ({} as NonNullable<Env["BILLING"]>) : Reflect.get(target, key, receiver),
+    });
+    const response = await worker.request("https://example.test/v1/admin/apps/refusal-order-read-unclaimed", {
+      method: "PUT",
+      headers: { ...headers, "content-type": "application/json" },
+      body: MALFORMED,
+    }, hosted);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "unclaimed_access_expired" } });
+  });
+
+  it("refuses a read key opening a CLI operation, and records nothing", async () => {
+    const { organizationId, headers } = await readKey("refusal-order-read-cli@example.test");
+    const cli = new Proxy(env, {
+      get: (target, key, receiver) =>
+        key === "DEPLOYMENT_ID" ? "refusal-order" : Reflect.get(target, key, receiver),
+    });
+    const name = "Opened by a read key";
+    const response = await worker.request("https://example.test/v1/cli/operations", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "app.add",
+        payload: { name, config: serverConfig() },
+        token: crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", ""),
+      }),
+    }, cli);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "grant_insufficient" } });
+    const operations = await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_operation WHERE organization_id = ?")
+      .bind(organizationId)
+      .first<{ n: number }>();
+    expect(operations?.n).toBe(0);
+    const apps = await env.DB.prepare("SELECT COUNT(*) AS n FROM app WHERE name = ?")
+      .bind(name)
+      .first<{ n: number }>();
+    expect(apps?.n).toBe(0);
+  });
+
+  it("answers cf-auth's own grant refusal in the gateway's envelope", () => {
+    // No request reaches one today — the executor refuses a read key before
+    // any cf-auth write it could make — so the mapping is asserted directly.
+    const refusal = grantInsufficient();
+    expect(isCfAuthError(refusal)).toBe(true);
+    const mapped = asGatewayAuthError(refusal);
+    expect(mapped).toBeInstanceOf(GatewayError);
+    expect(mapped).toMatchObject({ status: 403, code: "grant_insufficient" });
+  });
+
+  it("refuses a member's read key on a write for the role, not the grant", async () => {
+    const { organizationId, headers } = await readKey("refusal-order-read-member@example.test");
+    await seedServerApp("refusal-order-read-member-app", { organizationId });
+    await env.DB.prepare("UPDATE mgmt_organization_user SET role = 'member' WHERE organization_id = ?")
+      .bind(organizationId)
+      .run();
+    const response = await write("/v1/admin/apps/refusal-order-read-member-app", "PUT", headers);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+  });
+
+  it("lets a read key end itself", async () => {
+    const { headers } = await readKey("refusal-order-read-logout@example.test");
+    const revoked = await exports.default.fetch("https://example.test/v1/cli/credential", {
+      method: "DELETE",
+      headers,
+    });
+    expect(revoked.status, await revoked.clone().text()).toBe(200);
+    const after = await exports.default.fetch("https://example.test/v1/admin/apps", { headers });
+    expect(after.status).toBe(401);
+  });
+
+  it("applies the grant to a relayed operation as to a handled one", async () => {
+    // Both relays mounted today are public, so this mounts a writing
+    // management operation through `relay` on a router of its own.
+    let relayed = 0;
+    const route = new Hono<{ Bindings: Env; Variables: AdminVariables }>();
+    route.onError((error, c) =>
+      error instanceof GatewayError
+        ? c.json({ error: { code: error.code } }, error.status as 403)
+        : c.json({ error: { code: "unexpected", message: String(error) } }, 500));
+    const grants: CredentialGrant[] = [];
+    route.use("*", async (c, next) => {
+      const grant = grants.shift()!;
+      c.set("deployment", resolveDeployment(c.env, c.req.url));
+      c.set("billingRequestCache", new Map());
+      c.set("authState", {
+        authenticated: true,
+        user: { id: TEST_SERVICE_USER_ID, kind: "service" },
+        organization: { id: TEST_ORGANIZATION_ID, name: "Test" },
+        role: "owner",
+        memberships: [],
+        credentialType: "apiKey",
+        assurance: "credential",
+        grant,
+        actor: { id: TEST_SERVICE_USER_ID, credentialId: "identity-test-key" },
+      } as unknown as AuthState);
+      c.set("actor", {
+        userId: TEST_SERVICE_USER_ID,
+        identityKind: "service",
+        credentialId: "identity-test-key",
+        organizationId: TEST_ORGANIZATION_ID,
+        role: "owner",
+        credentialType: "apiKey",
+        grant,
+      });
+      await next();
+    });
+    adminRouter(route).relay("createProvider", async () => {
+      relayed += 1;
+      return new Response(null, { status: 204 });
+    });
+
+    grants.push("read");
+    const refused = await route.request("/providers", { method: "POST" }, env);
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "grant_insufficient" } });
+    expect(relayed).toBe(0);
+
+    grants.push("manage");
+    const allowed = await route.request("/providers", { method: "POST" }, env);
+    expect(allowed.status).toBe(204);
+    expect(relayed).toBe(1);
   });
 });

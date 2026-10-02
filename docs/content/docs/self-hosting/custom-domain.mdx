@@ -55,8 +55,8 @@ base URLs no client can call. Setting it changes two things:
   URL, it prints `https://api.example.com`, so new apps are configured against
   the API host from the start.
 - **The API host refuses the console surface.** On `api.example.com`,
-  `/v1/auth/*` and `/v1/console/*` answer `404`. App routes, `/v1/healthz` and
-  `/v1/admin/*` are served normally. No session cookie can be issued for a host
+  `/v1/auth/*`, `/v1/console/*` and the MCP endpoint `/mcp` answer `404`.
+  App routes, `/v1/healthz` and `/v1/admin/*` are served normally. No session cookie can be issued for a host
   that has no sign-in, so a management call arriving there is a management-key
   call by construction.
 

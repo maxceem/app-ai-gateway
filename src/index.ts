@@ -1,6 +1,7 @@
 import {
   pruneExpiredAccounts,
   pruneExpiredAuthorizations,
+  pruneOAuthTokens,
 } from "./core/account-lifecycle";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { HealthResponse } from "./contracts/responses";
@@ -31,7 +32,7 @@ import { authRoutes } from "./routes/auth";
 import { meRoutes } from "./routes/me";
 import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
-import { operationSweepStatements } from "./auth/identity";
+import { maintenanceSweepStatements } from "./auth/identity";
 
 export { EndpointRateLimiter, OrgQuota, UserLimiter };
 
@@ -71,6 +72,19 @@ const consoleHostOnly: MiddlewareHandler<{ Bindings: Env }> = async (c, next) =>
 app.use("/v1/auth/*", consoleHostOnly);
 app.use("/v1/console/*", consoleHostOnly);
 app.use("/v1/cli/browser/*", consoleHostOnly);
+app.use("/mcp", consoleHostOnly);
+// The OAuth authorization server MCP clients connect through, and the
+// documents that point them at it: console host only, like the endpoint they
+// authorize.
+const OAUTH_PATHS = [
+  "/.well-known/oauth-protected-resource",
+  "/.well-known/oauth-protected-resource/mcp",
+  "/.well-known/oauth-authorization-server",
+  "/oauth/authorize",
+  "/oauth/token",
+  "/oauth/revoke",
+] as const;
+for (const path of OAUTH_PATHS) app.use(path, consoleHostOnly);
 
 /**
  * The management surface is mounted as a whole app behind a dynamic `import()`,
@@ -79,8 +93,9 @@ app.use("/v1/cli/browser/*", consoleHostOnly);
  * that is worth, why the request is forwarded untouched and how errors get back
  * here.
  *
- * One bundle, four prefixes: the loader is memoised per `lazyRoutes` call, so
- * all four share a single evaluation of `./routes/management`. The wildcard
+ * One bundle, four prefixes and the OAuth paths: the loader is memoised per
+ * `lazyRoutes` call, so all of them share a single evaluation of
+ * `./routes/management`. The wildcard
  * also matches the bare prefix, so `/v1/admin` reaches the same app as
  * `/v1/admin/apps`.
  */
@@ -91,6 +106,22 @@ const management = lazyRoutes<AppEnv>(
 app.all("/v1/cli/*", management);
 app.all("/v1/auth/*", management);
 app.all("/v1/console/*", management);
+// Exact paths rather than prefixes: `/oauth/consent` is the console's own
+// page, served from its assets, and nothing else under `/.well-known` is ours.
+for (const path of OAUTH_PATHS) app.all(path, management);
+
+/**
+ * The MCP endpoint, a bundle of its own behind the same kind of mount: the tool
+ * table, the catalog and the MCP SDK are evaluated by the first MCP request an
+ * isolate serves. A second loader rather than a fifth prefix on the management
+ * one, so an MCP request does not evaluate the console and CLI routes and a
+ * management request does not evaluate the tool table. Console host only, like
+ * every surface a person or an agent manages the account through.
+ */
+app.all(
+  "/mcp",
+  lazyRoutes<AppEnv>(() => import("./routes/mcp").then((module) => module.mcpRoutes)),
+);
 
 // The application token exchange is on the client path and mounted statically:
 // what a proxied request would rather not evaluate — better-auth behind the
@@ -197,7 +228,8 @@ function sweepFailed(sweep: string, code: string, error: unknown): void {
 
 /**
  * Nightly retention: the authentication event log, spent App Attest challenges,
- * expired CLI authorizations, expired unclaimed accounts, and the usage history.
+ * expired CLI and OAuth authorizations, the token generations of ended OAuth
+ * connections, expired unclaimed accounts, and the usage history.
  *
  * Usage events are accounting history, so they are summed into
  * `app_usage_rollup` before they are dropped and no total ever disappears —
@@ -236,10 +268,22 @@ async function prune(env: Env): Promise<void> {
     sweepFailed("auth_challenges", "auth_challenges_prune_failed", error);
   }
   try {
-    await pruneExpiredAuthorizations(
-      db,
-      await operationSweepStatements(resolveDeployment(env), env, db, Date.now()),
-    );
+    const sweeps = await maintenanceSweepStatements(resolveDeployment(env), env, db, Date.now());
+    try {
+      await pruneExpiredAuthorizations(db, sweeps.operations);
+    } catch (error) {
+      sweepFailed("authorizations", "authorizations_prune_failed", error);
+    }
+    // One statement, after the operation sweep and before account cleanup:
+    // it deletes the token generations of connections revoked or past their
+    // lifetime, and is skipped where the deployment runs no OAuth.
+    if (sweeps.oauth !== null) {
+      try {
+        await pruneOAuthTokens(db, sweeps.oauth);
+      } catch (error) {
+        sweepFailed("oauth_tokens", "oauth_tokens_prune_failed", error);
+      }
+    }
   } catch (error) {
     sweepFailed("authorizations", "authorizations_prune_failed", error);
   }

@@ -74,9 +74,34 @@ unless the person explicitly requests it.
 - `agw account logout --json` revokes the saved key and removes it locally. Its
   result is `{loggedOut: true, revoked: true|false}`; `revoked: false` means the
   key was already refused or the deployment could not be reached.
-- Every key a CLI login creates appears on the console's Management keys page,
+- Every key a CLI login creates appears on the console's Access page,
   tagged CLI and labelled with the machine it was issued to, for example
   `CLI on mac-studio`. The person can revoke it there at any time.
+
+## MCP
+
+If you are connected to the gateway as an MCP server, at the console's address
+followed by `/mcp` (`https://console.appaigateway.com/mcp` when hosted), you
+can work with the same account through its tools instead of the CLI. A client
+connects with OAuth by itself: the person approves it on the console's consent
+page, choosing the account and whether you may read or manage, or continues
+without an account, which creates an unclaimed account your connection manages.
+An unclaimed account expires unless a person claims it: when `get_account`
+says so, call `claim_account` and give the person its URL. A management key as
+a bearer token works too. Use the tools:
+`get_account` first, then `list_providers`, `list_apps`, `get_app`,
+`validate_app`, `check_app`, usage and event tools, and the change tools.
+`add_app` and `add_app_key` take two calls: the first reserves and creates
+nothing, the second, with the same arguments and the answer's `handle`,
+creates it once, and repeating it is safe. An answer that names an operation
+calls it `id`; that is what `get_operation` takes. A key is revealed on a page a
+person opens, never in a tool result: give them `reveal_url`. A provider key
+or gateway token is never a tool argument: `add_provider` and the rotate tools
+answer a URL where the person enters it, and `get_operation` reports when they
+have finished. A refusal is a tool result marked as an error with the
+gateway's code and the next step to take. The server's `agw://guide` resource
+has its full rules, and the MCP server guide at `/automation/mcp` lists every
+tool.
 
 The API reference below is useful for integrations that do not use the CLI.
 
@@ -146,6 +171,7 @@ Every refusal is JSON:
 | 400 | `invalid_request` | The body is malformed or violates a rule; `message` says which. A create body that carries `id` gets this |
 | 401 | `auth_required` | Missing or wrong management key |
 | 403 | `forbidden` | The key's owner is read-only and may not change things |
+| 403 | `grant_insufficient` | The key is read-only and this call would change something; ask the person for a key with the manage grant |
 | 404 | `not_found`, `app_not_found` | No such app, provider, gateway or key |
 | 409 | `slug_taken` | A provider already has this slug; supply another |
 | 409 | `gateway_in_use` | A gateway still has providers routed through it |

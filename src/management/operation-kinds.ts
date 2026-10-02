@@ -2,9 +2,11 @@ import { and, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
   CliAppKeyAddPayloadSchema,
+  CliOperationRequestSchema,
   type CliHandoffContinuation,
   type CliOperationKind,
-} from "../../contracts/cli";
+  type CliRequestedOperationKind,
+} from "../contracts/cli";
 import {
   AppWriteSchema,
   HandoffProviderAddPayloadSchema,
@@ -15,23 +17,21 @@ import {
   ProviderGatewayCreateRequestSchema,
   ProviderGatewayRotateRequestSchema,
   ProviderUpdateRequestSchema,
-} from "../../contracts/schemas";
-import { GatewayError } from "../../core/errors";
-import { database } from "../../db";
-import { app } from "../../db/schema";
-import type { Actor } from "../../management/actor";
-import { createApp } from "../../management/apps";
-import { createAppKey } from "../../management/keys";
-import {
-  createProviderGateway,
-  rotateProviderGateway,
-} from "../../management/provider-gateways";
-import { createProvider, updateProvider } from "../../management/providers";
-import type { ManagementScope } from "../../management/scope";
-import { parseRequest } from "../../management/validation";
-import type { ResourceWriteBoundary } from "../../management/write-boundary";
-import type { AccountAccessMode } from "../../policy/accounts";
-import type { ResourceOperationKind } from "../../auth/operation-kinds";
+} from "../contracts/schemas";
+import { cliKindName, type ResourceOperationKind } from "../auth/operation-kinds";
+import { GatewayError } from "../core/errors";
+import { database } from "../db";
+import { app } from "../db/schema";
+import type { AccountAccessMode } from "../policy/accounts";
+import type { Actor } from "./actor";
+import { createApp, validateAppDraft } from "./apps";
+import { digest } from "./digest";
+import { apiKeyApp, createAppKey } from "./keys";
+import { createProviderGateway, rotateProviderGateway } from "./provider-gateways";
+import { createProvider, updateProvider } from "./providers";
+import type { ManagementScope } from "./scope";
+import { parseRequest } from "./validation";
+import type { ResourceWriteBoundary } from "./write-boundary";
 
 /**
  * Every kind of CLI operation, one entry each.
@@ -45,7 +45,9 @@ import type { ResourceOperationKind } from "../../auth/operation-kinds";
  * once, or once a browser has supplied its secret.
  *
  * Each is also registered with cf-auth's operation engine, which owns the row;
- * see `src/auth/operation-kinds.ts` for what the engine is told.
+ * see `src/auth/operation-kinds.ts` for what the engine is told. The CLI, the
+ * MCP server and the approval page all run a resource kind through
+ * `./resource-operations`, so what a kind does is written here once.
  */
 export type OperationKind = BootstrapKind | LoginKind | ClaimKind | ResourceKind;
 
@@ -106,6 +108,14 @@ export interface ResourceKind extends KindBase {
    * browser step has supplied its secret.
    */
   prepare(input: ResourceInput): ResourceWrite;
+  /**
+   * What a reservation of this kind checks against the account before it is
+   * recorded, beyond the payload's own schema: the judgement the write will
+   * make when it runs, made early, so an agent learns about a request that
+   * would be refused before it confirms one. It decides nothing the write does
+   * not decide again.
+   */
+  precheck?(scope: ManagementScope, actor: Actor, payload: Record<string, unknown>): Promise<void>;
   /** What the write's own answer is recorded as, in `CliOperationResult`'s shape. */
   result(outcome: Record<string, unknown>): Record<string, unknown>;
   /**
@@ -124,7 +134,7 @@ function withoutKey(result: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** The application an `app.key.add` names, which must be this account's. */
-async function ownedApp(scope: ManagementScope, actor: Actor, appId: string) {
+export async function ownedApp(scope: ManagementScope, actor: Actor, appId: string) {
   const row = await database(scope.env.DB).query.app.findFirst({
     where: and(eq(app.id, appId), eq(app.organizationId, actor.organizationId)),
   });
@@ -174,6 +184,9 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
       const body = parseRequest(AppWriteSchema, payload);
       return (scope, actor, boundary) => createApp(scope, actor, body, boundary);
     },
+    precheck: async (scope, actor, payload) => {
+      await validateAppDraft(scope, actor, parseRequest(AppWriteSchema, payload));
+    },
     result: (outcome) => ({ app: outcome.app, api_key: outcome.api_key }),
     redact: withoutKey,
   },
@@ -190,6 +203,9 @@ export const OPERATION_KINDS: Record<CliOperationKind, OperationKind> = {
       const { app: appId, ...body } = parseRequest(CliAppKeyAddPayloadSchema, payload);
       return async (scope, actor, boundary) =>
         createAppKey(scope, actor, await ownedApp(scope, actor, appId), body, boundary);
+    },
+    precheck: async (scope, actor, payload) => {
+      apiKeyApp(await ownedApp(scope, actor, parseRequest(CliAppKeyAddPayloadSchema, payload).app));
     },
     result: (outcome) => ({ api_key: outcome }),
     redact: withoutKey,
@@ -281,3 +297,72 @@ export const TARGET_SNAPSHOTS: Record<NonNullable<ResourceKind["target"]>, strin
   provider_gateway:
     "SELECT id,type,name,config_json AS config,status,revision FROM provider_gateway WHERE id=? AND organization_id=?",
 };
+
+/** The entry for a kind that runs one management write, or the refusal that it does not. */
+export function resourceKind(kind: string): ResourceKind {
+  const entry = operationKind(kind);
+  if (entry.type !== "resource") throw new GatewayError(400, "invalid_request", "Unsupported operation kind");
+  return entry;
+}
+
+/**
+ * The id the CLI knows an operation by: `op:` and its token's digest.
+ *
+ * The CLI computes it from the token it saved before sending, so it can poll
+ * an operation whose answer it never received. Every operation opened under a
+ * token is opened with it as the engine's own id, so the two never differ.
+ */
+export async function operationId(token: string): Promise<string> {
+  return `op:${await digest(token)}`;
+}
+
+/** The gateway's kind of an engine kind, and its entry in the gateway's table. */
+export function kindOf(engineKind: string): { kind: CliOperationKind; entry: OperationKind } {
+  const kind = knownKind(cliKindName(engineKind));
+  return { kind, entry: OPERATION_KINDS[kind] };
+}
+
+/**
+ * A record that breaks its kind's rules. The engine stores what this gateway
+ * handed it, so a record that fails them means the deployment has moved under
+ * its own data.
+ */
+function malformed(): GatewayError {
+  return new GatewayError(500, "internal_error", "A stored operation does not match its kind");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * What a completed claim or resource write reports: its result, with any
+ * one-time secret removed where the engine holds the whole of it sealed.
+ */
+export function resultRecord(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (!isRecord(raw)) throw malformed();
+  return raw;
+}
+
+/**
+ * The schema a kind's payload is sent under, as `/v1/cli/operations` reads
+ * it: the one normalisation every request digest is taken over, whichever
+ * transport sent the request.
+ */
+export function requestPayloadSchema(kind: CliRequestedOperationKind): z.ZodType {
+  const member = CliOperationRequestSchema.options.find((option) => option.shape.kind.value === kind);
+  if (!member) throw new GatewayError(400, "invalid_request", "Unsupported operation kind");
+  return member.shape.payload;
+}
+
+/**
+ * The digest of one request: its kind, its payload as
+ * {@link requestPayloadSchema} parsed it, and whether it owes a browser step.
+ * Stored in the operation's payload, where it binds a retry with the same
+ * token to the same request — the request itself may carry a secret that must
+ * not be stored — and where a later identical request is recognised by it.
+ */
+export function requestDigest(kind: CliOperationKind, payload: unknown, browser: boolean): Promise<string> {
+  return digest(JSON.stringify({ kind, payload, browser }));
+}

@@ -1,14 +1,10 @@
-import { and, eq } from "drizzle-orm";
-import { Hono, type Context, type Next } from "hono";
-import models from "../../usage/models.json";
+import { Hono } from "hono";
 import { adminRouter } from "../catalog-router";
-import { GatewayError } from "../../core/errors";
-import { database } from "../../db";
-import { app } from "../../db/schema";
 import type { AdminVariables } from "../../middleware/admin";
 import { appRoutes } from "./apps";
 import { authEventRoutes } from "./auth-events";
 import { keyRoutes } from "./keys";
+import { operationRoutes } from "./operations";
 import { usageRoutes } from "./usage";
 import { userRoutes } from "./users";
 import { managementKeyRoutes } from "./management-keys";
@@ -17,37 +13,19 @@ import { providerGatewayRoutes } from "./provider-gateways";
 import { organizationRoutes } from "./organizations";
 import { billingRoutes } from "./billing";
 
-
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
 export const adminRoutes = new Hono<AdminEnv>();
 
-async function scopeAdminApp(c: Context<AdminEnv>, next: Next) {
-  const appId = c.req.param("app");
-  if (!appId) throw new GatewayError(404, "app_not_found", "App is not registered");
-  const organizationId = c.get("actor").organizationId;
-  const row = await database(c.env.DB).query.app.findFirst({
-    where: and(eq(app.id, appId), eq(app.organizationId, organizationId)),
-  });
-
-  // Every route under `/apps/:app` is about an application that exists in the
-  // caller's account; one that is not there is not there for any of them. A
-  // configuration for an application that does not exist yet is validated at
-  // `/app-drafts/validate` instead.
-  if (!row) throw new GatewayError(404, "app_not_found", "App is not registered");
-
-  c.set("adminApp", row);
-  await next();
-}
-
-adminRoutes.use("/apps/:app", scopeAdminApp);
-adminRoutes.use("/apps/:app/*", scopeAdminApp);
+// Every operation under `/apps/{app}` resolves its application inside the
+// caller's account in `runOperation`, before its policy runs.
 
 /** Supplies the priced model catalog used by the proxy-policy editor. */
-adminRouter(adminRoutes).handle("listModelPrices", () => ({ prices: models }));
+adminRouter(adminRoutes).handle("listModelPrices");
 
 adminRoutes.route("/", appRoutes);
 adminRoutes.route("/", keyRoutes);
+adminRoutes.route("/", operationRoutes);
 adminRoutes.route("/", userRoutes);
 adminRoutes.route("/", usageRoutes);
 adminRoutes.route("/", authEventRoutes);

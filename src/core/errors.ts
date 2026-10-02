@@ -3,6 +3,12 @@ export type ErrorCode =
   | "forbidden"
   | "session_required"
   /**
+   * The credential is valid and its holder has the role, but it was issued
+   * with the `read` grant and the operation writes. Retrying with the same
+   * key never helps; a session or a key with the `manage` grant does.
+   */
+  | "grant_insufficient"
+  /**
    * A claim was refused because the signed-in human already belongs to another
    * account. Claiming is how a person gets their first account, so it is taken
    * from a browser that owns none but the one being claimed.
@@ -20,8 +26,18 @@ export type ErrorCode =
   | "operation_denied"
   /** Redeeming a login nobody has approved yet. */
   | "operation_pending"
-  /** Approving, completing or redeeming a step that already was. */
+  /** Approving, completing or redeeming a step that already was; executing a reservation past its replay window. */
   | "already_completed"
+  /** No operation of the caller's account has this id, or no reservation answers to this handle. */
+  | "operation_not_found"
+  /**
+   * A reservation's handle sent for another request than the one reserved:
+   * another kind, another account, or other input. Nothing was written;
+   * reserve again for the new request.
+   */
+  | "operation_mismatch"
+  /** The key an operation created was already revealed, and is shown once. */
+  | "already_revealed"
   | "validation_error"
   | "rate_limited"
   | "conflict"
@@ -109,6 +125,8 @@ export type ErrorCode =
   | "provider_not_configured"
   | "provider_disabled"
   | "provider_unavailable"
+  /** A management read named a provider slug the account holds no instance under. */
+  | "provider_not_found"
   | "slug_taken"
   | "provider_not_supported_by_gateway"
   | "provider_gateway_managed"
@@ -120,6 +138,11 @@ export type ErrorCode =
   | "app_revision_conflict"
   | "app_disabled"
   | "endpoint_not_found"
+  /**
+   * An application's example was asked for in a language its callers cannot
+   * authenticate with: curl for an App Attest app, Swift for a server app.
+   */
+  | "unsupported_snippet"
   | "internal_error";
 
 /**

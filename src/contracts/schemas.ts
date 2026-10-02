@@ -504,6 +504,35 @@ export const AppUpdateSchema = AppWriteSchema.extend({
 export type AppUpdate = z.infer<typeof AppUpdateSchema>;
 
 /**
+ * The two languages an application's example is written in: Swift for an App
+ * Attest application, whose callers hold an attestation rather than a key, and
+ * curl for a server application, which holds a key the Swift client cannot send.
+ */
+export const SNIPPET_LANGUAGES = ["swift", "curl"] as const;
+export type SnippetLanguage = (typeof SNIPPET_LANGUAGES)[number];
+
+/**
+ * What an application's example may be narrowed to. Every field is optional
+ * and defaulted from the application itself, so asking with none gets the
+ * request it can send today.
+ */
+export const AppSnippetQuerySchema = z.object({
+  language: z.enum(SNIPPET_LANGUAGES, { error: "language must be swift or curl" }).optional().meta({
+    description:
+      "swift or curl. Defaults to swift for an App Attest application and curl for a server application; the other one is refused with 400 unsupported_snippet.",
+  }),
+  provider: z.string().min(1).optional().meta({
+    description:
+      "The slug of the provider to write the example for. Defaults to the first one the application can reach. Unknown answers 404 provider_not_found; held but outside the application's routing or disabled answers 400 provider_unavailable.",
+  }),
+  endpoint: z.string().min(1).optional().meta({
+    description:
+      "The name of one of the application's custom endpoints, to call it instead of a provider path. Unknown answers 404 endpoint_not_found.",
+  }),
+});
+export type AppSnippetQuery = z.infer<typeof AppSnippetQuerySchema>;
+
+/**
  * Apple's key id is the base64 SHA-256 of the public key — 44 characters — and
  * a challenge is this gateway's own base64url of 32 bytes. Both are bounded
  * because these routes are unauthenticated and, under the `app_install` source,
@@ -812,23 +841,53 @@ export const OrganizationSelectRequestSchema = z.object({
 }).meta({ id: "OrganizationSelectRequest" });
 
 /**
- * The one field a credential is created with. Both key surfaces take a name and
- * nothing else — the token itself is minted here, never supplied — so they
- * share one shape rather than two that could drift apart.
+ * The field every credential is created with. Both key surfaces take a name —
+ * the token itself is minted here, never supplied — so they share one shape
+ * rather than two that could drift apart; a management key adds its grant.
  */
 export const CredentialNameRequestSchema = z.object({
   name: z.string().trim().min(1).max(100),
 });
-export const ManagementKeyCreateRequestSchema = CredentialNameRequestSchema
-  .meta({ id: "ManagementKeyCreateRequest" });
+
+/** How much of its holder's role a management key may use. */
+export const CredentialGrantSchema = z.enum(["read", "manage"]);
+
+export const ManagementKeyCreateRequestSchema = CredentialNameRequestSchema.extend({
+  grant: CredentialGrantSchema.default("manage").meta({
+    description:
+      "How much of your role the key may use. `read` may list, inspect and validate but cannot change your apps, providers or settings: a change your role would otherwise allow is refused with `403 grant_insufficient`, and the key may still revoke itself. `manage` may do everything your role allows. Defaults to `manage`.",
+  }),
+}).meta({ id: "ManagementKeyCreateRequest" });
 export const ApiKeyCreateRequestSchema = CredentialNameRequestSchema
   .meta({ id: "ApiKeyCreateRequest" });
+
+/**
+ * The browser proof an OAuth consent page holds: the fragment of the URL the
+ * authorization endpoint sent the browser to, which never reaches a server
+ * log. Carried in a body, never a URL, by every consent call.
+ */
+const OAuthConsentProofTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/).meta({
+  description: "The proof from the consent page URL's fragment.",
+});
+export const OAuthConsentProofSchema = z.object({ submissionToken: OAuthConsentProofTokenSchema }).strict();
+/** A signed-in person's "allow": which of their accounts, with how much of their role. */
+export const OAuthConsentAllowRequestSchema = z.object({
+  submissionToken: OAuthConsentProofTokenSchema,
+  organizationId: z.string().min(1).max(256).meta({
+    description: "The account the connection acts in: one the signed-in person is a member of.",
+  }),
+  grant: CredentialGrantSchema.meta({
+    description: "How much of the person's role the connection may use, whatever the client asked for.",
+  }),
+}).strict();
 
 /** Inferred request bodies, so a consumer never re-describes one by hand. */
 export type AppWrite = z.output<typeof AppWriteSchema>;
 /** The same body as a client composes it, before the schema's defaults apply. */
 export type AppWriteInput = z.input<typeof AppWriteSchema>;
 export type ClaimRequirement = z.output<typeof ClaimRequirementSchema>;
+export type OAuthConsentProof = z.output<typeof OAuthConsentProofSchema>;
+export type OAuthConsentAllowRequest = z.output<typeof OAuthConsentAllowRequestSchema>;
 export type IssuerAuthentication = z.output<typeof IssuerAuthenticationSchema>;
 export type IssuerAuthenticationInput = z.input<typeof IssuerAuthenticationSchema>;
 export type IssuerProvider = (typeof ISSUER_PROVIDERS)[number];

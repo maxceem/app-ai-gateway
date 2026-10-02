@@ -20,6 +20,7 @@ import { formatDateTime } from "@/lib/format";
 import { DEFAULT_LANDING, oauthErrorNotice } from "@/lib/auth-redirect";
 import { authErrorMessage, isSignInTaken } from "@/lib/auth-errors";
 import { useSignIn, useSignOut } from "@/lib/queries";
+import { clearStoredProof, readStoredProof, writeStoredProof } from "@/lib/stored-proof";
 
 /**
  * The human half of a CLI browser handoff.
@@ -51,50 +52,8 @@ import { useSignIn, useSignOut } from "@/lib/queries";
  * consent round trip, and sends it to nothing but the handoff endpoints.
  */
 
-/** A proof held only for this tab, only for this operation, only until it expires. */
-interface StoredProof {
-  token: string;
-  expiresAt: number;
-}
-
 function storageKeyFor(pathname: string): string {
   return `app-ai-gateway:cli-approve:${pathname}`;
-}
-
-function readStoredProof(key: string): StoredProof | null {
-  let stored: StoredProof | null = null;
-  try {
-    stored = JSON.parse(sessionStorage.getItem(key) ?? "null") as StoredProof | null;
-  } catch {
-    stored = null;
-  }
-  if (!stored || typeof stored.token !== "string") return null;
-  // A proof the gateway would refuse anyway is not worth keeping around.
-  if (!(stored.expiresAt > Date.now())) {
-    try {
-      sessionStorage.removeItem(key);
-    } catch {
-      /* Nothing to clear when storage is unavailable. */
-    }
-    return null;
-  }
-  return stored;
-}
-
-function writeStoredProof(key: string, value: StoredProof): void {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* Private modes refuse; the proof simply does not survive a redirect. */
-  }
-}
-
-function clearStoredProof(key: string): void {
-  try {
-    sessionStorage.removeItem(key);
-  } catch {
-    /* Already unreachable. */
-  }
 }
 
 /** Provider handoffs carry the secret; a gateway-routed provider has none of its own. */
@@ -184,7 +143,7 @@ export function CliApprovePage() {
         <Alert variant="destructive" role="alert">
           <AlertTitle>This link is missing its proof</AlertTitle>
           <AlertDescription>
-            Open the full link your CLI printed, or{" "}
+            Open the full link your CLI or agent gave you, or{" "}
             <Link to="/cli" className="text-primary-ink underline underline-offset-4">
               enter the code
             </Link>{" "}
@@ -211,8 +170,8 @@ export function CliApprovePage() {
         <Alert variant="destructive" role="alert">
           <AlertTitle>This request can no longer be approved</AlertTitle>
           <AlertDescription>
-            {authErrorMessage(details.error, "The link has expired or was already used.")} Rerun
-            the command in your CLI to start a new one.
+            {authErrorMessage(details.error, "The link has expired or was already used.")} Start
+            the request again from your CLI or agent to get a new one.
           </AlertDescription>
         </Alert>
       </ApproveShell>
@@ -345,7 +304,7 @@ function ApproveShell({
       <div className="w-full max-w-sm space-y-3">
         <Card className="w-full">
           <CardHeader className="grid-rows-[auto] gap-0">
-            <CardTitle>{title ?? "Approve a CLI request"}</CardTitle>
+            <CardTitle>{title ?? "Approve a request"}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">{children}</CardContent>
         </Card>

@@ -15,7 +15,26 @@ const EXISTING = {
   createdAt: "2026-02-01T00:00:00.000Z",
   revokedAt: null,
   source: "console",
+  credentialType: "apiKey",
   label: null,
+  grant: "manage",
+  clientId: null,
+  expiresAt: null,
+};
+
+/** An OAuth connection an MCP client holds, as the gateway lists it beside the keys. */
+const CONNECTION = {
+  ...EXISTING,
+  id: "connection-1",
+  // The client's own claim for itself: untrusted text the page must show as text.
+  name: "<img src=x onerror=alert(1)> Agent",
+  tokenHint: "zzzz",
+  source: "oauth",
+  credentialType: "oauth",
+  label: "<img src=x onerror=alert(1)> Agent",
+  grant: "read",
+  clientId: "https://agent.example/oauth/client.json",
+  expiresAt: "2026-03-03T00:00:00.000Z",
 };
 
 function stubKeys(created?: unknown, keys: unknown[] = [EXISTING]) {
@@ -84,6 +103,62 @@ describe("ManagementKeysPage", () => {
     expect(within(bootstrapRow).getByText("CLI setup")).toBeTruthy();
   });
 
+  it("lists OAuth connections beside the keys, by kind, client and domain", async () => {
+    stubKeys(undefined, [
+      EXISTING,
+      CONNECTION,
+      { ...CONNECTION, id: "connection-2", name: "Registered tool", label: "Registered tool", clientId: "test-client", grant: "manage" },
+    ]);
+    const { container } = renderAuthenticated(<ManagementKeysPage />);
+
+    expect(await screen.findByRole("heading", { name: "Access" })).toBeTruthy();
+    const keyRow = (await screen.findByText("CI deploy")).closest("tr")!;
+    expect(within(keyRow).getByText("Key")).toBeTruthy();
+    expect(within(keyRow).getByText("Acme")).toBeTruthy();
+    expect(within(keyRow).getByText("Never")).toBeTruthy();
+
+    // The declared name is text, never markup, and its domain says who vouched for it.
+    const connectionRow = screen.getByText(CONNECTION.name).closest("tr")!;
+    expect(container.querySelector("img")).toBeNull();
+    expect(within(connectionRow).getByText("Connection")).toBeTruthy();
+    expect(within(connectionRow).getByText("as declared by agent.example")).toBeTruthy();
+    expect(within(connectionRow).getByText("Read only")).toBeTruthy();
+    expect(within(connectionRow).queryByText("…zzzz")).toBeNull();
+    expect(within(connectionRow).queryByText("Never")).toBeNull();
+
+    const registeredRow = screen.getByText("Registered tool").closest("tr")!;
+    expect(within(registeredRow).getByText("Registered client")).toBeTruthy();
+  });
+
+  it("revokes a connection with the same operation as a key", async () => {
+    const fetchMock = stubKeys(undefined, [CONNECTION]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    const menu = await openRowActions(CONNECTION.name);
+    await userEvent.click(within(menu).getByRole("menuitem", { name: /revoke connection/i }));
+    expect(await screen.findByText(/has to be connected again/i)).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: /revoke connection/i }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/v1/admin/keys/connection-1/revoke")),
+      ).toBe(true);
+    });
+  });
+
+  it("names each key's grant", async () => {
+    stubKeys(undefined, [
+      EXISTING,
+      { ...EXISTING, id: "key-2", name: "Dashboards", tokenHint: "1234", grant: "read" },
+    ]);
+    renderAuthenticated(<ManagementKeysPage />);
+
+    const manageRow = (await screen.findByText("CI deploy")).closest("tr")!;
+    expect(within(manageRow).getByText("Manage")).toBeTruthy();
+    const readRow = screen.getByText("Dashboards").closest("tr")!;
+    expect(within(readRow).getByText("Read only")).toBeTruthy();
+  });
+
   it("does not call a key that has not been handed over active", async () => {
     stubKeys(undefined, [{ ...EXISTING, enabled: false }]);
     renderAuthenticated(<ManagementKeysPage />);
@@ -110,8 +185,38 @@ describe("ManagementKeysPage", () => {
 
     await waitFor(() => {
       const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
-      expect(post && JSON.parse(String(post[1]?.body)).name).toBe("Automation");
+      // Nothing chosen, so the key may do everything the role allows.
+      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Automation", grant: "manage" });
     });
+  });
+
+  it("offers the two grants, manage first and chosen, each explained", async () => {
+    stubKeys();
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
+    const group = await screen.findByRole("radiogroup", { name: /key grant/i });
+    const [manage, read] = within(group).getAllByRole("radio");
+    expect(manage!.textContent).toMatch(/^Manage.*everything your role allows/i);
+    expect(manage!.getAttribute("aria-checked")).toBe("true");
+    expect(read!.textContent).toMatch(/^Read only.*cannot change them/i);
+    expect(read!.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("creates a read-only key when that grant is chosen, and says what it can do", async () => {
+    const fetchMock = stubKeys({ key: { ...EXISTING, grant: "read", plaintext: PLAINTEXT } });
+    renderAuthenticated(<ManagementKeysPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /new key/i }));
+    await userEvent.type(await screen.findByLabelText(/key name/i), "Dashboards");
+    await userEvent.click(screen.getByRole("radio", { name: /read only/i }));
+    await userEvent.click(screen.getByRole("button", { name: /create key/i }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(post && JSON.parse(String(post[1]?.body))).toEqual({ name: "Dashboards", grant: "read" });
+    });
+    expect(await screen.findByText(/can read every app and provider here, but cannot change them/i)).toBeTruthy();
   });
 
   it("reveals the plaintext exactly once and warns it will not reappear", async () => {

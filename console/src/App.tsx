@@ -14,7 +14,9 @@ import { CliApprovePage } from "@/pages/cli-approve";
 import { CliCodePage } from "@/pages/cli-code";
 import { LoginPage } from "@/pages/login";
 import { ManagementKeysPage } from "@/pages/management-keys";
+import { OAuthConsentPage } from "@/pages/oauth-consent";
 import { ProvidersPage } from "@/pages/providers";
+import { RevealPage } from "@/pages/reveal";
 import { DEFAULT_SETTINGS_SECTION, SettingsPage } from "@/pages/settings";
 import { SignupPage } from "@/pages/signup";
 import { ConsoleSessionProvider } from "@/lib/console-session";
@@ -114,7 +116,9 @@ function AuthenticatedConsole() {
           <Route path="/apps/:appId/:tab/:section" element={<AppDetailPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/providers/:section" element={<ProvidersPage />} />
-          <Route path="/keys" element={<ManagementKeysPage />} />
+          <Route path="/access" element={<ManagementKeysPage />} />
+          {/* Where the page lived while it listed keys alone. */}
+          <Route path="/keys" element={<Navigate to="/access" replace />} />
           <Route
             path="/settings"
             element={<Navigate to={`/settings/${DEFAULT_SETTINGS_SECTION}`} replace />}
@@ -187,6 +191,18 @@ export default function App() {
         <Route path="/cli/approve/:id" element={<CliApprovePage />} />
         {/* Where a person types the terminal's pairing code instead of following its link. */}
         <Route path="/cli" element={<CliCodePage />} />
+        {/*
+          Where a person sees, once, a key an agent created for them. Outside
+          the shell like the approval page: a person is sent here by a link,
+          and signing in brings them back.
+        */}
+        <Route path="/reveal/:id" element={<RevealPage />} />
+        {/*
+          Where an MCP client's OAuth authorization request sends a person.
+          Outside the shell for the approval page's reason: it starts with
+          nobody signed in as often as not, and signing in brings them back.
+        */}
+        <Route path="/oauth/consent" element={<OAuthConsentPage />} />
         <Route path="*" element={<AuthenticatedConsole />} />
       </Routes>
       <Toaster position="top-center" />

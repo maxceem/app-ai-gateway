@@ -1,5 +1,6 @@
 import type { BillingRuntime } from "../billing/contract";
 import { GatewayError } from "../core/errors";
+import { log } from "../core/log";
 import { ACCOUNT_RECOVERY_MS } from "./accounts";
 
 export type DeploymentMode = "cloud" | "self_hosted";
@@ -79,6 +80,55 @@ export interface Deployment {
    * rather than where the deployment is resolved.
    */
   identity(): DeploymentIdentity;
+  /**
+   * The base URL application clients call: the separate API host a deployment
+   * publishes with `PUBLIC_API_URL`, or else its console origin. The same
+   * value as `identity().apiUrl`, without needing `DEPLOYMENT_ID` — an example
+   * request is worth writing on a deployment no CLI has been pointed at yet.
+   */
+  apiUrl(): string;
+  /**
+   * The origin the console is served from: `CLI_CONSOLE_ORIGIN`, or else the
+   * request's own. The same value as `identity().consoleOrigin`, without
+   * needing `DEPLOYMENT_ID`, for a surface that has to know which host is the
+   * console's but has no use for the deployment's name.
+   */
+  consoleOrigin(): string;
+  /** How the MCP endpoint on the console host treats browsers. */
+  readonly mcp: {
+    /**
+     * Browser origins besides the console's own that may call `/mcp`, from
+     * `MCP_ALLOWED_ORIGINS`. Empty unless the deployment lists some.
+     */
+    readonly allowedOrigins: readonly string[];
+  };
+  /** How MCP clients connect with OAuth instead of a management key. */
+  readonly oauth: {
+    /**
+     * The authorization server and the one protected resource: the console
+     * origin the deployment configured in `CLI_CONSOLE_ORIGIN`, or null where
+     * it runs none. Never the request's own origin: a token is bound to its
+     * issuer, so a deployment answering on two names would otherwise issue
+     * tokens for both, and the nightly sweep, which has no request, would see
+     * none. Null too without a `DEPLOYMENT_ID` for the authorizations to be
+     * bound to, or where the configured origin is not one an issuer may be
+     * (https, or http on a loopback host: `localhost`, `127.0.0.1`, `[::1]`
+     * or a name under `.localhost`). Lazy for the reason `identity()` is.
+     */
+    issuer(): string | null;
+    /**
+     * Whether a client may identify itself with a Client ID Metadata Document,
+     * an https `client_id` fetched when it asks. On unless `OAUTH_CIMD` is
+     * `false`.
+     */
+    readonly cimd: boolean;
+    /**
+     * `OAUTH_CLIENTS` as the deployment set it, unparsed: the clients it
+     * registers are read where the identity library is built
+     * (`src/auth/oauth-clients.ts`), never on a proxied request.
+     */
+    readonly clients: string | undefined;
+  };
 }
 
 /** The subset the pure policy helpers below decide on. */
@@ -89,25 +139,116 @@ function resolveIdentity(env: Env, requestUrl: string | undefined): DeploymentId
   if (!id) {
     throw new GatewayError(503, "invalid_request", "Deployment identity is not configured");
   }
+  return { id, ...resolveOrigins(env, requestUrl) };
+}
+
+/** Where the console is served and where application clients call, validated. */
+function resolveOrigins(
+  env: Env,
+  requestUrl: string | undefined,
+): Omit<DeploymentIdentity, "id"> {
   const configured = env.CLI_CONSOLE_ORIGIN ?? requestUrl;
   if (!configured) {
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const configuredOrigin = new URL(configured);
-  const loopback =
-    configuredOrigin.hostname === "localhost" ||
-    configuredOrigin.hostname.endsWith(".localhost") ||
-    configuredOrigin.hostname === "127.0.0.1";
-  if (
-    (configuredOrigin.protocol !== "https:" &&
-      !(configuredOrigin.protocol === "http:" && loopback)) ||
-    configuredOrigin.username ||
-    configuredOrigin.password
-  ) {
+  if (!secureOrigin(configuredOrigin)) {
     throw new GatewayError(503, "invalid_request", "Configure a secure console origin");
   }
   const consoleOrigin = configuredOrigin.origin;
-  return { id, consoleOrigin, apiUrl: env.PUBLIC_API_URL ?? consoleOrigin };
+  return { consoleOrigin, apiUrl: env.PUBLIC_API_URL ?? consoleOrigin };
+}
+
+/** `localhost`, or a name under it whose every label is non-empty. */
+const LOCALHOST_NAME = /^(?:localhost|(?:[^.]+\.)+localhost)$/u;
+
+/**
+ * A host that can only be this machine: `127.0.0.1`, `[::1]`, `localhost`, or
+ * a name under the reserved `.localhost` TLD (RFC 6761 §6.3), which is what a
+ * local instance answering on a worktree or branch name looks like. The URL
+ * parser keeps empty labels (`.localhost`, `a..localhost`), and they are
+ * refused here as the identity library refuses them.
+ */
+function loopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "[::1]" || LOCALHOST_NAME.test(hostname);
+}
+
+/** HTTPS, or plain HTTP on a loopback host for local development; never with credentials. */
+function secureOrigin(url: URL): boolean {
+  return (url.protocol === "https:" || (url.protocol === "http:" && loopbackHost(url.hostname)))
+    && !url.username
+    && !url.password;
+}
+
+/** The last `MCP_ALLOWED_ORIGINS` value parsed, so an isolate parses and warns about one value once. */
+let parsedMcpOrigins: { raw: string; origins: readonly string[] } | undefined;
+
+/**
+ * `MCP_ALLOWED_ORIGINS` as the exact origins a browser sends: comma-separated,
+ * each an `https` origin (or `http` on a loopback host) with no wildcard, path,
+ * query or credentials, normalised as a browser writes one — lower case, no
+ * default port, no trailing slash. An entry that is not one is dropped with a
+ * warning giving its position and why, rather than refusing every request over
+ * a typo in one of them. The warning never repeats the entry itself: one that
+ * does not parse may still carry credentials nobody can strip from it.
+ */
+function mcpAllowedOrigins(raw: string | undefined): readonly string[] {
+  const value = raw?.trim() ?? "";
+  if (value === "") return [];
+  if (parsedMcpOrigins?.raw === value) return parsedMcpOrigins.origins;
+  const origins: string[] = [];
+  const entries = value.split(",").map((part) => part.trim()).filter(Boolean);
+  for (const [index, entry] of entries.entries()) {
+    let url: URL | undefined;
+    try {
+      url = new URL(entry);
+    } catch {
+      url = undefined;
+    }
+    // A browser sends one exact origin, so an entry is matched exactly too: a
+    // wildcard host would match nothing, and is refused rather than kept as
+    // a rule that looks broader than it is.
+    const bare = url !== undefined
+      && secureOrigin(url)
+      && !url.hostname.includes("*")
+      && url.pathname === "/"
+      && !url.search
+      && !url.hash;
+    if (!url || !bare) {
+      log("warn", "mcp_allowed_origin_ignored", {
+        // 1-based, as a person counts the entries of the list they wrote.
+        position: index + 1,
+        reason: url === undefined
+          ? "not a URL"
+          : "not an exact https origin (http only on a loopback host) without a wildcard, path, query or credentials",
+      });
+      continue;
+    }
+    if (!origins.includes(url.origin)) origins.push(url.origin);
+  }
+  parsedMcpOrigins = { raw: value, origins };
+  return origins;
+}
+
+/**
+ * The configured console origin as an OAuth issuer, or null where there is
+ * none. Read from `CLI_CONSOLE_ORIGIN` alone, never from a request. The rule
+ * is the identity library's own, which refuses any other issuer: https, or
+ * http on a loopback host (`localhost`, `127.0.0.1`, `[::1]` or a name under
+ * `.localhost`).
+ */
+function oauthIssuer(env: Env): string | null {
+  if (!env.DEPLOYMENT_ID || !env.CLI_CONSOLE_ORIGIN) return null;
+  let origin: string;
+  try {
+    origin = resolveOrigins(env, undefined).consoleOrigin;
+  } catch {
+    return null;
+  }
+  const url = new URL(origin);
+  return url.protocol === "https:" || (url.protocol === "http:" && loopbackHost(url.hostname))
+    ? origin
+    : null;
 }
 
 /**
@@ -120,6 +261,8 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
   const billing = env.BILLING ?? null;
   const mode: DeploymentMode = billing ? "cloud" : "self_hosted";
   let identity: DeploymentIdentity | undefined;
+  let origins: Omit<DeploymentIdentity, "id"> | undefined;
+  let issuer: { value: string | null } | undefined;
   return {
     mode,
     rules: DEPLOYMENT_RULES[mode],
@@ -129,6 +272,20 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
     identity(): DeploymentIdentity {
       identity ??= resolveIdentity(env, requestUrl);
       return identity;
+    },
+    apiUrl(): string {
+      origins ??= resolveOrigins(env, requestUrl);
+      return origins.apiUrl;
+    },
+    consoleOrigin(): string {
+      origins ??= resolveOrigins(env, requestUrl);
+      return origins.consoleOrigin;
+    },
+    mcp: { allowedOrigins: mcpAllowedOrigins(env.MCP_ALLOWED_ORIGINS) },
+    oauth: {
+      issuer: () => (issuer ??= { value: oauthIssuer(env) }).value,
+      cimd: env.OAUTH_CIMD?.trim().toLowerCase() !== "false",
+      clients: env.OAUTH_CLIENTS,
     },
   };
 }

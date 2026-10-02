@@ -1,34 +1,29 @@
-import { AppWriteSchema, type AppWrite } from "../../src/contracts/schemas.ts";
+import {
+  AppWriteSchema,
+  SNIPPET_LANGUAGES,
+  type AppWrite,
+  type SnippetLanguage,
+} from "../../src/contracts/schemas.ts";
 import type {
   ApiKeyListResponse,
   ApiKeyRevokeResponse,
+  AppCheckResponse,
   AppDeleteResponse,
   AppListResponse,
   AppResponse,
   AppDraftValidateResponse,
+  AppSnippetResponse,
   AppValidateResponse,
-  ProviderSummary,
 } from "../../src/contracts/responses.ts";
-import { fail, validate } from "./common.ts";
+import { CliError, fail, validate } from "./common.ts";
 import type { Context } from "./context.ts";
 import { confirm } from "./input.ts";
 import type { Flags } from "./parser.ts";
 import { flagList } from "./parser.ts";
 import { jsonFile, required } from "./resources.ts";
 import { reserveOutput, type StoredKeyMetadata } from "./state.ts";
+import { shellQuote } from "../../src/shared/first-request.ts";
 import {
-  curlSnippet,
-  exampleNotes,
-  firstRequest,
-  ISSUER_TOKEN_NOTE,
-  shellQuote,
-  swiftSignsInUsers,
-  swiftSnippet,
-  type RequestExample,
-} from "../../src/shared/first-request.ts";
-import {
-  providerPolicyFor,
-  reachableProviders,
   selectedProviderPolicies,
   type AppAttestEnvironment,
 } from "../../src/shared/app-config.ts";
@@ -46,15 +41,6 @@ export interface AppWriteResult {
   guidance: string;
 }
 
-export interface AppCheckResult {
-  appId: string;
-  validation: ValidationResult;
-  status: AppWrite["status"];
-  providers: { id: string; slug: string; status: ProviderSummary["status"] }[];
-  ready: boolean;
-  limitations: string[];
-}
-
 export type AppResult =
   | AppListResponse
   | AppResponse
@@ -62,12 +48,12 @@ export type AppResult =
   | ApiKeyListResponse
   | ApiKeyRevokeResponse
   | AppWriteResult
-  | AppCheckResult
+  | AppCheckResponse
   | { definition: AppWrite; validation: ValidationResult }
   | { dryRun: true; definition: AppWrite; validation: ValidationResult }
   | { appId: string; applicationKey: StoredKeyMetadata }
   | { output: string }
-  | { language: "swift" | "shell"; snippet: string; notes: string[] };
+  | AppSnippetResponse;
 
 /** The stored application as a write body. */
 export function documentOf(app: AppResponse["app"]): AppWrite {
@@ -334,9 +320,13 @@ export async function appCommand(
     return { appId, applicationKey: created.key };
   }
   const appId = args[0] ?? "";
+  // Both are the gateway's own answers, composed where the configuration and
+  // the providers live, so every client reports the same verdict and writes
+  // the same example.
+  if (action === "check") return (await ctx.call("checkApp", { params: { app: appId } })).data;
+  if (action === "snippet") return appSnippet(ctx, appId, flags);
   const { data } = await ctx.call("getApp", { params: { app: appId } });
   if (action === "show") return data;
-  const doc = documentOf(data.app);
   if (action === "remove") {
     await confirm(
       `Delete app ${data.app.name} (${appId})? Its keys, users and authentication state will be removed and clients will lose access.`,
@@ -344,121 +334,58 @@ export async function appCommand(
     );
     return (await ctx.call("deleteApp", { params: { app: appId }, query: { confirm: appId } })).data;
   }
-  if (action === "check") {
-    const validation = await remoteValidation(ctx, doc, appId);
-    const { data: providers } = await ctx.call("listProviders");
-    // Every instance the routing names, paused ones included, so the report
-    // shows a disabled provider rather than leaving it out; ready means one of
-    // them can serve.
-    const selected = providers.providers.filter(
-      (p) => providerPolicyFor(doc.config.routing, p.slug) !== undefined,
-    );
-    return {
-      appId,
-      validation,
-      status: doc.status,
-      providers: selected.map((p) => ({
-        id: p.id,
-        slug: p.slug,
-        status: p.status,
-      })),
-      ready:
-        doc.status === "active" &&
-        reachableProviders(doc.config.routing, selected).length > 0,
-      limitations: [
-        "No inference was sent.",
-        "Physical device attestation, issuer login, subscription entitlement and upstream credentials were not exercised.",
-      ],
-    };
-  }
-  if (action === "snippet") {
-    const ios = doc.config.authentication.type === "apple_app_attest";
-    const language = flags.language ?? (ios ? "swift" : "curl");
-    if (!["swift", "curl"].includes(language))
-      fail("invalid_input", "--language must be swift or curl.");
-    // The two are not interchangeable: an iOS application's caller holds an
-    // App Attest assertion rather than a key, and a server application holds a
-    // key the Swift client has no way to send.
-    if ((language === "swift") !== ios)
-      fail(
-        "unsupported_snippet",
-        ios
-          ? "iOS applications authenticate with App Attest, which curl cannot perform."
-          : "Swift snippets are for iOS applications.",
-        `Run agw app snippet ${appId} --language ${ios ? "swift" : "curl"}.`,
-      );
-    const notes: string[] = [];
-    let example: RequestExample;
-    if (flags.endpoint) {
-      const endpoint = doc.config.endpoints[flags.endpoint];
-      if (!endpoint)
-        fail("endpoint_not_found", "Choose an existing custom endpoint.");
-      // A custom endpoint holds the provider, the model and the parameters, so
-      // the client sends only what its style documents.
-      const responses = endpoint.api_style === "responses";
-      example = {
-        target: { endpoint: flags.endpoint },
-        body: responses ? { input: "Say hello." } : null,
-        anthropic: false,
-        gaps: responses ? [] : ["body"],
-      };
-    } else {
-      const routing = doc.config.routing;
-      const { data: all } = await ctx.call("listProviders");
-      // What this application may send to today, which is narrower than what
-      // the account holds.
-      const reachable = reachableProviders(routing, all.providers);
-      const requested = typeof flags.provider === "string" ? flags.provider : undefined;
-      if (requested && !reachable.some((p) => p.slug === requested))
-        fail(
-          all.providers.some((p) => p.slug === requested)
-            ? "provider_unavailable"
-            : "provider_not_found",
-          all.providers.some((p) => p.slug === requested)
-            ? "That provider is disabled or outside this app's proxy policy."
-            : "No provider has that slug.",
-          "Run agw provider list for the slugs, and agw app show <id> for the policy.",
-        );
-      const { data: catalog } = await ctx.call("listModelPrices");
-      const providers = requested
-        ? reachable.filter((p) => p.slug === requested)
-        : reachable;
-      example = firstRequest(routing, providers, catalog.prices);
-      if (!requested && reachable.length > 1)
-        notes.push(`This app can reach ${reachable.length} providers. Add --provider <slug> for a different one.`);
-    }
-    notes.push(...exampleNotes(example));
-    // The host applications call, which is not always the one this CLI manages
-    // the gateway through: a deployment publishing a separate API domain names
-    // it in its own deployment identity, and a snippet goes into a real app.
-    const clientUrl = ctx.active?.deployment?.apiUrl ?? ctx.url;
-    let snippet: string;
-    if (ios) {
-      if (swiftSignsInUsers(doc.config.authentication)) notes.push(ISSUER_TOKEN_NOTE);
-      snippet = swiftSnippet({
-        baseUrl: clientUrl,
-        appId,
-        example,
-        authentication: doc.config.authentication,
-        notes: [
-          "Swift package: https://github.com/maxceem/app-ai-gateway-swift (from: 1.0.0)",
-          "Enable App Attest and test on a supported physical device.",
-          ...notes,
-        ],
-      });
-    } else {
-      snippet = curlSnippet({ baseUrl: clientUrl, appId, example, notes });
-    }
-    if (flags.output) {
-      const output = await reserveOutput(flags.output);
-      try {
-        await output.write(snippet);
-        return { output: output.path };
-      } finally {
-        await output.cancel();
-      }
-    }
-    return { language: ios ? "swift" : "shell", snippet, notes };
-  }
   fail("unknown_command", "Unknown command.");
+}
+
+/**
+ * `app snippet`: the example the gateway writes for the application, narrowed
+ * by the flags, and written to `--output` where one is given. The refusals
+ * keep the gateway's code and message and gain the command that answers them.
+ */
+async function appSnippet(ctx: Context, appId: string, flags: Flags): Promise<AppResult> {
+  const language = flags.language;
+  if (language !== undefined && !(SNIPPET_LANGUAGES as readonly string[]).includes(language))
+    fail("invalid_input", "--language must be swift or curl.");
+  const provider = typeof flags.provider === "string" ? flags.provider : undefined;
+  let data: AppSnippetResponse;
+  try {
+    ({ data } = await ctx.call("getAppSnippet", {
+      params: { app: appId },
+      query: {
+        ...(language === undefined ? {} : { language: language as SnippetLanguage }),
+        ...(provider === undefined ? {} : { provider }),
+        ...(flags.endpoint === undefined ? {} : { endpoint: flags.endpoint }),
+      },
+    }));
+  } catch (error) {
+    const remedy = error instanceof CliError ? snippetRemedy(error.code, appId, language) : undefined;
+    if (remedy === undefined || !(error instanceof CliError)) throw error;
+    throw new CliError(error.code, error.message, remedy, error.exitCode, error.details);
+  }
+  if (flags.output) {
+    const output = await reserveOutput(flags.output);
+    try {
+      await output.write(data.snippet);
+      return { output: output.path };
+    } finally {
+      await output.cancel();
+    }
+  }
+  return data;
+}
+
+/** The command that answers each refusal of `app snippet`, where there is one. */
+function snippetRemedy(code: string, appId: string, language: string | undefined): string | undefined {
+  switch (code) {
+    // Only a language that was asked for is refused, so the other one is right.
+    case "unsupported_snippet":
+      return `Run agw app snippet ${appId} --language ${language === "swift" ? "curl" : "swift"}.`;
+    case "provider_not_found":
+    case "provider_unavailable":
+      return "Run agw provider list for the slugs, and agw app show <id> for the policy.";
+    case "endpoint_not_found":
+      return `Run agw app show ${appId} for its custom endpoints.`;
+    default:
+      return undefined;
+  }
 }

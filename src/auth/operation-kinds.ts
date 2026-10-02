@@ -8,13 +8,15 @@
  * produced, and sweeping it. The engine has to know every kind before a
  * request reaches it, so they are registered in `createIdentityAuth` from this
  * module. What each kind *does* is the gateway's, in
- * `src/routes/cli/operation-kinds.ts`; this is only what the engine is told.
+ * `src/management/operation-kinds.ts`; this is only what the engine is told.
  *
- * Loaded on every identity build, so it imports nothing but types: no zod, no
- * contract schema and no cf-auth value, which would put all three on a proxied
+ * Loaded on every identity build, so it imports nothing but types and drizzle's
+ * `sql`, which the database layer has loaded already: no zod, no contract
+ * schema and no cf-auth value, which would put all three on a proxied
  * request's cold path.
  */
 
+import { sql } from "drizzle-orm";
 import type {
   AuthState,
   CfAuth,
@@ -63,6 +65,30 @@ export const RESOURCE_OPERATION_KINDS = {
 export type ResourceOperationKind = keyof typeof RESOURCE_OPERATION_KINDS;
 
 /**
+ * The creates an agent makes under a reservation: one call reserves, a second
+ * executes it once, and a repeat is answered with what the first did. Each is
+ * a kind of its own to the engine — `app.add.reserved` beside the CLI's
+ * `app.add` — because the two deliver the key they mint differently: the CLI
+ * collects it by polling, and an agent never sees it at all, so a person
+ * reveals it on a page.
+ */
+export const RESERVED_OPERATION_KINDS = ["app.add", "app.key.add"] as const satisfies readonly ResourceOperationKind[];
+
+export type ReservedOperationKind = (typeof RESERVED_OPERATION_KINDS)[number];
+
+const RESERVED_SUFFIX = ".reserved";
+
+/** The engine's name for a reserved create; see {@link RESERVED_OPERATION_KINDS}. */
+export function reservedKindName(kind: ReservedOperationKind): string {
+  return `${kind}${RESERVED_SUFFIX}`;
+}
+
+/** Whether an engine kind is a reserved create, whose key only a person may reveal. */
+export function isReservedKindName(engineKind: string): boolean {
+  return engineKind.endsWith(RESERVED_SUFFIX);
+}
+
+/**
  * The engine's name for a resource write: the CLI's own kind when it runs at
  * once, and that kind with `.browser` when it owes a browser step. They are two
  * kinds to the engine because one is completed by the gateway and the other by
@@ -73,9 +99,11 @@ export function engineKindName(kind: CliOperationKind, browser: boolean): string
   return browser && kind in RESOURCE_OPERATION_KINDS ? `${kind}.browser` : kind;
 }
 
-/** The CLI's kind for an engine kind; see {@link engineKindName}. */
+/** The CLI's kind for an engine kind; see {@link engineKindName} and {@link reservedKindName}. */
 export function cliKindName(engineKind: string): string {
-  return engineKind.endsWith(".browser") ? engineKind.slice(0, -".browser".length) : engineKind;
+  if (engineKind.endsWith(".browser")) return engineKind.slice(0, -".browser".length);
+  if (isReservedKindName(engineKind)) return engineKind.slice(0, -RESERVED_SUFFIX.length);
+  return engineKind;
 }
 
 /**
@@ -294,5 +322,23 @@ export function gatewayOperationKinds(identity: () => CfAuth): OperationKind[] {
     };
     return browser === "never" ? [immediate] : browser === "always" ? [approved] : [immediate, approved];
   });
-  return [bootstrap, claim, ...resources];
+  const reserved = RESERVED_OPERATION_KINDS.map((kind): OperationKind => ({
+    name: reservedKindName(kind),
+    payload: parseResourceEnvelope,
+    open: { minRole: "admin" },
+    browser: false,
+    // The key it minted reaches nobody but a person on the reveal page: not
+    // the agent that executed it, and not whoever holds the handle and polls.
+    deliver: "reveal",
+    recordTtlMs: OPERATION_RECORD_TTL_MS,
+    // A key revoked before anyone revealed it is not revealed: it would be a
+    // credential that no longer works, shown as though it did.
+    deliverable: ({ record }) => {
+      const keyId = (record as { api_key?: { id?: unknown } | null } | null)?.api_key?.id;
+      return typeof keyId === "string"
+        ? sql`exists (select 1 from app_api_key where id = ${keyId} and status = 'active')`
+        : undefined;
+    },
+  }));
+  return [bootstrap, claim, ...resources, ...reserved];
 }

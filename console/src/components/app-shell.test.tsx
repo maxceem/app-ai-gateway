@@ -231,12 +231,12 @@ describe("AppShell navigation", () => {
     renderAuthenticated(<AppShell>content</AppShell>);
 
     // Absent until the operator opens their account block.
-    expect(screen.queryByRole("menuitem", { name: /management keys/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /^access$/i })).toBeNull();
 
     await openAccountMenu();
 
     expect(screen.getByRole("menuitem", { name: /settings/i })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /management keys/i })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /^access$/i })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /sign out/i })).toBeTruthy();
   });
 

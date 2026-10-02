@@ -1,5 +1,4 @@
 import type { Context, Env as HonoEnv, Hono } from "hono";
-import { cfAuth } from "../auth/identity";
 import {
   CATALOG,
   type BodiedOperation,
@@ -8,15 +7,16 @@ import {
   type OperationParams,
   type OperationResponse,
   type OperationSpec,
-  type ParsedOperationQuery,
-  type ParsedOperationRequest,
 } from "../contracts/catalog";
-import { assertAccountAccess } from "../core/account-lifecycle";
-import { GatewayError } from "../core/errors";
-import type { app as appTable } from "../db/schema";
-import type { AdminActor } from "../management/actor";
-import { parseRequest } from "../management/validation";
-import type { ManagementScope } from "../management/scope";
+import {
+  authorizeOperation,
+  runOperation,
+  type OperationCaller,
+  type OperationHandlerTable,
+  type OperationInput,
+  type OperationRequest,
+} from "../management/executor";
+import { OPERATION_HANDLERS, type RegisteredOperation } from "../management/handlers";
 import type { AdminVariables } from "../middleware/admin";
 import { jsonBody, managementScope } from "./admin/body";
 
@@ -39,102 +39,50 @@ function honoPath(template: string, base: string): string {
   return (relative || "/").replace(/\{(\w+)\}/gu, ":$1");
 }
 
-/**
- * The authorization one operation asks for, with the defaults filled in.
- *
- * A `GET` reads and a member may; anything else writes and an admin may. Both
- * halves of that — who, and what standing the account itself needs — are the
- * entry's, never a method test or a path regex in `middleware/admin.ts`.
- */
-function operationPolicy(spec: OperationSpec) {
-  const writes = spec.method !== "GET";
-  return {
-    role: spec.policy?.role ?? (writes ? "admin" : "member"),
-    access: spec.policy?.access ?? (writes ? "setup" : "read"),
-    identity: spec.policy?.identity,
-    /** A session-only operation refuses a management key, however privileged. */
-    sessionOnly: spec.security === "session",
-  } as const;
-}
-
-/**
- * Applies one operation's declared policy to the authenticated caller.
- *
- * Runs after `adminAuth`, which established who is asking and nothing more.
- * The order is fixed, so a caller short of two things is always told about the
- * same one.
- */
 type AuthorizedContext = Context<{ Bindings: Env; Variables: AdminVariables }>;
 
-async function authorize(c: AuthorizedContext, spec: OperationSpec): Promise<void> {
-  if (spec.security !== "management" && spec.security !== "session") return;
-  const policy = operationPolicy(spec);
-  const { canManageOrganization, requireOrganization, requireUser } = await cfAuth();
-  const state = c.get("authState");
-  const actor = c.get("actor");
-  if (policy.role === "admin" && !canManageOrganization(actor.role)) {
-    throw new GatewayError(
-      403,
-      "forbidden",
-      "Only organization owners and admins can mutate gateway resources",
-    );
-  }
-  if (policy.identity === "human") requireUser(state);
-  requireOrganization(state, policy.role);
-  await assertAccountAccess(c.get("deployment"), c.env, actor.organizationId, policy.access);
-  if (policy.sessionOnly && actor.credentialType !== "session") {
-    throw new GatewayError(
-      403,
-      "session_required",
-      "Management keys can only be administered from a user session",
-    );
-  }
+function guarded(spec: OperationSpec): boolean {
+  return spec.security === "management" || spec.security === "session";
 }
 
-type AppRow = typeof appTable.$inferSelect;
-
 /**
- * The application an `/apps/{app}` operation is about, which the admin scope
- * has already found in the caller's account. Its absence means an operation was
- * mounted outside that scope, which is a bug here rather than a request to
- * refuse.
+ * Who is asking, as the executor takes it: the request's scope, and on a guarded
+ * operation the `authState` and `actor` that `adminAuth` or the surface's own
+ * `authenticate` established on the context.
  */
-function scopedApp(c: AuthorizedContext): AppRow {
-  const row = c.get("adminApp");
-  if (!row) throw new GatewayError(500, "internal_error", "Route is not scoped to an application");
-  return row;
+function operationCaller(c: AuthorizedContext, spec: OperationSpec): OperationCaller {
+  const scope = managementScope(c);
+  if (!guarded(spec)) return { scope };
+  const state = c.get("authState");
+  const actor = c.get("actor");
+  return state && actor ? { scope, auth: { state, actor } } : { scope };
 }
 
 /** What a mounted handler is handed: the request, typed by the catalog's path. */
 export type OperationContext<E extends HonoEnv, K extends OperationName> =
   Context<E, HonoPath<Catalog[K]["path"]>>;
 
-/**
- * Everything else a handler is handed, already parsed and resolved: the query
- * and the body through the operation's own schemas, the request's management
- * scope, the actor on an operation that has one, and the application an
- * `/apps/{app}` operation is about.
- */
-export type OperationInput<K extends OperationName> = {
-  query: ParsedOperationQuery<K>;
-  body: ParsedOperationRequest<K>;
-  scope: ManagementScope;
-} & (Catalog[K]["security"] extends "management" | "session" ? { actor: AdminActor } : unknown)
-  & ("app" extends keyof OperationParams<K> ? { app: AppRow } : unknown);
+/** A handler that needs the HTTP request itself, beside its parsed input. */
+export type HttpOperationHandler<E extends HonoEnv, K extends BodiedOperation> = (
+  c: OperationContext<E, K>,
+  input: OperationInput<K>,
+) => OperationResponse<K> | Promise<OperationResponse<K>>;
 
 /**
- * Mounts handlers on the paths the catalog declares.
+ * Mounts catalog operations on the paths the catalog declares: the HTTP
+ * adapter over `runOperation`.
  *
  * A handler returns the operation's response body and nothing else: the method,
  * the path and the success status come from the entry, and the body's type is
  * the entry's response schema, so a handler that drifts from the contract fails
- * `pnpm run check` at its own `return`. The path reaches the handler too, so
- * `c.req.param("id")` is a string rather than a maybe-string, and so does
- * everything in {@link OperationInput}: a service is handed a typed body and
- * never parses one itself.
+ * `pnpm run check` at its own `return`. The executor resolves the application,
+ * applies the entry's policy and parses the path, the query and the body, so a
+ * service is handed a typed body and never parses one itself.
  *
- * Anything a response needs beyond its body — a cookie, a cache header — is set
- * on `c` before returning, as cf-auth already does when it writes the
+ * An operation in the handler registry is mounted by name alone. One that needs
+ * the request — anything a response carries beyond its body, a cookie, a
+ * cache header — is mounted with a handler of its own, which sets that on `c`
+ * before returning, as cf-auth already does when it writes the
  * current-organization cookie.
  */
 export function catalogRouter<E extends HonoEnv>(
@@ -158,65 +106,74 @@ export function catalogRouter<E extends HonoEnv>(
   const readBody = options.readBody ?? jsonBody;
   const mount = (name: OperationName, handler: (c: Context<E>) => Promise<Response>): void => {
     const spec: OperationSpec = CATALOG[name];
-    const guarded = spec.security === "management" || spec.security === "session";
     // Authorization is the entry's, so an entry that has some is never mounted
     // where it would not be applied: a route module cannot opt out of it by
     // building the wrong router.
-    if (guarded && !options.authorized) {
+    if (guarded(spec) && !options.authorized) {
       throw new Error(`${name} is a ${spec.security} operation and must be mounted through an authorizing router`);
     }
-    const served = options.authorized
-      ? async (c: Context<E>) => {
-          if (guarded && options.authenticate) await options.authenticate(c);
-          await authorize(c as unknown as AuthorizedContext, spec);
-          return handler(c);
-        }
-      : handler;
+    const served = async (c: Context<E>) => {
+      if (guarded(spec) && options.authenticate) await options.authenticate(c);
+      return handler(c);
+    };
     app.on(spec.method, honoPath(spec.path, base), served as never);
     MOUNTED_OPERATIONS.add(name);
   };
 
-  return {
-    handle<K extends BodiedOperation>(
-      name: K,
-      handler: (
-        c: OperationContext<E, K>,
-        input: OperationInput<K>,
-      ) => OperationResponse<K> | Promise<OperationResponse<K>>,
-      options: {
-        /**
-         * A refusal of this operation's own that must come before its body is
-         * read: after the policy, before any parsing.
-         */
-        before?: (c: OperationContext<E, K>) => void | Promise<void>;
-      } = {},
-    ): void {
-      // Catalog-mounted handlers answer with a body and a 200 or 201 status.
-      // Better Auth serves the social sign-in flow outside this router.
-      const spec: OperationSpec = CATALOG[name];
-      const status = (spec.status ?? 200) as 200 | 201;
-      const request = spec.request;
-      if (request !== undefined && "content" in request) {
-        throw new Error(`${name} takes a multipart body, which is not parsed through this router`);
-      }
-      const actor = spec.security === "management" || spec.security === "session";
-      const scoped = spec.path.includes("{app}");
-      mount(name, async (c) => {
-        // Parsed after the policy has run, so a caller who may not ask is told
-        // that rather than what is wrong with how they asked.
-        const context = c as unknown as OperationContext<E, K>;
-        if (options.before) await options.before(context);
-        const admin = c as unknown as AuthorizedContext;
-        const input = {
-          query: spec.query ? parseRequest(spec.query, c.req.query()) : {},
-          body: request ? parseRequest(request, await readBody(c)) : undefined,
-          scope: managementScope(admin),
-          ...(actor ? { actor: admin.get("actor") } : {}),
-          ...(scoped ? { app: scopedApp(admin) } : {}),
-        } as OperationInput<K>;
-        return c.json(await handler(context, input), status);
-      });
+  /**
+   * The request as the executor takes it: raw, with the body read only when
+   * asked for. Hono matched the catalog's own path to get here, so the
+   * parameters it bound are exactly the ones that path names — the one place
+   * that is known rather than checked.
+   */
+  const operationRequest = <K extends OperationName>(c: Context<E>): OperationRequest<K> => ({
+    params: c.req.param() as Record<string, string> as OperationParams<K>,
+    query: c.req.query(),
+    body: () => readBody(c),
+  });
+
+  function handle<K extends RegisteredOperation>(name: K): void;
+  function handle<K extends BodiedOperation>(
+    name: K,
+    handler: HttpOperationHandler<E, K>,
+    options?: {
+      /**
+       * A refusal of this operation's own that must come before its body is
+       * read: after the policy, before any parsing.
+       */
+      before?: (c: OperationContext<E, K>) => void | Promise<void>;
     },
+  ): void;
+  function handle<K extends BodiedOperation>(
+    name: K,
+    handler?: HttpOperationHandler<E, K>,
+    handleOptions: { before?: (c: OperationContext<E, K>) => void | Promise<void> } = {},
+  ): void {
+    // Catalog-mounted handlers answer with a body and a 200 or 201 status.
+    // Better Auth serves the social sign-in flow outside this router.
+    const spec: OperationSpec = CATALOG[name];
+    const status = (spec.status ?? 200) as 200 | 201;
+    const request = spec.request;
+    if (request !== undefined && "content" in request) {
+      throw new Error(`${name} takes a multipart body, which is not parsed through this router`);
+    }
+    const registered = (OPERATION_HANDLERS as OperationHandlerTable)[name];
+    if (!handler && !registered) throw new Error(`${name} has no registered handler to mount`);
+    mount(name, async (c) => {
+      const context = c as unknown as OperationContext<E, K>;
+      const result = await runOperation(
+        name,
+        operationCaller(c as unknown as AuthorizedContext, spec),
+        operationRequest<K>(c),
+        handler ? (input) => handler(context, input) : registered!,
+        handleOptions.before ? { before: () => handleOptions.before!(context) } : {},
+      );
+      return c.json(result, status);
+    });
+  }
+
+  return {
+    handle,
 
     /**
      * The same mount for the two handoff endpoints that relay another system's
@@ -224,13 +181,22 @@ export function catalogRouter<E extends HonoEnv>(
      * the claim cookie appended. Their status and their `Set-Cookie` headers are
      * the answer, not just their body, so there is nothing for this router to
      * assemble. The path still comes from the catalog, which is what keeps them
-     * from being a second place a URL is written.
+     * from being a second place a URL is written, and the entry's policy still
+     * runs first.
      */
     relay<K extends OperationName>(
       name: K,
       handler: (c: OperationContext<E, K>) => Promise<Response>,
     ): void {
-      mount(name, (c) => handler(c as unknown as OperationContext<E, K>));
+      const spec: OperationSpec = CATALOG[name];
+      mount(name, async (c) => {
+        await authorizeOperation(
+          name,
+          operationCaller(c as unknown as AuthorizedContext, spec),
+          operationRequest<K>(c),
+        );
+        return handler(c as unknown as OperationContext<E, K>);
+      });
     },
   };
 }

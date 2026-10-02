@@ -435,6 +435,8 @@ describe("admin provider instances", () => {
       env,
       deployment: resolveDeployment(env),
       billingCache: new Map() as BillingRequestCache,
+      // An update reaches no operation engine.
+      identity: () => Promise.reject(new Error("not used by an update")),
     };
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2020-01-01T00:00:00.000Z"));

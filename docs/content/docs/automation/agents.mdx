@@ -28,13 +28,13 @@ browser session. Without `--no-open`, the CLI also tries to open the page in
 this machine's browser.
 
 For CI, or an agent that should not wait for you, create a management key on the
-console's **Management keys** page and give it to the agent privately:
+console's **Access** page and give it to the agent privately:
 
 - as `AGW_MANAGEMENT_KEY` in its environment. When set, it is the credential for
   every command and overrides any saved login;
 - or piped once with `agw account login --key-stdin`, which saves it.
 
-Every key a CLI login creates is listed on the **Management keys** page with a
+Every key a CLI login creates is listed on the **Access** page with a
 **CLI** tag and the label of the machine that asked for it. `agw account logout`
 revokes the saved key; you can also revoke any of them on that page.
 
@@ -55,7 +55,7 @@ the terminal before approving. The person claiming creates their sign-in on
 that page; if the browser is already signed in as someone with an account, the
 page asks them to sign out first. Claiming keeps the CLI connected, so it can go on
 configuring resources and reading usage; human-only administration still needs
-you. Run `agw account logout`, or revoke its key on the **Management keys** page,
+you. Run `agw account logout`, or revoke its key on the **Access** page,
 whenever you want that access to end.
 
 Application keys go to private files, never standard output. The CLI preserves

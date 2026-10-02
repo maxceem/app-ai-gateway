@@ -25,7 +25,6 @@ import { Context, operationIdFor } from "../src/context.ts";
 import type { Flags } from "../src/parser.ts";
 import { CliError, fail } from "../src/common.ts";
 import { errorOf, hasCode, stubContext, served } from "./helpers.ts";
-import type { ProviderType } from "../../src/shared/providers.ts";
 
 const server: AppWrite = {
   name: "Server",
@@ -152,67 +151,72 @@ test("app remove supplies required confirmation query and full writes supply the
   assert.equal(options.body.name, "Renamed");
 });
 
-/** A provider as `listProviders` answers with one, named and typed by this test. */
-const providerRow = (slug: string, type: string) => ({
-  id: `p-${slug}`, slug, type, name: slug, secretHint: null, providerGatewayId: null,
-  gatewayRoute: null, baseUrl: null, pricing: null, status: "active",
-  revision: 1, createdAt: "now", createdBy: "me", ...served(type as ProviderType),
-});
-
 /** The example a command answered with, refused as a string by the union's other members. */
 function snippetOf(result: AppResult): string {
   assert.ok("snippet" in result && typeof result.snippet === "string");
   return result.snippet;
 }
 
-/** A context that answers the three reads an example is written from. */
-const snippetContext = (providers: ReturnType<typeof providerRow>[], app: AppWrite = server) =>
-  stubContext({
-    url: "https://gw.test",
-    active: null,
-    call: async (name: string) => {
-      if (name === "listProviders") return { data: { providers } };
-      if (name === "listModelPrices")
-        return { data: { prices: { openai: { "gpt-5.6-sol": { input: 5, output: 30 } } } } };
-      return { data: { app: { ...app, id: "app-1", revision: 1 }, resolved: null } };
+/** What the gateway writes for a server application, as `getAppSnippet` answers. */
+const serverExample = {
+  language: "shell" as const,
+  snippet:
+    "curl --fail-with-body 'https://gw.test/v1/apps/app-1/proxy/openai/v1/responses' \\\n" +
+    '  -H "Authorization: Bearer $APP_AI_GATEWAY_KEY" \\\n',
+  notes: [],
+};
+
+/** A context whose gateway answers `getAppSnippet`, recording what each call asked for. */
+function snippetContext(answer: () => unknown = () => serverExample) {
+  const calls: { name: string; options?: Record<string, unknown> }[] = [];
+  const ctx = stubContext({
+    call: async (name: string, options?: Record<string, unknown>) => {
+      calls.push({ name, ...(options ? { options } : {}) });
+      return { data: answer() };
     },
   });
+  return { ctx, calls };
+}
 
-test("a server app gets a runnable example, with placeholders for what it does not have yet", async () => {
-  const bare = await appCommand(snippetContext([]), "app snippet", ["app-1"], {});
-  const bareSnippet = snippetOf(bare);
-  assert.ok(bareSnippet.includes("/proxy/PROVIDER_SLUG/v1/chat/completions"));
-  assert.ok(bareSnippet.includes('"model":"MODEL"'));
-  assert.ok(bareSnippet.includes('-H "Authorization: Bearer $APP_AI_GATEWAY_KEY"'));
-  assert.ok("notes" in bare && bare.notes.length === 2);
-  // The placeholders are named in the snippet itself, as shell comments, so
-  // the human output says why without a second channel to read.
-  assert.match(bareSnippet, /^# No provider is configured yet/);
+test("app snippet is the gateway's example, narrowed by its flags", async () => {
+  const bare = snippetContext();
+  const result = await appCommand(bare.ctx, "app snippet", ["app-1"], {});
+  assert.deepEqual(result, serverExample);
+  // Nothing asked for, so nothing sent: the gateway defaults every field from
+  // the application itself.
+  assert.deepEqual(bare.calls, [{ name: "getAppSnippet", options: { params: { app: "app-1" }, query: {} } }]);
 
-  const configured = snippetOf(
-    await appCommand(
-      snippetContext([providerRow("openai", "openai"), providerRow("second", "openai")]),
-      "app snippet",
-      ["app-1"],
-      {},
-    ),
-  );
-  assert.ok(configured.includes("/proxy/openai/v1/responses"));
-  assert.ok(configured.includes('{"model":"gpt-5.6-sol","input":"Say hello."}'));
-  // Two reachable providers is not an ambiguity to refuse over: the first is
-  // shown, and the other is named as one flag away.
-  assert.match(configured, /^# This app can reach 2 providers/);
+  const narrowed = snippetContext();
+  await appCommand(narrowed.ctx, "app snippet", ["app-1"], { language: "curl", provider: "claude" });
+  await appCommand(narrowed.ctx, "app snippet", ["app-1"], { endpoint: "chat" });
+  assert.deepEqual(narrowed.calls.map((call) => call.options?.query), [
+    { language: "curl", provider: "claude" },
+    { endpoint: "chat" },
+  ]);
+});
 
-  const named = snippetOf(
-    await appCommand(
-      snippetContext([providerRow("openai", "openai"), providerRow("claude", "anthropic")]),
-      "app snippet",
-      ["app-1"],
-      { provider: "claude" },
-    ),
-  );
-  assert.ok(named.includes("/proxy/claude/v1/messages"));
-  assert.ok(named.includes("anthropic-version: 2023-06-01"));
+test("app snippet writes the example to --output and reports only the path", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-snippet-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "first-request.sh");
+  const { ctx } = snippetContext();
+  const result = await appCommand(ctx, "app snippet", ["app-1"], { output: path });
+  assert.deepEqual(result, { output: path });
+  assert.equal(await readFile(path, "utf8"), serverExample.snippet);
+});
+
+test("app check is the gateway's own verdict", async () => {
+  const verdict = {
+    appId: "app-1",
+    validation: { valid: true, app_id: "app-1" },
+    status: "active",
+    providers: [{ id: "p-openai", slug: "openai", status: "active" }],
+    ready: true,
+    limitations: ["No inference was sent."],
+  };
+  const { ctx, calls } = snippetContext(() => verdict);
+  assert.deepEqual(await appCommand(ctx, "app check", ["app-1"], {}), verdict);
+  assert.deepEqual(calls, [{ name: "checkApp", options: { params: { app: "app-1" } } }]);
 });
 
 test("creating a server app hands back the request to send, keyed from the file it just wrote", async (t) => {
@@ -225,9 +229,7 @@ test("creating a server app hands back the request to send, keyed from the file 
     active: null,
     bootstrap: async () => {},
     call: async (name: string) => {
-      if (name === "listProviders") return { data: { providers: [providerRow("openai", "openai")] } };
-      if (name === "listModelPrices")
-        return { data: { prices: { openai: { "gpt-5.6-sol": { input: 5, output: 30 } } } } };
+      if (name === "getAppSnippet") return { data: serverExample };
       return { data: { app: created, resolved: null } };
     },
     keyOperation: async () => ({
@@ -255,43 +257,34 @@ test("creating a server app hands back the request to send, keyed from the file 
   assert.ok("applicationKey" in result && result.applicationKey?.storagePath === keyPath);
 });
 
-test("each application type is offered only the snippet its callers can authenticate", async () => {
-  const ios = await appDocument(iosFlags);
+test("app snippet refuses an unknown language itself, and answers the gateway's refusals with a command", async () => {
+  const unused = snippetContext();
   await assert.rejects(
-    () => appCommand(snippetContext([], server), "app snippet", ["app-1"], { language: "swift" }),
-    hasCode("unsupported_snippet"),
-  );
-  await assert.rejects(
-    () => appCommand(snippetContext([], ios), "app snippet", ["app-1"], { language: "curl" }),
-    hasCode("unsupported_snippet"),
-  );
-  await assert.rejects(
-    () => appCommand(snippetContext([], server), "app snippet", ["app-1"], { language: "python" }),
+    () => appCommand(unused.ctx, "app snippet", ["app-1"], { language: "python" }),
     hasCode("invalid_input"),
   );
-  await assert.rejects(
-    () => appCommand(snippetContext([], server), "app snippet", ["app-1"], { provider: "absent" }),
-    hasCode("provider_not_found"),
-  );
-  // A provider the account holds but the app cannot send to is a different
-  // answer from one that does not exist.
-  await assert.rejects(
-    () =>
-      appCommand(
-        snippetContext([{ ...providerRow("openai", "openai"), status: "disabled" }], server),
-        "app snippet",
-        ["app-1"],
-        { provider: "openai" },
-      ),
-    hasCode("provider_unavailable"),
-  );
-  // An iOS app defaults to Swift, and its example carries a body like the rest.
-  const swift = snippetOf(
-    await appCommand(snippetContext([providerRow("openai", "openai")], ios), "app snippet", ["app-1"], {}),
-  );
-  assert.ok(swift.includes("import AppAIGateway"));
-  assert.ok(swift.includes('providerPath: "v1/responses"'));
-  assert.ok(swift.includes("request.httpBody = Data("));
+  assert.equal(unused.calls.length, 0);
+
+  const refusing = (code: string) =>
+    snippetContext(() => {
+      throw new CliError(code, "Deployment rejected the request (HTTP 400).", "Review command configuration and account status.", 3, { status: 400 });
+    }).ctx;
+  const nextAction = async (code: string, flags: Flags) => {
+    const error = await appCommand(refusing(code), "app snippet", ["app-1"], flags).then(
+      () => assert.fail("expected a refusal"),
+      (caught: unknown) => caught as CliError,
+    );
+    assert.equal(error.code, code);
+    assert.equal(error.details?.status, 400);
+    return error.nextAction;
+  };
+  assert.equal(await nextAction("unsupported_snippet", { language: "swift" }), "Run agw app snippet app-1 --language curl.");
+  assert.equal(await nextAction("unsupported_snippet", { language: "curl" }), "Run agw app snippet app-1 --language swift.");
+  assert.match(await nextAction("provider_not_found", { provider: "absent" }), /agw provider list/);
+  assert.match(await nextAction("provider_unavailable", { provider: "openai" }), /agw provider list/);
+  assert.equal(await nextAction("endpoint_not_found", { endpoint: "chat" }), "Run agw app show app-1 for its custom endpoints.");
+  // Anything else is passed on as the transport reported it.
+  assert.equal(await nextAction("app_not_found", {}), "Review command configuration and account status.");
 });
 
 test("provider canonical-origin reset can initiate a narrowly bound browser resubmission", async () => {
@@ -986,42 +979,6 @@ test("a failed wrangler run reports its own output, minus the secrets it was giv
   // envelope, so the escapes are gone and the text is not.
   const coloured = wranglerFailure(["deploy"], 1, "\u001b[31m✘ \u001b[0mrefused by the API");
   assert.equal(CliErrorDetailsSchema.parse(coloured.details).output, "✘ refused by the API");
-});
-
-/**
- * The snippet is compiled into an application, so its base URL has to be the
- * host that application calls. A deployment publishing a separate API domain
- * names it in its own identity, which is not the URL this CLI manages the
- * gateway through — the console host serves both.
- */
-test("app snippet names the deployment's API host, not the managed URL", async () => {
-  const ios = await appDocument(iosFlags);
-  const ctx = stubContext({
-    url: "https://console.example",
-    active: {
-      url: "https://console.example",
-      authenticated: true,
-      deployment: {
-        id: "deployment-1",
-        mode: "cloud",
-        apiUrl: "https://api.example.com",
-        consoleOrigin: "https://console.example",
-      },
-    },
-    call: async (name: string) => {
-      if (name === "getApp")
-        return { data: { app: { ...ios, id: "app-1", revision: 1 }, resolved: null } };
-      if (name === "listModelPrices")
-        return { data: { prices: { openai: { "gpt-5.6-sol": { input: 5, output: 30 } } } } };
-      return { data: { providers: [{ id: "p-1", slug: "openai", type: "openai", status: "active" }] } };
-    },
-  });
-  const result = await appCommand(ctx, "app snippet", ["app-1"], {});
-  const snippet = "snippet" in result ? result.snippet : undefined;
-  assert.equal(typeof snippet, "string");
-  assert.ok(snippet !== undefined);
-  assert.match(snippet, /baseURL: URL\(string: "https:\/\/api\.example\.com"\)!/u);
-  assert.equal(snippet.includes("console.example"), false);
 });
 
 /** A wrangler double that records every run and answers from a script. */

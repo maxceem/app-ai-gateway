@@ -531,10 +531,7 @@ function app(
         ],
         style,
       ),
-      ...notes([
-        ...(result.validation.remote ? [] : result.validation.skipped),
-        ...result.limitations,
-      ]),
+      ...notes(result.limitations),
     ];
   if ("definition" in result) {
     const dryRun = "dryRun" in result;

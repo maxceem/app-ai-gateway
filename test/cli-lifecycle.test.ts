@@ -283,6 +283,66 @@ describe("CLI account lifecycle", () => {
     expect(refused.status).toBe(429);
     expect(await refused.json()).toMatchObject({ error: { code: "rate_limited" } });
   });
+  it("answers a resent bootstrap at an exhausted limit, and writes nothing for it", async () => {
+    // The limit counts new accounts, never the answer to one already made: a
+    // CLI that lost its answer must get it back however busy its address is.
+    const testEnv = runtime();
+    const first = { token: random() };
+    const firstResponse = await request(testEnv, "/bootstrap", first);
+    expect(firstResponse.status).toBe(200);
+    const original = await bootstrapped(firstResponse);
+    for (let spent = 1; spent < ENDPOINT_RATE_LIMITS.bootstrap.limit; spent++)
+      expect((await request(testEnv, "/bootstrap", { token: random() })).status).toBe(200);
+    const refused = await request(testEnv, "/bootstrap", { token: random() });
+    expect(refused.status).toBe(429);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "rate_limited" } });
+
+    const rows = async () => Object.fromEntries(
+      await Promise.all(
+        ["mgmt_user", "mgmt_organization", "mgmt_organization_user", "mgmt_operation", "mgmt_api_key"].map(
+          async (table) => [table, await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first("n")] as const,
+        ),
+      ),
+    );
+    const before = await rows();
+    const resent = await request(testEnv, "/bootstrap", first);
+    expect(resent.status).toBe(200);
+    const again = await bootstrapped(resent);
+    expect(again.id).toBe(original.id);
+    expect(again.account.id).toBe(original.account.id);
+    // The key the engine still holds sealed, not a second one.
+    expect(again.credential.token).toBe(original.credential.token);
+    expect(await rows()).toEqual(before);
+  });
+  it("answers a resent claim at an exhausted operation limit as a poll, and opens no second one", async () => {
+    const testEnv = runtime();
+    const { data } = await start(testEnv);
+    const auth = { authorization: `Bearer ${data.credential.token}` };
+    const claim = { kind: "claim", payload: {}, token: random() };
+    const firstResponse = await request(testEnv, "/operations", claim, auth);
+    expect(firstResponse.status).toBe(200);
+    const first = (await firstResponse.json()) as { id: string; kind: string; state: string };
+    expect(first).toMatchObject({ kind: "claim", state: "pending" });
+    for (let spent = 1; spent < ENDPOINT_RATE_LIMITS.operation.limit; spent++) {
+      const opened = await request(testEnv, "/operations", { ...claim, token: random() }, auth);
+      expect(opened.status, `claim ${spent}`).toBe(200);
+    }
+    const refused = await request(testEnv, "/operations", { ...claim, token: random() }, auth);
+    expect(refused.status).toBe(429);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "rate_limited" } });
+
+    const claims = () =>
+      env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_operation WHERE kind='claim'").first("n");
+    const before = await claims();
+    expect(before).toBe(ENDPOINT_RATE_LIMITS.operation.limit);
+    const resent = await request(testEnv, "/operations", claim, auth);
+    expect(resent.status).toBe(200);
+    await expect(resent.json()).resolves.toMatchObject({ id: first.id, kind: "claim", state: "pending" });
+    expect(await claims()).toBe(before);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_operation WHERE id=?").bind(first.id).first("n"),
+    ).toBe(1);
+  });
   it("gives a selfhost to its first caller and permanently closes second bootstrap", async () => {
     const testEnv = runtime(false);
     const input = { token: random() };

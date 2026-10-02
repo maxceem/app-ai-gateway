@@ -54,11 +54,14 @@ import {
   ApiKeyTokenRequestSchema,
   AppAttestRegisterRequestSchema,
   AppAttestTokenRequestSchema,
+  AppSnippetQuerySchema,
   AppUpdateSchema,
   AppWriteSchema,
   GoogleSignInRequestSchema,
   ManagementKeyCreateRequestSchema,
   MonthSchema,
+  OAuthConsentAllowRequestSchema,
+  OAuthConsentProofSchema,
   OrganizationSelectRequestSchema,
   PROVIDER_SLUG_PATTERN,
   ProviderCreateRequestSchema,
@@ -75,10 +78,12 @@ import {
   ApiKeyRevokeResponseSchema,
   AppAttestChallengeResponseSchema,
   AppAttestRegisterResponseSchema,
+  AppCheckResponseSchema,
   AppDeleteResponseSchema,
   AppListResponseSchema,
   AppResponseSchema,
   AppDraftValidateResponseSchema,
+  AppSnippetResponseSchema,
   AppValidateResponseSchema,
   AuthEventListSchema,
   AuthEventSummarySchema,
@@ -96,6 +101,8 @@ import {
   ManagementKeyListResponseSchema,
   ManagementKeyResponseSchema,
   MonthlyUsageResponseSchema,
+  OAuthConsentDetailsResponseSchema,
+  OAuthConsentRedirectResponseSchema,
   OrganizationListResponseSchema,
   PricesResponseSchema,
   ProviderDeleteResponseSchema,
@@ -106,6 +113,8 @@ import {
   ProviderListResponseSchema,
   ProviderResponseSchema,
   ProviderTestResponseSchema,
+  OperationStatusResponseSchema,
+  RevealedOperationResponseSchema,
   TimeseriesResponseSchema,
   UsageEventListSchema,
   UsageRepriceResponseSchema,
@@ -163,19 +172,25 @@ export interface OperationSpec {
   readonly security: SecurityKind;
   /**
    * Management-surface authorization, for `security: "management" | "session"`
-   * entries, applied by `src/routes/catalog-router.ts` before the handler runs.
+   * entries, applied by `runOperation` in `src/management/executor.ts` before
+   * the handler runs.
    *
    * Defaults are the shape of the surface rather than a list: `GET` reads, so
    * `{ role: "member", access: "read" }`; anything else writes, so
    * `{ role: "admin", access: "setup" }`. Only an operation that departs from
    * that says so here, and it says so beside its own path instead of in a
-   * regex in another file. `identity: "human"` refuses a service credential,
-   * and a `session` entry refuses anything but a browser session.
+   * regex in another file. `session: true` requires an interactive browser
+   * session, which only a human has; a `session` security entry additionally
+   * refuses a management key. `grant` is the least credential grant the
+   * caller needs, `manage` for anything but a `GET`; only an operation that
+   * changes nothing despite its method — a dry-run validation, a key ending
+   * itself — says `read`.
    */
   readonly policy?: {
     readonly role?: "member" | "admin";
     readonly access?: "read" | "setup";
-    readonly identity?: "human";
+    readonly session?: true;
+    readonly grant?: "read" | "manage";
   };
   /** Registered in the full document but not the published one. */
   readonly hidden?: true;
@@ -210,6 +225,15 @@ const CLI_ERRORS = {
   410: "The protected credential exchange has expired; no replacement is minted.",
   429: "The durable initiation or submission rate limit was reached.",
 } as const;
+
+/** The refusals every OAuth consent call shares, beside the shared set. */
+const CONSENT_ERRORS = {
+  409: "The authorization was denied, already completed by another choice, or the account the choice needed is gone; nothing was written.",
+  410: "The authorization lapsed: it is open for ten minutes. Start the connection again from the client.",
+} as const;
+
+const CONSENT_DESCRIPTION =
+  "The API of the console's OAuth consent page, which an MCP client's authorization request sends a person to. First-party browser only: both the request URL origin and the exact Origin header must match the console origin, and `submissionToken` is the proof from the consent page URL's fragment, so it never travels in a URL. Allowing, continuing without an account and denying each answer the `redirect` to send the browser to, and answer it again, byte for byte, when repeated with the same proof.";
 
 const BROWSER_HANDOFF_DESCRIPTION =
   "First-party browser only: both the request URL origin and exact Origin header must match consoleOrigin; a separate submissionToken is required — the proof from the approval URL's fragment, or, for a login, the user code the terminal shows. Identity approval (a claim or a login) also requires an interactive human session; registration is limited to a valid pending claim or login. Provider secret values are write-only.";
@@ -515,7 +539,7 @@ export const CATALOG = {
     security: "management",
     // The whole billing subtree is a person's to act on: a service credential
     // may run an account but may not buy, change or cancel what pays for it.
-    policy: { identity: "human" },
+    policy: { session: true },
     response: BillingPlansResponseSchema,
     responseDescription: "Billing service response.",
   },
@@ -527,7 +551,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Get billing access and the current allowance period",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     response: BillingStatusResponseSchema,
     responseDescription:
       "Billing access, and the current period against the plan's request allowance when an entitlement resolves.",
@@ -540,7 +564,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Create a hosted checkout",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingCheckoutRequestSchema,
     response: BillingCheckoutResponseSchema,
     responseDescription: "Hosted checkout URL.",
@@ -553,7 +577,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Change the subscription plan",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingPlanSelectionSchema,
     response: BillingChangeResponseSchema,
     responseDescription: "Billing service response.",
@@ -566,7 +590,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Resume a canceled subscription",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingPlanSelectionSchema,
     response: BillingChangeResponseSchema,
     responseDescription: "Billing service response.",
@@ -579,7 +603,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Cancel the subscription at period end",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     response: BillingCancelResponseSchema,
     responseDescription: "Cancellation accepted.",
   },
@@ -591,7 +615,7 @@ export const CATALOG = {
     tags: ["Admin billing"],
     summary: "Start a no-card trial",
     security: "management",
-    policy: { identity: "human" },
+    policy: { session: true },
     request: BillingTrialRequestSchema,
     response: BillingAccessSchema,
     responseDescription: "Trial access state.",
@@ -631,7 +655,7 @@ export const CATALOG = {
     security: "management",
     // A POST that stores nothing: it answers whether a body would be accepted,
     // which is a read of the configuration rules and not a write.
-    policy: { role: "member", access: "read" },
+    policy: { role: "member", access: "read", grant: "read" },
     params: APP_PARAM,
     request: AppWriteSchema,
     response: AppValidateResponseSchema,
@@ -645,10 +669,35 @@ export const CATALOG = {
     summary: "Validate a new application configuration without saving it",
     description: "Judged as a creation would be, against the account's current providers and prices.",
     security: "management",
-    policy: { role: "member", access: "read" },
+    policy: { role: "member", access: "read", grant: "read" },
     request: AppWriteSchema,
     response: AppDraftValidateResponseSchema,
     responseDescription: "The configuration would be accepted.",
+  },
+
+  checkApp: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/check",
+    tags: ["Admin applications"],
+    summary: "Check whether an application is ready to serve requests",
+    description: "Validates the stored configuration as an update of it would be judged, lists every provider its routing names with that provider's status — a disabled one included — and reports `ready` when the application is active and at least one of those providers is active. It sends no inference: App Attest on a physical device, issuer sign-in, subscription entitlements and the upstream credentials themselves are not exercised, and `limitations` says so in every answer. A stored configuration that would no longer be accepted answers `400 invalid_request` with the reason.",
+    security: "management",
+    params: APP_PARAM,
+    response: AppCheckResponseSchema,
+    responseDescription: "What the check established, and what it did not exercise.",
+  },
+
+  getAppSnippet: {
+    method: "GET",
+    path: "/v1/admin/apps/{app}/snippet",
+    tags: ["Admin applications"],
+    summary: "Get the first request an application can send",
+    description: "Written against what the application has today: a provider it can reach and a priced model where those exist, and named placeholders, explained in `notes`, where they do not. An App Attest application gets Swift for the App AI Gateway Swift package and a server application gets curl; asking for the other answers `400 unsupported_snippet`. The URL is the one application clients call, which is this deployment's separate API host where it publishes one. A snippet never contains a credential: a server application's example reads its key from the `APP_AI_GATEWAY_KEY` environment variable.",
+    security: "management",
+    params: APP_PARAM,
+    query: AppSnippetQuerySchema,
+    response: AppSnippetResponseSchema,
+    responseDescription: "The example, its language and the notes written into it.",
   },
 
   deleteApp: {
@@ -682,7 +731,7 @@ export const CATALOG = {
     path: "/v1/admin/keys",
     tags: ["Admin management keys"],
     summary: "Create a management key",
-    description: "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one.",
+    description: "Console session only, and requires the owner or admin role. A management key cannot create another one, so revoking a key you handed out ends that access for good. The plaintext agw_mgmt_ token is returned once, and never expires; the account's own deadline is the only one. A key created with the `read` grant cannot change your apps, providers or settings: a change its owner's role would otherwise allow is refused with `403 grant_insufficient`, and the key may still revoke itself.",
     security: "session",
     request: ManagementKeyCreateRequestSchema,
     status: 201,
@@ -861,6 +910,9 @@ export const CATALOG = {
     tags: ["Admin organizations"],
     summary: "List the organizations the caller belongs to",
     security: "management",
+    // cf-auth lists them only for an interactive session: a key is scoped to
+    // its one organization and may not read the others its owner belongs to.
+    policy: { session: true },
     response: OrganizationListResponseSchema,
     responseDescription: "Memberships ordered by organization creation time.",
   },
@@ -875,8 +927,11 @@ export const CATALOG = {
     // Switching the active organization re-signs the cookie naming which
     // tenant the caller reads; gating it behind owner/admin would strand a
     // read-only member in one organization, and gating it behind setup access
-    // would strand them in an account whose trial has ended.
-    policy: { role: "member", access: "read" },
+    // would strand them in an account whose trial has ended. Only an
+    // interactive session has a cookie to re-sign, and cf-auth refuses any
+    // other caller, so the entry says so rather than leaving a key to learn it
+    // from the handler — after the grant check, with a remedy that cannot work.
+    policy: { role: "member", access: "read", session: true },
     request: OrganizationSelectRequestSchema,
     response: IdentitySessionSchema,
     responseDescription: "Session rescoped to the selected organization.",
@@ -1112,6 +1167,36 @@ export const CATALOG = {
     responseDescription: "The priced model catalog this deployment enforces.",
   },
 
+  getOperation: {
+    method: "GET",
+    path: "/v1/admin/operations/{id}",
+    tags: ["Admin change operations"],
+    summary: "Get where an operation stands",
+    description: "Any credential of the account that opened the operation may read it, whatever its role and grant; any other is answered `404 operation_not_found`, so the answer never says whether the id exists elsewhere. A pending operation reports when it lapses, a completed one what it changed, and one declined in a browser `expired` with `denied: true`. It never returns a secret and never collects one: a key the operation created is revealed only on the page `reveal_url` names, to a person signed in to the console as an owner or admin. The approval link of a pending browser step is in the answer that opened it and nowhere else.",
+    security: "management",
+    params: { id: { example: "4b1e…" } },
+    response: OperationStatusResponseSchema,
+    responseDescription: "Where the operation stands, and what it changed once completed.",
+  },
+
+  revealOperation: {
+    method: "POST",
+    path: "/v1/admin/operations/{id}/reveal",
+    tags: ["Admin change operations"],
+    summary: "Reveal the key an operation created, once",
+    description: "Console session only, and requires the owner or admin role in the operation's account; a management key is refused with `403 session_required`. First-party console only: the request URL's origin and the exact `Origin` header must both be the console origin. Answers the key an app or key creation made once, within 15 minutes of its creation: a second reveal is `409 already_revealed`, and one after the window, or for a key revoked since, is `410 operation_expired`. Reveal it only on a page a person asked to see it on, never on load.",
+    security: "session",
+    // Read access: the key already exists, and collecting it is not a change.
+    policy: { role: "admin", access: "read", session: true },
+    params: { id: { example: "4b1e…" } },
+    response: RevealedOperationResponseSchema,
+    responseDescription: "The key the operation created, with its plaintext.",
+    errors: {
+      409: "The key was already revealed.",
+      410: "The reveal window passed, or the key was revoked since it was created.",
+    },
+  },
+
   getCliCapabilities: {
     method: "GET",
     path: "/v1/cli/capabilities",
@@ -1187,9 +1272,9 @@ export const CATALOG = {
     summary: "Revoke the management key this request is sent with",
     description: "Logging a CLI out. Any management key may end itself, whatever its role and whatever the account's standing; a browser session cannot use this and signs out instead.",
     security: "management",
-    // Holding a key is authority enough to end it: a member may, and an
-    // account past its free window may.
-    policy: { role: "member", access: "read" },
+    // Holding a key is authority enough to end it: a member may, an account
+    // past its free window may, and a key with the `read` grant may.
+    policy: { role: "member", access: "read", grant: "read" },
     response: CliCredentialRevokeResponseSchema,
     responseDescription: "The key is revoked; the next request made with it is refused.",
     errors: CLI_ERRORS,
@@ -1309,6 +1394,78 @@ export const CATALOG = {
     response: CliBrowserRegisterResponseSchema,
     responseDescription: "A new human identity for a pending claim or login, with its session set as a cookie.",
     errors: CLI_ERRORS,
+  },
+
+  /*
+   * The OAuth consent page's API. Like the CLI handoff, there is no page to
+   * fetch here: the console renders `/oauth/consent` from its own bundle, and
+   * these four carry the proof from its fragment in their bodies. The OAuth
+   * endpoints themselves — discovery, `/oauth/authorize`, `/oauth/token` and
+   * `/oauth/revoke` — are HTTP-only and not management operations, so they
+   * have no entries; the MCP guide documents them.
+   */
+  getOauthConsentDetails: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/details",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: details",
+    description: `${CONSENT_DESCRIPTION} Reading the details changes nothing. The client's name is its own claim, shown as declared by the host that served its metadata document.`,
+    security: "public",
+    params: { id: { description: "The authorization's id, from the consent page URL's `id` query parameter." } },
+    request: OAuthConsentProofSchema,
+    response: OAuthConsentDetailsResponseSchema,
+    responseDescription: "Who is asking and for what, who this browser would allow it as, the accounts that person may choose, and whether continuing without an account is available.",
+    errors: CONSENT_ERRORS,
+  },
+
+  allowOauthConsent: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/allow",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: allow",
+    description: `${CONSENT_DESCRIPTION} Console session only: the person signed in to this browser connects the client to one of their accounts, with the grant they choose. A management key or an OAuth access token is refused with \`403 session_required\`.`,
+    security: "session",
+    // Any member may connect a client with their own role, as any member may
+    // log a CLI in; the grant is theirs to narrow. Read access, because
+    // connecting changes nothing in the account.
+    policy: { role: "member", access: "read", session: true },
+    params: { id: { description: "The authorization's id." } },
+    request: OAuthConsentAllowRequestSchema,
+    response: OAuthConsentRedirectResponseSchema,
+    responseDescription: "The client's redirect URI with the authorization code.",
+    errors: CONSENT_ERRORS,
+  },
+
+  continueOauthWithoutAccount: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/guest",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: continue without an account",
+    description: `${CONSENT_DESCRIPTION} Creates an account nobody has claimed yet, owned by the connection's own service identity, and connects the client to it with the \`manage\` grant whatever it asked for. Admitted where the deployment allows a new unclaimed account — always on the hosted service, where it is deleted unless a person claims it, and on a self-hosted deployment only while it is empty — and counted per network address with the CLI's account creation. Repeating it for the same authorization answers the same account.`,
+    security: "public",
+    params: { id: { description: "The authorization's id." } },
+    request: OAuthConsentProofSchema,
+    response: OAuthConsentRedirectResponseSchema,
+    responseDescription: "The client's redirect URI with the authorization code.",
+    errors: {
+      ...CONSENT_ERRORS,
+      409: "This deployment no longer admits an account without a person (a self-hosted one that has been initialized), or another choice completed the authorization first.",
+      429: "Too many accounts were created from this network address. Carries Retry-After.",
+    },
+  },
+
+  denyOauthConsent: {
+    method: "POST",
+    path: "/v1/console/oauth/{id}/deny",
+    tags: ["Console OAuth consent"],
+    summary: "OAuth consent: deny",
+    description: `${CONSENT_DESCRIPTION} Anyone holding the link may decline, signed in or not.`,
+    security: "public",
+    params: { id: { description: "The authorization's id." } },
+    request: OAuthConsentProofSchema,
+    response: OAuthConsentRedirectResponseSchema,
+    responseDescription: "The client's redirect URI with `error=access_denied`.",
+    errors: CONSENT_ERRORS,
   },
 
   cliBrowserGoogle: {

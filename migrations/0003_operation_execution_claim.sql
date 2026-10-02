@@ -1,0 +1,1 @@
+ALTER TABLE `mgmt_operation` ADD `execution_claim` text;

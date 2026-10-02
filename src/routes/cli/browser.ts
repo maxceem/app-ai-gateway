@@ -1,5 +1,6 @@
 import type { OperationBrowserCredential, OperationDetails } from "@maxceem/cf-auth";
 import { cliJson } from "./security";
+import { assertConsoleOrigin } from "../console-origin";
 import { GatewayError } from "../../core/errors";
 import { clientAddress, enforceEndpointRateLimit } from "../../core/endpoint-rate-limit";
 import type { z } from "zod";
@@ -20,28 +21,31 @@ import {
 } from "../../core/account-lifecycle";
 import { googleAuthEnabled, identityAuthFor } from "../../auth/identity";
 import {
+  kindOf,
   TARGET_SNAPSHOTS,
   type ClaimKind,
   type LoginKind,
   type OperationKind,
   type ResourceKind,
-} from "./operation-kinds";
-import { authState, operationEngine, runResourceOperation } from "./operations";
-import { kindOf } from "./operation-rows";
+} from "../../management/operation-kinds";
+import { runResourceOperation } from "../../management/resource-operations";
+import { managementScope } from "../admin/body";
+import { authState, operationEngine } from "./operations";
 import { approveClaim, approveLogin, loginOrganizations, pageRefusal } from "./identity-handoff";
-import type { OperationInput } from "../catalog-router";
+import type { OperationInput } from "../../management/executor";
 import type { CliContext } from "./types";
 
 /**
  * The whole of what the page says once the step is approved, keyed on where
  * the registry sends the person next: a claim ends with its approver holding a
  * console session for the account they just took, and every other kind was
- * opened by a command that is still running, whose terminal already has the
- * answer.
+ * opened by something still waiting for the answer — a CLI command, or an
+ * agent's tool call — which already has it. Worded for either door, since the
+ * page cannot tell which one opened the step.
  */
 const CONTINUATION_MESSAGE: Record<CliHandoffContinuation, string> = {
   console: "This account is yours.",
-  cli: "You can close this tab and return to your CLI.",
+  cli: "You can close this tab and return to the CLI or agent that asked.",
 };
 
 function outcomeFor(kind: OperationKind): CliBrowserSubmitResponse {
@@ -50,19 +54,6 @@ function outcomeFor(kind: OperationKind): CliBrowserSubmitResponse {
     message: CONTINUATION_MESSAGE[kind.continueTo],
     continueTo: kind.continueTo,
   };
-}
-
-/**
- * Refuses a browser endpoint reached other than from the first-party approval
- * page. Runs before the body is read, so a request from anywhere else learns
- * nothing about what it sent.
- */
-export function assertConsoleOrigin(c: CliContext): void {
-  const consoleOrigin = c.get("deployment").identity().consoleOrigin;
-  if (new URL(c.req.url).origin !== consoleOrigin)
-    throw new GatewayError(404, "not_found", "Page was not found");
-  if (c.req.header("origin") !== consoleOrigin)
-    throw new GatewayError(403, "forbidden", "Use the first-party approval page");
 }
 
 /**
@@ -87,10 +78,10 @@ export type BrowserStep =
  * and that happens before the submission allowance is spent, so a stranger
  * guessing at proofs cannot lock the page out for its owner.
  */
-export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliContext, input: Input) {
+export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliContext, id: string, input: Input) {
   const credential = browserCredential(input.submissionToken);
   const viewer = await authState(c, true);
-  const details = await (await operationEngine(c)).details({ id: c.req.param("id") ?? "", ...credential, viewer });
+  const details = await (await operationEngine(c)).details({ id, ...credential, viewer });
   if (details.state === "expired")
     throw new GatewayError(410, "invalid_request", "Operation has expired");
   await enforceEndpointRateLimit(c.env, "submission", details.id);
@@ -118,7 +109,7 @@ export async function verifiedSubmission<Input extends CliBrowserProof>(c: CliCo
  */
 export async function relayedSubmission<Schema extends z.ZodType<CliBrowserProof>>(c: CliContext, schema: Schema) {
   assertConsoleOrigin(c);
-  return verifiedSubmission(c, parseRequest(schema, await cliJson(c.req.raw)));
+  return verifiedSubmission(c, c.req.param("id") ?? "", parseRequest(schema, await cliJson(c.req.raw)));
 }
 
 /**
@@ -148,9 +139,9 @@ async function reviewSnapshots(
 
 export async function browserDetails(
   c: CliContext,
-  { body }: OperationInput<"cliBrowserDetails">,
+  { body, params }: OperationInput<"cliBrowserDetails">,
 ): Promise<CliBrowserDetailsResponse> {
-  const { step, viewer: state } = await verifiedSubmission(c, body);
+  const { step, viewer: state } = await verifiedSubmission(c, params.id, body);
   const { details } = step;
   const login = step.entry.type === "login";
   const organizationId = details.organization?.id ?? null;
@@ -204,9 +195,9 @@ export async function browserRegister(c: CliContext): Promise<Response> {
 
 export async function browserSubmit(
   c: CliContext,
-  { body }: OperationInput<"cliBrowserSubmit">,
+  { body, params }: OperationInput<"cliBrowserSubmit">,
 ): Promise<CliBrowserSubmitResponse> {
-  const { step, credential, input: { secret, organizationId } } = await verifiedSubmission(c, body);
+  const { step, credential, input: { secret, organizationId } } = await verifiedSubmission(c, params.id, body);
   const { details } = step;
   if (step.entry.type === "claim") {
     await approveClaim(c, details, step.entry, credential);
@@ -239,7 +230,7 @@ export async function browserSubmit(
   if (!review || !sender || !details.organization)
     throw new GatewayError(500, "internal_error", "A stored operation does not match its kind");
   const engine = await operationEngine(c);
-  await runResourceOperation(c, {
+  await runResourceOperation(managementScope(c), {
     id: details.id,
     // The write runs as the CLI that sent it; the engine rechecks that
     // credential, and its role, when it commits.
@@ -259,11 +250,11 @@ export async function browserSubmit(
  */
 export async function browserDeny(
   c: CliContext,
-  { body }: OperationInput<"cliBrowserDeny">,
+  { body, params }: OperationInput<"cliBrowserDeny">,
 ): Promise<CliBrowserDenyResponse> {
-  const { step, credential, viewer } = await verifiedSubmission(c, body);
+  const { step, credential, viewer } = await verifiedSubmission(c, params.id, body);
   await (await operationEngine(c)).deny({ id: step.details.id, ...credential, actor: viewer });
-  return { state: "denied", message: "Declined. You can close this tab; your CLI has been told." };
+  return { state: "denied", message: "Declined. You can close this tab; the CLI or agent that asked will be told." };
 }
 
 /**
@@ -280,3 +271,5 @@ export async function browserLookup(
   if (!found) return { found: false };
   return { found: true, id: found.id, kind: kindOf(found.kind).kind, expiresAt: found.expiresAt };
 }
+
+export { assertConsoleOrigin };

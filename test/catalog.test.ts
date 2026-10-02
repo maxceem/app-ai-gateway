@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   CATALOG,
@@ -10,25 +11,31 @@ import {
 import "../src/routes/management";
 import { Hono } from "hono";
 import { MOUNTED_OPERATIONS, catalogRouter } from "../src/routes/catalog-router";
+import { GatewayError } from "../src/core/errors";
+import { runOperation, type OperationCaller } from "../src/management/executor";
+import { OPERATION_HANDLERS } from "../src/management/handlers";
+import { resolveDeployment } from "../src/policy/deployment";
 
 /** The credentials only an operation mounted through a catalog router is reached with. */
 const CATALOG_MOUNTED_SECURITY: ReadonlySet<SecurityKind> = new Set(["management", "session", "cliPoll"]);
 /** Documented, but served by Better Auth's own handler rather than a catalog router. */
 const BETTER_AUTH_TAG = "Console authentication";
+/** The public steps a browser takes through a catalog router: a CLI handoff, and an OAuth consent. */
+const BROWSER_STEP_TAGS = ["CLI", "Console OAuth consent"];
 
 /**
  * The half of the catalog the management app is supposed to serve, picked by
  * the credential that reaches it rather than by where its path lives, so a new
  * surface cannot fall out of this check by choosing a new prefix: everything a
  * management key, a browser session or a CLI poll reaches, and the public
- * steps of a CLI handoff.
- * Those public handoff steps are selected by their `CLI` tag.
+ * steps of a CLI handoff and of an OAuth consent.
+ * Those public steps are selected by their tags.
  */
 const SERVED = Object.entries<OperationSpec>(CATALOG)
   .filter(([, spec]) =>
     !spec.tags.includes(BETTER_AUTH_TAG)
     && (CATALOG_MOUNTED_SECURITY.has(spec.security)
-      || (spec.security === "public" && spec.tags.includes("CLI"))))
+      || (spec.security === "public" && spec.tags.some((tag) => BROWSER_STEP_TAGS.includes(tag)))))
   .map(([name]) => name);
 
 describe("operation catalog", () => {
@@ -60,6 +67,53 @@ describe("operation catalog", () => {
     expect(() => catalogRouter(new Hono(), "/v1/cli").handle("getCliCapabilities", () => {
       throw new Error("unreachable");
     })).not.toThrow();
+  });
+
+  it("mounts every registered handler under the operation it is keyed by", () => {
+    for (const name of Object.keys(OPERATION_HANDLERS)) {
+      expect(Object.keys(CATALOG), name).toContain(name);
+      expect(MOUNTED_OPERATIONS.has(name as keyof typeof CATALOG), name).toBe(true);
+    }
+  });
+
+  it("runs a registered operation for any caller its entry admits, whatever the transport", async () => {
+    const deploymentEnv = { ...env, DEPLOYMENT_ID: "catalog-test-deployment" } as Env;
+    const caller: OperationCaller = {
+      scope: {
+        env: deploymentEnv,
+        deployment: resolveDeployment(deploymentEnv, "https://example.test/"),
+        billingCache: new Map(),
+        // Neither operation below reaches the identity library.
+        identity: () => Promise.reject(new Error("not used by these operations")),
+      },
+    };
+    const request = { params: {}, query: {} };
+    // A public operation needs no one to have authenticated.
+    const capabilities = await runOperation(
+      "getCliCapabilities",
+      caller,
+      request,
+      OPERATION_HANDLERS.getCliCapabilities,
+    );
+    expect(capabilities.protocolVersion).toBe(1);
+    // A guarded one refuses a caller no transport authenticated, before its
+    // handler is reached.
+    const refused = await runOperation("getCliAccount", caller, request, () => {
+      throw new Error("unreachable");
+    }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(GatewayError);
+    expect(refused).toMatchObject({ status: 401, code: "auth_required" });
+  });
+
+  it("types a call's path parameters by the operation it names", () => {
+    // Never run: this is checked by `pnpm run check`, where the directive
+    // fails if the call below ever compiles.
+    const typeOnly = (caller: OperationCaller) => [
+      runOperation("revokeAppKey", caller, { params: { app: "a", key: "k" }, query: {} }, OPERATION_HANDLERS.revokeAppKey),
+      // @ts-expect-error `revokeAppKey` names `{key}` in its path, so params without it do not compile.
+      runOperation("revokeAppKey", caller, { params: { app: "a" }, query: {} }, OPERATION_HANDLERS.revokeAppKey),
+    ];
+    expect(typeof typeOnly).toBe("function");
   });
 
   it("documents every path parameter it names", () => {
