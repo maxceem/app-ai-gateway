@@ -45,7 +45,7 @@ const NEW_GATEWAY = "__new__";
  * does not exist yet opens the gateway modal on top of this one, so the
  * provider being described is never thrown away to go and create it.
  *
- * Exported so the first-run checklist on the apps page can open the very same
+ * Exported so the first-run checklist in the rail can open the very same
  * modal rather than sending an operator here mid-task, or growing a second copy
  * of a form that holds a provider credential. {@link AddProviderButton} is the
  * wrapper that owns the open state for those callers.
@@ -412,11 +412,17 @@ export function AddProviderDialog({
  * The add-provider modal plus the control that opens it.
  *
  * For callers that offer adding a provider as one step among others and have no
- * page header to hang a button on — the first-run checklist on the apps page.
+ * page header to hang a button on — the first-run checklist in the rail.
  * The state, the lists the form needs and the read-only guard all stay here, so
  * such a caller adds a provider without knowing anything about how one is made.
  */
-export function AddProviderButton({ label = "Add provider" }: { label?: string }) {
+export function AddProviderButton({
+  label = "Add provider",
+  size = "sm",
+}: {
+  label?: string;
+  size?: "sm" | "xs";
+}) {
   const [open, setOpen] = useState(false);
   const list = useProviders();
   // Only the open modal has any use for them, and most visitors never open it.
@@ -424,7 +430,7 @@ export function AddProviderButton({ label = "Add provider" }: { label?: string }
 
   return (
     <>
-      <GuardedButton size="sm" onClick={() => setOpen(true)}>
+      <GuardedButton size={size} onClick={() => setOpen(true)}>
         {label}
       </GuardedButton>
       <AddProviderDialog

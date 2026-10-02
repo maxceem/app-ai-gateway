@@ -15,7 +15,7 @@ import { ProvidersSection } from "./providers-section";
 import { GATEWAYS_PATH } from "./shared";
 
 /**
- * Re-exported for the one page that reaches into this one: the apps page's
+ * Re-exported for the one place that reaches into this page: the rail's
  * first-run checklist opens the add-provider modal itself rather than sending
  * an operator here mid-task.
  */

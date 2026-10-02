@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -8,6 +8,19 @@ import { membership, renderAuthenticated, stubApi } from "@/test/render";
 import type { BillingAccess, OrganizationQuota } from "@/lib/types";
 
 afterEach(() => vi.unstubAllGlobals());
+
+/**
+ * The rail's first-run checklist reads the apps list on every page. An
+ * organization past its first request has none to show, which is the rail
+ * these tests are about; the checklist has a suite of its own.
+ */
+const SETTLED_APPS = {
+  "/v1/admin/apps": { body: { month: "2026-09", has_proxied_requests: true, apps: [] } },
+};
+// Braced: a hook that returns the mock would have it run as a teardown.
+beforeEach(() => {
+  stubApi(SETTLED_APPS);
+});
 
 const FREE_ACCESS: BillingAccess = {
   state: "billed",
@@ -48,12 +61,14 @@ function quotaAt(used: number): OrganizationQuota {
 
 /** Opens an app so the rail is handed over to it. */
 function renderInsideApp(route = "/apps/app-1/auth", status = "active", content: ReactNode = "content") {
+  // The app before the list: routes match by prefix, first one wins.
   stubApi({
     "/v1/admin/apps/app-1": {
       body: {
         app: { id: "app-1", name: "My app", status, config: {} },
       },
     },
+    ...SETTLED_APPS,
   });
   return renderAuthenticated(
     <UnsavedDraftProvider>

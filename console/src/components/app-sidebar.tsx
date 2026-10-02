@@ -23,6 +23,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AllowanceBar } from "@/components/allowance-bar";
 import { Brand } from "@/components/brand";
+import { GettingStarted } from "@/components/getting-started";
 import { OrganizationMenuItems } from "@/components/org-switcher";
 import { AppStatusBadge } from "@/components/status-badge";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -292,7 +293,7 @@ function RootNav({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation();
 
   return (
-    <nav className="flex flex-1 flex-col gap-1 p-3">
+    <nav className="flex flex-col gap-1 p-3">
       {NAV_ITEMS.map((item) => {
         const active = location.pathname.startsWith(item.to);
         const sections = active ? item.sections : undefined;
@@ -366,7 +367,7 @@ function DrillInRail({
   const location = useLocation();
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex flex-col">
       <div className="flex flex-col gap-2 border-b border-sidebar-border px-3 pb-3">
         <div className="flex items-center justify-between gap-2 pr-2">
           <Link
@@ -394,7 +395,7 @@ function DrillInRail({
 
       <nav
         aria-label={`${title} sections`}
-        className="flex flex-1 flex-col gap-1 overflow-y-auto p-3"
+        className="flex flex-col gap-1 p-3"
       >
         {items.map((item) => (
           <RailLink
@@ -464,11 +465,18 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <ThemeToggle />
       </div>
 
-      {appMatch?.params.appId ? (
-        <AppRail appId={appMatch.params.appId} onNavigate={onNavigate} />
-      ) : (
-        <RootNav onNavigate={onNavigate} />
-      )}
+      {/* The one region that scrolls, so the account block stays put. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {appMatch?.params.appId ? (
+          <AppRail appId={appMatch.params.appId} onNavigate={onNavigate} />
+        ) : (
+          <RootNav onNavigate={onNavigate} />
+        )}
+
+        {/* Right under whichever rail is up, where it is seen first: the step
+            left after an app is created is finished from inside that app. */}
+        <GettingStarted />
+      </div>
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border p-3">
         <PlanSummary onNavigate={onNavigate} />
