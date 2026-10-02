@@ -64,6 +64,11 @@ async function createKey(name: string) {
   await userEvent.click(screen.getByRole("button", { name: /create key/i }));
 }
 
+/** The Kind cell as it reads, e.g. `CLI: …1234` or `MCP: agent.example`. */
+function kindOf(row: HTMLElement) {
+  return row.querySelectorAll("td")[1]!.textContent;
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ManagementKeysPage", () => {
@@ -93,14 +98,13 @@ describe("ManagementKeysPage", () => {
 
     const cliRow = (await screen.findByText("agw login")).closest("tr")!;
     expect(within(cliRow).getByText("CLI on mac-studio")).toBeTruthy();
-    expect(within(cliRow).getByText("CLI")).toBeTruthy();
+    expect(kindOf(cliRow)).toBe("CLI: …1234");
 
     const consoleRow = screen.getByText("CI deploy").closest("tr")!;
-    expect(within(consoleRow).getByText("Console")).toBeTruthy();
-    expect(within(consoleRow).queryByText(/CLI/)).toBeNull();
+    expect(kindOf(consoleRow)).toBe("API: …6789");
 
     const bootstrapRow = screen.getByText("agw init").closest("tr")!;
-    expect(within(bootstrapRow).getByText("CLI setup")).toBeTruthy();
+    expect(kindOf(bootstrapRow)).toBe("CLI: …5678");
   });
 
   it("lists OAuth connections beside the keys, by kind, client and domain", async () => {
@@ -113,21 +117,20 @@ describe("ManagementKeysPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Access" })).toBeTruthy();
     const keyRow = (await screen.findByText("CI deploy")).closest("tr")!;
-    expect(within(keyRow).getByText("Key")).toBeTruthy();
-    expect(within(keyRow).getByText("Acme")).toBeTruthy();
+    expect(kindOf(keyRow)).toBe("API: …6789");
     expect(within(keyRow).getByText("Never")).toBeTruthy();
 
-    // The declared name is text, never markup, and its domain says who vouched for it.
+    // The declared name is text, never markup, and its domain says who vouched for it;
+    // a connection's token is replaced on every refresh, so it shows no hint.
     const connectionRow = screen.getByText(CONNECTION.name).closest("tr")!;
     expect(container.querySelector("img")).toBeNull();
-    expect(within(connectionRow).getByText("Connection")).toBeTruthy();
-    expect(within(connectionRow).getByText("as declared by agent.example")).toBeTruthy();
+    expect(kindOf(connectionRow)).toBe("MCP: agent.example");
     expect(within(connectionRow).getByText("Read only")).toBeTruthy();
     expect(within(connectionRow).queryByText("…zzzz")).toBeNull();
     expect(within(connectionRow).queryByText("Never")).toBeNull();
 
     const registeredRow = screen.getByText("Registered tool").closest("tr")!;
-    expect(within(registeredRow).getByText("Registered client")).toBeTruthy();
+    expect(kindOf(registeredRow)).toBe("MCP");
   });
 
   it("revokes a connection with the same operation as a key", async () => {
@@ -168,13 +171,12 @@ describe("ManagementKeysPage", () => {
     expect(screen.queryByText("Active")).toBeNull();
   });
 
-  it("shows a placeholder for keys created before hints were recorded", async () => {
+  it("shows only the kind for keys created before hints were recorded", async () => {
     stubKeys(undefined, [{ ...EXISTING, tokenHint: null }]);
     renderAuthenticated(<ManagementKeysPage />);
 
-    await screen.findByText("CI deploy");
-    expect(screen.getByText("—")).toBeTruthy();
-    expect(screen.queryByText(/…/)).toBeNull();
+    const row = (await screen.findByText("CI deploy")).closest("tr")!;
+    expect(kindOf(row)).toBe("API");
   });
 
   it("names the key in a modal and sends it", async () => {
