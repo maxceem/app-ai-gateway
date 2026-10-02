@@ -590,8 +590,33 @@ function recentNotice(recent: RecentOperation): string {
   return `An identical request ${what} ${when} as operation ${recent.id}; use get_operation to inspect it before creating another.`;
 }
 
-const OPERATION_HANDLE = z.object({
-  operation: z.string({ error: "operation must be the string an earlier call of this tool answered with" })
+/**
+ * What a tool answers when it opens an engine operation a person completes in
+ * a browser: the operation's `id`, which `get_operation` takes, and the URL.
+ */
+type OpenedOperationResult = {
+  id: string;
+  url: string;
+  expiresAt: string;
+  notice?: string;
+  next: string;
+};
+
+/**
+ * What a reserved create answers on its first call: the `handle` its second
+ * call takes, and the `id` of the operation it reserved, which `get_operation`
+ * takes. The two are never the same string and never share a name.
+ */
+type ReservedResult = {
+  handle: string;
+  id: string;
+  expiresAt: string;
+  notice?: string;
+  next: string;
+};
+
+const RESERVATION_HANDLE = z.object({
+  handle: z.string({ error: "handle must be the string an earlier call of this tool answered with" })
     .min(1)
     .max(512)
     .optional(),
@@ -599,17 +624,17 @@ const OPERATION_HANDLE = z.object({
 
 const RESERVATION_ARGUMENT = z.string().min(1).max(512).optional().meta({
   description:
-    "Omit it to reserve: nothing is created, and the answer's `operation` is the handle. Then call again with the same arguments and that handle to create it, once. Calling again with the same handle repeats the first answer rather than creating another.",
+    "Omit it to reserve: nothing is created, and the answer's `handle` is this argument. Then call again with the same arguments and that handle to create it, once. Calling again with the same handle repeats the first answer rather than creating another.",
 });
 
 /** What to do after each refusal particular to a reserved create. */
 function reservationNext(tool: string): Partial<Record<ErrorCode, string>> {
   return {
-    operation_not_found: `This server never gave out that operation. Call ${tool} without operation to reserve again.`,
-    operation_mismatch: `The operation was reserved for other arguments, or for another account. Call ${tool} without operation to reserve these arguments, or send the arguments you reserved.`,
-    operation_expired: `The reservation lapsed after 15 minutes. Call ${tool} without operation to reserve again.`,
-    already_completed: `That operation ran more than 15 minutes ago. Call get_operation with its id to see what it created before creating another.`,
-    conflict: `Nothing was written. Call ${tool} again with the same arguments and operation in a few seconds.`,
+    operation_not_found: `This server never gave out that handle. Call ${tool} without handle to reserve again.`,
+    operation_mismatch: `The handle was reserved for other arguments, or for another account. Call ${tool} without handle to reserve these arguments, or send the arguments you reserved.`,
+    operation_expired: `The reservation lapsed after 15 minutes. Call ${tool} without handle to reserve again.`,
+    already_completed: `That create ran more than 15 minutes ago. Call get_operation with the id its reservation answered to see what it created before creating another.`,
+    conflict: `Nothing was written. Call ${tool} again with the same arguments and handle in a few seconds.`,
   };
 }
 
@@ -618,7 +643,7 @@ const REVEAL_NEXT =
 
 /**
  * A create an agent may retry but that must happen once: a call without
- * `operation` reserves it and creates nothing, and a call with the handle it
+ * `handle` reserves it and creates nothing, and a call with the `handle` it
  * answered creates it — once, however often that call is repeated. A key it
  * creates is never in the answer; a person reveals it on the page `reveal_url`
  * names.
@@ -652,22 +677,22 @@ function reservationTool(definition: {
       await authorizeKind(caller.scope, auth, operationKind(kind));
       // Before anything is hashed, reserved or written.
       refuseAppCredential(input);
-      const { operation } = parseRequest(OPERATION_HANDLE, input);
+      const { handle } = parseRequest(RESERVATION_HANDLE, input);
       const payload = definition.payload(input);
-      if (operation === undefined) {
+      if (handle === undefined) {
         const reserved = await reserveResourceOperation(caller.scope, auth.actor, auth.state, { kind, payload });
         return {
-          operation: reserved.handle,
+          handle: reserved.handle,
           id: reserved.id,
           expiresAt: reserved.expiresAt,
           ...(reserved.recent ? { notice: recentNotice(reserved.recent) } : {}),
-          next: `Nothing is created yet. Call ${name} again with the same arguments and this operation before ${reserved.expiresAt} to create it.`,
-        };
+          next: `Nothing is created yet. Call ${name} again with the same arguments and this handle before ${reserved.expiresAt} to create it.`,
+        } satisfies ReservedResult;
       }
       const executed = await executeReservedOperation(caller.scope, auth.actor, auth.state, {
         kind,
         payload,
-        handle: operation,
+        handle,
       });
       return {
         id: executed.id,
@@ -681,9 +706,10 @@ function reservationTool(definition: {
     },
     summary: (raw, input) => {
       const result = raw as Record<string, unknown>;
-      if (typeof result.operation === "string") {
-        const notice = typeof result.notice === "string" ? ` ${result.notice}` : "";
-        return `Reserved ${definition.reserving(input)}; nothing is created yet. Call ${name} again with the same arguments and operation "${result.operation}" to create it.${notice}`;
+      if (typeof result.handle === "string") {
+        const reserved = raw as ReservedResult;
+        const notice = reserved.notice === undefined ? "" : ` ${reserved.notice}`;
+        return `Reserved ${definition.reserving(input)} as operation ${reserved.id}; nothing is created yet. Call ${name} again with the same arguments and handle "${reserved.handle}" to create it.${notice}`;
       }
       const repeated = result.replayed === true ? " This repeats the answer of the call that created it; nothing new was created." : "";
       const reveal = typeof result.reveal_url === "string"
@@ -725,7 +751,7 @@ const BROWSER_STEP_LONGEST = (() => {
 })();
 
 const BROWSER_NEXT =
-  "Give the URL to the person: they open it in their browser, enter the secret there and approve. Then call get_operation with this operation's id until it completes. Do not open the URL yourself.";
+  "Give the URL to the person: they open it in their browser, enter the secret there and approve. Then call get_operation with this answer's id until it completes. Do not open the URL yourself.";
 
 /**
  * A change whose secret a person supplies: the tool opens it with what can be
@@ -769,17 +795,17 @@ function browserTool(definition: {
       const payload = definition.payload(input);
       const step = await openBrowserOperation(caller.scope, auth.actor, auth.state, { kind, payload });
       return {
-        operation: step.view.id,
+        id: step.view.id,
         url: step.url,
         expiresAt: step.view.expiresAt,
         ...(step.recent ? { notice: recentNotice(step.recent) } : {}),
         next: BROWSER_NEXT,
-      };
+      } satisfies OpenedOperationResult;
     },
     summary: (raw, input) => {
-      const result = raw as { operation: string; url: string; expiresAt: string; notice?: string };
+      const result = raw as OpenedOperationResult;
       const notice = result.notice === undefined ? "" : ` ${result.notice}`;
-      return `Opened operation ${result.operation} to ${definition.asking(input)}. A person opens ${result.url} in their browser before ${result.expiresAt}, enters the secret there and approves; then call get_operation.${notice}`;
+      return `Opened operation ${result.id} to ${definition.asking(input)}. A person opens ${result.url} in their browser before ${result.expiresAt}, enters the secret there and approves; then call get_operation.${notice}`;
     },
   };
 }
@@ -1071,7 +1097,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     // Where a completed create reports the key it made, without its value.
     keyMetadataAt: [["result", "api_key"]],
     input: operationInput("getOperation", {
-      id: z.string().min(1).meta({ description: "The operation's id, as the tool that opened it answered it." }),
+      id: z.string().min(1).meta({ description: "The operation's id: the id the tool that opened it answered, never a reservation's handle." }),
     }),
     summary: (result) => {
       const declined = result.denied ? ": a person declined it" : "";
@@ -1086,7 +1112,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "add_provider",
     title: "Add a provider",
     description:
-      "Opens adding a provider credential, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes the provider's type, name, slug and the rest of what list_providers shows, or providerGatewayId to route it through a provider gateway, in which case the person only approves. Call get_operation with the answer's operation until it completes. Answers a notice when an identical request was made in the last hour.",
+      "Opens adding a provider credential, such as an OpenAI key, and answers a URL. A person opens it in their browser, enters the key there and approves; the key never passes through you, and an argument carrying one is refused. Takes the provider's type, name, slug and the rest of what list_providers shows, or providerGatewayId to route it through a provider gateway, in which case the person only approves. Call get_operation with the answer's id until it completes. Answers a notice when an identical request was made in the last hour.",
     kind: "provider.add",
     input: HandoffProviderAddPayloadSchema,
     payload: (input) => input,
@@ -1096,7 +1122,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "add_provider_gateway",
     title: "Add a provider gateway",
     description:
-      "Opens adding a reusable provider gateway, such as a Cloudflare AI Gateway several providers route through, and answers a URL. A person opens it in their browser, enters the gateway's token there and approves; the token never passes through you, and an argument carrying one is refused. Call get_operation with the answer's operation until it completes.",
+      "Opens adding a reusable provider gateway, such as a Cloudflare AI Gateway several providers route through, and answers a URL. A person opens it in their browser, enters the gateway's token there and approves; the token never passes through you, and an argument carrying one is refused. Call get_operation with the answer's id until it completes.",
     kind: "provider-gateway.add",
     input: z.object({
       gateway: HandoffProviderGatewayAddPayloadSchema.meta({
@@ -1153,7 +1179,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "rotate_provider_key",
     title: "Rotate a provider's key",
     description:
-      "Opens replacing a provider's key and answers a URL. A person opens it in their browser, enters the new key there and approves; the key never passes through you. Send the provider's id and the revision list_providers returned. Call get_operation with the answer's operation until it completes.",
+      "Opens replacing a provider's key and answers a URL. A person opens it in their browser, enters the new key there and approves; the key never passes through you. Send the provider's id and the revision list_providers returned. Call get_operation with the answer's id until it completes.",
     kind: "provider.rotate-key",
     input: z.object({ ...HandoffRotatePayloadSchema.shape, id: PROVIDER_ID }),
     payload: (input) => input,
@@ -1163,7 +1189,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "rotate_provider_gateway_key",
     title: "Rotate a provider gateway's token",
     description:
-      "Opens replacing a provider gateway's token and answers a URL. A person opens it in their browser, enters the new token there and approves; the token never passes through you. Send the gateway's id and the revision list_provider_gateways returned. Call get_operation with the answer's operation until it completes.",
+      "Opens replacing a provider gateway's token and answers a URL. A person opens it in their browser, enters the new token there and approves; the token never passes through you. Send the gateway's id and the revision list_provider_gateways returned. Call get_operation with the answer's id until it completes.",
     kind: "provider-gateway.rotate-key",
     input: z.object({ ...HandoffRotatePayloadSchema.shape, id: GATEWAY_ID }),
     payload: (input) => input,
@@ -1198,13 +1224,13 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "add_app",
     title: "Create an app",
     description:
-      "Creates an app from a document {name, config, status?}, the same one validate_app judges: call validate_app first. Two calls: without operation it checks the document and reserves the creation, creating nothing; with the same config and the answer's operation it creates the app, once — repeating that call answers the same app again rather than creating another. The gateway assigns the app's id. A server app's key is never in the answer: reveal_url names the page where a person signed in as an owner or admin sees it once.",
+      "Creates an app from a document {name, config, status?}, the same one validate_app judges: call validate_app first. Two calls: without handle it checks the document and reserves the creation, creating nothing; with the same config and the answer's handle it creates the app, once — repeating that call answers the same app again rather than creating another. The gateway assigns the app's id. A server app's key is never in the answer: reveal_url names the page where a person signed in as an owner or admin sees it once.",
     kind: "app.add",
     input: z.object({
       config: CATALOG.createApp.request.meta({
         description: "The app document: {name, config, status?}, exactly the body validate_app takes for a new app.",
       }),
-      operation: RESERVATION_ARGUMENT,
+      handle: RESERVATION_ARGUMENT,
     }),
     payload: (input) => input.config,
     reserving: (input) => `creating the app "${String((input.config as { name?: unknown } | undefined)?.name)}"`,
@@ -1251,14 +1277,14 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "add_app_key",
     title: "Create an app key",
     description:
-      "Creates another API key for a server app. Two calls: without operation it reserves the key, creating nothing; with the same arguments and the answer's operation it creates it, once — repeating that call answers the same key again rather than creating another. The key's value is never in the answer: reveal_url names the page where a person signed in as an owner or admin sees it once.",
+      "Creates another API key for a server app. Two calls: without handle it reserves the key, creating nothing; with the same arguments and the answer's handle it creates it, once — repeating that call answers the same key again rather than creating another. The key's value is never in the answer: reveal_url names the page where a person signed in as an owner or admin sees it once.",
     kind: "app.key.add",
     input: z.object({
       app: PATH_ARGUMENTS.app!,
       name: CliAppKeyAddPayloadSchema.shape.name.meta({ description: "A name to tell the key apart by in list_app_keys." }),
-      operation: RESERVATION_ARGUMENT,
+      handle: RESERVATION_ARGUMENT,
     }),
-    payload: ({ operation: _operation, ...payload }) => payload,
+    payload: ({ handle: _handle, ...payload }) => payload,
     reserving: (input) => `a key named "${String(input.name)}" for ${String(input.app)}`,
     created: (result) => {
       const key = result.api_key as { id?: string; name?: string } | undefined;
@@ -1295,7 +1321,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     name: "claim_account",
     title: "Start claiming the account",
     description:
-      "Starts a person's claim of an account nobody owns yet, and answers a URL. The person who should own it opens it in their own browser, signs up or signs in there and approves; the account, its apps and providers and this connection stay as they are, and the account no longer expires. Never open the URL yourself or approve it. Call get_operation with the answer's operation until it completes. Refused with conflict when a person already owns the account.",
+      "Starts a person's claim of an account nobody owns yet, and answers a URL. The person who should own it opens it in their own browser, signs up or signs in there and approves; the account, its apps and providers and this connection stay as they are, and the account no longer expires. Never open the URL yourself or approve it. Call get_operation with the answer's id until it completes. Refused with conflict when a person already owns the account.",
     kind: "claim",
     input: z.object({}),
     annotations: OPENS_OPERATION,
@@ -1315,15 +1341,15 @@ export const MCP_TOOLS: readonly McpTool[] = [
       );
       if (url === null) throw new GatewayError(409, "conflict", "This claim can no longer be approved");
       return {
-        operation: view.id,
+        id: view.id,
         url,
         expiresAt: view.expiresAt,
-        next: "Give the URL to the person who should own this account, to open in their own browser before it lapses. Then call get_operation with this operation's id until it completes.",
-      };
+        next: "Give the URL to the person who should own this account, to open in their own browser before it lapses. Then call get_operation with this answer's id until it completes.",
+      } satisfies OpenedOperationResult;
     },
     summary: (raw) => {
-      const result = raw as { operation: string; url: string; expiresAt: string };
-      return `Opened claim ${result.operation}. The person who should own the account opens ${result.url} in their own browser before ${result.expiresAt} and approves; then call get_operation.`;
+      const result = raw as OpenedOperationResult;
+      return `Opened claim ${result.id}. The person who should own the account opens ${result.url} in their own browser before ${result.expiresAt} and approves; then call get_operation.`;
     },
   },
 ];
@@ -1354,7 +1380,7 @@ const NEXT_ACTIONS: Partial<Record<ErrorCode, string>> = {
   not_found: "Check the id and call the matching list tool.",
   operation_not_found: "Check the id: get_operation takes the id a change tool answered with, and sees only your account's operations.",
   operation_expired: "It lapsed before it completed. Call the tool that opened it again to start a new one.",
-  operation_mismatch: "Call the tool again without operation to reserve these arguments.",
+  operation_mismatch: "Call the tool again without handle to reserve these arguments.",
   already_completed: "Call get_operation with its id to see what it did.",
   conflict: "Something changed while the call ran. Read it again with the matching get or list tool and retry with what it returns.",
   app_revision_conflict: "Call get_app for the current document and revision, reapply your change and call update_app again.",

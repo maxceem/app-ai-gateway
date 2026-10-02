@@ -357,8 +357,11 @@ describe("MCP reserved creates", () => {
 
     const reserved = await callTool(owner.key, "add_app", { config });
     expect(reserved.isError).toBeFalsy();
-    const { operation, id } = reserved.structuredContent;
-    expect(operation).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    const { handle, id } = reserved.structuredContent;
+    expect(handle).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    // The handle and the operation's id are two strings under two names.
+    expect(id).not.toBe(handle);
+    expect(reserved.structuredContent).not.toHaveProperty("operation");
     expect(reserved.structuredContent.next).toContain("add_app");
     expect(reserved.structuredContent.notice).toBeUndefined();
     expect(await appCount(owner.organizationId)).toBe(0);
@@ -367,7 +370,7 @@ describe("MCP reserved creates", () => {
     const pending = await callTool(owner.read, "get_operation", { id });
     expect(pending.structuredContent).toMatchObject({ id, kind: "app.add.reserved", state: "pending" });
 
-    const created = await callTool(owner.key, "add_app", { config, operation });
+    const created = await callTool(owner.key, "add_app", { config, handle });
     expect(created.isError, created.content[0]?.text).toBeFalsy();
     expect(created.structuredContent).toMatchObject({
       id,
@@ -382,7 +385,7 @@ describe("MCP reserved creates", () => {
     expect(created.content[0]!.text).toContain("reveal");
     expect(await appCount(owner.organizationId)).toBe(1);
 
-    const again = await callTool(owner.key, "add_app", { config, operation });
+    const again = await callTool(owner.key, "add_app", { config, handle });
     expect(again.isError).toBeFalsy();
     expect(again.structuredContent).toMatchObject({ id, replayed: true, app: created.structuredContent.app });
     expect(again.structuredContent.reveal_url).toBe(created.structuredContent.reveal_url);
@@ -410,7 +413,7 @@ describe("MCP reserved creates", () => {
     const after = await callTool(owner.read, "get_operation", { id });
     expect(after.structuredContent.reveal_url).toBeUndefined();
     // The replay outlives the reveal, and still carries nothing secret.
-    const replayed = await callTool(owner.key, "add_app", { config, operation });
+    const replayed = await callTool(owner.key, "add_app", { config, handle });
     expect(replayed.structuredContent).toMatchObject({ replayed: true });
     expect(replayed.structuredContent.reveal_url).toBeUndefined();
   });
@@ -420,7 +423,7 @@ describe("MCP reserved creates", () => {
     const config = appDocument("Windows");
     const executed = await callTool(owner.key, "add_app", { config });
     await collectKey(
-      await callTool(owner.key, "add_app", { config, operation: executed.structuredContent.operation }),
+      await callTool(owner.key, "add_app", { config, handle: executed.structuredContent.handle }),
       owner.cookie,
     );
     const lapsed = await callTool(owner.key, "add_app", { config: appDocument("Lapsed") });
@@ -432,21 +435,21 @@ describe("MCP reserved creates", () => {
       .run();
     const held = await callTool(owner.key, "add_app", {
       config: appDocument("Busy"),
-      operation: busy.structuredContent.operation,
+      handle: busy.structuredContent.handle,
     });
     expectRefusal(held, "conflict");
-    expect(held.structuredContent.next).toContain("same arguments and operation");
+    expect(held.structuredContent.next).toContain("same arguments and handle");
 
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 16 * 60_000);
-    const late = await callTool(owner.key, "add_app", { config, operation: executed.structuredContent.operation });
+    const late = await callTool(owner.key, "add_app", { config, handle: executed.structuredContent.handle });
     expectRefusal(late, "already_completed");
     const expired = await callTool(owner.key, "add_app", {
       config: appDocument("Lapsed"),
-      operation: lapsed.structuredContent.operation,
+      handle: lapsed.structuredContent.handle,
     });
     expectRefusal(expired, "operation_expired");
-    expect(expired.structuredContent.next).toContain("without operation");
+    expect(expired.structuredContent.next).toContain("without handle");
     vi.useRealTimers();
     expect(await appCount(owner.organizationId)).toBe(1);
   });
@@ -455,32 +458,32 @@ describe("MCP reserved creates", () => {
     const owner = await account("mcp-reserve-mismatch@example.test");
     const stranger = await account("mcp-reserve-stranger@example.test");
     const reserved = await callTool(owner.key, "add_app", { config: appDocument("Original") });
-    const { operation } = reserved.structuredContent;
+    const { handle } = reserved.structuredContent;
 
-    const changed = await callTool(owner.key, "add_app", { config: appDocument("Changed"), operation });
+    const changed = await callTool(owner.key, "add_app", { config: appDocument("Changed"), handle });
     expectRefusal(changed, "operation_mismatch");
-    const foreign = await callTool(stranger.key, "add_app", { config: appDocument("Original"), operation });
+    const foreign = await callTool(stranger.key, "add_app", { config: appDocument("Original"), handle });
     expectRefusal(foreign, "operation_mismatch");
-    const unknown = await callTool(owner.key, "add_app", { config: appDocument("Original"), operation: "x".repeat(43) });
+    const unknown = await callTool(owner.key, "add_app", { config: appDocument("Original"), handle: "x".repeat(43) });
     expectRefusal(unknown, "operation_not_found");
     expect(await appCount(owner.organizationId)).toBe(0);
     expect(await appCount(stranger.organizationId)).toBe(0);
 
     // A refused execution gave the handle back: the reserved input still creates.
-    await collectKey(await callTool(owner.key, "add_app", { config: appDocument("Original"), operation }), owner.cookie);
+    await collectKey(await callTool(owner.key, "add_app", { config: appDocument("Original"), handle }), owner.cookie);
 
-    for (const args of [{ config: appDocument("Read") }, { config: appDocument("Original"), operation }]) {
+    for (const args of [{ config: appDocument("Read") }, { config: appDocument("Original"), handle }]) {
       expectRefusal(await callTool(owner.read, "add_app", args), "grant_insufficient");
     }
     expectRefusal(await callTool(owner.read, "add_app_key", { app: "anything", name: "Read" }), "grant_insufficient");
   });
 
-  it("publishes operation as optional, so a client that validates can reserve", async () => {
+  it("publishes handle as optional, so a client that validates can reserve", async () => {
     const tools = await listTools();
     for (const name of ["add_app", "add_app_key"]) {
       const schema = tools.find((tool) => tool.name === name)!.inputSchema;
-      expect(schema.properties, name).toHaveProperty("operation");
-      expect(schema.required ?? [], name).not.toContain("operation");
+      expect(schema.properties, name).toHaveProperty("handle");
+      expect(schema.required ?? [], name).not.toContain("handle");
     }
     expect(tools.find((tool) => tool.name === "add_app")!.inputSchema.required).toEqual(["config"]);
     expect(tools.find((tool) => tool.name === "add_app_key")!.inputSchema.required).toEqual(["app", "name"]);
@@ -489,19 +492,19 @@ describe("MCP reserved creates", () => {
   it("answers other input as a mismatch while the handle is executing and after it completed", async () => {
     const owner = await account("mcp-reserve-busy@example.test");
     const config = appDocument("Busy");
-    const { operation } = (await callTool(owner.key, "add_app", { config })).structuredContent;
+    const { handle } = (await callTool(owner.key, "add_app", { config })).structuredContent;
 
     // Hold the execution inside the engine, after it claimed the handle.
     const entered = new Promise<void>((resolve) => {
       barrier.entered = resolve;
     });
     barrier.armed = true;
-    const executing = callTool(owner.key, "add_app", { config, operation }, heldRuntime);
+    const executing = callTool(owner.key, "add_app", { config, handle }, heldRuntime);
     await entered;
     try {
-      const other = await callTool(owner.key, "add_app", { config: appDocument("Other"), operation }, heldRuntime);
+      const other = await callTool(owner.key, "add_app", { config: appDocument("Other"), handle }, heldRuntime);
       expectRefusal(other, "operation_mismatch");
-      const same = await callTool(owner.key, "add_app", { config, operation }, heldRuntime);
+      const same = await callTool(owner.key, "add_app", { config, handle }, heldRuntime);
       expectRefusal(same, "conflict");
     } finally {
       barrier.release();
@@ -511,12 +514,12 @@ describe("MCP reserved creates", () => {
     expect(created.structuredContent.replayed).toBe(false);
 
     // Completed: other input is still a mismatch, not a replay of the first.
-    const after = await callTool(owner.key, "add_app", { config: appDocument("Other"), operation });
+    const after = await callTool(owner.key, "add_app", { config: appDocument("Other"), handle });
     expectRefusal(after, "operation_mismatch");
     // A key handle sent to the app tool names another kind.
     const keyHandle = (await callTool(owner.key, "add_app_key", { app: created.structuredContent.app.id, name: "K" }))
-      .structuredContent.operation;
-    expectRefusal(await callTool(owner.key, "add_app", { config, operation: keyHandle }), "operation_mismatch");
+      .structuredContent.handle;
+    expectRefusal(await callTool(owner.key, "add_app", { config, handle: keyHandle }), "operation_mismatch");
     expect(await appCount(owner.organizationId)).toBe(1);
     await collectKey(created, owner.cookie);
   });
@@ -538,11 +541,11 @@ describe("MCP reserved creates", () => {
     };
     // A reservation of a clean document, so the leaky one is also sent with a handle.
     const clean = await callTool(owner.key, "add_app", { config: appDocument("Clean") });
-    const { operation, id } = clean.structuredContent;
+    const { handle, id } = clean.structuredContent;
 
     const attempts: [string, Record<string, unknown>][] = [
       ["add_app", { config: leaky("Leaky") }],
-      ["add_app", { config: leaky("Clean"), operation }],
+      ["add_app", { config: leaky("Clean"), handle }],
       ["update_app", { app, config: { ...leaky("Leaky"), revision: 1 } }],
       ["validate_app", { app, config: leaky("Leaky") }],
       ["validate_app", { config: leaky("Leaky") }],
@@ -569,9 +572,9 @@ describe("MCP reserved creates", () => {
     expect(row).toEqual({ revision: 1, found: 0 });
 
     // The clean reservation creates, replays and reports without it.
-    const created = await callTool(owner.key, "add_app", { config: appDocument("Clean"), operation });
+    const created = await callTool(owner.key, "add_app", { config: appDocument("Clean"), handle });
     await collectKey(created, owner.cookie);
-    const replayed = await callTool(owner.key, "add_app", { config: appDocument("Clean"), operation });
+    const replayed = await callTool(owner.key, "add_app", { config: appDocument("Clean"), handle });
     const status = await callTool(owner.read, "get_operation", { id });
     for (const answer of [created, replayed, status]) expect(JSON.stringify(answer)).not.toContain(leaked);
     expect(await appCount(owner.organizationId)).toBe(2);
@@ -600,10 +603,10 @@ describe("MCP reserved creates", () => {
     expect(second.structuredContent.notice).toContain(first.structuredContent.id);
     expect(second.structuredContent.notice).toContain("get_operation");
     expect(second.content[0]!.text).toContain(first.structuredContent.id);
-    expect(second.structuredContent.operation).not.toBe(first.structuredContent.operation);
+    expect(second.structuredContent.handle).not.toBe(first.structuredContent.handle);
 
     await collectKey(
-      await callTool(owner.key, "add_app", { config, operation: first.structuredContent.operation }),
+      await callTool(owner.key, "add_app", { config, handle: first.structuredContent.handle }),
       owner.cookie,
     );
     const third = await callTool(owner.key, "add_app", { config });
@@ -625,8 +628,8 @@ describe("MCP reserved creates", () => {
     expectRefusal(missing, "app_not_found");
 
     const reserved = await callTool(owner.key, "add_app_key", { app, name: "Agent key" });
-    const { operation, id } = reserved.structuredContent;
-    const created = await callTool(owner.key, "add_app_key", { app, name: "Agent key", operation });
+    const { handle, id } = reserved.structuredContent;
+    const created = await callTool(owner.key, "add_app_key", { app, name: "Agent key", handle });
     expect(created.isError, created.content[0]?.text).toBeFalsy();
     expect(created.structuredContent.api_key).toMatchObject({ id: expect.any(String), name: "Agent key", key_prefix: expect.any(String) });
     expect(created.structuredContent.api_key).not.toHaveProperty("key");
@@ -678,19 +681,20 @@ describe("MCP browser steps", () => {
     const slug = `browser-${crypto.randomUUID().slice(0, 8)}`;
     const opened = await callTool(owner.key, "add_provider", { type: "openai", name: "Through a browser", slug });
     expect(opened.isError, opened.content[0]?.text).toBeFalsy();
-    const { operation, url, expiresAt } = opened.structuredContent;
-    expect(url).toMatch(new RegExp(`^${ORIGIN}/cli/approve/${encodeURIComponent(operation)}#`, "u"));
+    const { id, url, expiresAt } = opened.structuredContent;
+    expect(opened.structuredContent).not.toHaveProperty("operation");
+    expect(url).toMatch(new RegExp(`^${ORIGIN}/cli/approve/${encodeURIComponent(id)}#`, "u"));
     expect(Date.parse(expiresAt)).toBeGreaterThan(Date.now());
     expect(opened.structuredContent.next).toContain("get_operation");
 
-    const pending = await callTool(owner.read, "get_operation", { id: operation });
+    const pending = await callTool(owner.read, "get_operation", { id });
     expect(pending.structuredContent).toMatchObject({ state: "pending", kind: "provider.add.browser" });
     expect(pending.structuredContent).not.toHaveProperty("url");
 
     const typed = `sk-mcp-browser-${crypto.randomUUID()}`;
     await approve(url, typed);
 
-    const completed = await callTool(owner.read, "get_operation", { id: operation });
+    const completed = await callTool(owner.read, "get_operation", { id });
     expect(completed.structuredContent).toMatchObject({
       state: "completed",
       result: { provider: { slug, type: "openai", secretHint: typed.slice(-4) } },
@@ -699,8 +703,8 @@ describe("MCP browser steps", () => {
 
     // The same request again is noted, and opens a second step rather than merging.
     const again = await callTool(owner.key, "add_provider", { type: "openai", name: "Through a browser", slug });
-    expect(again.structuredContent.notice).toContain(operation);
-    expect(again.structuredContent.operation).not.toBe(operation);
+    expect(again.structuredContent.notice).toContain(id);
+    expect(again.structuredContent.id).not.toBe(id);
   });
 
   it("refuses a secret passed as an argument, wherever it is put, and a read key", async () => {
@@ -868,12 +872,12 @@ describe("MCP browser steps", () => {
     for (const name of harmless) {
       const opened = await callTool(owner.key, "add_provider", { type: "openai", name });
       expect(opened.isError, `${name}: ${opened.content[0]?.text}`).toBeFalsy();
-      operations.push(opened.structuredContent.operation);
+      operations.push(opened.structuredContent.id);
     }
     for (const name of harmless.slice(0, 2)) {
       const gateway = await callTool(owner.key, "add_provider_gateway", { gateway: { type: "vercel", name } });
       expect(gateway.isError, `${name}: ${gateway.content[0]?.text}`).toBeFalsy();
-      operations.push(gateway.structuredContent.operation);
+      operations.push(gateway.structuredContent.id);
     }
     // A fragment route names no parameter, whatever its words. Another
     // account, whose operation allowance this test has not spent.
@@ -889,7 +893,7 @@ describe("MCP browser steps", () => {
       const opened = await callTool(routed.key, "add_provider", { type: "openai", name });
       expect(opened.isError, `${name}: ${opened.content[0]?.text}`).toBeFalsy();
       const row = await env.DB.prepare("SELECT json_extract(payload, '$.review.name') AS name FROM mgmt_operation WHERE id = ?")
-        .bind(opened.structuredContent.operation)
+        .bind(opened.structuredContent.id)
         .first<{ name: string }>();
       expect(row!.name).toBe(name);
     }
@@ -1220,7 +1224,7 @@ describe("MCP claim_account", () => {
     const claim = await callTool(token, "claim_account");
     expect(claim.isError, claim.content[0]?.text).toBeFalsy();
     expect(claim.structuredContent.url).toMatch(new RegExp(`^${ORIGIN}/cli/approve/`, "u"));
-    const status = await callTool(token, "get_operation", { id: claim.structuredContent.operation });
+    const status = await callTool(token, "get_operation", { id: claim.structuredContent.id });
     expect(status.structuredContent).toMatchObject({ kind: "claim", state: "pending" });
 
     const owned = await account("mcp-claim-owned@example.test");
@@ -1252,10 +1256,10 @@ describe("MCP every change tool", () => {
     }
     const opened = (result: ToolResult) => {
       expect(result.structuredContent.url).toContain("/cli/approve/");
-      return result.structuredContent as { operation: string; url: string };
+      return result.structuredContent as { id: string; url: string };
     };
-    const completed = async (operation: string) => {
-      const status = await callTool(owner.read, "get_operation", { id: operation });
+    const completed = async (id: string) => {
+      const status = await callTool(owner.read, "get_operation", { id });
       expect(status.structuredContent.state, JSON.stringify(status.structuredContent)).toBe("completed");
       return status.structuredContent.result;
     };
@@ -1264,18 +1268,18 @@ describe("MCP every change tool", () => {
         tool: "add_provider_gateway",
         args: () => ({ gateway: { type: "vercel", name: "Every gateway" } }),
         after: async (result) => {
-          const { operation, url } = opened(result);
+          const { id, url } = opened(result);
           await approve(url, `vck_gateway_${crypto.randomUUID()}`);
-          state.gateway = (await completed(operation)).gateway;
+          state.gateway = (await completed(id)).gateway;
         },
       },
       {
         tool: "rotate_provider_gateway_key",
         args: () => ({ id: state.gateway.id, revision: state.gateway.revision }),
         after: async (result) => {
-          const { operation, url } = opened(result);
+          const { id, url } = opened(result);
           await approve(url, `vck_rotated_${crypto.randomUUID()}`);
-          state.gateway = (await completed(operation)).gateway;
+          state.gateway = (await completed(id)).gateway;
         },
       },
       {
@@ -1290,9 +1294,9 @@ describe("MCP every change tool", () => {
         tool: "add_provider",
         args: () => ({ type: "anthropic", name: "Every provider", slug: `every-${crypto.randomUUID().slice(0, 8)}` }),
         after: async (result) => {
-          const { operation, url } = opened(result);
+          const { id, url } = opened(result);
           await approve(url, `sk-ant-every-${crypto.randomUUID()}`);
-          state.provider = (await completed(operation)).provider;
+          state.provider = (await completed(id)).provider;
         },
       },
       {
@@ -1306,10 +1310,10 @@ describe("MCP every change tool", () => {
         tool: "rotate_provider_key",
         args: () => ({ id: state.provider.id, revision: state.provider.revision }),
         after: async (result) => {
-          const { operation, url } = opened(result);
+          const { id, url } = opened(result);
           const typed = `sk-ant-rotated-${crypto.randomUUID()}`;
           await approve(url, typed);
-          state.provider = (await completed(operation)).provider;
+          state.provider = (await completed(id)).provider;
           expect(state.provider.secretHint).toBe(typed.slice(-4));
         },
       },
@@ -1327,12 +1331,12 @@ describe("MCP every change tool", () => {
         tool: "add_app",
         args: () => ({ config: appDocument("Every app") }),
         after: (result) => {
-          state.appHandle = result.structuredContent.operation;
+          state.appHandle = result.structuredContent.handle;
         },
       },
       {
         tool: "add_app",
-        args: () => ({ config: appDocument("Every app"), operation: state.appHandle }),
+        args: () => ({ config: appDocument("Every app"), handle: state.appHandle }),
         after: async (result) => {
           state.app = result.structuredContent.app;
           state.defaultKey = result.structuredContent.api_key;
@@ -1353,12 +1357,12 @@ describe("MCP every change tool", () => {
         tool: "add_app_key",
         args: () => ({ app: state.app.id, name: "Every key" }),
         after: (result) => {
-          state.keyHandle = result.structuredContent.operation;
+          state.keyHandle = result.structuredContent.handle;
         },
       },
       {
         tool: "add_app_key",
-        args: () => ({ app: state.app.id, name: "Every key", operation: state.keyHandle }),
+        args: () => ({ app: state.app.id, name: "Every key", handle: state.keyHandle }),
         after: async (result) => {
           await collectKey(result, owner.cookie);
         },

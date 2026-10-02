@@ -92,8 +92,9 @@ a bearer token works too. Use the tools:
 `get_account` first, then `list_providers`, `list_apps`, `get_app`,
 `validate_app`, `check_app`, usage and event tools, and the change tools.
 `add_app` and `add_app_key` take two calls: the first reserves and creates
-nothing, the second, with the same arguments and the answer's `operation`,
-creates it once, and repeating it is safe. A key is revealed on a page a
+nothing, the second, with the same arguments and the answer's `handle`,
+creates it once, and repeating it is safe. An answer that names an operation
+calls it `id`; that is what `get_operation` takes. A key is revealed on a page a
 person opens, never in a tool result: give them `reveal_url`. A provider key
 or gateway token is never a tool argument: `add_provider` and the rotate tools
 answer a URL where the person enters it, and `get_operation` reports when they

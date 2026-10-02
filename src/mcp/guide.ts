@@ -12,7 +12,7 @@ export const MCP_INSTRUCTIONS = [
   "This server manages an App AI Gateway account: the AI provider credentials it holds, the apps that call providers through it, their end users, and their usage.",
   "Read before you write: call get_account first, and list or get a resource before proposing a change to it.",
   "Secrets never pass through a tool: provider keys are entered by a person in a browser, and an app key is only ever revealed on a browser page.",
-  "add_app and add_app_key take two calls: the first reserves and creates nothing, and the second, with the same arguments and the answer's operation, creates it once.",
+  "add_app and add_app_key take two calls: the first reserves and creates nothing, and the second, with the same arguments and the answer's handle, creates it once. Every answer that names an operation calls it id, which is what get_operation takes.",
   "A change that needs a secret answers a URL for a person to open; poll get_operation until it completes.",
   "An unclaimed account expires unless a person claims it; get_account says so, and claim_account starts the claim.",
   "Read agw://guide for the full rules.",
@@ -79,13 +79,14 @@ someone changed since is refused rather than overwritten.
 Changes come in three shapes.
 
 **Creates take two calls.** \`add_app\` and \`add_app_key\` first reserve: called
-without \`operation\`, they check the arguments, create nothing, and answer a
-handle as \`operation\`. Call the same tool again with the same arguments and
-that handle, within 15 minutes, to create it. If that answer is lost, call
-again with the same handle: it answers the same result with \`replayed: true\`
-and creates nothing more. A handle sent with different arguments is refused
-with \`operation_mismatch\`; one that lapsed with \`operation_expired\`; reserve
-again in either case. When a reservation answers a \`notice\`, an identical
+without \`handle\`, they check the arguments, create nothing, and answer a
+\`handle\` and the reserved operation's \`id\`. Call the same tool again with
+the same arguments and that \`handle\`, within 15 minutes, to create it; the
+\`id\` is what \`get_operation\` takes, never a handle. If the creating call's
+answer is lost, call again with the same handle: it answers the same result
+with \`replayed: true\` and creates nothing more. A handle sent with different
+arguments is refused with \`operation_mismatch\`; one that lapsed with
+\`operation_expired\`; reserve again in either case. When a reservation answers a \`notice\`, an identical
 request was made in the last hour: inspect it with \`get_operation\` before you
 create a second.
 
@@ -93,7 +94,7 @@ create a second.
 \`add_provider_gateway\`, \`rotate_provider_key\` and
 \`rotate_provider_gateway_key\` take everything but the key or token, and answer
 a URL. Give it to the person: they open it, enter the secret there and
-approve. Poll \`get_operation\` with the answer's \`operation\` until it is
+approve. Poll \`get_operation\` with the answer's \`id\` until it is
 \`completed\`, or \`expired\` (with \`denied\` when they declined). Never open the
 URL yourself.
 

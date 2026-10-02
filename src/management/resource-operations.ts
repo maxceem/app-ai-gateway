@@ -412,7 +412,7 @@ function mismatch(): GatewayError {
   return new GatewayError(
     409,
     "operation_mismatch",
-    "This operation was reserved for a different request; reserve again for this one",
+    "This handle was reserved for a different request; reserve again for this one",
   );
 }
 
@@ -455,7 +455,7 @@ async function assertReservedFor(
  */
 function executionRefusal(error: unknown): unknown {
   if (engineRefused(error, "operation_not_found"))
-    return new GatewayError(404, "operation_not_found", "No reservation answers to this operation handle");
+    return new GatewayError(404, "operation_not_found", "No reservation answers to this handle");
   if (engineRefused(error, "operation_mismatch")) return mismatch();
   if (engineRefused(error, "operation_expired"))
     return new GatewayError(410, "operation_expired", "This reservation lapsed before it was executed");
