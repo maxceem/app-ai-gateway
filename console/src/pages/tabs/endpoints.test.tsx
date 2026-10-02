@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { EndpointsTab } from "./endpoints";
+import { EndpointsTab, endpointSummary } from "./endpoints";
 import { useAppDraft } from "@/hooks/use-app-draft";
 import { renderAuthenticated, stubApi } from "@/test/render";
 import type { EndpointsConfig } from "@/lib/config-types";
@@ -138,10 +138,93 @@ const CHAT: EndpointsConfig = {
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** Opens a row's editor; the list shows every endpoint closed. */
+const expand = async (slug: string) =>
+  userEvent.click(await screen.findByRole("button", { name: `Edit ${slug}` }));
+
+describe("endpointSummary", () => {
+  it("says the style, the target, and only the extras that are set", () => {
+    expect(endpointSummary(CHAT.chat!)).toBe("responses · openai-dev → gpt-5.6-luna");
+    expect(
+      endpointSummary({
+        ...CHAT.chat!,
+        max_output_tokens: 4096,
+        fallback: [{ provider: "grok", model: "grok-5" }],
+      }),
+    ).toBe("responses · openai-dev → gpt-5.6-luna · 1 fallback · up to 4,096 output tokens");
+    expect(endpointSummary({ api_style: "responses", provider: "openai-dev", model: "" }))
+      .toBe("responses · openai-dev → no model");
+  });
+});
+
 describe("EndpointsTab", () => {
+  it("lists endpoints closed, each with its URL and a one-line summary, and opens one to edit", async () => {
+    renderTab({
+      ...CHAT,
+      speech: { api_style: "audio_transcription", provider: "openai-dev", model: "gpt-5.6-luna" },
+    });
+
+    expect(await screen.findByText(`POST /v1/apps/${APP_ID}/endpoints/chat`)).toBeTruthy();
+    expect(screen.getByText("responses · openai-dev → gpt-5.6-luna")).toBeTruthy();
+    expect(screen.getByText("audio_transcription · openai-dev → gpt-5.6-luna")).toBeTruthy();
+    // Closed rows hold no fields.
+    expect(screen.queryByLabelText("Endpoint slug")).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: "Edit chat" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByLabelText("Endpoint slug")).toHaveProperty("value", "chat");
+    // Only the row that was opened.
+    expect(screen.getAllByLabelText("Endpoint slug")).toHaveLength(1);
+
+    await userEvent.click(toggle);
+    expect(screen.queryByLabelText("Endpoint slug")).toBeNull();
+  });
+
+  it("keeps a row open while its slug is retyped, and says when the slug is not valid", async () => {
+    renderTab(CHAT);
+
+    await expand("chat");
+    const slug = screen.getByLabelText("Endpoint slug");
+    await userEvent.type(slug, "-v2");
+
+    expect(screen.getByRole("button", { name: "Edit chat-v2" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(`POST /v1/apps/${APP_ID}/endpoints/chat-v2`)).toBeTruthy();
+
+    await userEvent.type(slug, "!");
+    expect(screen.getAllByText("Use 1-64 characters from a-z, 0-9, and -").length).toBeGreaterThan(0);
+  });
+
+  it("marks a closed row whose endpoint cannot be saved yet", async () => {
+    renderTab({ chat: { api_style: "responses", provider: "openai-dev", model: "" } });
+
+    expect(await screen.findByText("Choose a model")).toBeTruthy();
+  });
+
+  it("marks a row whose provider the account no longer has", async () => {
+    renderTab({ chat: { api_style: "responses", provider: "openai-gone", model: "gpt-5.6-luna" } });
+
+    expect(await screen.findByText("provider not configured")).toBeTruthy();
+  });
+
+  it("removes an endpoint from inside its open row", async () => {
+    renderTab(CHAT);
+
+    await screen.findByText(`POST /v1/apps/${APP_ID}/endpoints/chat`);
+    // Closed, a row offers nothing destructive.
+    expect(screen.queryByRole("button", { name: /remove endpoint/i })).toBeNull();
+    await expand("chat");
+    await userEvent.click(screen.getByRole("button", { name: /remove endpoint/i }));
+
+    expect(screen.queryByText(`POST /v1/apps/${APP_ID}/endpoints/chat`)).toBeNull();
+    expect(screen.getByText(/no custom endpoints/i)).toBeTruthy();
+  });
+
   it("targets provider instances, and only those whose type serves the style", async () => {
     renderTab(CHAT);
 
+    await expand("chat");
     await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
     const options = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
 
@@ -165,6 +248,7 @@ describe("EndpointsTab", () => {
       [VERCEL_GATEWAY],
     );
 
+    await expand("speech");
     await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
     const transcription = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
     expect(transcription.some((label) => label?.includes("openai-vercel"))).toBe(false);
@@ -174,6 +258,7 @@ describe("EndpointsTab", () => {
   it("keeps that instance for a style its route does serve", async () => {
     renderTab(CHAT, [...PROVIDERS, OPENAI_VIA_VERCEL], [VERCEL_GATEWAY]);
 
+    await expand("chat");
     await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
     expect(
       (await screen.findAllByRole("option")).some((entry) =>
@@ -199,6 +284,7 @@ describe("EndpointsTab", () => {
     });
     renderAuthenticated(<Harness />);
 
+    await expand("chat");
     await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
     const options = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
     expect(options.some((label) => label?.includes("openai-vercel"))).toBe(true);
@@ -208,6 +294,7 @@ describe("EndpointsTab", () => {
   it("prices the model list through the instance's provider type", async () => {
     renderTab(CHAT);
 
+    await expand("chat");
     await userEvent.click(await screen.findByRole("combobox", { name: "Model" }));
     const models = (await screen.findAllByRole("option")).map((entry) => entry.textContent);
 
@@ -221,6 +308,7 @@ describe("EndpointsTab", () => {
       ...PROVIDERS.slice(1),
     ]);
 
+    await expand("chat");
     await userEvent.click(await screen.findByRole("combobox", { name: "Model" }));
 
     // The gateway accepts a model this row prices, so the picker must offer it.
@@ -245,6 +333,7 @@ describe("EndpointsTab", () => {
   it("switches an endpoint to another instance and clears the stale model", async () => {
     renderTab(CHAT);
 
+    await expand("chat");
     await userEvent.click(await screen.findByRole("combobox", { name: "Provider" }));
     await userEvent.click(await screen.findByRole("option", { name: /grok/ }));
 
@@ -258,6 +347,7 @@ describe("EndpointsTab", () => {
   it("keeps a slug the organization no longer has selectable rather than silently repointing it", async () => {
     renderTab({ chat: { api_style: "responses", provider: "openai-gone", model: "gpt-5.6-luna" } });
 
+    await expand("chat");
     const trigger = await screen.findByRole("combobox", { name: "Provider" });
     expect(trigger.textContent).toContain("openai-gone — not configured");
   });
@@ -271,6 +361,8 @@ describe("EndpointsTab", () => {
         .toHaveProperty("disabled", false));
     await userEvent.click(screen.getByRole("button", { name: /add endpoint/i }));
 
+    // A new row opens on its own: it has nothing to read yet, only to fill in.
+    expect(screen.getByRole("button", { name: "Edit endpoint" }).getAttribute("aria-expanded")).toBe("true");
     // The old default was the literal type name, which need not be a slug here.
     await screen.findByLabelText("Endpoint slug");
     expect(screen.getByRole("combobox", { name: "Provider" }).textContent).toContain("openai-dev");
