@@ -52,7 +52,7 @@ function attest(doc: AppWrite) {
 test("quickstart and JSON defaults remain distinct, and retained provider policies survive updates", async () => {
   const ios = await appDocument(iosFlags);
   assert.deepEqual(attest(ios).environments, ["production", "development"]);
-  assert.equal(ios.config.limits?.per_user.requests.per_day, 300);
+  assert.equal(ios.config.limits?.per_user.requests.per_day, 10000);
   const previous = structuredClone(server);
   previous.config.routing.providers = {
     mode: "selected",
