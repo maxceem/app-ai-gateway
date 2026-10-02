@@ -1,6 +1,6 @@
 ---
 title: Errors and limits
-description: The error format, every code a client can see, and what to do about each one.
+description: Common client errors, their response format, and how to handle limits and failures.
 ---
 
 Every refusal from the gateway is JSON with one `error` object:
@@ -20,14 +20,16 @@ logs. `data` is present only when the code alone is not actionable. Every
 `429` carries a `Retry-After` header in seconds.
 
 A provider's own error is not in this format: it is passed through as the
-provider sent it, with the provider's status code. Tell the two apart by
-whether the body has a top-level `error.code` string from the table below.
+provider sent it, with the provider's status code. Provider errors may also contain `error.code`, so that field alone does not
+prove where an error originated. Handle known gateway codes, retain the HTTP
+status and provider request ID when present, and inspect **Usage** and
+**Auth & Errors** to diagnose the source.
 
 ## Authentication
 
 | Code | Status | Meaning | What to do |
 | --- | --- | --- | --- |
-| `auth_required` | 401 or 403 | No usable credential, an expired gateway token, a revoked key, or a blocked user | Exchange a new token. If it persists for one user, they are blocked |
+| `auth_required` | 401 or 403 | No usable credential, an expired gateway token, a revoked key, or a blocked user | Refresh an expired gateway token once; otherwise check the app credential and the user status in the console |
 | `attest_failed` | 403 | The App Attest attestation or assertion did not verify, or the key's environment is no longer accepted | Register a new key. The Swift package does this once automatically |
 | `issuer_token_rejected` | 403 | The sign-in token did not verify | Refresh the ID token, retry once, then treat as signed out |
 | `issuer_claims_missing` | 403 | The token verified but the required entitlement claim is not there yet | Wait and retry. Do not sign the user in again. Sync the purchase if you can |
@@ -48,11 +50,20 @@ app below, and nothing in the console changes it.
 | `app_budget_exhausted` | 429 | A monthly spending budget set on this app is spent. Same `data.scope` | Wait for the next month, or raise the budget in the console |
 | `billing_request_quota_exceeded` | 429 | The monthly request allowance of the account that owns the app is spent. `data` carries `limit`, `used` and `resetAt` | Nothing on the device fixes it. Show a friendly message and retry after `resetAt` |
 | `billing_unavailable` | 503 | The gateway could not check the account, so it refused rather than guess | Retry after `Retry-After`. Not an account problem |
-| `billing_payment_required` | 402 | The account has no plan at all | The account owner has to act |
+| `billing_payment_required` | 402 | Account access needs attention in the console | Ask the person managing the gateway account to resolve it; retrying on the device will not help |
 | `payload_too_large` | 413 | The request body is over 20 MB | Send less |
 
 `app_*` codes come from limits set on the app in the console. `billing_*`
 codes come from the account and are unrelated to those limits.
+
+## Account access
+
+These refusals concern the gateway account, not your app's end-user sign-in:
+
+| Code | Status | What to do |
+| --- | --- | --- |
+| `unclaimed_access_expired` | 403 | The person who started the account must claim it through the CLI or MCP browser handoff. Do not ask the app's end user to sign in again. |
+| `account_expired` | 403 | The account's recovery deadline has passed. Stop automatic retries and ask the person managing the gateway account to investigate. |
 
 ## Policy
 
@@ -74,12 +85,15 @@ codes come from the account and are unrelated to those limits.
 | `provider_not_configured` | 502 | No provider has this slug | Add one in the console |
 | `provider_disabled` | 502 | The provider with this slug is paused | Enable it in the console |
 | `provider_unavailable` | 502 | The provider's key could not be read | Check the gateway's health |
-| `provider_error` | 502 or 504 | The provider could not be reached, or sent nothing for 120 seconds | Retry with backoff |
+| `provider_error` | 502 or 504 | The provider could not be reached, or sent no response headers before the timeout (120 seconds by default) | Retry with backoff |
 | `internal_error` | 500 | Something failed inside the gateway | Retry with backoff |
 
 ## A sensible client policy
 
-- Treat `429` and `5xx` as retryable, everything else as something to fix.
+- Use bounded backoff for transient `429` and `5xx` errors, respecting
+  `Retry-After`. A budget or account refusal needs the action in its row above.
+  Avoid automatically replaying inference after a partial response or a lost
+  connection: the provider may already have processed and charged for it.
 - On `app_rate_limited` with scope `user`, back that user off for
   `Retry-After` seconds. With scope `app`, show a "busy, try again shortly"
   state rather than hammering.

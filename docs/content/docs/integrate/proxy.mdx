@@ -14,8 +14,10 @@ The proxy route forwards a provider-native request to one of your providers:
   or a custom slug such as `openai-dev`. It names one of your provider keys,
   not a provider type.
 - `{provider_path}` is the provider's own API path, verbatim and without a
-  leading slash. Any method is forwarded, so `GET v1/models` works as well as
-  `POST v1/responses`.
+  leading slash. New apps allow inference endpoints. Other operations need an
+  explicit [allowed path](/applications/provider-access), and a fixed model
+  for pricing when the request does not name one. The provider route must
+  support the operation too.
 
 The body is the provider's body and the response is the provider's response.
 The provider's documentation is the reference for both.
@@ -103,8 +105,9 @@ authentication, limits and the provider's time to first byte.
 
 - Request bodies are limited to 20 MB. Larger ones answer
   `413 payload_too_large`.
-- If the provider sends nothing for 120 seconds, the request answers
-  `504 provider_error`. Once the first byte arrives, the stream is unbounded.
+- If the provider sends no response headers within 120 seconds, the request
+  answers `504 provider_error`. After headers arrive there is no gateway body
+  deadline. Self-hosted gateways can configure this timeout.
 - If the app sets **Max output tokens** for the provider, a request asking
   for more is refused with `403 max_output_tokens_exceeded`, and one that
   asks for nothing gets the cap injected.
@@ -119,8 +122,8 @@ own format.
 
 ## Reading your own limits
 
-An app that identifies users can call `GET /v1/apps/{app}/me` with its
-gateway token:
+An app that identifies users can call `GET /v1/apps/{app}/me` with the same
+credentials as a proxy request:
 
 ```json
 {

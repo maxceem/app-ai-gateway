@@ -21,6 +21,11 @@ as `openai` or `anthropic`, and `{provider_path}` is the provider's own API
 path. The app's **Settings**
 page shows this URL filled in for your app.
 
+<Callout title="Self-hosting">
+  Replace `https://api.appaigateway.com` with your gateway's API origin. Keep
+  the `/v1/apps/...` path and use the credentials from that deployment.
+</Callout>
+
 ## Without user identity
 
 Send the key as the bearer credential on every request:
@@ -81,14 +86,15 @@ X-End-User-ID: customer-123
 
 The header is required once configured, so a request without it answers
 `400 invalid_request`. The gateway strips it before the request reaches the
-provider. Per-user limits, per-user usage and blocking then apply to that
-identifier. With an SDK, set it as a default header.
+provider. Per-user limits and usage then apply to that identifier. Block these users in
+your backend; the gateway does not offer blocking for header-based identities.
+With an SDK, set it as a default header.
 
 ## Signed-in users
 
 If the app's **User authentication** is **Signed-in users only**, the key
 alone is no longer accepted on requests. Exchange it together with the
-user's ID token for a gateway token, then send the gateway token with
+user's sign-in JWT for a gateway token, then send the gateway token with
 `X-App-Version`:
 
 ```sh

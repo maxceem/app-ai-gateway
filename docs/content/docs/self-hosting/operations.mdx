@@ -3,8 +3,9 @@ title: Operations
 description: Health, logs, key rotation, recovery, retention, and what to watch on a gateway you run yourself.
 ---
 
-This page covers what to check, what to watch, and what to do when something
-needs fixing on a running gateway.
+This page is for a gateway you run yourself. For hosted apps, start with
+[Usage](/applications/usage), [Auth & Errors](/applications/auth-events) and
+[client errors](/integrate/errors); you do not need Cloudflare access.
 
 ## Health
 
@@ -58,8 +59,8 @@ pnpm exec wrangler secret put SECRET_VAULT_LOCAL_KEK_V2   # paste it at the hidd
 
 Older versions stay accepted for decryption, so existing provider keys keep
 working and new writes use the new key. There is no bulk re-encryption script,
-so keep the old version until every provider key has been rotated through the
-console, which re-encrypts it under the current version. In `kms` mode, key
+so keep the old version until every provider key and provider-gateway token has been rotated through
+the console, which re-encrypts each under the current version. In `kms` mode, key
 rotation is a cf-kms operation and does not touch this Worker.
 
 Use Wrangler's hidden prompt or stdin so no secret value enters shell history.
@@ -118,12 +119,11 @@ many users the month touched.
 
 ## Request volume
 
-A self-hosted gateway has no ceiling on request volume. It bounds what a
-request may do: an app reaches only the providers, paths and models it is
+A self-hosted gateway relies on your configured app limits and infrastructure
+capacity to bound request volume. It also bounds what a request may do: an app reaches only the providers, paths and models it is
 configured for, only priced models proxy at all, and you can block a user or
-disable an app or a provider at any time. It does not bound how many requests
-there are, so a compromised app key, a looping client, or a runaway agent can
-keep spending until you notice.
+disable an app or a provider at any time. Without per-user or per-app limits, a compromised app key or a looping client
+can keep sending requests until you intervene.
 
 Disabling or deleting a provider can take up to 60 seconds to reach another
 warm Worker isolate because provider rows are cached; for an immediate
@@ -131,8 +131,7 @@ emergency stop, revoke the key in the provider account too.
 
 Put the ceiling where the money is:
 
-- Set a spend cap and an alert in each provider account. Every provider you
-  add offers both.
+- Set spend caps and alerts in each provider account where available.
 - Watch the request and cost trends on the [Usage](/applications/usage) tab,
   and set per-user and per-app limits on each app.
 - When something looks wrong, block the user on the
@@ -147,15 +146,10 @@ Put the ceiling where the money is:
 
 ## Read replication
 
-The rows the gateway caches — an app, its providers, its keys and its account
-row — are read through a D1 read-replication session. If you turn on read
-replication for the database in the Cloudflare dashboard (**D1** → your
-database → **Settings**), a Worker running far from the database's primary
-answers those cold reads from the nearest replica instead of crossing a region
-for each one; without it nothing changes, and there is nothing to configure in
-the gateway either way. Those caches already tolerate up to a minute of
-staleness, so a replica running slightly behind costs them nothing. Writes, and
-every read behind the console and the CLI, still go to the primary.
+The current gateway reads app configuration, provider rows, credentials and
+account state from the D1 primary. Bounded Worker caches provide the documented
+propagation windows. Enabling D1 read replication does not make these reads use
+replicas; the gateway does not opt them into replica sessions.
 
 ## Routine verification
 
@@ -173,7 +167,7 @@ pnpm run deploy:dry-run
 pnpm run startup:check
 ```
 
-`verify` runs the type checks, the OpenAPI drift check, and both test suites.
+`verify` runs the type checks, the OpenAPI drift check, and the Worker, console, CLI and script tests.
 The dry run resolves the configuration and builds the console without
 deploying. `startup:check` confirms the Worker starts within Cloudflare's
 startup limit.

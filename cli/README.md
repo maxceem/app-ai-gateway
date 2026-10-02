@@ -18,15 +18,16 @@ agw account login
 
 The CLI prints a pairing code and opens the console. Check that the page shows
 the same code, then approve. The CLI receives a management key of its own,
-listed on the console's **Management keys** page with a **CLI** tag and this
+listed on the console's **Access** page with a **CLI** tag and this
 machine's name. Over SSH, on a machine without a display, or with `--no-open`,
 the CLI opens nothing: open the printed URL on any device and approve there. For your own deployment, run
 `agw deployment connect --url https://ai.example.com` instead. `agw account
 logout` revokes the key and removes it from this machine.
 
-No account yet? Skip login. A free anonymous account is created for you
+No account yet? Skip login. An unclaimed hosted account is created for you
 automatically as soon as you add your first provider or app below. You can
-claim it later with `agw account claim`.
+claim it with `agw account claim`. Check `agw account status` for its expiry;
+claim it before that deadline to keep it.
 
 Add a provider. Paste its API key into the hidden prompt.
 
@@ -79,7 +80,7 @@ elsewhere and pass `--release-archive <path>`.
 | Group | What it manages |
 | --- | --- |
 | `provider` | Provider credentials: `add`, `list`, `show`, `update`, `rotate-key`, `remove` |
-| `provider-gateway` | Cloudflare AI Gateway in front of a provider |
+| `provider-gateway` | Connections to Cloudflare AI Gateway or Vercel AI Gateway |
 | `app` | Apps and their config: `add`, `list`, `show`, `update`, `validate`, `check`, `snippet`, `remove`, `key` |
 | `usage` | Spend and requests: `show`, `breakdown` |
 | `account` | `status`, `claim`, `login`, `logout` |
@@ -91,7 +92,7 @@ elsewhere and pass `--release-archive <path>`.
 ## Using `agw` from an agent
 
 Full guide: [docs.appaigateway.com/automation/cli](https://docs.appaigateway.com/automation/cli).
-The whole documentation is also published as
+The agent manual is also published as
 [agents.md](https://docs.appaigateway.com/agents.md).
 
 **Output.** Add `--json` for exactly one JSON document on stdout; progress goes
@@ -136,8 +137,11 @@ page reaches the CLI or its output.
 
 **Editing apps.** Read before you write. `app show --json` returns the full
 config; save `{name, config, status}` from `result.app`, edit it, and pass it
-back with `app update <id> --file`. A concurrent change is rejected rather than
-overwritten. `app validate --file` checks a file without touching the account.
+back with `app update <id> --file`. The command reads a revision when it
+starts and rejects competing writes during that command; refresh and merge
+an older export first. `app validate --file` checks a new app document;
+`app update <id> --file app.json --dry-run` validates an existing app's update.
+Finish with `app check <id>` and `app snippet <id>`, which send no inference.
 
 **State.** Connection, credentials and pending operations live in
 `~/.local/state/agw` (`$XDG_STATE_HOME/agw`, or `%LOCALAPPDATA%/agw` on

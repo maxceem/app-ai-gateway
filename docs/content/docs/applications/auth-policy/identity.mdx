@@ -79,8 +79,9 @@ backend's secret manager.
 **Revoke** stops a key within a minute. Create the replacement first, move
 your backend to it, then revoke the old one, and rotation costs no downtime.
 
-An app whose every key is revoked answers `401 auth_required` to everything.
-The app's pages show a notice when that happens.
+Once revocation has propagated, bare-key requests using those keys fail with
+`401 auth_required`. Gateway tokens issued from a revoked key also stop
+working within a minute. The app's pages show a notice when no active key remains.
 
 ### How the key is sent
 

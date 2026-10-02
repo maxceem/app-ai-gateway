@@ -1,10 +1,10 @@
 {
   "title": "Automation and agents",
   "pages": [
-    "cli",
-    "api",
-    "mcp",
     "agents",
+    "cli",
+    "mcp",
+    "api",
     "agent-manual"
   ]
 }

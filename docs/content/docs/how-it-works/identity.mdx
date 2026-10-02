@@ -21,12 +21,13 @@ An **iOS application** proves itself with Apple App Attest. The device holds a
 key in the Secure Enclave, Apple attests that the key belongs to a genuine
 install of your app, and the gateway checks that attestation against your
 Team ID and Bundle ID. The app then exchanges an assertion for a gateway
-token that lasts one hour. Nothing shippable inside the app can be extracted
-and reused elsewhere.
+token that lasts one hour. There is no shared application API key to embed in
+the app.
 
 A **server** application proves itself with an API key, a long-lived
-`agw_…` secret that your backend sends on every request. The key belongs in a
-secret manager, never in a client.
+`agw_…` secret. Without signed-in users it sends that key on every request;
+with signed-in users it exchanges the key and the user's JWT for a gateway
+token. The key belongs in a secret manager, never in a client.
 
 The AppAIGateway Swift package does the App Attest exchange for you. See
 [iOS with the Swift package](/integrate/ios).

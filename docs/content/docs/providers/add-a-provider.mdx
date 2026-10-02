@@ -50,11 +50,11 @@ answer is one of three verdicts:
 | Verdict | What it says | Meaning |
 | --- | --- | --- |
 | Works | "Works. The provider accepted this credential." | The provider answered the test call with this key. |
-| Failed | "OpenAI answered with HTTP 401, so this key could not be used." | The provider refused the key. Any status below 500 other than 429 counts as a refusal. |
+| Failed | "OpenAI answered with HTTP 401, so this key could not be used." | The provider refused the key with HTTP 401 or 403. |
 | Unconfirmed | "There is no test call for Perplexity, so nothing was checked." or "OpenAI did not answer in time, so nothing is proven either way." | Nothing was proven, in either direction. Add the key if you know it is right. |
 
-A 5xx or 429 from the provider is also unconfirmed: the provider is having a
-moment, and that says nothing about your key. Not every provider has a test
+Other non-success statuses, including 404, 429 and 5xx, are unconfirmed: they
+do not establish whether the key is valid. Not every provider has a test
 call. The per-provider list is in
 [Supported providers](/providers/supported-providers#what-test-provider-calls).
 
@@ -70,7 +70,8 @@ POST /v1/admin/providers/test
 { "type": "openai", "secret": "sk-..." }
 ```
 
-A refused key answers `400 provider_key_invalid`. Any other outcome answers
+A working key answers `{ "validated": true }`. A refused key answers
+`400 provider_key_invalid`. An inconclusive test answers
 `{ "validated": false, "reason": "no_probe" | "unreachable" | "unexpected_status" }`
 with the upstream `status` where there was one.
 
@@ -174,8 +175,9 @@ slug for reuse. Requests to the slug then answer `502 provider_not_configured`.
 
 An app's configuration may keep naming a disabled or deleted slug. Its proxy
 policy page shows the row with a `disabled` or `deleted` badge, and a named
-endpoint whose primary target is unavailable falls through to its fallbacks
-exactly as it would on an upstream failure.
+endpoint whose primary provider is disabled can use its fallbacks. Deleting
+that primary provider instead makes the endpoint fail with
+`provider_not_configured`; update the endpoint before deleting its provider.
 
 ```json
 PUT /v1/admin/providers/{id}

@@ -40,20 +40,20 @@ cannot drain the shared window before their own limit stops them.
 - **Edits take up to a minute** to apply everywhere.
 
 Per-user limits need an app that identifies users. An app with **No user
-identity** has nobody to apply them to, and the console shows only the
-application limits for it.
+identity** has nobody to apply them to, and the console disables its per-user fields.
 
 ## Blocking a user
 
 Blocking is not a limit. On the app's **Users** page, **Block** refuses every
 request from that user with `403 auth_required`. New token exchanges are
 refused at once, and a token the user already holds stops working within ten
-seconds. **Unblock** restores them the same way.
+seconds. **Unblock** restores them the same way. Users identified by a backend header must be blocked in your
+backend; the gateway does not offer blocking for them.
 
 ## What a user can see about themselves
 
-An app that identifies users can call `GET /v1/apps/{app}/me` with its
-gateway token to read the user's per-user limits, requests today, what is
+An app that identifies users can call `GET /v1/apps/{app}/me` with the same
+credentials as a proxy request to read the user's per-user limits, requests today, what is
 left of the daily limit, the month's spend, and whether the user is blocked.
 It is meant for showing a user where they stand before they hit a limit. See
 [Errors and limits from the client side](/integrate/errors).

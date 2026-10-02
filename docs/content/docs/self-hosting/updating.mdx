@@ -53,8 +53,10 @@ deployment:
 curl https://YOUR-WORKER.workers.dev/v1/healthz
 ```
 
-Variables you changed in **Settings → Variables** survive a build. Secrets are
-never touched by a deployment.
+Plain variables changed only in **Settings → Variables** can be overwritten
+by the next deploy. Preserve them in the deployment configuration, or use
+[Wrangler's `keep_vars`](https://developers.cloudflare.com/workers/wrangler/configuration/)
+when you intentionally manage them in the dashboard. Existing secrets are kept.
 
 ## Wrangler deployments
 
@@ -76,7 +78,9 @@ pnpm run deploy:dry-run --profile prod
 
 The deploy script checks that the vault secret still exists, leaves
 `JWT_SECRET` and `BETTER_AUTH_SECRET` as they are, applies migrations, and
-deploys. Nothing you configured is reset.
+deploys. App and provider configuration stays in the database. Plain Worker
+variables come from the deployment configuration, so preserve dashboard-only
+changes there before deploying.
 
 Console build variables such as `VITE_POSTHOG_KEY` are read when the console
 is built, so a change to one of them also needs a deploy.
@@ -139,5 +143,5 @@ pnpm run deploy:dry-run
 ```
 
 `verify` type-checks every project, checks the generated OpenAPI document for
-drift, and runs both test suites. The dry run builds the console and resolves
+drift, and runs the Worker, console, CLI and script tests. The dry run builds the console and resolves
 the Wrangler configuration without deploying anything.

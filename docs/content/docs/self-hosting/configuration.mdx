@@ -1,9 +1,12 @@
 ---
 title: Configuration
-description: Every variable and secret the gateway reads, what it does, and where to set it.
+description: Configure a self-hosted gateway, including secrets, sign-in, hostnames and maintenance.
 ---
 
-The gateway is configured through Worker variables and secrets. A variable is
+Hosted users manage their apps and providers in the console; none of these
+settings are needed. This page configures a gateway you run yourself.
+
+A self-hosted gateway is configured through Worker variables and secrets. A variable is
 plain text you can read back in the dashboard. A secret is write-only: once
 set, only its name is visible. Provider keys are not configured here at all.
 You add them in the console, and the gateway encrypts them with the vault
@@ -30,6 +33,13 @@ argument:
 ```sh
 pnpm exec wrangler secret put SECRET_VAULT_LOCAL_KEK_V2
 ```
+
+Wrangler and button deployments can overwrite dashboard edits to plain
+variables. Keep persistent changes in the configuration used to deploy, or
+configure [Wrangler's `keep_vars`](https://developers.cloudflare.com/workers/wrangler/configuration/).
+CLI updates already use `--keep-vars` to preserve additional dashboard variables;
+values explicitly supplied by the deployment configuration still take precedence.
+Secrets are managed separately from plain variables.
 
 ## The vault
 
@@ -107,11 +117,16 @@ variable never lets an unknown visitor take that account.
 
 ### `DEPLOYMENT_ID`
 
-An immutable public UUID in plain Wrangler `vars`, generated once for the
-deployment. Keep it across updates and domain changes. The CLI compares this
-identity with Cloudflare settings before adopting an existing Worker. Do not
-upload it as a secret. Local setup stores its development value in ignored
-`.dev.vars`; the deployment helpers pass it as a plain binding.
+An immutable public UUID stored as a plain Worker binding. The deployment
+helpers generate it automatically and reuse the deployed value on updates and
+domain changes. The CLI compares this identity with Cloudflare settings before
+adopting an existing Worker. Do not upload it as a secret.
+
+You normally do not need to set it. An explicit value in the build environment
+or Wrangler `vars` is supported for initial setup, but must match the existing
+identity on updates. Local setup stores its development value in ignored
+`.dev.vars`; `pnpm run deploy` uses that value only when no deployed or explicitly
+configured identity exists.
 
 ### `CLI_CONSOLE_ORIGIN`
 
@@ -160,16 +175,17 @@ prints as the base URL and which routes answer on that host; see
 
 ## MCP clients
 
-The [MCP server](/automation/mcp) needs nothing configured: a client connects
-with a management key, or with OAuth through the console's consent page. These
-three variables decide which browsers may call it and which clients may connect
-with OAuth.
+The [MCP server](/automation/mcp) accepts a management key without extra
+configuration. OAuth through the console's consent page also requires a stable
+deployment ID and console origin. The deployment helpers generate
+[`DEPLOYMENT_ID`](#deployment_id) automatically; CLI deployment setup also
+configures the console origin for you.
 
-OAuth for MCP clients needs two settings: `DEPLOYMENT_ID`, and
-[`CLI_CONSOLE_ORIGIN`](#cli_console_origin) set to the one canonical address of
+For Wrangler or button deployments, set
+[`CLI_CONSOLE_ORIGIN`](#cli_console_origin) to the one canonical address of
 your console — `https`, or for local development `http` on a loopback host:
 `localhost`, `127.0.0.1`, `[::1]` or any name under `.localhost`, such as
-`http://my-branch.app.localhost:8080`. That address is the authorization
+`http://gateway.localhost:5173`. That address is the authorization
 server every token is issued by and bound to, so it has to be one fixed origin:
 if the gateway took it from each request, a deployment answering on two names
 would issue tokens for both, and the nightly cleanup of ended connections,
@@ -253,9 +269,9 @@ response headers before the gateway gives up and answers `504`. Once headers
 arrive the body streams for as long as the model needs; only the first byte is
 bounded. Reasoning models can think for a minute before that first byte, which
 is why the default is generous. A custom endpoint's fallback chain shares one
-budget across all of its targets, so a chain never keeps a client waiting longer
-than this however many fallbacks it lists. A primary that never answers spends
-the whole budget, so lower it if you want fallbacks to cover that case too.
+budget across all of its targets, so the wait for response headers cannot exceed this across the chain. A primary
+that never answers consumes the whole budget and leaves no time for a fallback.
+Lowering the value shortens that wait; it does not reserve time for fallbacks.
 
 ## Nightly maintenance
 
@@ -317,7 +333,7 @@ so changing either means deploying again.
 | `SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN` | Secret | Required in `kms` mode |
 | `JWT_SECRET`, `BETTER_AUTH_SECRET` | Secret | Generated |
 | `ALLOW_ADDITIONAL_REGISTRATIONS` | Variable | `false` |
-| `DEPLOYMENT_ID` | Variable | Required immutable UUID |
+| `DEPLOYMENT_ID` | Variable | Automatically generated and preserved on updates |
 | `CLI_CONSOLE_ORIGIN` | Variable | Current origin |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |
 | `OAUTH_RELAY_URL` | Variable | Unset |

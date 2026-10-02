@@ -19,12 +19,15 @@ misbehaving release or a runaway client while you investigate.
 
 ## Delete this app
 
-Clients of the app stop working immediately. Registered users and App Attest
-keys are removed. Usage history is kept for accounting. The confirmation asks
-you to type the app ID.
+Clients of the app stop working within a minute as cached configuration and
+credentials expire. Registered users, application keys, App Attest keys and
+authentication diagnostics are removed. Usage history is retained in account
+totals. The confirmation asks you to type the app ID.
 
 ## Through the API
 
 - `PUT /v1/admin/apps/{app}` with the full body updates the name, the
-  configuration and the status. `status` is `active` or `disabled`.
-- `DELETE /v1/admin/apps/{app}` deletes the app.
+  configuration and the status. Include the `revision` from your latest read
+  and preserve `status` (`active` or `disabled`); omitting status enables the app.
+- `DELETE /v1/admin/apps/{app}?confirm={app}` deletes the app. The query value
+  must repeat the app ID.

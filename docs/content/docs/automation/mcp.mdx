@@ -12,6 +12,24 @@ same rules, so connecting a client over MCP gives it no more and no less than
 the credential it connects with. No key or token ever passes through a tool,
 in either direction.
 
+## First task
+
+Add `https://console.appaigateway.com/mcp` to your client's remote MCP servers,
+then approve the OAuth connection in your browser. Select your existing
+account and **Read only** for inspection, or **Manage** for configuration.
+Use **Continue without an account** only when you want a new account.
+
+Ask the agent to read `agw://guide`, call `get_account`, and inspect your apps
+and providers before changing them. For example: “Check my app's configuration
+and show the integration snippet; do not send inference.” It can use
+`check_app` and `get_app_snippet` without making a provider request.
+
+<Callout title="Self-hosting">
+  Use your console's origin followed by `/mcp`. OAuth requires the settings in
+  [Configuration](/self-hosting/configuration#mcp-clients); management keys are
+  an alternative when OAuth is not configured.
+</Callout>
+
 ## Endpoint
 
 The server is one URL on the host you sign in to the console at:
@@ -302,11 +320,17 @@ not.
   anywhere else, inside an app document included, is redacted. A field holding `null` stays `null`, and hint fields
   such as `secretHint` are shown as they are.
 
-### Everything else takes effect at once
+### Changes without a browser step
 
 Updates carry the `revision` the agent read, so a change someone made since is
 refused rather than overwritten. Deletions repeat the id as `confirm`; prefer
-disabling an app or a provider, which you can undo.
+disabling an app or a provider, which you can undo. Saved app and provider
+changes take up to a minute to affect live traffic. User blocks refuse new
+token exchanges immediately and existing gateway tokens within ten seconds.
+
+If `get_app` returns `[redacted]` inside configuration, do not send that marker
+back or omit those fields from a full replacement. Have the person make the
+edit through a client that can preserve the original values.
 
 ## Results and refusals
 

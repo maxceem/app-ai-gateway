@@ -9,8 +9,8 @@ to develop against the gateway without touching the one your apps use.
 
 ## Requirements
 
-- Node.js 22 or newer.
-- pnpm 11.
+- Node.js 22.19 or newer.
+- The pnpm version declared in the root `package.json`.
 - Wrangler 4, which `pnpm install` brings with it.
 - `openssl`, to generate the vault key.
 
@@ -70,9 +70,9 @@ pnpm run verify
 ```
 
 `check` type-checks every project and detects drift in the generated OpenAPI
-document; it takes a few seconds, so run it after every edit. `test` runs both
-test suites, about a minute. `verify` does both and is what to run before a
-commit.
+document; it takes a few seconds, so run it after every edit. `test` runs the Worker, console, CLI and script tests. `verify` runs both
+checks and tests and is what to run before a commit or hand-off; you do not
+need to run all three commands in sequence.
 
 ## Google sign-in on a local gateway
 

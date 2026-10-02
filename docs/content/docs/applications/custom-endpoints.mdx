@@ -37,8 +37,8 @@ or xAI provider, because those are the request shapes the gateway composes.
   A client value above it is refused, a missing value is injected.
 - **Fallback chain**: provider and model pairs tried in order when the
   provider call fails, is rate limited upstream, or returns a server error,
-  and nothing has been streamed to the client yet. Usage is recorded against
-  the target that served the request.
+  and nothing has been streamed to the client yet. Each provider attempt is
+  recorded, including a failed attempt before a successful fallback.
 
 A transcription endpoint cannot use a provider routed through Vercel AI
 Gateway, because Vercel serves no transcription API. OpenAI endpoints call
@@ -59,7 +59,13 @@ providers of the same type. `openai` falling back to `openai-dev` moves
 traffic to a second key without changing the request shape. A fallback target
 that cannot be resolved at request time, because the provider is gone,
 disabled or unpriced, is skipped rather than failing the request. Only the
-primary target must resolve.
+primary target must resolve, except that a disabled primary is skipped so its
+fallbacks can serve. Deleting the primary provider, losing its credential, or
+removing its price fails the request before fallback.
+
+The whole chain shares a 120-second budget for response headers. A primary
+that uses the entire budget leaves no time for a fallback; a stream that has
+already begun is never restarted on another provider.
 
 The **Usage** page's **By endpoint** breakdown shows what each endpoint cost,
 and the event list shows which target served each request.

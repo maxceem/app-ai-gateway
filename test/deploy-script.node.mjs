@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +16,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   createMissingGeneratedSecrets,
+  deploymentIdFromVersion,
+  deploymentVersionIds,
   missingRequiredSecrets,
   parseSecretList,
   requiredUserSecrets,
+  resolveDeploymentId,
 } from "../scripts/deploy-lib.mjs";
 import {
   listProfiles,
@@ -25,6 +31,120 @@ import {
 } from "../scripts/wrangler-config.mjs";
 
 const deterministicRandom = (length) => Buffer.alloc(length, 0xab);
+
+test("reads the newest deployment regardless of list order, including split traffic", () => {
+  const old = { created_on: "2026-09-01T00:00:00Z", versions: [{ version_id: "old" }] };
+  const current = { created_on: "2026-10-01T00:00:00Z", versions: [{ version_id: "a" }, { version_id: "b" }] };
+  for (const deployments of [[old, current], [current, old]]) {
+    assert.deepEqual(deploymentVersionIds(JSON.stringify(deployments)), ["a", "b"]);
+  }
+  assert.deepEqual(deploymentVersionIds("[]"), []);
+  for (const invalid of ["{}", "[{}]", JSON.stringify([{ ...current, versions: [] }])]) {
+    assert.throws(() => deploymentVersionIds(invalid), /Unexpected Wrangler/u);
+  }
+});
+
+test("only accepts readable public deployment bindings", () => {
+  const output = (bindings) => JSON.stringify({ resources: { bindings } });
+  assert.equal(deploymentIdFromVersion(output([])), undefined);
+  assert.equal(deploymentIdFromVersion(output([{ name: "DEPLOYMENT_ID", type: "plain_text", text: "" }])), undefined);
+  assert.equal(deploymentIdFromVersion(output([{ name: "DEPLOYMENT_ID", type: "plain_text", text: "stable-identity" }])), "stable-identity");
+  assert.throws(() => deploymentIdFromVersion("{}"), /Unexpected Wrangler/u);
+  assert.throws(() => deploymentIdFromVersion(output([{ name: "DEPLOYMENT_ID", type: "secret_text" }])), /plain-text/u);
+});
+
+test("keeps deployed identities, supports explicit initial values, and rejects conflicts", () => {
+  const failGenerate = () => assert.fail("must not generate another identity");
+  assert.equal(resolveDeploymentId(["deployed-identity"], undefined, "local-identity", failGenerate), "deployed-identity");
+  assert.equal(resolveDeploymentId([], "configured-identity", "local-identity", failGenerate), "configured-identity");
+  assert.equal(resolveDeploymentId([], undefined, "local-identity", failGenerate), "local-identity");
+  assert.equal(resolveDeploymentId(["deployed-identity", "deployed-identity"], "deployed-identity", undefined, failGenerate), "deployed-identity");
+  assert.throws(() => resolveDeploymentId(["deployed-identity"], "different-identity"), /differs/u);
+  assert.throws(() => resolveDeploymentId(["deployed-identity", undefined]), /disagree/u);
+  assert.throws(() => resolveDeploymentId(["deployed-identity", "other-identity"]), /disagree/u);
+  assert.throws(() => resolveDeploymentId(["invalid!"]), /Invalid DEPLOYMENT_ID/u);
+});
+
+// An isolated checkout and persistent fake Cloudflare state exercise separate
+// build processes without depending on this checkout's local credentials.
+function identityDeploymentFixture(t) {
+  const directory = mkdtempSync(join(tmpdir(), "agw-deployment-identity-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, "scripts"));
+  for (const name of ["deploy.mjs", "deploy-lib.mjs", "wrangler-config.mjs"]) {
+    copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(directory, "scripts", name));
+  }
+  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(directory, "node_modules"), "dir");
+  writeFileSync(join(directory, "wrangler.jsonc"), JSON.stringify({ name: "fixture-worker" }));
+  const fakeWrangler = join(directory, "wrangler.mjs");
+  const callLog = join(directory, "calls.ndjson");
+  const statePath = join(directory, "state.json");
+  writeFileSync(fakeWrangler, `#!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify(args) + "\\n");
+const statePath = process.env.FAKE_STATE;
+const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : null;
+if (args[0] === "deployments") {
+  if (process.env.FAKE_FAILURE === "lookup") { console.error("Authentication failed [code: 10000]"); process.exit(1); }
+  if (process.env.FAKE_FAILURE === "malformed") { console.log("{}"); process.exit(0); }
+  if (!state) { console.error("Worker not found [code: 10007]"); process.exit(1); }
+  console.log(JSON.stringify([{ created_on: "2026-10-01T00:00:00Z", versions: [{ version_id: "active-version" }] }]));
+}
+if (args[0] === "versions") {
+  if (process.env.FAKE_FAILURE === "version") { console.error("Network failure"); process.exit(1); }
+  console.log(JSON.stringify({ resources: { bindings: state.id === undefined ? [] : [{ name: "DEPLOYMENT_ID", type: "plain_text", text: state.id }] } }));
+}
+if (args[0] === "secret" && args[1] === "list") {
+  console.log(JSON.stringify(["SECRET_VAULT_LOCAL_KEK_V1", "JWT_SECRET", "BETTER_AUTH_SECRET"].map(name => ({ name }))));
+}
+if (args[0] === "deploy") {
+  writeFileSync(statePath, JSON.stringify({ id: args[args.indexOf("--var") + 1].slice("DEPLOYMENT_ID:".length) }));
+}
+`, { mode: 0o700 });
+  return {
+    statePath,
+    callLog,
+    run(extraEnv = {}) {
+      return spawnSync(process.execPath, ["scripts/deploy.mjs"], {
+        cwd: directory, encoding: "utf8",
+        env: { ...process.env, DEPLOYMENT_ID: "", APP_AI_GATEWAY_WRANGLER_BIN: fakeWrangler,
+          FAKE_WRANGLER_LOG: callLog, FAKE_STATE: statePath, FAKE_FAILURE: "", ...extraEnv },
+      });
+    },
+  };
+}
+
+test("one-click deployment generates a UUID and reuses it in a later build", (t) => {
+  const fixture = identityDeploymentFixture(t);
+  const first = fixture.run();
+  assert.equal(first.status, 0, first.stderr);
+  const firstId = JSON.parse(readFileSync(fixture.statePath, "utf8")).id;
+  assert.match(firstId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  const second = fixture.run();
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(JSON.parse(readFileSync(fixture.statePath, "utf8")).id, firstId);
+});
+
+test("an older Worker without an identity receives one automatically", (t) => {
+  const fixture = identityDeploymentFixture(t);
+  writeFileSync(fixture.statePath, "{}");
+  const result = fixture.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(JSON.parse(readFileSync(fixture.statePath, "utf8")).id);
+});
+
+for (const failure of ["lookup", "version", "malformed", "conflict"]) {
+  test(`identity ${failure} stops deployment before any writes`, (t) => {
+    const fixture = identityDeploymentFixture(t);
+    writeFileSync(fixture.statePath, JSON.stringify({ id: "deployed-identity" }));
+    const result = fixture.run({ FAKE_FAILURE: failure, ...(failure === "conflict" ? { DEPLOYMENT_ID: "different-identity" } : {}) });
+    assert.notEqual(result.status, 0);
+    const calls = readFileSync(fixture.callLog, "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(calls.every(args => ["deployments", "versions"].includes(args[0])));
+    assert.equal(JSON.parse(readFileSync(fixture.statePath, "utf8")).id, "deployed-identity");
+  });
+}
 
 test("parses Wrangler's JSON secret list", () => {
   const names = parseSecretList(
@@ -71,7 +191,6 @@ test("deploy button masks the vault key and shows every setting in clear text", 
     SECRET_VAULT_MODE: "local",
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
     ALLOW_ADDITIONAL_REGISTRATIONS: "false",
-    DEPLOYMENT_ID: "",
   });
 
   // Both halves of the form carry an explanation, and nothing in it is blank.
@@ -113,6 +232,7 @@ const previous = existsSync(process.env.FAKE_WRANGLER_LOG)
   ? readFileSync(process.env.FAKE_WRANGLER_LOG, "utf8")
   : "";
 appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify(entry) + "\\n");
+if (args[0] === "deployments") console.log("[]");
 if (args[0] === "secret" && args[1] === "list") {
   console.log(JSON.stringify([{ name: "SECRET_VAULT_LOCAL_KEK_V1" }]));
 }
@@ -153,6 +273,7 @@ if (
     assert.deepEqual(
       calls.map((call) => call.args),
       [
+        ["deployments", "list", "--json"],
         ["secret", "list", "--format", "json"],
         ["secret", "bulk"],
         ["d1", "migrations", "apply", "DB", "--remote"],
@@ -161,7 +282,7 @@ if (
       ],
     );
 
-    const uploaded = JSON.parse(calls[1].input);
+    const uploaded = JSON.parse(calls[2].input);
     assert.deepEqual(Object.keys(uploaded), ["JWT_SECRET", "BETTER_AUTH_SECRET"]);
     assert.equal(Buffer.from(uploaded.JWT_SECRET, "base64url").byteLength, 48);
     assert.equal(Buffer.from(uploaded.BETTER_AUTH_SECRET, "base64url").byteLength, 48);
@@ -282,6 +403,7 @@ test("deploying a profile passes the generated config to every Wrangler call", (
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_WRANGLER_LOG, JSON.stringify({ args }) + "\\n");
+if (args[0] === "deployments") console.log("[]");
 if (args[0] === "secret" && args[1] === "list") {
   console.log(JSON.stringify([
     { name: "SECRET_VAULT_KMS_URL" },
@@ -307,6 +429,7 @@ if (args[0] === "secret" && args[1] === "list") {
     const configArgs = ["--config", fileURLToPath(generatedPath)];
     const calls = readFileSync(callLog, "utf8").trim().split("\n").map((line) => JSON.parse(line).args);
     assert.deepEqual(calls, [
+      ["deployments", "list", "--json", ...configArgs],
       ["secret", "list", "--format", "json", ...configArgs],
       ["d1", "migrations", "apply", "DB", "--remote", ...configArgs],
       ["deploy", ...configArgs, "--var", "DEPLOYMENT_ID:deployment-fixture-identity"],
@@ -337,6 +460,7 @@ const args=process.argv.slice(2), log=process.env.FAKE_WRANGLER_LOG;
 const previous=existsSync(log)?readFileSync(log,"utf8"):"";
 const input=args[0]==="secret"&&args[1]==="bulk"?readFileSync(0,"utf8"):undefined;
 appendFileSync(log,JSON.stringify({args,input})+"\\n");
+if(args[0]==="deployments")console.log("[]");
 if(args[0]==="secret"&&args[1]==="list")console.log(JSON.stringify([
  {name:"JWT_SECRET"},{name:"BETTER_AUTH_SECRET"},...(previous.includes('"bulk"')?[{name:"SECRET_VAULT_LOCAL_KEK_V1"}]:[])
 ]));

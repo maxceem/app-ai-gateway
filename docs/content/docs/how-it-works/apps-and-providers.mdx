@@ -51,10 +51,11 @@ the app; App Attest or an API key still has to pass.
 1. The gateway reads the app from the URL and checks the credential: a
    gateway token for an iOS app, or an API key for a server app.
 2. It works out which user the request belongs to, if the app identifies
-   users, and refuses a blocked user.
-3. It checks the app's limits, per user first and then per app.
-4. It checks the app's proxy policy: is this provider allowed, this path, this
-   model? Is the model priced?
+   users.
+3. It checks the app's proxy policy: is this provider allowed, this path, this
+   model? Can its cost be accounted for?
+4. It refuses a blocked authenticated user, then checks the app's limits,
+   per user first and then per app.
 5. It adds your provider key and forwards the request to the provider. The
    body goes through unchanged, apart from a few same-format adjustments such
    as a model rewrite or an output cap you configured.
@@ -62,9 +63,10 @@ the app; App Attest or an API key still has to pass.
    The gateway reads the usage out of the stream and records the request with
    its tokens, cost, latency and outcome.
 
-Requests refused at steps 1 to 4 never reach a provider and cost nothing at
-the provider. Refusals are recorded too, so you can see them on the app's
-**Usage** page.
+Requests refused before forwarding never reach a provider and incur no provider
+charge. **Usage** records provider attempts, including failed attempts in a
+fallback chain. **Auth & Errors** shows authentication events and sampled
+requests stopped by limits or a user block; those samples are not usage totals.
 
 ## Provider-native, not unified
 
