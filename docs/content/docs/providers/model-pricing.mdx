@@ -3,10 +3,11 @@ title: Model pricing
 description: How the gateway prices each request, how to add prices for models the catalog does not know, and why unpriced models are refused.
 ---
 
-Every request that reaches a provider is recorded with a cost in USD. The
-gateway needs a price for the model before it will forward the request, so a
-model it cannot price is refused rather than served for free. This page covers
-where prices come from and how to add your own.
+The gateway records provider attempts and their measured cost in USD. Before
+forwarding, it requires either a local model price or a route that reports its
+own cost, such as OpenRouter. A successful response without readable usage is
+marked **unresolved**, so recorded spend can differ from your provider's
+invoice. This page covers local prices, reported cost and unresolved usage.
 
 ## The catalog
 
@@ -15,7 +16,9 @@ tokens for the common models of each provider type, plus cached-input,
 cache-write and long-context rates where the provider has them, and per-minute
 or per-hour rates for transcription models. Prices are market data about
 models rather than something you configure, so the catalog ships with the
-gateway and is updated with it.
+gateway. The hosted service updates it with gateway releases. Self-hosted gateways receive catalog updates when you update your
+deployment. Use the provider's **Pricing** action to cover a new or changed
+model without waiting for a release.
 
 The catalog is keyed by provider type and the provider's own model ID:
 `gpt-5.6-sol` under `openai`, `claude-opus-5` under `anthropic`,
@@ -29,29 +32,16 @@ be right for them: **Fireworks AI** names models per account, and
 **Hugging Face** re-prices the same model ID on every upstream its router might
 pick. Their models proxy once you price them, and not before.
 
-### Where the catalog errs high
+### Treat recorded cost as usage accounting
 
-Where a provider's real price depends on something the gateway cannot see, the
-shipped entry is the **higher** rate, so the recorded cost is never lower than
-what you pay:
+Catalog prices estimate the provider cost from the usage it reports. Discounts,
+serving tiers, tools and other provider-specific charges may not be represented
+by a model's token rates. Check your provider's current pricing and invoice
+when exact charges matter, and use custom prices where appropriate.
 
-- **DeepSeek** charges half price outside its peak hours. The catalog carries
-  the peak rate, so off-peak traffic records as costing more than it did.
-- Batch and discounted serving tiers, offered by ByteDance, Moonshot and
-  others, are priced per request rather than per model. The catalog carries
-  the standard rate.
-
-Override the entry with a custom price if your traffic sits mostly on the
-cheaper side. Erring high keeps a [spending limit](/applications/limits) a
-limit: a cost recorded too low would let traffic through that the limit was
-meant to stop.
-
-One catalog entry surprises people. **Mistral Medium costs more than Mistral
-Large.** Mistral's size names describe model generations, not a price ladder:
-`mistral-medium-latest` resolves to the current frontier model at $1.50 in and
-$7.50 out per million tokens, while `mistral-large-latest` resolves to the
-older Mistral Large 3 at $0.50 and $1.50. `mistral-small-latest` is $0.15 and
-$0.60. Pick by the model card, not by the name.
+`GET /v1/admin/prices` shows the built-in catalog this gateway uses; the
+provider's **Pricing** dialog shows your custom overrides. Model names alone do not tell you their relative price, and a
+catalog entry does not guarantee that your provider account can still use it.
 
 ## Custom prices
 
@@ -102,7 +92,8 @@ provider.
 `$0` is a valid price, and it is the right one for a model you host yourself
 and pay no per-token price for. Enter it deliberately: a request priced at
 zero counts toward nothing in any [spending limit](/applications/limits), so a
-free model is also an unmetered one. The dialog refuses an empty price field
+free model still records requests and tokens, but contributes no spend.
+Request limits still apply. The dialog refuses an empty price field
 for that reason; zero has to be a typed answer.
 
 ## Unpriced models are refused
@@ -120,8 +111,7 @@ catalog knows is refused before it reaches the provider:
 ```
 
 The status is `400`, and the message names where to fix it. Entering the price
-is what allows the model. Nothing unpriced ever proxies, no usage goes
-unaccounted, and the cost on a usage event is never empty. This applies to
+is what allows the model on a locally priced route. This applies to
 custom base URLs too: a model served from your own endpoint is almost
 certainly not in the catalog and needs a price on that provider. See
 [Custom base URLs](/providers/custom-base-urls#custom-endpoints-still-need-prices).
@@ -169,8 +159,9 @@ count means.
 <Callout type="warn" title="Deleting a provider deletes its custom prices">
   Custom prices live on the provider. **Update key** keeps them; **Delete
   provider** discards them along with the key. Usage events outlive the
-  provider, so past traffic priced only by a deleted custom price can no longer
-  be repriced until the price is entered again somewhere.
+  provider, so past traffic whose serving provider was deleted can only be
+  repriced if the built-in catalog covers it. Recreating the same slug creates a new provider;
+  its custom prices do not reconnect to the deleted provider's events.
 </Callout>
 
 ## Repricing stored usage
@@ -187,4 +178,9 @@ usage, which are rewritten to zero but keep their `unresolved` marker). With
 answers `400 invalid_request` and writes nothing, so a month is never left
 half-repriced. Events with a `reported` cost are never touched, since a local
 price would replace a fact with an estimate. A repriced event's `cost_source`
-becomes `computed`. See the [API reference](/api) for the request shape.
+becomes `computed` when readable usage was available.
+
+Repricing covers retained raw events only, with at most 10,000 matching events
+per call, and requires token pricing. It does not reprice compacted history or
+time-based transcription charges. See the [API reference](/api) for the request
+shape.

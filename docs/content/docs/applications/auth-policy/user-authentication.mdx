@@ -23,8 +23,8 @@ name missing**, **Unauthenticated users allowed**, or **No user identity**.
 
 ## Signed-in users only
 
-Your app already has an ID token from your identity provider once the user
-signs in. It sends that token to the gateway, and the gateway verifies the
+Your app sends a signed JWT from its identity provider, with the issuer and
+audience you configure below. The gateway verifies the
 signature against the provider's public keys, checks the issuer and audience
 against what you configured, and takes the user ID from the token.
 
@@ -35,7 +35,7 @@ verification settings from the values you enter.
 | --- | --- | --- |
 | **Firebase Authentication** | Firebase project id (from Project settings, not the project number) | Google's shared key set, issuer `https://securetoken.google.com/<project-id>`, audience `<project-id>` |
 | **Supabase Auth** | Project ref (the subdomain of your project URL) | Your project's JWKS, issuer `https://<ref>.supabase.co/auth/v1`, audience `authenticated` |
-| **Auth0** | Tenant domain, API identifier | Your tenant's JWKS, issuer `https://<domain>/`, audience = the API identifier |
+| **Auth0** | Auth0 domain, API identifier | Your Auth0 domain's JWKS, issuer `https://<domain>/`, audience = the API identifier |
 | **Clerk** | Frontend API host, Audience | Your Frontend API JWKS, issuer `https://<host>`, audience = what your JWT template sets |
 | **Custom issuer** | JWKS URL, Issuer (iss), Audience (aud) | Exactly what you enter |
 
@@ -48,7 +48,9 @@ Things each provider needs you to know:
 - **Supabase** must be on asymmetric JWT signing keys. A legacy HS256 project
   publishes no public keys, so every token is rejected.
 - **Auth0** puts a trailing slash in `iss`. The preset writes it. Do not
-  remove it.
+  remove it. With the API identifier as audience, send a JWT access token
+  requested for that API, not an ID token whose audience is your client ID.
+  See [Get Access Tokens](https://auth0.com/docs/secure/tokens/access-tokens/get-access-tokens).
 - **Clerk**'s default session token has no `aud`. Add one in your JWT
   template, because the gateway requires it. Clerk's own guidance also checks
   `azp` against permitted origins; native apps have no origin, so the preset
@@ -138,7 +140,8 @@ The header is required once configured. A request without it is refused with
 silently meter part of its traffic as nobody.
 
 This belongs only on a server you control. A client an end user runs could
-send any ID it likes, which would make per-user limits and blocks optional.
+send any ID it likes and bypass per-user limits. Block these users in your
+backend; gateway blocking requires an authenticated user or install.
 
 ```json
 "end_user": { "source": "header", "header": "x-end-user-id" }

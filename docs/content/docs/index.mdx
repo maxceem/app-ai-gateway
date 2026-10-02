@@ -6,7 +6,7 @@ description: Give your apps access to AI providers without shipping provider key
 App AI Gateway sits between your apps and the AI providers they use. Your app
 calls the gateway, and the gateway calls OpenAI, Anthropic, Gemini, xAI or
 whichever provider you added. Your provider keys stay on the gateway, every
-request is checked before it goes out, and every request is recorded so you
+request is checked before it goes out, and provider attempts are recorded so you
 can see where the money went.
 
 ![Your iOS app calls App AI Gateway, which holds the provider keys, applies per-user limits, records usage and cost, and forwards the request to the provider.](/overview.png)
@@ -35,15 +35,20 @@ watched from one console.
   provider, user, endpoint and app version. Block a user who is running up your
   bill.
 
-## Cloud or self-hosted
+## Get started
 
-The gateway runs in two ways, and the documentation covers both.
+Sign up at [console.appaigateway.com](https://console.appaigateway.com), bring
+a provider key, and follow the [Quickstart](/quickstart). Your apps call
+`https://api.appaigateway.com`; there is nothing to deploy.
 
-- **Cloud.** Sign up at [console.appaigateway.com](https://console.appaigateway.com)
-  and your apps call `https://api.appaigateway.com`. Nothing to deploy.
-- **Self-hosted.** Deploy the open-source gateway to your own Cloudflare
-  account. See
-  [Self-hosting](/self-hosting/deploy-to-cloudflare).
+The guides describe the same apps, providers and APIs wherever your gateway
+runs. Examples use the hosted addresses by default.
+
+<Callout title="Self-hosting">
+  Use your own console and API addresses in these examples. If both share one
+  address, use it for both. The [self-hosting guides](/self-hosting/deploy-to-cloudflare)
+  cover deployment, configuration and updates on your Cloudflare account.
+</Callout>
 
 ## Where to start
 

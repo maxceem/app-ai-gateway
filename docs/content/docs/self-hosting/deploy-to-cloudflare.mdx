@@ -26,7 +26,7 @@ the release matching `agw --version` elsewhere, copy it over, and name it:
 
 ```sh
 agw deployment setup --name my-gateway --no-domain \
-  --release-archive ./gateway-0.1.5.tar.gz
+  --release-archive "./gateway-$(agw --version).tar.gz"
 ```
 
 The same hash is checked, so a file that travelled by hand is trusted no further

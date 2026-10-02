@@ -53,5 +53,5 @@ are counted.
 ```
 
 The block is optional: omit it and the app is unlimited. Every field is
-nullable, and `null` means unlimited for that field alone. A `per_user`
-block on an app with no user identity is refused.
+nullable, and `null` means unlimited for that field alone. Non-null per-user limits
+on an app with no user identity are refused; an all-null block is accepted.

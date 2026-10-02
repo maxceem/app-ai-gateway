@@ -6,7 +6,7 @@ description: Point a model name an app sends at the model the provider should re
 The **Model rewrites** page maps a model name the client sends to the model
 the provider receives. The rewrite is applied after the allowlist check, so
 the target does not need to be in the
-[allowed models](/applications/provider-access#allowed-models), and usage
+[allowed models](/applications/provider-access#models-this-provider-serves), and usage
 records the rewritten model.
 
 A rewrite is how you move an app to a newer model without a release: the app
@@ -14,8 +14,10 @@ keeps asking for `gpt-5.6-terra` and you point that name at `gpt-5.6-sol`. For a
 bigger change, such as a different provider or fixed parameters, use a
 [custom endpoint](/applications/custom-endpoints).
 
-Rewrite targets are checked against the price catalog, not against your
-providers, so they can be saved before the provider exists.
+Rewrite targets must be covered by the built-in catalog or one of your
+providers' pricing rules. A catalogued target can be saved before its provider
+exists. A request still needs a price, or upstream cost reporting, on the
+provider it actually calls.
 
 ## In the configuration
 

@@ -3,51 +3,97 @@ title: Agent manual
 description: Everything an AI agent needs to manage providers, applications, users and usage through the API, in one page.
 ---
 
-Use the `agw` CLI to operate App AI Gateway on a person's behalf. Install
-`@maxceem/agw` with npm on Node.js 22.19 or later. This page is also served as
-plain markdown at `/agents.md`; the API contract is at `/openapi.json`.
+Manage App AI Gateway on a person's behalf with the CLI or an existing MCP
+connection. This manual is also served as plain markdown at
+[https://docs.appaigateway.com/agents.md](https://docs.appaigateway.com/agents.md).
+Use [the documentation index](/llms.txt) to find task-specific guides and
+[OpenAPI](/openapi.json) for exact HTTP schemas. Prefer the connected server's
+capabilities and the installed CLI's `--help` when versions differ.
 
-## Start with the CLI
+## Choose the connection before changing anything
 
-1. Run `agw deployment status --json` and inspect the deployment identity.
-2. Add your first provider with `agw provider add --type openai --browser --no-open`
-   to initialize a new hosted account, or run
-   `agw deployment setup --name NAME --no-domain` to self-host. For an existing
-   account, sign in as described in "Signing in" below.
-3. Run `agw account claim` when human ownership is needed. Give the person the
-   URL. They must use a browser outside the agent's visible surface, compare the
-   account, create their sign-in on that page and approve; if that browser is
-   already signed in as someone with an account, they sign out first. The page
-   names the account and the signed-in person. Do not open that URL yourself or
-   impersonate that human.
-4. Read providers and apps before changing them. Use each command's `--help`
-   to choose flags, and `--json` for one stable machine-readable result.
-5. Use provider browser handoffs for unknown secrets. Their URL is sufficient.
-   Poll the saved operation after the person finishes.
-6. Write application keys only through `--key-output` to an unused private file.
-   Validate and update apps through the CLI, which preserves the whole config
-   and uses revisions to reject concurrent changes.
+Hosted defaults:
 
-`agw app snippet <app-id> --json` returns the request that app can send — curl
-for a server app, Swift for an iOS one — with named placeholders such as
-`PROVIDER_SLUG` and `MODEL` where its configuration does not supply a value, and
-one note per placeholder in `result.notes`. Creating an app returns the same
-example in `result.snippet`.
+| Purpose | Address |
+| --- | --- |
+| Console, sign-in and browser handoffs | `https://console.appaigateway.com` |
+| App requests and management API | `https://api.appaigateway.com` |
+| MCP | `https://console.appaigateway.com/mcp` |
 
-The CLI saves proofs before sending a request and credentials before reporting
-success. Retry with the same private state after a lost response. Do not delete
-state, repeat with a new proof, or print a credential to diagnose a failure.
-`--json` returns `{schemaVersion:1,ok:true,context,result}` or
-`{schemaVersion:1,ok:false,error}`. Exit codes: 0 success, 2 invalid input,
-3 remote failure, 4 state/authentication recovery, 5 wait timeout. A wait timeout
-does not cancel the operation. Provider secrets are never returned.
+For self-hosting, substitute that deployment's console and API origins; they
+may be the same. Do not deploy infrastructure unless the person asked for
+self-hosting. `GATEWAY_URL` below means the selected API origin, with no `/v1`
+suffix. Use the URLs returned by handoff operations instead of constructing them.
 
-Use `agw usage show --month YYYY-MM --json` for retained account totals, including
-deleted apps. Use add/update `--file` for application configuration only; it does
-not transfer credentials or history. Build that file from
-`agw app show <app-id> --json`, keeping `name`, `config` and `status` from
-`result.app`; other fields are rejected. Never send paid inference as a setup test
-unless the person explicitly requests it.
+With MCP, start with `get_account` and read `agw://guide`; see "MCP" below.
+For the CLI, install `@maxceem/agw` on Node.js 22.19 or later, then:
+
+```sh
+agw deployment status --json --no-input
+agw account status --json --no-input
+```
+
+The CLI defaults to hosted only when no connection is saved. Inspect its
+reported URL, deployment and account; do not assume a previous task left the
+right connection active. A configured credential is not proof it is valid.
+
+- **Existing account:** use the saved connection if it matches. Otherwise run
+  `agw account login --no-open --json --no-input`. To sign in to hosted again,
+  use `agw deployment connect --cloud --no-open --json --no-input`. Without a
+  supplied management key, this returns a pending browser login just like
+  `account login`; have the person approve it before continuing.
+- **Existing self-hosted gateway:** use `agw deployment connect --url URL
+  --no-open --json --no-input`.
+- **New hosted account, when requested:** on a fresh hosted connection, the
+  first provider, provider-gateway or app creation initializes an unclaimed
+  account. Do not use this path to recover a failed login to an existing one.
+  Check account status for its expiry, start `agw account claim --no-open
+  --json --no-input`, and give the person the URL to keep the account.
+
+Help, status, lists, validation and dry runs never create accounts. Claiming
+requires the person to create their sign-in in their own browser; do not open
+or approve the claim yourself. Claiming preserves the agent's access.
+
+## CLI task workflow
+
+1. Read `agw provider list --json` and `agw app list --json`. Reuse the IDs and
+   slugs returned; inspect a target with `agw app show <app-id> --json`.
+2. Add a missing provider with `agw provider add --type openai --browser
+   --no-open --json --no-input`. Give the person the returned URL and wait
+   with `agw operation wait <id> --json`. Never request the secret in chat.
+3. Read the command's `--help` and make the requested change. For iOS, supply
+   the person's Team ID and Bundle ID. Set `--attest-environments production`
+   for a production-only app: CLI flag-based creation otherwise enables both
+   production and development. For server keys, use `--key-output` with an
+   unused private path, or retain the CLI's managed private output file.
+4. For a new app file, use `agw app validate --file app.json --json`. For an
+   existing app, use `agw app update <app-id> --file app.json --dry-run --json`
+   so validation is performed as an update of that app. The file contains only
+   `name`, `config` and `status` from `result.app`; exclude metadata such as
+   `id`, `revision` and timestamps. Keep every existing configuration field.
+5. Apply the requested update, then reread the app. File updates replace the
+   whole document. The CLI reads a revision when the update command starts;
+   this protects against a competing write during that command, not edits
+   made since an earlier file export. Refresh and merge an old file first.
+6. Run `agw app check <app-id> --json` and
+   `agw app snippet <app-id> --json`. Resolve any placeholders named in
+   `result.notes`. The check reads configuration only: no provider key,
+   physical device, sign-in or entitlement is exercised. Do not send inference
+   unless the person requested it.
+7. Report the app ID, provider slugs, API base URL, key file location, checks
+   and remaining work. Report pending handoffs as pending, never completed.
+
+For every unattended command, use `--json --no-input`; for browser handoffs,
+add `--no-open`. `--json` returns `{schemaVersion:1,ok:true,context,result}` or
+`{schemaVersion:1,ok:false,error}`. Inspect both `ok` and the result: a successful
+pending operation still needs the browser step and polling. Exit codes are
+0 success, 2 invalid input, 3 remote failure, 4 state/authentication recovery
+and 5 wait timeout. A timeout does not cancel the operation. Follow
+`error.nextAction`, preserving retry state after a lost response.
+
+Use `agw usage show --month YYYY-MM --json` for retained account totals,
+including deleted apps. Configuration files transfer neither credentials nor
+usage history between deployments.
 
 ## Signing in
 
@@ -66,7 +112,7 @@ unless the person explicitly requests it.
   `operation_expired`. Start a new login; do not retry the old id.
 - In CI, or when the person gives you an existing management key, use the
   `AGW_MANAGEMENT_KEY` environment variable. When it is set it is the credential
-  for every command, ahead of any saved login, and nothing is written to disk;
+  for every command, ahead of any saved login, and the environment key is not saved to disk;
   `agw account login` refuses with `environment_credential`. Alternatively pipe
   the key once with `agw account login --key-stdin` (or
   `agw deployment connect --url URL --key-stdin`) to save it. Never pass a key
@@ -95,7 +141,10 @@ a bearer token works too. Use the tools:
 nothing, the second, with the same arguments and the answer's `handle`,
 creates it once, and repeating it is safe. An answer that names an operation
 calls it `id`; that is what `get_operation` takes. A key is revealed on a page a
-person opens, never in a tool result: give them `reveal_url`. A provider key
+person opens, never in a tool result: give them `reveal_url`. If a read contains
+`[redacted]` configuration, do not send that marker back in an update or drop
+those fields from a full replacement; have the person preserve them through
+the console or another authorized client. A provider key
 or gateway token is never a tool argument: `add_provider` and the rotate tools
 answer a URL where the person enters it, and `get_operation` reports when they
 have finished. A refusal is a tool result marked as an error with the
@@ -150,8 +199,10 @@ provider's own request format. You manage all of this through the admin API.
    missing revision returns 400; a stale revision returns 409. Reread and merge.
 5. Read before you write. List providers and apps before changing anything,
    so you use slugs and IDs that exist.
-6. Changes take up to one minute to apply to live traffic. Blocking a user is
-   immediate.
+6. App and provider changes take up to one minute to apply to live traffic.
+   Blocking an authenticated user refuses new token exchanges immediately;
+   existing gateway tokens stop working within ten seconds. Header-based
+   users must be blocked in the backend.
 7. Prefer reversible actions. Disable an app or provider rather than deleting
    it unless deletion was asked for. Deleting a provider also deletes its
    custom prices; deleting an app removes its users and keys.
@@ -170,7 +221,7 @@ Every refusal is JSON:
 | --- | --- | --- |
 | 400 | `invalid_request` | The body is malformed or violates a rule; `message` says which. A create body that carries `id` gets this |
 | 401 | `auth_required` | Missing or wrong management key |
-| 403 | `forbidden` | The key's owner is read-only and may not change things |
+| 403 | `forbidden` | The owning identity's role does not permit this operation |
 | 403 | `grant_insufficient` | The key is read-only and this call would change something; ask the person for a key with the manage grant |
 | 404 | `not_found`, `app_not_found` | No such app, provider, gateway or key |
 | 409 | `slug_taken` | A provider already has this slug; supply another |
@@ -178,19 +229,23 @@ Every refusal is JSON:
 | 409 | `provider_gateway_managed` | This provider's key lives in a gateway; rotate the gateway token instead |
 | 400 | `provider_not_supported_by_gateway` | That provider type cannot be routed through that gateway |
 | 400 | `provider_key_invalid` | The provider refused the key during a test |
+| 400 | `app_revision_required` | Include the revision from the app read |
+| 409 | `app_revision_conflict`, `conflict` | Reread the resource and merge the requested changes before retrying |
 | 502 | `provider_unavailable` | The gateway could not decrypt a stored key |
 
 ## Workflow for setting up an app
 
 1. `GET /v1/admin/providers`. Note which provider types exist and their
    `slug` values.
-2. If the app needs a provider that is missing, and the person has given you
-   its key, use the provider browser handoff. Do not ask the agent to read it.
+2. If a provider is missing, use a CLI or MCP browser handoff so the person
+   can enter the key privately.
 3. Compose the application body from the reference below.
 4. `POST /v1/admin/app-drafts/validate` with the body. Fix every error.
-5. `POST /v1/admin/apps` with the same body. Read `app.id` from the
-   response. For a server app, `api_key.key` is in the response once; store
-   it where the person asked.
+5. Create through the [retry-safe operation](#retrying-creation-safely), using
+   `kind: "app.add"` and that body as `payload`. Read `result.app.id` and
+   store `result.api_key.key` privately for a server app. A plain
+   `POST /v1/admin/apps` instead returns `app` and `api_key` at the top level,
+   but cannot safely be retried after a lost response.
 6. Report the app ID, the base URL
    `{GATEWAY_URL}/v1/apps/{app.id}/proxy/{provider_slug}/{provider_path}`,
    and where the key went. Do not include the key.
@@ -226,8 +281,10 @@ nor the provider's `pricing` cannot be used by any app: requests answer
 validation. OpenRouter reports its own cost and needs no price.
 
 Custom `baseUrl` points an `openai`-type provider at an OpenAI-compatible
-server (Azure OpenAI v1, vLLM). It must be `https`, a public hostname, no
-port, no query.
+server. It requires `https`, a public hostname, the default port and no query.
+The client path is appended literally: use `https://my-vllm.example.com/`
+with `v1/chat/completions`, or Azure's `https://RESOURCE.openai.azure.com/openai/`
+with that same path. Do not duplicate `v1/`. See [Custom base URLs](/providers/custom-base-urls).
 
 ### Gateways
 
@@ -261,7 +318,7 @@ paths `v1/responses`, `v1/chat/completions` and `v1/messages`.
 | `POST /v1/admin/apps/{app}/validate` | `{ name, config, status? }` | `{ valid: true, app_id }` or a 400 naming the problem. Judged as an update of that app; 404 if it does not exist |
 | `POST /v1/admin/apps` | `{ name, config, status? }` | Returns the app plus `api_key` (server apps only, once) |
 | `PUT /v1/admin/apps/{app}` | `{ name, config, status?, revision }` | Full replace; `revision` must be the one the last read returned |
-| `DELETE /v1/admin/apps/{app}` | | Removes users and keys, keeps usage history |
+| `DELETE /v1/admin/apps/{app}?confirm={app}` | | Query repeats the app ID. Removes users, keys and diagnostics; retains usage history in account totals |
 | `GET /v1/admin/apps/{app}/keys` | | Server apps only |
 | `POST /v1/admin/apps/{app}/keys` | `{ name }` | Returns `key` once |
 | `POST /v1/admin/apps/{app}/keys/{key}/revoke` | | |
@@ -351,7 +408,8 @@ Policy object for one provider:
 ### `limits`
 
 Optional. Omit for no limits. Every field is `null` (unlimited) or a number.
-`per_user` may only be set on an app that identifies users. Request limits
+Non-null `per_user` limits require an app that identifies users; an all-null
+block is accepted without user identity. Request limits
 must be positive; a spend budget may be `0` to stop all spend.
 
 ```json
@@ -488,6 +546,10 @@ client code.
   returning `{ "access_token", "expires_in": 3600 }`.
 - iOS apps use the AppAIGateway Swift package, which handles App Attest and
   the token exchange. See the human documentation under Integrate your app.
+
+For Auth0's API-identifier preset, `issuer_token` must be a JWT access token
+for that API. Firebase uses its ID token. In every case the configured issuer
+and audience must match; see [User authentication](/applications/auth-policy/user-authentication).
 
 ## Reporting back
 

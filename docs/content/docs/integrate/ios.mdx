@@ -44,7 +44,14 @@ let gateway = AppAIGatewayClient(
 ```
 
 `appID` is the app's ID from the console. `baseURL` is
-`https://api.appaigateway.com`. Keep one client per
+`https://api.appaigateway.com` for the hosted service.
+
+<Callout title="Self-hosting">
+  Set `baseURL` to your own gateway's API origin, without `/v1` or an app path.
+  The package appends those paths itself.
+</Callout>
+
+Keep one client per
 app for the life of the process; it caches the gateway token and refreshes it
 in the background.
 
@@ -81,8 +88,11 @@ authMode: .appAttest(issuerTokenProvider: { forceRefresh in
 })
 ```
 
-Any provider works the same way: Supabase's session access token, Auth0's
-ID token, Clerk's session token, or your own. Return the raw JWT string.
+Return the JWT whose issuer and audience match your gateway configuration:
+Firebase's ID token, Supabase's session access token, Clerk's configured JWT,
+or your own. With the Auth0 preset, return an access token issued for your API
+identifier, as described in [Auth0's token guide](https://auth0.com/docs/secure/tokens/access-tokens/get-access-tokens).
+The closure is named `issuerTokenProvider` regardless of the token type.
 
 ## Send a request
 

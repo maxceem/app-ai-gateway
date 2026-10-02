@@ -10,22 +10,15 @@ command. The last section shows the same thing for an iOS app.
 Sign up at [console.appaigateway.com](https://console.appaigateway.com). The sidebar
 shows the same three steps as this guide until your first request goes through.
 
-Prefer a terminal or coding agent? Install Node.js 22.19 or later and run:
+<Callout title="Self-hosting">
+  Open your own console and replace `https://api.appaigateway.com` in the
+  examples with your gateway's API address. If you have not deployed yet,
+  follow [Self-hosting](/self-hosting/deploy-to-cloudflare) first.
+</Callout>
 
-```sh
-npx @maxceem/agw provider add --type openai --browser --no-open
-npx @maxceem/agw app add --type ios --team-id ABCDE12345 --bundle-id com.example.app
-```
-
-The first creation initializes your hosted account. The browser handoff lets a
-person provide the credential privately. Run `agw account claim` after installing
-the CLI globally to establish human ownership. Already have an account? Run
-`agw account login` instead: it opens the console, you check that the page
-shows the pairing code your terminal printed, and approve. On a machine without
-a browser, such as over SSH, it prints the URL for you to open on any device.
-In CI, set `AGW_MANAGEMENT_KEY` to a management key instead. See [CLI](/automation/cli) for
-installation, complete workflows and recovery. Self-hosted gateways use
-[protected initialization](/self-hosting/deploy-to-cloudflare) before sign-in.
+Prefer a terminal or coding agent? Follow the [CLI guide](/automation/cli) or
+[Use with AI agents](/automation/agents). Sign in to your existing account
+before creating resources so they appear in the same console.
 
 ## 1. Add a provider key
 

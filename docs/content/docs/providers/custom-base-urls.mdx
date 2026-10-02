@@ -16,8 +16,8 @@ The field takes an absolute `https://` URL, and the path you append after the
 slug is joined onto it:
 
 ```text
-Base URL:   https://my-vllm.example.com/v1/
-Your app:   POST /v1/apps/my-app/proxy/vllm/chat/completions
+Base URL:   https://my-vllm.example.com/
+Your app:   POST /v1/apps/my-app/proxy/vllm/v1/chat/completions
 Reaches:    https://my-vllm.example.com/v1/chat/completions
 ```
 
@@ -35,7 +35,7 @@ POST /v1/admin/providers
   "name": "Self-hosted Llama",
   "slug": "vllm",
   "secret": "...",
-  "baseUrl": "https://my-vllm.example.com/v1/"
+  "baseUrl": "https://my-vllm.example.com/"
 }
 ```
 
@@ -43,13 +43,20 @@ The field is not available with **Use gateway**. A gateway owns the upstream
 origin, and the API refuses `baseUrl` together with `providerGatewayId` on
 both create and update.
 
+The base URL and client path are joined literally. Do not put `v1/` in both.
+For an OpenAI-compatible server, the layout above also makes **Test provider**
+call `/v1/models` and lets custom endpoints use their standard `v1/` paths.
+The gateway's default inference policy matches the client path, before this
+join; a custom base URL does not change that policy.
+
 ## What it enables
 
 Any server that speaks a supported provider's API unchanged becomes usable
 without a code change in your apps.
 
 - **Self-hosted inference.** vLLM, SGLang, Ollama behind TLS, llama.cpp's
-  server. Pick `openai` as the type and point it at your `/v1/` base.
+  server. Pick `openai` as the type and use the origin as the base; keep
+  `v1/` in the client path.
 - **A second region of a supported provider.** BytePlus ModelArk's `eu-west`
   host, for instance, whose keys and catalogs are region-isolated. Pick
   `bytedance` as the type and enter that region's base URL.
@@ -146,16 +153,20 @@ every [spending limit](/applications/limits). See
 
 ## Azure OpenAI
 
-Use provider type `openai` with the resource's **v1** base URL:
+Use provider type `openai`. Microsoft's SDK examples include `/openai/v1/`
+in the [SDK base URL](https://learn.microsoft.com/en-us/azure/developer/ai/how-to/switching-endpoints).
+For this gateway, put `/openai/` in the provider's **Base URL** and keep `v1/`
+in the client path:
 
 ```text
-https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/
+Base URL: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/
+Client path: v1/chat/completions
+Upstream: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/chat/completions
 ```
 
 Azure's v1 API accepts the resource key as `Authorization: Bearer`, which is
-exactly what the gateway sends for the `openai` type. It is the same thing
-Microsoft's own documentation does when it runs the stock OpenAI SDK against
-that base URL. Two things to know:
+what the gateway sends for the `openai` type. The gateway's credential probe
+also appends `v1/models`. Two things to know:
 
 - **The older, dated Azure surface is not supported.** It authenticates with an
   `api-key` header and needs an `?api-version=` query on the base, neither of

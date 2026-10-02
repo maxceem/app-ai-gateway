@@ -11,16 +11,26 @@ agw --help
 agw deployment status --json
 ```
 
-The default destination is the hosted API. The first provider, provider-gateway
-or application creation initializes a recoverable account and saves its credential
-privately. For example, run `agw provider add --type openai --browser --no-open`.
-Help, status, lists and validation never create an account. For an
-existing account, run `agw account login`; see [Sign in](#sign-in) below.
-For your own deployment, run `agw deployment setup --name my-gateway --no-domain`.
-It drives Wrangler itself and fetches the Worker, console and migrations it
-installs: one archive from the project's GitHub release, checked against a hash
-built into the CLI and then cached, so a source checkout is not required. See
-[Deploy to Cloudflare](/self-hosting/deploy-to-cloudflare) for the offline route.
+A fresh CLI uses the hosted API. If you already have an account, run
+`agw account login` before creating resources; otherwise a creation can start a
+separate account. A saved connection remains active across commands, so check
+the URL from `deployment status` and the account from `agw account status`.
+Use `agw deployment connect --cloud` to sign in to the hosted service again.
+It starts browser login unless you supply a management key.
+
+If you want a new hosted account, your first provider, provider-gateway or app
+creation initializes one and saves its credential privately. For example, run
+`agw provider add --type openai --browser --no-open`. Help, status, lists,
+validation and dry runs never create accounts. New unclaimed accounts are
+temporary; check `agw account status` and use `agw account claim` to keep yours.
+
+<Callout title="Self-hosting">
+  Connect to an existing gateway with `agw deployment connect --url URL`.
+  To create one on your Cloudflare account, use `agw deployment setup --name
+  my-gateway --no-domain`. No source checkout is needed. See
+  [Deploy to Cloudflare](/self-hosting/deploy-to-cloudflare) for deployment and
+  offline archive options.
+</Callout>
 
 ## Sign in
 
@@ -72,7 +82,8 @@ key. Create one on the console's **Access** page, then either:
 
 - set `AGW_MANAGEMENT_KEY` in the environment. When it is set, it is the
   credential for every command and takes precedence over any saved login, and
-  nothing is written to disk. `agw account login` refuses to run while it is
+  the environment key is not saved to disk. Commands can still save operation
+  state and application-key files. `agw account login` refuses to run while it is
   set, and `agw account logout` only clears the saved login and reminds you the
   variable is still in charge. Use `agw deployment connect --url URL` to choose
   which deployment the key is sent to; it stores the URL, not the key.
@@ -115,9 +126,10 @@ agw provider --help
 ```
 
 Use the command's `--help` for its exact flags. Read an app before editing it.
-Application updates carry the revision read from the server and reject a
-concurrent change; reread and merge deliberately. Add and update with `--file`
-preserve the complete validated configuration, including native endpoint
+Application updates carry the revision read when the command starts and reject
+a competing write during that command. A `--file` exported earlier can still
+replace more recent settings: reread and merge before using it. Add and update
+with `--file` preserve the complete validated configuration, including native endpoint
 parameters. They do not transfer credentials or usage
 to another deployment. Build that file from `agw app show <app-id> --json`,
 keeping `name`, `config` and `status` from `result.app`.
@@ -127,6 +139,22 @@ server app, Swift for an iOS one. Creating an app prints it too. It is built
 from that app's own providers, allowed endpoints and priced models, and stands
 named placeholders in — `PROVIDER_SLUG`, `MODEL` — for anything not set up yet,
 so you always get something to run and can see what is still missing.
+
+For file changes, validate a new app with `agw app validate --file app.json
+--json`. For an existing app, use `agw app update <app-id> --file app.json
+--dry-run --json`, which validates it as an update. Check the returned
+`validation.remote`: without a login, draft validation checks only the local
+schema and cannot verify provider references or pricing.
+
+After saving, run `agw app check <app-id> --json`. It reads configuration
+without sending inference; it does not verify upstream keys, App Attest on a
+device, sign-in or entitlements. Generate the matching client example with
+`app snippet` and address any placeholder notes before using it.
+
+Flag-based `agw app add --type ios` enables both production and development
+App Attest environments. Use `--attest-environments production` for a shipped
+app, and a separate development app when needed. The console and an API body
+that omits environments default to production only.
 
 Application keys are written only to a private file. Select a path with
 `--key-output`, or use the default managed private file.
@@ -140,7 +168,9 @@ must be requested explicitly.
 `--json` writes one JSON document to stdout with `schemaVersion`, `ok` and either
 `result` or `error`. Progress goes to stderr. Without `--json` the same result is
 printed as plain text to read, and a failure is printed to stderr instead of
-stdout. Exit codes are 0 for success, 2 for input errors, 3 for remote failures,
+stdout. A successful result with `state: "pending"` still needs its browser
+step and `operation wait`; it does not mean the change finished. Exit codes are
+0 for success, 2 for input errors, 3 for remote failures,
 4 for state or authentication recovery, and 5 for a wait timeout. A timeout
 leaves the operation pending.
 

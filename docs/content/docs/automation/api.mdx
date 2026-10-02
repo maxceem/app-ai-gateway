@@ -3,10 +3,19 @@ title: Use the API
 description: Manage providers, apps, users and usage from scripts and CI with a management key.
 ---
 
-Everything the console does, the API does. The console itself is a client
-of it. For a terminal or coding agent, start with the [CLI](/automation/cli),
+The console uses the API to manage your apps and providers. Some account and
+access actions require a human console session; management credentials cannot
+perform those actions. For a terminal or coding agent, start with the [CLI](/automation/cli),
 which handles protected state, browser handoffs and creation retries. Direct
 integrations can use the same API from a deployment script or CI job.
+
+Use `https://api.appaigateway.com` as the API origin and
+[console.appaigateway.com](https://console.appaigateway.com) to manage access.
+
+<Callout title="Self-hosting">
+  Use your gateway's API origin. If your console and API share an address,
+  use that address. Routes and request bodies are the same.
+</Callout>
 
 ## Management keys
 
@@ -46,8 +55,8 @@ what calls providers, and a management key is refused on those routes.
 Send the management credential as an `Authorization: Bearer` header from your
 HTTP client's protected credential store. Do not put it in shell arguments or
 logs. The CLI reads it from the `AGW_MANAGEMENT_KEY` environment variable,
-which takes precedence over any saved login and writes nothing to disk, so a CI
-job only needs the key in its secret store:
+which takes precedence over any saved login without saving that environment
+key to disk. A CI job can supply it from its secret store:
 
 ```sh
 AGW_MANAGEMENT_KEY="$MANAGEMENT_KEY" agw app list --json
@@ -71,11 +80,15 @@ document is at [/openapi.json](/openapi.json).
 | Providers | `GET`, `POST /v1/admin/providers`, `POST /v1/admin/providers/test`, `PUT`, `DELETE /v1/admin/providers/{id}` |
 | Gateways | `GET`, `POST /v1/admin/provider-gateways`, `POST …/test`, `PATCH`, `DELETE …/{id}`, `POST …/{id}/rotate` |
 | Apps | `GET`, `POST /v1/admin/apps`, `GET`, `PUT`, `DELETE /v1/admin/apps/{app}`, `POST …/validate`, `POST /v1/admin/app-drafts/validate` |
+| App checks | `GET /v1/admin/apps/{app}/check`, `GET …/snippet` (no inference) |
 | App keys | `GET`, `POST /v1/admin/apps/{app}/keys`, `POST …/keys/{key}/revoke` |
 | Users | `GET /v1/admin/apps/{app}/users`, `GET …/users/{user}`, `POST …/block`, `POST …/unblock` |
 | Usage | `GET /v1/admin/apps/{app}/usage`, `…/usage/timeseries`, `…/usage/breakdown`, `…/events`, `POST …/usage/reprice` |
-| Auth events | `GET /v1/admin/apps/{app}/auth-events`, `…/auth-events/summary` |
+| Auth events | `GET /v1/admin/apps/{app}/auth-events`, `…/auth-events/summary`, `…/rejection-events` |
 | Prices | `GET /v1/admin/prices` |
+
+Account status and totals are also available through `GET /v1/cli/account`
+and `GET /v1/cli/usage?month=YYYY-MM`. The latter retains usage from deleted apps.
 
 ## Validate before you write
 
@@ -91,20 +104,27 @@ would.
 - Never send `id` when creating an app. The gateway assigns it and returns
   it as `app.id`. A body with `id` is refused with `400`.
 - `PUT /v1/admin/apps/{app}` replaces the whole app: send `name`, the full
-  `config` and optionally `status`. Fetch first, change, then put.
+  `config`, `status`, and the `revision` from your latest read. Omitted `status`
+  defaults to `active`, so preserve it to avoid enabling a paused app.
+- App deletion requires `DELETE /v1/admin/apps/{app}?confirm={app}`, repeating
+  the app ID in the query.
 - An app's API key is returned once, as `api_key.key` on create or `key` on
-  `POST …/keys`. Nothing returns it again.
+  `POST …/keys`. Ordinary reads never return it; retry-safe operations have the
+  limited recovery window described below.
 - A provider key is never returned. Responses carry only `secretHint`, the
   last characters.
-- Every write takes up to a minute to apply everywhere.
+- App and provider changes take up to a minute to affect live traffic.
+  Management credential revocation is immediate; user blocks stop new token
+  exchanges immediately and existing gateway tokens within ten seconds.
 
 ## Example: create a server app and its first key
 
-```sh
-curl --fail-with-body "$GATEWAY_URL/v1/admin/apps" \
-  -H "Authorization: Bearer $APP_AI_GATEWAY_MGMT_KEY" \
-  -H 'Content-Type: application/json' \
-  -d @- <<'JSON'
+Send this JSON body to `POST https://api.appaigateway.com/v1/admin/apps`
+from your authenticated HTTP client, with `Content-Type: application/json`.
+First add a provider with slug `openai` and validate the same body at
+`POST /v1/admin/app-drafts/validate`.
+
+```json
 {
   "name": "Search service",
   "config": {
@@ -122,12 +142,13 @@ curl --fail-with-body "$GATEWAY_URL/v1/admin/apps" \
     }
   }
 }
-JSON
 ```
 
 The response carries `app.id`, which clients compile into their URLs, and
 `api_key.key`, which goes straight into the calling service's secret manager.
-Do not write the response to a file that outlives the step.
+Handle the response privately: do not print it to a terminal or CI log. For a
+retryable script, submit the body as an operation as described below. The CLI
+handles both retry proofs and private key storage automatically.
 
 ## Revisions and retry proofs
 

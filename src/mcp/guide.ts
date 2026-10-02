@@ -26,7 +26,7 @@ App AI Gateway sits between a person's applications and AI providers such as
 OpenAI, Anthropic and Gemini. The person stores a provider credential once,
 and every app they create reaches providers through the gateway with its own
 authentication, its own routing and its own limits on its users. This server
-lets you read and, as it grows, manage all of that on the person's behalf.
+lets you read and manage all of that on the person's behalf.
 
 ## Who you are acting as
 
@@ -75,6 +75,9 @@ check the change with \`validate_app\` before making it. An app document is
 \`{name, config, status?}\`, as \`get_app\` returns it without its id and
 revision; the gateway assigns an app's id, which never changes, and an update carries the \`revision\` it was read at, so a document
 someone changed since is refused rather than overwritten.
+An update replaces the whole document: preserve every configuration field and
+the current status unless the person asked to change them. Omitting status
+enables the app.
 
 Changes come in three shapes.
 
@@ -98,14 +101,17 @@ approve. Poll \`get_operation\` with the answer's \`id\` until it is
 \`completed\`, or \`expired\` (with \`denied\` when they declined). Never open the
 URL yourself.
 
-**Everything else takes effect at once**: \`update_provider\`,
+**Changes without a browser step**: \`update_provider\`,
 \`update_provider_gateway\` and \`update_app\` carry the revision you read, so a
 change someone made since is refused rather than overwritten;
 \`remove_provider\`, \`remove_provider_gateway\` and \`remove_app\` delete for
 good and need the id again as \`confirm\`; \`revoke_app_key\`,
-\`block_app_user\` and \`unblock_app_user\` act at once. Prefer reversible
-changes: disable an app or a provider rather than deleting it unless the
-person asked for the deletion.
+\`block_app_user\` and \`unblock_app_user\` need no browser handoff. App and
+provider changes, including key revocation, take up to a minute to reach live
+traffic. User blocks stop new token exchanges immediately and existing gateway
+tokens within ten seconds; header-based users must be blocked in the backend.
+Prefer reversible changes: disable an app or a provider rather than deleting
+it unless the person asked for the deletion.
 
 \`get_operation\` reads any operation a change tool opened, by its id. It never
 returns a secret.
@@ -157,8 +163,9 @@ How the server holds to that:
   when it holds nothing else. An \`api_key\` anywhere else, inside an app
   document included, is redacted. A field holding \`null\` stays \`null\`, and
   hint fields such as \`secretHint\` are shown as they are. Do not send a
-  \`[redacted]\` value back in an update; leave that field out or ask the
-  person.
+  \`[redacted]\` value back in an update or omit the field from a full
+  replacement. Have the person make the change through the console or another
+  authorized client that can preserve the original values.
 
 ## Errors
 
@@ -174,8 +181,9 @@ yours; try again later.
 ## Rules
 
 1. Never send a request through an app to test it unless the person asks:
-   every one reaches a provider and costs them money. \`check_app\` and
-   \`get_app_snippet\` send nothing.
+   every one reaches a provider and may cost them money. \`check_app\` and
+   \`get_app_snippet\` send no inference. They do not test upstream keys,
+   physical device attestation, user sign-in or subscription entitlements.
 2. Changes take up to a minute to reach live traffic.
 3. Report what you did with ids and names, never with a credential.
 `;
