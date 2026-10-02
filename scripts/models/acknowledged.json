@@ -1,1 +1,306 @@
-[]
+[
+  {
+    "key": "openai/gpt-6-sol: not added",
+    "reason": "Superseded by the newer GPT-6.1 Sol candidate."
+  },
+  {
+    "key": "openai/gpt-4.1-nano: not added",
+    "reason": "Marked deprecated and nearing retirement."
+  },
+  {
+    "key": "openai/gpt-4o: not added",
+    "reason": "Older model already superseded in the catalog by newer general-purpose options."
+  },
+  {
+    "key": "openai/gpt-4o-2024-05-13: not added",
+    "reason": "Dated deprecated snapshot, redundant with the existing GPT-4o entry."
+  },
+  {
+    "key": "openai/o1: not added",
+    "reason": "Deprecated older reasoning model, superseded by newer catalog options."
+  },
+  {
+    "key": "openai/o1-pro: not added",
+    "reason": "Deprecated older reasoning model, superseded by newer catalog options."
+  },
+  {
+    "key": "openai/o4-mini: not added",
+    "reason": "Deprecated older reasoning model, superseded by newer catalog options."
+  },
+  {
+    "key": "openai/o3-mini: not added",
+    "reason": "Deprecated older reasoning model, superseded by newer catalog options."
+  },
+  {
+    "key": "openai/gpt-4-turbo-2024-04-09: not added",
+    "reason": "Dated legacy snapshot with a near-term retirement date."
+  },
+  {
+    "key": "openai/gpt-4-0613: not added",
+    "reason": "Dated legacy snapshot with a near-term retirement date."
+  },
+  {
+    "key": "openai/gpt-3.5-turbo: not added",
+    "reason": "Deprecated legacy model with a near-term retirement date."
+  },
+  {
+    "key": "openai/gpt-3.5-turbo-0125: not added",
+    "reason": "Dated legacy snapshot with a near-term retirement date."
+  },
+  {
+    "key": "openai/gpt-3.5-turbo-1106: not added",
+    "reason": "Retired legacy snapshot."
+  },
+  {
+    "key": "openai/gpt-3.5-turbo-instruct: not added",
+    "reason": "Retired legacy completion model."
+  },
+  {
+    "key": "openai/davinci-002: not added",
+    "reason": "Retired legacy completion model."
+  },
+  {
+    "key": "openai/babbage-002: not added",
+    "reason": "Retired legacy completion model."
+  },
+  {
+    "key": "openai/chat-latest: not added",
+    "reason": "Insufficient metadata to establish a stable, useful general-purpose model identity."
+  },
+  {
+    "key": "openai/gpt-rosalind-research: not added",
+    "reason": "Research-focused model outside the gateway's general-purpose selection."
+  },
+  {
+    "key": "openai/gpt-5-search-api: not added",
+    "reason": "Search-specific model outside the general-purpose gateway selection."
+  },
+  {
+    "key": "openai/text-embedding-3-small: not added",
+    "reason": "Unsupported public pricing: specialized models, text-embedding-3-small: no input or output price"
+  },
+  {
+    "key": "openai/text-embedding-3-large: not added",
+    "reason": "Unsupported public pricing: specialized models, text-embedding-3-large: no input or output price"
+  },
+  {
+    "key": "openai/text-embedding-ada-002: not added",
+    "reason": "Unsupported public pricing: specialized models, text-embedding-ada-002: no input or output price"
+  },
+  {
+    "key": "openai/omni-moderation-latest: not added",
+    "reason": "Unsupported public pricing: specialized models, omni-moderation-latest: \"Free\" is not a price"
+  },
+  {
+    "key": "openai/gpt-realtime-whisper: not added",
+    "reason": "Realtime audio transcription is a narrow modality, and no supported general-purpose use is established here."
+  },
+  {
+    "key": "openai/gpt-4o-transcribe-diarize: not added",
+    "reason": "Diarization is a specialist transcription feature, not a standard general-purpose gateway need."
+  },
+  {
+    "key": "anthropic/claude-mythos-5-1: not added",
+    "reason": "The supplied metadata does not establish capabilities or distinguish it from existing Claude family choices."
+  },
+  {
+    "key": "anthropic/claude-opus-4-1: not added",
+    "reason": "It is an older Opus generation superseded by newer Opus entries already in the catalog."
+  },
+  {
+    "key": "anthropic/claude-opus-4: not added",
+    "reason": "This older Opus version is superseded by newer cataloged Opus models."
+  },
+  {
+    "key": "anthropic/claude-sonnet-4: not added",
+    "reason": "It is superseded by newer Sonnet models already represented in the catalog."
+  },
+  {
+    "key": "anthropic/claude-haiku-3-5: not added",
+    "reason": "This older Haiku version is superseded by the current Haiku 4.5 entry."
+  },
+  {
+    "key": "xai/grok-4.6: not added",
+    "reason": "The newer Grok 4.7 provides the more current choice from this family."
+  },
+  {
+    "key": "gemini/gemini-3.7-flash: not added",
+    "reason": "It is superseded by the newer Gemini 3.8 Flash candidate."
+  },
+  {
+    "key": "gemini/gemini-3.8-live: not added",
+    "reason": "Unsupported public pricing: gemini-3.8-live, gemini-3.8-live-extended-thinking, gemini-3.1-flash-live-preview, Input price: unknown price format \"$0.75 (text) $3.00 or $0.005/min (audio) $1.00 or $0.002/min (image/video)\""
+  },
+  {
+    "key": "gemini/gemini-3.8-live-extended-thinking: not added",
+    "reason": "Unsupported public pricing: gemini-3.8-live, gemini-3.8-live-extended-thinking, gemini-3.1-flash-live-preview, Input price: unknown price format \"$0.75 (text) $3.00 or $0.005/min (audio) $1.00 or $0.002/min (image/video)\""
+  },
+  {
+    "key": "gemini/gemini-3.1-flash-live-preview: not added",
+    "reason": "Unsupported public pricing: gemini-3.8-live, gemini-3.8-live-extended-thinking, gemini-3.1-flash-live-preview, Input price: unknown price format \"$0.75 (text) $3.00 or $0.005/min (audio) $1.00 or $0.002/min (image/video)\""
+  },
+  {
+    "key": "gemini/gemini-3.5-live-translate-preview: not added",
+    "reason": "Unsupported public pricing: gemini-3.5-live-translate-preview, Input price: unknown price format \"$3.50 or $0.0053/min^\\*^ (audio)\""
+  },
+  {
+    "key": "gemini/gemini-3.5-transcribe-live: not added",
+    "reason": "Unsupported public pricing: gemini-3.5-transcribe-live, Input price: unknown price format \"$3.50 or $0.005/min^\\*^ (audio)\""
+  },
+  {
+    "key": "gemini/gemini-3.5-transcribe: not added",
+    "reason": "Unsupported public pricing: gemini-3.5-transcribe, Input price: unknown price format \"$2.00 or $0.003/min^\\*^ (audio)\""
+  },
+  {
+    "key": "gemini/gemini-omni-1.1-flash: not added",
+    "reason": "Unsupported public pricing: gemini-omni-1.1-flash, Output price (including thinking tokens): unknown price format \"$9.00 (text) $17.50 (video)^\\*^\""
+  },
+  {
+    "key": "gemini/gemini-omni-flash-preview: not added",
+    "reason": "Unsupported public pricing: gemini-omni-flash-preview, Output price (including thinking tokens): unknown price format \"$9.00 (text) $17.50 (video)^\\*^\""
+  },
+  {
+    "key": "gemini/gemini-3.1-flash-image: not added",
+    "reason": "Unsupported public pricing: gemini-3.1-flash-image, Input price: \"$0.50 (text/image)\" has no single text price"
+  },
+  {
+    "key": "gemini/gemini-3.1-flash-lite-image: not added",
+    "reason": "Unsupported public pricing: gemini-3.1-flash-lite-image, Input price: \"$0.25 (text/image/video)\" has no single text price"
+  },
+  {
+    "key": "gemini/gemini-3.8-flash-tts: not added",
+    "reason": "Unsupported public pricing: gemini-3.8-flash-tts, Input price: unknown price format \"$0.50 (text) through December 31, 2026. $1.00 (text) starting January 1, 2027.\""
+  },
+  {
+    "key": "gemini/gemini-3.8-flash-lite-tts: not added",
+    "reason": "Unsupported public pricing: gemini-3.8-flash-lite-tts, Input price: unknown price format \"$0.50 (text) through December 31, 2026. $1.00 (text) starting January 1, 2027.\""
+  },
+  {
+    "key": "gemini/gemini-3.1-flash-tts-preview: not added",
+    "reason": "Unsupported public pricing: gemini-3.1-flash-tts-preview, Output price: \"$20.00 (audio)\" has no single text price"
+  },
+  {
+    "key": "gemini/gemini-3-pro-image: not added",
+    "reason": "Unsupported public pricing: gemini-3-pro-image, Input price: unknown price format \"$2.00 (text/image), equivalent to $0.0011 per image^\\*^\""
+  },
+  {
+    "key": "gemini/gemini-2.5-flash-native-audio-preview-12-2025: not added",
+    "reason": "Unsupported public pricing: gemini-2.5-flash-native-audio-preview-12-2025: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/gemini-2.5-flash-image: not added",
+    "reason": "Unsupported public pricing: gemini-2.5-flash-image, Output price: unknown price format \"$0.039 per image\\*\""
+  },
+  {
+    "key": "gemini/gemini-2.5-flash-preview-tts: not added",
+    "reason": "Unsupported public pricing: gemini-2.5-flash-preview-tts, Output price: \"$10.00 (audio)\" has no single text price"
+  },
+  {
+    "key": "gemini/gemini-2.5-pro-preview-tts: not added",
+    "reason": "Unsupported public pricing: gemini-2.5-pro-preview-tts, Output price: \"$20.00 (audio)\" has no single text price"
+  },
+  {
+    "key": "gemini/veo-3.1-generate-preview: not added",
+    "reason": "Unsupported public pricing: veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/veo-3.1-fast-generate-preview: not added",
+    "reason": "Unsupported public pricing: veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/veo-3.1-lite-generate-preview: not added",
+    "reason": "Unsupported public pricing: veo-3.1-generate-preview, veo-3.1-fast-generate-preview, veo-3.1-lite-generate-preview: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/lyria-3.5: not added",
+    "reason": "Unsupported public pricing: lyria-3.5: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/lyria-3-clip-preview: not added",
+    "reason": "Unsupported public pricing: lyria-3-clip-preview, lyria-3-pro-preview: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/lyria-3-pro-preview: not added",
+    "reason": "Unsupported public pricing: lyria-3-clip-preview, lyria-3-pro-preview: no \"### Standard\" table"
+  },
+  {
+    "key": "gemini/gemini-embedding-2: not added",
+    "reason": "Unsupported public pricing: gemini-embedding-2: no input or output row"
+  },
+  {
+    "key": "gemini/gemini-robotics-er-2-preview: not added",
+    "reason": "Unsupported public pricing: gemini-robotics-er-2-preview, Input price: unknown price format \"$1.00 (text / image / video / audio) through December 31, 2026. $2.00 (text / image / video / audio) starting January 1, 2027.\""
+  },
+  {
+    "key": "gemini/gemini-robotics-er-2-streaming-preview: not added",
+    "reason": "Unsupported public pricing: gemini-robotics-er-2-streaming-preview, Input price: unknown price format \"$1.00 (text / image / video / audio) through December 31, 2026. $2.00 (text / image / video / audio) starting January 1, 2027.\""
+  },
+  {
+    "key": "groq/llama-3.1-8b-instant: not added",
+    "reason": "Unsupported public pricing: The official source has no supported public price for this model."
+  },
+  {
+    "key": "groq/llama-3.3-70b-versatile: not added",
+    "reason": "Unsupported public pricing: The official source has no supported public price for this model."
+  },
+  {
+    "key": "groq/canopylabs/orpheus-arabic-saudi: not added",
+    "reason": "Unsupported public pricing: ## [Preview Models](#preview-models), canopylabs/orpheus-arabic-saudi: unknown price format \"$40.00 per 1M characters\""
+  },
+  {
+    "key": "groq/canopylabs/orpheus-v1-english: not added",
+    "reason": "Unsupported public pricing: ## [Preview Models](#preview-models), canopylabs/orpheus-v1-english: unknown price format \"$22.00 per 1M characters\""
+  },
+  {
+    "key": "groq/meta-llama/llama-prompt-guard-2-22m: not added",
+    "reason": "Prompt Guard is a narrow safety-classification utility rather than a general-purpose application model."
+  },
+  {
+    "key": "groq/meta-llama/llama-prompt-guard-2-86m: not added",
+    "reason": "Prompt Guard is a narrow safety-classification utility rather than a general-purpose application model."
+  },
+  {
+    "key": "groq/minimaxai/minimax-m2.7: not added",
+    "reason": "Unsupported public pricing: The official source has no supported public price for this model."
+  },
+  {
+    "key": "groq/openai/gpt-oss-safeguard-20b: not added",
+    "reason": "This beta safeguard model is a narrow safety utility rather than a general-purpose model."
+  },
+  {
+    "key": "together/thinkingmachines/Inkling: not added",
+    "reason": "The supplied metadata does not establish a distinct general-purpose capability that warrants adding it."
+  },
+  {
+    "key": "together/Qwen/Qwen3.7-Max: not added",
+    "reason": "The newer Qwen 3.8 candidate makes this earlier Max generation redundant."
+  },
+  {
+    "key": "together/zai-org/GLM-5.2: not added",
+    "reason": "The newer GLM-5.3 and its Flash tier make this previous generation redundant."
+  },
+  {
+    "key": "together/deepseek-ai/DeepSeek-V4-Flash-0731: not added",
+    "reason": "The supplied catalog already has a stable DeepSeek V4 Flash entry, making this dated snapshot redundant."
+  },
+  {
+    "key": "together/Qwen/Qwen3.7-Plus: not added",
+    "reason": "The supplied metadata does not establish capabilities or release recency, and the catalog already has several useful Qwen tiers."
+  },
+  {
+    "key": "together/Prism-ML/Ternary-Bonsai-27B: not added",
+    "reason": "Unsupported public pricing: chat models, Prism-ML/Ternary-Bonsai-27B: \"Free\" is not a price"
+  },
+  {
+    "key": "together/meta-models/Muse-Glimmer-30B: not added",
+    "reason": "The supplied metadata provides no capabilities or release context to establish its general-purpose value."
+  },
+  {
+    "key": "together/Qwen/Qwen3.8-Flash: not added",
+    "reason": "The supplied metadata provides no capabilities or release context to distinguish this from the existing Qwen options."
+  },
+  {
+    "key": "together/together/Tev1-4B-experimental: not added",
+    "reason": "Unsupported public pricing: chat models, together/Tev1-4B-experimental: \"Free\" is not a price"
+  }
+]

@@ -135,9 +135,13 @@ means a static import crept back in.
   (`listModelPrices`).
 - It is checked daily by `.github/workflows/update-models.yml`
   (`scripts/update-models.mjs`), which opens one rolling pull request from
-  `automation/update-models`. It changes the value of a price field an entry
-  already has, and sets `retirement_date` from the provider's deprecation
-  page; adding or removing models and price fields stays a human edit.
+  `automation/update-models` when a current price changes or a new model is
+  discovered. An OpenAI-compatible classifier (GPT-6 Luna by default) proposes
+  which discoveries to add or skip, with a reason for each. The sync changes the
+  value of a price field an entry already has, and includes `retirement_date`
+  updates from the provider's deprecation page alongside those prices.
+  Retirement-only changes and upcoming prices stay in the run summary;
+  new price fields on existing entries and removing models stay a human edit.
 - `retirement_date` records when the provider stops serving a model. A retired
   model stays in the catalog and stays priced, so apps that still name it keep
   billing exactly; never delete an entry because it retired.
@@ -147,7 +151,26 @@ means a static import crept back in.
   lives in `scripts/models/sources.mjs` and nowhere else. A report item that
   is expected is acknowledged in `scripts/models/acknowledged.json` with a
   reason, not by loosening a parser or a test.
-- Preview the sync with `node scripts/update-models.mjs --dry-run`.
+- Preview with `node scripts/update-models.mjs --dry-run`: no files are written
+  and AI is not called. Add `--classify` to explicitly run paid classification.
+- New discoveries and all add/skip reasons are visible directly in the rolling
+  PR. Merging adds current official rates or saves an exact
+  `<provider>/<model>: not added` acknowledgement. No issue is created.
+  Members with write access override proposals by commenting
+  `/models add provider/model` or `/models skip provider/model reason` on that
+  PR, one command per line. The bot updates the same PR.
+- `scripts/models/review.json` holds proposed choices, their reasons and who
+  made them. Daily runs reuse the PR's choices and preserve manual overrides.
+  AI only returns add/skip choices for supplied IDs; code alone determines and
+  validates prices. Unsupported billing is skipped with an explicit reason.
+  AI failure keeps new models pending in a reviewable PR and fails the run;
+  it does not block valid current price edits.
+- Both workflows share one queue and execute only main-branch scripts. The
+  command workflow checks live write access and reads only the fixed review
+  JSON from the PR; it never checks out or executes PR code. Configure the
+  full OpenAI-compatible chat/completions URL in `MODEL_REVIEW_API_URL`, the
+  model in `MODEL_REVIEW_MODEL` (repository variables), and the application
+  key in the `MODEL_REVIEW_API_KEY` Actions secret.
 - A test never writes a shipped price down. It asserts the arithmetic — which
   rate each kind of token bills at — and reads the rates with `shippedRates`
   from `test/shipped-rates.ts`, so the daily sync changing a price breaks no

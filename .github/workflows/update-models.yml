@@ -1,6 +1,11 @@
 # Checks every model in src/usage/models.json against its provider's pricing
 # and deprecation pages once a day, and opens (or updates) one pull request
-# with any price or retirement date that changed. The rules — official page
+# when a current price changed or new models need review. AI proposes add/skip
+# choices; prices are parsed and validated in code. Comments override choices
+# on the same PR, and merging applies them. No review issue is created.
+# Retirement dates accompany current price changes.
+# Retirement-only changes and upcoming prices stay in the run summary.
+# The rules — official page
 # first, the two community lists only when they agree, nothing guessed — live
 # in scripts/update-models.mjs.
 #
@@ -29,14 +34,15 @@ permissions:
   contents: write
   pull-requests: write
   actions: write
-
-concurrency:
-  group: update-models
-  cancel-in-progress: false
+  issues: write
 
 jobs:
   update:
     if: github.repository == 'maxceem/app-ai-gateway'
+    concurrency:
+      group: model-catalog-sync
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -50,11 +56,20 @@ jobs:
         with:
           node-version: 22
 
+      - name: Preserve choices from the rolling PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/review-models.mjs load "$RUNNER_TEMP/model-review.json"
+
       - name: Check models
         id: models
+        env:
+          MODEL_REVIEW_API_KEY: ${{ secrets.MODEL_REVIEW_API_KEY }}
+          MODEL_REVIEW_API_URL: ${{ vars.MODEL_REVIEW_API_URL }}
+          MODEL_REVIEW_MODEL: ${{ vars.MODEL_REVIEW_MODEL }}
         run: |
           set +e
-          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md"
+          node scripts/update-models.mjs --report "$RUNNER_TEMP/models.md" --review "$RUNNER_TEMP/model-review.json"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -72,7 +87,10 @@ jobs:
           title: Update the model catalog
           commit-message: Update the model catalog
           body-path: ${{ runner.temp }}/models.md
-          add-paths: src/usage/models.json
+          add-paths: |
+            src/usage/models.json
+            scripts/models/acknowledged.json
+            scripts/models/review.json
           delete-branch: true
 
       - name: Run CI on the pull request
@@ -88,7 +106,7 @@ jobs:
         run: |
           if [ "$CODE" = "3" ]; then
             echo "::error::Some models need a person; see the run summary or the pull request."
-          else
+          elif [ "$CODE" != "0" ]; then
             echo "::error::scripts/update-models.mjs failed (exit $CODE)."
           fi
           exit 1

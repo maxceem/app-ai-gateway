@@ -204,8 +204,8 @@ test("xai: pairs long-context rows and reads speech to text per hour", () => {
 test("together: reads escaped prices by API model string", () => {
   const text = fixture("together.md");
   const prices = parse(parseTogether, text, ["moonshotai/Kimi-K3", "openai/gpt-oss-120b"]);
-  assert.deepEqual(prices.get("moonshotai/Kimi-K3"), { input: 3, cached_input: 0.3, output: 15 });
-  assert.deepEqual(prices.get("openai/gpt-oss-120b"), { input: 0.15, output: 0.6 });
+  assert.deepEqual(prices.get("moonshotai/Kimi-K3"), { input: 3, cached_input: 0.3, output: 15, author: "Moonshot" });
+  assert.deepEqual(prices.get("openai/gpt-oss-120b"), { input: 0.15, output: 0.6, author: "OpenAI" });
   assert.equal(prices.get("Prism-ML/Ternary-Bonsai-27B"), null);
   assertFails(parseTogether, text, ["Prism-ML/Ternary-Bonsai-27B"], /not a price/);
   assertFails(parseTogether, replaceOnce(text, "| API model string |", "| Model string |"), ["openai/gpt-oss-120b"], /header changed/);
@@ -563,23 +563,27 @@ test("lists: a price one list leaves out is not a disagreement", () => {
 });
 
 test("rules: a dated price is applied on its day and announced before it", () => {
-  const catalog = { gemini: { "gemini-3.6-flash": { input: 1.5, cached_input: 0.15, output: 7.5 } } };
+  const catalog = { gemini: { "gemini-3.6-flash": { input: 0.75, cached_input: 0.075, output: 3.75 } } };
   const run = (today) =>
     decide({
       catalog,
       official: { gemini: { prices: parse(parseGemini, fixture("gemini.md"), ["gemini-3.6-flash"], today) } },
       lists: noLists,
+      today,
     });
   const before = run("2026-12-31");
-  assert.deepEqual(before.changes.map((change) => [change.field, change.to]), [["input", 0.75], ["cached_input", 0.075], ["output", 3.75]]);
+  assert.deepEqual(before.changes, []);
+  assert.deepEqual(catalogEdits(before), [], "a future announcement must not trigger a catalog update");
   assert.deepEqual(before.upcoming.map((item) => [item.field, item.value, item.date]), [
     ["input", 1.5, "2027-01-01"],
     ["output", 7.5, "2027-01-01"],
     ["cached_input", 0.15, "2027-01-01"],
   ]);
   assert.equal(needsHuman(before), false);
+  assert.match(renderReport(before), /### Upcoming price changes[\s\S]*2027-01-01/u);
   const after = run("2027-01-01");
-  assert.deepEqual(after.changes, []);
+  assert.deepEqual(after.changes.map((change) => [change.field, change.to]), [["input", 1.5], ["cached_input", 0.15], ["output", 7.5]]);
+  assert.equal(catalogEdits(after).length, 3);
   assert.deepEqual(after.upcoming, []);
 });
 
@@ -685,7 +689,27 @@ test("retirement: an official date is added, and a moved one updated", () => {
     [["a", undefined, "2027-02-26", "official"], ["b", "2026-12-01", "2027-01-15", "official"]],
   );
   assert.equal(needsHuman(decision), false);
-  assert.deepEqual(catalogEdits(decision).filter((edit) => edit.field === "retirement_date").length, 2);
+  assert.deepEqual(catalogEdits(decision), [], "retirement-only changes must not trigger a catalog update");
+  assert.match(renderReport(decision), /### Retirement dates[\s\S]*2027-02-26/u);
+});
+
+test("retirement: dates accompany an actual price update", () => {
+  const decision = decide({
+    catalog: { openai: { a: { input: 1.0, output: 2.0 }, b: { input: 1.0, output: 2.0 } } },
+    official: { openai: page({ a: { input: 1.25, output: 2 }, b: { input: 1, output: 2 } }) },
+    deprecations: { openai: dates({ b: { date: "2027-02-26" } }) },
+    lists: noLists,
+    today: TODAY,
+  });
+  assert.deepEqual(catalogEdits(decision), [
+    { provider: "openai", model: "a", field: "input", to: 1.25 },
+    { provider: "openai", model: "b", field: "retirement_date", to: "2027-02-26" },
+  ]);
+  const text = JSON.stringify({ openai: { a: { input: 1.0, output: 2.0 }, b: { input: 1.0, output: 2.0 } } });
+  assert.deepEqual(JSON.parse(applyEdits(text, catalogEdits(decision))).openai, {
+    a: { input: 1.25, output: 2 },
+    b: { input: 1, output: 2, retirement_date: "2027-02-26" },
+  });
 });
 
 test("retirement: a date the official page withdrew needs a person, and stays", () => {
@@ -764,6 +788,41 @@ test("retirement: a failed deprecation parser needs a person and falls back to t
 
 // Report --------------------------------------------------------------------
 
+for (const changed of [false, true]) {
+  test(`report: ${changed ? "current prices trigger a PR" : "informational changes do not trigger a PR"}`, () => {
+    const decision = decide({
+      catalog: { openai: { a: { input: 1.0, output: 2.0 }, b: { input: 1.0, output: 2.0 } } },
+      official: { openai: page({
+        a: { input: changed ? 1.25 : 1, output: 2, upcoming: [{ field: "input", value: 1.5, date: "2027-01-01" }] },
+        b: { input: 1, output: 2 },
+      }) },
+      deprecations: { openai: dates({ b: { date: "2027-02-26" } }) },
+      lists: noLists,
+      today: TODAY,
+    });
+    const report = renderReport(decision);
+    assert.deepEqual(report.match(/^## .+$/gmu), [
+      "## Changes that trigger a pull request",
+      "## Additional information",
+    ]);
+    const [trigger, additional] = report.split("## Additional information");
+    assert.doesNotMatch(trigger, /Retirement dates|Upcoming price changes|2027-01-01|2027-02-26/u);
+    assert.match(additional, /does not trigger a pull request/u);
+    assert.match(additional, /### Retirement dates[\s\S]*2027-02-26/u);
+    assert.match(additional, /### Upcoming price changes[\s\S]*2027-01-01/u);
+    assert.doesNotMatch(additional, /### Current price changes/u);
+    if (changed) {
+      assert.match(trigger, /### Current price changes[\s\S]*1 → \*\*1\.25\*\*/u);
+      assert.doesNotMatch(trigger, /No pull request is needed/u);
+      assert.ok(catalogEdits(decision).length > 0);
+    } else {
+      assert.match(trigger, /No current price changes or newly discovered models\. No pull request is needed\./u);
+      assert.doesNotMatch(trigger, /### Current price changes/u);
+      assert.deepEqual(catalogEdits(decision), []);
+    }
+  });
+}
+
 test("report: fetched text is escaped", () => {
   const report = renderReport({
     changes: [{ provider: "p", model: "m`|<b>", field: "input", from: 1, to: 2, source: "official" }],
@@ -782,5 +841,6 @@ test("report: fetched text is escaped", () => {
   assert.match(report, /&lt;img/u);
   const row = report.split("\n").find((line) => line.startsWith("| `p/m"));
   assert.equal(row.split(/(?<!\\)\|/u).length, 6, "the model id must not add a table cell");
-  assert.match(report, /## Price changes[\s\S]*## Needs attention[\s\S]*## Sources[\s\S]*New on official pages/u);
+  assert.match(report, /## Changes that trigger a pull request[\s\S]*### Current price changes[\s\S]*### Newly discovered models[\s\S]*## Additional information[\s\S]*### Needs attention[\s\S]*### Sources/u);
+  assert.match(report, /These items fail the workflow but do not trigger a pull request/u);
 });

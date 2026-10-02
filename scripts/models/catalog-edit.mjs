@@ -181,3 +181,25 @@ export function applyEdits(text, edits) {
   }
   return result;
 }
+
+/** Explicitly approved additions. Existing entries and their formatting stay intact. */
+export function addModels(text, additions) {
+  const expected = JSON.parse(text);
+  let result = text;
+  for (const { provider, model, price } of additions) {
+    if (!Object.hasOwn(expected, provider)) throw new Error(`models.json: unknown provider ${provider}`);
+    if (Object.hasOwn(expected[provider], model)) throw new Error(`models.json: ${provider}/${model} already exists`);
+    const root = readValue(result, 0);
+    const node = member(root, provider, provider);
+    const fields = Object.entries(price).map(([key, value]) => `${JSON.stringify(key)}: ${key === "long_context_threshold" ? JSON.stringify(value) : literal(value)}`);
+    const prefix = `    ${JSON.stringify(model)}: `;
+    const inline = `${prefix}{ ${fields.join(", ")} }`;
+    const entry = inline.length + 1 <= WIDTH ? inline : `${prefix}{\n${fields.map((field) => `      ${field}`).join(",\n")}\n    }`;
+    // Insert first: the provider's closing brace and all existing entries remain byte-for-byte.
+    const at = node.start + 1;
+    result = result.slice(0, at) + `\n${entry}${node.entries.length > 0 ? "," : ""}` + result.slice(at);
+    expected[provider][model] = price;
+  }
+  if (!isDeepStrictEqual(JSON.parse(result), expected)) throw new Error("models.json: an addition changed other values");
+  return result;
+}
