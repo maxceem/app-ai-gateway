@@ -53,7 +53,7 @@ export function unlimitedScope(): LimitScopeConfig {
  */
 export function mobileDefaultLimits(): LimitsConfig {
   return {
-    per_user: { requests: { per_minute: 10, per_day: 300 }, spending: { monthly_usd: null } },
+    per_user: { requests: { per_minute: 100, per_day: 10000 }, spending: { monthly_usd: null } },
     per_app: unlimitedScope(),
   };
 }

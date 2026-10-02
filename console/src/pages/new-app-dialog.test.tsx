@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { mobileDefaultLimits } from "@shared/app-defaults";
 import { NewAppDialog } from "./new-app-dialog";
 import { renderAuthenticated } from "@/test/render";
 import type { AuthenticationDraft } from "@/lib/config-types";
@@ -169,7 +170,7 @@ describe("a server application", () => {
     expect(attempts[0]?.config?.authentication).toEqual({ type: "api_key", end_user: { source: "none" } });
     /*
      * A backend without users is one identity, so a per-user limit would not
-     * meter users, it would cap the whole backend at ten requests a minute.
+     * meter users, it would cap the whole backend at one user's rate.
      * The block itself is always written — the schema defaults it — so what
      * this asserts is that every number in it is unlimited.
      */
@@ -262,9 +263,7 @@ describe("an iOS application", () => {
       end_user: { source: "app_install" },
     });
     // Every install is a stranger, so a mobile app starts rate limited.
-    expect(attempts[0]?.config?.limits).toMatchObject({
-      per_user: { requests: { per_minute: 10, per_day: 300 } },
-    });
+    expect(attempts[0]?.config?.limits).toEqual(mobileDefaultLimits());
   });
 
   it("sign-in adds an identity provider step and a subscription step", async () => {

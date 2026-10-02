@@ -90,8 +90,8 @@ See [Subscription check](/applications/auth-policy/subscription-check).
 Click **Create app**. The new app allows every provider you have, has no
 model rewrites and no custom endpoints, and is active.
 
-- An **iOS application** starts with per-user limits of 10 requests per
-  minute and 300 per day, and no spending budget.
+- An **iOS application** starts with per-user limits of 100 requests per
+  minute and 10,000 per day, and no spending budget.
 - A **server** application starts with no limits at all.
 
 A server application also gets its first API key, shown once in a dialog
@@ -145,7 +145,7 @@ An iOS app with signed-in users from Firebase and the default limits:
     },
     "routing": { "providers": { "mode": "all" }, "model_rewrites": {} },
     "limits": {
-      "per_user": { "requests": { "per_minute": 10, "per_day": 300 }, "spending": { "monthly_usd": null } },
+      "per_user": { "requests": { "per_minute": 100, "per_day": 10000 }, "spending": { "monthly_usd": null } },
       "per_app": { "requests": { "per_minute": null, "per_day": null }, "spending": { "monthly_usd": null } }
     }
   }

@@ -118,8 +118,8 @@ your app with Apple App Attest, and the gateway gives it a short-lived token.
 1. **New app**, type **iOS application**. Enter your **Apple Team ID** and
    **Bundle ID** from your Apple Developer account and Xcode.
 2. **User authentication**: choose **Unauthenticated users** to start. Each
-   install then counts as one user, with the default limits of ten requests a
-   minute and three hundred a day.
+   install then counts as one user, with the default limits of 100 requests a
+   minute and 10,000 a day.
 3. Add the AppAIGateway Swift package to your project and send a request:
 
 ```swift
