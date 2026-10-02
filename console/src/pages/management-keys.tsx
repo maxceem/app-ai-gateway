@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, Ban, Plus } from "lucide-react";
+import { AlertCircle, Ban, Eye, Plus, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -19,10 +19,10 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, PageHeader } from "@/components/field";
 import { FormDialog } from "@/components/form-dialog";
 import { GuardedButton } from "@/components/guarded-button";
+import { Hint } from "@/components/hint";
+import { RelativeTime } from "@/components/relative-time";
 import { RowAction, RowActions } from "@/components/row-actions";
 import { SecretRevealDialog } from "@/components/secret-reveal-dialog";
-import { useConsoleSession } from "@/lib/console-session";
-import { formatDateTime } from "@/lib/format";
 import {
   useCreateManagementKey,
   useManagementKeys,
@@ -32,15 +32,22 @@ import type { CreatedManagementKey, ManagementKey } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
- * Where a key came from, as a short tag and the sentence behind it.
+ * What a credential is for, as one short tag and the sentence behind it: a key
+ * created here is for the API, a key a CLI received is the CLI's, and an OAuth
+ * connection is an MCP client's.
  *
- * The gateway reports the source as a plain string, so a value this console
- * does not know yet is still shown, as itself, rather than hidden.
+ * The gateway reports a key's source as a plain string, so a value this
+ * console does not know yet is still shown, as itself, rather than hidden.
  */
-const KEY_SOURCES: Record<string, { tag: string; title: string; cli: boolean }> = {
-  console: { tag: "Console", title: "Created in this console", cli: false },
-  cli: { tag: "CLI", title: "Issued to a CLI that was approved in a browser", cli: true },
-  bootstrap: { tag: "CLI setup", title: "The key a CLI started this account with", cli: true },
+const KEY_SOURCES: Record<string, { tag: string; title: string }> = {
+  console: { tag: "API", title: "A key created in this console" },
+  cli: { tag: "CLI", title: "Issued to a CLI that was approved in a browser" },
+  bootstrap: { tag: "CLI", title: "The key a CLI started this account with" },
+};
+
+const CONNECTION_KIND = {
+  tag: "MCP",
+  title: "An MCP client connected with OAuth. Its token renews itself while the client uses it.",
 };
 
 type KeyGrant = ManagementKey["grant"];
@@ -66,29 +73,13 @@ const KEY_GRANTS: Choice<KeyGrant>[] = [
 function KeyGrantBadge({ grant }: { grant: KeyGrant }) {
   const known = KEY_GRANTS.find((choice) => choice.value === grant);
   return (
-    <Badge
-      variant="outline"
-      title={known?.description}
-      className="text-[11px] font-normal text-muted-foreground"
-    >
-      {known?.label ?? grant}
-    </Badge>
-  );
-}
-
-function KeySourceBadge({ source }: { source: string }) {
-  const known = KEY_SOURCES[source];
-  return (
-    <Badge
-      variant="outline"
-      title={known?.title}
-      className={cn(
-        "text-[11px] font-normal",
-        known?.cli ? "border-primary/40 text-primary-ink" : "text-muted-foreground",
-      )}
-    >
-      {known?.tag ?? source}
-    </Badge>
+    <Hint content={known?.description}>
+      <Badge variant="outline" className="text-[11px] font-normal text-muted-foreground">
+        {/* Viewing or changing, readable at a glance down the column. */}
+        {grant === "read" ? <Eye /> : grant === "manage" ? <ShieldCheck /> : null}
+        {known?.label ?? grant}
+      </Badge>
+    </Hint>
   );
 }
 
@@ -116,41 +107,42 @@ export function clientDomain(clientId: string | null): string | null {
   }
 }
 
-function KindBadge({ connection }: { connection: boolean }) {
+/**
+ * What a credential is and which one: a key's last characters, or the domain
+ * that vouches for a connection's client. A connection gets no token hint,
+ * because its token is replaced every time the client renews it.
+ */
+function KindCell({ credential }: { credential: ManagementKey }) {
+  const connection = isConnection(credential);
+  const known = connection ? CONNECTION_KIND : KEY_SOURCES[credential.source];
+  const detail = connection
+    ? clientDomain(credential.clientId)
+    : credential.tokenHint === null
+      ? null
+      : `…${credential.tokenHint}`;
   return (
-    <Badge
-      variant="outline"
-      title={
-        connection
-          ? "An MCP client connected with OAuth. Its token renews itself while the client uses it."
-          : "A management key: a token you created or a CLI received"
-      }
-      className={cn(
-        "text-[11px] font-normal",
-        connection ? "border-primary/40 text-primary-ink" : "text-muted-foreground",
-      )}
-    >
-      {connection ? "Connection" : "Key"}
-    </Badge>
+    <Hint content={known?.title}>
+      <span>
+        {known?.tag ?? credential.source}
+        {detail ? (
+          <>
+            :{" "}
+            <span className={cn("text-muted-foreground", connection ? "break-all" : "font-mono")}>{detail}</span>
+          </>
+        ) : null}
+      </span>
+    </Hint>
   );
 }
 
 /**
  * Who holds a credential. A connection's name is its client's own claim for
- * itself, so it is shown as plain text beside the domain that vouched for it,
- * never as anything a page could interpret.
+ * itself, so it is shown as plain text, never as anything a page could
+ * interpret; the domain that vouched for it is beside the kind.
  */
 function HolderCell({ credential }: { credential: ManagementKey }) {
   if (isConnection(credential)) {
-    const domain = clientDomain(credential.clientId);
-    return (
-      <>
-        <p className="font-medium break-all">{credential.name}</p>
-        <p className="text-xs text-muted-foreground break-all">
-          {domain ? `as declared by ${domain}` : "Registered client"}
-        </p>
-      </>
-    );
+    return <p className="font-medium break-all">{credential.name}</p>;
   }
   return (
     <>
@@ -169,7 +161,6 @@ function HolderCell({ credential }: { credential: ManagementKey }) {
  * and revoked alike.
  */
 export function ManagementKeysPage() {
-  const { organization } = useConsoleSession();
   const list = useManagementKeys();
   const createKey = useCreateManagementKey();
   const revokeKey = useRevokeManagementKey();
@@ -209,14 +200,12 @@ export function ManagementKeysPage() {
 
   const keys = list.data?.keys ?? [];
   const pendingConnection = pendingRevoke !== null && isConnection(pendingRevoke);
-  const accountName = (organizationId: string) =>
-    organization?.id === organizationId ? organization.name : organizationId;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Access"
-        description="Management keys and connected MCP clients can manage everything in this console through the API — from CI, scripts, or an AI agent. Revoke any of them here."
+        description="CLI, API and MCP access to your account. Add or revoke it any time."
         action={
           <GuardedButton
             size="sm"
@@ -249,7 +238,6 @@ export function ManagementKeysPage() {
               <TableHead>Name</TableHead>
               <TableHead>Kind</TableHead>
               <TableHead>Grant</TableHead>
-              <TableHead>Account</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Expires</TableHead>
               <TableHead>Status</TableHead>
@@ -260,14 +248,14 @@ export function ManagementKeysPage() {
             {list.isPending ? (
               [0, 1, 2].map((row) => (
                 <TableRow key={row}>
-                  <TableCell colSpan={8}>
+                  <TableCell colSpan={7}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : keys.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   No keys or connections yet.
                 </TableCell>
               </TableRow>
@@ -280,31 +268,22 @@ export function ManagementKeysPage() {
                       <HolderCell credential={key} />
                     </TableCell>
                     <TableCell>
-                      <div className="flex flex-wrap items-center gap-1">
-                        <KindBadge connection={connection} />
-                        {connection ? null : <KeySourceBadge source={key.source} />}
-                      </div>
-                      {connection ? null : (
-                        <p className="mt-1 font-mono text-xs text-muted-foreground">
-                          {key.tokenHint === null ? "—" : `…${key.tokenHint}`}
-                        </p>
-                      )}
+                      <KindCell credential={key} />
                     </TableCell>
                     <TableCell>
                       <KeyGrantBadge grant={key.grant} />
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{accountName(key.organizationId)}</TableCell>
                     <TableCell className="tabular text-muted-foreground">
-                      {formatDateTime(key.createdAt)}
+                      <RelativeTime value={key.createdAt} />
                     </TableCell>
                     <TableCell className="tabular text-muted-foreground">
                       {/* A connection's end moves forward each time its client renews it. */}
-                      {key.expiresAt ? formatDateTime(key.expiresAt) : "Never"}
+                      {key.expiresAt ? <RelativeTime value={key.expiresAt} /> : "Never"}
                     </TableCell>
                     <TableCell>
                       {key.revokedAt ? (
                         <span className="text-muted-foreground">
-                          Revoked {formatDateTime(key.revokedAt)}
+                          Revoked <RelativeTime value={key.revokedAt} />
                         </span>
                       ) : key.enabled ? (
                         <span className="text-foreground">Active</span>
