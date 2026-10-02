@@ -320,6 +320,11 @@ export const ManagementKeySummarySchema = z.object({
       "Where the key was issued: `console`, `cli` for a key a CLI login received, `bootstrap` for the key a CLI account starts with, or `oauth` for an OAuth connection an MCP client holds. Display only.",
     example: "cli",
   }),
+  credentialType: z.enum(["apiKey", "oauth"]).meta({
+    description:
+      "What the row authenticates as: `apiKey` for a management key, `oauth` for an MCP client's connection. `source` says where it was issued and is display only.",
+    example: "apiKey",
+  }),
   label: z.string().nullable().meta({
     description: "Who holds it, as the issuing client described itself, e.g. `CLI on mac-studio`. Display only.",
   }),
@@ -330,7 +335,7 @@ export const ManagementKeySummarySchema = z.object({
   }),
   clientId: z.string().nullable().meta({
     description:
-      "For an OAuth connection (`source: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first.",
+      "For an OAuth connection (`credentialType: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first.",
   }),
 });
 

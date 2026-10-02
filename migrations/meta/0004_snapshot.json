@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "22d1990f-c4e7-4ab2-9804-06c358e7a87b",
+  "id": "47745dcd-f51f-493e-81d1-9055fa23acf2",
   "prevId": "67584103-8de1-4189-9f4d-4dbaee017f91",
   "tables": {
     "app": {
@@ -1265,6 +1265,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "credential_type": {
+          "name": "credential_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'apiKey'"
         }
       },
       "indexes": {

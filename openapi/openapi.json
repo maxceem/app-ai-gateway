@@ -6281,6 +6281,15 @@
                             "description": "Where the key was issued: `console`, `cli` for a key a CLI login received, `bootstrap` for the key a CLI account starts with, or `oauth` for an OAuth connection an MCP client holds. Display only.",
                             "example": "cli"
                           },
+                          "credentialType": {
+                            "type": "string",
+                            "enum": [
+                              "apiKey",
+                              "oauth"
+                            ],
+                            "description": "What the row authenticates as: `apiKey` for a management key, `oauth` for an MCP client's connection. `source` says where it was issued and is display only.",
+                            "example": "apiKey"
+                          },
                           "label": {
                             "type": [
                               "string",
@@ -6302,7 +6311,7 @@
                               "string",
                               "null"
                             ],
-                            "description": "For an OAuth connection (`source: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first."
+                            "description": "For an OAuth connection (`credentialType: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first."
                           }
                         },
                         "required": [
@@ -6316,6 +6325,7 @@
                           "createdAt",
                           "revokedAt",
                           "source",
+                          "credentialType",
                           "label",
                           "grant",
                           "clientId"
@@ -6446,6 +6456,15 @@
                           "description": "Where the key was issued: `console`, `cli` for a key a CLI login received, `bootstrap` for the key a CLI account starts with, or `oauth` for an OAuth connection an MCP client holds. Display only.",
                           "example": "cli"
                         },
+                        "credentialType": {
+                          "type": "string",
+                          "enum": [
+                            "apiKey",
+                            "oauth"
+                          ],
+                          "description": "What the row authenticates as: `apiKey` for a management key, `oauth` for an MCP client's connection. `source` says where it was issued and is display only.",
+                          "example": "apiKey"
+                        },
                         "label": {
                           "type": [
                             "string",
@@ -6467,7 +6486,7 @@
                             "string",
                             "null"
                           ],
-                          "description": "For an OAuth connection (`source: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first."
+                          "description": "For an OAuth connection (`credentialType: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first."
                         },
                         "plaintext": {
                           "type": "string"
@@ -6484,6 +6503,7 @@
                         "createdAt",
                         "revokedAt",
                         "source",
+                        "credentialType",
                         "label",
                         "grant",
                         "clientId",
@@ -6617,6 +6637,15 @@
                           "description": "Where the key was issued: `console`, `cli` for a key a CLI login received, `bootstrap` for the key a CLI account starts with, or `oauth` for an OAuth connection an MCP client holds. Display only.",
                           "example": "cli"
                         },
+                        "credentialType": {
+                          "type": "string",
+                          "enum": [
+                            "apiKey",
+                            "oauth"
+                          ],
+                          "description": "What the row authenticates as: `apiKey` for a management key, `oauth` for an MCP client's connection. `source` says where it was issued and is display only.",
+                          "example": "apiKey"
+                        },
                         "label": {
                           "type": [
                             "string",
@@ -6638,7 +6667,7 @@
                             "string",
                             "null"
                           ],
-                          "description": "For an OAuth connection (`source: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first."
+                          "description": "For an OAuth connection (`credentialType: \"oauth\"`), the client it was issued to: a registered client's id, or the https URL a client identifies itself with. Null for a key. A connection's `name` is the client's own name for itself, display only; its `expiresAt` is when it ends unless the client refreshes it first."
                         }
                       },
                       "required": [
@@ -6652,6 +6681,7 @@
                         "createdAt",
                         "revokedAt",
                         "source",
+                        "credentialType",
                         "label",
                         "grant",
                         "clientId"

@@ -110,7 +110,11 @@ publish such a document; see [Configuration](/self-hosting/configuration#oauth_c
 A connection the app uses at least once a month lives until you revoke it.
 Every refresh replaces both tokens; presenting an old refresh token again,
 after a short grace period, ends the whole connection, because only a stolen
-copy would. The same access token also works as a bearer token on the
+copy would. Presenting the newest refresh token within 5 seconds of the
+refresh that issued it is answered `429` with `slow_down` and a `Retry-After`
+header, and that token stays good; presenting the previous one within the grace
+period instead answers the same tokens that refresh did.
+The same access token also works as a bearer token on the
 management API under `/v1/admin`, with the same grant, though a client
 discovers how to authorize only from `/mcp`: the API's refusals carry a
 `Bearer realm="management"` challenge that names no metadata. Neither ever reaches your keys and

@@ -679,9 +679,10 @@ describe("OAuth consent", () => {
     // The access page lists the connection beside the keys, and revokes it there.
     const listed = await request(testEnv, "/v1/admin/keys", { headers: session(human.cookie) });
     const { keys } = await listed.json<{ keys: any[] }>();
-    const connection = keys.find((key) => key.source === "oauth");
+    const connection = keys.find((key) => key.credentialType === "oauth");
     expect(connection).toMatchObject({
       name: REGISTERED.name,
+      source: "oauth",
       clientId: REGISTERED.clientId,
       grant: "manage",
       organizationId: human.organizationId,
@@ -907,7 +908,7 @@ describe("OAuth connection lifecycle", () => {
 
     const listed = await request(testEnv, "/v1/admin/keys", { headers: session(person.cookie) });
     expect(listed.status, await listed.clone().text()).toBe(200);
-    const connection = (await listed.json<{ keys: any[] }>()).keys.find((key) => key.source === "oauth");
+    const connection = (await listed.json<{ keys: any[] }>()).keys.find((key) => key.credentialType === "oauth");
     expect(connection).toMatchObject({ clientId: REGISTERED.clientId, grant: "manage" });
     const revoked = await request(testEnv, `/v1/admin/keys/${connection.id}/revoke`, {
       method: "POST",
@@ -940,11 +941,51 @@ describe("OAuth connection lifecycle", () => {
     expect(await count("SELECT count(*) AS n FROM mgmt_oauth_token")).toBe(0);
   });
 
+  it("answers a refresh within the rotation interval with slow_down and a Retry-After, changing nothing", async () => {
+    freezeClock();
+    const testEnv = runtime();
+    const { human, authorization, tokens } = await connected(testEnv);
+    const rotated = await refresh(testEnv, authorization.clientId, tokens.refresh_token);
+    expect(rotated.status, await rotated.clone().text()).toBe(200);
+    const next = await rotated.json<Tokens>();
+
+    const connection = () => env.DB.prepare(
+      `SELECT k.enabled, k.revoked_at, k.expires_at, t.generation, t.rotated_at, t.refresh_token_hash
+       FROM mgmt_api_key k JOIN mgmt_oauth_token t ON t.api_key_id = k.id
+       WHERE k.organization_id = ? AND k.credential_type = 'oauth' ORDER BY t.generation`,
+    ).bind(human.organizationId).all().then(({ results }) => results);
+    const before = await connection();
+
+    // The new refresh token, presented again at once: refused, and the clock
+    // has not moved, so the whole interval is still to wait.
+    const early = await refresh(testEnv, authorization.clientId, next.refresh_token);
+    expect(early.status).toBe(429);
+    expect(early.headers.get("retry-after")).toBe("5");
+    expect(early.headers.get("cache-control")).toBe("no-store");
+    expect(await early.json()).toEqual({ error: "slow_down", error_description: expect.any(String) });
+    // A listed browser origin is allowed to read when to come back.
+    const fromBrowser = await request(testEnv, "/oauth/token", {
+      ...form({ grant_type: "refresh_token", refresh_token: next.refresh_token, client_id: authorization.clientId }),
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: BROWSER_ORIGIN },
+    });
+    expect(fromBrowser.status).toBe(429);
+    expect(fromBrowser.headers.get("access-control-allow-origin")).toBe(BROWSER_ORIGIN);
+    expect(fromBrowser.headers.get("access-control-expose-headers")).toBe("WWW-Authenticate, Retry-After");
+    expect(fromBrowser.headers.get("retry-after")).toBe("5");
+    expect(await connection()).toEqual(before);
+    expect((await callTool(testEnv, next.access_token, "get_account")).isError).toBeFalsy();
+
+    // The same token once the interval has passed rotates as usual.
+    vi.setSystemTime(Date.now() + 5_000);
+    const later = await refresh(testEnv, authorization.clientId, next.refresh_token);
+    expect(later.status, await later.clone().text()).toBe(200);
+  });
+
   it("sweeps the tokens of a connection that lapsed, nightly", async () => {
     const testEnv = runtime();
     const { human } = await connected(testEnv);
     expect(await count("SELECT count(*) AS n FROM mgmt_oauth_token")).toBe(1);
-    await env.DB.prepare("UPDATE mgmt_api_key SET expires_at = ? WHERE organization_id = ? AND source = 'oauth'")
+    await env.DB.prepare("UPDATE mgmt_api_key SET expires_at = ? WHERE organization_id = ? AND credential_type = 'oauth'")
       .bind(Date.now() - 60_000, human.organizationId)
       .run();
     const sweeps = await maintenanceSweepStatements(resolveDeployment(testEnv), testEnv, env.DB, Date.now());

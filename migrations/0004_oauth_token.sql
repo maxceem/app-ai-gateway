@@ -15,4 +15,5 @@ CREATE UNIQUE INDEX `mgmt_oauth_token_access_token_hash_unique` ON `mgmt_oauth_t
 CREATE UNIQUE INDEX `mgmt_oauth_token_refresh_token_hash_unique` ON `mgmt_oauth_token` (`refresh_token_hash`);--> statement-breakpoint
 CREATE UNIQUE INDEX `mgmt_oauth_token_api_key_id_generation_unique` ON `mgmt_oauth_token` (`api_key_id`,`generation`);--> statement-breakpoint
 ALTER TABLE `mgmt_api_key` ADD `client_id` text;--> statement-breakpoint
-ALTER TABLE `mgmt_api_key` ADD `resource` text;
+ALTER TABLE `mgmt_api_key` ADD `resource` text;--> statement-breakpoint
+ALTER TABLE `mgmt_api_key` ADD `credential_type` text DEFAULT 'apiKey' NOT NULL;

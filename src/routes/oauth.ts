@@ -252,12 +252,19 @@ function tooLarge(): Response {
   return tokenError(413, `The body must be at most ${MAX_FORM_BYTES} bytes`);
 }
 
-/** `POST /oauth/token`: the code exchange and the refresh, with cf-auth's status and body. */
+/**
+ * `POST /oauth/token`: the code exchange and the refresh, with cf-auth's status
+ * and body. A refresh presented again within the rotation interval is cf-auth's
+ * `429 slow_down`, which carries `Retry-After`.
+ */
 oauthRoutes.on(["POST", "OPTIONS"], "/oauth/token", withOrigin(async (c, oauth) => {
   const body = await formBody(c);
   if (body instanceof Response) return body;
-  const { status, body: answer } = await oauth.token({ body });
-  return Response.json(answer, { status, headers: TOKEN_HEADERS });
+  const result = await oauth.token({ body });
+  const headers = result.status === 429
+    ? { ...TOKEN_HEADERS, "Retry-After": String(result.retryAfterSeconds) }
+    : TOKEN_HEADERS;
+  return Response.json(result.body, { status: result.status, headers });
 }));
 
 /** `POST /oauth/revoke` (RFC 7009): either token ends the whole connection; an unknown one is a `200` too. */

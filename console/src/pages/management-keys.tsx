@@ -98,7 +98,7 @@ function KeySourceBadge({ source }: { source: string }) {
  * It is listed, and revoked, exactly like a key.
  */
 function isConnection(key: ManagementKey): boolean {
-  return key.source === "oauth";
+  return key.credentialType === "oauth";
 }
 
 /**

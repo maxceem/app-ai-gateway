@@ -68,14 +68,16 @@ export function originDecision(
  * `Mcp-Name`, so a browser client could not send one if its preflight left
  * them out. The OAuth endpoints allow the same headers, since the same client
  * sends them. `WWW-Authenticate` is exposed so a browser client can read the
- * challenge that tells it where to authorize.
+ * challenge that tells it where to authorize, and on the OAuth endpoints
+ * `Retry-After` too, so it can read when a refresh refused with `slow_down`
+ * may be presented again.
  */
 function corsHeaders(origin: string, surface: CorsSurface): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": surface === "mcp" ? "POST, OPTIONS" : "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version, Mcp-Method, Mcp-Name",
-    "Access-Control-Expose-Headers": "WWW-Authenticate",
+    "Access-Control-Expose-Headers": surface === "mcp" ? "WWW-Authenticate" : "WWW-Authenticate, Retry-After",
     Vary: "Origin",
   };
 }

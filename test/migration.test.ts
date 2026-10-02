@@ -256,10 +256,15 @@ describe("initial database migration", () => {
       "grant",
       "client_id",
       "resource",
+      "credential_type",
     ]);
     // A key from before grants existed keeps doing what it did.
     expect(managementKeyColumns.results.find((column) => column.name === "grant"))
       .toMatchObject({ notnull: 1, dflt_value: "'manage'" });
+    // What a row authenticates as, whatever its display-only `source` says: a
+    // key from before connections existed stays a management key.
+    expect(managementKeyColumns.results.find((column) => column.name === "credential_type"))
+      .toMatchObject({ notnull: 1, dflt_value: "'apiKey'" });
     // An OAuth connection is a key row of its own; every other key has neither.
     for (const column of ["client_id", "resource"])
       expect(managementKeyColumns.results.find(({ name }) => name === column)).toMatchObject({ notnull: 0 });
