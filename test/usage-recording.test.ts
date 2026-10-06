@@ -259,6 +259,81 @@ describe("usage recording idempotency", () => {
     expect(row?.cost_usd).toBeCloseTo(cost, 12);
   });
 
+  it("prices a token-priced transcription from the tokens it reports", async () => {
+    const appId = "usage-record-audio-tokens";
+
+    await recordUsageEvent({
+      organizationId: "operator-test-organization",
+      env,
+      observed: observedBody(JSON.stringify({
+        text: "hello",
+        usage: { type: "tokens", input_tokens: 140, output_tokens: 12, total_tokens: 152 },
+      })),
+      contentType: "application/json",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution({
+        model: "gpt-4o-transcribe",
+        route: "openai/v1/audio/transcriptions",
+        apiStyle: "audio_transcription",
+      }),
+      appVersion: null,
+      status: "ok",
+      latencyMs: 40,
+    });
+
+    const rates = shippedRates("openai", "gpt-4o-transcribe");
+    const cost = (140 * rates.input + 12 * rates.output) / 1e6;
+    const row = await env.DB.prepare(
+      "SELECT cost_source, cost_usd, input_tokens, output_tokens FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ cost_source: string; cost_usd: number; input_tokens: number; output_tokens: number }>();
+    expect(row).toMatchObject({ cost_source: "computed", input_tokens: 140, output_tokens: 12 });
+    expect(row?.cost_usd).toBeCloseTo(cost, 12);
+    expect(await monthlyCost(`${appId}:user-1`)).toBe(microusd(cost));
+  });
+
+  it("marks a transcription that reports only another unit as unresolved", async () => {
+    const appId = "usage-record-audio-mismeasured";
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await recordUsageEvent({
+      organizationId: "operator-test-organization",
+      env,
+      // Tokens, for a model billed by the minute: pricing them would read $0.
+      observed: observedBody(JSON.stringify({
+        text: "hello",
+        usage: { type: "tokens", input_tokens: 140, output_tokens: 12 },
+      })),
+      contentType: "application/json",
+      identity: testIdentity({ appId, userId: "user-1" }),
+      attribution: testAttribution({
+        model: "whisper-1",
+        route: "openai/v1/audio/transcriptions",
+        apiStyle: "audio_transcription",
+      }),
+      appVersion: null,
+      status: "ok",
+      latencyMs: 40,
+    });
+
+    const row = await env.DB.prepare(
+      "SELECT event_id, cost_source, cost_usd FROM app_usage_event WHERE app_id = ?",
+    )
+      .bind(appId)
+      .first<{ event_id: string; cost_source: string; cost_usd: number }>();
+    expect(row).toMatchObject({ cost_source: "unresolved", cost_usd: 0 });
+    const unresolved = errors.mock.calls
+      .map((call) => JSON.parse(String(call[0])))
+      .find((entry) => entry.message === "usage_unresolved_cost");
+    expect(unresolved).toMatchObject({
+      appId,
+      model: "whisper-1",
+      reason: "no_priced_measure",
+      eventId: row?.event_id,
+    });
+  });
+
   it("marks a successful response with an unreadable usage shape as unresolved", async () => {
     const appId = "usage-record-unresolved";
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});

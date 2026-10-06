@@ -12,7 +12,13 @@ import { log } from "../core/log";
 import { timeOrderedId } from "../core/ids";
 import { storedAppVersion } from "../core/app-version";
 import { type ObservedBody } from "./body-observer";
-import { computeCost, EMPTY_USAGE, resolveModelAuthor, type UsageObservation } from "./pricing";
+import {
+  computeCost,
+  EMPTY_USAGE,
+  reportsPricedMeasure,
+  resolveModelAuthor,
+  type UsageObservation,
+} from "./pricing";
 import { observeResponse } from "./usage-readers";
 import { type ProviderType, reportsCost } from "../shared/providers";
 import type { ApiStyle } from "../shared/capabilities";
@@ -264,10 +270,17 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // local price: the billability gate refused it, but a price deleted inside the
   // configuration cache window lets one request through. Nothing computed a cost
   // for it, so `computed` at $0 would claim a free request; the cost is unknown.
+  //
+  // The fourth is a response that reported a measure, just not the one the
+  // model is priced in: a duration for a token-priced model, or tokens for a
+  // time-priced one. Its price would multiply counters that were never sent.
   const unpriced = price === null && !reporting;
+  const mismeasured = observed !== null
+    && price !== null
+    && !reportsPricedMeasure(attribution.provider, attribution.model, observed, attribution.pricing);
   const unresolved = input.status === "ok"
     && reportedCost === null
-    && (observed === null || unpriced || (reporting && price === null));
+    && (observed === null || unpriced || mismeasured || (reporting && price === null));
   if (unresolved) {
     log("error", "usage_unresolved_cost", {
       eventId,
@@ -286,7 +299,9 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
           ? "no_usage_reported"
           : unpriced
             ? "no_local_price"
-            : "no_cost_reported",
+            : mismeasured
+              ? "no_priced_measure"
+              : "no_cost_reported",
     });
   }
   if (unpriced) {

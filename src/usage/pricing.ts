@@ -42,6 +42,12 @@ interface Price {
 
 export interface UsageObservation extends UsageCounts {
   audioSeconds?: number;
+  /**
+   * Set when the response reported a duration and no token counts, so its
+   * zeroed counters are absent rather than a measured zero. Only a transcription
+   * can say this; a token reader always measured what it returns.
+   */
+  durationOnly?: true;
 }
 
 /** What a response that said nothing readable is priced as: nothing at all. */
@@ -142,6 +148,27 @@ export function resolveModelAuthor(provider: ProviderType, model: string): strin
   return catalogPrice(provider, model)?.author
     ?? namespaceModelAuthor(provider, model)
     ?? providerModelAuthor(provider);
+}
+
+/**
+ * Whether an observation carries the measure the model's price is denominated
+ * in. A time-priced model needs a duration and a token-priced one needs token
+ * counts; anything else would compute a confident $0 from the counters left at
+ * zero — a free-looking request that escapes every budget. `true` where no
+ * price applies, because that is {@link computeCost}'s `null` to report.
+ */
+export function reportsPricedMeasure(
+  provider: ProviderType,
+  model: string,
+  usage: UsageObservation,
+  overrides?: ProviderPricing | null,
+): boolean {
+  const price = modelPrice(provider, model, overrides);
+  if (!price) return true;
+  if (price.per_minute !== undefined || price.per_hour !== undefined) {
+    return usage.audioSeconds !== undefined;
+  }
+  return usage.durationOnly !== true;
 }
 
 export function computeCost(
