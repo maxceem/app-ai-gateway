@@ -13,6 +13,7 @@ import {
   computeCost,
   hasTokenModelPrice,
   isBillable,
+  reportsPricedMeasure,
   resolveModelAuthor,
 } from "../src/usage/pricing";
 import { extractUsageText, observeResponse } from "../src/usage/usage-readers";
@@ -166,6 +167,55 @@ describe("usage extraction", () => {
     // 90 seconds at the hourly rate.
     expect(computeCost("xai", "grok-transcribe", usage))
       .toBeCloseTo((90 / 3600) * shippedRates("xai", "grok-transcribe").per_hour, 12);
+  });
+
+  it("prices an OpenAI token-priced transcription from its tokens", () => {
+    const usage = extracted(
+      JSON.stringify({ text: "hello", usage: { type: "tokens", input_tokens: 140, output_tokens: 12 } }),
+      "application/json",
+      "audio_transcription",
+    );
+    const rates = shippedRates("openai", "gpt-4o-transcribe");
+    expect(reportsPricedMeasure("openai", "gpt-4o-transcribe", usage)).toBe(true);
+    expect(computeCost("openai", "gpt-4o-transcribe", usage))
+      .toBeCloseTo((140 * rates.input + 12 * rates.output) / 1e6, 12);
+  });
+
+  it("refuses to price a transcription in a unit its response did not report", () => {
+    // A duration for a token-priced model and tokens for a time-priced one both
+    // compute $0 from counters nobody sent; neither may read as measured.
+    const duration = extracted(
+      JSON.stringify({ text: "hello", duration: 30 }),
+      "application/json",
+      "audio_transcription",
+    );
+    const tokens = extracted(
+      JSON.stringify({ text: "hello", usage: { input_tokens: 140, output_tokens: 12 } }),
+      "application/json",
+      "audio_transcription",
+    );
+    expect(reportsPricedMeasure("openai", "gpt-4o-transcribe", duration)).toBe(false);
+    expect(reportsPricedMeasure("openai", "whisper-1", tokens)).toBe(false);
+    expect(reportsPricedMeasure("xai", "grok-transcribe", tokens)).toBe(false);
+    // The matching pairs, and a response that carries both, are measured.
+    expect(reportsPricedMeasure("openai", "whisper-1", duration)).toBe(true);
+    expect(reportsPricedMeasure("openai", "gpt-4o-transcribe", tokens)).toBe(true);
+    const both = { ...tokens, audioSeconds: 30 };
+    expect(reportsPricedMeasure("openai", "gpt-4o-transcribe", both)).toBe(true);
+    expect(reportsPricedMeasure("openai", "whisper-1", both)).toBe(true);
+  });
+
+  it("treats reported zero tokens as a measured zero, with or without a duration", () => {
+    // Presence, not value, is what counts: a zero the provider sent is measured,
+    // and a duration of zero next to it must not turn it back into an absence.
+    for (const body of [
+      { text: "", usage: { type: "tokens", input_tokens: 0, output_tokens: 0 } },
+      { text: "", duration: 0, usage: { type: "tokens", input_tokens: 0, output_tokens: 0 } },
+    ]) {
+      const usage = extracted(JSON.stringify(body), "application/json", "audio_transcription");
+      expect(reportsPricedMeasure("openai", "gpt-4o-transcribe", usage)).toBe(true);
+      expect(computeCost("openai", "gpt-4o-transcribe", usage)).toBe(0);
+    }
   });
 
   it("uses provider-specific and long-context rates", () => {
@@ -416,6 +466,7 @@ const RECOGNISED_SHAPES: {
   contentType: string;
   body: string;
   expected: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number; outputTokens: number };
+  /** A duration the response reported in place of any token counts. */
   audioSeconds?: number;
 }[] = [
   {
@@ -511,6 +562,63 @@ const RECOGNISED_SHAPES: {
     expected: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
     audioSeconds: 42,
   },
+  // OpenAI's token-priced transcription models report tokens and no duration;
+  // reading only `duration` left every one of them unresolved.
+  {
+    name: "OpenAI token-priced transcription JSON",
+    style: "audio_transcription",
+    contentType: "application/json",
+    body: JSON.stringify({
+      text: "hello",
+      usage: {
+        type: "tokens",
+        input_tokens: 140,
+        input_token_details: { text_tokens: 0, audio_tokens: 140 },
+        output_tokens: 12,
+        total_tokens: 152,
+      },
+    }),
+    expected: { inputTokens: 140, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 12 },
+  },
+  {
+    name: "OpenAI token-priced transcription SSE",
+    style: "audio_transcription",
+    contentType: "text/event-stream",
+    body:
+      [
+        `data: ${JSON.stringify({ type: "transcript.text.delta", delta: "hel" })}`,
+        `data: ${JSON.stringify({
+          type: "transcript.text.done",
+          text: "hello",
+          usage: { type: "tokens", input_tokens: 90, output_tokens: 6, total_tokens: 96 },
+        })}`,
+        "",
+      ].join("\n\n"),
+    expected: { inputTokens: 90, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 6 },
+  },
+  {
+    name: "OpenAI duration-priced transcription JSON",
+    style: "audio_transcription",
+    contentType: "application/json",
+    body: JSON.stringify({ text: "hello", usage: { type: "duration", seconds: 31 } }),
+    expected: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+    audioSeconds: 31,
+  },
+  {
+    // The usage block is the billed figure; `duration` is the audio's length.
+    name: "OpenAI duration-priced transcription verbose_json",
+    style: "audio_transcription",
+    contentType: "application/json",
+    body: JSON.stringify({
+      task: "transcribe",
+      duration: 30.4,
+      text: "hello",
+      segments: [],
+      usage: { type: "duration", seconds: 31 },
+    }),
+    expected: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+    audioSeconds: 31,
+  },
   // The OpenAI-compatible batch. All four spell the cache hit differently, and
   // every one of them prices it at a discount, so reading only OpenAI's
   // spelling would over-bill exactly the traffic the discount exists for.
@@ -595,7 +703,7 @@ describe("recognised usage shapes", () => {
       expect(usage).toEqual(
         shape.audioSeconds === undefined
           ? shape.expected
-          : { ...shape.expected, audioSeconds: shape.audioSeconds },
+          : { ...shape.expected, audioSeconds: shape.audioSeconds, durationOnly: true },
       );
       // Nothing here may meter as free: every fixture reports either tokens or
       // a duration, and both are priced.
@@ -618,6 +726,7 @@ const STYLE_FIXTURES: Record<ApiStyle, {
   contentType: string;
   body: string;
   expected: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number; outputTokens: number };
+  /** A duration the response reported in place of any token counts. */
   audioSeconds?: number;
 }> = {
   responses: {
@@ -681,7 +790,7 @@ describe("readers keyed by API style", () => {
       expect(extracted(fixture.body, fixture.contentType, style)).toEqual(
         fixture.audioSeconds === undefined
           ? fixture.expected
-          : { ...fixture.expected, audioSeconds: fixture.audioSeconds },
+          : { ...fixture.expected, audioSeconds: fixture.audioSeconds, durationOnly: true },
       );
     });
   }
@@ -849,6 +958,56 @@ describe("large response bodies", () => {
       cachedInputTokens: 300,
       cacheWriteTokens: 0,
       outputTokens: 4321,
+    });
+  });
+
+  it("prices a 6 MB verbose transcription from the usage at its end", async () => {
+    const segment = { id: 0, start: 0, end: 1, text: "lorem ipsum ".repeat(40) };
+    const segments = Array.from({ length: Math.ceil(SIX_MB / 500) }, () => segment);
+    const observed = await observe(JSON.stringify({
+      task: "transcribe",
+      duration: 3599.5,
+      text: "hello",
+      segments,
+      usage: { type: "duration", seconds: 3600 },
+    }));
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "application/json", "openai", "audio_transcription").usage;
+    expect(usage?.audioSeconds).toBe(3600);
+    expect(computeCost("openai", "whisper-1", usage!))
+      .toBeCloseTo(60 * shippedRates("openai", "whisper-1").per_minute, 12);
+  });
+
+  it("keeps a truncated transcription's duration next to its token usage", async () => {
+    // Both measures sit in the tail; dropping either would leave one of the
+    // two pricing units unresolved.
+    const observed = await observe(JSON.stringify({
+      text: "x".repeat(SIX_MB),
+      duration: 30,
+      usage: { type: "tokens", input_tokens: 140, output_tokens: 12 },
+    }));
+    expect(observed.truncated).toBe(true);
+    const usage = observeResponse(observed, "application/json", "openai", "audio_transcription").usage!;
+    expect(usage).toMatchObject({ inputTokens: 140, outputTokens: 12, audioSeconds: 30 });
+    expect(reportsPricedMeasure("openai", "whisper-1", usage)).toBe(true);
+    expect(computeCost("openai", "whisper-1", usage))
+      .toBeCloseTo(0.5 * shippedRates("openai", "whisper-1").per_minute, 12);
+  });
+
+  it("still reads a truncated Anthropic body as Anthropic when its tail names a duration", async () => {
+    // The tail document carries any duration next to the usage object, so the
+    // sniffing walk must not let it reclassify an Anthropic usage as audio.
+    const observed = await observe(JSON.stringify({
+      filler: "x".repeat(SIX_MB),
+      duration: 4,
+      usage: { input_tokens: 50, cache_read_input_tokens: 20, output_tokens: 9 },
+    }));
+    expect(observed.truncated).toBe(true);
+    expect(observeResponse(observed, "application/json", "anthropic", "other").usage).toEqual({
+      inputTokens: 50,
+      cachedInputTokens: 20,
+      cacheWriteTokens: 0,
+      outputTokens: 9,
     });
   });
 
