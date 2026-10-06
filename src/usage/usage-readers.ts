@@ -113,12 +113,30 @@ function geminiUsage(value: unknown): UsageCounts | null {
   };
 }
 
+function nonNegativeNumber(value: unknown): number | null {
+  const number = finiteNumber(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
+/**
+ * A transcription reports whatever its model is billed by, and the reader does
+ * not choose between them: OpenAI's token-priced models answer with a `usage`
+ * of tokens, its duration-priced ones with `usage: {type: "duration", seconds}`,
+ * and xAI and `verbose_json` with a top-level `duration`. Every measure present
+ * is kept, and the model's price decides which one is billed — so a response
+ * shape can never move a model onto another model's unit.
+ *
+ * `usage.seconds` wins over `duration` where both appear: it is the figure the
+ * usage block bills, and `duration` is the length of the audio as transcribed.
+ */
 function audioUsage(value: unknown): UsageObservation | null {
   const root = asRecord(value);
   if (!root) return null;
-  const duration = root.duration;
-  if (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0) return null;
-  return { ...EMPTY_USAGE, audioSeconds: duration };
+  const seconds = nonNegativeNumber(asRecord(root.usage)?.seconds)
+    ?? nonNegativeNumber(root.duration);
+  const tokens = openAiUsage(root);
+  if (tokens) return seconds === null ? tokens : { ...tokens, audioSeconds: seconds };
+  return seconds === null ? null : { ...EMPTY_USAGE, audioSeconds: seconds, durationOnly: true };
 }
 
 /** Marks a block that carries no value: empty, `[DONE]`, or malformed. */
@@ -203,18 +221,22 @@ function usageShape(value: unknown): Exclude<UsageFormat, "unknown"> | null {
   const root = asRecord(value);
   if (!root) return null;
   if (asRecord(root.usageMetadata)) return "gemini";
-  if (typeof root.duration === "number") return "audio";
   if (typeof root.type === "string" && root.type.startsWith("message_")) return "anthropic";
   if (asRecord(root.message)?.usage) return "anthropic";
   const response = asRecord(root.response) ?? root;
   const usage = asRecord(response.usage);
-  if (!usage) return null;
   if (
-    Object.hasOwn(usage, "cache_read_input_tokens")
-    || Object.hasOwn(usage, "cache_creation_input_tokens")
+    usage
+    && (Object.hasOwn(usage, "cache_read_input_tokens")
+      || Object.hasOwn(usage, "cache_creation_input_tokens"))
   ) {
     return "anthropic";
   }
+  // After the Anthropic checks: a truncated body's tail document carries any
+  // `duration` it saw next to the usage object, and an Anthropic usage read
+  // as audio would lose its cache buckets.
+  if (typeof root.duration === "number" || usage?.type === "duration") return "audio";
+  if (!usage) return null;
   return "openai";
 }
 
@@ -306,12 +328,13 @@ function tailUsageDocument(tail: string): Record<string, unknown> | null {
       }
     }
   }
-  // A duration is read only where nothing counted tokens: a transcription
-  // reports one and no usage object, and a token-priced response that happens
-  // to mention a duration somewhere must not be re-read as time-priced.
-  if (Object.keys(document).length > 0) return document;
+  // A duration is kept alongside any usage object: a transcription can report
+  // both, and the model's price, not this scan, decides which one is billed.
+  // Only the audio reader reads it, so a token-priced response that happens to
+  // mention a duration is still priced from its tokens.
   const duration = [...tail.matchAll(TAIL_DURATION)].at(-1)?.[1];
-  return duration === undefined ? null : { duration: Number(duration) };
+  if (duration !== undefined) document.duration = Number(duration);
+  return Object.keys(document).length > 0 ? document : null;
 }
 
 /**
@@ -408,7 +431,8 @@ function lastReported(
 
 /**
  * OpenAI, Gemini and audio report once, at the end, so the answer is the last
- * value that parses to an observation.
+ * value that parses to an observation. A streamed transcription carries its
+ * usage on the final `transcript.text.done` event.
  */
 const openAiReader: UsageReader = (values) => lastReported(values, openAiUsage);
 const geminiReader: UsageReader = (values) => lastReported(values, geminiUsage);
