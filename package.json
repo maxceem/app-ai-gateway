@@ -37,7 +37,7 @@
     "typecheck:tsc": "tsc --noEmit && pnpm --filter @maxceem/agw typecheck:tsc && pnpm --filter @app-ai-gateway/console typecheck:tsc && pnpm --filter @app-ai-gateway/docs typecheck:tsc",
     "test:worker": "vitest run --config vitest.suites.config.ts",
     "test:swift-publish": "node --test test/swift-publish.node.mjs",
-    "test:deploy-script": "node --test test/deploy-script.node.mjs test/bootstrap-account.node.mjs",
+    "test:deploy-script": "node --test test/deploy-script.node.mjs",
     "test:release-script": "node --test test/release-script.node.mjs",
     "test:update-models": "node --test test/update-models.node.mjs test/review-models.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
@@ -47,7 +47,6 @@
     "cli:check": "pnpm --filter @maxceem/agw check",
     "cli:test": "pnpm --filter @maxceem/agw test",
     "cli:release:github": "node cli/scripts/publish-release.mjs",
-    "account:bootstrap": "node scripts/bootstrap-account.mjs",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
@@ -90,8 +89,8 @@
       "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": {
         "description": "Which local vault key new credentials are encrypted under. Leave this as `1`; it only changes when you rotate to a second key."
       },
-      "ALLOW_ADDITIONAL_REGISTRATIONS": {
-        "description": "Set true to let more people create separate accounts after the first person registers on a self-hosted deployment."
+      "ALLOWED_REGISTRATION_EMAILS": {
+        "description": "Your email address. Only the emails listed here, comma-separated, can create an account on this deployment, each one of their own."
       }
     }
   }

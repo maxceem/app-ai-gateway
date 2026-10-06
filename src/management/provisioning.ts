@@ -22,9 +22,9 @@ import { enforceEndpointRateLimit } from "../core/endpoint-rate-limit";
 import { GatewayError } from "../core/errors";
 import { database } from "../db";
 import { mgmtOrganization, mgmtOrganizationUser, mgmtUser } from "../db/schema";
-import { guardedInsert, prepared, type WriteStatement } from "../db/sql";
+import { guardedInsert, type WriteStatement } from "../db/sql";
 import { bootstrapDecision, type BootstrapDecision } from "../policy/deployment";
-import { emptyDeploymentCondition } from "../policy/sql";
+import { proofMatches } from "./digest";
 import type { ManagementScope } from "./scope";
 
 /**
@@ -77,44 +77,44 @@ export function unclaimedAccountDecision(
 }
 
 /** What the deployment's rule says about admitting a new unclaimed account, whichever account it would be. */
-type AdmissionRule = Pick<BootstrapDecision, "requiresEmptyDeployment" | "rateLimited">;
+type AdmissionRule = Pick<BootstrapDecision, "admission" | "rateLimited">;
 
 /** The deployment's rule for a new unclaimed account, before any account is named. */
 export function unclaimedAccountRule(scope: ManagementScope): AdmissionRule {
-  const { requiresEmptyDeployment, rateLimited } = scope.deployment.rules.bootstrap;
-  return { requiresEmptyDeployment, rateLimited };
-}
-
-async function deploymentEmpty(scope: ManagementScope): Promise<boolean> {
-  return !(await prepared(scope.env.DB, sql`SELECT 1 WHERE NOT ${emptyDeploymentCondition()}`).first());
+  const { admission, rateLimited } = scope.deployment.rules.bootstrap;
+  return { admission, rateLimited };
 }
 
 /**
- * Whether a new unclaimed account could be admitted now, read without a side
- * effect: nothing is counted. A page that offers the choice asks this, so it
- * offers it exactly where choosing it would get past the admission — the rate
- * limit aside, which only answers once it is spent.
+ * Whether a door that holds no CLI token — the consent page's "continue
+ * without an account" — may offer a new unclaimed account at all. A page asks
+ * this before offering the choice, so the button and the answer pressing it
+ * gets agree — the rate limit aside, which only answers once it is spent.
  */
-export async function unclaimedAccountAvailable(scope: ManagementScope): Promise<boolean> {
-  return !unclaimedAccountRule(scope).requiresEmptyDeployment || deploymentEmpty(scope);
+export function unclaimedAccountAvailable(scope: ManagementScope): boolean {
+  return unclaimedAccountRule(scope).admission === "open";
 }
 
 /**
  * The admission alone: refuses a new unclaimed account the deployment's rule
- * does not allow now, and answers the condition the batch that creates it must
- * still hold, or null where it needs none. Never counts anything, so a refusal
+ * does not allow. `token` is the CLI bootstrap's own, or null for a door that
+ * has none. A self-host admits only the token whose digest the CLI stored
+ * when it deployed the Worker, so the account is the deploying CLI's however
+ * soon anyone else finds the address. Never counts anything, so a refusal
  * here spends no allowance.
  */
 export async function admitUnclaimedAccountCondition(
   scope: ManagementScope,
   rule: AdmissionRule,
-): Promise<SQL | null> {
-  // A self-host belongs to whoever initializes it first, exactly as its first
-  // console registration does. Once an account exists, neither door reopens.
-  if (!rule.requiresEmptyDeployment) return null;
-  if (!(await deploymentEmpty(scope)))
-    throw new GatewayError(409, "conflict", "This deployment has already been initialized");
-  return emptyDeploymentCondition();
+  token: string | null,
+): Promise<null> {
+  if (rule.admission === "open") return null;
+  if (token !== null && (await proofMatches(token, scope.deployment.bootstrapTokenDigest))) return null;
+  throw new GatewayError(
+    403,
+    "forbidden",
+    "Only the CLI that deployed this gateway can create an account without signing in",
+  );
 }
 
 /**
@@ -129,14 +129,9 @@ export async function limitUnclaimedAccounts(
   address: string,
 ): Promise<void> {
   // Cloud only, where an account costs this gateway's operator something and
-  // anyone can ask for one.
-  //
-  // A self-host counts nothing, because the only thing counting could refuse
-  // there is the race to be its first caller — and that race is the rule, not
-  // a flaw in it: whoever initializes an empty deployment owns it. What a
-  // limit here would reliably refuse instead is the owner's own installer
-  // retrying a deployment whose storage has not come up yet. The admission's
-  // 409 is the guard that matters, and it never expires.
+  // anyone can ask for one. A self-host admits only its deploying CLI's
+  // token, and what a limit there would reliably refuse instead is that CLI
+  // retrying a deployment whose storage has not come up yet.
   if (rule.rateLimited) await enforceEndpointRateLimit(scope.env, "bootstrap", address);
 }
 
@@ -149,8 +144,9 @@ export async function admitUnclaimedAccount(
   scope: ManagementScope,
   decision: BootstrapDecision,
   address: string,
+  token: string,
 ): Promise<void> {
-  await admitUnclaimedAccountCondition(scope, decision);
+  await admitUnclaimedAccountCondition(scope, decision, token);
   await limitUnclaimedAccounts(scope, decision, address);
 }
 
@@ -159,21 +155,17 @@ export async function admitUnclaimedAccount(
  * that asked (`serviceName`), the account with its deadline, and the owner
  * membership — as builders for the batch that completes the door's operation.
  *
- * Every row is guarded by `guard`, the operation's own. `admission` is the
- * condition the admission answered, carried by the identity and the account
- * only: the membership is guarded instead by the account being this identity's
- * creation, since the account it follows is exactly what makes an emptiness
- * rule false. A door whose engine judges the admission once, up front, passes
- * none.
+ * Every row is guarded by `guard`, the operation's own, and the membership
+ * also by the account being this identity's creation, so it lands only on the
+ * account this batch made.
  */
 export function unclaimedAccountStatements(
   scope: ManagementScope,
   decision: BootstrapDecision,
-  options: { guard: SQL; admission: SQL | null; serviceName: string },
+  options: { guard: SQL; serviceName: string },
 ): WriteStatement[] {
   const { accountId, userId, createdAt, recoveryEndsAt } = decision;
-  const { guard, admission, serviceName } = options;
-  const create = admission === null ? guard : and(guard, admission)!;
+  const { guard, serviceName } = options;
   const created = sql`EXISTS (
     SELECT 1 FROM mgmt_organization WHERE id=${accountId} AND created_by_user_id=${userId})`;
   const at = new Date(Date.parse(createdAt));
@@ -187,7 +179,7 @@ export function unclaimedAccountStatements(
       kind: "service",
       createdAt: at,
       updatedAt: at,
-    }, create).onConflictDoNothing(),
+    }, guard).onConflictDoNothing(),
     guardedInsert(db, mgmtOrganization, {
       id: accountId,
       name: "My account",
@@ -195,7 +187,7 @@ export function unclaimedAccountStatements(
       expiresAt: recoveryEndsAt,
       createdAt,
       updatedAt: createdAt,
-    }, create).onConflictDoNothing(),
+    }, guard).onConflictDoNothing(),
     guardedInsert(db, mgmtOrganizationUser, {
       id: `member-${accountId}`,
       organizationId: accountId,
@@ -248,13 +240,12 @@ function settledElsewhere(error: unknown): boolean {
 /**
  * Creates the account in the batch that completes its operation.
  *
- * Every statement is guarded by the engine — the operation is still pending —
- * and, on a deployment only its first caller may take, by emptiness. The
- * engine completes the operation only if the last of them, the owner
- * membership, was written, so of two tokens racing for an empty self-host the
- * one whose account landed completes and the other stays pending, unused. The
- * record names no credential yet: one needs the membership this batch creates,
- * and is issued, sealed and recorded next by the door that asked.
+ * Every statement is guarded by the engine — the operation is still pending.
+ * The engine completes the operation only if the last of them, the owner
+ * membership, was written, so an operation for a self-host's one account that
+ * another token already holds stays pending, unused. The record names no
+ * credential yet: one needs the membership this batch creates, and is issued,
+ * sealed and recorded next by the door that asked.
  */
 async function createAccount(
   scope: ManagementScope,
@@ -270,15 +261,11 @@ async function createAccount(
     await engine.complete({
       id,
       outcome: record,
-      statements: unclaimedAccountStatements(scope, decision, {
-        guard,
-        admission: decision.requiresEmptyDeployment ? emptyDeploymentCondition() : null,
-        serviceName,
-      }),
+      statements: unclaimedAccountStatements(scope, decision, { guard, serviceName }),
     });
   } catch (error) {
-    // A twin completed it first, or another caller took an empty self-host:
-    // the operation as it now stands says which.
+    // A twin completed it first, or another token holds the self-host's one
+    // account: the operation as it now stands says which.
     if (settledElsewhere(error)) return;
     throw error;
   }

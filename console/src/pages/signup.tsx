@@ -174,9 +174,9 @@ export function SignupPage() {
 }
 
 /**
- * Self-hosted deployments commonly keep additional registration disabled.
- * The screen states that plainly rather than 404-ing, because operators arrive
- * here from bookmarks and shared links.
+ * A self-hosted deployment that lists no registration emails accepts no
+ * sign-ups. The screen states that plainly rather than 404-ing, because
+ * operators arrive here from bookmarks and shared links.
  */
 function RegistrationClosed({ googleAuth }: { googleAuth: boolean }) {
   return (

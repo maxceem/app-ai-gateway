@@ -1,7 +1,7 @@
 import { GatewayError } from "../../core/errors";
-import { digest } from "../../management/digest";
+import { digest, proofMatches } from "../../management/digest";
 
-export { digest };
+export { digest, proofMatches };
 
 const encoder = new TextEncoder();
 export async function derive(secret: string, purpose: string): Promise<string> {
@@ -18,22 +18,6 @@ export async function derive(secret: string, purpose: string): Promise<string> {
     ),
     (b) => b.toString(16).padStart(2, "0"),
   ).join("");
-}
-export async function proofMatches(
-  raw: unknown,
-  expected: string | null,
-): Promise<boolean> {
-  if (typeof raw !== "string" || !expected) return false;
-  const hash = await digest(raw);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(expected),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(hash));
-  return crypto.subtle.verify("HMAC", key, signature, encoder.encode(expected));
 }
 export async function cliJson(request: Request): Promise<unknown> {
   const reader = request.body?.getReader();

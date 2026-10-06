@@ -33,8 +33,5 @@ docs/public/openapi.json
 
 cli/dist/
 
-# Protected manual initialization state and credential file.
-.agw-bootstrap/
-
 # State and cache of a CLI built from this checkout; `pnpm cli:dev:reset` clears it.
 .agw-dev/

@@ -381,8 +381,8 @@ function Footnote({ id, expiresAt }: { id: string; expiresAt?: string }) {
  * account already, and that is exactly what the sign-out screen next door
  * refuses, so a standing "sign in instead" here would reopen the door this
  * whole rule exists to shut. It goes through the handoff's own endpoint rather
- * than public sign-up, since a deployment that refuses public registration
- * still has to let its first person in.
+ * than public sign-up, since a claim registers whoever the CLI sent, whether
+ * or not the deployment lists their email.
  *
  * For a claim, signing in appears exactly once, as the answer to a question a
  * person has already been asked: a registration refused because that email is

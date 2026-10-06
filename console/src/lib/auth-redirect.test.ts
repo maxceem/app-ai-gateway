@@ -95,7 +95,7 @@ describe("oauthErrorNotice", () => {
     for (const code of ["registration_disabled", "signup_disabled"]) {
       const notice = oauthErrorNotice(`?error=${code}`);
       expect(notice?.tone, code).toBe("destructive");
-      expect(notice?.description, code).toMatch(/not registered/i);
+      expect(notice?.description, code).toMatch(/not allowed to create an account/i);
     }
   });
 

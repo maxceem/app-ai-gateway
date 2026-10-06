@@ -13,15 +13,20 @@ export interface DeploymentRules {
    * what expired. A self-host's accounts carry none, so nothing checks one.
    */
   readonly accountDeadlines: boolean;
-  /** `open` lets anyone register; `restricted` asks `ALLOW_ADDITIONAL_REGISTRATIONS` and the claim flow. */
-  readonly registration: "open" | "restricted";
+  /** `open` lets anyone register; `listed` only the emails in `ALLOWED_REGISTRATION_EMAILS`. */
+  readonly registration: "open" | "listed";
   /** Whether a new registration gets an account of its own always, or only when its flow asks for one. */
   readonly provisionDefaultOrganization: "always" | "when_requested";
   readonly bootstrap: {
     /** `hashed`: one account per CLI token; `deployment`: the one account the deployment has. */
     readonly accountId: "hashed" | "deployment";
-    /** Only an empty deployment may be bootstrapped: whoever initializes it first owns it. */
-    readonly requiresEmptyDeployment: boolean;
+    /**
+     * `open`: anyone may ask for an unclaimed account. `cli_token`: only the
+     * CLI that deployed the Worker, with the token whose digest it stored in
+     * `CLI_BOOTSTRAP_TOKEN_DIGEST`; every other door to an unclaimed account
+     * is closed.
+     */
+    readonly admission: "open" | "cli_token";
     readonly rateLimited: boolean;
   };
 }
@@ -32,20 +37,15 @@ const DEPLOYMENT_RULES: Record<DeploymentMode, DeploymentRules> = {
     accountDeadlines: true,
     registration: "open",
     provisionDefaultOrganization: "always",
-    bootstrap: { accountId: "hashed", requiresEmptyDeployment: false, rateLimited: true },
+    bootstrap: { accountId: "hashed", admission: "open", rateLimited: true },
   },
   self_hosted: {
     accountDeadlines: false,
-    registration: "restricted",
+    registration: "listed",
     provisionDefaultOrganization: "when_requested",
-    bootstrap: { accountId: "deployment", requiresEmptyDeployment: true, rateLimited: false },
+    bootstrap: { accountId: "deployment", admission: "cli_token", rateLimited: false },
   },
 };
-
-export interface RegistrationRule {
-  allowWhenHumanExists: boolean;
-  allowWhenNoHumanWithAccount: boolean;
-}
 
 /** Who this deployment says it is, to a client that has to address it by name. */
 export interface DeploymentIdentity {
@@ -70,7 +70,13 @@ export interface Deployment {
   readonly rules: DeploymentRules;
   /** The billing service, or null on a self-hosted deployment. The only source of "is billing present". */
   readonly billing: BillingRuntime | null;
-  readonly additionalRegistrations: boolean;
+  /**
+   * `ALLOWED_REGISTRATION_EMAILS`, normalised to lower case. Read only where
+   * `rules.registration` is `listed`; `*` admits anyone.
+   */
+  readonly registrationEmails: ReadonlySet<string>;
+  /** `CLI_BOOTSTRAP_TOKEN_DIGEST`, or null where the deployment has none. */
+  readonly bootstrapTokenDigest: string | null;
   /**
    * Public identity and console origin, validated and memoized.
    *
@@ -132,7 +138,7 @@ export interface Deployment {
 }
 
 /** The subset the pure policy helpers below decide on. */
-export type DeploymentPolicy = Pick<Deployment, "rules" | "additionalRegistrations">;
+export type DeploymentPolicy = Pick<Deployment, "rules" | "registrationEmails">;
 
 function resolveIdentity(env: Env, requestUrl: string | undefined): DeploymentIdentity {
   const id = env.DEPLOYMENT_ID;
@@ -252,6 +258,17 @@ function oauthIssuer(env: Env): string | null {
 }
 
 /**
+ * `ALLOWED_REGISTRATION_EMAILS` as the set registration is checked against:
+ * comma-separated, trimmed and in lower case, so an entry matches however a
+ * person capitalises the address they sign up with.
+ */
+function registrationEmails(raw: string | undefined): ReadonlySet<string> {
+  return new Set(
+    (raw ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean),
+  );
+}
+
+/**
  * The one derivation of deployment shape from the environment.
  *
  * Called by `requestScope` for a request and directly by the scheduled
@@ -267,8 +284,8 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
     mode,
     rules: DEPLOYMENT_RULES[mode],
     billing,
-    additionalRegistrations:
-      env.ALLOW_ADDITIONAL_REGISTRATIONS?.trim().toLowerCase() === "true",
+    registrationEmails: registrationEmails(env.ALLOWED_REGISTRATION_EMAILS),
+    bootstrapTokenDigest: env.CLI_BOOTSTRAP_TOKEN_DIGEST?.trim().toLowerCase() || null,
     identity(): DeploymentIdentity {
       identity ??= resolveIdentity(env, requestUrl);
       return identity;
@@ -290,34 +307,21 @@ export function resolveDeployment(env: Env, requestUrl?: string): Deployment {
   };
 }
 
-/** One rule value drives both the advisory registration read and the atomic insert guard. */
-export function registrationRule(
-  policy: DeploymentPolicy,
-  claimRegistration: boolean,
-): RegistrationRule {
-  if (policy.rules.registration === "open") {
-    return {
-      allowWhenHumanExists: true,
-      allowWhenNoHumanWithAccount: true,
-    };
-  }
-  return {
-    allowWhenHumanExists: policy.additionalRegistrations,
-    allowWhenNoHumanWithAccount: claimRegistration,
-  };
+/**
+ * Whether a person with `email` may register a new account: anyone on a
+ * hosted deployment; on a self-host, only an email it lists. A claim adopts
+ * the account a CLI already created rather than registering a new one, so it
+ * is never asked this.
+ */
+export function registrationAllowed(policy: DeploymentPolicy, email: string | null): boolean {
+  if (policy.rules.registration === "open") return true;
+  const emails = policy.registrationEmails;
+  return emails.has("*") || (email !== null && emails.has(email.trim().toLowerCase()));
 }
 
-export function registrationAllowed(
-  rule: RegistrationRule,
-  state: { humanExists: boolean; accountExists: boolean },
-): boolean {
-  return state.humanExists
-    ? rule.allowWhenHumanExists
-    : !state.accountExists || rule.allowWhenNoHumanWithAccount;
-}
-
-export function registrationUnrestricted(rule: RegistrationRule): boolean {
-  return rule.allowWhenHumanExists && rule.allowWhenNoHumanWithAccount;
+/** Whether anyone at all could register here, which is what the console asks before offering it. */
+export function registrationOpen(policy: DeploymentPolicy): boolean {
+  return policy.rules.registration === "open" || policy.registrationEmails.size > 0;
 }
 
 export function shouldProvisionDefaultOrganization(
@@ -340,7 +344,7 @@ export interface BootstrapDecision {
   userId: string;
   createdAt: string;
   recoveryEndsAt: string | null;
-  requiresEmptyDeployment: boolean;
+  admission: DeploymentRules["bootstrap"]["admission"];
   rateLimited: boolean;
   /**
    * Whether the account is this token's own — derived from the token, so no
@@ -366,7 +370,7 @@ export function bootstrapDecision(
     userId: `service-${accountId}`,
     createdAt: new Date(input.nowMs).toISOString(),
     recoveryEndsAt,
-    requiresEmptyDeployment: bootstrap.requiresEmptyDeployment,
+    admission: bootstrap.admission,
     rateLimited: bootstrap.rateLimited,
     accountPerToken: bootstrap.accountId === "hashed",
   };

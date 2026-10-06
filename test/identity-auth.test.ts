@@ -37,7 +37,7 @@ async function signup(email: string): Promise<{ cookie: string; organizationId: 
     method: "POST",
     headers: { "content-type": "application/json", origin: ORIGIN },
     body: JSON.stringify({ name: email.split("@")[0], email, password: "correct-horse-42" }),
-  }, new Proxy(env, { get(target, key) { return key === "BILLING" ? {} : key === "ALLOW_ADDITIONAL_REGISTRATIONS" ? "true" : Reflect.get(target, key); } }) as Env);
+  }, new Proxy(env, { get(target, key) { return key === "BILLING" ? {} : Reflect.get(target, key); } }) as Env);
   expect(response.status, await response.clone().text()).toBe(200);
   const user = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email = ?")
     .bind(email)
@@ -190,10 +190,10 @@ describe("operator authentication", () => {
     expect(rejected.status).toBe(401);
   });
 
-  it("returns the stable registration-disabled error when public signup is off", async () => {
+  it("returns the stable registration-disabled error for an email the deployment does not list", async () => {
     const closedEnv = new Proxy(env, {
       get(target, property, receiver) {
-        if (property === "ALLOW_ADDITIONAL_REGISTRATIONS") return "false";
+        if (property === "ALLOWED_REGISTRATION_EMAILS") return "someone-else@example.test";
         return Reflect.get(target, property, receiver);
       },
     }) as Env;

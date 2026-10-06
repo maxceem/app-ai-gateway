@@ -13,7 +13,7 @@
   "vars": {
     "SECRET_VAULT_MODE": "local",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": "1",
-    "ALLOW_ADDITIONAL_REGISTRATIONS": "false"
+    "ALLOWED_REGISTRATION_EMAILS": ""
   },
   // The deploy script generates DEPLOYMENT_ID once and reuses its deployed binding.
   // Nightly maintenance: retention, expired accounts and authorizations.

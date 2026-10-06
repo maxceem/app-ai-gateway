@@ -17,7 +17,7 @@ const AUTH_MESSAGES: Record<string, string> = {
   CREDENTIAL_ACCOUNT_NOT_FOUND: "This account signs in with Google.",
   SESSION_EXPIRED: "Your session expired. Sign in again.",
   // Surfaced by the gateway rather than Better Auth, but shown on the same screens.
-  registration_disabled: "Public registration is disabled for this deployment.",
+  registration_disabled: "This email address is not allowed to register on this gateway.",
   session_required: "Create a sign-in on this page before approving this request.",
   account_exists: "This sign-in already has an account. Sign out, then create a new sign-in to claim this one.",
 };

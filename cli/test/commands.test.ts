@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, stat, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -867,7 +868,7 @@ test("pending setup domain resumes without bootstrap and preserves current inven
           { name: "DEPLOYMENT_ID", type: "plain_text", text: "deployment-1" },
           { name: "DB", type: "d1", id: "db" },
           { name: "CUSTOM_SETTING", type: "plain_text", text: "current-value" },
-          { name: "ALLOW_ADDITIONAL_REGISTRATIONS", type: "plain_text", text: "true" },
+          { name: "ALLOWED_REGISTRATION_EMAILS", type: "plain_text", text: "owner@example.com" },
           {
             name: "ORG_QUOTA",
             type: "durable_object_namespace",
@@ -929,11 +930,11 @@ test("pending setup domain resumes without bootstrap and preserves current inven
   const saved = installations[journal.id]!;
   assert.equal(saved.pendingDomain, undefined);
   assert.equal(saved.vars?.["CUSTOM_SETTING"], "current-value");
-  assert.equal(saved.vars?.["ALLOW_ADDITIONAL_REGISTRATIONS"], "true");
+  assert.equal(saved.vars?.["ALLOWED_REGISTRATION_EMAILS"], "owner@example.com");
   const generated = JSON.parse(
     await readFile(join(dir, "deployments", journal.id, "wrangler.json"), "utf8"),
   ) as { vars: Record<string, string> };
-  assert.equal(generated.vars["ALLOW_ADDITIONAL_REGISTRATIONS"], "true");
+  assert.equal(generated.vars["ALLOWED_REGISTRATION_EMAILS"], "owner@example.com");
   assert.ok(saved.domains?.includes("existing.example.com"));
 });
 
@@ -1164,6 +1165,17 @@ async function freshInstall(
   bootstrapAnswers: (attempt: number) => unknown,
 ) {
   const cf = cfMock();
+  // The Worker secrets each deploy uploaded, read before the CLI deletes their file.
+  const uploaded: Record<string, string>[] = [];
+  const run = cf.run;
+  cf.run = async function (args: string[], options?: unknown) {
+    const at = args.indexOf("--secrets-file");
+    if (at >= 0) {
+      const file = args[at + 1]!;
+      uploaded.push(JSON.parse(await readFile(file, "utf8")) as Record<string, string>);
+    }
+    return run.call(this, args, options as never);
+  };
   const bodies: unknown[] = [];
   const ctx = stubContext({
     state: { installations: {} },
@@ -1186,14 +1198,14 @@ async function freshInstall(
     Object.keys((ctx.state as { installations: Record<string, unknown> }).installations)[0];
   const artifact = async () =>
     ({ directory: releaseDirectory, config: {}, manifest: { version: "0.1.0" } }) as never;
-  const run = deploymentCommand(
+  const installing = deploymentCommand(
     ctx,
     "deployment setup",
     { name: "fresh", "no-input": true, yes: true },
     cf,
     artifact,
   );
-  return { run, bodies, ctx };
+  return { run: installing, bodies, ctx, uploaded };
 }
 
 test("the warming retry backs off, gives up, and knows which failures to repeat", async () => {
@@ -1294,6 +1306,27 @@ test("a bootstrap that only says 'not yet' is retried on the same token", async 
   // Retried unchanged, which is the whole reason retrying is safe: the same
   // token names the same account, however many times it arrives.
   assert.equal(new Set(bodies.map((body) => JSON.stringify(body))).size, 1);
+});
+
+test("setup stores the digest of the one token it bootstraps with, beside the other secrets", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agw-digest-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const releaseDir = join(dir, "artifact");
+  await mkdir(releaseDir);
+  const { run, bodies, uploaded } = await freshInstall(dir, releaseDir, () => ({
+    deployment: { id: "deployment-1" },
+    account: { id: "private-1" },
+    result: { credential: { token: "management" } },
+  }));
+  await run;
+  assert.equal(uploaded.length, 1);
+  const { token } = bodies[0] as { token: string };
+  assert.equal(
+    uploaded[0]!["CLI_BOOTSTRAP_TOKEN_DIGEST"],
+    createHash("sha256").update(token).digest("hex"),
+  );
+  assert.notEqual(uploaded[0]!["CLI_BOOTSTRAP_TOKEN_DIGEST"], token);
+  assert.equal(uploaded[0]!["SECRET_VAULT_LOCAL_KEK_V1"], "SENTINEL-KEK");
 });
 
 test("a bootstrap that refuses is not retried into a rate limit", async (t) => {

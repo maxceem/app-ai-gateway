@@ -79,7 +79,7 @@ describe("SignupPage", () => {
       [CAPABILITIES_URL]: capabilities(),
       "/v1/auth/sign-up/email": {
         status: 403,
-        body: { error: { code: "registration_disabled", message: "Public registration is disabled" } },
+        body: { error: { code: "registration_disabled", message: "Not allowed to register" } },
       },
     });
 

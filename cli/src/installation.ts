@@ -113,7 +113,7 @@ export async function configFile(
     ],
     vars: {
       ...artifact.config.vars,
-      ALLOW_ADDITIONAL_REGISTRATIONS: "false",
+      ALLOWED_REGISTRATION_EMAILS: "",
       ...journal.vars,
       DEPLOYMENT_ID: journal.id,
     },

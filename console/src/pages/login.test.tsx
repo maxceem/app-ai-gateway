@@ -114,7 +114,7 @@ describe("LoginPage OAuth failures", () => {
     renderPublic(<LoginPage />, { route: "/login?error=registration_disabled" });
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/does not accept new accounts/i);
+    expect(alert.textContent).toMatch(/can.t register here/i);
   });
 
   it("shows nothing extra on an ordinary sign-in visit", async () => {

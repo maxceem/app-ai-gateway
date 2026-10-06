@@ -103,17 +103,27 @@ supply a value for either.
 
 ## Sign-in
 
-### `ALLOW_ADDITIONAL_REGISTRATIONS`
+### `ALLOWED_REGISTRATION_EMAILS`
 
-Plain variable, default `false`. An empty deployment allows its first person to
-register and creates an account they own. Once a person exists, `false` keeps
-new registration closed while existing people can sign in. Set it to `true` to
-let additional people register; each receives a separate account and no access
-to anyone else's account.
+Plain variable, empty by default. The email addresses that may create an
+account in the console, separated by commas and matched without regard to
+case. Each listed person who registers gets an account of their own, with no
+access to anyone else's. Nobody else can register, and an empty list means
+nobody can. `*` lets anyone register.
 
-If you initialize with the CLI first, the deployment already has an account, so
-the first person must register through that CLI's protected claim flow. This
-variable never lets an unknown visitor take that account.
+The list only decides who may register. Removing an address does not remove
+that person or stop them signing in.
+
+It does not apply to claiming the account `agw deployment setup` creates.
+Only the CLI holding that account's key can start a claim, so `agw account
+claim` works with any email.
+
+### `CLI_BOOTSTRAP_TOKEN_DIGEST`
+
+Secret, set by `agw deployment setup` when it deploys the Worker. It is the
+SHA-256 of the token the CLI then creates its account with, so that account is
+the CLI's however soon anyone else finds the address. Without it, nothing can
+create an account without signing in. You never set it yourself.
 
 ### `DEPLOYMENT_ID`
 
@@ -147,10 +157,9 @@ Cloud with the authorised redirect URI:
 https://YOUR-HOST/v1/auth/callback/google
 ```
 
-Google follows the same registration policy as email and password: it can create
-the first account on an empty deployment, or separate additional accounts when
-additional registration is enabled. A verified pending claim can create the
-human owner of its existing account through the scoped Google flow.
+Google follows the same registration rule as email and password: only a listed
+email can create an account. A pending claim can create the person who owns its
+existing account through the scoped Google flow, with any email.
 
 Signing in with Google never joins a sign-in that already exists for the same
 email address. If you registered that address with a password, keep using the
@@ -332,7 +341,8 @@ so changing either means deploying again.
 | `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | Variable | `1` |
 | `SECRET_VAULT_KMS_URL`, `SECRET_VAULT_KMS_TOKEN` | Secret | Required in `kms` mode |
 | `JWT_SECRET`, `BETTER_AUTH_SECRET` | Secret | Generated |
-| `ALLOW_ADDITIONAL_REGISTRATIONS` | Variable | `false` |
+| `ALLOWED_REGISTRATION_EMAILS` | Variable | Empty |
+| `CLI_BOOTSTRAP_TOKEN_DIGEST` | Secret | Set by `agw deployment setup` |
 | `DEPLOYMENT_ID` | Variable | Automatically generated and preserved on updates |
 | `CLI_CONSOLE_ORIGIN` | Variable | Current origin |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Secret | Unset |

@@ -1,6 +1,6 @@
 ---
 title: Deploy to Cloudflare
-description: Deploy from the Cloudflare form and initialize your account privately.
+description: Deploy from the Cloudflare form and register with your email.
 ---
 
 For the simplest terminal setup, install `@maxceem/agw` and run
@@ -55,7 +55,7 @@ Fill in these values:
 | `SECRET_VAULT_LOCAL_KEK_V1` | Your private vault key. |
 | `SECRET_VAULT_MODE` | `local` |
 | `SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION` | `1` |
-| `ALLOW_ADDITIONAL_REGISTRATIONS` | `false` |
+| `ALLOWED_REGISTRATION_EMAILS` | Your email address. Add more, separated by commas, for anyone else who should have an account of their own. |
 
 The deploy script generates the deployment ID and internal signing secrets once,
 applies migrations and deploys the console and Worker. Later builds read and
@@ -66,43 +66,13 @@ existing deployment, it stops rather than risking a change to its identity.
 Check `https://YOUR-WORKER.workers.dev/v1/healthz` and confirm `"vault":"ok"`.
 The generated deployment ID is available at `/v1/cli/capabilities`.
 
-## Initialize and claim privately
+## Register
 
-An empty deployment lets its first person register in the console. To initialize
-through the CLI instead, clone your fork locally, install Node.js 22.19 or later,
-and run the helper from that checkout. Once the helper creates its account,
-ordinary registration cannot take ownership of it:
-
-```sh
-node scripts/bootstrap-account.mjs https://YOUR-WORKER.workers.dev
-npm install -g @maxceem/agw
-agw deployment connect --url https://YOUR-WORKER.workers.dev --key-stdin < .agw-bootstrap/management-key
-agw account claim
-```
-
-The helper saves retry proofs before its request and writes the management
-credential to `.agw-bootstrap/management-key` with private permissions. It never
-prints the credential. Keep that directory if a response is lost and repeat the
-same command. Complete initialization promptly because protected remote key
-recovery lasts 15 minutes.
-
-Open the claim URL that `agw account claim` prints in your own browser, check
-the account it names, create your sign-in on that page and approve. If that
-browser is already signed in as someone else, the page asks you to sign out
-first. The CLI keeps its access afterwards; run `agw account logout` or revoke
-its key on the **Access** page when you no longer want it. Existing
-accounts continue to sign in normally. If you enable
-additional registration, each new person receives a separate account and no
-access to this claimed one.
-
-<Callout type="warn" title="Initialize straight after deploying">
-  A deployment with no account yet belongs to whoever takes it first, whether by
-  registering in the console or by running the helper above. Do that yourself as
-  soon as the health check passes. A deployment nobody has taken holds no
-  provider credentials, so nothing of yours is exposed; if someone else does get
-  there first, delete its D1 database, create it again, apply the migrations and
-  deploy once more to start from empty.
-</Callout>
+Open `https://YOUR-WORKER.workers.dev` and create your sign-in with the email
+you listed in `ALLOWED_REGISTRATION_EMAILS`. It gets an account of its own; an
+address that is not listed cannot register. To let someone else in later, add
+their email to the variable in the Worker's settings. See
+[`ALLOWED_REGISTRATION_EMAILS`](/self-hosting/configuration#allowed_registration_emails).
 
 Follow [Quickstart](/quickstart) to add a provider and an app, or
 [Custom domain and rate limiting](/self-hosting/custom-domain) to add a hostname.

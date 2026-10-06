@@ -1,8 +1,6 @@
 import { env } from "cloudflare:workers";
-import { createCfAuthTables } from "@maxceem/cf-auth/schema";
-import { getTableName, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { database } from "../src/db";
 import { prepared } from "../src/db/sql";
 import {
   ACCOUNT_RECOVERY_MS,
@@ -13,80 +11,63 @@ import {
 } from "../src/policy/accounts";
 import {
   registrationAllowed,
-  registrationRule,
+  registrationOpen,
   resolveDeployment,
 } from "../src/policy/deployment";
 import {
   accountAccessCondition,
   expiredUnclaimedAccountsCondition,
-  registrationCreateCondition,
 } from "../src/policy/sql";
 
 const actions = ["read", "setup", "proxy"] as const;
 const DAY = 86_400_000;
-const selfHostedRegistrationExpected = {
-  "false:false": [true, false, false, false],
-  "false:true": [true, false, true, true],
-  "true:false": [true, true, false, false],
-  "true:true": [true, true, true, true],
-} as const;
 
-function policy(mode: "cloud" | "self_hosted", additional = false) {
+function policy(mode: "cloud" | "self_hosted", emails?: string) {
   return resolveDeployment({
     ...(mode === "cloud" ? { BILLING: {} } : {}),
-    ALLOW_ADDITIONAL_REGISTRATIONS: additional ? "  TrUe " : "false",
+    ...(emails === undefined ? {} : { ALLOWED_REGISTRATION_EMAILS: emails }),
   } as unknown as Env);
 }
 
 describe("deployment registration policy", () => {
-  it("keeps pure preflight and configured-table SQL decisions in parity", async () => {
-    const prefix = `policy_${crypto.randomUUID().replaceAll("-", "")}_`;
-    const tables = createCfAuthTables({ tablePrefix: prefix });
-    const userTable = getTableName(tables.user);
-    const organizationTable = getTableName(tables.organization);
-    await env.DB.exec(
-      `CREATE TABLE "${userTable}" (kind TEXT NOT NULL);
-       CREATE TABLE "${organizationTable}" (id TEXT NOT NULL);`,
-    );
-
-    for (const mode of ["cloud", "self_hosted"] as const) {
-      for (const additional of [false, true]) {
-        for (const claim of [false, true]) {
-          const rule = registrationRule(policy(mode, additional), claim);
-          for (const humanExists of [false, true]) {
-            for (const accountExists of [false, true]) {
-              await env.DB.batch([
-                env.DB.prepare(`DELETE FROM "${userTable}"`),
-                env.DB.prepare(`DELETE FROM "${organizationTable}"`),
-              ]);
-              if (humanExists) {
-                await env.DB.prepare(`INSERT INTO "${userTable}"(kind) VALUES ('human')`).run();
-              }
-              if (accountExists) {
-                await env.DB.prepare(`INSERT INTO "${organizationTable}"(id) VALUES ('account')`)
-                  .run();
-              }
-              const stateIndex = (humanExists ? 2 : 0) + (accountExists ? 1 : 0);
-              const key = `${String(claim)}:${String(additional)}` as
-                keyof typeof selfHostedRegistrationExpected;
-              const selfHostedExpected = selfHostedRegistrationExpected[key][stateIndex];
-              const expected = mode === "cloud" ? true : selfHostedExpected;
-              expect(registrationAllowed(rule, { humanExists, accountExists })).toBe(expected);
-              const row = await database(env.DB).get<{ allowed: number }>(sql`
-                SELECT ${registrationCreateCondition(rule, tables)} AS allowed
-              `);
-              expect(Boolean(row?.allowed), JSON.stringify({
-                mode,
-                additional,
-                claim,
-                humanExists,
-                accountExists,
-              })).toBe(expected);
-            }
-          }
-        }
-      }
+  it("lets anyone register on cloud, whatever a self-host's list says", () => {
+    for (const emails of [undefined, "", "owner@example.com"]) {
+      const cloud = policy("cloud", emails);
+      expect(registrationOpen(cloud)).toBe(true);
+      expect(registrationAllowed(cloud, "stranger@example.com")).toBe(true);
+      expect(registrationAllowed(cloud, null)).toBe(true);
     }
+  });
+
+  it("closes a self-host whose list is unset or empty", () => {
+    for (const emails of [undefined, "", " , ,"]) {
+      const selfHost = policy("self_hosted", emails);
+      expect(registrationOpen(selfHost)).toBe(false);
+      expect(registrationAllowed(selfHost, "owner@example.com")).toBe(false);
+    }
+  });
+
+  it("admits only a listed email on a self-host, however either side is spelled", () => {
+    const selfHost = policy("self_hosted", " Owner@Example.com ,second@example.com,");
+    expect(registrationOpen(selfHost)).toBe(true);
+    expect(registrationAllowed(selfHost, "owner@example.com")).toBe(true);
+    expect(registrationAllowed(selfHost, "  OWNER@example.COM ")).toBe(true);
+    expect(registrationAllowed(selfHost, "second@example.com")).toBe(true);
+    expect(registrationAllowed(selfHost, "stranger@example.com")).toBe(false);
+    expect(registrationAllowed(selfHost, "owner@example.com.evil")).toBe(false);
+    expect(registrationAllowed(selfHost, null)).toBe(false);
+  });
+
+  it("admits anyone on a self-host that lists *", () => {
+    const selfHost = policy("self_hosted", "*");
+    expect(registrationOpen(selfHost)).toBe(true);
+    expect(registrationAllowed(selfHost, "stranger@example.com")).toBe(true);
+  });
+
+  it("reads the bootstrap token digest as lower-case hex, or null where unset", () => {
+    expect(policy("self_hosted").bootstrapTokenDigest).toBeNull();
+    expect(resolveDeployment({ CLI_BOOTSTRAP_TOKEN_DIGEST: " ABC123 " } as unknown as Env).bootstrapTokenDigest)
+      .toBe("abc123");
   });
 });
 

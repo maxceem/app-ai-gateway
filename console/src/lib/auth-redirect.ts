@@ -176,15 +176,15 @@ const OAUTH_ERRORS: Record<string, OAuthErrorNotice> = {
   },
   registration_disabled: {
     tone: "destructive",
-    title: "This gateway does not accept new accounts",
+    title: "This email can't register here",
     description:
-      "Your Google account is not registered here. Ask an owner or admin to add you, then sign in.",
+      "Your Google account's email is not allowed to create an account on this gateway.",
   },
   signup_disabled: {
     tone: "destructive",
-    title: "This gateway does not accept new accounts",
+    title: "This email can't register here",
     description:
-      "Your Google account is not registered here. Ask an owner or admin to add you, then sign in.",
+      "Your Google account's email is not allowed to create an account on this gateway.",
   },
   // Better Auth refuses to join a Google login to a sign-in it did not create,
   // so this is what an email that already has a password gets back.

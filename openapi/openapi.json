@@ -11261,7 +11261,7 @@
         ],
         "operationId": "bootstrapCliAccount",
         "summary": "Initialize a recoverable CLI account",
-        "description": "Persist the random token before sending: its digest is the operation's id, and an identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization is public too and creates the deployment's single initial account, so whoever initializes an empty deployment first owns it, exactly as its first console registration does; it is not rate limited, because the only thing a limit could refuse on a deployment nobody owns yet is its own installer retrying, and every caller after the first is refused permanently anyway. All responses are no-store.",
+        "description": "Persist the random token before sending: its digest is the operation's id, and an identical retry returns the same account and protected credential during its exchange window. Cloud initialization is public and rate limited. Self-hosted initialization creates the deployment's single unclaimed account, and only for the token whose SHA-256 the deploying CLI stored as the Worker secret `CLI_BOOTSTRAP_TOKEN_DIGEST`; any other token, or a deployment without that secret, is refused with 403. It is not rate limited, because only the deploying CLI can pass it, and a limit would refuse that CLI retrying a deployment whose storage has not come up yet. All responses are no-store.",
         "requestBody": {
           "required": true,
           "content": {
