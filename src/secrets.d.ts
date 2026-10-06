@@ -8,7 +8,9 @@ interface Env {
   CLI_CONSOLE_ORIGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
-  ALLOW_ADDITIONAL_REGISTRATIONS?: string;
+  // The SHA-256, in hex, of the token the CLI bootstraps a self-host with. Set
+  // only by the CLI that deployed the Worker; unset means no bootstrap.
+  CLI_BOOTSTRAP_TOKEN_DIGEST?: string;
   // How long an upstream provider may take to send its response headers, in
   // seconds. Unset means 120 s: reasoning models can think for a minute before
   // the first byte. The body streams for as long as it needs once headers land.
@@ -44,13 +46,14 @@ interface Env {
   // dropped with a warning. Not a secret.
   OAUTH_CLIENTS?: string;
   BILLING?: import("./billing/contract").BillingRuntime;
-  // The vault mode and KEK version are plain `vars` in wrangler.jsonc, so the
+  // The vault mode, KEK version and registration list are plain `vars` in wrangler.jsonc, so the
   // deploy form shows their defaults in clear text. `wrangler types` narrows a
   // var to the literal it finds there, which is wrong for any deployment that
   // overrides one in a profile overlay or in the dashboard; these declarations
   // merge the honest type back over it.
   SECRET_VAULT_MODE: string;
   SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
+  ALLOWED_REGISTRATION_EMAILS: string;
   // Vault credentials. Each is required only in its own SECRET_VAULT_MODE, and
   // src/vault validates the full per-mode set on first use rather than trusting
   // these optional markers. Higher local KEK versions are read by name.
@@ -67,7 +70,7 @@ declare namespace Cloudflare {
   CLI_CONSOLE_ORIGIN?: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
-    ALLOW_ADDITIONAL_REGISTRATIONS?: string;
+    CLI_BOOTSTRAP_TOKEN_DIGEST?: string;
     PROVIDER_TTFB_TIMEOUT_SECONDS?: string;
     MAINTENANCE_QUERY_BUDGET?: string;
     TERMS_OF_SERVICE_URL?: string;
@@ -80,6 +83,7 @@ declare namespace Cloudflare {
     BILLING?: import("./billing/contract").BillingRuntime;
     SECRET_VAULT_MODE: string;
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: string;
+    ALLOWED_REGISTRATION_EMAILS: string;
     SECRET_VAULT_KMS_URL?: string;
     SECRET_VAULT_KMS_TOKEN?: string;
     SECRET_VAULT_LOCAL_KEK_V1?: string;

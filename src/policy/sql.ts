@@ -1,8 +1,7 @@
-import type { DeploymentRules, RegistrationRule } from "./deployment";
+import type { DeploymentRules } from "./deployment";
 import type { AccountAccessMode } from "./accounts";
 import { UNCLAIMED_ACCESS_MS, requiresUnclaimedAccess } from "./accounts";
 import { sql, type SQL } from "drizzle-orm";
-import type { CfAuthTables } from "@maxceem/cf-auth/schema";
 
 /**
  * The predicates a guarded write carries into its own statement, as drizzle
@@ -23,30 +22,6 @@ export function humanOwnerCondition(organization: SQL): SQL {
     SELECT 1 FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
     WHERE m.organization_id=${organization} AND m.role='owner' AND u.kind='human'
   )`;
-}
-
-export function emptyDeploymentCondition(): SQL {
-  return sql`(NOT EXISTS (SELECT 1 FROM mgmt_organization)
-    AND NOT EXISTS (SELECT 1 FROM mgmt_user WHERE kind='human'))`;
-}
-
-export function registrationCreateCondition(
-  rule: RegistrationRule,
-  tables: CfAuthTables,
-): SQL {
-  return sql`
-    (
-      exists (select 1 from ${tables.user} where ${tables.user.kind} = 'human')
-      and ${rule.allowWhenHumanExists ? 1 : 0}
-    )
-    or (
-      not exists (select 1 from ${tables.user} where ${tables.user.kind} = 'human')
-      and (
-        ${rule.allowWhenNoHumanWithAccount ? 1 : 0}
-        or not exists (select 1 from ${tables.organization})
-      )
-    )
-  `;
 }
 
 /** The caller's clock, never earlier than SQLite's own. */

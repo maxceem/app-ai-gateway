@@ -58,7 +58,7 @@ config.main = "./worker/index.js";
 config.no_bundle = true;
 config.assets.directory = "./console";
 config.d1_databases = [{ binding: "DB", migrations_dir: "migrations" }];
-config.vars.ALLOW_ADDITIONAL_REGISTRATIONS = "false";
+config.vars.ALLOWED_REGISTRATION_EMAILS = "";
 await writeFile(join(out, "wrangler.json"), JSON.stringify(config, null, 2));
 const files = {};
 async function walk(dir) {

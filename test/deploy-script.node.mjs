@@ -190,7 +190,7 @@ test("deploy button masks the vault key and shows every setting in clear text", 
   assert.deepEqual(wranglerConfig.vars, {
     SECRET_VAULT_MODE: "local",
     SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION: "1",
-    ALLOW_ADDITIONAL_REGISTRATIONS: "false",
+    ALLOWED_REGISTRATION_EMAILS: "",
   });
 
   // Both halves of the form carry an explanation, and nothing in it is blank.

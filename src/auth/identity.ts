@@ -3,13 +3,10 @@ import type { OAuthSweepStatements } from "../core/account-lifecycle";
 import { mgmtAuthTables } from "../db/schema";
 import { GatewayError, type ErrorCode } from "../core/errors";
 import {
-  registrationAllowed as policyRegistrationAllowed,
-  registrationRule,
-  registrationUnrestricted,
+  registrationAllowed,
   shouldProvisionDefaultOrganization,
   type Deployment,
 } from "../policy/deployment";
-import { registrationCreateCondition } from "../policy/sql";
 import { oauthClients } from "./oauth-clients";
 import { gatewayOperationKinds, OPERATION_LIMITS } from "./operation-kinds";
 
@@ -57,42 +54,18 @@ export const OAUTH_ACCESS_TOKEN_PREFIX = "agw_oat_";
 export const OAUTH_REFRESH_TOKEN_PREFIX = "agw_ort_";
 export const CONSOLE_REQUEST_HEADER = "x-console-request";
 
-async function registrationState(env: Env): Promise<{
-  humanExists: boolean;
-  accountExists: boolean;
-}> {
-  const row = await env.DB.prepare(
-    `SELECT
-      EXISTS(SELECT 1 FROM mgmt_user WHERE kind='human') AS human_exists,
-      EXISTS(SELECT 1 FROM mgmt_organization) AS account_exists`,
-  ).first<{ human_exists: number; account_exists: number }>();
-  return {
-    humanExists: Boolean(row?.human_exists),
-    accountExists: Boolean(row?.account_exists),
-  };
-}
-
-export async function registrationOpen(deployment: Deployment, env: Env): Promise<boolean> {
-  return registrationAllowed(deployment, env, false);
-}
-
-async function registrationAllowed(
-  deployment: Deployment,
-  env: Env,
-  claimRegistration: boolean,
-): Promise<boolean> {
-  const rule = registrationRule(deployment, claimRegistration);
-  if (registrationUnrestricted(rule)) return true;
-  return policyRegistrationAllowed(rule, await registrationState(env));
-}
-
+/**
+ * Refuses a new person the deployment does not admit. A claim registers
+ * whoever the CLI holding the account's key sent, so only other registrations
+ * are checked against the deployment's list.
+ */
 async function assertRegistrationAllowed(
   deployment: Deployment,
-  env: Env,
+  email: string | null,
   claimRegistration: boolean,
   onDenied?: () => void,
 ): Promise<void> {
-  if (!(await registrationAllowed(deployment, env, claimRegistration))) {
+  if (!claimRegistration && !registrationAllowed(deployment, email)) {
     await registrationDenied(onDenied);
   }
 }
@@ -217,7 +190,6 @@ export async function createIdentityAuth(
   const origin = new URL(requestUrl).origin;
   const googleEnabled = googleAuthEnabled(env);
   const googleRedirectUri = googleEnabled ? googleRelayRedirectUri(env) : undefined;
-  const rule = registrationRule(deployment, claimRegistration);
   const realm = operationsRealm(deployment);
   // Read lazily by the claim kind, whose approval is this instance's own
   // `claimOrganization`: no request reaches it before it is built.
@@ -230,17 +202,8 @@ export async function createIdentityAuth(
     basePath: IDENTITY_AUTH_BASE_PATH,
     trustedOrigins: [origin],
     userHooks: {
-      beforeCreate: () =>
-        assertRegistrationAllowed(deployment, env, claimRegistration, onRegistrationDenied),
-      ...(!registrationUnrestricted(rule)
-        ? {
-            atomicCreateGuard: {
-              condition: (tables: typeof mgmtAuthTables) =>
-                registrationCreateCondition(rule, tables),
-              onDenied: onRegistrationDenied,
-            },
-          }
-        : {}),
+      beforeCreate: (user) =>
+        assertRegistrationAllowed(deployment, user.email, claimRegistration, onRegistrationDenied),
     },
     emailAndPassword: { enabled: true, revokeOtherSessionsOnPasswordChange: true },
     organizations: {

@@ -9,8 +9,8 @@ describe("authErrorMessage", () => {
   });
 
   it("translates the gateway's registration_disabled code", () => {
-    const error = new ApiError(403, "registration_disabled", "Public registration is disabled");
-    expect(authErrorMessage(error)).toMatch(/registration is disabled/i);
+    const error = new ApiError(403, "registration_disabled", "Not allowed to register");
+    expect(authErrorMessage(error)).toMatch(/not allowed to register/i);
   });
 
   it("keeps an unmapped but human-readable server message", () => {

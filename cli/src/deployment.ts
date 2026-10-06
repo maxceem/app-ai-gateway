@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { release, type ReleaseArtifact } from "./release.ts";
@@ -249,6 +249,9 @@ async function install(
   const secrets = {
     ...journal.secrets,
     SECRET_VAULT_LOCAL_KEK_V1: await ctx.store.vaultKey(journal.id),
+    // The Worker creates its account only for the token this digest is of, so
+    // the account is this CLI's however soon anyone else finds the address.
+    CLI_BOOTSTRAP_TOKEN_DIGEST: createHash("sha256").update(journal.bootstrap!.token).digest("hex"),
   };
   const secretPath = join(file.directory, "secrets.json");
   await writeFile(secretPath, JSON.stringify(secrets), {

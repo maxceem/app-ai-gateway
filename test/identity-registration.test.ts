@@ -13,13 +13,11 @@ vi.setConfig({ testTimeout: 30_000 });
 const ORIGIN = "https://example.test";
 const GOOGLE_CLIENT_ID = "test-google-client";
 
-function runtime(options: { additional?: boolean; cloud?: boolean; google?: boolean } = {}): Env {
+function runtime(options: { emails?: string; cloud?: boolean; google?: boolean } = {}): Env {
   return new Proxy(env, {
     get(target, property, receiver) {
       if (property === "BILLING") return options.cloud ? {} : undefined;
-      if (property === "ALLOW_ADDITIONAL_REGISTRATIONS") {
-        return options.additional ? "true" : "false";
-      }
+      if (property === "ALLOWED_REGISTRATION_EMAILS") return options.emails ?? "";
       if (property === "GOOGLE_CLIENT_ID") {
         return options.google ? GOOGLE_CLIENT_ID : undefined;
       }
@@ -32,152 +30,6 @@ function runtime(options: { additional?: boolean; cloud?: boolean; google?: bool
       return Reflect.get(target, property, receiver);
     },
   }) as Env;
-}
-
-type PreparedStatement = ReturnType<Env["DB"]["prepare"]>;
-
-function interceptFirst(
-  statement: PreparedStatement,
-  runFirst: (run: () => Promise<unknown>) => Promise<unknown>,
-): PreparedStatement {
-  return new Proxy(statement, {
-    get(target, property) {
-      if (property === "bind") {
-        return (...values: unknown[]) => interceptFirst(target.bind(...values), runFirst);
-      }
-      if (property === "first") return () => runFirst(() => target.first());
-      if (property === "all") return () => runFirst(() => target.all());
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-/**
- * Makes two initializers observe the same empty state before either may write.
- * Without this barrier, password hashing often serializes requests enough that
- * even a check-then-act implementation appears safe.
- */
-function registrationBarrierEnv(base: Env, skipReads: number): Env {
-  let arrivals = 0;
-  let release!: () => void;
-  const barrier = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const db = new Proxy(base.DB, {
-    get(target, property, receiver) {
-      if (property !== "prepare") return Reflect.get(target, property, receiver);
-      return (query: string) => {
-        const statement = target.prepare(query);
-        const registrationRead = query.includes("human_exists");
-        if (!registrationRead) return statement;
-        return interceptFirst(statement, async (run) => {
-          const result = await run();
-          arrivals += 1;
-          if (arrivals <= skipReads) return result;
-          if (arrivals === skipReads + 2) release();
-          await barrier;
-          return result;
-        });
-      };
-    },
-  });
-  return new Proxy(base, {
-    get(target, property, receiver) {
-      return property === "DB" ? db : Reflect.get(target, property, receiver);
-    },
-  }) as Env;
-}
-
-function signupWinsBootstrapEnv(base: Env): {
-  env: Env;
-  guardedInsertCount: () => number;
-  bootstrapPreflightCount: () => number;
-} {
-  let signupFinalReady!: () => void;
-  const signupFinal = new Promise<void>((resolve) => {
-    signupFinalReady = resolve;
-  });
-  let bootstrapReady!: () => void;
-  const bootstrapChecked = new Promise<void>((resolve) => {
-    bootstrapReady = resolve;
-  });
-  let signupInserted!: () => void;
-  const inserted = new Promise<void>((resolve) => {
-    signupInserted = resolve;
-  });
-  let bootstrapBatchFinished!: () => void;
-  const bootstrapBatch = new Promise<void>((resolve) => {
-    bootstrapBatchFinished = resolve;
-  });
-  let registrationReads = 0;
-  let guardedInserts = 0;
-  let bootstrapPreflights = 0;
-  let bootstrapMayBatch = false;
-  const db = new Proxy(base.DB, {
-    get(target, property, receiver) {
-      if (property === "batch") {
-        return async (statements: PreparedStatement[]) => {
-          try {
-            return await target.batch(statements);
-          } finally {
-            // A batch the engine refuses throws — its completion asserts it
-            // landed, and rolls the whole batch back when it did not — and has
-            // observed the new human all the same.
-            if (bootstrapMayBatch) bootstrapBatchFinished();
-          }
-        };
-      }
-      if (property !== "prepare") return Reflect.get(target, property, receiver);
-      return (query: string) => {
-        const statement = target.prepare(query);
-        if (query.includes("human_exists")) {
-          registrationReads += 1;
-          if (registrationReads === 1) return statement; // Public route pre-check.
-          return interceptFirst(statement, async (run) => {
-            const result = await run();
-            signupFinalReady();
-            await bootstrapChecked;
-            return result;
-          });
-        }
-        if (query.includes("SELECT 1 WHERE NOT (NOT EXISTS (SELECT 1 FROM mgmt_organization)")) {
-          bootstrapPreflights += 1;
-          return interceptFirst(statement, async (run) => {
-            const result = await run();
-            await signupFinal;
-            bootstrapReady();
-            await inserted;
-            bootstrapMayBatch = true;
-            return result;
-          });
-        }
-        const normalized = query.toLowerCase().replaceAll('"', "").replace(/\s+/gu, " ");
-        if (normalized.includes("insert into mgmt_user")) {
-          return interceptFirst(statement, async (run) => {
-            const result = await run();
-            guardedInserts += 1;
-            signupInserted();
-            // Keep signup between user insertion and account provisioning until
-            // bootstrap's guarded batch has observed the new human.
-            await bootstrapBatch;
-            return result;
-          });
-        }
-        return statement;
-      };
-    },
-  });
-  const proxied = new Proxy(base, {
-    get(target, property, receiver) {
-      return property === "DB" ? db : Reflect.get(target, property, receiver);
-    },
-  }) as Env;
-  return {
-    env: proxied,
-    guardedInsertCount: () => guardedInserts,
-    bootstrapPreflightCount: () => bootstrapPreflights,
-  };
 }
 
 async function authRequest(testEnv: Env, path: string, body: Record<string, unknown>) {
@@ -305,154 +157,60 @@ beforeEach(async () => {
 
 afterEach(() => vi.restoreAllMocks());
 
+/** The account each listed person owns, by email. */
+async function ownedAccount(email: string): Promise<string | undefined> {
+  const row = await env.DB.prepare(
+    `SELECT m.organization_id FROM mgmt_organization_user m
+     JOIN mgmt_user u ON u.id=m.user_id WHERE u.email=? AND m.role='owner'`,
+  ).bind(email).first<{ organization_id: string }>();
+  return row?.organization_id;
+}
+
 describe("self-hosted registration policy", () => {
-  it("atomically admits only one of two first public registrations", async () => {
-    const testEnv = registrationBarrierEnv(runtime(), 2);
-    const responses = await Promise.all([
-      signUp(testEnv, "race-one@example.test"),
-      signUp(testEnv, "race-two@example.test"),
-    ]);
-    expect(responses.map((response) => response.status).sort()).toEqual([200, 403]);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user WHERE kind='human'").first("n"))
-      .toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user_account").first("n")).toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization_user").first("n"))
-      .toBe(1);
-  });
-
-  it("atomically chooses one initializer between public signup and CLI bootstrap", async () => {
-    const barrier = signupWinsBootstrapEnv(runtime());
-    const testEnv = barrier.env;
-    const [signup, bootstrap] = await Promise.all([
-      signUp(testEnv, "signup-race@example.test"),
-      worker.request(`${ORIGIN}/v1/cli/bootstrap`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token: crypto.randomUUID() }),
-      }, testEnv),
-    ]);
-    expect(signup.status, await signup.clone().text()).toBe(200);
-    expect(bootstrap.status, await bootstrap.clone().text()).toBe(409);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization_user").first("n"))
-      .toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user_account").first("n"))
-      .toBe(signup.status === 200 ? 1 : 0);
-    // The engine opens the bootstrap before its account is attempted, so the
-    // one that lost the race is left pending, unused, until it expires.
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_operation WHERE kind='bootstrap' AND state='completed'").first("n"))
-      .toBe(bootstrap.status === 200 ? 1 : 0);
-    expect(barrier.guardedInsertCount()).toBe(1);
-    expect(barrier.bootstrapPreflightCount()).toBe(1);
-  });
-
-  it("preserves adapter ids, dates, and selected fields on guarded creates", async () => {
-    const testEnv = runtime({ additional: true });
-    const auth = await createIdentityAuth(resolveDeployment(testEnv), testEnv, ORIGIN, { suppressDefaultOrganization: true });
-    const context = await auth.auth.$context;
-    const createdAt = new Date("2026-01-02T03:04:05.000Z");
-    const updatedAt = new Date("2026-02-03T04:05:06.000Z");
-    const selected = await context.adapter.create({
-      model: "user",
-      forceAllowId: true,
-      select: ["id", "email"],
-      data: {
-        id: "pinned-user-id",
-        name: "Pinned",
-        email: "pinned@example.test",
-        emailVerified: true,
-        image: null,
-        kind: "human",
-        createdAt,
-        updatedAt,
-      },
-    });
-    expect(selected).toEqual({ id: "pinned-user-id", email: "pinned@example.test" });
-    const row = await env.DB.prepare(
-      "SELECT id,email,email_verified,kind,created_at,updated_at FROM mgmt_user WHERE email=?",
-    ).bind("pinned@example.test").first<Record<string, unknown>>();
-    expect(row).toEqual({
-      id: "pinned-user-id",
-      email: "pinned@example.test",
-      email_verified: 1,
-      kind: "human",
-      created_at: createdAt.getTime(),
-      updated_at: updatedAt.getTime(),
-    });
-
-    const generatedData = {
-      id: "ignored-user-id",
-      name: "Generated",
-      email: "generated@example.test",
-      kind: "human",
-      emailVerified: false,
-      createdAt,
-      updatedAt,
-    };
-    const generated = await context.adapter.create<{ id?: string; name: string; email: string }>({
-      model: "user",
-      forceAllowId: false,
-      data: generatedData,
-    });
-    expect(generated.id).not.toBe("ignored-user-id");
-    expect(generated.id).toEqual(expect.any(String));
-  });
-
-  it("lets the first person register as an account owner, then blocks new people but preserves sign-in", async () => {
-    const testEnv = runtime();
-    const before = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
-    await expect(before.json()).resolves.toMatchObject({ registrationOpen: true });
+  it("registers each listed email into an account of its own and refuses anyone else", async () => {
+    const testEnv = runtime({ emails: "first@example.test, Second@Example.test" });
+    const capabilities = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
+    await expect(capabilities.json()).resolves.toMatchObject({ registrationOpen: true });
 
     const first = await signUp(testEnv, "first@example.test");
     expect(first.status, await first.clone().text()).toBe(200);
-    const ownership = await env.DB.prepare(
-      `SELECT m.organization_id, m.role FROM mgmt_organization_user m
-       JOIN mgmt_user u ON u.id=m.user_id WHERE u.email=?`,
-    ).bind("first@example.test").first<{ organization_id: string; role: string }>();
-    expect(ownership).toMatchObject({ role: "owner" });
+    const second = await signUp(testEnv, "second@example.test");
+    expect(second.status, await second.clone().text()).toBe(200);
+    const firstAccount = await ownedAccount("first@example.test");
+    const secondAccount = await ownedAccount("second@example.test");
+    expect(firstAccount).toBeDefined();
+    expect(secondAccount).toBeDefined();
+    expect(secondAccount).not.toBe(firstAccount);
 
-    const after = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
-    await expect(after.json()).resolves.toMatchObject({ registrationOpen: false });
-    const blocked = await signUp(testEnv, "second@example.test");
-    expect(blocked.status).toBe(403);
-    await expect(blocked.json()).resolves.toEqual({
+    const refused = await signUp(testEnv, "stranger@example.test");
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toEqual({
       error: {
         code: "registration_disabled",
-        message: "Public registration is disabled for this deployment",
+        message: "This email address is not allowed to register on this deployment",
       },
     });
+    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user WHERE email=?")
+      .bind("stranger@example.test").first("n")).toBe(0);
+  });
+
+  it("closes sign-up with an empty list, yet still signs in a person it no longer lists", async () => {
+    const listed = await signUp(runtime({ emails: "former@example.test" }), "former@example.test");
+    expect(listed.status, await listed.clone().text()).toBe(200);
+
+    const testEnv = runtime();
+    const capabilities = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
+    await expect(capabilities.json()).resolves.toMatchObject({ registrationOpen: false });
+    expect((await signUp(testEnv, "former-friend@example.test")).status).toBe(403);
 
     const login = await authRequest(testEnv, "sign-in/email", {
-      email: "first@example.test",
+      email: "former@example.test",
       password: "correct-horse-42",
     });
     expect(login.status, await login.clone().text()).toBe(200);
   });
 
-  it("gives an enabled additional registration its own isolated account", async () => {
-    const existing = await seedHuman("existing@example.test");
-    const testEnv = runtime({ additional: true });
-    const response = await signUp(testEnv, "additional@example.test");
-    expect(response.status, await response.clone().text()).toBe(200);
-
-    const newUser = await env.DB.prepare("SELECT id FROM mgmt_user WHERE email=?")
-      .bind("additional@example.test")
-      .first<{ id: string }>();
-    const memberships = await env.DB.prepare(
-      "SELECT organization_id,role FROM mgmt_organization_user WHERE user_id=?",
-    ).bind(newUser!.id).all<{ organization_id: string; role: string }>();
-    expect(memberships.results).toHaveLength(1);
-    expect(memberships.results[0]).toMatchObject({ role: "owner" });
-    expect(memberships.results[0]!.organization_id).not.toBe(existing.organizationId);
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM mgmt_organization_user WHERE organization_id=? AND user_id=?",
-      ).bind(existing.organizationId, newUser!.id).first("n"),
-    ).toBe(0);
-  });
-
-  it("keeps a machine-initialized deployment claim-only even when additional registration is enabled", async () => {
+  it("gives a listed person an account of their own beside the CLI's unclaimed one", async () => {
     const now = new Date().toISOString();
     await env.DB.batch([
       env.DB.prepare(
@@ -465,16 +223,19 @@ describe("self-hosted registration policy", () => {
         "INSERT INTO mgmt_organization_user(id,organization_id,user_id,role,status,joined_at) VALUES ('machine-owner','machine-account','service-owner','owner','active',?)",
       ).bind(now),
     ]);
-    const testEnv = runtime({ additional: true });
+    const response = await signUp(runtime({ emails: "visitor@example.test" }), "visitor@example.test");
+    expect(response.status, await response.clone().text()).toBe(200);
 
-    const capabilities = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, testEnv);
-    await expect(capabilities.json()).resolves.toMatchObject({ registrationOpen: false });
-    expect((await signUp(testEnv, "visitor@example.test")).status).toBe(403);
-    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE kind='human'").first("n"))
-      .toBe(0);
+    const account = await ownedAccount("visitor@example.test");
+    expect(account).toBeDefined();
+    expect(account).not.toBe("machine-account");
+    // Only a claim takes over the CLI's account.
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM mgmt_organization_user WHERE organization_id='machine-account'",
+    ).first("n")).toBe(1);
   });
 
-  it("applies the fresh human gate to trusted claim registration after a human exists", async () => {
+  it("admits a claim registration whatever the list says, and gives it no account of its own", async () => {
     await seedHuman("owner@example.test");
     const claimEnv = runtime();
     const response = await (await createIdentityAuth(
@@ -484,44 +245,25 @@ describe("self-hosted registration policy", () => {
       { claimRegistration: true },
     )).auth.api.signUpEmail({
       body: {
-        name: "Second claimant",
-        email: "second-claimant@example.test",
+        name: "Claimant",
+        email: "claimant@example.test",
         password: "claim-password-42",
       },
       asResponse: true,
     });
-    expect(response.status).toBe(403);
+    expect(response.status, await response.clone().text()).toBe(200);
     expect(
-      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
-        .bind("second-claimant@example.test")
-        .first("n"),
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM mgmt_organization_user m JOIN mgmt_user u ON u.id=m.user_id
+         WHERE u.email=?`,
+      ).bind("claimant@example.test").first("n"),
     ).toBe(0);
   });
 });
 
 describe("Google registration policy", () => {
-  it("uses the same atomic first-owner gate for Google and password registration", async () => {
-    const token = await googleIdToken("google-race@example.test", "google-race");
-    const testEnv = registrationBarrierEnv(runtime({ google: true }), 1);
-    const [password, google] = await Promise.all([
-      signUp(testEnv, "password-race@example.test"),
-      authRequest(testEnv, "sign-in/social", {
-        provider: "google",
-        callbackURL: ORIGIN,
-        idToken: { token },
-      }),
-    ]);
-    expect([password.status, google.status].sort()).toEqual([200, 403]);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user WHERE kind='human'").first("n"))
-      .toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_user_account").first("n")).toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization").first("n")).toBe(1);
-    expect(await env.DB.prepare("SELECT COUNT(*) n FROM mgmt_organization_user").first("n"))
-      .toBe(1);
-  });
-
-  it("lets Google create the first owner, blocks a second new person, and still signs the owner in", async () => {
-    const testEnv = runtime({ google: true });
+  it("lets a listed Google email register, refuses an unlisted one, and still signs the first in", async () => {
+    const testEnv = runtime({ google: true, emails: "google-owner@example.test" });
     const first = await googleSignIn(testEnv, "google-owner@example.test", "google-owner");
     expect(first.status, await first.clone().text()).toBe(200);
     expect(
@@ -540,8 +282,8 @@ describe("Google registration policy", () => {
     expect(existing.status, await existing.clone().text()).toBe(200);
   });
 
-  it("keeps successful HTTPS redirect callbacks open for the first and existing Google user", async () => {
-    const testEnv = runtime({ google: true });
+  it("keeps successful HTTPS redirect callbacks open for a listed and an existing Google user", async () => {
+    const testEnv = runtime({ google: true, emails: "redirect-owner@example.test" });
     const exchange = mockGoogleTokenExchange("redirect-owner@example.test", "redirect-owner");
     const firstStart = await startGoogleRedirect(testEnv);
     const first = await googleCallback(testEnv, firstStart.response, firstStart.state);
@@ -580,12 +322,9 @@ describe("Google registration policy", () => {
     ).toBe(1);
   });
 
-  it("rechecks the database at a redirect callback after registration closes", async () => {
-    const testEnv = runtime({ google: true });
+  it("refuses an unlisted email at the redirect callback", async () => {
+    const testEnv = runtime({ google: true, emails: "someone-else@example.test" });
     const started = await startGoogleRedirect(testEnv);
-
-    const first = await signUp(testEnv, "password-owner@example.test");
-    expect(first.status, await first.clone().text()).toBe(200);
     mockGoogleTokenExchange("stale-google@example.test", "stale-google-user");
     const callback = await googleCallback(testEnv, started.response, started.state);
 
@@ -598,10 +337,10 @@ describe("Google registration policy", () => {
         .first("n"),
     ).toBe(0);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_organization").first("n"))
-      .toBe(1);
+      .toBe(0);
   });
 
-  it("normalizes a denied Google claim callback after another human registers", async () => {
+  it("admits an unlisted Google email at a claim's callback, and only with the claim's signed grant", async () => {
     const testEnv = runtime({ google: true });
     // A claim is opened under the id the CLI knows it by — `op:` and its
     // token's digest, which the row also keeps as `poll_token_hash`.
@@ -628,30 +367,41 @@ describe("Google registration policy", () => {
     const claimAuth = await createIdentityAuth(resolveDeployment(testEnv), testEnv, ORIGIN, {
       claimRegistration: true,
     });
-    const started = await claimAuth.auth.api.signInSocial({
-      body: { provider: "google", callbackURL: `${ORIGIN}/after-claim` },
-      headers: new Headers({ origin: ORIGIN }),
-      asResponse: true,
-    });
-    const authorization = new URL(((await started.clone().json()) as { url: string }).url);
+    const startClaim = async () => {
+      const started = await claimAuth.auth.api.signInSocial({
+        body: { provider: "google", callbackURL: `${ORIGIN}/after-claim` },
+        headers: new Headers({ origin: ORIGIN }),
+        asResponse: true,
+      });
+      return { started, state: new URL(((await started.clone().json()) as { url: string }).url).searchParams.get("state")! };
+    };
     const encoded = btoa(JSON.stringify({ id: operationId, expires }));
     const signature = await derive(testEnv.BETTER_AUTH_SECRET, `claim-oauth:${encoded}`);
+    mockGoogleTokenExchange("claimant@example.test", "claimant");
 
-    await seedHuman("other-owner@example.test");
-    mockGoogleTokenExchange("denied-claim@example.test", "denied-claim");
-    const callback = await googleCallback(
-      testEnv,
-      started,
-      authorization.searchParams.get("state")!,
-      `cli_claim_oauth=${encoded}.${signature}`,
-    );
-    expect(callback.status).toBe(302);
-    expect(callback.headers.get("location")).toBe("/login?error=registration_disabled");
+    // Without the grant, the callback is an ordinary registration, which this
+    // deployment's empty list refuses.
+    const forged = await startClaim();
+    const refused = await googleCallback(testEnv, forged.started, forged.state, `cli_claim_oauth=${encoded}.forged`);
+    expect(refused.status).toBe(302);
+    expect(refused.headers.get("location")).toBe("/login?error=registration_disabled");
     expect(
       await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
-        .bind("denied-claim@example.test")
+        .bind("claimant@example.test")
         .first("n"),
     ).toBe(0);
+
+    // Each exchange answers with a response of its own.
+    mockGoogleTokenExchange("claimant@example.test", "claimant");
+    const granted = await startClaim();
+    const admitted = await googleCallback(testEnv, granted.started, granted.state, `cli_claim_oauth=${encoded}.${signature}`);
+    expect(admitted.status).toBe(302);
+    expect(admitted.headers.get("location")).toBe(`${ORIGIN}/after-claim`);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_user WHERE email=?")
+        .bind("claimant@example.test")
+        .first("n"),
+    ).toBe(1);
   });
 
   it("carries rejected navigation cookies and destination onto the sign-in redirect", () => {
@@ -711,7 +461,7 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
     // The claim flow is the one Google entry point that does not end on the
     // sign-in screen: the claimant carries on here with a password, so the
     // refusal has to come back to the page they started on.
-    const testEnv = runtime({ additional: true, google: true });
+    const testEnv = runtime({ google: true });
     // A claim is opened under the id the CLI knows it by — `op:` and its
     // token's digest, which the row also keeps as `poll_token_hash` — and the
     // engine's proofs are SHA-256-sized hex.
@@ -799,7 +549,7 @@ describe("Google sign-in onto an email that already has a sign-in", () => {
 });
 
 describe("cloud registration", () => {
-  it("stays open independently of the self-host additional-registration flag", async () => {
+  it("stays open whatever a self-host's list says", async () => {
     const response = await worker.request(`${ORIGIN}/v1/console/capabilities`, {}, runtime({ cloud: true }));
     await expect(response.json()).resolves.toMatchObject({
       billing: true,

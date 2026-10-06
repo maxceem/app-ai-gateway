@@ -14,7 +14,8 @@
  */
 
 import type { AuthState, CfAuthOAuth, OrganizationMembership } from "@maxceem/cf-auth";
-import { googleAuthEnabled, registrationOpen } from "../auth/identity";
+import { googleAuthEnabled } from "../auth/identity";
+import { registrationOpen } from "../policy/deployment";
 import type { OAuthConsentAllowRequest, OAuthConsentProof } from "../contracts/schemas";
 import type {
   OAuthConsentDetailsResponse,
@@ -80,7 +81,7 @@ export async function oauthConsentDetails(
   const details = await oauth.authorizationDetails({ id, proof: submissionToken, viewer });
   const now = Date.now();
   const accounts = details.viewer ? usableAccounts(details.viewer.memberships, now) : [];
-  const guestAvailable = await unclaimedAccountAvailable(scope);
+  const guestAvailable = unclaimedAccountAvailable(scope);
   return {
     id: details.id,
     state: details.state,
@@ -109,7 +110,7 @@ export async function oauthConsentDetails(
       ? unclaimedAccountDecision(scope, { requestHash: "", nowMs: now }).recoveryEndsAt
       : null,
     googleEnabled: googleAuthEnabled(scope.env),
-    registrationOpen: await registrationOpen(scope.deployment, scope.env),
+    registrationOpen: registrationOpen(scope.deployment),
   };
 }
 
@@ -140,14 +141,13 @@ export async function allowOauthConsent(
  * that completes the authorization, connected with the `manage` grant.
  *
  * In cf-auth's order, which is the bootstrap's: the deployment's admission,
- * whose refusal spends nothing; then the per-address limit the CLI's
+ * whose refusal spends nothing and which a self-host always refuses, since
+ * this door holds no CLI token; then the per-address limit the CLI's
  * bootstrap counts under too, keyed on this browser's address; then the
- * account's rows, every one conditioned on the guard cf-auth hands over — the
- * admission it judged and latched once, as the batch's first write, and never
- * judges again, since the account itself is what makes an emptiness rule
- * false. The ids are derived from the authorization's own, so a retry names
- * the same rows; an authorization already completed answers its redirect
- * before any of this runs.
+ * account's rows, every one conditioned on the guard cf-auth hands over. The
+ * ids are derived from the authorization's own, so a retry names the same
+ * rows; an authorization already completed answers its redirect before any of
+ * this runs.
  */
 export async function continueOauthWithoutAccount(
   scope: ManagementScope,
@@ -160,7 +160,7 @@ export async function continueOauthWithoutAccount(
   const { redirect } = await oauth.approveGuestAuthorization({
     id,
     proof: submissionToken,
-    admit: () => admitUnclaimedAccountCondition(scope, rule),
+    admit: () => admitUnclaimedAccountCondition(scope, rule, null),
     rateLimit: () => limitUnclaimedAccounts(scope, rule, address),
     provision: async (ctx) => {
       const decision = unclaimedAccountDecision(scope, {
@@ -172,7 +172,6 @@ export async function continueOauthWithoutAccount(
         organizationId: decision.accountId,
         statements: unclaimedAccountStatements(scope, decision, {
           guard: ctx.guard,
-          admission: null,
           serviceName: GUEST_SERVICE_NAME,
         }),
       };

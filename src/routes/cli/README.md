@@ -17,18 +17,16 @@ whose URL origin or `Origin` header is not exactly it.
 
 ## Who owns a fresh deployment
 
-An empty self-host belongs to whoever takes it first, by console registration or
-by CLI bootstrap. Bootstrap once required a separate installer secret; that
-guarded only one of those two doors while registration left the other open, so
-it bought consistency of configuration rather than security, and was removed.
-What actually closes the window is that registration checks for an existing
-human and account inside the statement that inserts its human, while bootstrap
-checks for both inside the transaction that creates its account. Registration's
-human insert therefore closes bootstrap's guard even before registration has
-finished provisioning the account. Exactly one caller wins, and additional
-registrations reopen only through the explicit self-host setting. Guidance to
-initialize promptly, and to reset the database if a stranger gets there first,
-lives in the self-hosting guides.
+A self-host has two doors, and neither is first-come. Console registration
+admits only an email listed in `ALLOWED_REGISTRATION_EMAILS`, and each person
+it admits gets an account of their own. CLI bootstrap creates the deployment's
+one unclaimed account, `private-<DEPLOYMENT_ID>`, and only for the token whose
+SHA-256 the deploying CLI stored as `CLI_BOOTSTRAP_TOKEN_DIGEST` before the
+Worker first answered; without that secret it creates nothing. Registration no
+longer reads the database to decide, so neither door can close or race the
+other. A claim then gives that account its person, whatever their email: only
+the holder of the account's key can open one. The consent page's "continue
+without an account" holds no token, so a self-host never offers it.
 
 Cloud bootstrap is public and rate limited per IP, and each call yields its own
 account.
@@ -232,9 +230,8 @@ bundle like every other screen; this package renders no HTML. That is why the
 URL handed to the CLI names it, and why Google consent for a claim returns to it
 rather than to an endpoint — the fragment does not survive that redirect, which
 is exactly what the `sessionStorage` copy is for. Claim registration keeps its
-own endpoint rather than using the console's public sign-up, because a
-deployment that refuses public registration must still be able to admit the one
-human who is claiming it. Its Google grant is a signed, HttpOnly cookie on the
+own endpoint rather than using the console's public sign-up, because a claim
+admits the person the CLI sent whether or not the deployment lists their email. Its Google grant is a signed, HttpOnly cookie on the
 callback path naming the claim, issued only once the link's proof has been
 checked; the callback asks only whether that claim is still pending, with one
 query, before it chooses the identity instance that serves it. A login's

@@ -47,11 +47,15 @@ function fakeBilling(): BillingRuntime {
     }),
   };
 }
-function runtime(cloud = true): Env {
+/** The token a self-host's deploying CLI bootstraps with; `runtime(false)` stores its digest. */
+const SELF_HOST_TOKEN = "self-host-deploying-cli-token-0001";
+const SELF_HOST_DIGEST = await digest(SELF_HOST_TOKEN);
+function runtime(cloud = true, bootstrapDigest: string | undefined = cloud ? undefined : SELF_HOST_DIGEST): Env {
   const values: Partial<Env> = {
     DEPLOYMENT_ID: "cli-test-deployment",
     CLI_CONSOLE_ORIGIN: "https://example.test",
     ...(cloud ? { BILLING: fakeBilling() } : {}),
+    ...(bootstrapDigest === undefined ? {} : { CLI_BOOTSTRAP_TOKEN_DIGEST: bootstrapDigest }),
   };
   return new Proxy(env, {
     get: (target, key, receiver) =>
@@ -93,8 +97,11 @@ async function bootstrapped(response: Response) {
   };
   return { ...body, credential: body.result.credential, unclaimedAccess: body.result.unclaimedAccess };
 }
-async function start(testEnv: Env, headers: Record<string, string> = {}) {
-  const input = { token: random() };
+async function start(
+  testEnv: Env,
+  headers: Record<string, string> = {},
+  input = { token: testEnv.BILLING ? random() : SELF_HOST_TOKEN },
+) {
   const response = await request(testEnv, "/bootstrap", input, {
     "cf-connecting-ip": random(),
     ...headers,
@@ -252,7 +259,7 @@ describe("CLI account lifecycle", () => {
   });
   it("does not count a selfhost's attempts, so an installer may retry past the cloud allowance", async () => {
     const testEnv = runtime(false);
-    const input = { token: random() };
+    const input = { token: SELF_HOST_TOKEN };
     // A deployment whose database is not callable yet: the writes throw, the
     // request is answered 500, and nothing is created. The CLI answers this by
     // sending the identical request again, which is what a counted endpoint
@@ -343,23 +350,38 @@ describe("CLI account lifecycle", () => {
       await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_operation WHERE id=?").bind(first.id).first("n"),
     ).toBe(1);
   });
-  it("gives a selfhost to its first caller and permanently closes second bootstrap", async () => {
+  it("creates a selfhost's one account only for the token its deploying CLI stored", async () => {
+    const rows = async () => Object.fromEntries(
+      await Promise.all(
+        ["mgmt_user", "mgmt_organization", "mgmt_operation", "mgmt_api_key"].map(
+          async (table) => [table, await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first("n")] as const,
+        ),
+      ),
+    );
+    const empty = await rows();
+    // Without a stored digest, or with a token it is not of, nothing is created.
+    for (const [testEnv, token] of [[runtime(false, ""), SELF_HOST_TOKEN], [runtime(false), random()]] as const) {
+      const refused = await request(testEnv, "/bootstrap", { token });
+      expect(refused.status).toBe(403);
+      await expect(refused.json()).resolves.toMatchObject({ error: { code: "forbidden" } });
+    }
+    expect(await rows()).toEqual(empty);
+
     const testEnv = runtime(false);
-    const input = { token: random() };
-    const response = await request(testEnv, "/bootstrap", input);
+    const response = await request(testEnv, "/bootstrap", { token: SELF_HOST_TOKEN });
     expect(response.status).toBe(200);
     const data = await bootstrapped(response);
     expect(data.account.expiresAt).toBeNull();
     expect(data.credential.token).toMatch(/^agw_mgmt_/u);
-    expect(
-      (
-        await request(
-          testEnv,
-          "/bootstrap",
-          { token: random() },
-        )
-      ).status,
-    ).toBe(409);
+    const resent = await bootstrapped(await request(testEnv, "/bootstrap", { token: SELF_HOST_TOKEN }));
+    expect(resent.account.id).toBe(data.account.id);
+    expect(resent.credential.token).toBe(data.credential.token);
+
+    // A second CLI that stored a digest of its own still cannot make another.
+    const other = random();
+    expect((await request(runtime(false, await digest(other)), "/bootstrap", { token: other })).status)
+      .toBe(409);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM mgmt_organization").first("n")).toBe(1);
     expect(
       (
         await worker.request(
@@ -776,9 +798,7 @@ describe("CLI account lifecycle", () => {
             ? "test-google-secret"
             : key === "OAUTH_RELAY_URL"
               ? "https://relay.example.test"
-              : key === "ALLOW_ADDITIONAL_REGISTRATIONS"
-                ? "false"
-                : Reflect.get(target, key, receiver),
+              : Reflect.get(target, key, receiver),
     });
     const { data } = await start(testEnv);
     const op = (await (

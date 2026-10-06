@@ -64,32 +64,11 @@ see [Updating](/self-hosting/updating).
 curl https://YOUR-WORKER.workers.dev/v1/healthz
 ```
 
-Expect `"vault": "ok"`. An empty deployment lets its first person register in
-the console. To initialize with the CLI instead, create and claim its account privately:
-
-```sh
-node scripts/bootstrap-account.mjs https://YOUR-WORKER.workers.dev
-agw deployment connect --url https://YOUR-WORKER.workers.dev --key-stdin < .agw-bootstrap/management-key
-agw account claim
-```
-
-Install `@maxceem/agw` first if necessary. The helper saves recovery proofs
-before requesting an account and stores its credential privately. Keep its state
-when retrying a lost response. `agw account claim` prints a URL: open it in your
-own browser, check the account it names, create your sign-in on that page and
-approve. The CLI keeps its access afterwards; run `agw account logout` or revoke
-its key on the **Access** page when you no longer want it. Once CLI
-initialization creates the account, ordinary registration cannot take it; its first person must
-use this protected claim.
-
-<Callout type="warn" title="Initialize straight after deploying">
-  A deployment with no account yet belongs to whoever takes it first, whether by
-  registering in the console or by running the helper above. Do that yourself as
-  soon as the health check passes. A deployment nobody has taken holds no
-  provider credentials, so nothing of yours is exposed; if someone else does get
-  there first, delete its D1 database, create it again, apply the migrations and
-  deploy once more to start from empty.
-</Callout>
+Expect `"vault": "ok"`. Then open the console and create your sign-in with an
+email listed in `ALLOWED_REGISTRATION_EMAILS`, which is empty in the tracked
+`wrangler.jsonc`: set it in a [profile](#deployment-profiles) or in the Worker's
+settings first. See
+[`ALLOWED_REGISTRATION_EMAILS`](/self-hosting/configuration#allowed_registration_emails).
 
 ## Deployment profiles
 
@@ -112,7 +91,7 @@ cannot drift. The merge rules are small:
   "workers_dev": false,
   "routes": [{ "pattern": "console.example.com", "custom_domain": true }],
   "vars": {
-    "ALLOW_ADDITIONAL_REGISTRATIONS": "false",
+    "ALLOWED_REGISTRATION_EMAILS": "you@example.com",
     "SECRET_VAULT_MODE": "kms",
     "SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION": null
   },

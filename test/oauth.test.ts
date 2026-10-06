@@ -780,43 +780,19 @@ describe("OAuth guest door", () => {
     expect(refused.headers.get("retry-after")).toMatch(/^\d+$/u);
   });
 
-  it("is offered on an empty self-hosted deployment, and closes it as the CLI's bootstrap does", async () => {
+  it("is never offered on a self-hosted deployment, empty or owned, and refuses without counting", async () => {
     const testEnv = runtime(false);
-    expect(await count("SELECT count(*) AS n FROM mgmt_organization")).toBe(0);
-    const first = await authorize(testEnv);
-    const offered = await details(testEnv, first);
-    expect(offered).toMatchObject({ guestAvailable: true, guestExpiresAt: null });
-
-    const tokens = await exchange(testEnv, first, codeFrom(first, await guest(testEnv, first)));
-    // Not counted: a self-host's first caller is its owner, whoever it is.
-    expect((await callTool(testEnv, tokens.access_token, "get_account")).structuredContent.account).toMatchObject({
-      id: "private-oauth-tests",
-      claimed: false,
-      expiresAt: null,
-    });
-
-    // Registration's window closed with it, as after a CLI bootstrap.
-    const capabilities = await request(testEnv, "/v1/console/capabilities");
-    expect(await capabilities.json()).toMatchObject({ registrationOpen: false });
-
-    // Nobody else gets in through the door, and the refusal spends no allowance.
-    const second = await authorize(testEnv);
-    expect(await details(testEnv, second)).toMatchObject({ guestAvailable: false, guestExpiresAt: null });
-    limiterCalls.length = 0;
-    const refused = await consent(testEnv, second, "guest");
-    expect(refused.status).toBe(409);
-    expect(limiterCalls).toEqual([]);
-    expect(await count("SELECT count(*) AS n FROM mgmt_organization")).toBe(1);
-  });
-
-  it("is not offered on a self-hosted deployment a person already owns", async () => {
-    const testEnv = runtime(false);
-    await seedHuman("oauth-selfhost-owner@example.test");
-    const authorization = await authorize(testEnv);
-    expect(await details(testEnv, authorization)).toMatchObject({ guestAvailable: false });
-    limiterCalls.length = 0;
-    expect((await consent(testEnv, authorization, "guest")).status).toBe(409);
-    expect(limiterCalls).toEqual([]);
+    for (const owned of [false, true]) {
+      if (owned) await seedHuman("oauth-selfhost-owner@example.test");
+      const authorization = await authorize(testEnv);
+      expect(await details(testEnv, authorization)).toMatchObject({ guestAvailable: false, guestExpiresAt: null });
+      limiterCalls.length = 0;
+      const refused = await consent(testEnv, authorization, "guest");
+      expect(refused.status).toBe(403);
+      expect(limiterCalls).toEqual([]);
+    }
+    // Only the deploying CLI creates an account without a person.
+    expect(await count("SELECT count(*) AS n FROM mgmt_organization WHERE id='private-oauth-tests'")).toBe(0);
   });
 });
 

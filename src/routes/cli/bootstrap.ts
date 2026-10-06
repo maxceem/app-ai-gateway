@@ -66,7 +66,7 @@ export async function bootstrap(
     throw new GatewayError(409, "conflict", "This operation token is already bound to a different request");
 
   // A resend is not a new account, so it is neither refused as one nor counted.
-  if (!existing) await admitUnclaimedAccount(scope, decision, clientAddress(c.req.raw));
+  if (!existing) await admitUnclaimedAccount(scope, decision, clientAddress(c.req.raw), input.token);
 
   // Sending it again is answered as a poll would be: with the key the engine
   // still holds sealed, while its window lasts.

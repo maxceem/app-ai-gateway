@@ -1,7 +1,8 @@
 import type { AuthState } from "@maxceem/cf-auth";
 import { Hono, type Context } from "hono";
 import type { ConsoleCapabilitiesResponse } from "../contracts/responses";
-import { googleAuthEnabled, identityAuthFor, MANAGEMENT_IDENTITY, registrationOpen } from "../auth/identity";
+import { googleAuthEnabled, identityAuthFor, MANAGEMENT_IDENTITY } from "../auth/identity";
+import { registrationOpen } from "../policy/deployment";
 import { clientAddress } from "../core/endpoint-rate-limit";
 import { publicApiOrigin } from "../core/public-api-url";
 import {
@@ -25,7 +26,7 @@ function optionalUrl(value: string | undefined): string | undefined {
 
 consoleRoutes.get("/capabilities", async (c) => c.json({
   billing: c.get("deployment").billing !== null,
-  registrationOpen: await registrationOpen(c.get("deployment"), c.env),
+  registrationOpen: registrationOpen(c.get("deployment")),
   googleAuth: googleAuthEnabled(c.env),
   // Legal documents are deployment-specific. The console shows the sign-up
   // consent line only when the operator configured both links.

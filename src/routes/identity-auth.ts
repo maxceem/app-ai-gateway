@@ -4,9 +4,9 @@ import { clientAddress, enforceEndpointRateLimit } from "../core/endpoint-rate-l
 import {
   identityAuthFor,
   IDENTITY_AUTH_BASE_PATH,
-  registrationOpen,
   relaySocialSignIn,
 } from "../auth/identity";
+import { registrationAllowed } from "../policy/deployment";
 import type { RequestVariables } from "../middleware/request-scope";
 
 export const identityAuthRoutes = new Hono<{
@@ -50,8 +50,8 @@ async function submittedEmail(request: Request): Promise<string | null> {
  * This is the gateway's own limit and runs on every deployment, because the
  * zone rules that would otherwise do it need a zone: a one-click `workers.dev`
  * install has none, and Better Auth's own limiter is off. Only this route is
- * counted. Sign-up is already refused outright once a deployment has its
- * owner, and the rest of Better Auth's surface either needs a session or hands
+ * counted. A self-host refuses sign-up outright to any email it does not
+ * list, and the rest of Better Auth's surface either needs a session or hands
  * out nothing an attacker can grind for.
  *
  * The address is counted first and counted always, including for a body that
@@ -68,7 +68,7 @@ function registrationDisabled() {
   return {
     error: {
       code: "registration_disabled",
-      message: "Public registration is disabled for this deployment",
+      message: "This email address is not allowed to register on this deployment",
     },
   };
 }
@@ -143,7 +143,7 @@ identityAuthRoutes.all("/*", async (c) => {
   if (
     c.req.method === "POST" &&
     c.req.path === "/v1/auth/sign-up/email" &&
-    !(await registrationOpen(c.get("deployment"), c.env))
+    !registrationAllowed(c.get("deployment"), await submittedEmail(c.req.raw))
   ) {
     return c.json(registrationDisabled(), 403);
   }

@@ -11,7 +11,7 @@ SECRET_VAULT_LOCAL_KEK_V1=
 # For local development, run `pnpm run secrets:setup-local` to generate them.
 
 # SECRET_VAULT_MODE, SECRET_VAULT_LOCAL_KEK_CURRENT_VERSION and
-# ALLOW_ADDITIONAL_REGISTRATIONS are not secrets and are not repeated here: they are
+# ALLOWED_REGISTRATION_EMAILS are not secrets and are not repeated here: they are
 # plain `vars` in wrangler.jsonc, where a deployment reads and edits them in
 # clear text. A name uncommented in this file becomes a masked field in the
 # deploy form, which is right for a key and wrong for a setting.

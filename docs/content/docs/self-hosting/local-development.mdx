@@ -39,22 +39,11 @@ Each step does one thing:
 
 Open `http://localhost:5173`. Vite serves the console with hot reloading and
 runs the Worker beside it on the same origin, so an edit to either is live
-without a rebuild. Local development allows additional account registrations,
-so you can create as many test accounts as you need. To test the CLI
-initialization path instead, initialize locally, connect, then complete
-the browser claim:
-
-```sh
-node scripts/bootstrap-account.mjs http://localhost:5173
-agw deployment connect --url http://localhost:5173 --key-stdin < .agw-bootstrap/management-key
-agw account claim
-```
-
-Install `@maxceem/agw` if needed. The helper never prints the returned
-credential. `agw account claim` prints a URL; open it in a browser, create your
-sign-in on that page and approve. The CLI keeps its access afterwards. The local
-gateway calls real providers
-when you make inference requests, so use credentials with an appropriate spend cap.
+without a rebuild. Local development lets any email register, so you can
+create as many test accounts as you need. To test the CLI path end to end,
+deploy a gateway of your own with `agw deployment setup`. The local gateway
+calls real providers when you make inference requests, so use credentials with
+an appropriate spend cap.
 
 `.dev.vars` is read by `pnpm run dev` and also by `pnpm run secrets:upload`,
 so the same file can feed a deployment. If you would rather keep the two apart,
