@@ -107,6 +107,7 @@ export async function verifyGatewayToken(
       userId: payload.sub,
       authMethod: payload.auth_method,
       credentialType: "gateway_token",
+      expiresAt: payload.exp * 1000,
       ...(typeof payload.api_key_id === "string" ? { apiKeyId: payload.api_key_id } : {}),
     };
   } catch {

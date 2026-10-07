@@ -39,7 +39,7 @@
     "test:swift-publish": "node --test test/swift-publish.node.mjs",
     "test:deploy-script": "node --test test/deploy-script.node.mjs",
     "test:release-script": "node --test test/release-script.node.mjs",
-    "test:update-models": "node --test test/update-models.node.mjs test/review-models.node.mjs",
+    "test:update-models": "node --test test/update-models.node.mjs test/review-models.node.mjs test/realtime-conformance.node.mjs",
     "pretest:worker": "pnpm run console:ensure",
     "cli:build": "pnpm --filter @maxceem/agw build",
     "cli:dev": "node cli/scripts/dev.mjs",
@@ -68,12 +68,14 @@
     "@cloudflare/vitest-pool-workers": "^0.18.7",
     "@cloudflare/workers-types": "^5.20260723.1",
     "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.2",
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "drizzle-kit": "^0.31.10",
     "jsonc-parser": "^3.3.1",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "ws": "^8.22.0"
   },
   "engines": {
     "node": ">=22"

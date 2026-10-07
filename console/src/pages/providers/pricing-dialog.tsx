@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/field";
 import { GuardedButton } from "@/components/guarded-button";
 import { providerLabel, reportsCost } from "@/lib/config-types";
-import { draftsToPricing, toDrafts, type PricingDraft } from "@/lib/pricing-draft";
+import { EXTRA_PRICE_FIELDS, draftsToPricing, toDrafts, type PricingDraft } from "@/lib/pricing-draft";
 import { useUpdateProvider } from "@/lib/queries";
 import type { ProviderCredential } from "@/lib/types";
 import { errorMessage } from "./shared";
@@ -108,7 +108,8 @@ export function PricingDialog({
                 <span className="w-9" />
               </div>
               {drafts.map((row, index) => (
-                <div key={index} className="grid grid-cols-[2fr_1fr_1fr_auto] items-center gap-2">
+                <div key={index} className="space-y-2 rounded-md border p-3">
+                <div className="grid grid-cols-[2fr_1fr_1fr_auto] items-center gap-2">
                   <Input
                     aria-label={`Model ${index + 1}`}
                     value={row.model}
@@ -143,6 +144,10 @@ export function PricingDialog({
                   >
                     <Trash2 className="size-4" />
                   </Button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {EXTRA_PRICE_FIELDS.map(field => <label key={field} className="space-y-1 text-xs text-muted-foreground">{({ audio_input: 'Audio input', audio_output: 'Audio output', cached_input: 'Cached text input', cached_audio_input: 'Cached audio input' })[field]} $/1M<Input aria-label={`${field} price ${index + 1}`} inputMode="decimal" value={row[field] ?? ''} placeholder="Unset" disabled={readOnly} onChange={event => setRow(index, { [field]: event.target.value })} /></label>)}
+                </div>
                 </div>
               ))}
             </>

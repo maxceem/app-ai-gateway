@@ -871,3 +871,31 @@ struct AppAIGatewayClientTests {
         #expect(registerCalls.snapshot() == 0)
     }
 }
+
+struct RealtimeTests {
+    @Test func realtimeRequestUsesExistingHeadersAndSafeQueryItems() async throws {
+        let client = AppAIGatewayClient(appID: "test-app", baseURL: URL(string: "https://gateway.test")!, authMode: .apiKey(key: "test-key", issuerTokenProvider: nil), endUserId: "user-7")
+        let request = try await client.authorizedRealtimeRequest(provider: ProviderSlug.openai, model: "a/b + &")
+        #expect(request.url?.scheme == "wss")
+        #expect(request.url?.path == "/v1/apps/test-app/realtime/openai")
+        #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "model", value: "a/b + &")])
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(request.value(forHTTPHeaderField: "X-End-User-Id") == "user-7")
+        #expect(request.value(forHTTPHeaderField: "X-App-Version") != nil)
+    }
+    @Test func localRealtimeUsesWS() async throws {
+        let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "http://preview.localhost:8080")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil))
+        #expect(try await client.realtimeURL(provider: "openai", model: "gpt-realtime").scheme == "ws")
+    }
+    @Test func insecurePublicRealtimeIsRefused() async {
+        let client = AppAIGatewayClient(appID: "test", baseURL: URL(string: "http://gateway.example")!, authMode: .apiKey(key: "test", issuerTokenProvider: nil))
+        await #expect(throws: URLError.self) { try await client.realtimeURL(provider: "openai", model: "gpt-realtime") }
+    }
+    @Test func decodesGatewayErrorWithoutProviderWrapping() throws {
+        let event = try JSONDecoder().decode(RealtimeGatewayError.self, from: Data(#"{"type":"gateway.error","error":{"code":"app_rate_limited","message":"Wait","retry_after_seconds":30},"session_id":"session","generation_id":null}"#.utf8))
+        #expect(event.type == "gateway.error")
+        #expect(event.error.retryAfterSeconds == 30)
+        #expect(event.generationID == nil)
+    }
+}

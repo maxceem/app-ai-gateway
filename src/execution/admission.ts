@@ -8,7 +8,7 @@ import { nextUtcMonthStart } from "../core/time";
 import type { LimiterCheckResult } from "../do/UserLimiter";
 import type { AppRecord, GatewayIdentity } from "../core/types";
 import type { RejectionReason, RejectionScope } from "../shared/rejection-reasons";
-import { attemptAttribution, type ExecutionPlan } from "./plan";
+import { attemptAttribution, type AttemptAttribution, type ExecutionPlan } from "./plan";
 import type { Deployment } from "../policy/deployment";
 
 /**
@@ -59,7 +59,13 @@ export interface AdmissionInput {
   billingCache: BillingRequestCache;
   app: AppRecord;
   identity: GatewayIdentity;
-  plan: ExecutionPlan;
+  attribution: AttemptAttribution;
+  endpointSlug: string | null;
+  admissionId?: string;
+  now?: number;
+  freshSpend?: boolean;
+  beforeClaim?: (input: import("../do/OrgQuota").QuotaAdmissionInput | null) => void;
+  mayContinue?: () => boolean;
   appVersion: string | null;
   waitUntil: (promise: Promise<unknown>) => void;
 }
@@ -70,12 +76,21 @@ export interface AdmissionInput {
  * throws, and `onDuration` has reported the same figure by then.
  */
 export async function admitRequest(
+  input: Omit<AdmissionInput, "attribution" | "endpointSlug"> & { plan: ExecutionPlan },
+  onDuration: (durationMs: number) => void = () => {},
+): Promise<number> {
+  return admitGeneration({ ...input, attribution: attemptAttribution(input.plan.attempts[0]), endpointSlug: input.plan.endpointSlug }, onDuration);
+}
+
+export async function admitGeneration(
   input: AdmissionInput,
   onDuration: (durationMs: number) => void = () => {},
 ): Promise<number> {
   const start = performance.now();
-  const { env, app, identity, plan } = input;
-  const firstAttempt = plan.attempts[0];
+  const { env, app, identity } = input;
+  const ensureLive = () => {
+    if (input.mayContinue && !input.mayContinue()) throw new GatewayError(409, "conflict", "Session ended during admission");
+  };
 
   const blockedEvent = (
     reason: RejectionReason,
@@ -86,8 +101,8 @@ export async function admitRequest(
       recordRejectionEvent({
         env,
         identity,
-        attribution: attemptAttribution(firstAttempt),
-        endpointSlug: plan.endpointSlug,
+        attribution: input.attribution,
+        endpointSlug: input.endpointSlug,
         appVersion: input.appVersion,
         reason,
         scope,
@@ -151,7 +166,7 @@ export async function admitRequest(
     identity.userId === null
       ? Promise.resolve(false)
       : cachedAppUserBlocked(env.DB, identity.appId, identity.userId),
-    billingQuota(input.deployment, env, app.organizationId, input.billingCache),
+    billingQuota(input.deployment, env, app.organizationId, input.billingCache, input.now),
   ]);
 
   if (blockedResult.status === "rejected") throw blockedResult.reason;
@@ -172,7 +187,8 @@ export async function admitRequest(
    * one: a request the app-wide window refuses has spent one of the caller's
    * own tokens, which costs only the caller already being refused.
    */
-  const now = Date.now();
+  ensureLive();
+  const now = input.now ?? Date.now();
   // `identity.userId` is non-null whenever per-user limits exist: configuring
   // them on an application that identifies no end users is refused when the
   // configuration is parsed, so this is a narrowing, not a second policy.
@@ -181,21 +197,27 @@ export async function admitRequest(
       .getByName(`${identity.appId}:${identity.userId}`)
       .checkAndIncrement({
         now,
+        admissionId: input.admissionId,
+        freshSpend: input.freshSpend,
         rpm: app.config.limits.per_user.requests.per_minute,
         rpd: app.config.limits.per_user.requests.per_day,
         monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_user),
         spend: { appId: identity.appId, userKey: identity.userId },
       });
+    ensureLive();
     if (!result.allowed) refuseByAppLimits(result, "user", now);
   }
   if (hasAppLevelLimits(app.config)) {
     const result = await env.USER_LIMITER.getByName(identity.appId).checkAndIncrement({
       now,
+      admissionId: input.admissionId,
+      freshSpend: input.freshSpend,
       rpm: app.config.limits.per_app.requests.per_minute,
       rpd: app.config.limits.per_app.requests.per_day,
       monthlyBudgetMicrousd: monthlyBudgetMicrousd(app.config.limits.per_app),
       spend: { appId: identity.appId, userKey: null },
     });
+    ensureLive();
     if (!result.allowed) refuseByAppLimits(result, "app", now);
   }
 
@@ -210,14 +232,22 @@ export async function admitRequest(
   requireActiveBilling(quota.access);
   // Self-hosted, or a plan with no monthly limit: no coordination object is
   // touched at all, so neither pays for a count nothing enforces.
-  if (quota.kind === "unmetered") return finish();
+  if (quota.kind === "unmetered") {
+    ensureLive();
+    input.beforeClaim?.(null);
+    return finish();
+  }
 
   const { period } = quota;
-  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit({
+  const claim = {
     periodId: period.periodId,
     periodEnd: period.periodEnd,
     limit: quota.limit,
-  });
+    admissionId: input.admissionId,
+  };
+  ensureLive();
+  input.beforeClaim?.(claim);
+  const admission = await env.ORG_QUOTA.getByName(app.organizationId).admit(claim);
   const durationMs = finish();
   if (!admission.allowed) {
     blockedEvent("blocked_billing", "account", durationMs);

@@ -898,3 +898,8 @@ test("report: fetched text is escaped", () => {
   assert.match(report, /## Changes that trigger a pull request[\s\S]*### Current price changes[\s\S]*### Newly discovered models[\s\S]*## Additional information[\s\S]*### Needs attention[\s\S]*### Sources/u);
   assert.match(report, /These items fail the workflow but do not trigger a pull request/u);
 });
+
+test("openai realtime: retains independent audio and cached audio prices", () => {
+  const text = fixture("openai.md") + `\nRealtime and audio generation models\n\n### Grouped Pricing Table data\n\n| Model | Modality | Input | Cached input | Output / cost |\n| --- | --- | --- | --- | --- |\n| gpt-realtime | Audio | $32.00 | $0.40 | $64.00 |\n| gpt-realtime | Text | $4.00 | $0.40 | $16.00 |\n`;
+  assert.deepEqual(parse(parseOpenai, text, ["gpt-realtime"]).get("gpt-realtime"), { input: 4, output: 16, cached_input: .4, audio_input: 32, audio_output: 64, cached_audio_input: .4 });
+});

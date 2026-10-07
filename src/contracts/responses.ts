@@ -150,6 +150,11 @@ export const UsageEventSchema = z.object({
   model: z.string(),
   route: z.string(),
   endpoint_slug: z.string().nullable(),
+  realtime_session_id: z.string().nullable().optional(),
+  realtime_generation_id: z.string().nullable().optional(),
+  realtime_protocol: z.enum(["openai_realtime", "gemini_live"]).nullable().optional(),
+  provider_response_id: z.string().nullable().optional(),
+  completion_status: z.string().nullable().optional(),
   input_tokens: z.number().int(),
   cached_input_tokens: z.number().int(),
   cache_write_tokens: z.number().int(),
@@ -383,6 +388,7 @@ export const ProviderSummarySchema = z.object({
       description: "Whose URL layout clients call under /proxy/{slug}/: the provider's own paths, or the one path per API style a gateway publishes for every provider it serves.",
     }),
   }).meta({ description: "What this instance can do on its route, decided by the gateway rather than re-derived by clients." }),
+  realtimeProtocols: z.array(z.enum(["openai_realtime", "gemini_live"])).optional().meta({ description: "Supported realtime transports, independent of model availability and price sufficiency." }),
   revision: z.number().int().positive(),
   status: z.enum(["active", "disabled"]).meta({
     description: "disabled is a reversible pause: the row keeps its secret, its pricing and its slug, and requests to it fail with provider_disabled until it is enabled again.",
@@ -991,3 +997,10 @@ export type BreakdownResponse = z.infer<typeof BreakdownResponseSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type PricesResponse = z.infer<typeof PricesResponseSchema>;
 export type UsageRepriceResponse = z.infer<typeof UsageRepriceResponseSchema>;
+
+/** Extension events are distinguishable from provider-native events. */
+export const RealtimeErrorEventSchema = z.object({
+  type: z.literal("gateway.error"),
+  error: z.object({ code: z.string(), message: z.string(), retry_after_seconds: z.number().positive().optional() }),
+  session_id: z.string(), generation_id: z.string().nullable(),
+}).meta({ id: "RealtimeErrorEvent" });

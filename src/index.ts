@@ -19,6 +19,9 @@ import { GatewayError, ROUTE_NOT_FOUND } from "./core/errors";
 import { log } from "./core/log";
 import { publicApiHost } from "./core/public-api-url";
 import { storedAppVersion } from "./core/app-version";
+import { serveRealtime } from "./realtime/serve";
+import { RealtimeSession } from "./do/RealtimeSession";
+import { INFERENCE_ROUTES } from "./contracts/inference-routes";
 import { OrgQuota } from "./do/OrgQuota";
 import { UserLimiter } from "./do/UserLimiter";
 import { EndpointRateLimiter } from "./do/EndpointRateLimiter";
@@ -34,7 +37,7 @@ import { vaultStatus } from "./vault";
 import { resolveDeployment } from "./policy/deployment";
 import { maintenanceSweepStatements } from "./auth/identity";
 
-export { EndpointRateLimiter, OrgQuota, UserLimiter };
+export { EndpointRateLimiter, OrgQuota, UserLimiter, RealtimeSession };
 
 type AppEnv = {
   Bindings: Env;
@@ -137,8 +140,9 @@ app.route("/v1/apps/:app/auth", authRoutes);
 // credential, plan, admission, provider — in `./execution/serve`. Named
 // endpoints are POST-only, so any other method is an unrouted path and is
 // answered before a body is read or a credential checked.
-app.all("/v1/apps/:app/proxy/:provider/*", serveProxy);
-app.post("/v1/apps/:app/endpoints/:slug", serveEndpoint);
+app.all(INFERENCE_ROUTES.proxyProviderRequest, serveProxy);
+app.all(INFERENCE_ROUTES.connectRealtime, serveRealtime);
+app.post(INFERENCE_ROUTES.callNamedEndpoint, serveEndpoint);
 
 app.use("/v1/apps/:app/me", billingEntitlementGate, gatewayAuth);
 app.route("/v1/apps/:app/me", meRoutes);

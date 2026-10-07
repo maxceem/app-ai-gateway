@@ -161,6 +161,24 @@ function insertUsageEvent(env: Env, event: UsageEvent): Promise<unknown> {
  * totals in the same D1 write, then marks the API key used. A duplicate insert
  * changes no total, so every step can be retried without double counting.
  */
+/** Insert plus atomic spend triggers are the acknowledgement; ancillary key updates are separate. */
+export async function persistUsageEventAcknowledged(env: Env, event: UsageEvent): Promise<"stored" | "owner_deleted"> {
+  try {
+    await withRetry(() => insertUsageEvent(env, event));
+    return "stored";
+  } catch (error) {
+    // A failed insert alone proves nothing about deletion. Confirm authoritative ownership.
+    const owner = await env.DB.prepare('SELECT id FROM mgmt_organization WHERE id = ?').bind(event.row.organizationId).first();
+    if (!owner) return "owner_deleted";
+    throw error;
+  }
+}
+
+/** Ancillary and bounded: its failure never invalidates an acknowledged usage insert. */
+export async function markUsageApiKeyUsed(env: Env, event: UsageEvent): Promise<void> {
+  if (event.row.apiKeyId) await recordStep("api_key_used", event, () => markApiKeyUsed(env, event.row.apiKeyId!));
+}
+
 export async function persistUsageEvent(env: Env, event: UsageEvent): Promise<void> {
   const outcomes: boolean[] = [];
   outcomes.push(await recordStep("usage_insert", event, () => insertUsageEvent(env, event)));
@@ -239,6 +257,25 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       });
     }
   }
+  await persistUsageEvent(input.env, buildUsageEvent({
+    ...input, eventId, createdAt, observed, report, aborted,
+  }));
+}
+
+export interface UsageBuildInput extends Omit<UsageEventInput, "env" | "observed"> {
+  eventId: string;
+  createdAt: string;
+  observed: UsageObservation | null;
+  report?: ProviderReport | null;
+  aborted?: boolean;
+  realtime?: { sessionId: string; generationId: string; protocol: string; providerResponseId: string | null; completionStatus: string };
+}
+
+/** Shared HTTP/realtime settlement; requires no runtime I/O or framework context. */
+export function buildUsageEvent(input: UsageBuildInput): UsageEvent {
+  const { attribution, identity, eventId, createdAt, observed } = input;
+  const report = input.report ?? null;
+  const aborted = input.aborted ?? false;
   const reporting = reportsCost(attribution.provider);
   const reportedCost = report?.costUsd ?? null;
   const usage: UsageObservation = observed ?? EMPTY_USAGE;
@@ -279,10 +316,10 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const mismeasured = observed !== null
     && price !== null
     && !reportsPricedMeasure(attribution.provider, attribution.model, observed, attribution.pricing);
-  const unresolved = input.status === "ok"
+  const unresolved = (input.status === "ok" || input.realtime !== undefined)
     && reportedCost === null
     && (observed === null || unpriced || mismeasured || (reporting && price === null));
-  if (unresolved) {
+  if (unresolved && input.realtime === undefined) {
     log("error", "usage_unresolved_cost", {
       eventId,
       appId: identity.appId,
@@ -341,7 +378,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   // Observed values come solely from the parsed report: nothing else is entitled
   // to claim who served a request, so there is no caller-supplied alternative.
   const servedModel = report?.servedModel ?? null;
-  await persistUsageEvent(input.env, {
+  return {
     eventId,
     row: {
       eventId,
@@ -369,6 +406,11 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       model: attribution.model,
       route: attribution.route,
       endpointSlug: input.endpointSlug ?? null,
+      realtimeSessionId: input.realtime?.sessionId ?? null,
+      realtimeGenerationId: input.realtime?.generationId ?? null,
+      realtimeProtocol: input.realtime?.protocol ?? null,
+      providerResponseId: input.realtime?.providerResponseId ?? null,
+      completionStatus: input.realtime?.completionStatus ?? null,
       inputTokens: usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
       cacheWriteTokens: usage.cacheWriteTokens,
@@ -387,5 +429,5 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
       createdAt,
     },
     audioSeconds: usage.audioSeconds,
-  });
+  };
 }

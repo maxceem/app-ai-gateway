@@ -159,7 +159,8 @@ export interface OperationSpec {
   readonly response: z.ZodType;
   /** What the success response means, as the document publishes it. */
   readonly responseDescription: string;
-  readonly status?: 200 | 201 | 302;
+  readonly status?: 101 | 200 | 201 | 302;
+  readonly transport?: "websocket";
   /**
    * Extra documented error responses, status → description. The shared
    * 400/401/403/404 set is added to every entry; `"none"` leaves an operation
@@ -446,6 +447,16 @@ export const CATALOG = {
     response: CurrentUserResponseSchema,
     responseDescription: "Current user state.",
     errors: { 402: NO_PLAN, 404: NO_END_USERS },
+  },
+
+  connectRealtime: {
+    method: "GET", path: "/v1/apps/{app}/realtime/{provider}", transport: "websocket",
+    tags: ["Provider proxy"], summary: "Connect a provider-native realtime session",
+    description: "Opt-in WebSocket connection. Each admitted model generation attempt is one request; configuration and audio frames are not additional requests. Native Authorization headers are required. No reconnect replay or conversation resumption. Gateway errors use type gateway.error. Only documented provider profiles are supported.",
+    security: "gateway", params: { app: APP_PARAM.app, provider: { example: "openai-dev", pattern: PROVIDER_SLUG_PATTERN } },
+    query: z.object({ model: z.string().min(1).max(200) }), headers: GatewayClientHeadersSchema,
+    response: NO_RESPONSE_BODY, responseDescription: "Switching protocols to a provider-native WebSocket stream.", status: 101,
+    errors: { 426: "A WebSocket upgrade is required.", 429: DATA_PLANE_RATE_LIMITED, 502: "Provider connection failed." },
   },
 
   proxyProviderRequest: {
@@ -1552,7 +1563,7 @@ export type OperationResponse<K extends OperationName> =
  * both the set that can be mounted and the set that types.
  */
 export type BodiedOperation = {
-  [K in OperationName]: unknown extends OperationResponse<K> ? never : K;
+  [K in OperationName]: Catalog[K] extends { transport: "websocket" } ? never : unknown extends OperationResponse<K> ? never : K;
 }[OperationName];
 
 
@@ -1598,3 +1609,5 @@ export function operationPath<K extends OperationName>(
     ? filled
     : filled + searchSuffix(query as Record<string, string | number | boolean | undefined | null>);
 }
+
+export type HttpOperationName = Exclude<OperationName, "connectRealtime">;

@@ -59,7 +59,7 @@ export interface GatewayRouteConfig {
   providerOnly?: string[];
 }
 /** Per-1M-token overrides for models the shipped catalog does not cover. */
-export type ProviderPricing = Record<string, { input: number; output: number }>;
+export type ProviderPricing = Record<string, { input: number; output: number; audio_input?: number; audio_output?: number; cached_input?: number; cached_audio_input?: number }>;
 /**
  * Where a proxied request's `cost_usd` came from. `reported` is the upstream's
  * own figure for that request, which outranks a local estimate because it is
@@ -337,6 +337,11 @@ export const appUsageEvent = sqliteTable(
     model: text("model").notNull(),
     route: text("route").notNull(),
     endpointSlug: text("endpoint_slug"),
+    realtimeSessionId: text("realtime_session_id"),
+    realtimeGenerationId: text("realtime_generation_id"),
+    realtimeProtocol: text("realtime_protocol"),
+    providerResponseId: text("provider_response_id"),
+    completionStatus: text("completion_status"),
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),

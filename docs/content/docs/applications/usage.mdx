@@ -83,3 +83,13 @@ per-user rate limits bound how much can go unmetered. See
   `route`, `endpoint`, `app_version`.
 - `GET /v1/admin/apps/{app}/events?limit=&status=&user=&model=&before_id=`
   for the event list, paged by `next_before_id`.
+
+## Realtime sessions
+
+Opt-in [realtime WebSockets](/integrate/realtime) support direct OpenAI
+`gpt-realtime` and `gpt-realtime-mini` with manual response creation or managed
+VAD. Each admitted generation attempt is one request, including cancellation or
+failure; audio chunks and connection setup add no requests. Reconnect creates a
+new conversation without replay. Gemini Live remains unavailable pending live
+conformance. Swift clients use `authorizedRealtimeRequest(provider:model:)`
+and `URLSession.webSocketTask(with:)`.

@@ -143,6 +143,11 @@ export type ErrorCode =
    * authenticate with: curl for an App Attest app, Swift for a server app.
    */
   | "unsupported_snippet"
+  | "realtime_not_supported"
+  | "realtime_session_limit"
+  | "realtime_protocol_error"
+  | "realtime_usage_unresolved"
+  | "upgrade_required"
   | "internal_error";
 
 /**

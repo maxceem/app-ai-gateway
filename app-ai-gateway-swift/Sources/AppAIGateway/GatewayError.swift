@@ -268,3 +268,25 @@ struct ErrorEnvelope: Decodable {
 
     let error: Body
 }
+
+/// Gateway-originated WebSocket error; provider events retain their native types.
+public struct RealtimeGatewayError: Decodable, Sendable {
+    public struct Details: Decodable, Sendable {
+        public let code: String
+        public let message: String
+        public let retryAfterSeconds: Double?
+        enum CodingKeys: String, CodingKey {
+            case code, message
+            case retryAfterSeconds = "retry_after_seconds"
+        }
+    }
+    public let type: String
+    public let error: Details
+    public let sessionID: String
+    public let generationID: String?
+    enum CodingKeys: String, CodingKey {
+        case type, error
+        case sessionID = "session_id"
+        case generationID = "generation_id"
+    }
+}

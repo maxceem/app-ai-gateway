@@ -32,6 +32,7 @@ interface EndpointRateLimit {
  * this table: it exists only to stop one caller from hammering one endpoint.
  */
 export const ENDPOINT_RATE_LIMITS = {
+  realtime_connect: { limit: 10, windowMs: 60_000, action: "open a realtime session", sharedBy: "this app identity" },
   bootstrap: {
     limit: 3,
     windowMs: 86_400_000,

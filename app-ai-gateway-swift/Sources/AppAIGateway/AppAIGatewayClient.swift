@@ -207,6 +207,39 @@ public actor AppAIGatewayClient {
         )
     }
 
+    /// A fresh provider-native conversation. Reconnecting never replays a generation.
+    public func realtimeURL(provider: String, model: String) throws -> URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        let host = components.host ?? ""
+        if components.scheme == "https" {
+            components.scheme = "wss"
+        } else if components.scheme == "http" && (host == "localhost" || host.hasSuffix(".localhost") || host == "127.0.0.1" || host == "::1" || host == "[::1]") {
+            components.scheme = "ws"
+        } else {
+            throw URLError(.unsupportedURL)
+        }
+        guard components.user == nil, components.password == nil, !model.isEmpty else { throw URLError(.badURL) }
+        let origin = components.url!
+        var result = URLComponents(url: origin.appending(path: "v1/apps/\(appID)/realtime/\(provider)"), resolvingAgainstBaseURL: false)!
+        result.queryItems = [URLQueryItem(name: "model", value: model)]
+        result.fragment = nil
+        guard let url = result.url else { throw URLError(.badURL) }
+        return url
+    }
+
+    public func realtimeURL(provider: ProviderSlug, model: String) throws -> URL {
+        try realtimeURL(provider: provider.rawValue, model: model)
+    }
+
+    /// Pass this request to URLSession.webSocketTask(with:). Each admitted response consumes one request.
+    public func authorizedRealtimeRequest(provider: String, model: String) async throws -> URLRequest {
+        try await authorizedRequest(url: realtimeURL(provider: provider, model: model), method: "GET")
+    }
+
+    public func authorizedRealtimeRequest(provider: ProviderSlug, model: String) async throws -> URLRequest {
+        try await authorizedRealtimeRequest(provider: provider.rawValue, model: model)
+    }
+
     /// A server-configured endpoint. The provider, model, and any baked
     /// parameters live in the gateway's endpoint row, so the caller sends only
     /// the request body its slug expects.

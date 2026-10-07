@@ -2,6 +2,7 @@ import {
   CATALOG,
   operationPath,
   type OperationName,
+  type HttpOperationName,
   type OperationParams,
   type OperationQuery,
   type OperationRequest,
@@ -96,7 +97,7 @@ export interface CallOptions<K extends OperationName> {
  * transport itself — the cookie and `x-console-request` — is unchanged, and the
  * console still parses nothing, because the server is the one that validates.
  */
-export function call<K extends OperationName>(
+export function call<K extends HttpOperationName>(
   name: K,
   { params, query, body, headers }: CallOptions<K> = {},
 ): Promise<OperationResponse<K>> {

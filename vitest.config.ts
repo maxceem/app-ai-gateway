@@ -3,6 +3,12 @@ import { availableParallelism } from "node:os";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
+// Allow CI or a busy workstation to constrain runtime concurrency explicitly.
+const workerOverride = Number(process.env.GATEWAY_TEST_MAX_WORKERS);
+const defaultWorkers = Math.max(2, Math.min(6, Math.floor(availableParallelism() / 2)));
+const testWorkers = Number.isSafeInteger(workerOverride) && workerOverride > 0
+  ? Math.min(6, workerOverride) : defaultWorkers;
+
 export default defineConfig({
   plugins: [
     cloudflareTest(async () => {
@@ -11,6 +17,7 @@ export default defineConfig({
         wrangler: { configPath: "./wrangler.jsonc", environment: "local" },
         miniflare: {
           bindings: {
+            REALTIME_SOAK: process.env.REALTIME_SOAK ?? "",
             JWT_SECRET: "test-jwt-secret-with-at-least-thirty-two-bytes",
             BETTER_AUTH_SECRET: "test-better-auth-secret-with-at-least-thirty-two-bytes",
             // Tests must not change behavior based on a developer's ignored
@@ -34,7 +41,7 @@ export default defineConfig({
     // then fight over the CPU. Half the cores, capped, lands on that optimum
     // here without oversubscribing a smaller machine. Re-checked once the barrels
     // reduced the suite to nine files: nine workers measured the same as six.
-    maxWorkers: Math.max(2, Math.min(6, Math.floor(availableParallelism() / 2))),
+    maxWorkers: testWorkers,
     setupFiles: ["./test/apply-migrations.ts"],
     // The console is a browser app with its own jsdom Vitest project, run by
     // `pnpm run console:test`. Without this it is swept up by the default glob
